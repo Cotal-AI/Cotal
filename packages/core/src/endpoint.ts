@@ -293,6 +293,12 @@ export function fitHistoryPage(items: CotalMessage[], budget: number): CotalMess
   return first === items.length ? [] : items.slice(first);
 }
 
+type MembershipFeedWatch = {
+  onChange: () => void;
+  iter?: Awaited<ReturnType<KV["watch"]>>;
+  stopped: boolean;
+};
+
 export class CotalEndpoint extends EventEmitter {
   readonly card: AgentCard;
   readonly space: string;
@@ -338,6 +344,9 @@ export class CotalEndpoint extends EventEmitter {
   private deliveryKv?: KV;
   private managerLeaseKv?: KV;
   private membershipFeedKv?: KV;
+  /** Caller-owned membership watches survive a connection rebuild as INTENT. Their iterators are
+   *  connection-scoped and are stopped/re-created around the epoch swap. */
+  private readonly membershipFeedWatches = new Set<MembershipFeedWatch>();
   /** The live `ctl.delivery` serve subscription (delivery daemon) — re-created on every (re)connect by
    *  {@link armDeliveryControl}; tracked so the stale one is dropped on reconnect. */
   private deliveryServeSub?: import("@nats-io/transport-node").Subscription;
@@ -967,6 +976,10 @@ export class CotalEndpoint extends EventEmitter {
       }, this.heartbeatMs);
     }
 
+    // Caller-owned membership watches are INTENT rather than one-connection iterators. Re-open them
+    // before reporting the endpoint connected, so a successful reconnect does not leave the graph stale.
+    await this.rearmMembershipWatches();
+
     // Re-arm Plane-3 (delivery-daemon-hosted fan-out + trusted reader + ctl.delivery) on every (re)connect — no-op unless this
     // endpoint hosts it. The first arm comes from startPlane3 (after start()); this re-binds the loops
     // a reconnect's clearConnectionScoped() tore down, so a broker blip doesn't silently kill the backstop.
@@ -1011,6 +1024,10 @@ export class CotalEndpoint extends EventEmitter {
     this.joinSeq.clear();
     this.channelConfigs.clear();
     this.channelDefaults = {};
+    for (const watch of this.membershipFeedWatches) {
+      try { watch.iter?.stop(); } catch { /* already closed with the connection */ }
+      watch.iter = undefined;
+    }
   }
 
   /** If stop() ran during a rebuild's `await connectAndBind`, the just-bound connection +
@@ -1165,6 +1182,11 @@ export class CotalEndpoint extends EventEmitter {
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     if (this.bearerTimer) clearTimeout(this.bearerTimer);
     if (this.credsTimer) clearTimeout(this.credsTimer);
+    for (const watch of this.membershipFeedWatches) {
+      watch.stopped = true;
+      try { watch.iter?.stop(); } catch { /* already closed */ }
+    }
+    this.membershipFeedWatches.clear();
     for (const msgs of this.streamMsgs) {
       try {
         msgs.stop();
@@ -2091,12 +2113,57 @@ export class CotalEndpoint extends EventEmitter {
    *  stop handle. Best-effort: a feed the cred can't read (or absent) surfaces as an `error` event and
    *  the dashboard keeps its last snapshot. */
   async watchMembership(onChange: () => void): Promise<{ stop(): void }> {
+    const watch: MembershipFeedWatch = { onChange, stopped: false };
+    this.membershipFeedWatches.add(watch);
+    try {
+      await this.armMembershipWatch(watch);
+    } catch (err) {
+      watch.stopped = true;
+      this.membershipFeedWatches.delete(watch);
+      throw err;
+    }
+    return {
+      stop: () => {
+        if (watch.stopped) return;
+        watch.stopped = true;
+        this.membershipFeedWatches.delete(watch);
+        try { watch.iter?.stop(); } catch { /* already closed */ }
+        watch.iter = undefined;
+      },
+    };
+  }
+
+  /** Bind one caller-owned membership-watch intent to the CURRENT connection. */
+  private async armMembershipWatch(watch: MembershipFeedWatch): Promise<void> {
+    if (watch.stopped) return;
     const kv = await this.membershipFeedRegistry();
     const iter = await kv.watch();
+    if (watch.stopped) {
+      iter.stop();
+      return;
+    }
+    watch.iter = iter;
     void (async () => {
-      for await (const _ of iter) onChange();
-    })().catch((err) => this.emit("error", err as Error));
-    return { stop: () => iter.stop() };
+      for await (const _ of iter) {
+        if (watch.stopped || watch.iter !== iter) break;
+        watch.onChange();
+      }
+    })().catch((err) => {
+      if (!watch.stopped && watch.iter === iter) this.emit("error", err as Error);
+    }).finally(() => {
+      if (watch.iter === iter) watch.iter = undefined;
+    });
+  }
+
+  /** Rebind every live membership-watch intent after a connection rebuild. A membership feed is
+   *  best-effort: one watcher failing to re-open emits an error but never makes the whole endpoint
+   *  reconnect fail. The intent stays registered so a later rebuild can try again. */
+  private async rearmMembershipWatches(): Promise<void> {
+    await Promise.all([...this.membershipFeedWatches].map(async (watch) => {
+      if (watch.stopped) return;
+      try { await this.armMembershipWatch(watch); }
+      catch (err) { this.emit("error", err as Error); }
+    }));
   }
 
   /** Fetch recent messages from a channel's JetStream backlog. */

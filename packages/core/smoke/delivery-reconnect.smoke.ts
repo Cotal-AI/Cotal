@@ -13,7 +13,9 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, principalKey, DEV_OWNER } from "../src/index.js";
+import { connect } from "@nats-io/transport-node";
+import { Kvm } from "@nats-io/kv";
+import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, principalKey, DEV_OWNER, membershipBucket, standaloneConnectOpts } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -66,6 +68,10 @@ try {
   check("durableJoin works before reconnect", pre.durable === true);
   const reviewGen = pre.generation ?? 0;
   await observer.readMembership(); // open the membership-feed KV on the old connection before rebuilding
+  let membershipChanges = 0;
+  const membershipWatch = await observer.watchMembership(() => { membershipChanges++; });
+  await wait(200); // drain the watch's initial replay before measuring the post-reconnect write
+  membershipChanges = 0;
 
   // Force both roles to drain + rebuild. The daemon exercises its responder/Plane-3 handles; the
   // observer exercises the cached read-only membership-feed handle that triggered #800.
@@ -89,10 +95,17 @@ try {
   const lease = await daemon.readDeliveryLease(0);
   check("the delivery lease is still readable after reconnect (deliveryKv reopened)", lease?.ready === true);
 
-  let membershipWatch: { stop(): void } | undefined;
-  try { membershipWatch = await observer.watchMembership(() => {}); } catch (e) { console.log(`    (post-reconnect membership watch threw: ${(e as Error).message})`); }
-  check("the membership feed watch re-opens on the fresh connection", membershipWatch !== undefined);
-  membershipWatch?.stop();
+  const membershipRwCreds = await mintCreds(auth, newIdentity(), "membership-rw");
+  const membershipNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: membershipRwCreds, tls: false }) });
+  try {
+    const feed = await new Kvm(membershipNc).open(membershipBucket(space));
+    await feed.put("reconnect-probe", JSON.stringify({ live: [], durable: [], observedAt: Date.now() }));
+    for (let i = 0; i < 20 && membershipChanges === 0; i++) await wait(50);
+  } finally {
+    await membershipNc.drain();
+  }
+  check("the membership feed watch stays live across reconnect", membershipChanges > 0, { membershipChanges });
+  membershipWatch.stop();
 
   console.log(`\nDELIVERY-RECONNECT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

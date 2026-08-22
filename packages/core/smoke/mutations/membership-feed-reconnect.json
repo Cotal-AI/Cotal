@@ -15,9 +15,9 @@
       "file": "packages/core/src/endpoint.ts",
       "find": "      this.membershipFeedKv = undefined;\n",
       "replace": "",
-      "expectRed": "the membership feed watch re-opens on the fresh connection",
-      "cell": "the membership feed watch re-opens on the fresh connection",
-      "note": "The pre-reconnect read populated the cache. Deleting this one clear makes the post-reconnect watch reuse the stale KV and throw closed connection."
+      "expectRed": "the membership feed watch stays live across reconnect",
+      "cell": "the membership feed watch stays live across reconnect",
+      "note": "The pre-reconnect read populated the cache. Deleting this one clear makes the existing watch fail to rebind to the fresh KV, so the post-reconnect feed write produces no callback."
     }
   ]
 }
