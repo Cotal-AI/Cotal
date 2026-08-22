@@ -60,6 +60,7 @@ try {
   const pre = await agent.durableJoinChannel("review");
   check("durableJoin works before reconnect", pre.durable === true);
   const reviewGen = pre.generation ?? 0;
+  await daemon.readMembership(); // open the membership-feed KV on the old connection before rebuilding
 
   // Force the daemon endpoint to drain + rebuild its connection (drops the old ctl.delivery sub + KV handles).
   await daemon.reconnect();
@@ -81,6 +82,11 @@ try {
 
   const lease = await daemon.readDeliveryLease(0);
   check("the delivery lease is still readable after reconnect (deliveryKv reopened)", lease?.ready === true);
+
+  let membershipWatch: { stop(): void } | undefined;
+  try { membershipWatch = await daemon.watchMembership(() => {}); } catch (e) { console.log(`    (post-reconnect membership watch threw: ${(e as Error).message})`); }
+  check("the membership feed watch re-opens on the fresh connection", membershipWatch !== undefined);
+  membershipWatch?.stop();
 
   console.log(`\nDELIVERY-RECONNECT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

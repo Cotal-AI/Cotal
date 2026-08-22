@@ -1084,6 +1084,7 @@ export class CotalEndpoint extends EventEmitter {
       // handle after a reconnect).
       this.membersKv = undefined;
       this.aclKv = undefined;
+      this.membershipFeedKv = undefined;
       this.deliveryKv = undefined;
       this.emit("connection", { connected: false }); // null window opened — not live until the rebind below
       try {
