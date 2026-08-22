@@ -7,8 +7,8 @@
     {
       "name": "L1 adopt immediately at event-plane creation while the mesh is down",
       "file": "extensions/pi/src/extension.ts",
-      "find": "    if (adopted || !runtime.mesh.connected) return;\n    adopted = true;\n    holder.adopt(path);",
-      "replace": "    if (adopted) return;\n    adopted = true;\n    holder.adopt(path);",  
+      "find": "  flush();\n\n  let runId: string | undefined;",
+      "replace": "  adopted = true;\n  holder.adopt(path);\n  holder.flush(path);\n\n  let runId: string | undefined;",   
       "expectRed": "C1: nothing published while the mesh is down"
     },
     {
