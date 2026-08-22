@@ -402,9 +402,24 @@ export class MeshAgent extends EventEmitter {
       // bounded local loss: evicted items are acked without being marked handled.
       let excess = this.inbox.length - MAX_INBOX;
       while (excess-- > 0) {
+        // Eviction order, weakest claim first. The tiers below `pullOnly` exist because `pullOnly`
+        // is `!mentionsMe && historical`, and `mentionsMe` derives from the payload `mentions` field
+        // — forgeable by the sender. A peer that stamps every flooded message with the victim's name
+        // makes none of its traffic pull-only, so `findIndex` returned -1, the old code fell through
+        // to index 0, and index 0 is the OLDEST entry: a directed message waiting to be handled. It
+        // was spliced out and acked unhandled, which is unrecoverable (#791). Ambient channel chatter
+        // at volume did the same thing with no forgery at all.
+        //
+        // So directedness decides who gets sacrificed, and directedness is read from `kind`, which is
+        // derived from the delivering subject and broker-policed rather than from the payload.
         let index = this.inbox.findIndex((p) => p.pullOnly);
+        // Channel traffic before anything addressed to us specifically, forged mentions included.
+        if (index < 0) index = this.inbox.findIndex((p) => p.item.kind === "channel");
+        // Only when the whole buffer is directed mail does the oldest lose, and that case carries no
+        // attacker advantage: a peer cannot force DMs it is not authorised to send.
         if (index < 0) index = 0;
         const [evicted] = this.inbox.splice(index, 1);
+        const sacrificingDirected = evicted.item.kind !== "channel";
         this.rememberEvicted(evicted);
         // ...but NOT an id that is mid-delivery. Overflow prefers the oldest, which is exactly what a
         // surfaced batch is made of, so without this an arrival can ack a message a host is still
@@ -412,7 +427,11 @@ export class MeshAgent extends EventEmitter {
         // unrecoverable — gone from the buffer, never marked handled, no longer redeliverable. Left
         // un-acked it redelivers; and if the delivery does succeed, {@link drainInboxIds} marks the
         // now-missing id handled so that redelivery is silently acked.
-        if (!this.inFlightIds.has(evicted.item.id)) evicted.ack();
+        //
+        // A directed message is never acked on overflow: leaving it un-acked lets JetStream redeliver
+        // it once we have room, which turns unrecoverable loss into a delay. Channel ambient is still
+        // acked, because replaying it is what the history flood was (#775).
+        if (!this.inFlightIds.has(evicted.item.id) && !sacrificingDirected) evicted.ack();
       }
     }
     this.emit("incoming", item);
