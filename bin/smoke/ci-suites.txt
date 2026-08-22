@@ -408,4 +408,7 @@ smoke:manager-reconcile-startup
 # storm of user turns (119 digests, 0 assistant output, provider emergency compaction).
 smoke:history-flood
 
+# The delete route reads its request body under a hard cap so an unbounded client cannot balloon the process (#721).
+smoke:web-body-cap
+
 smoke:orientation

@@ -1,0 +1,76 @@
+{
+  "command": "pnpm smoke:web-body-cap",
+  "progressPattern": "^[0-9]\\. ",
+  "mutations": [
+    {
+      "name": "C1 the streaming count stops refusing, so the cap holds only for a caller that honestly declares an oversized body and stops nothing for one that declares nothing at all",
+      "file": "implementations/web/src/web.ts",
+      "find": "    if (seen > MAX_BODY_BYTES) throw tooLarge(seen, \"read\");\n",
+      "replace": "",
+      "expectRed": "5.2 a body with NO declared length is still refused, so the cap is enforced on the bytes as they arrive and not only on what the caller admits to"
+    },
+    {
+      "name": "C2 the declared size is no longer consulted, so an announced oversize is read until the streaming gate catches it instead of being refused before a body byte arrives",
+      "file": "implementations/web/src/web.ts",
+      "find": "  const declared = Number(req.headers[\"content-length\"]);\n  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw tooLarge(declared, \"declared\");\n",
+      "replace": "",
+      "expectRed": "5.0 a body ANNOUNCED as oversized is refused on the announcement, without waiting for bytes the caller never sends"
+    },
+    {
+      "name": "C3 the cap TRUNCATES instead of refusing, which is the failure this route can least afford: it turns an oversized body into a shortened one and acts on whatever that parses to, the same shape as a channel name the caller never sent",
+      "file": "implementations/web/src/web.ts",
+      "find": "    if (seen > MAX_BODY_BYTES) throw tooLarge(seen, \"read\");\n    chunks.push(chunk as Buffer);",
+      "replace": "    if (seen > MAX_BODY_BYTES) { chunks.push((chunk as Buffer).subarray(0, (chunk as Buffer).length - (seen - MAX_BODY_BYTES))); break; }\n    chunks.push(chunk as Buffer);",
+      "expectRed": "4.2 ...and the refusal is about the size, never a complaint about a channel name, which is what a truncated parse would produce"
+    },
+    {
+      "name": "C4 the count is still exact and the refusal still says 413, but it is only consulted AFTER the loop, so the whole body is read before the server forms an opinion and the memory is already spent when the refusal is written",
+      "file": "implementations/web/src/web.ts",
+      "find": "  for await (const chunk of req) {\n    seen += (chunk as Buffer).length;",
+      "replace": "  for await (const chunk of req) {\n    seen += (chunk as Buffer).length;\n    if (true) { chunks.push(chunk as Buffer); continue; }",
+      "expectRed": "5.3 ...and the caller is cut off partway through an undeclared body, so the refusal happened AT the threshold rather than after reading to the end"
+    },
+    {
+      "name": "C5 the delete route swallows the size refusal back into an empty body, so an oversized request is answered with a complaint that a field is missing which the caller in fact sent, and the size is never mentioned",
+      "file": "implementations/web/src/web.ts",
+      "find": "        if (e instanceof PayloadTooLarge) throw e;\n",
+      "replace": "",
+      "expectRed": "3.1 a body over the cap is refused with 413, the status for a body this server declined to READ, not the 400 it gives a body it read and disliked"
+    },
+    {
+      "name": "C6 the cap is set far below any real body, which is the opposite failure to the one this change fixes: it refuses the dashboard's own deletes and would read as a working cap to anyone who only tested oversized bodies",
+      "file": "implementations/web/src/web.ts",
+      "find": "const MAX_BODY_BYTES = 8 * 1024;",
+      "replace": "const MAX_BODY_BYTES = 1024;",
+      "expectRed": "2.4 a body just UNDER the cap is processed normally, extra fields and all"
+    },
+    {
+      "name": "C7 the read loop refuses AT the cap instead of past it, so a body of exactly the permitted size is rejected: the limit becomes one the caller must stay under rather than one it may reach, and every cell built on a body far below or far above the cap still passes",
+      "file": "implementations/web/src/web.ts",
+      "find": "    if (seen > MAX_BODY_BYTES) throw tooLarge(seen, \"read\");",
+      "replace": "    if (seen >= MAX_BODY_BYTES) throw tooLarge(seen, \"read\");",
+      "expectRed": "6.3 the same body with NO declared length is accepted too, which is the read loop's own boundary rather than the header gate's"
+    },
+    {
+      "name": "C8 the same off-by-one in the DECLARED gate, which compares a different number than the read loop does, so an error in one is invisible to the other and needs its own cell",
+      "file": "implementations/web/src/web.ts",
+      "find": "  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw tooLarge(declared, \"declared\");",
+      "replace": "  if (Number.isFinite(declared) && declared >= MAX_BODY_BYTES) throw tooLarge(declared, \"declared\");",
+      "expectRed": "6.1 a body of EXACTLY the cap is accepted and purges: the limit is a ceiling the caller may reach, not one it must stay under"
+    },
+    {
+      "name": "C9 the refusal no longer ends the connection it arrived on, so a caller that asks to keep it alive is not cut off: Node reads the rest of the body to get the socket back, and the cap bounds only what a caller volunteers to stop sending",
+      "file": "implementations/web/src/web.ts",
+      "find": "      res.writeHead(status, e instanceof PayloadTooLarge\n        ? { \"content-type\": \"application/json\", connection: \"close\" }\n        : { \"content-type\": \"application/json\" });",
+      "replace": "      res.writeHead(status, { \"content-type\": \"application/json\" });",
+      "expectRed": "7.1 an oversized DECLARED body on a KEEP-ALIVE connection is refused and that connection ENDS, so the cap bounds what this server takes in rather than what the caller volunteers to stop sending"
+    },
+    {
+      "name": "C10 a size refusal stops reaching the operator log, leaving the ONE report of it that a reset connection cannot lose: the caller mid-upload may never read the 413, so with this line gone an oversized request is refused silently as far as anyone running the dashboard can tell",
+      "file": "implementations/web/src/web.ts",
+      "find": "      console.error(c[caller ? \"yellow\" : \"red\"](`${caller ? \"~\" : \"!\"} ${req.method ?? \"GET\"} ${req.url ?? \"/\"} ${caller ? \"refused\" : \"failed\"}: ${why}`));",
+      "replace": "      if (!(e instanceof PayloadTooLarge)) console.error(c[caller ? \"yellow\" : \"red\"](`${caller ? \"~\" : \"!\"} ${req.method ?? \"GET\"} ${req.url ?? \"/\"} ${caller ? \"refused\" : \"failed\"}: ${why}`));",
+      "expectRed": "7.3 an oversized CHUNKED body over keep-alive is cut off and RECORDED BY THE OPERATOR even though the uploading caller may get no readable reply, which is the durable half of the refusal and the half this change actually owns"
+    }
+  ]
+}
