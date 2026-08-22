@@ -133,6 +133,30 @@ try {
   for (let i = 0; i < 20 && (await membershipConsumers()).length !== 0; i++) await wait(50);
   check("stopping the membership watch deletes its broker consumer", (await membershipConsumers()).length === 0, await membershipConsumers());
 
+  // Stop DURING arm after the broker consumer exists but before consume() returns. This is the exact
+  // unowned interval that leaked when identity was recorded only after consume completed.
+  const raceNc = (observer as unknown as { nc: import("@nats-io/transport-node").NatsConnection }).nc;
+  const raceFeed = await new Kvm(raceNc).open(membershipBucket(space));
+  const raceBucket = raceFeed as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<import("@nats-io/jetstream").PushConsumer> } } };
+  const raceGet = raceBucket.js.consumers.getPushConsumer.bind(raceBucket.js.consumers);
+  let releaseRace!: () => void;
+  const raceGate = new Promise<void>((resolve) => { releaseRace = resolve; });
+  raceBucket.js.consumers.getPushConsumer = async (...args: unknown[]) => {
+    const consumer = await raceGet(...args);
+    const consume = consumer.consume.bind(consumer);
+    consumer.consume = async (...consumeArgs: Parameters<typeof consume>) => { await raceGate; return consume(...consumeArgs); };
+    return consumer;
+  };
+  (observer as unknown as { membershipFeedKv: unknown }).membershipFeedKv = raceFeed;
+  const raceHandlePromise = observer.watchMembership(() => {});
+  for (let i = 0; i < 20 && (await membershipConsumers()).length === 0; i++) await wait(50);
+  const raceIntent = [...(observer as unknown as { membershipFeedWatches: Set<{ stopped: boolean; arm: Promise<void> }> }).membershipFeedWatches][0];
+  raceIntent.stopped = true;
+  releaseRace();
+  await raceHandlePromise;
+  for (let i = 0; i < 20 && (await membershipConsumers()).length !== 0; i++) await wait(50);
+  check("stop during membership arm retains identity and leaves no broker consumer", (await membershipConsumers()).length === 0, await membershipConsumers());
+
   const shutdownWatch = await observer.watchMembership(() => {});
   await wait(200);
   const shutdownConsumer = await membershipConsumers();

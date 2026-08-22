@@ -2158,22 +2158,28 @@ export class CotalEndpoint extends EventEmitter {
     const cc = kv._buildCC(">", KvWatchInclude.LastValue, { headers_only: false });
     const consumer = await kv.js.consumers.getPushConsumer(kv.stream, cc);
     const info = await consumer.info(true);
+    // The broker resource exists now. Record its identity BEFORE consume() so a concurrent stop or
+    // connection close always leaves enough state for strict cleanup or fresh-epoch retry.
+    watch.consumer = consumer;
+    watch.consumerStream = info.stream_name;
+    watch.consumerName = info.name;
     let pending = info.num_pending;
-    const iter = await consumer.consume({ callback: (msg) => {
+    let iter: Awaited<ReturnType<PushConsumer["consume"]>>;
+    try { iter = await consumer.consume({ callback: (msg) => {
       const isUpdate = pending === 0 || --pending === 0;
       const entry: KvWatchEntry = kv.jmToWatchEntry(msg, isUpdate);
       if (!watch.stopped && watch.consumer === consumer) watch.onChange();
       void entry;
-    } });
+    } }); }
+    catch (err) {
+      await this.disarmMembershipWatch(watch);
+      throw err;
+    }
+    watch.iter = iter;
     if (watch.stopped) {
-      iter.stop();
-      await consumer.delete().catch(() => false);
+      await this.disarmMembershipWatch(watch);
       return;
     }
-    watch.consumer = consumer;
-    watch.consumerStream = info.stream_name;
-    watch.consumerName = info.name;
-    watch.iter = iter;
     iter.closed().then(() => {
       if (!watch.stopped && watch.consumer === consumer) this.emit("error", new Error("membership watch closed"));
     }).catch(() => {});

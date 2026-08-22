@@ -1,6 +1,6 @@
 {
   "suite": "packages/core/smoke/delivery-reconnect.smoke.ts",
-  "guard": "membership reads and caller-owned watches recover across manual and terminal reconnects, with broker consumers deleted on replacement and caller stop",
+  "guard": "membership reads and caller-owned watches recover across manual and terminal reconnects, races, and shutdown, with broker consumers deleted on replacement and stop",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:delivery-reconnect:auth",
   "completionMarker": "DELIVERY-RECONNECT SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/membership-feed-reconnect.json",
@@ -35,6 +35,15 @@
       "expectRed": "terminal self-heal creates one successor and deletes the closed-epoch predecessor",
       "cell": "terminal self-heal creates one successor and deletes the closed-epoch predecessor",
       "note": "After nc.closed, the fresh connection must delete the recorded predecessor before creating its successor."
+    },
+    {
+      "name": "stop during membership arm forgets consumer identity before cleanup",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    watch.consumer = consumer;\n    watch.consumerStream = info.stream_name;\n    watch.consumerName = info.name;\n    let pending = info.num_pending;\n",
+      "replace": "    let pending = info.num_pending;\n",
+      "expectRed": "stop during membership arm retains identity and leaves no broker consumer",
+      "cell": "stop during membership arm retains identity and leaves no broker consumer",
+      "note": "The broker resource exists after consumer.info and before consume returns. Identity must be recorded at that point so a concurrent stop can delete it."
     }
   ]
 }
