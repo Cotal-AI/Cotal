@@ -343,6 +343,7 @@ try {
 
   // ---------- A(cont). the closed route table ----------
   console.log("A') the public route table is closed");
+  check("GET /health is served on the public face", (await get(`${PUBLIC}/health`)).status === 200);
   check("GET /jwks is served on the public face", (await get(`${PUBLIC}/jwks`)).status === 200);
   check("…with the explicit cache contract", /max-age=/.test((await get(`${PUBLIC}/jwks`)).headers.get("cache-control") ?? ""));
   let notFound = 0;
@@ -403,7 +404,7 @@ try {
 }
 
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 44;
+const EXPECTED = 45;
 console.log(`\nremote-exchange smoke: ${pass} passed, ${fail} failed`);
 if (pass + fail !== EXPECTED) {
   console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped`);
