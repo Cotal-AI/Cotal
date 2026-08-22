@@ -38,7 +38,7 @@
  * temp directory beneath it resolves THERE - and a suite that built its tree under `tmpdir()`
  * without checking would silently measure a foreign anchor and report a green.
  *
- * COTAL_HOME is sandboxed; kills ONLY the PIDs it spawns. Needs nats-server on PATH.
+ * COTAL_HOME and XDG_CONFIG_HOME are sandboxed; kills ONLY the PIDs it spawns. Needs nats-server on PATH.
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -180,7 +180,7 @@ const cmd = (name: string): Command => {
 async function attachFrom(cwd: string, ms = 25_000): Promise<string> {
   const p = spawnProc("npx", ["tsx", BIN, "attach", "--name", SEAT, "--space", SPACE], {
     cwd,
-    env: { ...cleanEnv, COTAL_HOME: home, NO_COLOR: "1" },
+    env: { ...cleanEnv, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   kids.push(p);
@@ -408,6 +408,10 @@ try {
     "no user-facing refusal on any route points at an internal work item",
     ![rawOpen.out, rawCreds.out, fromFossil, fromBare].some((o) => /#\d+\b|follow-up/.test(o)),
     { rawOpen: rawOpen.out.slice(-300) },
+  );
+  ok(
+    "the attached-session subprocess does not reconcile connector payloads before exercising attach",
+    ![fromFossil, fromBare, fromCorrupt].some((o) => /(?:^|\n)(?:✓ added @cotal-ai\/|→ wrote operator-global seed store payload)/.test(o)),
   );
 
   console.log(`\nattach auth-root: ${pass} passed, ${fail} failed`);
