@@ -436,3 +436,9 @@ smoke:inbox-overflow-directed
 # four-route allowlist, capless credential proof, loopback negative control, immediate revocation,
 # public-only view refusal, Origin/body hardening, peer isolation and bearer refresh after expiry.
 smoke:remote-exchange:live
+
+# A restarted seat must resume the session it left, not silently start blank (#789). The host called
+# createSession unconditionally, so stop+respawn forked a new session and orphaned the transcript:
+# a live seat answered NO PRIOR CONTEXT about work in its own 112 KB journal, while the TUI, spawned
+# with --resume, showed a human the history the agent could not recall.
+smoke:jcode-session-resume
