@@ -5,8 +5,8 @@
 The advertised tool surface and the orientation card now gate on **authenticated**, not on "has static creds", so a user-auth agent is no longer told it can spawn.
 
 `cotal_spawn` and `cotal_persona` ride the `spawn` capability, and the gate read `!config.creds` as
-"open mode". That was true while there were two identity states. There is now a third — user-mode
-auth — and it carries no static creds by construction: the pair is refused at parse, at launch, and
+"open mode". That was true while there were two identity states. There is now a third: user-mode
+auth. It carries no static creds by construction; the pair is refused at parse, at launch, and
 at connect, one launch carrying one identity plane. So `!config.creds` was always true on a user-auth
 agent, and every agent on a user-auth mesh was advertised both manager-op tools whatever its
 capabilities. The wire still refused the call, so nothing could be done with them; what broke is the
