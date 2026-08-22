@@ -18,6 +18,24 @@
       "expectRed": "the membership feed watch stays live across reconnect",
       "cell": "the membership feed watch stays live across reconnect",
       "note": "The pre-reconnect read populated the cache. Deleting this one clear makes the existing watch fail to rebind to the fresh KV, so the post-reconnect feed write produces no callback."
+    },
+    {
+      "name": "reconnect drops the membership watch rearm call",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    await this.rearmMembershipWatches();\n",
+      "replace": "",
+      "expectRed": "the membership feed watch stays live across reconnect",
+      "cell": "the membership feed watch stays live across reconnect",
+      "note": "The old iterator is retired and the intent never gets a successor, so the post-reconnect membership-rw write produces no callback."
+    },
+    {
+      "name": "reconnect stops the local membership iterator but leaves its broker consumer",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    await consumer?.delete().catch(() => false);\n",
+      "replace": "",
+      "expectRed": "reconnect deletes the predecessor membership consumer instead of accumulating one",
+      "cell": "reconnect deletes the predecessor membership consumer instead of accumulating one",
+      "note": "Local iterator stop is not broker deletion. The predecessor remains until the ordered consumer inactive threshold while a successor is created."
     }
   ]
 }

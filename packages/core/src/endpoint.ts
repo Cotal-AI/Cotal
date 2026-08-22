@@ -38,7 +38,9 @@ import {
   type ConsumerInfo,
   type JsMsg,
 } from "@nats-io/jetstream";
-import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
+import { type PushConsumer } from "@nats-io/jetstream";
+import { Kvm, type KV, type KvEntry, type KvWatchEntry } from "@nats-io/kv";
+import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 
 import type {
   AgentCard,
@@ -295,8 +297,10 @@ export function fitHistoryPage(items: CotalMessage[], budget: number): CotalMess
 
 type MembershipFeedWatch = {
   onChange: () => void;
-  iter?: Awaited<ReturnType<KV["watch"]>>;
+  iter?: { stop(): void };
+  consumer?: PushConsumer;
   stopped: boolean;
+  arm: Promise<void>;
 };
 
 export class CotalEndpoint extends EventEmitter {
@@ -1024,10 +1028,8 @@ export class CotalEndpoint extends EventEmitter {
     this.joinSeq.clear();
     this.channelConfigs.clear();
     this.channelDefaults = {};
-    for (const watch of this.membershipFeedWatches) {
-      try { watch.iter?.stop(); } catch { /* already closed with the connection */ }
-      watch.iter = undefined;
-    }
+    for (const watch of this.membershipFeedWatches)
+      watch.arm = watch.arm.then(() => this.disarmMembershipWatch(watch));
   }
 
   /** If stop() ran during a rebuild's `await connectAndBind`, the just-bound connection +
@@ -1184,8 +1186,9 @@ export class CotalEndpoint extends EventEmitter {
     if (this.credsTimer) clearTimeout(this.credsTimer);
     for (const watch of this.membershipFeedWatches) {
       watch.stopped = true;
-      try { watch.iter?.stop(); } catch { /* already closed */ }
+      watch.arm = watch.arm.then(() => this.disarmMembershipWatch(watch));
     }
+    await Promise.all([...this.membershipFeedWatches].map((watch) => watch.arm));
     this.membershipFeedWatches.clear();
     for (const msgs of this.streamMsgs) {
       try {
@@ -2113,56 +2116,73 @@ export class CotalEndpoint extends EventEmitter {
    *  stop handle. Best-effort: a feed the cred can't read (or absent) surfaces as an `error` event and
    *  the dashboard keeps its last snapshot. */
   async watchMembership(onChange: () => void): Promise<{ stop(): void }> {
-    const watch: MembershipFeedWatch = { onChange, stopped: false };
+    if (this.stopped) throw new Error("endpoint stopped - cannot watch membership");
+    const watch: MembershipFeedWatch = { onChange, stopped: false, arm: Promise.resolve() };
     this.membershipFeedWatches.add(watch);
-    try {
-      await this.armMembershipWatch(watch);
-    } catch (err) {
+    watch.arm = watch.arm.then(() => this.armMembershipWatch(watch));
+    try { await watch.arm; }
+    catch (err) {
       watch.stopped = true;
       this.membershipFeedWatches.delete(watch);
+      await this.disarmMembershipWatch(watch);
       throw err;
     }
-    return {
-      stop: () => {
-        if (watch.stopped) return;
-        watch.stopped = true;
-        this.membershipFeedWatches.delete(watch);
-        try { watch.iter?.stop(); } catch { /* already closed */ }
-        watch.iter = undefined;
-      },
-    };
+    return { stop: () => {
+      if (watch.stopped) return;
+      watch.stopped = true;
+      this.membershipFeedWatches.delete(watch);
+      watch.arm = watch.arm.then(() => this.disarmMembershipWatch(watch));
+    } };
   }
 
-  /** Bind one caller-owned membership-watch intent to the CURRENT connection. */
+  /** Bind one caller-owned membership-watch intent to the CURRENT connection. Arming is serialized
+   *  per intent, so a public watch call cannot race a reconnect rearm into two consumers. */
   private async armMembershipWatch(watch: MembershipFeedWatch): Promise<void> {
     if (watch.stopped) return;
     const kv = await this.membershipFeedRegistry();
-    const iter = await kv.watch();
+    if (!(kv instanceof Bucket)) throw new Error("membership watch needs the @nats-io/kv Bucket implementation");
+    const cc = kv._buildCC(">", KvWatchInclude.LastValue, { headers_only: false });
+    const consumer = await kv.js.consumers.getPushConsumer(kv.stream, cc);
+    const info = await consumer.info(true);
+    let pending = info.num_pending;
+    const iter = await consumer.consume({ callback: (msg) => {
+      const isUpdate = pending === 0 || --pending === 0;
+      const entry: KvWatchEntry = kv.jmToWatchEntry(msg, isUpdate);
+      if (!watch.stopped && watch.consumer === consumer) watch.onChange();
+      void entry;
+    } });
     if (watch.stopped) {
       iter.stop();
+      await consumer.delete().catch(() => false);
       return;
     }
+    watch.consumer = consumer;
     watch.iter = iter;
-    void (async () => {
-      for await (const _ of iter) {
-        if (watch.stopped || watch.iter !== iter) break;
-        watch.onChange();
-      }
-    })().catch((err) => {
-      if (!watch.stopped && watch.iter === iter) this.emit("error", err as Error);
-    }).finally(() => {
-      if (watch.iter === iter) watch.iter = undefined;
-    });
+    iter.closed().then(() => {
+      if (!watch.stopped && watch.consumer === consumer) this.emit("error", new Error("membership watch closed"));
+    }).catch(() => {});
   }
 
-  /** Rebind every live membership-watch intent after a connection rebuild. A membership feed is
-   *  best-effort: one watcher failing to re-open emits an error but never makes the whole endpoint
-   *  reconnect fail. The intent stays registered so a later rebuild can try again. */
+  /** Stop the local iterator AND delete its ordered consumer. The admin/observer grant already holds
+   *  the bucket-scoped consumer-delete row, so a reconnect leaves no five-minute predecessor. */
+  private async disarmMembershipWatch(watch: MembershipFeedWatch): Promise<void> {
+    const iter = watch.iter;
+    const consumer = watch.consumer;
+    watch.iter = undefined;
+    watch.consumer = undefined;
+    try { iter?.stop(); } catch { /* already closed */ }
+    await consumer?.delete().catch(() => false);
+  }
+
+  /** Rebind every live membership-watch intent after a connection rebuild. */
   private async rearmMembershipWatches(): Promise<void> {
     await Promise.all([...this.membershipFeedWatches].map(async (watch) => {
       if (watch.stopped) return;
-      try { await this.armMembershipWatch(watch); }
-      catch (err) { this.emit("error", err as Error); }
+      watch.arm = watch.arm.then(async () => {
+        await this.disarmMembershipWatch(watch);
+        await this.armMembershipWatch(watch);
+      });
+      try { await watch.arm; } catch (err) { this.emit("error", err as Error); }
     }));
   }
 

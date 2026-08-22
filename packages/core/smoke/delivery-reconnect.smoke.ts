@@ -68,10 +68,20 @@ try {
   check("durableJoin works before reconnect", pre.durable === true);
   const reviewGen = pre.generation ?? 0;
   await observer.readMembership(); // open the membership-feed KV on the old connection before rebuilding
+  const watchIntents = (observer as unknown as { membershipFeedWatches: Set<{ consumer?: import("@nats-io/jetstream").PushConsumer }> }).membershipFeedWatches;
+  const consumerExists = async (consumer: import("@nats-io/jetstream").PushConsumer | undefined) => {
+    if (!consumer) return false;
+    try { await consumer.info(false); return true; }
+    catch { return false; }
+  };
   let membershipChanges = 0;
   const membershipWatch = await observer.watchMembership(() => { membershipChanges++; });
   await wait(200); // drain the watch's initial replay before measuring the post-reconnect write
   membershipChanges = 0;
+  const membershipWatchIntent = [...watchIntents][0];
+  const predecessorMembershipConsumer = membershipWatchIntent?.consumer;
+  const predecessorMembershipConsumerName = (await predecessorMembershipConsumer?.info(true))?.name;
+  check("the pre-reconnect membership watch owns a live broker consumer", await consumerExists(predecessorMembershipConsumer), predecessorMembershipConsumerName);
 
   // Force both roles to drain + rebuild. The daemon exercises its responder/Plane-3 handles; the
   // observer exercises the cached read-only membership-feed handle that triggered #800.
@@ -105,7 +115,13 @@ try {
     await membershipNc.drain();
   }
   check("the membership feed watch stays live across reconnect", membershipChanges > 0, { membershipChanges });
+  const successorMembershipConsumer = membershipWatchIntent?.consumer;
+  const successorMembershipConsumerName = (await successorMembershipConsumer?.info(true))?.name;
+  check("reconnect creates a successor membership consumer", successorMembershipConsumer !== undefined && successorMembershipConsumer !== predecessorMembershipConsumer && await consumerExists(successorMembershipConsumer), { predecessorMembershipConsumerName, successorMembershipConsumerName });
+  check("reconnect deletes the predecessor membership consumer instead of accumulating one", !(await consumerExists(predecessorMembershipConsumer)), predecessorMembershipConsumerName);
   membershipWatch.stop();
+  for (let i = 0; i < 20 && await consumerExists(successorMembershipConsumer); i++) await wait(50);
+  check("stopping the membership watch deletes its broker consumer", !(await consumerExists(successorMembershipConsumer)), successorMembershipConsumerName);
 
   console.log(`\nDELIVERY-RECONNECT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
