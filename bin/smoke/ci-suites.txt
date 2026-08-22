@@ -436,3 +436,10 @@ smoke:inbox-overflow-directed
 # four-route allowlist, capless credential proof, loopback negative control, immediate revocation,
 # public-only view refusal, Origin/body hardening, peer isolation and bearer refresh after expiry.
 smoke:remote-exchange:live
+
+# A seat must name the provider actually carrying its model, and refuse a provider-prefixed model id
+# at the boundary (#785). Measured: one route reported three identities - requested gemini-3.7-flash
+# under a cliproxy default, logged as prv:OpenRouter, died in a cursor_plugin_error - and none of the
+# three appeared in the roster, the spawn confirmation, or the manager exit line. RuntimeInfo already
+# carried provider and routes in the response the model check reads; they were discarded.
+smoke:jcode-route-identity
