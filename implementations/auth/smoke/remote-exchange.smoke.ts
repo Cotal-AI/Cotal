@@ -113,7 +113,7 @@ const {
   cotalAuthProvider, establishIdpSession, grantActor, grantManagedActor, revokeManagedActor,
   loadAuthServiceInfo, loadCalloutAuth, newActorToken,
 } = await import("@cotal-ai/auth");
-const { decodeJwt } = await import("jose");
+const { createLocalJWKSet, jwtVerify } = await import("jose");
 type DeviceLoginPrompt = import("@cotal-ai/auth").DeviceLoginPrompt;
 const { pickFreePort } = await import("./_free-port.js");
 
@@ -244,6 +244,8 @@ try {
   // ---------- B. the generated discovery bundle ----------
   console.log("B) /.well-known/cotal-mesh is generated from enforced config");
   const wk = await get(`${PUBLIC}/.well-known/cotal-mesh`);
+  const publicJwks = await get(`${PUBLIC}/jwks`);
+  const verifyPublicBearer = createLocalJWKSet(publicJwks.body as { keys: import("jose").JWK[] });
   const idpPin = wk.body.idp as { url?: string; issuer?: string; audience?: string } | undefined;
   const eps = wk.body.endpoints as { url?: string } | undefined;
   check("bundle serves 200 on the public face", wk.status === 200, wk.body);
@@ -286,8 +288,19 @@ try {
   check("…and returns a real bearer for the granted owner",
     typeof capless.body.token === "string" && capless.body.owner === OWNER && typeof capless.body.exp === "number", capless.body);
   {
-    const claims = decodeJwt(capless.body.token as string) as { act?: { actor?: string } };
-    check("…whose actor claim is the granted row's actor", claims.act?.actor === AGENT, claims.act);
+    let signed = false;
+    let detail: unknown;
+    try {
+      const { payload, protectedHeader } = await jwtVerify(capless.body.token as string, verifyPublicBearer, {
+        algorithms: ["EdDSA"], issuer: `urn:cotal:auth:${SPACE}`, audience: SPACE,
+      });
+      const act = payload.act as { actor?: string } | undefined;
+      detail = { header: protectedHeader, act };
+      signed = protectedHeader.alg === "EdDSA" && act?.actor === AGENT;
+    } catch (e) {
+      detail = e instanceof Error ? e.message : String(e);
+    }
+    check("…is EdDSA-SIGNED by the public JWKS and carries the granted actor", signed, detail);
   }
   // THE NEGATIVE CONTROL. Byte-for-byte the same request, the other listener.
   const caplessLoopback = await post(`${LOOPBACK}/exchange`, agentBody);
@@ -355,8 +368,9 @@ try {
   // ---------- A(cont). the closed route table ----------
   console.log("A') the public route table is closed");
   check("GET /health is served on the public face", (await get(`${PUBLIC}/health`)).status === 200);
-  check("GET /jwks is served on the public face", (await get(`${PUBLIC}/jwks`)).status === 200);
-  check("…with the explicit cache contract", /max-age=/.test((await get(`${PUBLIC}/jwks`)).headers.get("cache-control") ?? ""));
+  check("POST /health is refused (GET only)", (await post(`${PUBLIC}/health`, {})).status === 405);
+  check("GET /jwks is served on the public face", publicJwks.status === 200);
+  check("…with the exact cache contract max-age=300", publicJwks.headers.get("cache-control") === "max-age=300");
   let notFound = 0;
   for (const p of ["/", "/exchange/", "/admin", "/views", "/actor", "/ledger", "/health/", "/.well-known/", "/..%2f", "/toString", "/constructor"]) {
     if ((await get(`${PUBLIC}${p}`)).status === 404) notFound++;
@@ -415,7 +429,7 @@ try {
 }
 
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 46;
+const EXPECTED = 47;
 console.log(`\nremote-exchange smoke: ${pass} passed, ${fail} failed`);
 if (pass + fail !== EXPECTED) {
   console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped`);
