@@ -14,4 +14,10 @@ export const provenance = {
   wrote(what: string, dest: string): void {
     process.stderr.write(`→ wrote ${what}: ${dest}\n`);
   },
+  /** `→ removed <what>: <dest>`: announce every file or directory the command DELETED. A silent
+   *  delete is worse than a silent write, because the write at least leaves the thing it made while
+   *  the delete leaves nothing to notice. Destructive steps get the one line the additive ones get. */
+  removed(what: string, dest: string): void {
+    process.stderr.write(`→ removed ${what}: ${dest}\n`);
+  },
 };
