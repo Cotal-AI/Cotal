@@ -2192,7 +2192,9 @@ export class CotalEndpoint extends EventEmitter {
   private async rearmMembershipWatches(): Promise<void> {
     await Promise.all([...this.membershipFeedWatches].map(async (watch) => {
       if (watch.stopped) return;
-      watch.arm = watch.arm.catch(() => {}).then(async () => {
+      // clearConnectionScoped already resets a rejected prior arm before scheduling disarm. At this
+      // point the queue is the completing cleanup promise; append the fresh arm without a second catch.
+      watch.arm = watch.arm.then(async () => {
         await this.disarmMembershipWatch(watch);
         await this.armMembershipWatch(watch);
       });

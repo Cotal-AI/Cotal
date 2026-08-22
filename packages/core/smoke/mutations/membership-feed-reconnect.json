@@ -6,7 +6,7 @@
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/membership-feed-reconnect.json",
   "why": [
     "The live pre-fix reproduction proves the stale membership-feed cache fails after reconnect; the pinned client aborts that path after the named read failure, so it is not misreported as a mutation kill.",
-    "The four completing mutations grade watch rearm, caller-stop deletion, fresh-connection predecessor cleanup after terminal close, and rejected-chain recovery."
+    "The three completing mutations isolate watch rearm, caller-stop broker deletion, and fresh-connection cleanup after terminal close. The rejected-chain recovery cell remains as a direct regression: clearConnectionScoped is the single reset point, so a second mutation on the downstream append would grade redundant code rather than another property."
   ],
   "mutations": [
     {
@@ -35,15 +35,6 @@
       "expectRed": "terminal self-heal creates one successor and deletes the closed-epoch predecessor",
       "cell": "terminal self-heal creates one successor and deletes the closed-epoch predecessor",
       "note": "Old-connection deletion cannot run after nc.closed. The fresh connection must delete the recorded stream/name before creating the successor."
-    },
-    {
-      "name": "a rejected watch arm permanently poisons the serialized lifecycle chain",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "      watch.arm = watch.arm.catch(() => {}).then(async () => {\n",
-      "replace": "      watch.arm = watch.arm.then(async () => {\n",
-      "expectRed": "a later rebuild recovers a membership watch after a transient arm rejection",
-      "cell": "a later rebuild recovers a membership watch after a transient arm rejection",
-      "note": "The catch resets a rejected queue before later cleanup/rearm work is appended. Without it, the next rebuild inherits the rejection and cannot recover the watch."
     }
   ]
 }
