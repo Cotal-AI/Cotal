@@ -299,6 +299,8 @@ type MembershipFeedWatch = {
   onChange: () => void;
   iter?: { stop(): void };
   consumer?: PushConsumer;
+  consumerStream?: string;
+  consumerName?: string;
   stopped: boolean;
   arm: Promise<void>;
 };
@@ -1029,7 +1031,7 @@ export class CotalEndpoint extends EventEmitter {
     this.channelConfigs.clear();
     this.channelDefaults = {};
     for (const watch of this.membershipFeedWatches)
-      watch.arm = watch.arm.then(() => this.disarmMembershipWatch(watch));
+      watch.arm = watch.arm.catch(() => {}).then(() => this.disarmMembershipWatch(watch));
   }
 
   /** If stop() ran during a rebuild's `await connectAndBind`, the just-bound connection +
@@ -1189,7 +1191,7 @@ export class CotalEndpoint extends EventEmitter {
     if (this.credsTimer) clearTimeout(this.credsTimer);
     for (const watch of this.membershipFeedWatches) {
       watch.stopped = true;
-      watch.arm = watch.arm.then(() => this.disarmMembershipWatch(watch));
+      watch.arm = watch.arm.catch(() => {}).then(() => this.disarmMembershipWatch(watch));
     }
     await Promise.all([...this.membershipFeedWatches].map((watch) => watch.arm));
     this.membershipFeedWatches.clear();
@@ -2122,7 +2124,7 @@ export class CotalEndpoint extends EventEmitter {
     if (this.stopped) throw new Error("endpoint stopped - cannot watch membership");
     const watch: MembershipFeedWatch = { onChange, stopped: false, arm: Promise.resolve() };
     this.membershipFeedWatches.add(watch);
-    watch.arm = watch.arm.then(() => this.armMembershipWatch(watch));
+    watch.arm = watch.arm.catch(() => {}).then(() => this.armMembershipWatch(watch));
     try { await watch.arm; }
     catch (err) {
       watch.stopped = true;
@@ -2134,7 +2136,7 @@ export class CotalEndpoint extends EventEmitter {
       if (watch.stopped) return;
       watch.stopped = true;
       this.membershipFeedWatches.delete(watch);
-      watch.arm = watch.arm.then(() => this.disarmMembershipWatch(watch));
+      watch.arm = watch.arm.catch(() => {}).then(() => this.disarmMembershipWatch(watch));
     } };
   }
 
@@ -2143,6 +2145,12 @@ export class CotalEndpoint extends EventEmitter {
   private async armMembershipWatch(watch: MembershipFeedWatch): Promise<void> {
     if (watch.stopped) return;
     const kv = await this.membershipFeedRegistry();
+    if (watch.consumerStream && watch.consumerName) {
+      const jsm = await jetstreamManager(this.nc!);
+      await jsm.consumers.delete(watch.consumerStream, watch.consumerName).catch(() => false);
+      watch.consumerStream = undefined;
+      watch.consumerName = undefined;
+    }
     if (!(kv instanceof Bucket)) throw new Error("membership watch needs the @nats-io/kv Bucket implementation");
     const cc = kv._buildCC(">", KvWatchInclude.LastValue, { headers_only: false });
     const consumer = await kv.js.consumers.getPushConsumer(kv.stream, cc);
@@ -2160,6 +2168,8 @@ export class CotalEndpoint extends EventEmitter {
       return;
     }
     watch.consumer = consumer;
+    watch.consumerStream = info.stream_name;
+    watch.consumerName = info.name;
     watch.iter = iter;
     iter.closed().then(() => {
       if (!watch.stopped && watch.consumer === consumer) this.emit("error", new Error("membership watch closed"));
@@ -2174,14 +2184,18 @@ export class CotalEndpoint extends EventEmitter {
     watch.iter = undefined;
     watch.consumer = undefined;
     try { iter?.stop(); } catch { /* already closed */ }
-    await consumer?.delete().catch(() => false);
+    const deleted = await consumer?.delete().catch(() => false);
+    if (deleted) {
+      watch.consumerStream = undefined;
+      watch.consumerName = undefined;
+    }
   }
 
   /** Rebind every live membership-watch intent after a connection rebuild. */
   private async rearmMembershipWatches(): Promise<void> {
     await Promise.all([...this.membershipFeedWatches].map(async (watch) => {
       if (watch.stopped) return;
-      watch.arm = watch.arm.then(async () => {
+      watch.arm = watch.arm.catch(() => {}).then(async () => {
         await this.disarmMembershipWatch(watch);
         await this.armMembershipWatch(watch);
       });
