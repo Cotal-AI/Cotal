@@ -84,6 +84,15 @@ class ExitSignal extends Error {}
 // passed on an env spread that `pnpm smoke:ci` (the sharded aggregate CI reads) refuses — the census
 // that catches it is a SEPARATE suite, so a lane running only the suites it owns is green by
 // construction while the gate is red. Run `pnpm smoke:ci` before pushing anything that spawns.
+//
+// BUT A GREEN CENSUS IS NOT EVIDENCE A SPAWN IS CLEAN, and this is the more important half.
+// `bin/smoke/suite-ambient-env.smoke.ts` matches the literal text `...process.env` (:49) and SKIPS
+// any file that does not contain it (:150). So it covers EXPLICIT spreads only. A spawn that omits
+// `env:` entirely inherits the parent environment in full — measured: with no `env:` the child reads
+// a COTAL_ value, with an explicit env it does not — and passes the census by construction. The
+// census therefore detects a SPELLING where the hazard is a PROPERTY: what the child inherited.
+// Reason about the child's actual environment; do not read a passing census as an answer. Teaching
+// the census to ask the property question is an upstream repair, tracked separately.
 async function httpsDowngradeFixture(
   plaintextTarget: string,
 ): Promise<{ ok: true; refused: boolean; message: string } | { ok: false; why: string }> {
@@ -97,9 +106,34 @@ async function httpsDowngradeFixture(
   ], { stdio: "ignore" });
   if (gen.status !== 0 || !existsSync(cert)) return { ok: false, why: "openssl unavailable" };
 
+  // NO SESSION CREDENTIALS AND NO INSTRUMENT KNOBS IN EITHER CHILD.
+  //
+  // Spreading the runner's whole environment handed a child a live managed session's credential and
+  // broker URL, and neither child needs any of it: the server's key, cert and redirect target are
+  // inlined into its source at write time, and the probe imports one function and fetches one URL.
+  // Not "reviewed safe" — that would claim inheritance was measured harmless; these children simply
+  // have no business holding connection material.
+  //
+  // The named knobs go too, and NODE_TLS_REJECT_UNAUTHORIZED is the one that matters: an ambient
+  // `0` would switch off exactly the certificate verification this fixture exists to exercise, and
+  // the downgrade cell would then pass for a reason that has nothing to do with the redirect policy.
+  // A deny-list rather than a whitelist on purpose — a whitelist breaks the child the first time it
+  // legitimately needs a new variable, and the repair for that is always to widen it back to
+  // everything.
+  const DENIED_KNOBS = /^(NODE_OPTIONS|NODE_TLS_REJECT_UNAUTHORIZED|SSL_CERT_FILE|SSL_CERT_DIR|(HTTP|HTTPS|ALL|NO)_PROXY)$/i;
+  const childEnv: NodeJS.ProcessEnv = { NODE_EXTRA_CA_CERTS: cert };
+  for (const [k, v] of Object.entries(process.env)) {
+    // The `startsWith("COTAL_")` test is written out rather than folded into DENIED_KNOBS because
+    // the census matches that exact spelling (`suite-ambient-env.smoke.ts:52`). Folding it into one
+    // regex is a STRICTER filter that the census reads as NO filter at all — measured: the combined
+    // form failed the census naming this file. One more way that instrument grades a spelling
+    // rather than the property, noted here because the next person to tidy this loop will hit it.
+    if (k.startsWith("COTAL_") || DENIED_KNOBS.test(k)) continue;
+    childEnv[k] ??= v;
+  }
   const serverJs = join(dir, "server.mjs");
   writeFileSync(serverJs, `import { createServer } from "node:https";\nimport { readFileSync } from "node:fs";\nconst s = createServer({ key: readFileSync(${JSON.stringify(key)}), cert: readFileSync(${JSON.stringify(cert)}) }, (_q, res) => { res.statusCode = 302; res.setHeader("location", ${JSON.stringify(`${plaintextTarget}/health`)}); res.end(); });\ns.listen(0, "127.0.0.1", () => console.log(JSON.stringify({ port: s.address().port })));\n`);
-  const server = spawn(process.execPath, [serverJs], { stdio: ["ignore", "pipe", "ignore"] });
+  const server = spawn(process.execPath, [serverJs], { stdio: ["ignore", "pipe", "ignore"], env: childEnv });
   const port = await new Promise<string | undefined>((resolve) => {
     const timer = setTimeout(() => resolve(undefined), 10_000);
     server.stdout.on("data", (b: Buffer) => {
@@ -113,12 +147,6 @@ async function httpsDowngradeFixture(
   const probeJs = join(dir, "probe.mjs");
   const addMod = new URL("../src/commands/meshes-add.ts", import.meta.url).pathname;
   writeFileSync(probeJs, `const { pinnedFetchProbe } = await import(${JSON.stringify(addMod)});\nconsole.log(JSON.stringify(await pinnedFetchProbe(process.argv[2])));\n`);
-  // NO COTAL_ KEYS IN THE CHILD. Spreading the runner's whole environment handed this child a live
-  // managed session's credential and broker URL — and it needs neither: it imports one function and
-  // fetches one URL. Not "reviewed safe" (that claims inheritance was measured harmless); it simply
-  // has no business holding connection material, so the keys are removed rather than justified.
-  const childEnv: NodeJS.ProcessEnv = { NODE_EXTRA_CA_CERTS: cert };
-  for (const [k, v] of Object.entries(process.env)) if (!k.startsWith("COTAL_")) childEnv[k] ??= v;
   const run = spawnSync(process.execPath, ["--import", "tsx", probeJs, `https://127.0.0.1:${port}/health`], {
     encoding: "utf8",
     env: childEnv,
