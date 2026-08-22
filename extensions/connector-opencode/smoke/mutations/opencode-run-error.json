@@ -29,8 +29,8 @@
     {
       "name": "O1 a failed turn closes exactly as a finished one does, which is the state this connector shipped in",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "          events?.closeRun(Date.now(), interrupted ? undefined : runErrorOf(event.properties.error));",
-      "replace": "          events?.closeRun(Date.now());",
+      "find": "          eventHolder?.closeRun(Date.now(), interrupted ? undefined : runErrorOf(event.properties.error));",
+      "replace": "          eventHolder?.closeRun(Date.now());",
       "expectRed": "fail:and that close is RUN_ERROR, not RUN_FINISHED",
       "cell": "fail:and that close is RUN_ERROR, not RUN_FINISHED — THE DEFECT",
       "note": "The pre-fix line, restored verbatim. An APIError turn is published as a run that ended, carrying no outcome, and a reader cannot tell it from a turn that succeeded."
