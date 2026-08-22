@@ -401,3 +401,9 @@ smoke:env-isolate
 # agree.
 smoke:attach-auth-root
 smoke:manager-reconcile-startup
+
+# Historical channel ambient must never drive automatic turns (#775). Found on the first real
+# mesh join a jcode seat ever made: the live E2E mesh is seconds old, so no suite had ever
+# delivered historical=true into a host-mode drive loop, and the join backfill arrived as a
+# storm of user turns (119 digests, 0 assistant output, provider emergency compaction).
+smoke:history-flood
