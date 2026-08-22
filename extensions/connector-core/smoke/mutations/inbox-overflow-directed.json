@@ -21,7 +21,14 @@
     "",
     "The mutations restore the shipped defect and then attack each half of the fix independently,",
     "because either half alone still loses mail: evicting the right victim but acking it is still",
-    "unrecoverable, and refusing to ack while still evicting DMs first still starves them."
+    "unrecoverable, and refusing to ack while still evicting DMs first still starves them.",
+    "",
+    "M2 note: the ack half is only observable once the inbox is ENTIRELY directed. While any channel",
+    "item remains, the tier picks that instead, so the waiting DM in the flood scenarios is never",
+    "evicted and its ack assertion stays green under the mutation. An earlier fixture pointed M2 at",
+    "that assertion and the harness correctly reported WRONG-RED - the suite failed, but at a",
+    "different cell than claimed. The two halves protect different scenarios, which is exactly why",
+    "both scenarios have to exist."
   ],
   "mutations": [
     {
@@ -36,7 +43,7 @@
       "file": "extensions/connector-core/src/agent.ts",
       "find": "        if (!this.inFlightIds.has(evicted.item.id) && !sacrificingDirected) evicted.ack();",
       "replace": "        if (!this.inFlightIds.has(evicted.item.id)) evicted.ack();",
-      "expectRed": "the waiting DM was never acked (redelivery stays possible)"
+      "expectRed": "sacrificed DMs are NOT acked, so the broker can redeliver them"
     },
     {
       "name": "M3 trust the forgeable payload instead of the subject-derived kind",
