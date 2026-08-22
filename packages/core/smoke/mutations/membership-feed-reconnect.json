@@ -36,6 +36,15 @@
       "expectRed": "reconnect deletes the predecessor membership consumer instead of accumulating one",
       "cell": "reconnect deletes the predecessor membership consumer instead of accumulating one",
       "note": "Local iterator stop is not broker deletion. The predecessor remains until the ordered consumer inactive threshold while a successor is created."
+    },
+    {
+      "name": "reconnect drains the old connection before membership consumer deletion finishes",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      await Promise.all([...this.membershipFeedWatches].map((watch) => watch.arm));\n",
+      "replace": "",
+      "expectRed": "reconnect deletes the predecessor membership consumer instead of accumulating one",
+      "cell": "reconnect deletes the predecessor membership consumer instead of accumulating one",
+      "note": "clearConnectionScoped schedules consumer deletion. The rebuild must await it while the old connection is still usable; otherwise the delete is lost and the predecessor lingers."
     }
   ]
 }

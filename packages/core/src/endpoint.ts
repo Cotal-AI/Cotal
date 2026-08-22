@@ -1093,6 +1093,9 @@ export class CotalEndpoint extends EventEmitter {
     this.reconnecting = true;
     try {
       this.clearConnectionScoped();
+      // Ordered membership-watch consumers must be deleted WHILE the old connection can still
+      // carry the JS API request. Draining first turns local stop into a five-minute broker leak.
+      await Promise.all([...this.membershipFeedWatches].map((watch) => watch.arm));
       this.nc = undefined;
       this.js = undefined;
       this.jsm = undefined;
