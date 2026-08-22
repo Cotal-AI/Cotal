@@ -408,6 +408,43 @@ try {
   }
   check("successful exchanges are never throttled (40/40 on one peer)", successes === 40, { successes });
 
+  // A VALID credential still mints while its own bucket is full.
+  //
+  // This is the cell the whole throttle depends on and it did not exist. The gate used to run
+  // before the body was read, so a full bucket refused every request from that peer key - valid
+  // ones included. On the public face the DEFAULT peer key is the socket address, so in the
+  // reverse-proxy topology `run-a-mesh.md` recommends (without --exchange-trusted-proxy) every
+  // client shares one bucket, and thirty unauthenticated garbage POSTs denied the public mint
+  // path for a rolling minute (#802). The cells above cannot see it: they only ever ask whether a
+  // throttled peer is refused, never whether a LEGITIMATE caller behind that same key still works.
+  //
+  // Throttling exists to slow probing, and a valid credential is not probing.
+  const victim = asPeer("203.0.113.44");
+  let victimThrottled = false;
+  for (let i = 0; i < 40; i++) {
+    const r = await post(`${PUBLIC}/exchange`, { ...agentBody2, actorToken: newActorToken().actorToken }, victim);
+    if (r.status === 429) { victimThrottled = true; break; }
+  }
+  check("a peer key is throttled after a refusal flood", victimThrottled);
+  const validWhileFull = await post(`${PUBLIC}/exchange`, agentBody2, victim);
+  check(
+    "A VALID TOKEN STILL MINTS (200) FROM A THROTTLED PEER KEY - a full bucket must not deny a request that would succeed",
+    validWhileFull.status === 200,
+    { status: validWhileFull.status, body: validWhileFull.body },
+  );
+  // ...and the budget still does its job: a FAILED exchange from that same throttled key is
+  // answered 429 rather than its specific reason, because the reason is what makes probing cheap.
+  const failedWhileFull = await post(
+    `${PUBLIC}/exchange`,
+    { ...agentBody2, actorToken: newActorToken().actorToken },
+    victim,
+  );
+  check(
+    "a FAILED exchange from a throttled key is answered 429, not the refusal reason",
+    failedWhileFull.status === 429,
+    { status: failedWhileFull.status, body: failedWhileFull.body },
+  );
+
   // ---------- H. refresh across expiry ----------
   console.log("H) agent-bearer-style refresh yields a fresh, later-expiring bearer");
   const first = await post(`${PUBLIC}/exchange`, { ...agentBody2, ttlSec: 1 });
@@ -429,7 +466,7 @@ try {
 }
 
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 47;
+const EXPECTED = 50;
 console.log(`\nremote-exchange smoke: ${pass} passed, ${fail} failed`);
 if (pass + fail !== EXPECTED) {
   console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped`);
