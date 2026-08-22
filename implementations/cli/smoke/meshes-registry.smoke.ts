@@ -21,7 +21,7 @@
  * Run: pnpm smoke:meshes-registry
  */
 import { strict as assert } from "node:assert";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -74,6 +74,54 @@ async function run(positionals: string[], values: Record<string, string | boolea
   return { out: lines.join("\n"), code };
 }
 class ExitSignal extends Error {}
+
+/**
+ * Run the REAL pinned-fetch policy against an `https://` source whose 302 points at plaintext,
+ * out of process so the self-signed CA can be trusted at startup (Node reads NODE_EXTRA_CA_CERTS
+ * only then). Returns the policy's verdict, or `ok: false` with a reason — never a silent skip.
+ */
+async function httpsDowngradeFixture(
+  plaintextTarget: string,
+): Promise<{ ok: true; refused: boolean; message: string } | { ok: false; why: string }> {
+  const dir = mkdtempSync(join(tmpdir(), "cotal-dgfix-"));
+  roots.push(dir);
+  const key = join(dir, "k.pem");
+  const cert = join(dir, "c.pem");
+  const gen = spawnSync("openssl", [
+    "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert,
+    "-days", "1", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1",
+  ], { stdio: "ignore" });
+  if (gen.status !== 0 || !existsSync(cert)) return { ok: false, why: "openssl unavailable" };
+
+  const serverJs = join(dir, "server.mjs");
+  writeFileSync(serverJs, `import { createServer } from "node:https";\nimport { readFileSync } from "node:fs";\nconst s = createServer({ key: readFileSync(${JSON.stringify(key)}), cert: readFileSync(${JSON.stringify(cert)}) }, (_q, res) => { res.statusCode = 302; res.setHeader("location", ${JSON.stringify(`${plaintextTarget}/health`)}); res.end(); });\ns.listen(0, "127.0.0.1", () => console.log(JSON.stringify({ port: s.address().port })));\n`);
+  const server = spawn(process.execPath, [serverJs], { stdio: ["ignore", "pipe", "ignore"] });
+  const port = await new Promise<string | undefined>((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), 10_000);
+    server.stdout.on("data", (b: Buffer) => {
+      const m = b.toString().match(/"port":(\d+)/);
+      if (m) { clearTimeout(timer); resolve(m[1]); }
+    });
+  });
+  if (!port) { server.kill(); return { ok: false, why: "https fixture did not start" }; }
+
+  // The child calls the SHIPPED policy, not a re-implementation of it.
+  const probeJs = join(dir, "probe.mjs");
+  const addMod = new URL("../src/commands/meshes-add.ts", import.meta.url).pathname;
+  writeFileSync(probeJs, `const { pinnedFetchProbe } = await import(${JSON.stringify(addMod)});\nconsole.log(JSON.stringify(await pinnedFetchProbe(process.argv[2])));\n`);
+  const run = spawnSync(process.execPath, ["--import", "tsx", probeJs, `https://127.0.0.1:${port}/health`], {
+    encoding: "utf8",
+    env: { ...process.env, NODE_EXTRA_CA_CERTS: cert },
+  });
+  server.kill();
+  const line = (run.stdout || "").trim().split("\n").pop() ?? "";
+  try {
+    const v = JSON.parse(line) as { refused: boolean; message: string };
+    return { ok: true, refused: v.refused, message: v.message };
+  } catch {
+    return { ok: false, why: `probe produced no verdict (${(run.stderr || "").trim().split("\n").pop() ?? "no stderr"})` };
+  }
+}
 
 /** A free localhost port (the listener is closed before the port is handed back). */
 async function freePort(): Promise<number> {
@@ -440,28 +488,25 @@ try {
     !redirected.ok && /redirect/i.test(redirected.ok ? "" : redirected.message), redirected);
   check("…and the redirect target is never contacted", exchangeHits === 0, { exchangeHits });
 
-  // THE ACTUAL ATTACK: an HTTPS → HTTP DOWNGRADE. The redirector above is http→http, so it pins
-  // "a 302 is refused" but NOT the cross-scheme walk that this lane's security fix exists for —
-  // code that followed https redirects while refusing http ones would pass it. This fixture is a
-  // real TLS server (self-signed, trusted only for this process) whose 302 points at a plaintext
-  // origin, which is the shape an on-path attacker uses.
-  // Driven through `pinnedFetch`'s own policy rather than a live TLS origin. A self-signed TLS
-  // server CANNOT prove this here: the fetch fails on certificate verification BEFORE the redirect
-  // is reached, so the cell would go green on the wrong reason (measured: "did not answer /health
-  // (fetch failed)", downgrade target never contacted) and would stay green with redirect-following
-  // re-enabled for https. Trusting the cert would need NODE_EXTRA_CA_CERTS, which Node reads only
-  // at startup, and disabling verification would remove the very check that masks the result.
+  // THE ACTUAL ATTACK: an HTTPS→HTTP DOWNGRADE, exercised from a REAL https SOURCE.
   //
-  // So assert the DISCRIMINATING fact instead: the refusal must name a REDIRECT and quote the
-  // plaintext Location. A cert failure, a timeout, or a 404 cannot satisfy that, and code that
-  // followed https redirects would return the followed body rather than a redirect refusal.
-  exchangeHits = 0;
-  const httpsToHttp = await pinnedFetchProbe(`${redirectorUrl}/health`);
-  check("an HTTPS→HTTP downgrade redirect is refused by naming the redirect, not followed",
-    httpsToHttp.refused && /redirect/i.test(httpsToHttp.message)
-      && httpsToHttp.message.includes(downgradeUrl), httpsToHttp);
-  check("…and the plaintext downgrade target is never contacted",
-    exchangeHits === 0, { exchangeHits });
+  // An in-process fixture cannot do this. A self-signed TLS server fails certificate verification
+  // before the redirect is reached, so the cell greens on the wrong reason; NODE_EXTRA_CA_CERTS is
+  // read only at process start, so setting it here does nothing; and rejectUnauthorized:false would
+  // delete the very verification whose failure was masking the result. An http→http redirector is
+  // no substitute either: it proves "a 302 is refused", not that an https SOURCE cannot be walked
+  // down to plaintext, so a rule that followed https redirects while refusing http ones passes it.
+  //
+  // So run the real code path in a CHILD spawned with the CA trusted at startup, which does trust
+  // it (measured: with the CA the child sees the 302; without it, DEPTH_ZERO_SELF_SIGNED_CERT).
+  const dg = await httpsDowngradeFixture(downgradeUrl);
+  if (dg.ok) {
+    check("an HTTPS-source downgrade to plaintext is refused, naming the redirect",
+      dg.refused && /redirect/i.test(dg.message) && dg.message.includes(downgradeUrl), dg);
+    check("…and the plaintext downgrade target is never contacted", exchangeHits === 0, { exchangeHits });
+  } else {
+    check(`an HTTPS-source downgrade to plaintext is refused (NOT RUN: ${dg.why})`, false);
+  }
   redirector.close();
   downgrade.close();
 

@@ -18,8 +18,25 @@ import { strict as assert } from "node:assert";
 import { classifyJoinTarget } from "../src/lib/join-target.js";
 
 let pass = 0;
+/** Every failure this run collected, so a mutation's kill set is READ IN FULL rather than truncated
+ *  at the first casualty. */
+const failures: string[] = [];
+/**
+ * Record a cell's verdict and KEEP GOING.
+ *
+ * This used to be `assert.ok`, which throws: the first failing cell aborted the process, so a
+ * mutation reported that SOMETHING died and never which cells it killed. An illegible kill set is
+ * close to no mutation testing at all — you cannot tell a precise kill from a suite that fell over
+ * early for an unrelated reason. Failures are collected here and the run exits non-zero at the end
+ * with the whole list (see the epilogue), so the kill set is the list rather than one line.
+ */
 const check = (name: string, cond: boolean, extra?: unknown) => {
-  assert.ok(cond, `${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
+  const detail = `${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`;
+  if (!cond) {
+    failures.push(detail);
+    console.log(`  ✗ ${detail}`);
+    return;
+  }
   pass++;
   console.log(`  ✓ ${name}`);
 };
@@ -50,7 +67,14 @@ const permits = (url: string, reach: "loopback" | "overlay" | "public-tls", poli
   if (server) check(`  normalizes to ${server}`, t.server === server, t.server);
 };
 
-/** Classify, expecting a refusal. Returns the message so a caller can assert on its content. */
+/** Classify, expecting a refusal. Returns the message so a caller can assert on its content.
+ *
+ *  THE THROW MUST BE A REFUSAL, NOT MERELY A THROW. This arm used to `check(..., true)` after any
+ *  exception that was not its own assert.fail — so a TypeError, a null dereference or any unrelated
+ *  crash inside the classifier made the cell PASS. That is the entire security arm of this lane:
+ *  every private-range, IPv6-spelling and loopback-name cell would have reported success if the
+ *  classifier died instead of refusing, and a crashing classifier would be indistinguishable from a
+ *  correct one. The guard lives INSIDE the helper so no call site can forget it. */
 const refuses = (url: string, why: string, policy = TODAY): string => {
   let message = "";
   try {
@@ -59,6 +83,18 @@ const refuses = (url: string, why: string, policy = TODAY): string => {
   } catch (e) {
     message = (e as Error).message;
     if (/was PERMITTED as/.test(message)) throw e; // the assert.fail above, not a refusal
+    // A refusal from this classifier always names the target and says "refused:", or is one of the
+    // two shape rejections it throws before classifying. Anything else is a crash wearing a
+    // refusal's clothes, and the cell fails NAMING it rather than silently passing.
+    const isRefusal =
+      / refused: /.test(message) ||
+      /is not a URL - pass a broker address/.test(message) ||
+      /must be a nats:\/\/ or tls:\/\/ URL/.test(message) ||
+      /has no host/.test(message);
+    if (!isRefusal) {
+      check(`refuses ${url} (${why})`, false, `NOT A REFUSAL — ${(e as Error).name}: ${message.split("\n")[0]}`);
+      return message;
+    }
   }
   check(`refuses ${url} (${why})`, true);
   return message;
@@ -309,4 +345,11 @@ refuses("http://127.0.0.1:4222", "not a broker scheme");
 refuses("ws://127.0.0.1:4222", "websocket is not classified by this policy");
 refuses("nats://999.1.1.1:4222", "octet out of range is a hostname, not an IP");
 
+// THE EPILOGUE IS THE GATE. Collecting failures only helps if the process still fails: report the
+// whole kill set, then exit non-zero. Without this the suite would print its casualties and pass.
+if (failures.length > 0) {
+  console.error(`\njoin-target: ${failures.length} FAILED, ${pass} passed`);
+  for (const f of failures) console.error(`  ✗ ${f}`);
+  process.exit(1);
+}
 console.log(`\njoin-target: ${pass} checks passed`);
