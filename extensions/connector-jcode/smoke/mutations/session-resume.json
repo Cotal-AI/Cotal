@@ -15,7 +15,12 @@
     "because a seat that silently inherits another lane's context acts on it with full confidence.",
     "So the mutations attack both directions - the shipped defect (never resume), and each guard that",
     "keeps a resume honest (working dir, archived, empty transcript, richest-wins). An over-eager",
-    "resume that adopts a foreign or retired session is a security-shaped bug, not a convenience one."
+    "resume that adopts a foreign or retired session is a security-shaped bug, not a convenience one.",
+    "",
+    "M6 note: an earlier version of M6 rewrote `[...usable].sort` to `usable.sort`, and it SURVIVED.",
+    "That was a bad mutation rather than a coverage gap - `usable` is produced by `filter`, which",
+    "already returns a fresh array, so sorting it in place is unobservable and the spread is merely",
+    "defensive. M6 now sorts the CALLER's array, which is the defect shape the assertion exists for."
   ],
   "mutations": [
     {
@@ -54,10 +59,10 @@
       "expectRed": "the largest transcript is chosen"
     },
     {
-      "name": "M6 sort the caller's array in place (observable side effect)",
+      "name": "M6 sort the CALLER's array in place instead of the filtered copy",
       "file": "extensions/connector-jcode/src/session-resume.ts",
       "find": "  return [...usable].sort(",
-      "replace": "  return usable.sort(",
+      "replace": "  (candidates as ResumeCandidate[]).sort((x, y) => (y.transcript_bytes ?? 0) - (x.transcript_bytes ?? 0));\n  return [...usable].sort(",
       "expectRed": "the input list is not mutated (no in-place sort)"
     }
   ]
