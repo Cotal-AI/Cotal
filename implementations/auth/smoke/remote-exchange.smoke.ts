@@ -92,6 +92,13 @@ const home = mkdtempSync(join(tmpdir(), "cotal-rx-home-"));
 process.env.COTAL_HOME = home;
 const root = mkdtempSync(join(tmpdir(), "cotal-rx-root-"));
 
+// This smoke may itself run inside a managed mesh session. The auth-service child must receive
+// only this fixture's sandboxed Cotal configuration, never the runner's live broker/credential
+// material. `smoke:suite-ambient-env` enforces this scrub before any `...process.env` spread.
+const childEnv: NodeJS.ProcessEnv = { ...process.env };
+for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
+childEnv.COTAL_HOME = home;
+
 const { betterAuth } = await import("better-auth");
 const { memoryAdapter } = await import("better-auth/adapters/memory");
 const { jwt } = await import("better-auth/plugins/jwt");
@@ -223,7 +230,7 @@ try {
     [...process.execArgv, SELF, "auth-service", "--space", SPACE, "--server", SERVER,
      "--exchange-public-port", String(publicPort), "--exchange-public-url", PUBLIC_URL,
      "--exchange-trusted-proxy"],
-    { cwd: root, env: { ...process.env, COTAL_HOME: home }, stdio: "ignore" },
+    { cwd: root, env: childEnv, stdio: "ignore" },
   );
   let info: ReturnType<typeof loadAuthServiceInfo>;
   {
