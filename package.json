@@ -80,6 +80,7 @@
     "smoke:jcode-args": "tsx extensions/connector-jcode/smoke/jcode-args.smoke.ts",
     "smoke:jcode-host": "tsx extensions/connector-jcode/smoke/jcode-host.smoke.ts",
     "smoke:jcode-private-state": "tsx extensions/connector-jcode/smoke/private-state.smoke.ts",
+    "smoke:jcode-session-resume": "tsx extensions/connector-jcode/smoke/session-resume.smoke.ts",
     "smoke:jcode-security": "tsx extensions/connector-jcode/smoke/jcode-security.smoke.ts",
     "smoke:jcode-live": "tsx extensions/connector-jcode/smoke/jcode-live.smoke.ts",
     "smoke:view": "tsx implementations/cli/smoke/view.smoke.ts",
