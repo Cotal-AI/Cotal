@@ -431,3 +431,8 @@ smoke:injection-framing
 # the same with no forgery. The suite shipped with #776 buffered 120 against MAX_INBOX 200, so it
 # never crossed this valve at all.
 smoke:inbox-overflow-directed
+
+# The optional remote-exchange face: a real auth-service with both listeners proves the public
+# four-route allowlist, capless credential proof, loopback negative control, immediate revocation,
+# public-only view refusal, Origin/body hardening, peer isolation and bearer refresh after expiry.
+smoke:remote-exchange:live

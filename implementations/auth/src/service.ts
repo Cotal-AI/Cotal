@@ -21,7 +21,21 @@
  * discovery file, so same-user file ACL is the boundary); requests carrying an `Origin` header are
  * rejected (a browser page can reach loopback; it must not be able to drive the exchange); bodies
  * must be `application/json`; failed exchanges are rate-limited and logged. No CORS headers, ever.
- * Remote/cross-machine exchange is explicitly NOT this surface.
+ *
+ * REMOTE EXCHANGE — the OPTIONAL second listener (`--exchange-public-port`, also binding
+ * 127.0.0.1; TLS terminates at a reverse proxy — in-process TLS was rejected: it duplicates cert
+ * renewal and forks deploy). It serves ONLY `GET /health`, `GET /jwks`, `POST /exchange`, and
+ * `GET /.well-known/cotal-mesh` (the generated discovery bundle); everything else 404s. Its
+ * `/exchange` demands NO capability — honestly: the 0600 cap is a same-uid file-ACL boundary with
+ * no remote meaning, so requiring its bytes from a remote caller would prove nothing. The proof on
+ * the public face is the credential itself: the human arm presents an EdDSA IdP JWT verified
+ * against the pinned JWKS/issuer/audience; the agent arm presents an actorToken whose sha256 must
+ * match a FRESH ledger row. Origin rejection, JSON-only bodies, the 64 KB bound, and no-CORS-ever
+ * hold verbatim; `view` requests are REFUSED outright (operator surfaces stay loopback-only);
+ * failures are bucketed per peer (`--exchange-trusted-proxy` opts into the last X-Forwarded-For
+ * hop as the peer key; otherwise the socket remote address) in a bounded LRU, under a global
+ * concurrent-admission cap and a hard request deadline — all of it pools SEPARATE from the
+ * loopback face's budgets, and successful exchanges stay unthrottled on both faces.
  *
  * Both trust boundaries authorize against the SAME actor ledger, read fresh per request — a revoke
  * bites at the next exchange AND the next connect with no restart.
@@ -93,6 +107,14 @@ const FAILED_EXCHANGE_PER_MIN = 30;
  *  is throttled AND audited, but never consumes the refused-exchange budget of a caller holding
  *  the real capability — a cap-less process must not be able to starve legitimate exchanges. */
 const BAD_CAP_PER_MIN = 30;
+
+/** PUBLIC-face budgets — their own pools entirely, so public probing can never consume the
+ *  loopback face's windows (and vice versa). Successes stay unthrottled, matching the loopback
+ *  stance. */
+const PUBLIC_FAILED_PER_MIN = 30; // per-PEER refused-exchange window (rolling minute)
+const PUBLIC_PEER_BUCKETS_MAX = 1024; // bounded LRU of per-peer failure buckets
+const PUBLIC_MAX_IN_FLIGHT = 64; // global concurrent-admission cap on the public listener
+const PUBLIC_DEADLINE_MS = 10_000; // hard wall-clock deadline per public request
 
 type Values = Record<string, string | undefined>;
 
@@ -403,6 +425,18 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
   const port = v.port === undefined ? 0 : Number(v.port);
   if (!Number.isInteger(port) || port < 0 || port > 65535)
     throw new Error(`auth-service: --port must be a port number, got "${v.port}"`);
+  // The optional PUBLIC exchange face (see the module header). The three flags travel together:
+  // a public URL or trusted-proxy setting without a listener to apply them to is a config error.
+  const publicPortRaw = v["exchange-public-port"];
+  const publicPort = publicPortRaw === undefined ? undefined : Number(publicPortRaw);
+  if (publicPort !== undefined && (!Number.isInteger(publicPort) || publicPort < 0 || publicPort > 65535))
+    throw new Error(`auth-service: --exchange-public-port must be a port number, got "${publicPortRaw}"`);
+  const publicUrlFlag = v["exchange-public-url"];
+  if (publicUrlFlag !== undefined && !/^https:\/\//.test(publicUrlFlag))
+    throw new Error(`auth-service: --exchange-public-url must be an https:// URL (TLS terminates at the reverse proxy), got "${publicUrlFlag}"`);
+  const trustedProxy = v["exchange-trusted-proxy"] !== undefined;
+  if (publicPort === undefined && (publicUrlFlag !== undefined || trustedProxy))
+    throw new Error("auth-service: --exchange-public-url/--exchange-trusted-proxy require --exchange-public-port");
 
   // The provider's space-scoped state dir for NON-SEAM material (ledger, IdP pin, discovery). The
   // layout fact is workspace-owned (userAuthStateDir); this daemon never touches `.cotal/auth/auth.json`.
@@ -477,7 +511,8 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
   const cap = randomBytes(32).toString("hex"); // per-start exchange capability (rotates with the daemon)
   const failures: number[] = []; // rolling-window timestamps of REFUSED exchanges
   const badCaps: number[] = []; // rolling-window timestamps of invalid-capability attempts
-  const http = createServer((req, res) => void handle(req, res, { issuer, bridge, cap, failures, badCaps, space, dir, mintConnectCredential: plane.mintConnectCredential }));
+  const ctx: HandlerCtx = { issuer, bridge, cap, failures, badCaps, space, dir, mintConnectCredential: plane.mintConnectCredential };
+  const http = createServer((req, res) => void handle(req, res, ctx));
   await new Promise<void>((resolvePort, reject) => {
     http.once("error", reject);
     http.listen(port, "127.0.0.1", () => resolvePort());
@@ -486,13 +521,44 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
   const boundPort = typeof addr === "object" && addr ? addr.port : port;
   const url = `http://127.0.0.1:${boundPort}`;
 
-  // Both planes bound — NOW write the discovery file (its existence is the readiness signal).
-  saveAuthServiceInfo(dir, { url, pid: process.pid, cap });
-  console.log(`✓ auth service up (space ${space}) - callout on ${server}, exchange/JWKS at ${url}`);
+  // The optional PUBLIC face: its own server, its own closed route table, its own budgets — also
+  // loopback-bound (the operator's reverse proxy terminates TLS and forwards here).
+  let publicHttp: ReturnType<typeof createServer> | undefined;
+  let publicUrl: string | undefined;
+  if (publicPort !== undefined) {
+    // The discovery bundle is GENERATED from the daemon's own recorded config — the pinned IdP,
+    // the flags, the callout material — so it cannot drift from what this process enforces.
+    // `endpoints.url` is finalized AFTER bind (the closure sees the mutation): with `--port 0`
+    // the pre-bind port would advertise an address nothing listens on.
+    const bundle: Record<string, unknown> = {
+      space,
+      server,
+      tlsRequired: true,
+      idp: { url: idp.url, issuer: idp.issuer, audience: idp.audience },
+      endpoints: { url: "" },
+      sentinelCreds: callout.sentinelCreds,
+    };
+    publicHttp = createServer(makePublicHandler(ctx, makePublicPolicy(trustedProxy), bundle));
+    await new Promise<void>((resolvePort, reject) => {
+      publicHttp!.once("error", reject);
+      publicHttp!.listen(publicPort, "127.0.0.1", () => resolvePort());
+    });
+    const paddr = publicHttp.address();
+    const boundPublic = typeof paddr === "object" && paddr ? paddr.port : publicPort;
+    publicUrl = publicUrlFlag ?? `http://127.0.0.1:${boundPublic}`;
+    bundle.endpoints = { url: publicUrl };
+  }
+
+  // All planes bound — NOW write the discovery file (its existence is the readiness signal).
+  saveAuthServiceInfo(dir, { url, pid: process.pid, cap, ...(publicUrl !== undefined ? { publicUrl } : {}) });
+  console.log(
+    `✓ auth service up (space ${space}) - callout on ${server}, exchange/JWKS at ${url}${publicUrl !== undefined ? `, public exchange at ${publicUrl}` : ""}`,
+  );
 
   const stop = async () => {
     clearAuthServiceInfo(dir); // a dead service must not satisfy the next start's readiness poll
     http.close();
+    publicHttp?.close();
     await plane.close().catch(() => {});
     await nc.close().catch(() => {});
     process.exit(0);
@@ -536,121 +602,292 @@ interface HandlerCtx {
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
 }
 
-/** Route one HTTP request. Local-only surface: /jwks (public keys, cacheable), /exchange (IdP JWT →
- *  bearer; capability-gated), /health. Anything else 404s. Errors are JSON `{ error }`. */
-async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx): Promise<void> {
-  const send = (status: number, body: unknown, headers: Record<string, string> = {}) => {
-    // No CORS headers, ever — a browser context must never be granted a readable response here.
-    res.writeHead(status, { "content-type": "application/json", ...headers });
-    res.end(JSON.stringify(body));
+/** Per-listener policy for `POST /exchange` — how a caller is proven, attributed, and throttled on
+ *  the face the request arrived on. The loopback face demands the per-start capability (a same-uid
+ *  file-ACL boundary via the 0600 discovery file) and attributes peers by socket address; the
+ *  public face demands no capability (it has no remote meaning — the credential is the proof) and
+ *  buckets failures per peer. Each face owns its budgets — neither can starve the other. */
+interface ExchangePolicy {
+  /** Demand `Authorization: Bearer <cap>` (the discovery-file capability) before anything else. */
+  requireCapability: boolean;
+  /** Refuse any `view` request outright — elevated operator surfaces stay loopback-only. */
+  refuseViews: boolean;
+  /** Name the requesting peer for failure attribution. */
+  peerKey(req: IncomingMessage): string;
+  /** True when this face's refused-exchange budget (for `peer`) is exhausted; prunes the window. */
+  throttled(ctx: HandlerCtx, peer: string): boolean;
+  /** Record a refused exchange against this face's budget (for `peer`). */
+  recordFailure(ctx: HandlerCtx, peer: string): void;
+}
+
+/** The loopback face: capability-gated; peers keyed by socket remote address; one shared
+ *  refused-exchange window (the pre-public behavior, unchanged). */
+const LOOPBACK_POLICY: ExchangePolicy = {
+  requireCapability: true,
+  refuseViews: false,
+  peerKey: (req) => req.socket.remoteAddress ?? "loopback",
+  throttled: (ctx) => {
+    const now = Date.now();
+    while (ctx.failures.length && now - ctx.failures[0] > 60_000) ctx.failures.shift();
+    return ctx.failures.length >= FAILED_EXCHANGE_PER_MIN;
+  },
+  recordFailure: (ctx) => ctx.failures.push(Date.now()),
+};
+
+/** The public face's policy: no capability, views refused, and failures bucketed per peer in a
+ *  bounded LRU — peer A's refusal flood throttles peer A, not peer B, and never the loopback
+ *  face. With `trustedProxy`, the peer is the LAST X-Forwarded-For hop (the one address the
+ *  operator's own reverse proxy appended — earlier hops are attacker-writable); without it the
+ *  header is ignored entirely and the socket remote address attributes the peer. */
+function makePublicPolicy(trustedProxy: boolean): ExchangePolicy {
+  const buckets = new Map<string, number[]>(); // insertion order = recency (touched keys re-insert)
+  const bucket = (peer: string): number[] => {
+    const existing = buckets.get(peer);
+    if (existing !== undefined) {
+      buckets.delete(peer); // re-insert → most-recently-used
+      buckets.set(peer, existing);
+      return existing;
+    }
+    if (buckets.size >= PUBLIC_PEER_BUCKETS_MAX) buckets.delete(buckets.keys().next().value as string);
+    const fresh: number[] = [];
+    buckets.set(peer, fresh);
+    return fresh;
   };
-  try {
-    if (req.url === "/health") return send(200, { ok: true, issuer: ctx.issuer.issuer });
-    if (req.url === "/jwks") {
-      if (req.method !== "GET") return send(405, { error: "GET only" });
+  return {
+    requireCapability: false,
+    refuseViews: true,
+    peerKey: (req) => {
+      if (trustedProxy) {
+        const xff = req.headers["x-forwarded-for"];
+        const last = (Array.isArray(xff) ? xff[xff.length - 1] : xff)?.split(",").pop()?.trim();
+        if (last) return last;
+      }
+      return req.socket.remoteAddress ?? "unknown";
+    },
+    throttled: (_ctx, peer) => {
+      const b = bucket(peer);
+      const now = Date.now();
+      while (b.length && now - b[0] > 60_000) b.shift();
+      return b.length >= PUBLIC_FAILED_PER_MIN;
+    },
+    recordFailure: (_ctx, peer) => bucket(peer).push(Date.now()),
+  };
+}
+
+/** JSON reply helper. No CORS headers, ever — a browser context must never be granted a readable
+ *  response here. */
+function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
+  res.writeHead(status, { "content-type": "application/json", ...headers });
+  res.end(JSON.stringify(body));
+}
+
+/** An HTTP-shaped request refusal found while reading the body. Keeping the status on the error
+ *  lets both listeners return the SAME exact wire response rather than collapsing a deliberate
+ *  size refusal into the generic malformed-request 400. */
+class RequestBodyError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+  }
+}
+
+function sendRequestError(res: ServerResponse, e: unknown): void {
+  if (e instanceof RequestBodyError) return send(res, e.status, { error: e.message });
+  send(res, 400, { error: e instanceof Error ? e.message : String(e) });
+}
+
+type RouteHandler = (req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx) => void | Promise<void>;
+
+/** The loopback route table: /health, /jwks (public keys, cacheable), /exchange (IdP JWT →
+ *  bearer; capability-gated). Anything else 404s. A `Map` (not an object literal) so a hostile
+ *  request-target like `toString` can never resolve through the prototype chain. */
+const ROUTES = new Map<string, RouteHandler>([
+  ["/health", (_req, res, ctx) => send(res, 200, { ok: true, issuer: ctx.issuer.issuer })],
+  [
+    "/jwks",
+    (req, res, ctx) => {
+      if (req.method !== "GET") return send(res, 405, { error: "GET only" });
       // The explicit cache contract (see the module doc): max-age bounds how stale a verifier's set
       // may be, which in turn floors how long a retired kid must stay published after rotation.
-      return send(200, ctx.issuer.jwks(), { "cache-control": `max-age=${JWKS_MAX_AGE_SEC}` });
-    }
-    if (req.url === "/exchange") {
-      if (req.method !== "POST") return send(405, { error: "POST only" });
-      // Browser exclusion: a cross-site page CAN reach loopback, but its requests carry `Origin`
-      // (and can't strip it). The CLI never sends one. Reject before touching anything else.
-      if (req.headers.origin !== undefined) return send(403, { error: "browser-origin requests are not served here" });
-      if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
-        return send(415, { error: "content-type must be application/json" });
-      // The capability gate: same-user file ACL on the 0600 discovery file is the boundary. An
-      // invalid/missing cap is still a failed exchange attempt — audited and throttled, in its own
-      // window (see BAD_CAP_PER_MIN), before anything downstream is touched.
-      const auth = req.headers.authorization ?? "";
-      if (auth !== `Bearer ${ctx.cap}`) {
-        const now = Date.now();
-        while (ctx.badCaps.length && now - ctx.badCaps[0] > 60_000) ctx.badCaps.shift();
-        ctx.badCaps.push(now);
-        console.error("auth-service: rejected an exchange with a missing/invalid capability");
-        if (ctx.badCaps.length > BAD_CAP_PER_MIN)
-          return send(429, { error: "too many invalid-capability attempts - wait a minute and retry" });
-        return send(401, { error: "missing/invalid exchange capability - read it from the space's auth-service.json" });
-      }
-      // Refused-exchange rate limit (probing protection): count only FAILURES.
-      const now = Date.now();
-      while (ctx.failures.length && now - ctx.failures[0] > 60_000) ctx.failures.shift();
-      if (ctx.failures.length >= FAILED_EXCHANGE_PER_MIN)
-        return send(429, { error: "too many refused exchanges - wait a minute and retry" });
-      const body = await readJsonBody(req);
-      const { idpToken, actor, actorToken, owner, ttlSec, view } = body as {
-        idpToken?: unknown;
-        actor?: unknown;
-        actorToken?: unknown;
-        owner?: unknown;
-        ttlSec?: unknown;
-        view?: unknown;
-      };
-      if (ttlSec !== undefined && typeof ttlSec !== "number") return send(400, { error: "ttlSec must be a number" });
-      if (view !== undefined && typeof view !== "string") return send(400, { error: "view must be a string when present" });
-      // TWO grant types, disjoint by construction: a HUMAN exchange proves an IdP session
-      // (idpToken), an AGENT exchange proves a spawn-time ledger secret (owner + actorToken).
-      // A request presenting both is malformed — refuse rather than pick.
-      if (idpToken !== undefined && actorToken !== undefined)
-        return send(400, { error: "exchange takes idpToken (human) OR owner+actorToken (agent), never both" });
-      if (actorToken !== undefined) {
-        // Elevated views are for signed-in HUMANS only: an agent's secret exchange never mints one,
-        // whatever its ledger row carries (v1 — agents hold no god views).
-        if (view !== undefined)
-          return send(400, { error: "the managed (agent-secret) exchange never mints elevated views - views ride a signed-in human exchange" });
-        if (typeof owner !== "string" || !owner || typeof actor !== "string" || !actor || typeof actorToken !== "string" || !actorToken)
-          return send(400, { error: "agent exchange needs { owner: string, actor: string, actorToken: string, ttlSec?: number }" });
-        try {
-          const grant = ledgerAuthorizeAgentExchange(ctx.dir, owner, actor, actorToken);
-          if (typeof grant.lifecycleUid !== "string" || !grant.lifecycleUid)
-            throw new Error(`actor "${actor}" has no lifecycleUid on its ledger row - respawn it (bearers are lifecycle-bound from v0.4)`);
-          // Credential-BIND the bearer (SPEC 13.1, R1): the incarnation's live root credential is
-          // ensured (minted release-last on first exchange) BEFORE the bearer bytes are signed,
-          // and rides act.credentialId — the connect arm requires it against the LIVE cred row.
-          const credentialId = await ctx.mintConnectCredential({ owner, actor, lifecycleUid: grant.lifecycleUid });
-          const token = await ctx.issuer.issue({
-            owner,
-            space: ctx.space,
-            actor,
-            scope: grant.scope,
-            parent: grant.parent,
-            // Lifecycle-BIND the bearer (SPEC 13.1): the row's uid rides act.lifecycleUid, and the
-            // callout refuses a mismatch against the CURRENT row at connect — a predecessor's
-            // still-unexpired bearer dies at the alias's respawn instead of minting the
-            // successor's broker authority.
-            lifecycleUid: grant.lifecycleUid,
-            credentialId,
-            ttlSec: Math.min(ttlSec ?? AGENT_BEARER_TTL_SEC, AGENT_BEARER_TTL_SEC),
-          });
-          const { exp } = decodeJwt(token);
-          return send(200, { token, owner, exp });
-        } catch (e) {
-          ctx.failures.push(Date.now());
-          const reason = e instanceof Error ? e.message : String(e);
-          console.error(`auth-service: refused an agent exchange: ${reason}`);
-          return send(401, { error: reason });
-        }
-      }
-      if (typeof idpToken !== "string" || !idpToken || typeof actor !== "string" || !actor)
-        return send(400, { error: "exchange needs { idpToken: string, actor: string, ttlSec?: number, view?: string }" });
-      try {
-        // The bridge validates `view` against the closed enum and the fresh ledger grant — an
-        // unknown or under-scoped view is a refused exchange (audited + throttled like any other).
-        const r = await ctx.bridge.exchange(idpToken, { actor, ttlSec, view: view as UserTokenView | undefined });
-        return send(200, r);
-      } catch (e) {
-        // A refused exchange (bad IdP token, ungranted actor, expired proof) is an AUTHENTICATED
-        // denial with the reason — the client shows it to the operator verbatim.
-        ctx.failures.push(Date.now());
-        const reason = e instanceof Error ? e.message : String(e);
-        console.error(`auth-service: refused an exchange: ${reason}`);
-        return send(401, { error: reason });
-      }
-    }
-    return send(404, { error: "unknown path - /health, /jwks, /exchange" });
+      return send(res, 200, ctx.issuer.jwks(), { "cache-control": `max-age=${JWKS_MAX_AGE_SEC}` });
+    },
+  ],
+  ["/exchange", (req, res, ctx) => handleExchange(req, res, ctx, LOOPBACK_POLICY)],
+]);
+
+/** Route one HTTP request against the loopback route table. Errors are JSON `{ error }`. */
+async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx): Promise<void> {
+  try {
+    const route = ROUTES.get(req.url ?? "");
+    if (!route) return send(res, 404, { error: "unknown path - /health, /jwks, /exchange" });
+    await route(req, res, ctx);
   } catch (e) {
-    send(400, { error: e instanceof Error ? e.message : String(e) });
+    sendRequestError(res, e);
   }
+}
+
+/** The exchange body, shared by every face; `policy` says how this face proves and attributes the
+ *  caller. Behavior on the loopback face is unchanged from the pre-route-table handler. */
+async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx, policy: ExchangePolicy): Promise<void> {
+  if (req.method !== "POST") return send(res, 405, { error: "POST only" });
+  // Browser exclusion: a cross-site page CAN reach loopback, but its requests carry `Origin`
+  // (and can't strip it). The CLI never sends one. Reject before touching anything else.
+  if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here" });
+  if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
+    return send(res, 415, { error: "content-type must be application/json" });
+  if (policy.requireCapability) {
+    // The capability gate: same-user file ACL on the 0600 discovery file is the boundary. An
+    // invalid/missing cap is still a failed exchange attempt — audited and throttled, in its own
+    // window (see BAD_CAP_PER_MIN), before anything downstream is touched.
+    const auth = req.headers.authorization ?? "";
+    if (auth !== `Bearer ${ctx.cap}`) {
+      const now = Date.now();
+      while (ctx.badCaps.length && now - ctx.badCaps[0] > 60_000) ctx.badCaps.shift();
+      ctx.badCaps.push(now);
+      console.error("auth-service: rejected an exchange with a missing/invalid capability");
+      if (ctx.badCaps.length > BAD_CAP_PER_MIN)
+        return send(res, 429, { error: "too many invalid-capability attempts - wait a minute and retry" });
+      return send(res, 401, { error: "missing/invalid exchange capability - read it from the space's auth-service.json" });
+    }
+  }
+  // Refused-exchange rate limit (probing protection): count only FAILURES, on THIS face's budget.
+  const peer = policy.peerKey(req);
+  if (policy.throttled(ctx, peer))
+    return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
+  const body = await readJsonBody(req);
+  const { idpToken, actor, actorToken, owner, ttlSec, view } = body as {
+    idpToken?: unknown;
+    actor?: unknown;
+    actorToken?: unknown;
+    owner?: unknown;
+    ttlSec?: unknown;
+    view?: unknown;
+  };
+  if (ttlSec !== undefined && typeof ttlSec !== "number") return send(res, 400, { error: "ttlSec must be a number" });
+  if (view !== undefined && typeof view !== "string") return send(res, 400, { error: "view must be a string when present" });
+  // The one-line class-closer: elevated views never ride the public face — operator surfaces are
+  // loopback-only, whatever the credential presented.
+  if (policy.refuseViews && view !== undefined)
+    return send(res, 403, { error: "elevated views are a loopback operator surface - the public exchange never serves them" });
+  // TWO grant types, disjoint by construction: a HUMAN exchange proves an IdP session
+  // (idpToken), an AGENT exchange proves a spawn-time ledger secret (owner + actorToken).
+  // A request presenting both is malformed — refuse rather than pick.
+  if (idpToken !== undefined && actorToken !== undefined)
+    return send(res, 400, { error: "exchange takes idpToken (human) OR owner+actorToken (agent), never both" });
+  if (actorToken !== undefined) {
+    // Elevated views are for signed-in HUMANS only: an agent's secret exchange never mints one,
+    // whatever its ledger row carries (v1 — agents hold no god views).
+    if (view !== undefined)
+      return send(res, 400, { error: "the managed (agent-secret) exchange never mints elevated views - views ride a signed-in human exchange" });
+    if (typeof owner !== "string" || !owner || typeof actor !== "string" || !actor || typeof actorToken !== "string" || !actorToken)
+      return send(res, 400, { error: "agent exchange needs { owner: string, actor: string, actorToken: string, ttlSec?: number }" });
+    try {
+      const grant = ledgerAuthorizeAgentExchange(ctx.dir, owner, actor, actorToken);
+      if (typeof grant.lifecycleUid !== "string" || !grant.lifecycleUid)
+        throw new Error(`actor "${actor}" has no lifecycleUid on its ledger row - respawn it (bearers are lifecycle-bound from v0.4)`);
+      // Credential-BIND the bearer (SPEC 13.1, R1): the incarnation's live root credential is
+      // ensured (minted release-last on first exchange) BEFORE the bearer bytes are signed,
+      // and rides act.credentialId — the connect arm requires it against the LIVE cred row.
+      const credentialId = await ctx.mintConnectCredential({ owner, actor, lifecycleUid: grant.lifecycleUid });
+      const token = await ctx.issuer.issue({
+        owner,
+        space: ctx.space,
+        actor,
+        scope: grant.scope,
+        parent: grant.parent,
+        // Lifecycle-BIND the bearer (SPEC 13.1): the row's uid rides act.lifecycleUid, and the
+        // callout refuses a mismatch against the CURRENT row at connect — a predecessor's
+        // still-unexpired bearer dies at the alias's respawn instead of minting the
+        // successor's broker authority.
+        lifecycleUid: grant.lifecycleUid,
+        credentialId,
+        ttlSec: Math.min(ttlSec ?? AGENT_BEARER_TTL_SEC, AGENT_BEARER_TTL_SEC),
+      });
+      const { exp } = decodeJwt(token);
+      return send(res, 200, { token, owner, exp });
+    } catch (e) {
+      policy.recordFailure(ctx, peer);
+      const reason = e instanceof Error ? e.message : String(e);
+      console.error(`auth-service: refused an agent exchange: ${reason}`);
+      return send(res, 401, { error: reason });
+    }
+  }
+  if (typeof idpToken !== "string" || !idpToken || typeof actor !== "string" || !actor)
+    return send(res, 400, { error: "exchange needs { idpToken: string, actor: string, ttlSec?: number, view?: string }" });
+  try {
+    // The bridge validates `view` against the closed enum and the fresh ledger grant — an
+    // unknown or under-scoped view is a refused exchange (audited + throttled like any other).
+    const r = await ctx.bridge.exchange(idpToken, { actor, ttlSec, view: view as UserTokenView | undefined });
+    return send(res, 200, r);
+  } catch (e) {
+    // A refused exchange (bad IdP token, ungranted actor, expired proof) is an AUTHENTICATED
+    // denial with the reason — the client shows it to the operator verbatim.
+    policy.recordFailure(ctx, peer);
+    const reason = e instanceof Error ? e.message : String(e);
+    console.error(`auth-service: refused an exchange: ${reason}`);
+    return send(res, 401, { error: reason });
+  }
+}
+
+/** Build the PUBLIC listener's request handler: its own closed route table (/health, /jwks,
+ *  /exchange under the public policy, /.well-known/cotal-mesh — 404 everything else), behind a
+ *  global concurrent-admission cap and a hard wall-clock deadline. All of it is public-face-local
+ *  state: nothing here touches the loopback face's windows. */
+function makePublicHandler(
+  ctx: HandlerCtx,
+  policy: ExchangePolicy,
+  bundle: Record<string, unknown>,
+): (req: IncomingMessage, res: ServerResponse) => void {
+  const routes = new Map<string, RouteHandler>([
+    [
+      "/health",
+      (req, res, c) => {
+        if (req.method !== "GET") return send(res, 405, { error: "GET only" });
+        return send(res, 200, { ok: true, issuer: c.issuer.issuer });
+      },
+    ],
+    [
+      "/jwks",
+      (req, res, c) => {
+        if (req.method !== "GET") return send(res, 405, { error: "GET only" });
+        return send(res, 200, c.issuer.jwks(), { "cache-control": `max-age=${JWKS_MAX_AGE_SEC}` });
+      },
+    ],
+    ["/exchange", (req, res, c) => handleExchange(req, res, c, policy)],
+    [
+      "/.well-known/cotal-mesh",
+      (req, res) => {
+        if (req.method !== "GET") return send(res, 405, { error: "GET only" });
+        // GENERATED from the daemon's own recorded config (flags + pinned IdP + callout material)
+        // — never hand-written, so it can't drift from what the service actually enforces.
+        return send(res, 200, bundle);
+      },
+    ],
+  ]);
+  let inFlight = 0;
+  return (req, res) => {
+    // Global concurrent-admission cap: total public work is bounded regardless of source — and
+    // (its own counter) can never consume the loopback face's capacity.
+    if (inFlight >= PUBLIC_MAX_IN_FLIGHT) return send(res, 503, { error: "busy - retry shortly" });
+    inFlight++;
+    // Hard request deadline: a stalled or slow-dripping request is answered and cut, never held.
+    const deadline = setTimeout(() => {
+      if (!res.headersSent) send(res, 503, { error: "request deadline exceeded" });
+      req.destroy();
+    }, PUBLIC_DEADLINE_MS);
+    res.on("close", () => {
+      clearTimeout(deadline);
+      inFlight--;
+    });
+    void (async () => {
+      try {
+        const route = routes.get(req.url ?? "");
+        if (!route) return send(res, 404, { error: "unknown path - /health, /jwks, /exchange, /.well-known/cotal-mesh" });
+        await route(req, res, ctx);
+      } catch (e) {
+        if (!res.headersSent) sendRequestError(res, e);
+      }
+    })();
+  };
 }
 
 /** Read + parse a small JSON body, bounded — the exchange payload is an IdP JWT plus an actor name;
@@ -659,21 +896,26 @@ function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const MAX = 64 * 1024;
   return new Promise((resolve, reject) => {
     let size = 0;
+    let tooLarge = false;
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => {
       size += c.length;
       if (size > MAX) {
-        reject(new Error("request body too large"));
-        req.destroy();
+        // Stop retaining bytes immediately, but keep draining the request so the client receives
+        // the explicit 413 JSON response. Destroying the socket hid the server's decision behind
+        // an undici transport error and made the size-bound smoke unable to prove this guard.
+        tooLarge = true;
+        chunks.length = 0;
         return;
       }
-      chunks.push(c);
+      if (!tooLarge) chunks.push(c);
     });
     req.on("end", () => {
+      if (tooLarge) return reject(new RequestBodyError(413, "request body too large (maximum 65536 bytes)"));
       try {
         resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
       } catch {
-        reject(new Error("request body is not valid JSON"));
+        reject(new RequestBodyError(400, "request body is not valid JSON"));
       }
     });
     req.on("error", reject);

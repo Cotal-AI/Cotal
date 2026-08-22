@@ -92,7 +92,9 @@ export const cotalAuthProvider: AuthProvider = {
                 // pid-liveness first: a STALE file from a dead prior daemon must never satisfy
                 // this poll (the daemon also scrubs it at startup and on exit — belt and braces).
                 const res = await fetch(`${info.url}/health`, { signal: AbortSignal.timeout(2000) });
-                if (res.ok) return { url: info.url };
+                // `publicUrl` (when the public exchange face is enabled) rides along so `up` can
+                // record it in the registry's convenience endpoint; `cap` NEVER leaves this file.
+                if (res.ok) return { url: info.url, ...(info.publicUrl !== undefined ? { publicUrl: info.publicUrl } : {}) };
                 lastReason = `health probe at ${info.url}/health returned HTTP ${res.status}`;
               } else if (info) {
                 // Do not assert "not running" about a pid we could not attribute. The POLICY is

@@ -94,7 +94,7 @@ files to hand out, and revoking a grant actually bites.
 
 **The flow.** Each person runs `cotal login --idp <url>` once per machine. After that,
 any command works: cached IdP session → fresh IdP proof per connect (so IdP-side
-revocation bites here too) → a local exchange turns it into a short-lived Cotal bearer →
+revocation bites here too) → the configured exchange turns it into a short-lived Cotal bearer →
 the broker's **auth callout** checks the bearer and the ledger at connect time and mints
 a scoped credential on the spot. Every bearer also names a **root credential** row in the
 space's credential ledger, proved live at each connect, so revoking that one credential
@@ -103,15 +103,43 @@ bites at the very next connect. The operator grants access with
 channels, may spawn), and `--allow-subscribe` / `--allow-publish` / `--scope` narrow it.
 No ledger row, no access; there is no allow-by-default.
 
-**One auth service per space** hosts both halves: the NATS auth callout and the loopback
-token exchange. It starts with the broker, is torn down by `cotal down`, and holds the
+**One auth service per space** hosts both halves: the NATS auth callout and the token
+exchange. Its default HTTP listener remains loopback-only and requires the per-start capability
+stored in the owner-only `auth-service.json` file. An operator may add a second listener with
+`cotal up --user-auth ... --exchange-public-port <port> --exchange-public-url https://auth.example`.
+That listener still binds `127.0.0.1`; put a reverse proxy in front of it and terminate TLS there.
+In-process TLS is deliberately not another deployment mode: it would duplicate certificate renewal
+and fork proxy-based deployments.
+
+The public listener has a closed surface: `GET /health`, `GET /jwks`, `POST /exchange`, and
+`GET /.well-known/cotal-mesh`; every other path is 404. It does **not** require the loopback
+capability. That capability proves same-uid access to a 0600 local file and has no remote meaning;
+on the public face the credential is the proof. A human presents an EdDSA IdP JWT checked against
+the pinned JWKS, issuer, and audience. An agent presents its spawn-time actor token, whose hash must
+match a fresh managed-ledger row. Elevated `view` exchanges stay loopback-only.
+
+The well-known response contains the IdP pins and the actual deny-all sentinel credential remote
+agents need before the bearer-driven auth callout. Treat it as bootstrap material: the sentinel
+cannot publish or subscribe, but consumers must still take the bundle only from the intended HTTPS
+origin and must verify TLS. `--exchange-trusted-proxy` opts into peer attribution by the **last**
+`X-Forwarded-For` hop; use it only when the listener is reachable solely through a proxy you control.
+Without it, forwarded headers are ignored and the socket address is the peer key. Public failure
+buckets are per-source and separate from loopback exchange budgets. The in-process LRU retains at
+most 1024 peer buckets: that bounds memory and isolates ordinary sources, but an attacker cycling
+more than 1024 trusted-proxy last hops can evict earlier 429 state. It is not a mint bypass; a valid
+credential is still required, so use upstream reverse-proxy rate limiting when that throttle-escape
+matters to the deployment.
+
+The service starts with the broker, is torn down by `cotal down`, and holds the
 data-account signing key for the callout (a running manager is the other standing holder, for
 the creds it mints); the operator seed never enters it. It also owns the space's two authority
 stores (lifecycle records and the credential ledger), provisions them at boot, and refuses
 connects it cannot credential-check against them; there is no fallback path. If it
 dies while the broker lives, re-running `cotal up` heals it, and a boot whose auth
 service never became ready exits non-zero, so automation never reads a dead identity
-plane as success. "One per space" is enforced, not assumed (SPEC §13.13): at boot the
+plane as success. Changing any public-listener flag requires `cotal down` followed by `cotal up`
+with the new values; a refresh adopts an already-running auth service rather than silently replacing
+its listener policy. "One per space" is enforced, not assumed (SPEC §13.13): at boot the
 service takes a broker-backed ownership claim, so a second same-space auth process refuses
 with instructions instead of silently splitting the plane, and a crashed one's claim is
 reclaimed only once the broker confirms its connections are gone — a verdict trusted only
