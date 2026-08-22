@@ -80,6 +80,10 @@ class ExitSignal extends Error {}
  * out of process so the self-signed CA can be trusted at startup (Node reads NODE_EXTRA_CA_CERTS
  * only then). Returns the policy's verdict, or `ok: false` with a reason — never a silent skip.
  */
+// A SUITE THAT SPAWNS A CHILD IS NOT COVERED BY ITS OWN SUITE RUN. `pnpm smoke:meshes-registry`
+// passed on an env spread that `pnpm smoke:ci` (the sharded aggregate CI reads) refuses — the census
+// that catches it is a SEPARATE suite, so a lane running only the suites it owns is green by
+// construction while the gate is red. Run `pnpm smoke:ci` before pushing anything that spawns.
 async function httpsDowngradeFixture(
   plaintextTarget: string,
 ): Promise<{ ok: true; refused: boolean; message: string } | { ok: false; why: string }> {
@@ -109,9 +113,15 @@ async function httpsDowngradeFixture(
   const probeJs = join(dir, "probe.mjs");
   const addMod = new URL("../src/commands/meshes-add.ts", import.meta.url).pathname;
   writeFileSync(probeJs, `const { pinnedFetchProbe } = await import(${JSON.stringify(addMod)});\nconsole.log(JSON.stringify(await pinnedFetchProbe(process.argv[2])));\n`);
+  // NO COTAL_ KEYS IN THE CHILD. Spreading the runner's whole environment handed this child a live
+  // managed session's credential and broker URL — and it needs neither: it imports one function and
+  // fetches one URL. Not "reviewed safe" (that claims inheritance was measured harmless); it simply
+  // has no business holding connection material, so the keys are removed rather than justified.
+  const childEnv: NodeJS.ProcessEnv = { NODE_EXTRA_CA_CERTS: cert };
+  for (const [k, v] of Object.entries(process.env)) if (!k.startsWith("COTAL_")) childEnv[k] ??= v;
   const run = spawnSync(process.execPath, ["--import", "tsx", probeJs, `https://127.0.0.1:${port}/health`], {
     encoding: "utf8",
-    env: { ...process.env, NODE_EXTRA_CA_CERTS: cert },
+    env: childEnv,
   });
   server.kill();
   const line = (run.stdout || "").trim().split("\n").pop() ?? "";
