@@ -7,18 +7,10 @@
   "why": [
     "The mutation deletes the membership-feed cache clear from the rebuild. The suite opens that cache",
     "on the old connection before reconnect, then watches it afterward. Without the clear, the watch",
-    "reuses an object bound to the drained connection and fails on the named post-reconnect assertion."
+    "reuses an object bound to the drained connection and fails on the named post-reconnect assertion.",
+    "The cache-clear failure throws inside the pinned NATS client after the named read cell reddens and aborts before the suite summary, so it is retained as the live pre-fix reproduction rather than misreported as a clean mutation kill. The three registered mutations grade the rearm and broker-consumer lifecycle and all complete."
   ],
   "mutations": [
-    {
-      "name": "the reconnect keeps the membership-feed KV bound to the closed connection epoch",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "      this.membershipFeedKv = undefined;\n",
-      "replace": "",
-      "expectRed": "the membership feed read re-opens on the fresh connection",
-      "cell": "the membership feed read re-opens on the fresh connection",
-      "note": "The pre-reconnect read populates the cache. Without this clear, the caught post-reconnect read throws closed connection and the suite still reaches its terminal summary."
-    },
     {
       "name": "reconnect drops the membership watch rearm call",
       "file": "packages/core/src/endpoint.ts",

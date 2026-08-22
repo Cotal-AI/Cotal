@@ -2185,7 +2185,8 @@ export class CotalEndpoint extends EventEmitter {
         await this.disarmMembershipWatch(watch);
         await this.armMembershipWatch(watch);
       });
-      try { await watch.arm; } catch (err) { this.emit("error", err as Error); }
+      try { await watch.arm; }
+      catch (err) { this.emit("error", err as Error); }
     }));
   }
 
