@@ -1,0 +1,48 @@
+{
+  "suite": "extensions/connector-core/smoke/injection-framing.smoke.ts",
+  "guard": "the block that carries peer messages into a turn names the order of operations - do the work with your own tools, verify it, then reply - and warns against reporting an action that was not performed, while still naming the reply verbs and preserving the historical marker",
+  "command": "pnpm smoke:injection-framing",
+  "completionMarker": "injection framing:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/injection-framing.json",
+  "why": [
+    "Found by dogfooding a live jcode seat, not by a gate. The operator DM'd it: create PROOF.txt",
+    "with an exact line, then confirm by DM. Five seconds later the seat sent the confirmation,",
+    "claiming the file was written, having called zero file tools. The file did not exist. It did",
+    "this twice; only an audit DM demanding tool-quoted evidence produced a real write call.",
+    "",
+    "The delivered block ended in '(Reply with cotal_send / cotal_dm, or cotal_roster to see who's",
+    "here.)' - three reply verbs, no mention of doing the work, arriving exactly when the model",
+    "chooses its next action. A weak model reads that as a chat turn to answer, and an answer that",
+    "sounds finished is cheaper than the work. The connector cannot stop a model from lying, but it",
+    "must not steer toward it, and that steering is the part we own.",
+    "",
+    "The mutations are the ways this can rot back: reverting to the reply-only tail (the shipped",
+    "wording verbatim), dropping the do-not-fabricate clause while keeping the work-first phrasing",
+    "(the half-fix that reads fine and loses the actual warning), and dropping the reply verbs while",
+    "keeping the warning (over-correction - an agent that knows not to lie but no longer knows how",
+    "to answer, which silently kills every reply path)."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the shipped wording: reply-only tail, no mention of doing the work",
+      "file": "extensions/connector-core/src/control.ts",
+      "find": "    `(If this asks for work, do it with your own tools first and verify the result, then reply with ` +\n    `cotal_dm / cotal_send — never report an action you did not actually perform. cotal_roster shows who's here.)`;",
+      "replace": "    `(Reply with cotal_send / cotal_dm, or cotal_roster to see who's here.)`;",
+      "expectRed": "tail does not open with a bare reply instruction"
+    },
+    {
+      "name": "M2 the half-fix: work-first phrasing kept, the do-not-fabricate warning dropped",
+      "file": "extensions/connector-core/src/control.ts",
+      "find": "    `(If this asks for work, do it with your own tools first and verify the result, then reply with ` +\n    `cotal_dm / cotal_send — never report an action you did not actually perform. cotal_roster shows who's here.)`;",
+      "replace": "    `(If this asks for work, do it with your own tools first, then reply with cotal_dm / cotal_send. cotal_roster shows who's here.)`;",
+      "expectRed": "tail warns against reporting work that was not performed"
+    },
+    {
+      "name": "M3 the over-correction: warning kept, the reply verbs lost",
+      "file": "extensions/connector-core/src/control.ts",
+      "find": "    `(If this asks for work, do it with your own tools first and verify the result, then reply with ` +\n    `cotal_dm / cotal_send — never report an action you did not actually perform. cotal_roster shows who's here.)`;",
+      "replace": "    `(If this asks for work, do it with your own tools first and verify the result — never report an action you did not actually perform.)`;",
+      "expectRed": "tail still names the reply verbs (an agent must know how to answer)"
+    }
+  ]
+}

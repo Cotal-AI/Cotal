@@ -108,11 +108,22 @@ function fmtItem(i: InboxItem): string {
   return `• #${i.channel} ${who(i)}${h}: ${i.text}`;
 }
 
-/** The context block injected into a turn when peer messages are waiting (else undefined). */
+/** The context block injected into a turn when peer messages are waiting (else undefined).
+ *
+ *  The tail names the ORDER OF OPERATIONS, not just the reply verbs. A peer message is frequently a
+ *  work order, and it arrives at the moment the model is choosing its next action: a tail that lists
+ *  only reply tools reads as "this is a chat turn, answer it", and an answer that sounds finished is
+ *  cheaper for a weak model than the work itself. Dogfooding a live seat produced exactly that — a
+ *  confirmation DM claiming a file had been written, sent seconds after the order, with no file tool
+ *  called and no file on disk, twice in a row. Naming the sequence (do it, verify it, then report
+ *  what the tools actually returned) is the part the connector owns; the model is still free to
+ *  disregard it, so this narrows the failure mode rather than closing it. */
 export function formatInjection(items: InboxItem[]): string | undefined {
   if (!items.length) return undefined;
   const head = `📨 Cotal — ${items.length} new message${items.length === 1 ? "" : "s"} from peers:`;
-  const tail = `(Reply with cotal_send / cotal_dm, or cotal_roster to see who's here.)`;
+  const tail =
+    `(If this asks for work, do it with your own tools first and verify the result, then reply with ` +
+    `cotal_dm / cotal_send — never report an action you did not actually perform. cotal_roster shows who's here.)`;
   return `${head}\n${items.map(fmtItem).join("\n")}\n${tail}`;
 }
 
