@@ -121,19 +121,31 @@ export interface DialPolicy {
  * compile, so an unlabelled refusal is a type error rather than a cell that passes for the wrong
  * reason.
  */
-export type JoinRefusalCode =
+export const JOIN_REFUSAL_CODES = [
   /** The string is not a URL at all. */
-  | "not-a-url"
+  "not-a-url",
   /** Parsed, but not a broker scheme this policy classifies. */
-  | "bad-scheme"
+  "bad-scheme",
   /** Parsed, but carries no host to classify. */
-  | "no-host"
+  "no-host",
   /** An overlay literal without required TLS and without recorded acceptance. */
-  | "overlay-unacked"
+  "overlay-unacked",
   /** A private range, which required TLS cannot make verifiable. */
-  | "private-range"
+  "private-range",
   /** A hostname or public literal with no TLS requirement to protect it. */
-  | "unprotected-target";
+  "unprotected-target",
+] as const;
+
+/**
+ * The type is DERIVED from the runtime array above, so there is exactly ONE universe of codes.
+ *
+ * A suite that restated this list would carry a second copy of the thing it measures, and copies
+ * drift in the direction that hurts: an arm added here but not there makes the emitted-code check
+ * either falsely red or, if loosened to compensate, permanently green. Exporting the array and
+ * deriving the type means a new arm is visible to the suite by construction, with the union no
+ * less closed than a hand-written one.
+ */
+export type JoinRefusalCode = (typeof JOIN_REFUSAL_CODES)[number];
 
 /**
  * A refusal from THIS classifier, identified structurally.
@@ -145,9 +157,13 @@ export type JoinRefusalCode =
  * private-range refusal. A tag the classifier sets deliberately cannot be produced by an unrelated
  * fault, so a cell can require not merely "something refused" but "the fence I am testing refused".
  *
- * BOUNDARY, stated so "typed" is not read as "unspoofable": code inside this module can always
- * construct one. This makes a refusal unforgeable from OUTSIDE the module, and unforgeable BY
- * ACCIDENT — which is the real threat, a non-privacy fault reporting as a privacy refusal.
+ * BOUNDARY, stated so "typed" is not read as "unspoofable": this class is EXPORTED so the suite can
+ * assert `instanceof`, and that same export hands the constructor to every importer — so a refusal
+ * is NOT unforgeable from outside. What holds is narrower, and is the property that matters:
+ * unforgeable BY ACCIDENT — constructible only by deliberate code that imports the class, wherever
+ * it lives; and `classifyJoinTarget` throws its own. The reachable threat was never a malicious
+ * importer manufacturing one; it was a non-privacy fault inside this module reporting as a privacy
+ * refusal, and a deliberate tag plus a per-cell code closes that.
  */
 export class JoinRefusal extends Error {
   readonly code: JoinRefusalCode;

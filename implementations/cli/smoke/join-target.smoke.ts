@@ -14,7 +14,7 @@
  * Hermetic (no broker, no network, no filesystem).
  * Run: pnpm smoke:join-target
  */
-import { classifyJoinTarget, JoinRefusal, type JoinRefusalCode } from "../src/lib/join-target.js";
+import { classifyJoinTarget, JoinRefusal, JOIN_REFUSAL_CODES, type JoinRefusalCode } from "../src/lib/join-target.js";
 
 let pass = 0;
 /**
@@ -34,11 +34,17 @@ const failures: string[] = [];
 /** How many cells this suite must run. A cell silently skipped or silently added is a defect in
  *  its own right, and one this file has already shipped once (an ambient-dependent arm). */
 const EXPECTED_CELLS = 142;
-/** Every code the classifier may emit. Mirrors the `JoinRefusalCode` union so the closure is
- *  enforced where this file actually runs, not only where it would be compiled. */
-const KNOWN_CODES: ReadonlySet<string> = new Set<JoinRefusalCode>([
-  "not-a-url", "bad-scheme", "no-host", "overlay-unacked", "private-range", "unprotected-target",
-]);
+/**
+ * Every code the classifier may emit, IMPORTED from production rather than restated here.
+ *
+ * A hand-written list would be a second copy of a closed set — the species this lane keeps killing.
+ * Because this file is never typechecked (`implementations/cli` compiles only `src`), that copy is
+ * also the ONLY closure the cells actually run against: a seventh code added at a new throw site,
+ * or a retired one, would leave the mirror stale and the unknown-code check dead while looking
+ * perfectly maintained. Importing the array means a new arm is a compile error at the source AND a
+ * runtime miss at the cell, with nothing to keep in sync by hand.
+ */
+const KNOWN_CODES: ReadonlySet<string> = new Set<string>(JOIN_REFUSAL_CODES);
 /**
  * Record a cell's verdict and KEEP GOING.
  *
@@ -140,6 +146,16 @@ const permits = (url: string, reach: "loopback" | "overlay" | "public-tls", poli
  *  every private-range, IPv6-spelling and loopback-name cell would have reported success if the
  *  classifier died instead of refusing, and a crashing classifier would be indistinguishable from a
  *  correct one. The guard lives INSIDE the helper so no call site can forget it. */
+/**
+ * Classify, expecting a refusal of a NAMED fence.
+ *
+ * `code` is declared optional only because the runtime check below is the one that binds. Making
+ * the PARAMETER required would enforce nothing here: `implementations/cli/tsconfig.json` sets
+ * `"include": ["src"]`, so this file is never compiled by `pnpm typecheck` — verified by injecting
+ * an unlisted code and watching typecheck stay silent. A required type in a file no compiler reads
+ * is a comment, and a mandatory-ness that cannot fail is exactly the species this helper family has
+ * now produced three times. So the obligation is enforced where the file actually runs.
+ */
 const refuses = (url: string, why: string, policy = TODAY, code?: JoinRefusalCode): string => {
   let permitted: string | undefined;
   let thrown: unknown;
@@ -169,11 +185,19 @@ const refuses = (url: string, why: string, policy = TODAY, code?: JoinRefusalCod
     check(`refuses ${url} (${why})`, false, `NOT A JoinRefusal — ${message.split("\n")[0]}`);
     return message;
   }
+  // EVERY refusal cell must NAME the fence it expects. Without this an omitted code silently
+  // degrades the cell to class-only, and a refusal from the WRONG fence — right class, right
+  // message, wrong reason — passes. That is the reachable case a generic typed identity was ruled
+  // insufficient for, so the obligation is checked here rather than left to a call site to honour.
+  if (code === undefined) {
+    check(`refuses ${url} (${why})`, false, `NO EXPECTED CODE DECLARED for ${url} — every refusal cell must name the fence it expects`);
+    return message;
+  }
   // THE UNION IS CLOSED IN THE TYPE SYSTEM, BUT NOTHING TYPECHECKS THIS FILE: `implementations/cli`
   // has `"include": ["src"]`, so a smoke is never compiled by `pnpm typecheck` and a typo'd or
   // retired code would sail through as a plain string. Re-assert the closure at runtime, or the
   // "compile error" this design leans on does not exist where it is being relied upon.
-  if (code !== undefined && !KNOWN_CODES.has(code)) {
+  if (!KNOWN_CODES.has(code)) {
     check(`refuses ${url} (${why})`, false, `UNKNOWN EXPECTED CODE ${JSON.stringify(code)} — not a member of JoinRefusalCode`);
     return message;
   }
@@ -181,7 +205,7 @@ const refuses = (url: string, why: string, policy = TODAY, code?: JoinRefusalCod
     check(`refuses ${url} (${why})`, false, `CLASSIFIER EMITTED AN UNKNOWN CODE ${JSON.stringify(thrown.code)}`);
     return message;
   }
-  if (code !== undefined && thrown.code !== code) {
+  if (thrown.code !== code) {
     // The right fence must answer, not merely some fence: a parser regression that refused every
     // private address would otherwise green the privacy cells while privacy was never consulted.
     check(`refuses ${url} (${why})`, false, `WRONG FENCE — expected code ${code}, got ${thrown.code}`);
@@ -211,7 +235,7 @@ console.log("\nAN OVERLAY ADDRESS IS NOT A GUARANTEE — permitted now, but neve
 // DEFAULT REFUSES. A printed warning was not a fence: stderr is unread by scripts and it was
 // never persisted, so a scripted registration got the risk with none of the notice. A flag is
 // the one notice a script cannot miss, because without it the command fails.
-const overlayDefault = refuses("nats://100.64.0.1:4222", "overlay, no TLS, no explicit acceptance", TODAY);
+const overlayDefault = refuses("nats://100.64.0.1:4222", "overlay, no TLS, no explicit acceptance", TODAY, "overlay-unacked");
 check("  the refusal names the opt-in flag", /--allow-unencrypted-overlay/.test(overlayDefault), overlayDefault);
 const overlay = classifyJoinTarget("nats://100.64.0.1:4222", ACKED);
 check("permits an overlay literal once explicitly accepted", overlay.reach === "overlay", overlay);
@@ -241,9 +265,9 @@ console.log("\nthe boundary of 100.64.0.0/10 — off-by-one here silently widens
 // classify public-tls; a widened overlay detector would flip them to "overlay" and go red here.
 // Under the overlay opt-in alone (no TLS) they stay refused — the opt-in buys overlay passage only.
 permits("nats://100.63.255.255:4222", "public-tls", WITH_TLS);
-refuses("nats://100.63.255.255:4222", "just below the range, even WITH the overlay opt-in", ACKED);
+refuses("nats://100.63.255.255:4222", "just below the range, even WITH the overlay opt-in", ACKED, "unprotected-target");
 permits("nats://100.128.0.1:4222", "public-tls", WITH_TLS);
-refuses("nats://100.128.0.1:4222", "just above the range, even WITH the overlay opt-in", ACKED);
+refuses("nats://100.128.0.1:4222", "just above the range, even WITH the overlay opt-in", ACKED, "unprotected-target");
 permits("nats://100.0.0.1:4222", "public-tls", WITH_TLS);
 
 console.log("\nprivate does NOT mean safe — hostile wifi is an RFC1918 network");
@@ -259,10 +283,10 @@ for (const policy of [TODAY, WITH_TLS]) {
 }
 
 console.log("\npublic addresses — the case this exists to stop");
-const publicMsg = refuses("nats://203.0.113.7:4222", "a public address in the clear");
+const publicMsg = refuses("nats://203.0.113.7:4222", "a public address in the clear", TODAY, "unprotected-target");
 check("  the refusal names the permitted classes", /Only a loopback literal/i.test(publicMsg), publicMsg);
 check("  and says private is not the same as yours", /private is not the same/i.test(publicMsg), publicMsg);
-refuses("tls://203.0.113.7:4222", "tls:// is cosmetic in this client and must not buy passage without recorded strictness");
+refuses("tls://203.0.113.7:4222", "tls:// is cosmetic in this client and must not buy passage without recorded strictness", TODAY, "unprotected-target");
 
 console.log("\npublic-tls — recorded strictness is what relaxes the fence, exactly as the doc block promised");
 // The header pre-authorized this: the `tls` connect option verifies chain AND hostname, so once
@@ -276,7 +300,7 @@ permits("tls://broker.example.com", "public-tls", WITH_TLS, "tls://broker.exampl
 const publicTls = classifyJoinTarget("tls://broker.example.com:4222", WITH_TLS);
 check("  a public-tls verdict carries no residual — the transport is proven, not promised", publicTls.residual === undefined, publicTls);
 // The same hostname WITHOUT recorded strictness keeps the existing sentence, verbatim in intent:
-const hostMsg = refuses("nats://broker.example.com:4222", "hostname without required TLS", TODAY);
+const hostMsg = refuses("nats://broker.example.com:4222", "hostname without required TLS", TODAY, "unprotected-target");
 check("  the no-TLS hostname refusal is the existing sentence", /Only a loopback literal/i.test(hostMsg) && /whoever answers the lookup/i.test(hostMsg), hostMsg);
 // A cafe LAN is private too: RFC1918 stays refused in BOTH modes (also pinned in the loop above).
 refuses("nats://192.168.1.10:4222", "RFC1918 never becomes public-tls", WITH_TLS, "private-range");
@@ -300,12 +324,12 @@ permits("nats://[::ffff:127.0.0.1]:4222", "loopback", TODAY);
 permits("nats://[::ffff:127.0.0.1]:4222", "loopback", WITH_TLS);
 permits("nats://[::ffff:100.64.0.1]:4222", "overlay", ACKED);
 permits("nats://[::ffff:8.8.8.8]:4222", "public-tls", WITH_TLS);
-refuses("nats://[::ffff:8.8.8.8]:4222", "mapped public address without required TLS", TODAY);
+refuses("nats://[::ffff:8.8.8.8]:4222", "mapped public address without required TLS", TODAY, "unprotected-target");
 // Pure-v6 private space, pinned in both modes alongside the mapped forms.
 for (const policy of [TODAY, WITH_TLS]) {
-  refuses("nats://[fc00::1]:4222", "ULA fc00::/7", policy);
-  refuses("nats://[fd00::1]:4222", "ULA fd00::/8 (non-overlay)", policy);
-  refuses("nats://[fe80::1]:4222", "link-local fe80::/10", policy);
+  refuses("nats://[fc00::1]:4222", "ULA fc00::/7", policy, policy.tlsRequired ? "private-range" : "unprotected-target");
+  refuses("nats://[fd00::1]:4222", "ULA fd00::/8 (non-overlay)", policy, policy.tlsRequired ? "private-range" : "unprotected-target");
+  refuses("nats://[fe80::1]:4222", "link-local fe80::/10", policy, policy.tlsRequired ? "private-range" : "unprotected-target");
 }
 permits("nats://[::1]:4222", "loopback", WITH_TLS);
 
@@ -335,7 +359,7 @@ permits("nats://broker.example.com:4222", "public-tls", WITH_TLS);
 permits("nats://09.0.0.1:4222", "public-tls", WITH_TLS);   // 09 is not octal and not decimal-legal
 permits("nats://999.1.1.1:4222", "public-tls", WITH_TLS);  // octet out of range: a hostname
 permits("nats://1.2.3.4.5:4222", "public-tls", WITH_TLS);  // five parts: not an IPv4 literal
-refuses("nats://broker.example.com:4222", "a hostname without required TLS is still refused", TODAY);
+refuses("nats://broker.example.com:4222", "a hostname without required TLS is still refused", TODAY, "unprotected-target");
 
 console.log("\nthe OTHER direction — a canonicalizer must not OVER-collapse a lookalike");
 // Everything above asks "is a private address under-refused?". This asks the mirror question a
@@ -373,7 +397,7 @@ for (const raw of ["nats://[::ffff:0:127.0.0.1]:4222", "nats://[::ffff:0:7f00:1]
 // other way — these are the cells that fail if `::ffff:` handling is deleted wholesale.
 permits("nats://[::ffff:127.0.0.1]:4222", "loopback", WITH_TLS);
 permits("nats://[::ffff:7f00:1]:4222", "loopback", WITH_TLS);
-refuses("nats://[::ffff:192.168.1.10]:4222", "the real mapped RFC1918 stays refused", WITH_TLS);
+refuses("nats://[::ffff:192.168.1.10]:4222", "the real mapped RFC1918 stays refused", WITH_TLS, "private-range");
 
 console.log("\nthe parser dependency, asserted DIRECTLY rather than by proxy");
 // The mapped-form handler deliberately does NOT canonicalize a legacy-spelled tail, on the stated
@@ -401,28 +425,28 @@ permits("nats://010.0.0.5:4222", "public-tls", WITH_TLS); // octal 010 = 8, so 8
 // fd7a:115c::/32 space and hand `overlay` — permitted WITHOUT required TLS — to addresses that are
 // not the overlay. Pinned with the ack policy, where a wrong verdict is most costly.
 permits("nats://[fd7a:115c:a1e0::1]:4222", "overlay", ACKED);
-refuses("nats://[fd7a:115c:ffff::1]:4222", "same /32, different /48 — not the overlay", ACKED);
-refuses("nats://[fd7a:115c::1]:4222", "the /32 prefix itself is not the overlay", ACKED);
+refuses("nats://[fd7a:115c:ffff::1]:4222", "same /32, different /48 — not the overlay", ACKED, "unprotected-target");
+refuses("nats://[fd7a:115c::1]:4222", "the /32 prefix itself is not the overlay", ACKED, "unprotected-target");
 // NATIVE PUBLIC IPv6 had no coverage at all: neither documentation range nor a real public address
 // was asserted in either mode. A v6 literal that is not private must behave like any public host.
 for (const raw of ["nats://[2001:db8::1]:4222", "nats://[2606:4700::1111]:4222"]) {
   permits(raw, "public-tls", WITH_TLS);
-  refuses(raw, "native public IPv6 without required TLS is refused like any public address", TODAY);
+  refuses(raw, "native public IPv6 without required TLS is refused like any public address", TODAY, "unprotected-target");
 }
 // --force is a liveness escape, not a policy escape: no force-like field exists on DialPolicy,
 // and smuggling one in changes nothing.
 const FORCED = { tlsRequired: false, allowUnencryptedOverlay: false, force: true } as unknown as Parameters<typeof classifyJoinTarget>[1];
-refuses("nats://203.0.113.7:4222", "--force does not waive the dial policy", FORCED);
-refuses("nats://broker.example.com:4222", "--force does not waive the dial policy for hostnames", FORCED);
+refuses("nats://203.0.113.7:4222", "--force does not waive the dial policy", FORCED, "unprotected-target");
+refuses("nats://broker.example.com:4222", "--force does not waive the dial policy for hostnames", FORCED, "unprotected-target");
 // Negative control: the pre-existing classes are untouched by the new reach (asserted throughout
 // the loopback/overlay sections above; re-pinned here at the boundary).
 permits("nats://127.0.0.1:4222", "loopback", WITH_TLS);
 permits("nats://100.64.0.1:4222", "overlay", WITH_TLS);
 
 console.log("\nhostnames — without recorded strictness a verdict must never depend on a lookup someone else answers");
-refuses("nats://localhost:4222", "resolver-dependent, even though it 'is' loopback", TODAY);
-refuses("nats://hub.example.ts.net:4222", "MagicDNS name: whoever answers the lookup picks the peer", TODAY);
-refuses("nats://broker.internal:4222", "hostname", TODAY);
+refuses("nats://localhost:4222", "resolver-dependent, even though it 'is' loopback", TODAY, "unprotected-target");
+refuses("nats://hub.example.ts.net:4222", "MagicDNS name: whoever answers the lookup picks the peer", TODAY, "unprotected-target");
+refuses("nats://broker.internal:4222", "hostname", TODAY, "unprotected-target");
 // With required TLS the hostname is verified by the certificate chain + hostname check, so the
 // resolver stops being the authority — the doc block's EASY case (e.g. publicly-resolvable
 // MagicDNS names with publicly-trusted certs).
@@ -431,10 +455,10 @@ permits("nats://broker.internal:4222", "public-tls", WITH_TLS);
 permits("nats://localhost:4222", "public-tls", WITH_TLS); // a hostname like any other: the cert check is the authority now
 
 console.log("\nmalformed input fails loud rather than defaulting to something");
-refuses("not-a-url", "not a URL");
-refuses("http://127.0.0.1:4222", "not a broker scheme");
-refuses("ws://127.0.0.1:4222", "websocket is not classified by this policy");
-refuses("nats://999.1.1.1:4222", "octet out of range is a hostname, not an IP");
+refuses("not-a-url", "not a URL", TODAY, "not-a-url");
+refuses("http://127.0.0.1:4222", "not a broker scheme", TODAY, "bad-scheme");
+refuses("ws://127.0.0.1:4222", "websocket is not classified by this policy", TODAY, "bad-scheme");
+refuses("nats://999.1.1.1:4222", "octet out of range is a hostname, not an IP", TODAY, "unprotected-target");
 
 // THE EPILOGUE IS THE GATE, AND IT DECIDES DIRECTLY — never through `check()`.
 //
