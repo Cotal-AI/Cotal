@@ -32,7 +32,7 @@ writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: 
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
 
-let mgr: CotalEndpoint | undefined, daemon: CotalEndpoint | undefined, agent: CotalEndpoint | undefined;
+let mgr: CotalEndpoint | undefined, daemon: CotalEndpoint | undefined, agent: CotalEndpoint | undefined, observer: CotalEndpoint | undefined;
 try {
   let up = false;
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
@@ -47,6 +47,11 @@ try {
   daemon.on("error", () => {}); await daemon.start();
   await daemon.startPlane3((owner, lifecycleUid) => daemon!.aclForOwner(owner, lifecycleUid));
 
+  // The dashboard/observer is the membership-feed reader in production. Use its real admin grant:
+  // the delivery cred writes the feed but deliberately cannot create the ordered consumer a KV watch needs.
+  observer = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "admin"), channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "observer", role: "observer", kind: "observer" } });
+  observer.on("error", () => {}); await observer.start();
+
   const aId = newIdentity();
   const uidA = mintLifecycleUid(); // alice's one lifecycle uid (SPEC §13.1)
   const aCreds = await provisionAgent(mgr, auth, aId, { allowSubscribe: ["review", "ops"], subscribe: ["review"], lifecycleUid: uidA });
@@ -60,10 +65,11 @@ try {
   const pre = await agent.durableJoinChannel("review");
   check("durableJoin works before reconnect", pre.durable === true);
   const reviewGen = pre.generation ?? 0;
-  await daemon.readMembership(); // open the membership-feed KV on the old connection before rebuilding
+  await observer.readMembership(); // open the membership-feed KV on the old connection before rebuilding
 
-  // Force the daemon endpoint to drain + rebuild its connection (drops the old ctl.delivery sub + KV handles).
-  await daemon.reconnect();
+  // Force both roles to drain + rebuild. The daemon exercises its responder/Plane-3 handles; the
+  // observer exercises the cached read-only membership-feed handle that triggered #800.
+  await Promise.all([daemon.reconnect(), observer.reconnect()]);
   await wait(400);
 
   // Post-reconnect, ALL ctl.delivery ops + every Plane-3 KV handle must work on the fresh connection:
@@ -84,7 +90,7 @@ try {
   check("the delivery lease is still readable after reconnect (deliveryKv reopened)", lease?.ready === true);
 
   let membershipWatch: { stop(): void } | undefined;
-  try { membershipWatch = await daemon.watchMembership(() => {}); } catch (e) { console.log(`    (post-reconnect membership watch threw: ${(e as Error).message})`); }
+  try { membershipWatch = await observer.watchMembership(() => {}); } catch (e) { console.log(`    (post-reconnect membership watch threw: ${(e as Error).message})`); }
   check("the membership feed watch re-opens on the fresh connection", membershipWatch !== undefined);
   membershipWatch?.stop();
 
@@ -96,6 +102,7 @@ try {
   process.exitCode = 1;
 } finally {
   try { await agent?.stop(); } catch { /* ignore */ }
+  try { await observer?.stop(); } catch { /* ignore */ }
   try { await daemon?.stop(); } catch { /* ignore */ }
   try { await mgr?.stop(); } catch { /* ignore */ }
   srv.kill("SIGKILL");
