@@ -22,11 +22,20 @@ import { strict as assert } from "node:assert";
 import { formatInjection } from "../src/control.js";
 import type { InboxItem } from "../src/agent.js";
 
+/** Collect failures instead of throwing on the first one, so the run always reaches its completion
+ *  marker. A suite that dies mid-way is indistinguishable from a suite that crashed for an unrelated
+ *  reason, and the mutation harness correctly refuses to count an unfinished run as a kill. */
 let pass = 0;
+const failures: string[] = [];
 const check = (name: string, cond: boolean, extra?: unknown): void => {
-  assert.ok(cond, `${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
-  pass++;
-  console.log(`  ✓ ${name}`);
+  if (cond) {
+    pass++;
+    console.log(`  ✓ ${name}`);
+    return;
+  }
+  const detail = `${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`;
+  failures.push(detail);
+  console.log(`  ✗ ${detail}`);
 };
 
 const dm = (text: string, over: Partial<InboxItem> = {}): InboxItem =>
@@ -90,4 +99,7 @@ console.log("injection framing");
   check("historical marker survives", out.includes("(history)"), out);
 }
 
-console.log(`injection framing: ${pass} cells OK`);
+console.log(`injection framing: ${pass} cells OK, ${failures.length} failed`);
+if (failures.length) {
+  assert.fail(`injection framing: ${failures.length} cell(s) failed\n  - ${failures.join("\n  - ")}`);
+}
