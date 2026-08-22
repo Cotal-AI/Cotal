@@ -98,12 +98,24 @@ console.log("\n6. an unusable session is skipped rather than trusted");
 
 console.log("\n7. selection is stable and side-effect free");
 {
-  const list = [s({ session_id: "a", transcript_bytes: 10 }), s({ session_id: "b", transcript_bytes: 20 })];
-  const frozen = JSON.stringify(list);
+  // Ordered so that sorting in place PROVABLY reorders: richest first means a descending sort must
+  // move elements. A two-element already-descending list would be a no-op and would let an in-place
+  // sort pass unnoticed (the first version of this test did exactly that, and a mutation caught it).
+  const list = [
+    s({ session_id: "a", transcript_bytes: 10 }),
+    s({ session_id: "c", transcript_bytes: 30 }),
+    s({ session_id: "b", transcript_bytes: 20 }),
+  ];
+  const orderBefore = list.map((c) => c.session_id).join(",");
   const first = chooseSessionToResume(list, cwd)?.session_id;
+  const orderAfter = list.map((c) => c.session_id).join(",");
   const second = chooseSessionToResume(list, cwd)?.session_id;
-  check("repeated selection returns the same session", first === second && first === "b");
-  check("the input list is not mutated (no in-place sort)", JSON.stringify(list) === frozen);
+  check("repeated selection returns the same session", first === second && first === "c");
+  check(
+    "the input list is not mutated (no in-place sort)",
+    orderAfter === orderBefore,
+    { orderBefore, orderAfter },
+  );
 }
 
 console.log(`\nsession resume: ${pass} cells OK, ${failures.length} failed`);
