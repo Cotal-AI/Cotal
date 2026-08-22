@@ -17,6 +17,7 @@ import {
   hasIdentity,
   resolveEventsStateRoot,
   runError,
+  runFinished,
   runStarted,
   startControlServer,
   textMessageContent,
@@ -99,15 +100,16 @@ class BoundStartSource<T> implements DurableSource<T> {
   }
 }
 
-function createEvents(runtime: PiRuntime, context: ExtensionContext, pi: ExtensionAPI): PiEvents | undefined {
+async function createEvents(runtime: PiRuntime, context: ExtensionContext, pi: ExtensionAPI): Promise<PiEvents | undefined> {
   if (!/^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "")) return undefined;
   const path = sessionPath(context);
   const threadId = context.sessionManager.getSessionId();
   const mapper = createPiMapper();
-  // Capture the source boundary before async emitter setup. A fresh JsonlFileSource adopts at its
-  // current end, so without this a complete turn written while the holder opens its WAL would be
-  // silently treated as history. A resumed WAL supplies its own cursor and bypasses this boundary.
-  let startCursor = "";
+  // Capture the source boundary before an event hook can append the first record. A fresh
+  // JsonlFileSource adopts at its current end, so reading this later would silently discard a
+  // completed turn that appeared while the holder opened its WAL. A resumed WAL has its own cursor
+  // and bypasses this boundary.
+  const startCursor = (await new JsonlFileSource<PiSessionRecord>(path).read(undefined)).cursor;
   const holder = new AguiEmitterHolder<PiSessionRecord>(
     async (sourcePath) => {
       const workspaceRoot = resolveEventsStateRoot(process.env);
@@ -132,28 +134,37 @@ function createEvents(runtime: PiRuntime, context: ExtensionContext, pi: Extensi
     mapper.forgetOpenRun,
   );
 
+  let adopted = false;
+  const ensureAdopted = (): void => {
+    if (adopted || !runtime.mesh.connected) return;
+    adopted = true;
+    holder.adopt(path);
+  };
   const append = (record: PiEventRecord): void => {
-    // Pi's extension API appends an opaque record to the same session JSONL this holder reads.
-    // Flush remains synchronous and serialized inside the existing holder lifecycle seam.
+    // The extension persists records even while the mesh is reconnecting. The captured source
+    // boundary remains before them, so the first connected holder replays rather than skipping
+    // their complete session observations.
     pi.appendEntry(EVENTS, record);
-    void ready.then(() => holder.flush(path));
+    ensureAdopted();
+    if (adopted) holder.flush(path);
   };
 
-  // The holder is lazy; pin its fresh-source boundary before its first adopt starts async setup.
-  // A later write remains ahead of this cursor and the first flush publishes it.
-  const ready = new JsonlFileSource<PiSessionRecord>(path).read(undefined).then((read) => {
-    startCursor = read.cursor;
-    holder.adopt(path);
+  runtime.mesh.ep.on("connection", (event: { connected: boolean }) => {
+    if (!event.connected) return;
+    ensureAdopted();
+    if (adopted) holder.flush(path);
   });
+  ensureAdopted();
 
   let runId: string | undefined;
+  const record = (value: PiEventRecord): void => append(value);
   return {
     holder,
-    append,
+    append: record,
     startTurn(timestamp) {
       if (runId !== undefined) return;
       runId = randomUUID();
-      append({ version: 1, runId, events: [runStarted({ threadId, runId, timestamp })] });
+      record({ version: 1, runId, events: [runStarted({ threadId, runId, timestamp })] });
     },
     assistant(timestamp, content, calls) {
       if (runId === undefined) return;
@@ -177,11 +188,11 @@ function createEvents(runtime: PiRuntime, context: ExtensionContext, pi: Extensi
             toolCallEnd({ toolCallId: call.id, timestamp }),
           );
         }
-      if (events.length) append({ version: 1, runId, events });
+      if (events.length) record({ version: 1, runId, events });
     },
     toolResult(timestamp, toolCallId, content) {
       if (runId === undefined) return;
-      append({
+      record({
         version: 1,
         runId,
         events: [toolCallResult({ messageId: randomUUID(), toolCallId, content: text(content), timestamp })],
@@ -189,7 +200,7 @@ function createEvents(runtime: PiRuntime, context: ExtensionContext, pi: Extensi
     },
     failedTurn(stopReason, timestamp) {
       if (runId === undefined) return;
-      append({
+      record({
         version: 1,
         runId,
         events: [runError({ message: `Pi turn ended with ${stopReason}`, timestamp, cotal: { stopReason } })],
@@ -198,10 +209,11 @@ function createEvents(runtime: PiRuntime, context: ExtensionContext, pi: Extensi
     },
     close(timestamp) {
       if (runId === undefined) return;
-      holder.closeRun(timestamp);
+      if (adopted) holder.closeRun(timestamp);
+      else record({ version: 1, runId, events: [runFinished({ threadId, runId, timestamp })] });
       runId = undefined;
     },
-    settled: () => ready.then(() => holder.settled()),
+    settled: () => holder.settled(),
   };
 }
 
@@ -340,7 +352,7 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   registerCotalTools(pi, runtime.mesh, runtime.config);
   pi.registerMessageRenderer<CotalBatchDetails>(CUSTOM_TYPE, (message) => wrapped(messageText(message.content)));
 
-  pi.on("session_start", (_event, context) => {
+  pi.on("session_start", async (_event, context) => {
     cleanPersonaFile(runtime);
     runtime.sessionId = context.sessionManager.getSessionId();
     if (runtime.expectedSessionId && runtime.sessionId !== runtime.expectedSessionId)
@@ -349,14 +361,14 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
     persistSessionId(runtime.sessionId);
     if (runtime.events !== undefined)
       throw new Error("pi connector: session replacement reached a live AG-UI holder before its shutdown completed");
-    runtime.events = createEvents(runtime, context, pi);
+    runtime.events = await createEvents(runtime, context, pi);
     runtime.driver.onSessionStart(asContext(context));
   });
-  pi.on("agent_start", (_event, context) => {
+  pi.on("agent_start", async (_event, context) => {
     // Pi creates the CLI session before it loads extension factories, so the startup
     // session_start may have already happened. agent_start is the first guaranteed context for
     // that session and occurs before its first turn_start.
-    runtime.events ??= createEvents(runtime, context, pi);
+    runtime.events ??= await createEvents(runtime, context, pi);
     runtime.driver.onAgentStart(asContext(context));
   });
   pi.on("turn_start", (event) => runtime.events?.startTurn(event.timestamp));
