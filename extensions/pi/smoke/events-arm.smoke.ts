@@ -40,6 +40,8 @@ const refusalFor = (extra: Record<string, unknown>): string | null => {
   check("events false leaves the plane unarmed", unarmed.COTAL_EVENTS === undefined, unarmed.COTAL_EVENTS);
   const grantOnly = env({ workspaceRoot: root, allowPublish: [eventChannel({ owner: "o", actor: "a" })] });
   check("a publish grant alone never arms the emitter", grantOnly.COTAL_EVENTS === undefined, grantOnly.COTAL_EVENTS);
+  const envAllowRefusal = refusalFor({ envAllow: ["COTAL_EVENTS", "COTAL_WORKSPACE_ROOT"] });
+  check("spawn.env cannot re-arm an unarmed Pi launch", /only arming path/.test(envAllowRefusal ?? ""), envAllowRefusal);
 }
 
 {
@@ -57,7 +59,7 @@ const refusalFor = (extra: Record<string, unknown>): string | null => {
   );
 }
 
-const expected = 10;
+const expected = 11;
 check(`every cell ran (${expected})`, pass + fail === expected, { pass, fail });
 console.log(`pi-events-arm smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

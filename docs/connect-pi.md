@@ -64,9 +64,11 @@ Pi session id. Only `session_shutdown { reason: "quit" }` stops the mesh.
 A seat launched with `cotal spawn --events --agent pi` publishes structured turn events on
 `events.<owner>.<actor>`, named from the seat principal. The launcher sets `COTAL_EVENTS` only for
 that spawn and supplies its managed workspace root for the write-ahead log; a normal Pi session
-publishes no events. The session's durable JSONL records are the event source, so a restarted seat
-continues the same ordered stream rather than reopening it. Frames expose their writer `epoch` and
-`seq`; assistant messages and tool results carry `messageId`, and tool events carry Pi's native
+publishes no events. The session's durable JSONL records are the event source. A temporary mesh
+outage pauses publication and the holder drains the persisted records after it reconnects; a
+publish/WAL/record-format failure instead halts the holder loudly and leaves the stream for operator
+recovery rather than guessing at a continuation. Frames expose their writer `epoch` and `seq`;
+assistant messages and tool results carry `messageId`, and tool events carry Pi's native
 `toolCallId`. See [Connect Claude Code](connect-claude.md#event-plane) for the shared channel and
 access rules.
 

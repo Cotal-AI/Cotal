@@ -17,7 +17,7 @@
  *
  * The prefix is stripped WHOLESALE rather than by a named deny-list, because the danger is
  * ASYMMETRY rather than any single omission: `COTAL_EVENTS` and `COTAL_WORKSPACE_ROOT` are set by
- * opencode/claude/codex and NOT by hermes/pi, `COTAL_CHANNEL` only by claude, `COTAL_VARIANT` only
+ * opencode/claude/codex/pi and NOT by hermes, `COTAL_CHANNEL` only by claude, `COTAL_VARIANT` only
  * by opencode/codex, the `COTAL_CODEX_*` family only by codex. A hand-maintained deny-list names
  * what its author remembers. The repo has a worked example: six suite files reached main each
  * blanking exactly `COTAL_SPACE`, `COTAL_SERVERS` and `COTAL_CREDS` by hand before spreading

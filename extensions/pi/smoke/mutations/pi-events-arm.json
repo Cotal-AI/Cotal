@@ -3,6 +3,11 @@
   "command": "pnpm smoke:pi-events-arm",
   "completionMarker": "pi-events-arm smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/pi/smoke/mutations/pi-events-arm.json",
+  "why": [
+    "A1-A4 cover the connector admission legs: declaration, shared derivation, explicit arm, and",
+    "the reserved environment names that must not bypass --events. The lifecycle retention seam",
+    "has a separate mutation configuration because it exercises extension.ts rather than this launch surface."
+  ],
   "mutations": [
     {
       "name": "A1 delete the connector eventChannel declaration so armed spawn is refused before launch",
@@ -24,6 +29,13 @@
       "find": "    if (opts.events === true) {",
       "replace": "    if (opts.events !== undefined || true) {",
       "expectRed": "an unarmed Pi launch sets no COTAL_EVENTS"
+    },
+    {
+      "name": "A4 remove the reserved spawn.env event guard so environment forwarding can arm an ungranted session",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "    if (opts.envAllow?.some((name) => /^COTAL_(EVENTS|WORKSPACE_ROOT)$/i.test(name)))\n      throw new Error(\n        \"pi connector: spawn.env may not forward COTAL_EVENTS or COTAL_WORKSPACE_ROOT; --events is \" +\n          \"the only arming path and supplies both together.\",\n      );\n",
+      "replace": "",
+      "expectRed": "spawn.env cannot re-arm an unarmed Pi launch"
     }
   ]
 }

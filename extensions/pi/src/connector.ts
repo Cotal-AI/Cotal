@@ -44,6 +44,11 @@ export const piConnector: Connector = {
       throw new Error("pi connector: MCP tool-sharing is not implemented");
     if (connectorLaunchOptions("pi", opts.launchOptions).length > 0)
       throw new Error("pi connector: launch options (--opt / launchOptions) are not implemented");
+    if (opts.envAllow?.some((name) => /^COTAL_(EVENTS|WORKSPACE_ROOT)$/i.test(name)))
+      throw new Error(
+        "pi connector: spawn.env may not forward COTAL_EVENTS or COTAL_WORKSPACE_ROOT; --events is " +
+          "the only arming path and supplies both together.",
+      );
 
     let model = opts.model;
     let persona: string | undefined;

@@ -18,7 +18,7 @@ not support throws; nothing silently degrades.
 | Session resume (`--resume`) | ✓ (forks) | ✗ ([#154](https://github.com/Cotal-AI/Cotal/issues/154)) | ✗ (a resumed thread has no MCP tools upstream) | ✗ | ✗ (private Harness API instance) | ✗ |
 | Tool-sharing (`--share-tools`) | ✓ (scoped opt-in) | ✗ (inherits your servers wholesale) | ✗ (isolated per-agent `CODEX_HOME`) | ✗ | ✗ (private MCP configuration) | ✗ |
 | Models | `--model` | `--model` + catalog (`cotal models`) + `--variant` | `--model` + catalog (`cotal models`) + `--variant` (reasoning effort) | any provider, via env | `--model` | `--model` |
-| Event plane (`--events`) | ✓ | ✓ | ✓ | ✗ | ✓ | ✗ |
+| Event plane (`--events`) | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
 | Containers ([deploy](deploy.md)) | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ |
 
 **Native vs. bridged.** OpenCode and pi expose real plugin runtimes, so the connector runs

@@ -1,0 +1,29 @@
+{
+  "guard": "the Pi event holder does not adopt or publish while disconnected, captures its source boundary before a new turn, and defers an adopted holder's flush until reconnection",
+  "command": "pnpm smoke:pi-events-lifecycle",
+  "completionMarker": "pi AG-UI lifecycle smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/pi/smoke/mutations/pi-events-lifecycle.json",
+  "mutations": [
+    {
+      "name": "L1 adopt immediately at event-plane creation while the mesh is down",
+      "file": "extensions/pi/src/extension.ts",
+      "find": "    if (adopted || !runtime.mesh.connected) return;",
+      "replace": "    if (adopted) return;",
+      "expectRed": "C1: nothing published while the mesh is down"
+    },
+    {
+      "name": "L2 drop the captured source boundary so an initial read starts at the later history end",
+      "file": "extensions/pi/src/extension.ts",
+      "find": "    return this.inner.read(cursor ?? this.start);",
+      "replace": "    return this.inner.read(cursor);",
+      "expectRed": "C2: a complete turn after createPiEvents publishes frames, not history"
+    },
+    {
+      "name": "L3 flush an adopted holder during a post-adopt disconnect",
+      "file": "extensions/pi/src/extension.ts",
+      "find": "    if (!runtime.mesh.connected) return;\n    ensureAdopted();",
+      "replace": "    ensureAdopted();",
+      "expectRed": "C3: post-adopt disconnect does not halt the holder"
+    }
+  ]
+}

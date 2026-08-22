@@ -41,7 +41,7 @@ import { wrapped } from "./wrap.js";
 const CUSTOM_TYPE = "cotal-inbox";
 const RUNTIMES = Symbol.for("cotal.pi.runtimes");
 
-interface PiRuntime {
+export interface PiRuntime {
   config: AgentConfig;
   mesh: MeshAgent;
   driver: PiDriver;
@@ -54,7 +54,7 @@ interface PiRuntime {
 
 type GlobalWithPi = typeof globalThis & { [RUNTIMES]?: Map<string, PiRuntime> };
 
-interface PiEvents {
+export interface PiEvents {
   holder: AguiEmitterHolder<PiSessionRecord>;
   append(record: PiEventRecord): void;
   startTurn(timestamp: number): void;
@@ -66,6 +66,23 @@ interface PiEvents {
 }
 
 const EVENTS = "cotal-agui";
+const EVENTS_STATE = "cotal-agui-state";
+const MAX_QUEUED_EVENT_RECORDS = 256;
+const MAX_QUEUED_EVENT_BYTES = 1_000_000;
+
+interface PiEventsState {
+  version: 1;
+  startCursor: string;
+}
+
+interface QueuedEventRecord {
+  bytes: number;
+}
+
+export const PI_EVENTS_LIMIT = {
+  records: MAX_QUEUED_EVENT_RECORDS,
+  bytes: MAX_QUEUED_EVENT_BYTES,
+} as const;
 
 function text(content: unknown): string {
   if (typeof content === "string") return content;
@@ -100,16 +117,22 @@ class BoundStartSource<T> implements DurableSource<T> {
   }
 }
 
-async function createEvents(runtime: PiRuntime, context: ExtensionContext, pi: ExtensionAPI): Promise<PiEvents | undefined> {
+export async function createPiEvents(runtime: PiRuntime, context: ExtensionContext, pi: ExtensionAPI): Promise<PiEvents | undefined> {
   if (!/^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "")) return undefined;
   const path = sessionPath(context);
   const threadId = context.sessionManager.getSessionId();
   const mapper = createPiMapper();
-  // Capture the source boundary before an event hook can append the first record. A fresh
-  // JsonlFileSource adopts at its current end, so reading this later would silently discard a
-  // completed turn that appeared while the holder opened its WAL. A resumed WAL has its own cursor
-  // and bypasses this boundary.
-  const startCursor = (await new JsonlFileSource<PiSessionRecord>(path).read(undefined)).cursor;
+  // A session that closes before connecting has no event WAL yet. Persist its exact initial
+  // boundary in Pi's JSONL, so a replacement extension resumes from that point instead of treating
+  // its already-recorded complete turns as pre-existing history.
+  let state: PiEventsState | undefined;
+  for (const entry of context.sessionManager.getEntries()) {
+    if (entry.type !== "custom" || entry.customType !== EVENTS_STATE) continue;
+    const data = entry.data as Partial<PiEventsState> | undefined;
+    if (data?.version === 1 && typeof data.startCursor === "string" && data.startCursor.length > 0) state = data as PiEventsState;
+  }
+  const startCursor = state?.startCursor ?? (await new JsonlFileSource<PiSessionRecord>(path).read(undefined)).cursor;
+  if (state === undefined) pi.appendEntry<PiEventsState>(EVENTS_STATE, { version: 1, startCursor });
   const holder = new AguiEmitterHolder<PiSessionRecord>(
     async (sourcePath) => {
       const workspaceRoot = resolveEventsStateRoot(process.env);
@@ -140,27 +163,43 @@ async function createEvents(runtime: PiRuntime, context: ExtensionContext, pi: E
     adopted = true;
     holder.adopt(path);
   };
-  const append = (record: PiEventRecord): void => {
-    // The extension persists records even while the mesh is reconnecting. The captured source
-    // boundary remains before them, so the first connected holder replays rather than skipping
-    // their complete session observations.
-    pi.appendEntry(EVENTS, record);
+  const queued: QueuedEventRecord[] = [];
+  let queuedBytes = 0;
+  const flush = (): void => {
+    if (!runtime.mesh.connected) return;
     ensureAdopted();
     if (adopted) holder.flush(path);
+  };
+  const append = (record: PiEventRecord): void => {
+    if (!runtime.mesh.connected) {
+      const bytes = Buffer.byteLength(JSON.stringify(record), "utf8");
+      if (queued.length >= MAX_QUEUED_EVENT_RECORDS || queuedBytes + bytes > MAX_QUEUED_EVENT_BYTES)
+        throw new Error(
+          `pi connector: disconnected AG-UI event queue reached its ${MAX_QUEUED_EVENT_RECORDS}-record / ` +
+            `${MAX_QUEUED_EVENT_BYTES}-byte limit; refusing to retain unbounded tool data while the mesh is down`,
+        );
+      queued.push({ bytes });
+      queuedBytes += bytes;
+    }
+    // The session remains source of record. The bounded ledger counts only retention while no
+    // observer can receive it; once connected the holder drains the durable session source.
+    pi.appendEntry(EVENTS, record);
+    flush();
   };
 
   runtime.mesh.ep.on("connection", (event: { connected: boolean }) => {
     if (!event.connected) return;
-    ensureAdopted();
-    if (adopted) holder.flush(path);
+    queued.length = 0;
+    queuedBytes = 0;
+    flush();
   });
-  ensureAdopted();
+  flush();
 
   let runId: string | undefined;
   const record = (value: PiEventRecord): void => append(value);
   return {
     holder,
-    append: record,
+    append,
     startTurn(timestamp) {
       if (runId !== undefined) return;
       runId = randomUUID();
@@ -209,7 +248,10 @@ async function createEvents(runtime: PiRuntime, context: ExtensionContext, pi: E
     },
     close(timestamp) {
       if (runId === undefined) return;
-      if (adopted) holder.closeRun(timestamp);
+      // A disconnected holder must not be asked to publish its out-of-band terminal: publishing
+      // then would kill the holder and poison the run's WAL. Persist the terminal in the same
+      // source instead; reconnect flushes it after the preceding records.
+      if (adopted && runtime.mesh.connected) holder.closeRun(timestamp);
       else record({ version: 1, runId, events: [runFinished({ threadId, runId, timestamp })] });
       runId = undefined;
     },
@@ -361,14 +403,14 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
     persistSessionId(runtime.sessionId);
     if (runtime.events !== undefined)
       throw new Error("pi connector: session replacement reached a live AG-UI holder before its shutdown completed");
-    runtime.events = await createEvents(runtime, context, pi);
+    runtime.events = await createPiEvents(runtime, context, pi);
     runtime.driver.onSessionStart(asContext(context));
   });
   pi.on("agent_start", async (_event, context) => {
     // Pi creates the CLI session before it loads extension factories, so the startup
     // session_start may have already happened. agent_start is the first guaranteed context for
     // that session and occurs before its first turn_start.
-    runtime.events ??= await createEvents(runtime, context, pi);
+    runtime.events ??= await createPiEvents(runtime, context, pi);
     runtime.driver.onAgentStart(asContext(context));
   });
   pi.on("turn_start", (event) => runtime.events?.startTurn(event.timestamp));
