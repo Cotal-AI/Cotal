@@ -1,0 +1,23 @@
+{
+  "suite": "packages/core/smoke/delivery-reconnect.smoke.ts",
+  "guard": "every connection-scoped KV handle, including the derived membership feed, is reopened after endpoint reconnect",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:delivery-reconnect:auth",
+  "completionMarker": "DELIVERY-RECONNECT SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/membership-feed-reconnect.json",
+  "why": [
+    "The mutation deletes the membership-feed cache clear from the rebuild. The suite opens that cache",
+    "on the old connection before reconnect, then watches it afterward. Without the clear, the watch",
+    "reuses an object bound to the drained connection and fails on the named post-reconnect assertion."
+  ],
+  "mutations": [
+    {
+      "name": "the reconnect keeps the membership-feed KV bound to the closed connection epoch",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      this.membershipFeedKv = undefined;\n",
+      "replace": "",
+      "expectRed": "the membership feed watch re-opens on the fresh connection",
+      "cell": "the membership feed watch re-opens on the fresh connection",
+      "note": "The pre-reconnect read populated the cache. Deleting this one clear makes the post-reconnect watch reuse the stale KV and throw closed connection."
+    }
+  ]
+}
