@@ -93,7 +93,14 @@ console.log("injection framing");
   check("empty input yields no block", formatInjection([]) === undefined);
 }
 
-// 4. Historical items keep their marker (the #775 contract) and are not re-framed as orders.
+// 4. Historical items keep their marker (the #775 contract).
+//
+// Scope, stated so the comment does not outrun the assertion: this proves the marker SURVIVES the
+// new tail, nothing more. The tail itself is one string per batch, identical for historical and live
+// items, exactly as before this change - so a historical DM that was already auto-injected now also
+// carries the work-first footer, with its `(history)` marker still on the item line. Narrowing which
+// items get an imperative tail would be a behaviour change, not a framing fix, and is not this
+// suite's claim.
 {
   const out = formatInjection([dm("old channel chatter", { historical: true })]) ?? "";
   check("historical marker survives", out.includes("(history)"), out);
