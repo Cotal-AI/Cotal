@@ -149,7 +149,7 @@ export function claimAuthPidSlot(space: string): { fd: number } | { livePid: num
 /** Start the provider's daemon command detached (pid + log space-scoped), stopped by `cotal down`.
  *  The pid slot is claimed exclusively FIRST ({@link claimAuthPidSlot}); a held or contested slot
  *  yields to the existing daemon (the caller's ready() poll adjudicates liveness). */
-function startAuthServiceDetached(space: string, server: string, command: string): number {
+function startAuthServiceDetached(space: string, server: string, command: string, extraArgs: string[] = []): number {
   reclaimDeadLegacyPid(space); // a pre-hex crash leaves a dead legacy pidfile; clear it or the
                                // canonical claim below produces the both-present wedge readPidPath refuses
   const slot = claimAuthPidSlot(space);
@@ -160,7 +160,7 @@ function startAuthServiceDetached(space: string, server: string, command: string
     const [node, ...self] = selfArgv();
     // Internal child re-exec (the `up` that reached here already seeded); the auth service does not
     // launch agents, so it skips the connector seed on boot (a direct `cotal auth-service` still seeds).
-    const child = spawn(node, [...self, command, "--space", space, "--server", server], {
+    const child = spawn(node, [...self, command, "--space", space, "--server", server, ...extraArgs], {
       detached: true,
       stdio: ["ignore", fd, fd],
       env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" },
@@ -187,8 +187,12 @@ export async function ensureAuthService(opts: {
   server: string;
   stateDir: string;
   prepared: AuthPrepared;
+  /** Extra daemon argv (argv array — never shell interpolation), e.g. the public-exchange flags
+   *  `up` threads through. Applied only when THIS call starts the daemon; an already-running
+   *  service keeps the flags it was started with (restart via `cotal down`/`up` to change them). */
+  extraArgs?: string[];
 }): Promise<Record<string, unknown>> {
-  if (!authServiceUp(opts.space)) startAuthServiceDetached(opts.space, opts.server, opts.prepared.service.command);
+  if (!authServiceUp(opts.space)) startAuthServiceDetached(opts.space, opts.server, opts.prepared.service.command, opts.extraArgs);
   try {
     return await opts.prepared.service.ready({ dir: opts.stateDir });
   } catch (e) {
