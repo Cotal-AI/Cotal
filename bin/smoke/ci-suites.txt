@@ -417,3 +417,11 @@ smoke:web-body-cap
 # The old tail offered three ways to reply and never mentioned doing the work, at the exact moment
 # the model chooses its next action.
 smoke:injection-framing
+
+# The inbox overflow valve must not let channel volume silence directed mail (#791). pullOnly is
+# `!mentionsMe && historical` and mentionsMe comes from a forgeable payload field, so a peer that
+# stamped the victim's name on every flooded message made none of its traffic pull-only: eviction
+# fell through to the oldest entry, a waiting DM, and acked it unhandled. Plain ambient volume did
+# the same with no forgery. The suite shipped with #776 buffered 120 against MAX_INBOX 200, so it
+# never crossed this valve at all.
+smoke:inbox-overflow-directed
