@@ -114,6 +114,50 @@ export interface DialPolicy {
   allowUnencryptedOverlay: boolean;
 }
 
+/**
+ * WHICH fence refused, as a closed set rather than as prose.
+ *
+ * The union is exhaustive on purpose: a new refusal arm must name itself here or it will not
+ * compile, so an unlabelled refusal is a type error rather than a cell that passes for the wrong
+ * reason.
+ */
+export type JoinRefusalCode =
+  /** The string is not a URL at all. */
+  | "not-a-url"
+  /** Parsed, but not a broker scheme this policy classifies. */
+  | "bad-scheme"
+  /** Parsed, but carries no host to classify. */
+  | "no-host"
+  /** An overlay literal without required TLS and without recorded acceptance. */
+  | "overlay-unacked"
+  /** A private range, which required TLS cannot make verifiable. */
+  | "private-range"
+  /** A hostname or public literal with no TLS requirement to protect it. */
+  | "unprotected-target";
+
+/**
+ * A refusal from THIS classifier, identified structurally.
+ *
+ * The suite used to decide "was this a refusal?" by matching the rendered message, which is a
+ * string shape standing in for a decision — the exact defect the address fences in this file exist
+ * to correct, reproduced in the harness that proves them. Measured: a fault firing before the
+ * privacy check that emitted the privacy refusal's text VERBATIM was accepted as a genuine
+ * private-range refusal. A tag the classifier sets deliberately cannot be produced by an unrelated
+ * fault, so a cell can require not merely "something refused" but "the fence I am testing refused".
+ *
+ * BOUNDARY, stated so "typed" is not read as "unspoofable": code inside this module can always
+ * construct one. This makes a refusal unforgeable from OUTSIDE the module, and unforgeable BY
+ * ACCIDENT — which is the real threat, a non-privacy fault reporting as a privacy refusal.
+ */
+export class JoinRefusal extends Error {
+  readonly code: JoinRefusalCode;
+  constructor(code: JoinRefusalCode, message: string) {
+    super(message);
+    this.name = "JoinRefusal";
+    this.code = code;
+  }
+}
+
 /** The NATS default client port, used when the join URL omits one. */
 const DEFAULT_PORT = 4222;
 
@@ -285,15 +329,15 @@ export function classifyJoinTarget(raw: string, policy: DialPolicy): JoinTarget 
   try {
     url = new URL(raw);
   } catch {
-    throw new Error(`${JSON.stringify(raw)} is not a URL - pass a broker address like nats://100.64.0.1:4222`);
+    throw new JoinRefusal("not-a-url", `${JSON.stringify(raw)} is not a URL - pass a broker address like nats://100.64.0.1:4222`);
   }
   if (url.protocol !== "nats:" && url.protocol !== "tls:")
-    throw new Error(`${JSON.stringify(raw)} must be a nats:// or tls:// URL, not ${url.protocol}//`);
+    throw new JoinRefusal("bad-scheme", `${JSON.stringify(raw)} must be a nats:// or tls:// URL, not ${url.protocol}//`);
   // ONE address, ONE verdict: every legacy IPv4 spelling (decimal dword, octal, hex, short form)
   // and every v4-mapped v6 literal is collapsed to canonical dotted form BEFORE any classifier
   // runs, so an alternate spelling cannot walk past the private-range fence.
   const host = normalizeLegacyV4(normalizeMappedV4(bareHost(url)));
-  if (!host) throw new Error(`${JSON.stringify(raw)} has no host`);
+  if (!host) throw new JoinRefusal("no-host", `${JSON.stringify(raw)} has no host`);
   const port = url.port || String(DEFAULT_PORT);
   const server = `${url.protocol}//${url.hostname}:${port}`;
 
@@ -304,7 +348,8 @@ export function classifyJoinTarget(raw: string, policy: DialPolicy): JoinTarget 
   if (isOverlayLiteral(host)) {
     if (policy.tlsRequired) return { server, reach: "overlay" };
     if (!policy.allowUnencryptedOverlay)
-      throw new Error(
+      throw new JoinRefusal(
+        "overlay-unacked",
         `${JSON.stringify(raw)} refused: ${host} is a private-overlay address, and this build cannot require TLS on the connection.\n` +
           `  That is safe while the overlay tunnel is up, and NOT safe if it is down: the range is then ordinary carrier-grade\n` +
           `  NAT, and whoever answers the dial receives the credentials this machine sends.\n` +
@@ -329,13 +374,15 @@ export function classifyJoinTarget(raw: string, policy: DialPolicy): JoinTarget 
   // stay refused: no public CA issues for them, and a cafe LAN is private too.
   if (policy.tlsRequired) {
     if (!isPrivateLiteral(host)) return { server, reach: "public-tls" };
-    throw new Error(
+    throw new JoinRefusal(
+      "private-range",
       `${JSON.stringify(raw)} refused: ${host} is a private-range address, and requiring TLS does not make it verifiable - no public CA issues certificates for RFC1918 or link-local space, and a cafe LAN is private, not yours.\n` +
         `  Register the broker by its public name or address, or run it on this machine and use a loopback literal.`,
     );
   }
 
-  throw new Error(
+  throw new JoinRefusal(
+    "unprotected-target",
     `${JSON.stringify(raw)} refused: this build cannot protect a connection to ${host}, and a machine that registers a mesh sends its agent credentials to that broker.\n` +
       `  Only a loopback literal (127.0.0.0/8, ::1) or a private-overlay literal (100.64.0.0/10, fd7a:115c:a1e0::/48) may be registered. An overlay literal additionally needs --allow-unencrypted-overlay, which records that you accepted its tunnel dependency.\n` +
       `  Ordinary private ranges are refused too: a cafe network is private, and private is not the same as yours.\n` +

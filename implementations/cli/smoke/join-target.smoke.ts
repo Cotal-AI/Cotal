@@ -14,13 +14,31 @@
  * Hermetic (no broker, no network, no filesystem).
  * Run: pnpm smoke:join-target
  */
-import { strict as assert } from "node:assert";
-import { classifyJoinTarget } from "../src/lib/join-target.js";
+import { classifyJoinTarget, JoinRefusal, type JoinRefusalCode } from "../src/lib/join-target.js";
 
 let pass = 0;
+/**
+ * Cells ENTERED, counted at entry and independent of every other book.
+ *
+ * The exit gate used to be `failures.length > 0` alone — which is a function of the array a
+ * "log it but do not record it" defect empties, so the guard could not fire against the one
+ * mutation it existed for: 24 visible ✗ on screen, rc 0, "118 checks passed". A guard whose
+ * condition is computed from the thing the defect removes is not a guard. This counter is
+ * incremented before any verdict is decided, so it survives a `check()` that has stopped recording,
+ * and the epilogue compares the three books against each other.
+ */
+let attempted = 0;
 /** Every failure this run collected, so a mutation's kill set is READ IN FULL rather than truncated
  *  at the first casualty. */
 const failures: string[] = [];
+/** How many cells this suite must run. A cell silently skipped or silently added is a defect in
+ *  its own right, and one this file has already shipped once (an ambient-dependent arm). */
+const EXPECTED_CELLS = 142;
+/** Every code the classifier may emit. Mirrors the `JoinRefusalCode` union so the closure is
+ *  enforced where this file actually runs, not only where it would be compiled. */
+const KNOWN_CODES: ReadonlySet<string> = new Set<JoinRefusalCode>([
+  "not-a-url", "bad-scheme", "no-host", "overlay-unacked", "private-range", "unprotected-target",
+]);
 /**
  * Record a cell's verdict and KEEP GOING.
  *
@@ -31,6 +49,7 @@ const failures: string[] = [];
  * with the whole list (see the epilogue), so the kill set is the list rather than one line.
  */
 const check = (name: string, cond: boolean, extra?: unknown) => {
+  attempted++;
   // `JSON.stringify` throws on a cycle, a BigInt, or a throwing `toJSON`. The reporter must never
   // be the thing that takes the run down — that failure mode is what this whole repair is about.
   let rendered = "";
@@ -121,7 +140,7 @@ const permits = (url: string, reach: "loopback" | "overlay" | "public-tls", poli
  *  every private-range, IPv6-spelling and loopback-name cell would have reported success if the
  *  classifier died instead of refusing, and a crashing classifier would be indistinguishable from a
  *  correct one. The guard lives INSIDE the helper so no call site can forget it. */
-const refuses = (url: string, why: string, policy = TODAY): string => {
+const refuses = (url: string, why: string, policy = TODAY, code?: JoinRefusalCode): string => {
   let permitted: string | undefined;
   let thrown: unknown;
   try {
@@ -138,17 +157,34 @@ const refuses = (url: string, why: string, policy = TODAY): string => {
     check(`refuses ${url} (${why})`, false, `PERMITTED as ${permitted}`);
     return "";
   }
-  // A refusal from this classifier always names the target and says "refused:", or is one of the
-  // shape rejections it throws before classifying. Anything else is a crash wearing a refusal's
-  // clothes, and the cell fails NAMING it rather than silently passing.
+  // REFUSAL IDENTITY IS STRUCTURAL, NOT PROSE. This used to regex-match the rendered text, which is
+  // a string shape standing in for a decision — the exact defect the fences in this file exist to
+  // correct, reproduced in the harness that proves them. Measured before the fix: a fault firing
+  // BEFORE the privacy check that emitted the privacy refusal's message verbatim was accepted as a
+  // genuine private-range refusal (rc 0, 142/142), as were a bare string and a plain object whose
+  // prose merely had refusal shape. Only the classifier sets this tag, so an unrelated fault cannot
+  // wear it, and `code` says WHICH fence answered rather than merely that something did.
   const message = describeThrown(thrown);
-  const isRefusal =
-    / refused: /.test(message) ||
-    /is not a URL - pass a broker address/.test(message) ||
-    /must be a nats:\/\/ or tls:\/\/ URL/.test(message) ||
-    /has no host/.test(message);
-  if (!isRefusal) {
-    check(`refuses ${url} (${why})`, false, `NOT A REFUSAL — ${message.split("\n")[0]}`);
+  if (!(thrown instanceof JoinRefusal)) {
+    check(`refuses ${url} (${why})`, false, `NOT A JoinRefusal — ${message.split("\n")[0]}`);
+    return message;
+  }
+  // THE UNION IS CLOSED IN THE TYPE SYSTEM, BUT NOTHING TYPECHECKS THIS FILE: `implementations/cli`
+  // has `"include": ["src"]`, so a smoke is never compiled by `pnpm typecheck` and a typo'd or
+  // retired code would sail through as a plain string. Re-assert the closure at runtime, or the
+  // "compile error" this design leans on does not exist where it is being relied upon.
+  if (code !== undefined && !KNOWN_CODES.has(code)) {
+    check(`refuses ${url} (${why})`, false, `UNKNOWN EXPECTED CODE ${JSON.stringify(code)} — not a member of JoinRefusalCode`);
+    return message;
+  }
+  if (!KNOWN_CODES.has(thrown.code)) {
+    check(`refuses ${url} (${why})`, false, `CLASSIFIER EMITTED AN UNKNOWN CODE ${JSON.stringify(thrown.code)}`);
+    return message;
+  }
+  if (code !== undefined && thrown.code !== code) {
+    // The right fence must answer, not merely some fence: a parser regression that refused every
+    // private address would otherwise green the privacy cells while privacy was never consulted.
+    check(`refuses ${url} (${why})`, false, `WRONG FENCE — expected code ${code}, got ${thrown.code}`);
     return message;
   }
   check(`refuses ${url} (${why})`, true);
@@ -216,10 +252,10 @@ console.log("\nprivate does NOT mean safe — hostile wifi is an RFC1918 network
 // verifiable, and public-tls must never absorb them. If someone later widens the overlay
 // detector to "private ranges", these go red.
 for (const policy of [TODAY, WITH_TLS]) {
-  refuses("nats://192.168.1.10:4222", "RFC1918: a coffee-shop LAN is private and hostile", policy);
-  refuses("nats://10.0.0.5:4222", "RFC1918", policy);
-  refuses("nats://172.16.0.5:4222", "RFC1918", policy);
-  refuses("nats://169.254.1.1:4222", "link-local", policy);
+  refuses("nats://192.168.1.10:4222", "RFC1918: a coffee-shop LAN is private and hostile", policy, policy.tlsRequired ? "private-range" : "unprotected-target");
+  refuses("nats://10.0.0.5:4222", "RFC1918", policy, policy.tlsRequired ? "private-range" : "unprotected-target");
+  refuses("nats://172.16.0.5:4222", "RFC1918", policy, policy.tlsRequired ? "private-range" : "unprotected-target");
+  refuses("nats://169.254.1.1:4222", "link-local", policy, policy.tlsRequired ? "private-range" : "unprotected-target");
 }
 
 console.log("\npublic addresses — the case this exists to stop");
@@ -243,9 +279,9 @@ check("  a public-tls verdict carries no residual — the transport is proven, n
 const hostMsg = refuses("nats://broker.example.com:4222", "hostname without required TLS", TODAY);
 check("  the no-TLS hostname refusal is the existing sentence", /Only a loopback literal/i.test(hostMsg) && /whoever answers the lookup/i.test(hostMsg), hostMsg);
 // A cafe LAN is private too: RFC1918 stays refused in BOTH modes (also pinned in the loop above).
-refuses("nats://192.168.1.10:4222", "RFC1918 never becomes public-tls", WITH_TLS);
-refuses("nats://10.1.2.3:4222", "RFC1918 never becomes public-tls", WITH_TLS);
-refuses("nats://169.254.1.1:4222", "link-local never becomes public-tls", WITH_TLS);
+refuses("nats://192.168.1.10:4222", "RFC1918 never becomes public-tls", WITH_TLS, "private-range");
+refuses("nats://10.1.2.3:4222", "RFC1918 never becomes public-tls", WITH_TLS, "private-range");
+refuses("nats://169.254.1.1:4222", "link-local never becomes public-tls", WITH_TLS, "private-range");
 
 console.log("\nONE address, ONE verdict — an alternate spelling must not walk past the fence");
 // `::ffff:192.168.1.10` and `::ffff:c0a8:010a` ARE 192.168.1.10. Classifying the v6 spelling on
@@ -253,10 +289,10 @@ console.log("\nONE address, ONE verdict — an alternate spelling must not walk 
 // RECORD a LAN broker that the dotted form refuses. Every spelling is normalized before any
 // classifier runs, so these track their dotted twins in both modes rather than being special-cased.
 for (const policy of [TODAY, WITH_TLS]) {
-  refuses("nats://[::ffff:192.168.1.10]:4222", "v4-mapped RFC1918, dotted tail", policy);
-  refuses("nats://[::ffff:c0a8:010a]:4222", "v4-mapped RFC1918, hex tail — the same address", policy);
-  refuses("nats://[::ffff:10.0.0.5]:4222", "v4-mapped 10/8", policy);
-  refuses("nats://[::ffff:169.254.1.1]:4222", "v4-mapped link-local", policy);
+  refuses("nats://[::ffff:192.168.1.10]:4222", "v4-mapped RFC1918, dotted tail", policy, policy.tlsRequired ? "private-range" : "unprotected-target");
+  refuses("nats://[::ffff:c0a8:010a]:4222", "v4-mapped RFC1918, hex tail — the same address", policy, policy.tlsRequired ? "private-range" : "unprotected-target");
+  refuses("nats://[::ffff:10.0.0.5]:4222", "v4-mapped 10/8", policy, policy.tlsRequired ? "private-range" : "unprotected-target");
+  refuses("nats://[::ffff:169.254.1.1]:4222", "v4-mapped link-local", policy, policy.tlsRequired ? "private-range" : "unprotected-target");
 }
 // The mapping is a NORMALIZATION, not a blanket refusal: mapped loopback and mapped overlay keep
 // the verdict their dotted twins get, or this "fix" would just break v6 spellings wholesale.
@@ -279,14 +315,14 @@ console.log("\nlegacy IPv4 spellings — inet_aton takes octal, hex and short fo
 // regex treated each as a HOSTNAME, so it sailed past the private fence and registered as public
 // while the dotted spelling of the same host was refused. One cell per spelling, both modes.
 for (const policy of [TODAY, WITH_TLS]) {
-  refuses("nats://3232235786:4222", "decimal dword for 192.168.1.10", policy);
-  refuses("nats://0300.0250.01.012:4222", "octal dotted for 192.168.1.10", policy);
-  refuses("nats://0xC0.0xA8.0x01.0x0A:4222", "hex dotted for 192.168.1.10", policy);
-  refuses("nats://0xC0A8010A:4222", "hex dword for 192.168.1.10", policy);
-  refuses("nats://192.168.1.010:4222", "mixed dotted with an octal final octet", policy);
-  refuses("nats://192.168.257:4222", "3-part short form for 192.168.1.1", policy);
-  refuses("nats://167772161:4222", "decimal dword for 10.0.0.1", policy);
-  refuses("nats://[::ffff:3232235786]:4222", "a mapped literal whose tail is itself a dword", policy);
+  refuses("nats://3232235786:4222", "decimal dword for 192.168.1.10", policy, policy.tlsRequired ? "private-range" : "unprotected-target");
+  refuses("nats://0300.0250.01.012:4222", "octal dotted for 192.168.1.10", policy, policy.tlsRequired ? "private-range" : "unprotected-target");
+  refuses("nats://0xC0.0xA8.0x01.0x0A:4222", "hex dotted for 192.168.1.10", policy, policy.tlsRequired ? "private-range" : "unprotected-target");
+  refuses("nats://0xC0A8010A:4222", "hex dword for 192.168.1.10", policy, policy.tlsRequired ? "private-range" : "unprotected-target");
+  refuses("nats://192.168.1.010:4222", "mixed dotted with an octal final octet", policy, policy.tlsRequired ? "private-range" : "unprotected-target");
+  refuses("nats://192.168.257:4222", "3-part short form for 192.168.1.1", policy, policy.tlsRequired ? "private-range" : "unprotected-target");
+  refuses("nats://167772161:4222", "decimal dword for 10.0.0.1", policy, policy.tlsRequired ? "private-range" : "unprotected-target");
+  refuses("nats://[::ffff:3232235786]:4222", "a mapped literal whose tail is itself a dword", policy, "not-a-url");
 }
 // Again a NORMALIZATION: legacy spellings of permitted addresses keep the permitted verdict.
 permits("nats://0177.0.0.1:4222", "loopback", TODAY);   // octal 127.0.0.1
@@ -315,14 +351,14 @@ console.log("\nthe OTHER direction — a canonicalizer must not OVER-collapse a 
 // asserting a blanket refusal would be over-claiming (an earlier draft of this block did exactly
 // that and went red here, which is how the real contract got written down).
 for (const policy of [TODAY, ACKED]) {
-  refuses("nats://[::ffff:0:127.0.0.1]:4222", "::ffff:0: is NOT the mapped loopback (ENETUNREACH), so nothing waives TLS for it", policy);
-  refuses("nats://[::ffff:0:7f00:1]:4222", "::ffff:0: hex tail is NOT the mapped loopback either", policy);
-  refuses("nats://[::ffff:0:100.64.0.1]:4222", "::ffff:0: must NOT inherit the overlay verdict, even with the overlay acked", policy);
-  refuses("nats://[::ffff:0:192.168.1.10]:4222", "::ffff:0: is not that private address either", policy);
+  refuses("nats://[::ffff:0:127.0.0.1]:4222", "::ffff:0: is NOT the mapped loopback (ENETUNREACH), so nothing waives TLS for it", policy, policy.tlsRequired ? "private-range" : "unprotected-target");
+  refuses("nats://[::ffff:0:7f00:1]:4222", "::ffff:0: hex tail is NOT the mapped loopback either", policy, policy.tlsRequired ? "private-range" : "unprotected-target");
+  refuses("nats://[::ffff:0:100.64.0.1]:4222", "::ffff:0: must NOT inherit the overlay verdict, even with the overlay acked", policy, policy.tlsRequired ? "private-range" : "unprotected-target");
+  refuses("nats://[::ffff:0:192.168.1.10]:4222", "::ffff:0: is not that private address either", policy, policy.tlsRequired ? "private-range" : "unprotected-target");
   // Refused EARLIER than the classifier: `new URL()` rejects it as an invalid IPv6 literal, so it
   // never reaches normalization at all. Pinned here because that is the behaviour we rely on — if
   // a future parser accepted it, this cell holds the line rather than letting a collapse appear.
-  refuses("nats://[::ffff:3232235786]:4222", "a dword inside a mapped tail is not a valid literal (and does not resolve)", policy);
+  refuses("nats://[::ffff:3232235786]:4222", "a dword inside a mapped tail is not a valid literal (and does not resolve)", policy, "not-a-url");
 }
 // Under REQUIRED TLS they are ordinary public literals: permitted, but as `public-tls` — never as
 // loopback, which is the class that would have let them skip the transport guarantee entirely.
@@ -357,8 +393,8 @@ console.log("\ndirection gaps the testing lens named — each verdict measured, 
 // `010.0.0.5` is octal 8.0.0.5, which is genuinely PUBLIC and must not be over-collapsed into the
 // 10/8 block it merely resembles. Both directions in one place, because the risk here is symmetric.
 for (const policy of [TODAY, WITH_TLS]) {
-  refuses("nats://192.168.01.10:4222", "leading-zero octal octets are still RFC1918", policy);
-  refuses("nats://192.168.1.0010:4222", "a wider octal final octet is still RFC1918", policy);
+  refuses("nats://192.168.01.10:4222", "leading-zero octal octets are still RFC1918", policy, policy.tlsRequired ? "private-range" : "unprotected-target");
+  refuses("nats://192.168.1.0010:4222", "a wider octal final octet is still RFC1918", policy, policy.tlsRequired ? "private-range" : "unprotected-target");
 }
 permits("nats://010.0.0.5:4222", "public-tls", WITH_TLS); // octal 010 = 8, so 8.0.0.5: public
 // OVERLAY PREFIX WIDTH. The overlay is fd7a:115c:a1e0::/48. A /32 reading would swallow the whole
@@ -400,11 +436,29 @@ refuses("http://127.0.0.1:4222", "not a broker scheme");
 refuses("ws://127.0.0.1:4222", "websocket is not classified by this policy");
 refuses("nats://999.1.1.1:4222", "octet out of range is a hostname, not an IP");
 
-// THE EPILOGUE IS THE GATE. Collecting failures only helps if the process still fails: report the
-// whole kill set, then exit non-zero. Without this the suite would print its casualties and pass.
-if (failures.length > 0) {
+// THE EPILOGUE IS THE GATE, AND IT DECIDES DIRECTLY — never through `check()`.
+//
+// Routing this decision through `check()` would put the gate inside the machinery it is meant to
+// audit: a defect that stops `check()` recording would also stop the audit being recorded, and the
+// suite would exit 0 having silently swallowed the finding. That is the recursive shape this file
+// keeps producing, so the accounting is read here, compared three ways, and acted on with a bare
+// `process.exit`.
+//
+// Three independent books must agree: cells ENTERED, cells PASSED, failures COLLECTED. Any defect
+// that drops a record breaks the identity even when the failure list looks empty.
+const accountingOk =
+  attempted === EXPECTED_CELLS && pass + failures.length === attempted;
+if (failures.length > 0 || !accountingOk) {
   console.error(`\njoin-target: ${failures.length} FAILED, ${pass} passed`);
   for (const f of failures) console.error(`  ✗ ${f}`);
+  if (!accountingOk) {
+    console.error(
+      `\n✗ ACCOUNTING BROKEN — entered ${attempted}, passed ${pass}, failed ${failures.length}` +
+        `, expected ${EXPECTED_CELLS} cells with passed+failed === entered.` +
+        `\n  A cell was skipped, added, or its verdict was not recorded. The count cannot be trusted,` +
+        ` so this run is a failure regardless of what the cells reported.`,
+    );
+  }
   process.exit(1);
 }
 console.log(`\njoin-target: ${pass} checks passed`);
