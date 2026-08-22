@@ -280,6 +280,39 @@ export function checkUserBundle(raw: string): Check<UserBundle> {
  *  registration, where patience is cheaper than a wrong record. */
 const EXCHANGE_PROBE_TIMEOUT_MS = 5_000;
 
+/**
+ * Fetch that CANNOT be walked off HTTPS.
+ *
+ * `fetch` follows redirects by default and will happily follow `https://` → `http://`, so a
+ * 302 from anyone on the path turns a pinned, encrypted fetch into a plaintext one — and the
+ * document being fetched IS the trust being adopted. `redirect: "manual"` stops the hop here;
+ * a redirect is then reported as the refusal it is, rather than silently followed.
+ *
+ * Loopback `http://` stays usable for tests and for an exchange on this machine (nothing leaves
+ * the box), which is also what keeps the suites honest without a TLS fixture. Everything else
+ * must be `https:`.
+ */
+export function assertPinnedFetchUrl(u: URL, what: string): string | undefined {
+  if (u.protocol === "https:") return undefined;
+  const host = u.hostname.replace(/^\[|\]$/g, "");
+  const loopback = host === "::1" || /^127\./.test(host) || host === "localhost";
+  if (u.protocol === "http:" && loopback) return undefined;
+  return `✗ ${what} must be https:// (got ${u.protocol}//) - the pins this registration adopts cannot be fetched over a channel the network can rewrite`;
+}
+
+/** One hop, no downgrade, no redirect-following. */
+async function pinnedFetch(target: string, what: string): Promise<Response> {
+  const u = new URL(target);
+  const bad = assertPinnedFetchUrl(u, what);
+  if (bad) throw new Error(bad);
+  const res = await fetch(u, { redirect: "manual", signal: AbortSignal.timeout(EXCHANGE_PROBE_TIMEOUT_MS) });
+  if (res.status >= 300 && res.status < 400)
+    throw new Error(
+      `✗ ${what} answered ${res.status} (a redirect to ${JSON.stringify(res.headers.get("location") ?? "")}) - a redirect can move a pinned fetch onto plaintext or onto another host, so it is refused rather than followed; publish the document at the pinned URL itself`,
+    );
+  return res;
+}
+
 /** The user arm of trust composition: the pinned exchange must ANSWER, and answer as itself.
  *  `/health` must report the pinned issuer (a base that answers with a foreign issuer is a
  *  different authority, however reachable) and `/jwks` must serve a non-empty key set (the
@@ -287,24 +320,36 @@ const EXCHANGE_PROBE_TIMEOUT_MS = 5_000;
  *  with the pins the operator supplied. */
 export async function verifyUserExchange(base: string, issuer: string): Promise<Check<void>> {
   const url = (p: string) => new URL(p, base.endsWith("/") ? base : `${base}/`).toString();
+  // The exchange base is a PIN. It must be an https URL (or loopback), and neither probe below
+  // may be redirected off it — otherwise the "pinned" exchange is whatever a 302 chooses.
+  try {
+    const badBase = assertPinnedFetchUrl(new URL(base), `the pinned exchange at ${base}`);
+    if (badBase) return bad(badBase);
+  } catch {
+    return bad(`✗ the bundle's pinned exchange endpoint ${JSON.stringify(base)} is not a URL`);
+  }
   let health: { ok?: boolean; issuer?: string };
   try {
-    const res = await fetch(url("health"), { signal: AbortSignal.timeout(EXCHANGE_PROBE_TIMEOUT_MS) });
+    const res = await pinnedFetch(url("health"), `the pinned exchange at ${base}`);
     if (!res.ok) return bad(`✗ the pinned exchange at ${base} answered /health with ${res.status} - it is not serving as the bundle promises`);
     health = (await res.json()) as never;
   } catch (e) {
-    return bad(`✗ the pinned exchange at ${base} did not answer /health (${(e as Error).message}) - the bundle's endpoint must be reachable to register against it`);
+    const m = (e as Error).message;
+    if (m.startsWith("✗")) return bad(m);
+    return bad(`✗ the pinned exchange at ${base} did not answer /health (${m}) - the bundle's endpoint must be reachable to register against it`);
   }
   if (health.issuer !== issuer)
     return bad(`✗ the exchange at ${base} answers for issuer ${JSON.stringify(health.issuer)} but the bundle pins ${JSON.stringify(issuer)} - a different issuer is a different authority; nothing was registered`);
   try {
-    const res = await fetch(url("jwks"), { signal: AbortSignal.timeout(EXCHANGE_PROBE_TIMEOUT_MS) });
+    const res = await pinnedFetch(url("jwks"), `the pinned exchange at ${base}`);
     if (!res.ok) return bad(`✗ the pinned exchange at ${base} answered /jwks with ${res.status}`);
     const jwks = (await res.json()) as { keys?: unknown[] };
     if (!Array.isArray(jwks.keys) || jwks.keys.length === 0)
       return bad(`✗ the pinned exchange at ${base} serves an empty /jwks - it holds no verification keys for the trust the bundle pins`);
   } catch (e) {
-    return bad(`✗ the pinned exchange at ${base} did not answer /jwks (${(e as Error).message})`);
+    const m = (e as Error).message;
+    if (m.startsWith("✗")) return bad(m);
+    return bad(`✗ the pinned exchange at ${base} did not answer /jwks (${m})`);
   }
   return good(undefined);
 }

@@ -455,11 +455,13 @@ private, not yours.
 > `cotal up --user-auth` provisioned it. The form below is what will be enabled.
 
 A **user-auth** mesh registers from supplied pinned trust, never guessed: `--user-auth-file`
-takes the bundle exported where the mesh runs; `--from` fetches its
-`/.well-known/cotal-mesh` discovery document (HTTPS only), displays the pins, and asks before
-adopting them. Registration verifies the pinned exchange answers `/health` and `/jwks` as the
-pinned issuer, and that the broker itself refuses a bare connect — the auth-required refusal is
-the pass. The sentinel credentials land in a 0600 file under the entry's root; the registry
+takes the bundle exported where the mesh runs; `--from` asks before it dials the address at all,
+then fetches its `/.well-known/cotal-mesh` discovery document (HTTPS only), displays the pins, and
+asks again before adopting them. Neither fetch follows redirects: a 302 can move a pinned fetch
+onto plaintext or onto another host, so it is refused rather than followed, and the pinned
+exchange must itself be an `https://` URL. Registration verifies that exchange answers `/health`
+and `/jwks` as the pinned issuer, and that the broker itself refuses a bare connect — the
+auth-required refusal is the pass. The sentinel credentials land in a 0600 file under the entry's root; the registry
 records only the path.
 
 `meshes rm` drops records — it never stops a mesh. For a mesh running on this machine `cotal down`

@@ -343,6 +343,64 @@ try {
   const fromHttp = await run(["add", "hosted"], { mode: "user", from: `${exchangeUrl}/.well-known/cotal-mesh`, root: hostedRoot });
   check("--from refuses a plain-http discovery URL", fromHttp.code === 1 && findMesh("hosted") === undefined, fromHttp.out);
 
+  // ── NO DOWNGRADE, NO REDIRECT, NO PRE-CONSENT I/O ──────────────────────────────────────
+  // `fetch` follows redirects by default and will follow https→http, so a 302 from anyone on the
+  // path turns a pinned encrypted fetch into a plaintext one — and the document IS the trust.
+  // Verified against the real defect: before the fix, the exchange probe accepted a plain-http
+  // base and a 302 was followed silently.
+  let exchangeHits = 0;
+  const downgrade = createHttpServer((req, res) => {
+    exchangeHits++;
+    res.setHeader("content-type", "application/json");
+    if (req.url?.endsWith("/health")) return void res.end(JSON.stringify({ ok: true, issuer: ISSUER }));
+    if (req.url?.endsWith("/jwks")) return void res.end(JSON.stringify({ keys: [{ kid: "k" }] }));
+    res.statusCode = 404; res.end("{}");
+  });
+  await new Promise<void>((r) => downgrade.listen(0, "127.0.0.1", r));
+  const downgradeUrl = `http://127.0.0.1:${(downgrade.address() as { port: number }).port}`;
+  const redirector = createHttpServer((_req, res) => {
+    res.statusCode = 302;
+    res.setHeader("location", `${downgradeUrl}/health`);
+    res.end();
+  });
+  await new Promise<void>((r) => redirector.listen(0, "127.0.0.1", r));
+  const redirectorUrl = `http://127.0.0.1:${(redirector.address() as { port: number }).port}`;
+
+  const { verifyUserExchange, assertPinnedFetchUrl } = await import("../src/commands/meshes-add.js");
+  // A non-loopback plain-http exchange base is refused outright: the pin cannot ride plaintext.
+  check("a plain-http (non-loopback) exchange base is refused by the pinned-fetch policy",
+    assertPinnedFetchUrl(new URL("http://exchange.example.com"), "x") !== undefined,
+    assertPinnedFetchUrl(new URL("http://exchange.example.com"), "x"));
+  check("…and a file:// exchange base is refused too",
+    assertPinnedFetchUrl(new URL("file:///etc/passwd"), "x") !== undefined);
+  check("…while https is accepted", assertPinnedFetchUrl(new URL("https://exchange.example.com"), "x") === undefined);
+  // A 302 is REFUSED, not followed — asserted against a live redirector.
+  exchangeHits = 0;
+  const redirected = await verifyUserExchange(redirectorUrl, ISSUER);
+  check("the exchange probe refuses a 302 instead of following it",
+    !redirected.ok && /redirect/i.test(redirected.ok ? "" : redirected.message), redirected);
+  check("…and the redirect target is never contacted", exchangeHits === 0, { exchangeHits });
+  redirector.close();
+  downgrade.close();
+
+  // `--from` must not touch the network before the operator consents to the address. On a pipe
+  // there is no way to consent, so it must refuse WITHOUT reaching out.
+  //
+  // This counts TCP CONNECTIONS, not HTTP requests, against an `https://` URL. Both matter:
+  // an `http://` URL is rejected by the scheme rule before any fetch, so it would pass this cell
+  // no matter where the consent gate sat (it did — the first version of this assertion survived
+  // the ordering mutation); and TLS never completes against a bare socket, so the request never
+  // becomes an HTTP hit even though the process did dial out. A connection here is the network
+  // I/O the gate exists to prevent.
+  let fromConnects = 0;
+  const fromSocket = createServer((s) => { fromConnects++; s.destroy(); });
+  await new Promise<void>((r) => fromSocket.listen(0, "127.0.0.1", () => r()));
+  const fromPort = (fromSocket.address() as { port: number }).port;
+  const fromNoTty = await run(["add", "hosted"], { mode: "user", from: `https://127.0.0.1:${fromPort}/.well-known/cotal-mesh`, root: hostedRoot });
+  check("--from performs NO network I/O before the consent gate",
+    fromNoTty.code === 1 && fromConnects === 0 && findMesh("hosted") === undefined, { out: fromNoTty.out, fromConnects });
+  fromSocket.close();
+
   delete process.env.COTAL_REMOTE_REGISTRATION_DEV;
   exchange.close();
   wrongExchange.close();

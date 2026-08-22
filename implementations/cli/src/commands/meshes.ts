@@ -257,8 +257,30 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
       console.error(c.red(`✗ --from must be an https:// URL - the discovery document carries the trust pins this registration adopts, and a plaintext fetch lets the network choose them`));
       process.exit(1);
     }
+    // CONSENT BEFORE THE NETWORK. Fetching first meant a bare `--from <url>` reached out to a
+    // host the operator had not yet agreed to talk to, and on a pipe it did so with no way to
+    // agree at all. Ask for the address itself first; the pins fetched from it are confirmed
+    // separately below.
+    {
+      const { canPrompt, clackIO } = await import("./meshes-wizard.js");
+      if (!canPrompt()) {
+        console.error(c.red("✗ --from needs a terminal to display and confirm the fetched pins - in a script, export the bundle where the mesh runs and pass it with --user-auth-file"));
+        process.exit(1);
+      }
+      const goFetch = await clackIO().confirm({ message: `Fetch trust pins from ${disco.origin}?`, initialValue: false });
+      if (!goFetch) {
+        console.error(c.dim("nothing was fetched, nothing was registered"));
+        process.exit(1);
+      }
+    }
     try {
-      const res = await fetch(disco, { signal: AbortSignal.timeout(10_000) });
+      // `redirect: "manual"`: a 302 can walk an https fetch down to http or onto another host,
+      // and the document IS the trust. A redirect is refused, never followed.
+      const res = await fetch(disco, { redirect: "manual", signal: AbortSignal.timeout(10_000) });
+      if (res.status >= 300 && res.status < 400) {
+        console.error(c.red(`✗ ${disco} answered ${res.status} (a redirect to ${JSON.stringify(res.headers.get("location") ?? "")}) - a redirect can move the fetch onto plaintext or onto another host, so it is refused rather than followed; publish the discovery document at the URL you pass`));
+        process.exit(1);
+      }
       if (!res.ok) {
         console.error(c.red(`✗ ${disco} answered ${res.status} - no discovery document there`));
         process.exit(1);
