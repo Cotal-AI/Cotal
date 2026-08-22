@@ -410,3 +410,10 @@ smoke:history-flood
 
 # The delete route reads its request body under a hard cap so an unbounded client cannot balloon the process (#721).
 smoke:web-body-cap
+
+# The block that carries peer messages into a turn must name the order of operations, not just the
+# reply verbs (#782). Found by dogfooding a live jcode seat: told to write a file and confirm, it
+# sent the confirmation five seconds later with zero file tool calls and no file on disk, twice.
+# The old tail offered three ways to reply and never mentioned doing the work, at the exact moment
+# the model chooses its next action.
+smoke:injection-framing

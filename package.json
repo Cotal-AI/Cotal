@@ -115,6 +115,7 @@
     "smoke:evict-live:auth": "tsx packages/core/smoke/evict-live-auth.smoke.ts",
     "smoke:deprovision": "tsx packages/core/smoke/deprovision-agent-auth.smoke.ts",
     "smoke:attention": "tsx extensions/connector-core/smoke/attention.smoke.ts",
+    "smoke:injection-framing": "tsx extensions/connector-core/smoke/injection-framing.smoke.ts",
     "smoke:control-reply": "tsx extensions/connector-core/smoke/control-reply.smoke.ts",
     "smoke:manager-invoke-verdict": "tsx extensions/connector-core/smoke/manager-invoke-verdict.smoke.ts",
     "smoke:card-host": "tsx extensions/connector-core/smoke/card-host.smoke.ts",
