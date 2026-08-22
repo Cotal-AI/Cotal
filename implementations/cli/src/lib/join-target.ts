@@ -170,6 +170,91 @@ function bareHost(url: URL): string {
 }
 
 /**
+ * Collapse ANY legacy IPv4 spelling to canonical dotted-quad, so that one address has ONE
+ * verdict however it is written.
+ *
+ * `inet_aton` — which the C library, Node's resolver and every OS dialer accept — does not
+ * require four decimal octets. It takes 1, 2, 3 or 4 parts, each of which may be decimal, octal
+ * (leading `0`) or hex (leading `0x`), and a short form's final part absorbs the remaining bytes.
+ * All of these are 192.168.1.10, verified against `dns.lookup` on this machine:
+ *
+ *     3232235786        (decimal dword)      -> 192.168.1.10
+ *     0300.0250.01.012  (octal dotted)       -> 192.168.1.10
+ *     0xC0A8010A        (hex dword)          -> 192.168.1.10
+ *     0177.0.0.1        (octal, loopback)    -> 127.0.0.1
+ *     192.168.257       (3-part shorthand)   -> 192.168.1.1
+ *
+ * A classifier that only matched four decimal octets treated each of these as a HOSTNAME, so it
+ * fell through the private-range fence and registered as a public address, while the dotted form
+ * of the very same host was refused. Canonicalize first; classify once.
+ *
+ * Returns the dotted form, or the input unchanged when it is not an IPv4 literal in any spelling
+ * (a real hostname, or a v6 literal handled below).
+ */
+function normalizeLegacyV4(host: string): string {
+  if (!/^[0-9a-fx.]+$/i.test(host) || host.endsWith(".")) return host;
+  const parts = host.split(".");
+  if (parts.length > 4) return host;
+  const nums: number[] = [];
+  for (const part of parts) {
+    if (part === "") return host;
+    let n: number;
+    if (/^0[xX][0-9a-fA-F]+$/.test(part)) n = parseInt(part.slice(2), 16);
+    else if (/^0[0-7]+$/.test(part)) n = parseInt(part.slice(1), 8);
+    else if (/^(0|[1-9][0-9]*)$/.test(part)) n = Number(part);
+    else return host; // e.g. 09 or 0xZ: not a number in any base, so not an IPv4 literal
+    if (!Number.isSafeInteger(n) || n < 0) return host;
+    nums.push(n);
+  }
+  // The last part absorbs the bytes the earlier parts did not name (inet_aton's short forms).
+  const leading = nums.slice(0, -1);
+  const last = nums[nums.length - 1];
+  if (leading.some((n) => n > 255)) return host;
+  const width = 4 - leading.length;
+  if (last > (width === 4 ? 0xffffffff : Math.pow(256, width) - 1)) return host;
+  const bytes = [...leading];
+  for (let i = width - 1; i >= 0; i--) bytes.push((last >>> (8 * i)) & 0xff);
+  return bytes.join(".");
+}
+
+/**
+ * Collapse an IPv4-MAPPED IPv6 literal to its dotted IPv4 form, so that one address has ONE
+ * verdict however it is spelled.
+ *
+ * `::ffff:192.168.1.10` and `::ffff:c0a8:010a` are the same 192.168.1.10, and the kernel dials
+ * them to the same host. Classifying the v6 spelling separately meant the private-range check ran
+ * a v4 regex that could not match, the address fell through to "not private", and
+ * `--tls` registered a LAN broker that the dotted form correctly refuses. Every classifier below
+ * therefore sees the normalized form, which keeps loopback/overlay/private answers identical
+ * across spellings rather than fixing only the range that was reported.
+ *
+ * Anything that is not a v4-mapped literal is returned unchanged.
+ */
+function normalizeMappedV4(host: string): string {
+  // Tolerate the `::ffff:0:` variant too, and a zone id, before the mapped tail.
+  const m = host.match(/^::ffff:(?:0:)?([0-9a-f.:]+)$/i);
+  if (!m) return host;
+  const tail = m[1];
+  const dotted = tail.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (dotted) {
+    const p = dotted.slice(1).map(Number);
+    return p.some((n) => n > 255) ? host : p.join(".");
+  }
+  // A mapped tail may itself use a legacy spelling (`::ffff:3232235786`).
+  if (/^[0-9a-fx.]+$/i.test(tail) && !tail.includes(":")) {
+    const legacy = normalizeLegacyV4(tail);
+    if (legacy !== tail) return legacy;
+  }
+  const hex = tail.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+  if (hex) {
+    const hi = parseInt(hex[1], 16);
+    const lo = parseInt(hex[2], 16);
+    return [hi >> 8, hi & 0xff, lo >> 8, lo & 0xff].join(".");
+  }
+  return host;
+}
+
+/**
  * Classify a registration target, or throw the reason it is refused.
  *
  * Refusal is the point: an unclassifiable target is one whose credentials would cross a network
@@ -184,7 +269,10 @@ export function classifyJoinTarget(raw: string, policy: DialPolicy): JoinTarget 
   }
   if (url.protocol !== "nats:" && url.protocol !== "tls:")
     throw new Error(`${JSON.stringify(raw)} must be a nats:// or tls:// URL, not ${url.protocol}//`);
-  const host = bareHost(url);
+  // ONE address, ONE verdict: every legacy IPv4 spelling (decimal dword, octal, hex, short form)
+  // and every v4-mapped v6 literal is collapsed to canonical dotted form BEFORE any classifier
+  // runs, so an alternate spelling cannot walk past the private-range fence.
+  const host = normalizeLegacyV4(normalizeMappedV4(bareHost(url)));
   if (!host) throw new Error(`${JSON.stringify(raw)} has no host`);
   const port = url.port || String(DEFAULT_PORT);
   const server = `${url.protocol}//${url.hostname}:${port}`;

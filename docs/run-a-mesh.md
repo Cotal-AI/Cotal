@@ -176,7 +176,9 @@ What the record will require decides what you may register:
 
 Ordinary private ranges like `10.x` and `192.168.x` are refused in **both** modes: a café's wifi
 is a private network too, being private is not the same as being yours, and no public CA issues
-certificates for those ranges. `--force` does not waive any of this — it exists for a mesh that
+certificates for those ranges. How an address is *spelled* changes nothing: `[::ffff:192.168.1.10]`,
+`3232235786`, `0300.0250.01.012` and `192.168.257` are all private addresses that your machine
+would dial as such, so each gets the same refusal as its dotted form. `--force` does not waive any of this — it exists for a mesh that
 is *down*, not for sending credentials somewhere unsafe.
 
 #### Registering a hosted user-auth mesh
@@ -188,8 +190,10 @@ is *down*, not for sending credentials somewhere unsafe.
 
 A user-auth space's IdP pins are established where the mesh runs and are never guessed. Register
 one from **supplied** trust: `--user-auth-file bundle.json` (exported on the mesh's machine), or
-`--from https://…/.well-known/cotal-mesh`, which fetches the discovery document over HTTPS,
-shows you the pins, and asks before adopting them. Registration checks that the pinned exchange
+`--from https://…/.well-known/cotal-mesh`, which asks before it contacts the address at all,
+fetches the discovery document over HTTPS, shows you the pins, and asks again before adopting
+them. Redirects are refused rather than followed — a 302 can walk a pinned fetch down to
+plaintext or onto another host — and the pinned exchange must be an `https://` URL too. Registration checks that the pinned exchange
 answers `/health` and `/jwks` as the pinned issuer and that the broker refuses a bare connect —
 that refusal is the pass. The bundle's sentinel credentials are written to a private (0600) file
 under the entry's root; the registry itself never carries the secret.

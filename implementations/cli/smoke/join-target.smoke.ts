@@ -143,6 +143,61 @@ check("  the no-TLS hostname refusal is the existing sentence", /Only a loopback
 refuses("nats://192.168.1.10:4222", "RFC1918 never becomes public-tls", WITH_TLS);
 refuses("nats://10.1.2.3:4222", "RFC1918 never becomes public-tls", WITH_TLS);
 refuses("nats://169.254.1.1:4222", "link-local never becomes public-tls", WITH_TLS);
+
+console.log("\nONE address, ONE verdict — an alternate spelling must not walk past the fence");
+// `::ffff:192.168.1.10` and `::ffff:c0a8:010a` ARE 192.168.1.10. Classifying the v6 spelling on
+// its own let a v4 regex miss, the address fall through to "not private", and `--tls --force`
+// RECORD a LAN broker that the dotted form refuses. Every spelling is normalized before any
+// classifier runs, so these track their dotted twins in both modes rather than being special-cased.
+for (const policy of [TODAY, WITH_TLS]) {
+  refuses("nats://[::ffff:192.168.1.10]:4222", "v4-mapped RFC1918, dotted tail", policy);
+  refuses("nats://[::ffff:c0a8:010a]:4222", "v4-mapped RFC1918, hex tail — the same address", policy);
+  refuses("nats://[::ffff:10.0.0.5]:4222", "v4-mapped 10/8", policy);
+  refuses("nats://[::ffff:0:192.168.1.10]:4222", "the ::ffff:0: spelling too", policy);
+  refuses("nats://[::ffff:169.254.1.1]:4222", "v4-mapped link-local", policy);
+}
+// The mapping is a NORMALIZATION, not a blanket refusal: mapped loopback and mapped overlay keep
+// the verdict their dotted twins get, or this "fix" would just break v6 spellings wholesale.
+permits("nats://[::ffff:127.0.0.1]:4222", "loopback", TODAY);
+permits("nats://[::ffff:127.0.0.1]:4222", "loopback", WITH_TLS);
+permits("nats://[::ffff:100.64.0.1]:4222", "overlay", ACKED);
+permits("nats://[::ffff:8.8.8.8]:4222", "public-tls", WITH_TLS);
+refuses("nats://[::ffff:8.8.8.8]:4222", "mapped public address without required TLS", TODAY);
+// Pure-v6 private space, pinned in both modes alongside the mapped forms.
+for (const policy of [TODAY, WITH_TLS]) {
+  refuses("nats://[fc00::1]:4222", "ULA fc00::/7", policy);
+  refuses("nats://[fd00::1]:4222", "ULA fd00::/8 (non-overlay)", policy);
+  refuses("nats://[fe80::1]:4222", "link-local fe80::/10", policy);
+}
+permits("nats://[::1]:4222", "loopback", WITH_TLS);
+
+console.log("\nlegacy IPv4 spellings — inet_aton takes octal, hex and short forms, and so does the dialer");
+// VERIFIED against dns.lookup on a real machine: 3232235786, 0300.0250.01.012, 0xC0A8010A and
+// 192.168.257 all resolve to private addresses, and 0177.0.0.1 to 127.0.0.1. A four-decimal-octet
+// regex treated each as a HOSTNAME, so it sailed past the private fence and registered as public
+// while the dotted spelling of the same host was refused. One cell per spelling, both modes.
+for (const policy of [TODAY, WITH_TLS]) {
+  refuses("nats://3232235786:4222", "decimal dword for 192.168.1.10", policy);
+  refuses("nats://0300.0250.01.012:4222", "octal dotted for 192.168.1.10", policy);
+  refuses("nats://0xC0.0xA8.0x01.0x0A:4222", "hex dotted for 192.168.1.10", policy);
+  refuses("nats://0xC0A8010A:4222", "hex dword for 192.168.1.10", policy);
+  refuses("nats://192.168.1.010:4222", "mixed dotted with an octal final octet", policy);
+  refuses("nats://192.168.257:4222", "3-part short form for 192.168.1.1", policy);
+  refuses("nats://167772161:4222", "decimal dword for 10.0.0.1", policy);
+  refuses("nats://[::ffff:3232235786]:4222", "a mapped literal whose tail is itself a dword", policy);
+}
+// Again a NORMALIZATION: legacy spellings of permitted addresses keep the permitted verdict.
+permits("nats://0177.0.0.1:4222", "loopback", TODAY);   // octal 127.0.0.1
+permits("nats://2130706433:4222", "loopback", WITH_TLS); // dword 127.0.0.1
+permits("nats://1684300801:4222", "overlay", ACKED);     // dword 100.64.0.1
+permits("nats://0x08080808:4222", "public-tls", WITH_TLS); // dword 8.8.8.8 is genuinely public
+// NEGATIVE CONTROL: a real hostname must not be mistaken for a number in some base. These stay
+// hostnames (public-tls under required TLS), or the normalizer would be eating names.
+permits("nats://broker.example.com:4222", "public-tls", WITH_TLS);
+permits("nats://09.0.0.1:4222", "public-tls", WITH_TLS);   // 09 is not octal and not decimal-legal
+permits("nats://999.1.1.1:4222", "public-tls", WITH_TLS);  // octet out of range: a hostname
+permits("nats://1.2.3.4.5:4222", "public-tls", WITH_TLS);  // five parts: not an IPv4 literal
+refuses("nats://broker.example.com:4222", "a hostname without required TLS is still refused", TODAY);
 // --force is a liveness escape, not a policy escape: no force-like field exists on DialPolicy,
 // and smuggling one in changes nothing.
 const FORCED = { tlsRequired: false, allowUnencryptedOverlay: false, force: true } as unknown as Parameters<typeof classifyJoinTarget>[1];
