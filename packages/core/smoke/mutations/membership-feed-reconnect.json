@@ -1,6 +1,6 @@
 {
   "suite": "packages/core/smoke/delivery-reconnect.smoke.ts",
-  "guard": "the connection-scoped derived membership-feed KV is reopened after endpoint reconnect",
+  "guard": "membership feed reads and caller-owned watches reopen across manual and terminal reconnects, with exactly one broker consumer per live watch and no predecessor leak",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:delivery-reconnect:auth",
   "completionMarker": "DELIVERY-RECONNECT SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/membership-feed-reconnect.json",
@@ -37,6 +37,24 @@
       "expectRed": "reconnect deletes the predecessor membership consumer instead of accumulating one",
       "cell": "reconnect deletes the predecessor membership consumer instead of accumulating one",
       "note": "clearConnectionScoped schedules consumer deletion. The rebuild must await it while the old connection is still usable; otherwise the delete is lost and the predecessor lingers."
+    },
+    {
+      "name": "terminal self-heal forgets the closed-epoch consumer identity before fresh cleanup",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (watch.consumerStream && watch.consumerName) {\n",
+      "replace": "    if (false && watch.consumerStream && watch.consumerName) {\n",
+      "expectRed": "terminal self-heal creates one successor and deletes the closed-epoch predecessor",
+      "cell": "terminal self-heal creates one successor and deletes the closed-epoch predecessor",
+      "note": "Old-connection delete cannot run after nc.closed. The fresh connection must delete the recorded stream/name before creating the successor."
+    },
+    {
+      "name": "a rejected watch arm permanently poisons the serialized lifecycle chain",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "watch.arm.catch(() => {}).then",
+      "replace": "watch.arm.then",
+      "expectRed": "the membership watch stays live after terminal self-heal",
+      "cell": "the membership watch stays live after terminal self-heal",
+      "note": "The catch resets a previously rejected arm promise so later disarm/rearm handlers can execute instead of inheriting the rejection forever."
     }
   ]
 }

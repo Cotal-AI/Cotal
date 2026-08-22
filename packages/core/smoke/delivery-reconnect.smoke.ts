@@ -133,6 +133,32 @@ try {
   for (let i = 0; i < 20 && (await membershipConsumers()).length !== 0; i++) await wait(50);
   check("stopping the membership watch deletes its broker consumer", (await membershipConsumers()).length === 0, await membershipConsumers());
 
+  // Terminal self-heal starts only AFTER the old connection is closed. Its cleanup request cannot ride
+  // that epoch, so the fresh connection must delete the predecessor by recorded stream+consumer name.
+  let terminalChanges = 0;
+  const terminalWatch = await observer.watchMembership(() => { terminalChanges++; });
+  await wait(200);
+  terminalChanges = 0;
+  const terminalBefore = await membershipConsumers();
+  check("the terminal-close control starts with one membership consumer", terminalBefore.length === 1, terminalBefore);
+  const healed = new Promise<void>((resolve) => {
+    const onConnection = (state: { connected: boolean }) => { if (state.connected) { observer!.off("connection", onConnection); resolve(); } };
+    observer!.on("connection", onConnection);
+  });
+  await (observer as unknown as { nc: import("@nats-io/transport-node").NatsConnection }).nc.close();
+  await Promise.race([healed, wait(5000)]);
+  await wait(200);
+  const terminalAfter = await membershipConsumers();
+  check("terminal self-heal creates one successor and deletes the closed-epoch predecessor", terminalAfter.length === 1 && !terminalAfter.some((n) => terminalBefore.includes(n)), { terminalBefore, terminalAfter });
+  const terminalNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: membershipRwCreds, tls: false }) });
+  try {
+    const feed = await new Kvm(terminalNc).open(membershipBucket(space));
+    await feed.put("terminal-reconnect-probe", JSON.stringify({ live: [], durable: [], observedAt: Date.now() }));
+    for (let i = 0; i < 20 && terminalChanges === 0; i++) await wait(50);
+  } finally { await terminalNc.drain(); }
+  check("the membership watch stays live after terminal self-heal", terminalChanges > 0, { terminalChanges });
+  terminalWatch.stop();
+
   console.log(`\nDELIVERY-RECONNECT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
 } catch (e) {
