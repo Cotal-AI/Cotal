@@ -21,6 +21,16 @@ import { cotalPath } from "./paths.js";
 const PID_PATH = (space: string) => cotalPath(`auth-service.${spaceKey(space)}.pid`);
 const LOG_PATH = (space: string) => cotalPath(`auth-service.${spaceKey(space)}.log`);
 
+/** Build the environment for the production auth-service re-exec. Exported only so the boundary
+ *  smoke can poison the parent with present and future COTAL_* authority names and grade the exact
+ *  child environment without launching a real signer. */
+export function authServiceChildEnv(parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const child: NodeJS.ProcessEnv = { ...parent };
+  for (const key of Object.keys(child)) if (key.startsWith("COTAL_")) delete child[key];
+  child.COTAL_SKIP_CONNECTOR_SEED = "1";
+  return child;
+}
+
 /** The pidfile to READ for a space's auth service: the canonical hex name, or the pre-hex
  *  `auth-service.<encoded>.pid` a build before the re-key wrote. `up`'s restart and its stop read
  *  this so an upgrade never orphans the live callout SIGNER of a pre-upgrade auth-service. Byte-
@@ -160,10 +170,17 @@ function startAuthServiceDetached(space: string, server: string, command: string
     const [node, ...self] = selfArgv();
     // Internal child re-exec (the `up` that reached here already seeded); the auth service does not
     // launch agents, so it skips the connector seed on boot (a direct `cotal auth-service` still seeds).
+    //
+    // AUTHORITY INHERITANCE BOUNDARY: `up` may itself run inside a managed mesh session, whose
+    // environment contains live COTAL_* broker/credential/control material. The auth-service is a
+    // trusted account-signer process, but it has no reason to inherit the LAUNCHER'S mesh identity.
+    // Scrub by prefix so future COTAL_* authority names are covered too; restore only the one
+    // internal re-exec switch the daemon legitimately needs.
+    const childEnv = authServiceChildEnv();
     const child = spawn(node, [...self, command, "--space", space, "--server", server, ...extraArgs], {
       detached: true,
       stdio: ["ignore", fd, fd],
-      env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" },
+      env: childEnv,
     });
     closeSync(fd);
     child.unref();

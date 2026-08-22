@@ -6,7 +6,8 @@
  * could misread), a live holder is yielded to, a provably dead holder's stale slot is reclaimed
  * exactly once, an EMPTY slot (impossible to produce under the protocol; a pre-protocol crash
  * shape) is reclaimed once rather than wedging forever, and GARBLED content is NEVER stolen.
- * Broker-free.
+ * It also grades the production auth-service re-exec environment: a poisoned parent cannot hand
+ * live or future COTAL_* authority variables to the signer child. Broker-free.
  *
  * Run: pnpm smoke:auth-pidfile
  */
@@ -14,7 +15,7 @@ import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claimAuthPidSlot } from "../src/lib/auth-proc.js";
+import { authServiceChildEnv, claimAuthPidSlot } from "../src/lib/auth-proc.js";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
@@ -35,6 +36,25 @@ async function deadPid(): Promise<number> {
 }
 
 try {
+  // 0. The production spawn boundary strips the launcher's mesh identity by PREFIX, not by a list
+  //    that goes stale when a future authority variable is added. Non-Cotal process context remains,
+  //    and the one internal switch is restored deliberately.
+  const poisoned: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH,
+    HOME: tmp,
+    COTAL_SERVER: "nats://live-runner.example:4222",
+    COTAL_CREDS: "/runner/live.creds",
+    COTAL_CONTROL_TOKEN: "live-control-token",
+    COTAL_FUTURE_UNKNOWN: "future-authority",
+    COTAL_SKIP_CONNECTOR_SEED: "poisoned-value",
+  };
+  const childEnv = authServiceChildEnv(poisoned);
+  check("the production auth-service child inherits NO ambient COTAL_* authority, including future names",
+    Object.keys(childEnv).filter((key) => key.startsWith("COTAL_")).join(",") === "COTAL_SKIP_CONNECTOR_SEED"
+      && childEnv.COTAL_SKIP_CONNECTOR_SEED === "1",
+    childEnv);
+  check("the auth-service env scrub preserves ordinary process context", childEnv.PATH === poisoned.PATH && childEnv.HOME === tmp);
+
   // 1. Virgin claim wins, and the claim is ATTRIBUTABLE from the first instant: the published slot
   //    already carries the launcher's pid (atomic pre-populated link, never an empty window).
   const slot1 = claimAuthPidSlot(SPACE);
