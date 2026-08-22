@@ -681,6 +681,20 @@ function send(res: ServerResponse, status: number, body: unknown, headers: Recor
   res.end(JSON.stringify(body));
 }
 
+/** An HTTP-shaped request refusal found while reading the body. Keeping the status on the error
+ *  lets both listeners return the SAME exact wire response rather than collapsing a deliberate
+ *  size refusal into the generic malformed-request 400. */
+class RequestBodyError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+  }
+}
+
+function sendRequestError(res: ServerResponse, e: unknown): void {
+  if (e instanceof RequestBodyError) return send(res, e.status, { error: e.message });
+  send(res, 400, { error: e instanceof Error ? e.message : String(e) });
+}
+
 type RouteHandler = (req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx) => void | Promise<void>;
 
 /** The loopback route table: /health, /jwks (public keys, cacheable), /exchange (IdP JWT →
@@ -707,7 +721,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx
     if (!route) return send(res, 404, { error: "unknown path - /health, /jwks, /exchange" });
     await route(req, res, ctx);
   } catch (e) {
-    send(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    sendRequestError(res, e);
   }
 }
 
@@ -870,7 +884,7 @@ function makePublicHandler(
         if (!route) return send(res, 404, { error: "unknown path - /health, /jwks, /exchange, /.well-known/cotal-mesh" });
         await route(req, res, ctx);
       } catch (e) {
-        if (!res.headersSent) send(res, 400, { error: e instanceof Error ? e.message : String(e) });
+        if (!res.headersSent) sendRequestError(res, e);
       }
     })();
   };
@@ -882,21 +896,26 @@ function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const MAX = 64 * 1024;
   return new Promise((resolve, reject) => {
     let size = 0;
+    let tooLarge = false;
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => {
       size += c.length;
       if (size > MAX) {
-        reject(new Error("request body too large"));
-        req.destroy();
+        // Stop retaining bytes immediately, but keep draining the request so the client receives
+        // the explicit 413 JSON response. Destroying the socket hid the server's decision behind
+        // an undici transport error and made the size-bound smoke unable to prove this guard.
+        tooLarge = true;
+        chunks.length = 0;
         return;
       }
-      chunks.push(c);
+      if (!tooLarge) chunks.push(c);
     });
     req.on("end", () => {
+      if (tooLarge) return reject(new RequestBodyError(413, "request body too large (maximum 65536 bytes)"));
       try {
         resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
       } catch {
-        reject(new Error("request body is not valid JSON"));
+        reject(new RequestBodyError(400, "request body is not valid JSON"));
       }
     });
     req.on("error", reject);

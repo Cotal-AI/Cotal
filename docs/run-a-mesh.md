@@ -28,10 +28,31 @@ Three modes:
 - **`--open`.** An unauthenticated, live-only dev mesh (no auth, no delivery daemon). For
   quick local experiments.
 
-All bind **loopback** by default. `--host 0.0.0.0` widens the bind independently of the
-auth mode, so "network-reachable" never silently means "unauthenticated". With no explicit
-`--server`, `cotal up` auto-selects a free local port when the default address is already
-held by another project; an explicit `--server` fails loud on collision.
+The broker and local services bind **loopback** by default. `--host 0.0.0.0` widens the broker
+bind independently of the auth mode, so "network-reachable" never silently means
+"unauthenticated". With no explicit `--server`, `cotal up` auto-selects a free local port when
+the default address is already held by another project; an explicit `--server` fails loud on
+collision.
+
+A user-auth mesh can expose only its credential exchange through an operator-owned HTTPS reverse
+proxy while leaving the existing local exchange untouched:
+
+```bash
+cotal up --user-auth --idp https://idp.example/api/auth \
+  --exchange-public-port 7443 \
+  --exchange-public-url https://auth.example
+```
+
+The public listener itself still binds `127.0.0.1:7443`; configure the proxy to terminate TLS and
+forward to it. It serves only `/health`, `/jwks`, `/exchange`, and `/.well-known/cotal-mesh` with
+the documented methods. It needs no local file capability: the signed IdP JWT or managed-agent
+actor token is the proof, while the original loopback listener remains capability-gated. Add
+`--exchange-trusted-proxy` only when that listener is reachable exclusively through your trusted
+proxy; it keys failure throttling by the last `X-Forwarded-For` hop instead of the socket address.
+The well-known bundle includes IdP pins and a deny-all sentinel credential, so fetch it only from
+the configured HTTPS origin. To change these listener flags, stop and restart the mesh; a refresh
+of an already-running service does not replace its bind or proxy policy. See
+[Identity & auth](identity-and-auth.md#per-user-auth-people-sign-in) for the trust boundary.
 
 `cotal status` prints the detailed setup, process, registry, and live mesh status;
 `cotal setup` (after the first run) prints the compact card.

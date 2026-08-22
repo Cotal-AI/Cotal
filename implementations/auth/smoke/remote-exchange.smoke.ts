@@ -111,7 +111,7 @@ const { createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setu
 const { authDir, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const {
   cotalAuthProvider, establishIdpSession, grantActor, grantManagedActor, revokeManagedActor,
-  loadAuthServiceInfo, newActorToken,
+  loadAuthServiceInfo, loadCalloutAuth, newActorToken,
 } = await import("@cotal-ai/auth");
 const { decodeJwt } = await import("jose");
 type DeviceLoginPrompt = import("@cotal-ai/auth").DeviceLoginPrompt;
@@ -140,21 +140,12 @@ const PUBLIC_URL = "https://exchange.smoke.test";
 
 type Reply = { status: number; body: Record<string, unknown>; headers: Headers };
 async function post(url: string, body: unknown, headers: Record<string, string> = {}): Promise<Reply> {
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json", ...headers },
-      body: typeof body === "string" ? body : JSON.stringify(body),
-    });
-    return { status: res.status, body: (await res.json().catch(() => ({}))) as Record<string, unknown>, headers: res.headers };
-  } catch (e) {
-    // The 64-KB guard destroys the request once the bound is crossed; undici reports that correct
-    // server-side refusal as a closed socket rather than exposing the attempted JSON error body.
-    // Preserve it as a refusal-class reply so the named body-bound cell can grade the boundary.
-    if ((e as { cause?: { code?: string } }).cause?.code === "UND_ERR_SOCKET")
-      return { status: 413, body: { error: "connection closed after request body exceeded the bound" }, headers: new Headers() };
-    throw e;
-  }
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...headers },
+    body: typeof body === "string" ? body : JSON.stringify(body),
+  });
+  return { status: res.status, body: (await res.json().catch(() => ({}))) as Record<string, unknown>, headers: res.headers };
 }
 async function get(url: string, headers: Record<string, string> = {}): Promise<Reply> {
   const res = await fetch(url, { headers });
@@ -209,6 +200,8 @@ try {
     account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
     dir, idpUrl: base,
   });
+  const expectedCallout = await loadCalloutAuth(store, SPACE);
+  if (!expectedCallout) throw new Error("prepared callout material was not persisted");
   jsDir = mkdtempSync(join(tmpdir(), "cotal-rx-js-"));
   writeFileSync(
     join(root, "server.conf"),
@@ -257,10 +250,12 @@ try {
   check("bundle carries the space + server it actually serves", wk.body.space === SPACE && wk.body.server === SERVER, wk.body);
   check("bundle states tlsRequired", wk.body.tlsRequired === true, wk.body);
   check("bundle pins the SAME IdP url/issuer/audience the daemon enforces",
-    idpPin?.url === base && typeof idpPin?.issuer === "string" && idpPin.issuer.length > 0 && typeof idpPin?.audience === "string",
-    idpPin);
+    idpPin?.url === base && idpPin.issuer === origin && idpPin.audience === origin,
+    { advertised: idpPin, enforced: { url: base, issuer: origin, audience: origin } });
   check("bundle's endpoints.url is the post-bind advertised public URL", eps?.url === PUBLIC_URL, eps);
-  check("bundle ships the sentinel creds the remote arm needs", typeof wk.body.sentinelCreds === "string" && (wk.body.sentinelCreds as string).length > 0);
+  check("bundle ships the ACTUAL deny-all sentinel credential prepared for this space",
+    wk.body.sentinelCreds === expectedCallout.sentinelCreds,
+    { advertisedLength: typeof wk.body.sentinelCreds === "string" ? wk.body.sentinelCreds.length : -1, expectedLength: expectedCallout.sentinelCreds.length });
   check("the bundle is NOT served on the loopback face (it is the public face's surface)",
     (await get(`${LOOPBACK}/.well-known/cotal-mesh`)).status === 404);
 
@@ -345,8 +340,17 @@ try {
   check("no CORS headers, ever", browser.headers.get("access-control-allow-origin") === null);
   const wrongType = await fetch(`${PUBLIC}/exchange`, { method: "POST", headers: { "content-type": "text/plain" }, body: "{}" });
   check("non-JSON content-type is refused (415)", wrongType.status === 415);
-  const huge = await post(`${PUBLIC}/exchange`, `{"pad":"${"x".repeat(70 * 1024)}"}`);
-  check("a body past the 64 KB bound is refused", huge.status >= 400, huge);
+  const sizedJson = (bytes: number) => `{"pad":"${"x".repeat(bytes - 10)}"}`;
+  const atLimitBody = sizedJson(64 * 1024);
+  if (Buffer.byteLength(atLimitBody) !== 64 * 1024) throw new Error("body-bound fixture is not exactly 65536 bytes");
+  const atLimit = await post(`${PUBLIC}/exchange`, atLimitBody);
+  check("an EXACTLY 64-KB valid JSON body reaches exchange validation (400, not size refusal)",
+    atLimit.status === 400 && /exchange needs/.test(String(atLimit.body.error)), atLimit);
+  const overLimitBody = sizedJson(64 * 1024 + 1);
+  if (Buffer.byteLength(overLimitBody) !== 64 * 1024 + 1) throw new Error("body-bound fixture is not exactly 65537 bytes");
+  const overLimit = await post(`${PUBLIC}/exchange`, overLimitBody);
+  check("a 65537-byte body gets the SERVER's exact 413 size refusal",
+    overLimit.status === 413 && overLimit.body.error === "request body too large (maximum 65536 bytes)", overLimit);
 
   // ---------- A(cont). the closed route table ----------
   console.log("A') the public route table is closed");
@@ -411,7 +415,7 @@ try {
 }
 
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 45;
+const EXPECTED = 46;
 console.log(`\nremote-exchange smoke: ${pass} passed, ${fail} failed`);
 if (pass + fail !== EXPECTED) {
   console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped`);
