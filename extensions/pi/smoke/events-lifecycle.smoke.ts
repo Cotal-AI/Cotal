@@ -27,6 +27,7 @@ class FakeMesh {
     async assertExpectationSemantics() {},
     encodedSize: () => 1,
     multicastExpecting: async ({ parts }: { parts: unknown[] }) => {
+      if (!this.connected) throw new Error("not live");
       this.frames.push(parts[0]);
       return { ack: { seq: this.nextAck++, duplicate: false } };
     },

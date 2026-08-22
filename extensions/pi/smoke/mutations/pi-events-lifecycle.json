@@ -7,8 +7,8 @@
     {
       "name": "L1 adopt immediately at event-plane creation while the mesh is down",
       "file": "extensions/pi/src/extension.ts",
-      "find": "    if (adopted || !runtime.mesh.connected) return;",
-      "replace": "    if (adopted) return;",
+      "find": "  flush();\n\n  let runId: string | undefined;",
+      "replace": "  ensureAdopted();\n\n  let runId: string | undefined;",
       "expectRed": "C1: nothing published while the mesh is down"
     },
     {
@@ -23,7 +23,7 @@
       "file": "extensions/pi/src/extension.ts",
       "find": "    if (!runtime.mesh.connected) return;\n    ensureAdopted();",
       "replace": "    ensureAdopted();",
-      "expectRed": "C3: post-adopt disconnect does not halt the holder"
+      "expectRed": "C3: reconnect drains the post-adopt durable records without halting"
     }
   ]
 }
