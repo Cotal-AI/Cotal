@@ -1,5 +1,21 @@
 # cotal-ai
 
+## 0.27.0
+
+### Patch Changes
+
+- 900f630: Add the Jcode Harness API connector with a private managed session, Cotal MCP bridge, and operator documentation.
+- Updated dependencies [0aed7fa]
+- Updated dependencies [900f630]
+- Updated dependencies [08a9cb8]
+  - @cotal-ai/connector-core@0.27.0
+  - @cotal-ai/workspace@0.27.0
+  - @cotal-ai/manager@0.27.0
+  - @cotal-ai/auth@0.27.0
+  - @cotal-ai/cli@0.27.0
+  - @cotal-ai/delivery@0.27.0
+  - @cotal-ai/core@0.27.0
+
 ## 0.26.0
 
 ### Patch Changes

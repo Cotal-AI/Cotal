@@ -1,5 +1,7 @@
 # @cotal-ai/pi
 
+## 0.27.0
+
 ## 0.26.0
 
 ### Patch Changes

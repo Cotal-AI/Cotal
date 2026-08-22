@@ -1,5 +1,14 @@
 # @cotal-ai/manager
 
+## 0.27.0
+
+### Patch Changes
+
+- 08a9cb8: Overlap manager control registration with startup static lifecycle reconciliation, while fencing each reconciling alias from reuse.
+- Updated dependencies [900f630]
+  - @cotal-ai/workspace@0.27.0
+  - @cotal-ai/core@0.27.0
+
 ## 0.26.0
 
 ### Patch Changes
