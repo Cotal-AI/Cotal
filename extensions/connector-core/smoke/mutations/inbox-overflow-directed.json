@@ -1,0 +1,70 @@
+{
+  "suite": "extensions/connector-core/smoke/inbox-overflow-directed.smoke.ts",
+  "guard": "the inbox overflow valve sacrifices channel traffic before anything addressed to this agent, reads directedness from the subject-derived kind rather than the forgeable payload, and never acks a directed message it evicts so the broker can redeliver it",
+  "command": "pnpm smoke:inbox-overflow-directed",
+  "completionMarker": "inbox overflow directed:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/inbox-overflow-directed.json",
+  "why": [
+    "A peer flooding a channel could silence a live DM waiting in the inbox. buffer() evicts pullOnly",
+    "entries first, and pullOnly is !mentionsMe && historical, where mentionsMe is read from the",
+    "payload mentions field the sender controls. A peer stamping the victim's name on every flooded",
+    "message made none of its traffic pull-only, so findIndex returned -1, eviction fell through to",
+    "index 0 - the oldest entry, the DM that had waited longest - and acked it without marking it",
+    "handled, which the broker treats as delivered. Plain ambient channel volume did the same with no",
+    "forgery at all (#791).",
+    "",
+    "This was invisible because no suite in the set ever pushed the inbox PAST MAX_INBOX, so the",
+    "eviction branch was never executed by any test: history-flood buffers 119, inbox-window buffers",
+    "exactly 200 as a deliberate boundary, and cross-path-dedup loops 8500 but drains after every",
+    "message so it never accumulates. This suite pushes 400 against a cap of 200 specifically to",
+    "execute that branch.",
+    "",
+    "The mutations restore the shipped defect and then attack each half of the fix independently,",
+    "because either half alone still loses mail: evicting the right victim but acking it is still",
+    "unrecoverable, and refusing to ack while still evicting DMs first still starves them."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the shipped defect: no channel tier, so eviction falls through to the oldest entry",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        if (index < 0) index = this.inbox.findIndex((p) => p.item.kind === \"channel\");",
+      "replace": "",
+      "expectRed": "the waiting DM is STILL PRESENT after the flood"
+    },
+    {
+      "name": "M2 ack a sacrificed directed message (loss becomes unrecoverable again)",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        if (!this.inFlightIds.has(evicted.item.id) && !sacrificingDirected) evicted.ack();",
+      "replace": "        if (!this.inFlightIds.has(evicted.item.id)) evicted.ack();",
+      "expectRed": "the waiting DM was never acked (redelivery stays possible)"
+    },
+    {
+      "name": "M3 trust the forgeable payload instead of the subject-derived kind",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        if (index < 0) index = this.inbox.findIndex((p) => p.item.kind === \"channel\");",
+      "replace": "        if (index < 0) index = this.inbox.findIndex((p) => !p.item.mentionsMe);",
+      "expectRed": "the waiting DM is STILL PRESENT after the flood"
+    },
+    {
+      "name": "M4 stop acking evicted channel ambient (reopens the history flood)",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        const sacrificingDirected = evicted.item.kind !== \"channel\";",
+      "replace": "        const sacrificingDirected = true;",
+      "expectRed": "evicted channel traffic WAS acked (replaying it is the history flood)"
+    },
+    {
+      "name": "M5 sacrifice live channel traffic before pull-only backlog",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        let index = this.inbox.findIndex((p) => p.pullOnly);",
+      "replace": "        let index = -1;",
+      "expectRed": "a live channel item outlives historical backlog"
+    },
+    {
+      "name": "M6 let the in-flight ceiling hold a partial batch instead of refusing whole",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (this.inFlightIds.size + fresh > MAX_INBOX * 2) return false;",
+      "replace": "    if (this.inFlightIds.size + fresh > MAX_INBOX * 2) { for (const id of ids) this.inFlightIds.set(id, (this.inFlightIds.get(id) ?? 0) + 1); return true; }",
+      "expectRed": "a batch that would cross the ceiling is refused whole"
+    }
+  ]
+}

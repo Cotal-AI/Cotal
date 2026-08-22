@@ -129,6 +129,30 @@ console.log("\n6. an all-directed inbox still bounds memory (no attacker advanta
   );
 }
 
+console.log("\n7. the in-flight ceiling refuses all-or-nothing, and a refused DM is still not lost");
+{
+  // holdInFlight caps at MAX_INBOX * 2. A flood can exhaust that ceiling, at which point the guard
+  // refuses a whole batch and the caller must not surface it. The contract is a DEFERRAL, so the
+  // messages must still be buffered and un-acked; a refusal that also dropped them would turn a
+  // protection into the very loss it exists to prevent (audit finding 2 on #776).
+  const h = harness();
+  const held: string[] = [];
+  for (let i = 0; i < 420; i++) {
+    const id = `hold-${i}`;
+    h.push({ id, kind: "dm", channel: "", from: "peer" });
+    held.push(id);
+  }
+  const agent = h.agent as unknown as { holdInFlight: (ids: readonly string[]) => boolean };
+  const first = agent.holdInFlight(held.slice(0, 300));
+  const past = agent.holdInFlight(held.slice(300));
+  check("a batch within the ceiling is held", first === true);
+  check("a batch that would cross the ceiling is refused whole", past === false);
+  check(
+    "the refused DMs were NOT acked - refusal is a deferral, not a drop",
+    !held.slice(300).some((id) => h.acked.has(id)),
+  );
+}
+
 console.log(`\ninbox overflow directed: ${pass} cells OK, ${failures.length} failed`);
 if (failures.length) {
   assert.fail(`inbox overflow directed: ${failures.length} cell(s) failed\n  - ${failures.join("\n  - ")}`);
