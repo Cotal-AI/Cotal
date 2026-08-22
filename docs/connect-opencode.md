@@ -115,7 +115,7 @@ Four things are specific to OpenCode and worth knowing before you read a stream:
   its own thread id on the one `events.<owner>.<actor>` channel. Before the switch, the session you
   are leaving is flushed and its open run is closed, so a reader never holds a run that never ends.
 - **A failed turn is published as a run error, not as a finished run.** OpenCode reports a turn that
-  died — an upstream API error, a provider auth failure, an output-length stop — on its own
+  died (an upstream API error, a provider auth failure, or an output-length stop) on its own
   `session.error` event, and that turn ends its run with `RUN_ERROR` carrying OpenCode's reason and
   its own error name as the code. If that reason cannot fit in the one closing frame, the shared close
   still publishes exactly one `RUN_ERROR` that does fit: it keeps the code and says the original detail

@@ -16,7 +16,7 @@ one from a record they actually receive. Claude Code ends a failed turn on its o
 hook, and that turn now closes with `RUN_ERROR` carrying the harness's error kind (`rate_limit`,
 `billing_error`, `server_error` and the rest) as the code. OpenCode reports a dead turn on
 `session.error`, and that turn now closes with `RUN_ERROR` carrying OpenCode's own error name and
-reason — except a turn a person stopped, which arrives on the same event and is not a failure.
+reason, except a turn a person stopped, which arrives on the same event and is not a failure.
 
 The shared close also bounds that failure detail. Upstream free text (`error_details`,
 `data.message`) can encode past the live frame ceiling; packing it as-is used to refuse the close
