@@ -1,7 +1,7 @@
 import { statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { probeConnect, type SpaceAuth } from "@cotal-ai/core";
-import { classifyJoinTarget, type JoinTarget } from "../lib/join-target.js";
+import { classifyJoinTarget, type DialPolicy, type JoinTarget } from "../lib/join-target.js";
 import {
   authDir,
   findCotalRoot,
@@ -91,31 +91,39 @@ export function checkServer(raw: string): Check<string> {
  * Registering a mesh is how a machine joins a broker it does not run, and every later command then
  * dials that address with an agent credential in the CONNECT line. NATS sends the initial INFO in
  * plaintext and unauthenticated, so an on-path attacker forges one that does not set
- * `tls_required` and reads the credential; the client side is the only fence, and this build has
- * no client-TLS surface yet. So the address itself is the gate. See {@link classifyJoinTarget} for
- * the ranges and for why hostnames are refused even when they resolve somewhere permitted.
+ * `tls_required` and reads the credential; the client side is the only fence. The address class
+ * and the RECORDED TLS INTENT together are the gate: see {@link classifyJoinTarget} for the
+ * ranges, why hostnames need required TLS, and why RFC1918 is refused in both modes.
+ *
+ * `policy.tlsRequired` is the strictness this registration will record — sourced from `--tls` or
+ * a `tls://` scheme ({@link tlsIntent}) — and it is what the dial will ENFORCE, because the
+ * candidate target and the written record carry the same value and preflight requires the
+ * handshake off it.
  *
  * This is a SAFETY rule, not a liveness check, which is why it sits with {@link checkServer} above
  * the `--force` branch rather than inside it. `--force` exists to register a mesh that is *down*
  * right now; it must not double as permission to ship credentials across an untrusted network,
  * where there is nothing to verify later and no error to come back and fix.
  */
-export function checkDialPolicy(server: string, allowUnencryptedOverlay = false): Check<JoinTarget> {
+export function checkDialPolicy(server: string, policy: DialPolicy): Check<JoinTarget> {
   try {
-    // WHEN THE RECORD CAN CARRY TLS INTENT, THIS LINE CHANGES AND THIS COMMENT GOES.
-    // `tlsRequired` is a property of the connection this registration will produce, and no field
-    // records it yet; it arrives with the work that teaches the broker to serve TLS. Passing a
-    // hardcoded `false` is honest rather than lazy: today no dial can require TLS.
-    //
-    // What that means CONCRETELY: public addresses, ordinary private ranges and hostnames are
-    // refused outright. An overlay literal is refused TOO unless the operator passed the explicit
-    // opt-in, because a printed warning is not a fence — stderr is not read by scripts, and the
-    // warning was never persisted, so nothing repeated it at the dials that followed. With the
-    // opt-in it is permitted and returns a residual, which the caller both prints AND records as
-    // consent. When the TLS field exists this passes the record's real intent and the opt-in goes.
-    return good(classifyJoinTarget(server, { tlsRequired: false, allowUnencryptedOverlay }));
+    return good(classifyJoinTarget(server, policy));
   } catch (e) {
     return bad(`✗ ${(e as Error).message}`);
+  }
+}
+
+/** The TLS intent this registration records, from its two sources: the explicit `--tls` flag, or
+ *  a `tls://` scheme. The scheme is typed intent — and today nats.js connects PLAINTEXT to
+ *  `tls://host` with empty options, so honoring it here is what converts typed-but-unenforced
+ *  intent into enforcement: the record carries `tlsRequired: true`, and every dial resolved
+ *  through it requires the handshake rather than tolerating plaintext. */
+export function tlsIntent(server: string, tlsFlag: boolean): boolean {
+  if (tlsFlag) return true;
+  try {
+    return new URL(server).protocol === "tls:";
+  } catch {
+    return false; // checkServer refuses the malformed URL; this never decides anything for it
   }
 }
 
@@ -192,33 +200,18 @@ export function checkEnforcement(mode: MeshEntry["mode"], enforces: "auth" | "op
 
 /** The target this registration would resolve to. `flag-server` is the source that can never
  *  classify as a prune — nothing is recorded yet, so no entry may be blamed for a failure. */
-export function candidateTarget(space: string, server: string, root: string, mode: MeshEntry["mode"], auth: SpaceAuth | undefined): MeshTarget {
+export function candidateTarget(space: string, server: string, root: string, mode: MeshEntry["mode"], auth: SpaceAuth | undefined, tlsRequired: boolean): MeshTarget {
   return {
     root,
     server,
     space,
     mode,
-    // A probe target for a registration that has not happened yet, so there is no recorded
-    // transport to honour and this stays non-strict. That reason stands on its own and is the
-    // whole justification.
-    //
-    // WHAT USED TO BE WRITTEN HERE WAS FALSE, and it is worth saying so rather than quietly
-    // deleting it. This comment claimed the scheme could not enforce because "`MeshEntry` cannot
-    // persist the intent" — a constraint removed three commits earlier by adding
-    // `MeshEntry.tlsRequired`. A dead premise was holding a live decision in place, and it is
-    // exactly why that field had no writers.
-    //
-    // The open question is now genuinely open: `tls://` is COSMETIC at the client (nats.js connects
-    // plaintext to `tls://host` with empty options; only the explicit `tls` option refuses), so an
-    // operator who types `tls://` today gets a record that resolves to a plaintext-tolerant client.
-    // Deriving `tlsRequired` from the scheme would make that typed intent real.
-    //
-    // It is deliberately NOT done in this change, for a reason that is true: it converts `meshes
-    // add tls://…` against a plaintext broker from a successful registration into a refusal. That
-    // is a behaviour change to this command's accept/refuse contract, it belongs with the dial-policy
-    // work being done in this file by another lane, and it is not one of the downgrades this branch
-    // exists to close. Tracked, owned, and not smuggled in beside them.
-    tlsRequired: false,
+    // The SAME source the dial policy read ({@link tlsIntent}) — the decision the old comment here
+    // reserved for the dial-policy work, now taken. A candidate that probed non-strict while the
+    // record it vouched for said strict would verify a connection the record's own dials refuse;
+    // carrying the real intent means `meshes add tls://…` against a plaintext broker is a REFUSAL
+    // at registration, not a surprise at the first spawn.
+    tlsRequired,
     ...(auth ? { auth } : {}),
     personaRoot: personaDir(root),
     source: "flag-server",

@@ -22,6 +22,7 @@ import {
   checkTrust,
   probeEnforcement,
   spacesAtRoot,
+  tlsIntent,
   verifyTarget,
   writeRecord,
   type Check,
@@ -49,6 +50,7 @@ export const meshesFlags = [
   { name: "root", type: "string", value: "<dir>", description: "add: folder holding this mesh's .cotal/auth + .cotal/agents (default: this project)" },
   { name: "mode", type: "string", value: "<auth|open>", description: "add: how the broker authenticates (default: inferred from --root)" },
   { name: "force", type: "boolean", description: "add: record without verifying, replacing any existing record · rm: drop a running mesh's record" },
+  { name: "tls", type: "boolean", description: "add: require TLS on every connection resolved through this record (a tls:// --server implies it)" },
   { name: "allow-unencrypted-overlay", type: "boolean", description: "add: accept that an overlay address is protected only while its tunnel is up (recorded on the entry)" },
 ] as const satisfies readonly FlagSpec[];
 
@@ -139,9 +141,13 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
     process.exit(1);
   }
   const server = take(checkServer(v.server));
+  // The strictness this registration RECORDS — from --tls or a tls:// scheme — and therefore what
+  // every dial through the record will enforce. Sourced once, so the dial policy, the candidate
+  // probe and the written entry cannot disagree.
+  const tlsRequired = tlsIntent(server, Boolean(v.tls));
   // Above the `--force` branch on purpose: this decides whether credentials may cross the network
   // to that address at all, which `--force` ("the mesh is down right now") must never waive.
-  const dial = take(checkDialPolicy(server, Boolean(v["allow-unencrypted-overlay"])));
+  const dial = take(checkDialPolicy(server, { tlsRequired, allowUnencryptedOverlay: Boolean(v["allow-unencrypted-overlay"]) }));
   // A permitted-but-not-guaranteed target is SAID OUT LOUD, never recorded quietly. Today that is
   // the overlay literal whose protection depends on a tunnel we cannot verify from here; the
   // operator is the only one who can know whether it is up, so the operator is told.
@@ -166,7 +172,7 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
   // success line rather than pretending the mesh was checked.
   if (!v.force) {
     take(checkEnforcement(mode, await probeEnforcement(server), server, space, root));
-    const verified = await verifyTarget(candidateTarget(space, server, root, mode, auth));
+    const verified = await verifyTarget(candidateTarget(space, server, root, mode, auth, tlsRequired));
     if (!verified.ok) {
       console.error(c.red(verified.message));
       console.error(c.dim("nothing was registered - fix the above, or `--force` to record it without verifying (e.g. the mesh is down right now)"));
@@ -174,7 +180,7 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
     }
   }
 
-  const result = writeRecord({ space, server, root, mode, origin: "manual", ...(dial.residual ? { unencryptedOverlay: true } : {}), ts: new Date().toISOString() });
+  const result = writeRecord({ space, server, root, mode, origin: "manual", ...(tlsRequired ? { tlsRequired: true } : {}), ...(dial.residual ? { unencryptedOverlay: true } : {}), ts: new Date().toISOString() });
   console.log(
     c.green(`✓ registered "${space}"`),
     // "recorded without verifying" describes THIS registration, not a durable property of the

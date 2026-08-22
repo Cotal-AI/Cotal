@@ -189,6 +189,36 @@ try {
     check(`add refuses ${label} in --server`, bad.code === 1 && findMesh("badurl") === undefined, bad.out);
   }
 
+  // ── add: TLS intent — typed, sourced, ENFORCED ──────────────────────────────────────────────
+  // A tls:// scheme is cosmetic at the client (nats.js connects plaintext to tls://host with
+  // empty options), so the record converts that typed intent into enforcement: the scheme sets
+  // tlsRequired=true, the candidate target carries it, and preflight then REQUIRES the handshake
+  // rather than tolerating plaintext.
+  const tlsTyped = await run(["add", "tls-typed"], { server: LIVE.replace("nats://", "tls://"), root });
+  check("add tls:// against a plaintext broker is REFUSED — typed intent is enforced, not cosmetic",
+    tlsTyped.code === 1 && findMesh("tls-typed") === undefined, tlsTyped.out);
+  const tlsForced = await run(["add", "tls-typed"], { server: LIVE.replace("nats://", "tls://"), root, force: true });
+  check("add tls:// --force records the TLS requirement on the entry",
+    tlsForced.code === 0 && findMesh("tls-typed")?.tlsRequired === true, findMesh("tls-typed"));
+  removeMesh("tls-typed");
+  const tlsFlagged = await run(["add", "tls-flagged"], { server: DEAD, root, tls: true, force: true });
+  check("add --tls records the TLS requirement without the scheme",
+    tlsFlagged.code === 0 && findMesh("tls-flagged")?.tlsRequired === true, findMesh("tls-flagged"));
+  removeMesh("tls-flagged");
+  check("a plain nats:// registration records no TLS requirement",
+    findMesh("ghost")?.tlsRequired === undefined, findMesh("ghost"));
+  // The dial policy reads the SAME source: a hostname is registrable IFF the dial will require TLS.
+  const hostNoTls = await run(["add", "hosty"], { server: "nats://broker.example.com:4222", root, force: true });
+  check("add a hostname without TLS intent stays refused (--force does not waive the dial policy)",
+    hostNoTls.code === 1 && findMesh("hosty") === undefined, hostNoTls.out);
+  const hostTls = await run(["add", "hosty"], { server: "tls://broker.example.com:4222", root, force: true });
+  check("add a hostname WITH tls:// is permitted and recorded with the requirement",
+    hostTls.code === 0 && findMesh("hosty")?.tlsRequired === true, findMesh("hosty"));
+  removeMesh("hosty");
+  const cafeTls = await run(["add", "cafe"], { server: "tls://192.168.1.10:4222", root, tls: true, force: true });
+  check("RFC1918 stays refused even with TLS intent (a cafe LAN is private too)",
+    cafeTls.code === 1 && findMesh("cafe") === undefined, cafeTls.out);
+
   // ROOT INFERENCE. `findCotalRoot` returns its starting directory when it finds no `.cotal`
   // up-tree, so the "outside a project" guard has to check the directory really is one — without
   // that, running this from `/` recorded `root: "/"`.
