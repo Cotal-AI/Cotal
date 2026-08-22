@@ -17,7 +17,6 @@
  *
  * Run: pnpm smoke:opencode-boot-prompt
  */
-import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
@@ -25,17 +24,28 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { seedChannelRegistry, isReachable } from "@cotal-ai/core";
+import { seedChannelRegistry, isReachable, CotalEndpoint } from "@cotal-ai/core";
 import { opencodeConnector } from "../src/extension.js";
 import { bootPlugin } from "./_boot-plugin.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0;
+let fail = 0;
+/** RECORDS a failure rather than throwing on it, and the reason is mutation grading rather than
+ *  taste. `assert.ok` ended the run at the first red, so the suite never printed its completion
+ *  marker, and mutation-proof could not tell "the cell caught the defect" from "the run died before
+ *  reaching the cell": every mutation against this file came back INCONCLUSIVE. Measured, not
+ *  supposed. Carrying on means each mutation reddens its OWN named cell and the marker still
+ *  prints, which is what makes the verdict readable. The process still exits non-zero. */
 const check = (name: string, cond: boolean, extra?: unknown) => {
-  assert.ok(cond, `${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
-  pass++;
-  console.log(`  ✓ ${name}`);
+  if (cond) {
+    pass++;
+    console.log(`  ✓ ${name}`);
+    return;
+  }
+  fail++;
+  console.error(`  ✗ ${name}${extra !== undefined ? `: ${JSON.stringify(extra)}` : ""}`);
 };
 
 // ── 1. the launch spec: does the connector hand the prompt over at all? ──────────────────────────
@@ -99,6 +109,8 @@ const auth = `Basic ${Buffer.from("opencode:test-secret").toString("base64")}`;
 let sessionSeq = 0;
 let sessionID = "";
 const prompts: { session: string; text: string }[] = [];
+let sessionGate: Promise<void> | undefined;
+let forcedSessionId: string | undefined;
 const oc = createHttpServer((req, res) => {
   if (req.headers.authorization !== auth) {
     res.writeHead(401).end();
@@ -109,8 +121,14 @@ const oc = createHttpServer((req, res) => {
   req.on("data", (d) => (raw += d));
   req.on("end", () => {
     if (req.method === "POST" && req.url === "/session") {
-      sessionID = `ses_boot_${++sessionSeq}`;
-      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: sessionID }));
+      // GATED FOR ARM C ONLY. The boot task awaits session creation, so holding this is what lets a
+      // native turn get in front of the boot prompt deterministically instead of by racing it.
+      const reply = (): void => {
+        sessionID = forcedSessionId ?? `ses_boot_${++sessionSeq}`;
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: sessionID }));
+      };
+      if (sessionGate) void sessionGate.then(reply);
+      else reply();
       return;
     }
     const m = req.url?.match(/^\/session\/([^/]+)\/prompt_async$/);
@@ -150,9 +168,34 @@ const waitForPrompts = async (n: number, ms = 8000): Promise<void> => {
 
 let armA: PluginHooks | undefined;
 let armB: PluginHooks | undefined;
+let armC: PluginHooks | undefined;
+let armD: PluginHooks | undefined;
+/** Publishes the @mention arm D needs. A REAL peer on a real broker, because the thing under test is
+ *  the mention-wake path, and a hand-called handler would grade a function rather than the route. */
+let watcher: CotalEndpoint | undefined;
+/** Drive the seat into focus THROUGH ITS OWN TOOL, retried until it reports focus: `agent.start()`
+ *  connects in the background, so a status write before the link is up does not take, and an arm
+ *  that is not in focus receives the @mention as an ordinary inbox item and grades nothing. */
+const enterFocus = async (hooks: PluginHooks): Promise<boolean> => {
+  const statusTool = (
+    hooks as unknown as { tool: Record<string, { execute: (a: unknown, c?: unknown) => Promise<string> }> }
+  ).tool.cotal_status;
+  for (let i = 0; i < 80; i++) {
+    try {
+      if (/focus/i.test(await statusTool.execute({ attention: "focus" }))) return true;
+    } catch {
+      /* not connected yet */
+    }
+    await sleep(100);
+  }
+  return false;
+};
 try {
   for (let i = 0; i < 50; i++) { if (await isReachable(servers)) break; await sleep(200); }
   await seedChannelRegistry({ servers, space, file: { defaults: { replay: false }, channels: { general: { replay: false } } } });
+  watcher = new CotalEndpoint({ space, servers, card: { id: "watch", name: "watch", role: "watcher", kind: "agent" }, channels: ["general"], heartbeatMs: 500, ttlMs: 30_000 });
+  watcher.on("error", () => undefined);
+  await watcher.start();
 
   // ARM A — booted WITH a prompt. Exactly one turn, carrying that text.
   process.env.COTAL_NAME = "Booty";
@@ -178,6 +221,98 @@ try {
   await armA.dispose?.();
   armA = undefined;
 
+  // ARM C, A NATIVE TURN GETS IN FRONT OF THE BOOT PROMPT, and the prompt must still be delivered.
+  //
+  // This is a LOSS, not an ordering question, and it is why the boot text is no longer cleared by
+  // the task that starts it. The task used to clear the flag and then call `drive`; a natively
+  // submitted prompt that had already made the session busy sent `drive` down its early return, and
+  // the operator's spawn prompt was gone with nothing holding it and nothing to retry it. A reviewer
+  // reproduced that against the real plugin before this cell existed.
+  //
+  // The gate is what makes it deterministic rather than a race: session creation is held, so the
+  // boot task is certainly still waiting when the native turn is announced.
+  const cText = "the operator's prompt, behind a native turn";
+  forcedSessionId = "ses_boot_native";
+  let releaseSession: () => void = () => undefined;
+  sessionGate = new Promise<void>((r) => (releaseSession = r));
+  const beforeC = prompts.length;
+  process.env.COTAL_NAME = "Racey";
+  process.env.COTAL_ID = "racey";
+  process.env.COTAL_OPENCODE_PROMPT = cText;
+  clearPluginGuard();
+  armC = await bootPlugin();
+  await sleep(400);
+
+  // The host started a turn of its own. `ours` adopts the id and the handler sets `busy`.
+  await fire(armC, { type: "session.status", properties: { sessionID: forcedSessionId, status: { type: "busy" } } });
+  releaseSession();
+  await sleep(600);
+  // Nothing may have been submitted yet: the connector does not prompt into a running turn.
+  check("boot-race: the boot prompt was not submitted into the running native turn",
+    prompts.length === beforeC, prompts.slice(beforeC));
+
+  // The native turn ends. THIS is where the prompt must appear: it was kept, not dropped.
+  await fire(armC, { type: "session.idle", properties: { sessionID: forcedSessionId } });
+  await waitForPrompts(beforeC + 1);
+  check("boot-race: the boot prompt survived the native turn and was submitted after it",
+    prompts.length === beforeC + 1 && prompts[beforeC]?.text.includes(cText) === true,
+    prompts.slice(beforeC));
+
+  await armC.dispose?.();
+  armC = undefined;
+  sessionGate = undefined;
+  forcedSessionId = undefined;
+
+  // ARM D, A WAKE ARRIVES BEFORE THE BOOT PROMPT'S DRIVE, and both have to come out the other side.
+  //
+  // This is the ordering ARM C cannot reach. There the thing in front of the boot is a NATIVE turn,
+  // which makes the session busy and is refused at the top of `drive`; here it is a focus @mention,
+  // which is refused further down, at the boot floor, and is put into the same one slot the boot
+  // turn's own drive later reads. That combination wedged the seat permanently: the boot text was
+  // taken only when the slot was empty, so the parked nudge sent the boot drive down the floor's
+  // early return and straight back into the slot, and emptying the slot needed the submission the
+  // floor had just refused. Neither input was ever submitted, no error was raised, no retry was
+  // scheduled, and the seat stayed online and deaf to every later connector-submitted turn.
+  // Reproduced live against this plugin before this arm existed.
+  //
+  // GRADED AS TWO CELLS, because they are two claims and one repair does not imply the other: the
+  // boot can be freed while the wake is quietly discarded by the slot's own success clear. And the
+  // gate is what makes it an ordering rather than a race, exactly as in ARM C: session creation is
+  // held, so the boot task is certainly still parked when the mention lands.
+  const dText = "the operator's prompt, with a wake already parked";
+  forcedSessionId = "ses_boot_wake";
+  let releaseD: () => void = () => undefined;
+  sessionGate = new Promise<void>((r) => (releaseD = r));
+  process.env.COTAL_NAME = "Wakey";
+  process.env.COTAL_ID = "wakey";
+  process.env.COTAL_OPENCODE_PROMPT = dText;
+  clearPluginGuard();
+  armD = await bootPlugin();
+  // PRECONDITION, not decoration: outside focus the @mention is an ordinary inbox item, there is no
+  // nudge to park, and both cells below would pass while grading the batch path.
+  check("boot+wake: the seat is in focus, so the @mention becomes a wake and not a batch",
+    await enterFocus(armD));
+  await watcher.multicast("@Wakey you were named while the boot prompt was still waiting", {
+    channel: "general",
+    mentions: ["Wakey"],
+  });
+  await sleep(2000); // ample for delivery and ingest, and the boot task is parked on the gate throughout
+  releaseD();
+  // SCOPED TO THIS ARM'S OWN SESSION ID. Every earlier arm's prompt is in the same array, and a
+  // whole-array check is satisfied by arm A's boot text and by any nudge-shaped line, which reads a
+  // starved arm as a healthy one.
+  const dPrompts = (): { session: string; text: string }[] => prompts.filter((p) => p.session === forcedSessionId);
+  for (let i = 0; i < 80 && dPrompts().length === 0; i++) await sleep(100);
+  check("boot+wake: the boot prompt was submitted even though a wake arrived in front of it",
+    dPrompts().some((p) => p.text.includes(dText)), dPrompts());
+  check("boot+wake: the wake that arrived first was delivered rather than parked into the boot",
+    dPrompts().some((p) => /mentioned by/i.test(p.text)), dPrompts());
+
+  await armD.dispose?.();
+  armD = undefined;
+  sessionGate = undefined;
+  forcedSessionId = undefined;
+
   // ARM B — booted WITHOUT a prompt. The connector's `--prompt`-less spawn must stay silent: the
   // control that says arm A measured the prompt and not merely "the plugin prompts at boot".
   delete process.env.COTAL_OPENCODE_PROMPT;
@@ -189,14 +324,26 @@ try {
   await sleep(3000);
   check("a boot with no prompt drives no turn at all", prompts.length === before, prompts.slice(before));
 
-  console.log(`\nOPENCODE BOOT-PROMPT TEST PASSED ✅  (${pass} checks)`);
+} catch (e) {
+  fail++;
+  console.error("  ✗ scenario threw:", (e as Error).message);
 } finally {
   await armA?.dispose?.();
+  await armC?.dispose?.();
+  await armD?.dispose?.();
   await armB?.dispose?.();
+  await watcher?.stop?.();
   nats.kill("SIGKILL");
   oc.close();
   await sleep(150);
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
-process.exit(0);
+// The marker prints on EVERY exit path, pass or fail: a grader that cannot tell an unfinished run
+// from a finished red run cannot grade this suite at all.
+console.log(
+  fail === 0
+    ? `\nOPENCODE BOOT-PROMPT TEST PASSED ✅  (${pass} checks)`
+    : `\nOPENCODE BOOT-PROMPT TEST FAILED ❌  (${pass} passed, ${fail} failed)`,
+);
+process.exit(fail === 0 ? 0 : 1);
