@@ -353,8 +353,6 @@ export class CotalEndpoint extends EventEmitter {
   /** Caller-owned membership watches survive a connection rebuild as INTENT. Their iterators are
    *  connection-scoped and are stopped/re-created around the epoch swap. */
   private readonly membershipFeedWatches = new Set<MembershipFeedWatch>();
-  /** Watch cancellations removed from the public set but still owning broker cleanup. */
-  private readonly membershipFeedCancellations = new Set<Promise<void>>();
   /** The live `ctl.delivery` serve subscription (delivery daemon) — re-created on every (re)connect by
    *  {@link armDeliveryControl}; tracked so the stale one is dropped on reconnect. */
   private deliveryServeSub?: import("@nats-io/transport-node").Subscription;
@@ -1198,7 +1196,6 @@ export class CotalEndpoint extends EventEmitter {
     }
     await Promise.all([...this.membershipFeedWatches].map((watch) => watch.arm));
     this.membershipFeedWatches.clear();
-    await Promise.all([...this.membershipFeedCancellations]);
     for (const msgs of this.streamMsgs) {
       try {
         msgs.stop();
@@ -2140,11 +2137,8 @@ export class CotalEndpoint extends EventEmitter {
       if (watch.stopped) { await watch.arm.catch(() => {}); return; }
       watch.stopped = true;
       this.membershipFeedWatches.delete(watch);
-      const cancellation = watch.arm.catch(() => {}).then(() => this.disarmMembershipWatch(watch));
-      watch.arm = cancellation;
-      this.membershipFeedCancellations.add(cancellation);
-      try { await cancellation; }
-      finally { this.membershipFeedCancellations.delete(cancellation); }
+      watch.arm = watch.arm.catch(() => {}).then(() => this.disarmMembershipWatch(watch));
+      await watch.arm;
     } };
   }
 

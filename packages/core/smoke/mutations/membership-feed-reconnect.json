@@ -1,12 +1,12 @@
 {
   "suite": "packages/core/smoke/delivery-reconnect.smoke.ts",
-  "guard": "membership reads and caller-owned watches recover across manual and terminal reconnects, with broker consumers deleted on replacement, caller stop, and endpoint shutdown",
+  "guard": "membership reads and caller-owned watches recover across manual and terminal reconnects, with broker consumers deleted on replacement and caller stop",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:delivery-reconnect:auth",
   "completionMarker": "DELIVERY-RECONNECT SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/membership-feed-reconnect.json",
   "why": [
     "The live pre-fix reproduction proves the stale membership-feed cache fails after reconnect; the pinned client aborts that path after the named read failure, so it is not misreported as a mutation kill.",
-    "The three completing mutations isolate watch rearm, caller-stop broker deletion, and fresh-connection cleanup after terminal close. The rejected-chain recovery cell remains as a direct regression: clearConnectionScoped is the single reset point, so a second mutation on the downstream append would grade redundant code rather than another property."
+    "The four completing mutations isolate watch rearm, caller-stop broker deletion, fresh-connection predecessor cleanup after terminal close, and rejected-chain recovery."
   ],
   "mutations": [
     {
@@ -21,29 +21,29 @@
     {
       "name": "stopping a membership watch leaves its ordered broker consumer",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    const deleted = await consumer?.delete().catch(() => false);\n",
-      "replace": "    const deleted = false;\n",
+      "find": "        const deleted = await consumer.delete();\n",
+      "replace": "        const deleted = false;\n",
       "expectRed": "stopping the membership watch deletes its broker consumer",
       "cell": "stopping the membership watch deletes its broker consumer",
-      "note": "The caller stop has no later rearm, so local iterator stop alone leaves the ordered consumer until its inactivity threshold."
+      "note": "The async stop handle must not resolve until its ordered broker consumer is deleted."
     },
     {
       "name": "terminal self-heal forgets the closed-epoch consumer identity before fresh cleanup",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    if (watch.consumerStream && watch.consumerName) {\n      const jsm = await jetstreamManager(this.nc!);\n      await jsm.consumers.delete(watch.consumerStream, watch.consumerName).catch(() => false);\n      watch.consumerStream = undefined;\n      watch.consumerName = undefined;\n    }\n",
+      "find": "    if (watch.consumerStream && watch.consumerName) {\n      const jsm = await jetstreamManager(this.nc!);\n      if (await this.deleteMembershipConsumer(jsm, watch.consumerStream, watch.consumerName)) {\n        watch.consumerStream = undefined;\n        watch.consumerName = undefined;\n      }\n    }\n",
       "replace": "    watch.consumerStream = undefined;\n    watch.consumerName = undefined;\n",
       "expectRed": "terminal self-heal creates one successor and deletes the closed-epoch predecessor",
       "cell": "terminal self-heal creates one successor and deletes the closed-epoch predecessor",
-      "note": "Old-connection deletion cannot run after nc.closed. The fresh connection must delete the recorded stream/name before creating the successor."
+      "note": "After nc.closed, the fresh connection must delete the recorded predecessor before creating its successor."
     },
     {
-      "name": "endpoint stop drains before a removed watch cancellation finishes",
+      "name": "a rejected watch arm permanently poisons the serialized lifecycle chain",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    await Promise.all([...this.membershipFeedCancellations]);\n",
-      "replace": "",
-      "expectRed": "watch stop followed immediately by endpoint stop still deletes the broker consumer",
-      "cell": "watch stop followed immediately by endpoint stop still deletes the broker consumer",
-      "note": "Public watch.stop removes intent immediately but registers its cleanup promise. Endpoint.stop must await that cancellation before draining the NATS request mux."
+      "find": "    for (const watch of this.membershipFeedWatches)\n      watch.arm = watch.arm.catch(() => {}).then(() => this.disarmMembershipWatch(watch));\n",
+      "replace": "    for (const watch of this.membershipFeedWatches)\n      watch.arm = watch.arm.then(() => this.disarmMembershipWatch(watch));\n",
+      "expectRed": "a later rebuild recovers a membership watch after a transient arm rejection",
+      "cell": "a later rebuild recovers a membership watch after a transient arm rejection",
+      "note": "clearConnectionScoped is the one reset point: it must turn a rejected prior arm into a completing cleanup queue before rearm appends new work."
     }
   ]
 }

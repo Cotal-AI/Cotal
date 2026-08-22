@@ -140,7 +140,7 @@ try {
   await shutdownWatch.stop();
   await observer.stop();
   for (let i = 0; i < 20 && (await membershipConsumers()).length !== 0; i++) await wait(50);
-  check("watch stop followed immediately by endpoint stop still deletes the broker consumer", (await membershipConsumers()).length === 0, await membershipConsumers());
+  check("awaited watch stop before endpoint stop deletes the broker consumer", (await membershipConsumers()).length === 0, await membershipConsumers());
 
   // Restart a fresh observer for the terminal-close arm: endpoint stop is permanent by contract.
   observer = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "admin"), channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "observer-2", role: "observer", kind: "observer" } });
