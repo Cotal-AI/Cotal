@@ -133,29 +133,34 @@ try {
   for (let i = 0; i < 20 && (await membershipConsumers()).length !== 0; i++) await wait(50);
   check("stopping the membership watch deletes its broker consumer", (await membershipConsumers()).length === 0, await membershipConsumers());
 
-  // Stop DURING arm after the broker consumer exists but before consume() returns. This is the exact
-  // unowned interval that leaked when identity was recorded only after consume completed.
+  // Invoke the REAL public stop while its broker consumer is live, then terminal-close that epoch.
+  // The stop promise must remain endpoint-owned and pending until fresh-epoch retained-identity deletion.
   const raceNc = (observer as unknown as { nc: import("@nats-io/transport-node").NatsConnection }).nc;
   const raceFeed = await new Kvm(raceNc).open(membershipBucket(space));
   const raceBucket = raceFeed as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<import("@nats-io/jetstream").PushConsumer> } } };
   const raceGet = raceBucket.js.consumers.getPushConsumer.bind(raceBucket.js.consumers);
-  let releaseRace!: () => void;
-  const raceGate = new Promise<void>((resolve) => { releaseRace = resolve; });
+  let raceConsumer: import("@nats-io/jetstream").PushConsumer | undefined;
   raceBucket.js.consumers.getPushConsumer = async (...args: unknown[]) => {
-    const consumer = await raceGet(...args);
-    const consume = consumer.consume.bind(consumer);
-    consumer.consume = async (...consumeArgs: Parameters<typeof consume>) => { await raceGate; return consume(...consumeArgs); };
-    return consumer;
+    raceConsumer = await raceGet(...args);
+    return raceConsumer;
   };
   (observer as unknown as { membershipFeedKv: unknown }).membershipFeedKv = raceFeed;
-  const raceHandlePromise = observer.watchMembership(() => {});
-  for (let i = 0; i < 20 && (await membershipConsumers()).length === 0; i++) await wait(50);
-  const raceIntent = [...(observer as unknown as { membershipFeedWatches: Set<{ stopped: boolean; arm: Promise<void> }> }).membershipFeedWatches][0];
-  raceIntent.stopped = true;
-  releaseRace();
-  await raceHandlePromise;
-  for (let i = 0; i < 20 && (await membershipConsumers()).length !== 0; i++) await wait(50);
-  check("stop during membership arm retains identity and leaves no broker consumer", (await membershipConsumers()).length === 0, await membershipConsumers());
+  const raceHandle = await observer.watchMembership(() => {});
+  const raceConsumers = await membershipConsumers();
+  check("the public stop/close race starts with one membership consumer", raceConsumers.length === 1 && raceConsumer !== undefined, raceConsumers);
+  if (!raceConsumer) throw new Error("public stop/close race did not capture broker consumer creation");
+  const raceDelete = raceConsumer.delete.bind(raceConsumer);
+  let releaseDelete!: () => void;
+  const deleteGate = new Promise<void>((resolve) => { releaseDelete = resolve; });
+  raceConsumer.delete = async () => { await deleteGate; return raceDelete(); };
+  const raceStop = raceHandle.stop();
+  void raceStop.catch(() => {});
+  void raceNc.close();
+  await wait(50);
+  releaseDelete();
+  const raceStopSettled = await Promise.race([raceStop.then(() => true, () => false), wait(5000).then(() => false)]);
+  for (let i = 0; i < 40 && (await membershipConsumers()).length !== 0; i++) await wait(50);
+  check("public stop concurrent with terminal close resolves after fresh cleanup", raceStopSettled && (await membershipConsumers()).length === 0, { raceStopSettled, consumers: await membershipConsumers() });
 
   const shutdownWatch = await observer.watchMembership(() => {});
   await wait(200);
@@ -165,6 +170,30 @@ try {
   await observer.stop();
   for (let i = 0; i < 20 && (await membershipConsumers()).length !== 0; i++) await wait(50);
   check("awaited watch stop before endpoint stop deletes the broker consumer", (await membershipConsumers()).length === 0, await membershipConsumers());
+
+  await observer.stop();
+
+  // Permanent endpoint shutdown has no future cleanup epoch. If the broker connection is already
+  // terminal, an outstanding public stop must not hang the process waiting for an impossible rebuild.
+  observer = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "admin"), channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "observer-broker-down", role: "observer", kind: "observer" } });
+  observer.on("error", () => {}); await observer.start();
+  const brokerDownWatch = await observer.watchMembership(() => {});
+  await (observer as unknown as { nc: import("@nats-io/transport-node").NatsConnection }).nc.close();
+  const brokerDownStop = brokerDownWatch.stop();
+  void brokerDownStop.catch(() => {});
+  const endpointStopped = await Promise.race([observer.stop().then(() => true), wait(2000).then(() => false)]);
+  const brokerDownWatchStopped = await Promise.race([brokerDownStop.then(() => true, () => false), wait(1000).then(() => false)]);
+  check("endpoint shutdown while broker is down settles the public membership stop", endpointStopped && brokerDownWatchStopped, { endpointStopped, brokerDownWatchStopped });
+  // This terminal boundary explicitly leaves broker expiry to retire the unreachable consumer; remove it
+  // from the cardinality census so subsequent cells grade their own ownership rather than this exception.
+  const expiredByShutdown = await membershipConsumers();
+  const cleanupNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "admin"), tls: false }) });
+  try {
+    const jsm = await import("@nats-io/jetstream").then(({ jetstreamManager }) => jetstreamManager(cleanupNc));
+    for (const name of expiredByShutdown) await jsm.consumers.delete(membershipStream, name);
+  } finally { await cleanupNc.drain(); }
+  for (let i = 0; i < 20 && (await membershipConsumers()).length !== 0; i++) await wait(50);
+  check("the broker-down shutdown exception is isolated before later lifecycle cells", (await membershipConsumers()).length === 0, await membershipConsumers());
 
   // Restart a fresh observer for the terminal-close arm: endpoint stop is permanent by contract.
   observer = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "admin"), channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "observer-2", role: "observer", kind: "observer" } });
