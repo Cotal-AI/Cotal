@@ -145,8 +145,8 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--open` | off (auth) | Unauthenticated dev mesh: no JWT, no ACLs |
 | `--user-auth` | off | Per-user auth: people `cotal login`; connects are authorized against the actor ledger |
 | `--idp <url>` | — | With `--user-auth`: the IdP auth base URL to pin on first enable |
-| `--exchange-public-port <n>` | — | With `--user-auth`: add the public exchange face on this loopback port, for an HTTPS reverse proxy to forward to |
-| `--exchange-public-url <https://…>` | — | With `--exchange-public-port`: advertise the reverse proxy's HTTPS URL in discovery |
+| `--exchange-public-port <n>` | none | With `--user-auth`: add the public exchange face on this loopback port, for an HTTPS reverse proxy to forward to |
+| `--exchange-public-url <https://…>` | none | With `--exchange-public-port`: advertise the reverse proxy's HTTPS URL in discovery |
 | `--exchange-trusted-proxy` | off | With `--exchange-public-port`: attribute public failure buckets to the last `X-Forwarded-For` hop. Enable only when the listener is reachable solely through a trusted proxy; otherwise the socket address is used |
 | `--detach` | off | Run in the background (stop with `cotal down`) |
 | `--tls-cert <path>` | — | PEM certificate to serve TLS with. Must be given together with `--tls-key`. The pair is validated **before** the broker starts — readability, private-key mode, that the two match, the validity window, and that the certificate covers the host clients will dial — because `nats-server` starts happily on an expired certificate and only the client then fails. The decision is recorded, so a later bare `cotal up` after a `cotal down` keeps serving TLS rather than silently reverting to cleartext |
@@ -1248,7 +1248,7 @@ cotal feedback-intake --keys <keys.json> [--port <n>] [--creds <file>]
 ```
 
 `auth-service` runs a user-auth space's identity plane: the NATS auth callout, the
-capability-gated local exchange and JWKS, and—when `--exchange-public-port` is set—the closed public
+capability-gated local exchange and JWKS, and, when `--exchange-public-port` is set, the closed public
 exchange/discovery face forwarded by an HTTPS reverse proxy. `--exchange-public-url` is the proxy URL
 advertised to clients; `--exchange-trusted-proxy` opts into last-hop `X-Forwarded-For` attribution.
 `cotal up --user-auth` starts and supervises the service for you, so you run it directly only to

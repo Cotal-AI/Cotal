@@ -126,8 +126,8 @@ origin and must verify TLS. `--exchange-trusted-proxy` opts into peer attributio
 Without it, forwarded headers are ignored and the socket address is the peer key. Public failure
 buckets are per-source and separate from loopback exchange budgets. The in-process LRU retains at
 most 1024 peer buckets: that bounds memory and isolates ordinary sources, but an attacker cycling
-more than 1024 trusted-proxy last hops can evict earlier 429 state. It is not a mint bypass—a valid
-credential is still required—so use upstream reverse-proxy rate limiting when that throttle-escape
+more than 1024 trusted-proxy last hops can evict earlier 429 state. It is not a mint bypass; a valid
+credential is still required, so use upstream reverse-proxy rate limiting when that throttle-escape
 matters to the deployment.
 
 The service starts with the broker, is torn down by `cotal down`, and holds the
