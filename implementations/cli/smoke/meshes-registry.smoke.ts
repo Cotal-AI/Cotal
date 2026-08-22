@@ -146,9 +146,10 @@ try {
   check("add --mode auth without that space's trust material fails loud", authless.code === 1 && authless.out.includes("trust material"), authless.out);
   check("add --mode auth recorded nothing", findMesh("needs-auth") === undefined, loadMeshes());
   const userMode = await run(["add", "hosted"], { server: LIVE, root, mode: "user" });
-  check("add --mode user is refused (IdP trust is not derivable)", userMode.code === 1 && userMode.out.includes("cotal up --user-auth"), userMode.out);
+  check("add --mode user WITHOUT pinned trust is refused (pins must be supplied, not guessed)",
+    userMode.code === 1 && userMode.out.includes("--user-auth-file") && userMode.out.includes("--from"), userMode.out);
   const badMode = await run(["add", "hosted"], { server: LIVE, root, mode: "sideways" });
-  check("add --mode with a junk value fails loud", badMode.code === 1 && badMode.out.includes("auth or open"), badMode.out);
+  check("add --mode with a junk value fails loud", badMode.code === 1 && badMode.out.includes("auth, open or user"), badMode.out);
   const badUsage = await run(["add"], { server: LIVE, root });
   check("add without a space name prints usage", badUsage.code === 1 && badUsage.out.includes("usage:"), badUsage.out);
 
@@ -218,6 +219,96 @@ try {
   const cafeTls = await run(["add", "cafe"], { server: "tls://192.168.1.10:4222", root, tls: true, force: true });
   check("RFC1918 stays refused even with TLS intent (a cafe LAN is private too)",
     cafeTls.code === 1 && findMesh("cafe") === undefined, cafeTls.out);
+
+  // ── add: --mode user with SUPPLIED pinned trust ────────────────────────────────────────────────────
+  // The old refusal's reasoning — IdP pins must be established, not guessed — is satisfied by
+  // SUPPLYING them: a bundle carries the pins, the exchange must answer /health + /jwks with the
+  // pinned issuer, and the credless broker probe reporting auth-required is the PASS.
+  const { statSync: statSentinel } = await import("node:fs");
+  const { createServer: createHttpServer } = await import("node:http");
+  const ISSUER = "https://idp.example.test/";
+  // A stand-in exchange: answers /health with the pinned issuer and /jwks with a key set.
+  const exchange = createHttpServer((req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/health") return void res.end(JSON.stringify({ ok: true, issuer: ISSUER }));
+    if (req.url === "/jwks") return void res.end(JSON.stringify({ keys: [{ kty: "OKP" }] }));
+    res.statusCode = 404;
+    res.end("{}");
+  });
+  await new Promise<void>((r) => exchange.listen(0, "127.0.0.1", r));
+  const exchangeUrl = `http://127.0.0.1:${(exchange.address() as { port: number }).port}`;
+  const wrongExchange = createHttpServer((req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/health") return void res.end(JSON.stringify({ ok: true, issuer: "https://someone-else.test/" }));
+    if (req.url === "/jwks") return void res.end(JSON.stringify({ keys: [] }));
+    res.statusCode = 404;
+    res.end("{}");
+  });
+  await new Promise<void>((r) => wrongExchange.listen(0, "127.0.0.1", r));
+  const wrongExchangeUrl = `http://127.0.0.1:${(wrongExchange.address() as { port: number }).port}`;
+  const SENTINEL_BLOB = "-----BEGIN NATS USER JWT-----\nsentinel-secret-material-o7\n------END NATS USER JWT------";
+  const bundleFor = (over: Record<string, unknown> = {}) => ({
+    space: "hosted",
+    server: AUTH_LIVE, // the broker that actually refuses a bare connect — the user-arm PASS
+    tlsRequired: false, // loopback in this smoke; a real remote bundle says true
+    userAuth: { provider: "cotal", idp: { url: ISSUER, issuer: ISSUER, audience: "cotal-mesh" }, endpoints: { url: exchangeUrl } },
+    sentinelCreds: SENTINEL_BLOB,
+    ...over,
+  });
+  const bundlePath = join(root, "bundle.json");
+  writeFileSync(bundlePath, JSON.stringify(bundleFor()));
+  const hostedRoot = projectRoot("hosted");
+  const userAdd = await run(["add", "hosted"], { mode: "user", "user-auth-file": bundlePath, root: hostedRoot });
+  check("add --mode user with a pinned bundle records a remote entry",
+    userAdd.code === 0 && findMesh("hosted")?.mode === "user", userAdd.out);
+  const hostedEntry = findMesh("hosted");
+  check("…marked remote, with the pinned exchange as a stated trust position",
+    hostedEntry?.userAuth?.remote === true && hostedEntry?.userAuth?.endpoints?.url === exchangeUrl, hostedEntry);
+  check("…and the record carries the sentinel PATH, never the blob",
+    typeof hostedEntry?.userAuth?.sentinelCredsPath === "string" &&
+      !JSON.stringify(hostedEntry).includes("sentinel-secret-material"), hostedEntry);
+  const sentinelStat = statSentinel(hostedEntry!.userAuth!.sentinelCredsPath!);
+  check("the sentinel lands 0600", (sentinelStat.mode & 0o777) === 0o600, sentinelStat.mode.toString(8));
+  // Round-trip: the recorded entry resolves to a usable user-mode target.
+  const { targetFromEntry } = await import("@cotal-ai/workspace");
+  const hostedTarget = targetFromEntry(hostedEntry!, hostedEntry!.server, "registry");
+  check("the remote entry round-trips through targetFromEntry",
+    hostedTarget.mode === "user" && hostedTarget.userAuth?.remote === true && hostedTarget.server.startsWith("nats://127.0.0.1"), hostedTarget);
+  const hostedList = await run([]);
+  check("`cotal meshes` output never contains the sentinel blob",
+    !hostedList.out.includes("sentinel-secret-material"), hostedList.out.slice(0, 200));
+  removeMesh("hosted");
+  // A bundle missing ANY pin refuses — each of the trust fields, not just one.
+  for (const strip of ["idp-url", "issuer", "audience", "endpoints", "sentinel"] as const) {
+    const broke = bundleFor();
+    if (strip === "idp-url") (broke.userAuth.idp as { url?: string }).url = undefined as never;
+    if (strip === "issuer") (broke.userAuth.idp as { issuer?: string }).issuer = undefined as never;
+    if (strip === "audience") (broke.userAuth.idp as { audience?: string }).audience = undefined as never;
+    if (strip === "endpoints") (broke.userAuth as { endpoints?: unknown }).endpoints = undefined;
+    if (strip === "sentinel") (broke as { sentinelCreds?: string }).sentinelCreds = undefined;
+    writeFileSync(bundlePath, JSON.stringify(broke));
+    const refusedPin = await run(["add", "hosted"], { mode: "user", "user-auth-file": bundlePath, root: hostedRoot });
+    check(`a bundle missing ${strip} refuses`, refusedPin.code === 1 && findMesh("hosted") === undefined, refusedPin.out);
+  }
+  // The exchange must answer with the PINNED issuer — a different issuer is a different authority.
+  writeFileSync(bundlePath, JSON.stringify(bundleFor({ userAuth: { provider: "cotal", idp: { url: ISSUER, issuer: ISSUER, audience: "cotal-mesh" }, endpoints: { url: wrongExchangeUrl } } })));
+  const wrongIss = await run(["add", "hosted"], { mode: "user", "user-auth-file": bundlePath, root: hostedRoot });
+  check("an exchange answering with a foreign issuer refuses", wrongIss.code === 1 && findMesh("hosted") === undefined, wrongIss.out);
+  // The user arm's enforcement check: an OPEN broker cannot be a user-auth mesh.
+  writeFileSync(bundlePath, JSON.stringify(bundleFor({ server: LIVE })));
+  const openUser = await run(["add", "hosted"], { mode: "user", "user-auth-file": bundlePath, root: hostedRoot });
+  check("add --mode user against an OPEN broker refuses (auth-required is the pass)",
+    openUser.code === 1 && findMesh("hosted") === undefined, openUser.out);
+  // The dial-policy fence is NOT waived for user mode: a hostname without TLS intent stays refused.
+  writeFileSync(bundlePath, JSON.stringify(bundleFor({ server: "nats://hosted.example.com:4222" })));
+  const userHostNoTls = await run(["add", "hosted"], { mode: "user", "user-auth-file": bundlePath, root: hostedRoot });
+  check("user-mode registration still goes THROUGH the dial-policy fence",
+    userHostNoTls.code === 1 && findMesh("hosted") === undefined, userHostNoTls.out);
+  // --from is HTTPS-only: handing the pins to a plaintext fetch would let the network choose them.
+  const fromHttp = await run(["add", "hosted"], { mode: "user", from: `${exchangeUrl}/.well-known/cotal-mesh`, root: hostedRoot });
+  check("--from refuses a plain-http discovery URL", fromHttp.code === 1 && findMesh("hosted") === undefined, fromHttp.out);
+  exchange.close();
+  wrongExchange.close();
 
   // ROOT INFERENCE. `findCotalRoot` returns its starting directory when it finds no `.cotal`
   // up-tree, so the "outside a project" guard has to check the directory really is one — without
@@ -658,7 +749,7 @@ try {
   // The kernel hands a completer the words AFTER the command name (`emitCommandCompletion`).
   check("completion offers the subcommands first", meshesComplete([""]).items.some((i) => i.value === "add"));
   check("completion offers registered spaces after `rm`", meshesComplete(["rm", ""]).items.some((i) => i.value === "tabbed"));
-  check("completion offers the modes after `--mode`", meshesComplete(["add", "x", "--mode", ""]).items.map((i) => i.value).join() === "auth,open");
+  check("completion offers the modes after `--mode`", meshesComplete(["add", "x", "--mode", ""]).items.map((i) => i.value).join() === "auth,open,user");
 } finally {
   process.chdir(cwd);
   broker.kill("SIGKILL");

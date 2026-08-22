@@ -96,8 +96,22 @@ export interface UserAuthInfo {
   provider: string;
   /** The pinned IdP: the login target (`cotal login --idp <url>`) + exact issuer/audience pins. */
   idp: { url: string; issuer: string; audience: string };
-  /** The local auth service's runtime endpoints (exchange/JWKS base URL). Convenience, not trust. */
+  /** The auth service's exchange/JWKS base URL. For a LOCAL entry this is convenience, not trust
+   *  (the service re-records it on every `up`). For a REMOTE entry ({@link UserAuthInfo.remote})
+   *  it is a STATED TRUST POSITION: the operator pinned it at registration — there is no local
+   *  `up` to re-derive it from — and registration verified it answers `/health` + `/jwks` with the
+   *  pinned issuer. Required when `remote` is set; {@link assertUserAuthInfo} enforces that. */
   endpoints?: { url?: string };
+  /** Present and `true` when this entry was registered for a mesh running elsewhere
+   *  (`cotal meshes add --mode user`): its pins were SUPPLIED (bundle or discovery document), not
+   *  established by a local `cotal up --user-auth`, so nothing on this machine can re-derive them
+   *  and no local service re-records the endpoints. */
+  remote?: true;
+  /** Path to the 0600 file holding the sentinel creds for a remote entry — the PATH, never the
+   *  blob: this registry file is echoed by `cotal meshes` and `status`, so inline secret material
+   *  would land on the operator's screen and in every copy of the record. The file lives under
+   *  the entry's own root (its space-scoped user-auth state dir). */
+  sentinelCredsPath?: string;
 }
 
 /** Runtime-validate a provider's opaque `publicAuth` blob into a {@link UserAuthInfo} — the
@@ -113,8 +127,19 @@ export function assertUserAuthInfo(v: unknown): UserAuthInfo {
   if (o.endpoints !== undefined && (o.endpoints === null || typeof o.endpoints !== "object" ||
       (o.endpoints.url !== undefined && typeof o.endpoints.url !== "string")))
     throw new Error("auth provider publicAuth: endpoints, when present, must be { url?: string }");
+  if (o.remote !== undefined && o.remote !== true)
+    throw new Error("auth provider publicAuth: remote, when present, must be exactly true");
+  if (o.sentinelCredsPath !== undefined && (typeof o.sentinelCredsPath !== "string" || !o.sentinelCredsPath))
+    throw new Error("auth provider publicAuth: sentinelCredsPath, when present, must be a non-empty path (the 0600 file, never the blob)");
+  // A remote entry's endpoints are its trust position, not a convenience: nothing local can
+  // re-derive them, so an entry claiming remote without a pinned exchange URL is unusable and
+  // must fail here rather than at the first connect.
+  if (o.remote === true && !o.endpoints?.url)
+    throw new Error("auth provider publicAuth: a remote entry requires a pinned endpoints.url (the exchange base verified at registration)");
   return { provider: o.provider, idp: { url: o.idp.url, issuer: o.idp.issuer, audience: o.idp.audience },
-    ...(o.endpoints ? { endpoints: { ...(o.endpoints.url ? { url: o.endpoints.url } : {}) } } : {}) };
+    ...(o.endpoints ? { endpoints: { ...(o.endpoints.url ? { url: o.endpoints.url } : {}) } } : {}),
+    ...(o.remote === true ? { remote: true } : {}),
+    ...(o.sentinelCredsPath ? { sentinelCredsPath: o.sentinelCredsPath } : {}) };
 }
 
 /** The cotal machine-home dir, overridable via `COTAL_HOME`.

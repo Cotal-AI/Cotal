@@ -1,6 +1,6 @@
 import { statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { probeConnect, type SpaceAuth } from "@cotal-ai/core";
+import { mkSecretDir, probeConnect, writeSecretFileAtomic, type SpaceAuth } from "@cotal-ai/core";
 import { classifyJoinTarget, type DialPolicy, type JoinTarget } from "../lib/join-target.js";
 import {
   authDir,
@@ -10,13 +10,16 @@ import {
   homeCotalDir,
   listSpaceAccounts,
   loadSpaceAuth,
+  assertUserAuthInfo,
   personaDir,
   preflightTarget,
   recordMesh,
   setCurrent,
+  userAuthStateDir,
   type MeshEntry,
   type MeshTarget,
   type PreflightFailure,
+  type UserAuthInfo,
 } from "@cotal-ai/workspace";
 
 /**
@@ -145,15 +148,16 @@ export function checkRoot(flag: string | undefined, cwd: string): Check<string> 
 }
 
 /** The recorded auth mode: what the operator said, or what `--root` proves. A root holding this
- *  space's account record means auth; anything else is an open broker. */
-export function checkMode(space: string, root: string, accounts: string[], flag: string | undefined): Check<MeshEntry["mode"]> {
+ *  space's account record means auth; anything else is an open broker. `--mode user` is permitted
+ *  IFF the pinned trust was SUPPLIED (`userTrustSupplied`) — the old blanket refusal reasoned
+ *  that IdP pins must be established, never guessed, and supplying them (a bundle exported where
+ *  the mesh runs, or a confirmed HTTPS discovery document) satisfies exactly that reasoning. */
+export function checkMode(space: string, root: string, accounts: string[], flag: string | undefined, userTrustSupplied = false): Check<MeshEntry["mode"]> {
   if (flag !== undefined && flag !== "auth" && flag !== "open" && flag !== "user")
-    return bad(`✗ --mode must be auth or open (got "${flag}")`);
-  // A user-auth mesh is registered by the login/exchange trust it was configured with — an issuer,
-  // an audience and an IdP URL pinned at `cotal up --user-auth`, not derivable from a broker URL.
-  // Guessing them would be inventing trust.
-  if (flag === "user")
-    return bad(`✗ --mode user cannot be registered by hand - a user-auth space carries pinned IdP trust (issuer, audience, login URL) that only \`cotal up --user-auth\` establishes, in the root where its broker runs`);
+    return bad(`✗ --mode must be auth, open or user (got "${flag}")`);
+  if (flag === "user" && !userTrustSupplied)
+    return bad(`✗ --mode user needs its pinned trust SUPPLIED, never guessed - a user-auth space carries IdP pins (issuer, audience, login URL) established where the mesh runs. Pass --user-auth-file <bundle.json> exported there, or --from <https://…/.well-known/cotal-mesh> to fetch, review and confirm them`);
+  if (flag === "user") return good("user");
   const mode = flag ?? (accounts.includes(space) ? "auth" : "open");
   if (mode === "auth" && !accounts.includes(space))
     return bad(`✗ --mode auth needs "${space}"'s trust material under ${authDir(root)}${accounts.length ? ` (it holds "${accounts.join('", "')}")` : " (it holds none)"} - copy the mesh's account + creds there, point --root at where they already are, or register it --mode open` + CA_COST);
@@ -189,13 +193,126 @@ export async function probeEnforcement(server: string): Promise<"auth" | "open" 
   return bare.reason === "auth-required" ? "auth" : "unreachable";
 }
 
-/** The claimed mode must match what the broker actually enforces, in both directions. */
+/** The claimed mode must match what the broker actually enforces, in both directions. The USER
+ *  arm reads the refusal as the evidence: a user-mode target has no probe credential by design,
+ *  so a credless probe against a user-auth broker reporting auth-required IS the pass — the one
+ *  fact a bare connect can prove about a broker whose admission runs through the callout. */
 export function checkEnforcement(mode: MeshEntry["mode"], enforces: "auth" | "open" | "unreachable", server: string, space: string, root: string): Check<void> {
   if (mode === "auth" && enforces === "open")
     return bad(`✗ the broker at ${server} accepts unauthenticated connections, so it cannot be registered as an auth mesh - it enforces no credentials; register it \`--mode open\`, or point --server at the authenticated broker for "${space}"`);
   if (mode === "open" && enforces === "auth")
     return bad(`✗ the broker at ${server} requires auth, so it cannot be registered as an open mesh - copy that mesh's account + creds under ${authDir(root)} and re-run with --mode auth` + CA_COST);
+  if (mode === "user" && enforces === "open")
+    return bad(`✗ the broker at ${server} accepts unauthenticated connections, so it cannot be registered as a user-auth mesh - user auth means the broker REFUSES a bare connect and admits only exchanged bearers; check that the bundle's server points at the user-auth broker for "${space}"`);
+  if (mode === "user" && enforces === "unreachable")
+    return bad(`✗ no broker answered at ${server} - a user-auth registration is verified by the broker's own auth-required refusal, so it cannot be recorded while the broker is unreachable`);
   return good(undefined);
+}
+
+// ---- the user arm: supplied pinned trust ----------------------------------------------------
+
+/** What a remote user-auth registration supplies: the pins nothing on this machine could derive.
+ *  Exported where the mesh runs; carried by `--user-auth-file`, or served at the space's
+ *  `/.well-known/cotal-mesh` for `--from`. */
+export interface UserBundle {
+  space: string;
+  server: string;
+  tlsRequired: boolean;
+  userAuth: UserAuthInfo;
+  /** The sentinel creds blob. IN THE BUNDLE ONLY — registration lands it in a 0600 file under
+   *  the entry's root and records the PATH; the registry document never carries the blob. */
+  sentinelCreds: string;
+}
+
+/** Validate a user-auth bundle, fail-loud on every missing pin. The `userAuth` arm goes through
+ *  {@link assertUserAuthInfo} — the same boundary every provider blob crosses — and additionally
+ *  requires the pinned exchange URL: for a remote entry the endpoints are a trust position, not a
+ *  convenience, because no local `up` exists to re-derive them. */
+export function checkUserBundle(raw: string): Check<UserBundle> {
+  let doc: Partial<UserBundle> & { userAuth?: unknown };
+  try {
+    doc = JSON.parse(raw) as never;
+  } catch {
+    return bad("✗ the user-auth bundle is not JSON - export it where the mesh runs and pass the file unmodified");
+  }
+  if (doc === null || typeof doc !== "object") return bad("✗ the user-auth bundle must be a JSON object");
+  if (typeof doc.space !== "string" || !doc.space) return bad("✗ the user-auth bundle names no space");
+  if (typeof doc.server !== "string" || !doc.server) return bad("✗ the user-auth bundle names no broker server");
+  if (typeof doc.tlsRequired !== "boolean") return bad("✗ the user-auth bundle must state tlsRequired explicitly (true or false) - transport strictness is part of what the export pins");
+  let userAuth: UserAuthInfo;
+  try {
+    userAuth = assertUserAuthInfo(doc.userAuth);
+  } catch (e) {
+    return bad(`✗ user-auth bundle: ${(e as Error).message}`);
+  }
+  if (!userAuth.endpoints?.url)
+    return bad("✗ the user-auth bundle pins no exchange endpoint (userAuth.endpoints.url) - for a remote registration that URL is trust, and it must come from the export, never be guessed");
+  if (typeof doc.sentinelCreds !== "string" || !doc.sentinelCreds)
+    return bad("✗ the user-auth bundle carries no sentinelCreds - the sentinel identity is part of the export");
+  return good({ space: doc.space, server: doc.server, tlsRequired: doc.tlsRequired, userAuth, sentinelCreds: doc.sentinelCreds });
+}
+
+/** Budget for the exchange trust probe — same posture as the mode probe above: run once, at
+ *  registration, where patience is cheaper than a wrong record. */
+const EXCHANGE_PROBE_TIMEOUT_MS = 5_000;
+
+/** The user arm of trust composition: the pinned exchange must ANSWER, and answer as itself.
+ *  `/health` must report the pinned issuer (a base that answers with a foreign issuer is a
+ *  different authority, however reachable) and `/jwks` must serve a non-empty key set (the
+ *  verification material the pins promise). Nothing here trusts the response beyond consistency
+ *  with the pins the operator supplied. */
+export async function verifyUserExchange(base: string, issuer: string): Promise<Check<void>> {
+  const url = (p: string) => new URL(p, base.endsWith("/") ? base : `${base}/`).toString();
+  let health: { ok?: boolean; issuer?: string };
+  try {
+    const res = await fetch(url("health"), { signal: AbortSignal.timeout(EXCHANGE_PROBE_TIMEOUT_MS) });
+    if (!res.ok) return bad(`✗ the pinned exchange at ${base} answered /health with ${res.status} - it is not serving as the bundle promises`);
+    health = (await res.json()) as never;
+  } catch (e) {
+    return bad(`✗ the pinned exchange at ${base} did not answer /health (${(e as Error).message}) - the bundle's endpoint must be reachable to register against it`);
+  }
+  if (health.issuer !== issuer)
+    return bad(`✗ the exchange at ${base} answers for issuer ${JSON.stringify(health.issuer)} but the bundle pins ${JSON.stringify(issuer)} - a different issuer is a different authority; nothing was registered`);
+  try {
+    const res = await fetch(url("jwks"), { signal: AbortSignal.timeout(EXCHANGE_PROBE_TIMEOUT_MS) });
+    if (!res.ok) return bad(`✗ the pinned exchange at ${base} answered /jwks with ${res.status}`);
+    const jwks = (await res.json()) as { keys?: unknown[] };
+    if (!Array.isArray(jwks.keys) || jwks.keys.length === 0)
+      return bad(`✗ the pinned exchange at ${base} serves an empty /jwks - it holds no verification keys for the trust the bundle pins`);
+  } catch (e) {
+    return bad(`✗ the pinned exchange at ${base} did not answer /jwks (${(e as Error).message})`);
+  }
+  return good(undefined);
+}
+
+/** Land the sentinel and write the remote user entry — ONE writer for both front ends, so the
+ *  wizard cannot drift from the flag form on what a remote record looks like. The sentinel blob
+ *  goes into a 0600 file under the entry's own root (its space-scoped user-auth state dir) and
+ *  the record carries the PATH: the registry document is echoed by `cotal meshes` and `status`,
+ *  and secret material must never ride a file that gets printed. */
+export function persistRemoteUserEntry(
+  space: string,
+  server: string,
+  root: string,
+  bundle: UserBundle,
+  tlsRequired: boolean,
+  overlayConsent: boolean,
+): ReturnType<typeof writeRecord> {
+  const dir = userAuthStateDir(root, space);
+  mkSecretDir(dir);
+  const sentinelCredsPath = join(dir, "sentinel.creds");
+  writeSecretFileAtomic(sentinelCredsPath, bundle.sentinelCreds);
+  return writeRecord({
+    space,
+    server,
+    root,
+    mode: "user",
+    origin: "manual",
+    ...(tlsRequired ? { tlsRequired: true } : {}),
+    ...(overlayConsent ? { unencryptedOverlay: true } : {}),
+    userAuth: { ...bundle.userAuth, remote: true, sentinelCredsPath },
+    ts: new Date().toISOString(),
+  });
 }
 
 /** The target this registration would resolve to. `flag-server` is the source that can never

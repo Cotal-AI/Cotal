@@ -2,6 +2,7 @@ import * as p from "@clack/prompts";
 import { findMesh, type MeshEntry } from "@cotal-ai/workspace";
 import { bold, brand, brandBold, dim, ok } from "../lib/theme.js";
 import { abortIfCancel } from "../lib/cancel.js";
+import { readFileSync } from "node:fs";
 import {
   candidateTarget,
   checkDialPolicy,
@@ -10,11 +11,14 @@ import {
   checkRoot,
   checkServer,
   checkTrust,
+  checkUserBundle,
   isDir,
+  persistRemoteUserEntry,
   probeEnforcement,
   spacesAtRoot,
   tlsIntent,
   verifyTarget,
+  verifyUserExchange,
   writeRecord,
 } from "./meshes-add.js";
 
@@ -254,10 +258,54 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
         message: "That folder holds no credentials for this broker. What next?",
         options: [
           { value: "root", label: "Point at a different folder", hint: "one that already holds its credentials" },
+          { value: "bundle", label: "It is a hosted user-auth mesh - I have its trust bundle", hint: "a bundle.json exported where the mesh runs" },
           { value: "cancel", label: "Cancel" },
         ],
       });
     if (next === "cancel") return cancelled(io);
+    // THE ONE GUIDED USER-AUTH BRANCH. No rule lives here: the bundle validation, the exchange
+    // trust probe, the auth-required PASS, and the record writer are the same functions the flag
+    // form calls (meshes-add.ts owns them); this branch only asks for the file and presents
+    // failures.
+    if (next === "bundle") {
+      const path = await io.text({
+        message: "Path to the trust bundle (bundle.json)",
+        placeholder: "exported where the mesh runs",
+        validate: (p) => (p ? undefined : "Required - the bundle carries the pins this registration adopts."),
+      });
+      let rawBundle: string;
+      try {
+        rawBundle = readFileSync(path, "utf8");
+      } catch (e) {
+        io.log.error(`Cannot read ${path} (${(e as Error).message})`);
+        return cancelled(io, "Nothing was registered.");
+      }
+      const parsed = checkUserBundle(rawBundle);
+      if (!parsed.ok) { io.log.error(parsed.message); return cancelled(io, "Nothing was registered."); }
+      const b = parsed.value;
+      const userTls = b.tlsRequired || tlsIntent(server as string, false);
+      const userDial = checkDialPolicy(server as string, { tlsRequired: userTls, allowUnencryptedOverlay: ackedFor === server });
+      if (!userDial.ok) { io.log.error(userDial.message); return cancelled(io, "Nothing was registered."); }
+      const exch = await verifyUserExchange(b.userAuth.endpoints!.url!, b.userAuth.idp.issuer);
+      if (!exch.ok) { io.log.error(exch.message); return cancelled(io, "Nothing was registered."); }
+      const enforce = checkEnforcement("user", enforces, server as string, b.space, root);
+      if (!enforce.ok) { io.log.error(enforce.message); return cancelled(io, "Nothing was registered."); }
+      io.note(
+        [
+          `space     ${b.space}`,
+          `broker    ${server}${userTls ? "  (TLS required)" : ""}`,
+          `issuer    ${b.userAuth.idp.issuer}`,
+          `audience  ${b.userAuth.idp.audience}`,
+          `exchange  ${b.userAuth.endpoints?.url}`,
+        ].join("\n"),
+        brand("About to record (user-auth, pinned)"),
+      );
+      const goUser = await io.confirm({ message: "Register this user-auth mesh?" });
+      if (!goUser) return cancelled(io, "Nothing was registered.");
+      persistRemoteUserEntry(b.space, server as string, root, b, userTls, Boolean(userDial.value.residual));
+      io.outro(ok(`Registered "${b.space}"`));
+      return true;
+    }
     root = undefined; // ask for a path; never re-infer, or this offers the same dead end again
     defaultRoot = undefined; // …and never offer the folder we just rejected as the default
   }
