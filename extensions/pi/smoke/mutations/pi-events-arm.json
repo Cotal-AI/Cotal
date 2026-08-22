@@ -1,0 +1,29 @@
+{
+  "guard": "the Pi connector declares connector-core's exact event channel, only --events arms COTAL_EVENTS, and an armed launch carries a durable workspace root",
+  "command": "pnpm smoke:pi-events-arm",
+  "completionMarker": "pi-events-arm smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/pi/smoke/mutations/pi-events-arm.json",
+  "mutations": [
+    {
+      "name": "A1 delete the connector eventChannel declaration so armed spawn is refused before launch",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "  eventChannel,\n  buildLaunch(opts: LaunchOpts): LaunchSpec {",
+      "replace": "  buildLaunch(opts: LaunchOpts): LaunchSpec {",
+      "expectRed": "the Pi connector declares an event plane"
+    },
+    {
+      "name": "A2 locally re-derive the channel with a plausible name key instead of core identity",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "  eventChannel,\n  buildLaunch(opts: LaunchOpts): LaunchSpec {",
+      "replace": "  eventChannel: ({ actor }) => `events.${actor}`,\n  buildLaunch(opts: LaunchOpts): LaunchSpec {",
+      "expectRed": "the connector event channel is connector-core's derivation by identity"
+    },
+    {
+      "name": "A3 arm every launch so an unarmed Pi session can publish",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "    if (opts.events === true) {",
+      "replace": "    if (opts.events !== undefined || true) {",
+      "expectRed": "an unarmed Pi launch sets no COTAL_EVENTS"
+    }
+  ]
+}

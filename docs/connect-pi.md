@@ -59,6 +59,17 @@ control listener, delivery association, and ordered presence chain in a process-
 then binds the replacement runtime on its next `session_start`. It also atomically records the new
 Pi session id. Only `session_shutdown { reason: "quit" }` stops the mesh.
 
+## Event plane
+
+A seat launched with `cotal spawn --events --agent pi` publishes structured turn events on
+`events.<owner>.<actor>`, named from the seat principal. The launcher sets `COTAL_EVENTS` only for
+that spawn and supplies its managed workspace root for the write-ahead log; a normal Pi session
+publishes no events. The session's durable JSONL records are the event source, so a restarted seat
+continues the same ordered stream rather than reopening it. Frames expose their writer `epoch` and
+`seq`; assistant messages and tool results carry `messageId`, and tool events carry Pi's native
+`toolCallId`. See [Connect Claude Code](connect-claude.md#event-plane) for the shared channel and
+access rules.
+
 For managed PTY seats, `cotal spawn --agent pi --resume <pi-session-id>` forks that transcript into
 a new meshed Pi session (`pi --fork`; the source is untouched). After readiness, the manager binds
 the exact current Pi session through the token-authenticated local control socket. An unexpected Pi

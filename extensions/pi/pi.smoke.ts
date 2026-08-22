@@ -539,8 +539,9 @@ for (const assistant of [
   ok(JSON.parse(readFileSync(state, "utf8")).status === "quit", "a deliberate Pi quit is distinguished from a crash");
   if (process.platform !== "win32") ok((statSync(state).mode & 0o077) === 0, "session state is owner-only on POSIX");
   else checks++;
-  if (previous === undefined) delete process.env.COTAL_PI_SESSION_STATE;
-  else process.env.COTAL_PI_SESSION_STATE = previous;
+  // Exercise the legacy derivation rather than the ambient managed-seat state inherited by this
+  // smoke process. The previous process value must not shadow the fixture's agent-file path.
+  delete process.env.COTAL_PI_SESSION_STATE;
 
   const project = join(root, "project");
   const agentDir = join(project, ".cotal", "agents");
@@ -557,6 +558,8 @@ for (const assistant of [
   if (oldAgentFile === undefined) delete process.env.COTAL_AGENT_FILE; else process.env.COTAL_AGENT_FILE = oldAgentFile;
   if (oldName === undefined) delete process.env.COTAL_NAME; else process.env.COTAL_NAME = oldName;
   if (oldUid === undefined) delete process.env.COTAL_LIFECYCLE_UID; else process.env.COTAL_LIFECYCLE_UID = oldUid;
+  if (previous === undefined) delete process.env.COTAL_PI_SESSION_STATE;
+  else process.env.COTAL_PI_SESSION_STATE = previous;
   rmSync(root, { recursive: true, force: true });
 }
 
@@ -570,6 +573,8 @@ for (const assistant of [
     "COTAL_DEFAULT_AGENT",
     "COTAL_CONTROL_SOCKET",
     "COTAL_CONTROL_TOKEN",
+    "COTAL_EVENTS",
+    "COTAL_WORKSPACE_ROOT",
   ] as const;
   const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   for (const key of keys) delete process.env[key];
@@ -647,6 +652,11 @@ for (const assistant of [
       typeof launch.sessionStatePath === "string" && env.COTAL_PI_SESSION_STATE === launch.sessionStatePath,
       "managed Pi launch env carries the exact session-state path",
     );
+    const armed = piConnector.buildLaunch({ space: "test", name: "pi-events", events: true, workspaceRoot: root }).env!;
+    ok(armed.COTAL_EVENTS === "1" && armed.COTAL_WORKSPACE_ROOT === root, "an events spawn arms Pi and carries its WAL root");
+    const plain = piConnector.buildLaunch({ space: "test", name: "pi-events", workspaceRoot: root }).env!;
+    ok(plain.COTAL_EVENTS === undefined && plain.COTAL_WORKSPACE_ROOT === undefined, "an unarmed Pi launch emits no event-plane env");
+    assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi-events", events: true }), /write-ahead log/);
     ok(launch.args.some((arg) => arg.endsWith("standalone.js")), "managed Pi launches use the standalone bundle");
     if (env.COTAL_PI_PERSONA_FILE) rmSync(dirname(env.COTAL_PI_PERSONA_FILE), { recursive: true, force: true });
 

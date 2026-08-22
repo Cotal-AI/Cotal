@@ -17,6 +17,7 @@ import {
   aclEnv,
   connectorLaunchOptions,
   controlEndpoint,
+  eventChannel,
   launchEnv,
   materialEnv,
 } from "@cotal-ai/connector-core";
@@ -32,6 +33,9 @@ export const piConnector: Connector = {
   requires: ["pi"],
   supportsResume: true,
   supportsSessionContinuation: true,
+  // Use connector-core's one shared derivation. The manager mints this channel's grant and the
+  // in-session emitter publishes to the same derivation from its endpoint principal.
+  eventChannel,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.resume && opts.continueSession)
       throw new Error("pi connector: resume (fork source) and continueSession (same session) are mutually exclusive");
@@ -68,6 +72,16 @@ export const piConnector: Connector = {
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
     if (opts.configPath) env.COTAL_AGENT_FILE = opts.configPath;
+    if (opts.events === true) {
+      if (!opts.workspaceRoot)
+        throw new Error(
+          "pi connector: events were requested but the launch carries no workspaceRoot, so the event " +
+            "write-ahead log has nowhere to live that a later start will find. Refusing rather than " +
+            "defaulting to the working directory.",
+        );
+      env.COTAL_EVENTS = "1";
+      env.COTAL_WORKSPACE_ROOT = opts.workspaceRoot;
+    }
 
     const args = ["--extension", STANDALONE];
     // Operator resume is a FORK, matching LaunchOpts.resume's contract: Pi creates a new session and
