@@ -129,9 +129,22 @@ try {
   const successorMembershipConsumerName = afterMembershipConsumers.find((n) => n !== predecessorMembershipConsumerName);
   check("reconnect creates exactly one successor membership consumer", afterMembershipConsumers.length === 1 && successorMembershipConsumerName !== undefined, { predecessorMembershipConsumerName, afterMembershipConsumers });
   check("reconnect deletes the predecessor membership consumer instead of accumulating one", !afterMembershipConsumers.includes(predecessorMembershipConsumerName), { predecessorMembershipConsumerName, afterMembershipConsumers });
-  membershipWatch.stop();
+  await membershipWatch.stop();
   for (let i = 0; i < 20 && (await membershipConsumers()).length !== 0; i++) await wait(50);
   check("stopping the membership watch deletes its broker consumer", (await membershipConsumers()).length === 0, await membershipConsumers());
+
+  const shutdownWatch = await observer.watchMembership(() => {});
+  await wait(200);
+  const shutdownConsumer = await membershipConsumers();
+  check("the shutdown-order control starts with one membership consumer", shutdownConsumer.length === 1, shutdownConsumer);
+  await shutdownWatch.stop();
+  await observer.stop();
+  for (let i = 0; i < 20 && (await membershipConsumers()).length !== 0; i++) await wait(50);
+  check("watch stop followed immediately by endpoint stop still deletes the broker consumer", (await membershipConsumers()).length === 0, await membershipConsumers());
+
+  // Restart a fresh observer for the terminal-close arm: endpoint stop is permanent by contract.
+  observer = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "admin"), channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "observer-2", role: "observer", kind: "observer" } });
+  observer.on("error", () => {}); await observer.start();
 
   // Terminal self-heal starts only AFTER the old connection is closed. Its cleanup request cannot ride
   // that epoch, so the fresh connection must delete the predecessor by recorded stream+consumer name.
@@ -166,7 +179,7 @@ try {
   let recoveredFromRejectedArm = false;
   try { await observer.reconnect(); recoveredFromRejectedArm = true; } catch { /* cell below names it */ }
   check("a later rebuild recovers a membership watch after a transient arm rejection", recoveredFromRejectedArm);
-  terminalWatch.stop();
+  await terminalWatch.stop();
 
   console.log(`\nDELIVERY-RECONNECT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

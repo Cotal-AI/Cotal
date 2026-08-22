@@ -353,6 +353,8 @@ export class CotalEndpoint extends EventEmitter {
   /** Caller-owned membership watches survive a connection rebuild as INTENT. Their iterators are
    *  connection-scoped and are stopped/re-created around the epoch swap. */
   private readonly membershipFeedWatches = new Set<MembershipFeedWatch>();
+  /** Watch cancellations removed from the public set but still owning broker cleanup. */
+  private readonly membershipFeedCancellations = new Set<Promise<void>>();
   /** The live `ctl.delivery` serve subscription (delivery daemon) — re-created on every (re)connect by
    *  {@link armDeliveryControl}; tracked so the stale one is dropped on reconnect. */
   private deliveryServeSub?: import("@nats-io/transport-node").Subscription;
@@ -1095,6 +1097,10 @@ export class CotalEndpoint extends EventEmitter {
     this.reconnecting = true;
     try {
       this.clearConnectionScoped();
+      // Manual reconnect still has a live old epoch: complete broker-consumer cleanup before drain.
+      // Terminal self-heal has an already-closed epoch: disarm retains stream/name for fresh cleanup.
+      if (oldNc && !oldNc.isClosed())
+        await Promise.all([...this.membershipFeedWatches].map((watch) => watch.arm));
       this.nc = undefined;
       this.js = undefined;
       this.jsm = undefined;
@@ -1192,6 +1198,7 @@ export class CotalEndpoint extends EventEmitter {
     }
     await Promise.all([...this.membershipFeedWatches].map((watch) => watch.arm));
     this.membershipFeedWatches.clear();
+    await Promise.all([...this.membershipFeedCancellations]);
     for (const msgs of this.streamMsgs) {
       try {
         msgs.stop();
@@ -2114,10 +2121,10 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Watch the membership feed for changes (admin/observer): `onChange` fires on every KV entry,
-   *  including the initial replay — the caller debounces + re-reads {@link readMembership}. Returns a
-   *  stop handle. Best-effort: a feed the cred can't read (or absent) surfaces as an `error` event and
-   *  the dashboard keeps its last snapshot. */
-  async watchMembership(onChange: () => void): Promise<{ stop(): void }> {
+   *  including the initial replay — the caller debounces + re-reads {@link readMembership}. The async
+   *  stop handle resolves only after its ordered broker consumer is deleted. Best-effort: a feed the
+   *  cred can't read (or absent) surfaces as an `error` event and the dashboard keeps its last snapshot. */
+  async watchMembership(onChange: () => void): Promise<{ stop(): Promise<void> }> {
     if (this.stopped) throw new Error("endpoint stopped - cannot watch membership");
     const watch: MembershipFeedWatch = { onChange, stopped: false, arm: Promise.resolve() };
     this.membershipFeedWatches.add(watch);
@@ -2129,11 +2136,15 @@ export class CotalEndpoint extends EventEmitter {
       await this.disarmMembershipWatch(watch);
       throw err;
     }
-    return { stop: () => {
-      if (watch.stopped) return;
+    return { stop: async () => {
+      if (watch.stopped) { await watch.arm.catch(() => {}); return; }
       watch.stopped = true;
       this.membershipFeedWatches.delete(watch);
-      watch.arm = watch.arm.catch(() => {}).then(() => this.disarmMembershipWatch(watch));
+      const cancellation = watch.arm.catch(() => {}).then(() => this.disarmMembershipWatch(watch));
+      watch.arm = cancellation;
+      this.membershipFeedCancellations.add(cancellation);
+      try { await cancellation; }
+      finally { this.membershipFeedCancellations.delete(cancellation); }
     } };
   }
 
@@ -2144,9 +2155,10 @@ export class CotalEndpoint extends EventEmitter {
     const kv = await this.membershipFeedRegistry();
     if (watch.consumerStream && watch.consumerName) {
       const jsm = await jetstreamManager(this.nc!);
-      await jsm.consumers.delete(watch.consumerStream, watch.consumerName).catch(() => false);
-      watch.consumerStream = undefined;
-      watch.consumerName = undefined;
+      if (await this.deleteMembershipConsumer(jsm, watch.consumerStream, watch.consumerName)) {
+        watch.consumerStream = undefined;
+        watch.consumerName = undefined;
+      }
     }
     if (!(kv instanceof Bucket)) throw new Error("membership watch needs the @nats-io/kv Bucket implementation");
     const cc = kv._buildCC(">", KvWatchInclude.LastValue, { headers_only: false });
@@ -2173,6 +2185,15 @@ export class CotalEndpoint extends EventEmitter {
     }).catch(() => {});
   }
 
+  /** Delete one membership-watch consumer, swallowing ONLY already-gone. */
+  private async deleteMembershipConsumer(jsm: JetStreamManager, stream: string, name: string): Promise<boolean> {
+    try { return await jsm.consumers.delete(stream, name); }
+    catch (err) {
+      if ((err as { code?: number }).code === 404 || /(consumer|stream) not found/i.test((err as Error).message)) return true;
+      throw err;
+    }
+  }
+
   /** Stop the local iterator AND delete its ordered consumer. The admin/observer grant already holds
    *  the bucket-scoped consumer-delete row, so a reconnect leaves no five-minute predecessor. */
   private async disarmMembershipWatch(watch: MembershipFeedWatch): Promise<void> {
@@ -2181,10 +2202,16 @@ export class CotalEndpoint extends EventEmitter {
     watch.iter = undefined;
     watch.consumer = undefined;
     try { iter?.stop(); } catch { /* already closed */ }
-    const deleted = await consumer?.delete().catch(() => false);
-    if (deleted) {
-      watch.consumerStream = undefined;
-      watch.consumerName = undefined;
+    if (consumer) {
+      try {
+        const deleted = await consumer.delete();
+        if (deleted) { watch.consumerStream = undefined; watch.consumerName = undefined; }
+      } catch (err) {
+        if ((err as { code?: number }).code === 404 || /(consumer|stream) not found/i.test((err as Error).message)) {
+          watch.consumerStream = undefined;
+          watch.consumerName = undefined;
+        } else throw err;
+      }
     }
   }
 
