@@ -374,6 +374,22 @@ try {
   check("…and a file:// exchange base is refused too",
     assertPinnedFetchUrl(new URL("file:///etc/passwd"), "x") !== undefined);
   check("…while https is accepted", assertPinnedFetchUrl(new URL("https://exchange.example.com"), "x") === undefined);
+
+  // THE LOOPBACK EXCEPTION IS AN ADDRESS DECISION, NOT A STRING ONE. It was written `/^127\./`,
+  // which is a prefix match on a NAME: `127.evil.com`, `127.0.0.1.nip.io` and `127.com` are all
+  // registrable by anyone and were all granted the plain-http exception (the probe really did
+  // fetch public `127.com` over http). The same string test also MISSED genuine loopback
+  // spellings. The host is now parsed and canonicalized instead, so both directions are pinned.
+  for (const name of ["http://127.evil.com", "http://127.0.0.1.nip.io", "http://127.com", "http://127x.example.com", "http://localhost"]) {
+    check(`a NAME gets no loopback exception: ${name}`,
+      assertPinnedFetchUrl(new URL(name), "x") !== undefined, name);
+  }
+  // …and the exception still works for real loopback literals, in every spelling the canonicalizer
+  // knows — without these the fix could "pass" by deleting the exception the suites depend on.
+  for (const lit of ["http://127.0.0.1:8080", "http://127.9.9.9", "http://[::1]:9", "http://0177.0.0.1", "http://2130706433", "http://[::ffff:127.0.0.1]"]) {
+    check(`a real loopback literal keeps the exception: ${lit}`,
+      assertPinnedFetchUrl(new URL(lit), "x") === undefined, lit);
+  }
   // A 302 is REFUSED, not followed — asserted against a live redirector.
   exchangeHits = 0;
   const redirected = await verifyUserExchange(redirectorUrl, ISSUER);

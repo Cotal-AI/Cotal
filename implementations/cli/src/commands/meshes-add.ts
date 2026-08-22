@@ -1,7 +1,7 @@
 import { statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { mkSecretDir, probeConnect, writeSecretFileAtomic, type SpaceAuth } from "@cotal-ai/core";
-import { classifyJoinTarget, type DialPolicy, type JoinTarget } from "../lib/join-target.js";
+import { classifyJoinTarget, isLoopbackHost, type DialPolicy, type JoinTarget } from "../lib/join-target.js";
 import {
   authDir,
   findCotalRoot,
@@ -294,9 +294,13 @@ const EXCHANGE_PROBE_TIMEOUT_MS = 5_000;
  */
 export function assertPinnedFetchUrl(u: URL, what: string): string | undefined {
   if (u.protocol === "https:") return undefined;
-  const host = u.hostname.replace(/^\[|\]$/g, "");
-  const loopback = host === "::1" || /^127\./.test(host) || host === "localhost";
-  if (u.protocol === "http:" && loopback) return undefined;
+  // The loopback exception is decided by PARSING the host as an address, never by how the text
+  // begins: `/^127\./` also matched `127.evil.com`, `127.0.0.1.nip.io` and `127.com`, which anyone
+  // can register, and it missed real spellings like `0177.0.0.1`. `isLoopbackHost` is the one
+  // authority for the question, canonicalization included. A name that does not parse as an IP is
+  // a NAME and gets no exception, however it starts — `localhost` included, since a hosts entry or
+  // a poisoned lookup can point it anywhere.
+  if (u.protocol === "http:" && isLoopbackHost(u.hostname)) return undefined;
   return `✗ ${what} must be https:// (got ${u.protocol}//) - the pins this registration adopts cannot be fetched over a channel the network can rewrite`;
 }
 

@@ -117,6 +117,23 @@ export interface DialPolicy {
 /** The NATS default client port, used when the join URL omits one. */
 const DEFAULT_PORT = 4222;
 
+/**
+ * Is this host the loopback machine, whatever spelling it arrived in?
+ *
+ * THE ANSWER COMES FROM PARSING AN ADDRESS, NEVER FROM HOW THE TEXT BEGINS. A prefix test like
+ * `/^127\./` matches `127.evil.com`, `127.0.0.1.nip.io` and `127.com` — all registrable by anyone
+ * — and misses real loopback spellings such as `0177.0.0.1` or `[::ffff:127.0.0.1]`. It is wrong
+ * in both directions, which is what a string standing in for an address decision usually is.
+ *
+ * Exported so every caller that needs "is this loopback" shares ONE authority, canonicalization
+ * included, rather than growing a second opinion. Brackets are tolerated so a caller may pass a
+ * URL hostname straight in.
+ */
+export function isLoopbackHost(host: string): boolean {
+  const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  return isLoopbackLiteral(normalizeLegacyV4(normalizeMappedV4(bare)));
+}
+
 /** Loopback: `127.0.0.0/8` and `::1`. LITERALS ONLY, never `localhost`, because the whole point is
  *  a verdict that does not depend on a resolver an attacker could influence (a hosts-file entry or
  *  a poisoned lookup would otherwise turn "loopback" into any address at all). */
