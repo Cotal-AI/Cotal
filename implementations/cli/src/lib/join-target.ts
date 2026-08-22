@@ -222,7 +222,11 @@ function normalizeLegacyV4(host: string): string {
  * verdict however it is spelled.
  *
  * `::ffff:192.168.1.10` and `::ffff:c0a8:010a` are the same 192.168.1.10, and the kernel dials
- * them to the same host. Classifying the v6 spelling separately meant the private-range check ran
+ * them to the same host. RFC 4291 mapped form is exactly `::ffff:a.b.c.d` (equivalently
+ * `::ffff:xxxx:xxxx`) and NOTHING ELSE: `::ffff:0:127.0.0.1` looks similar but is a different
+ * address, which a socket proves — it dials ENETUNREACH where `::ffff:127.0.0.1` connects to
+ * loopback. Collapsing it would be this fence's own bug in mirror image, granting a loopback,
+ * overlay or public verdict to an address that is none of those. Classifying the v6 spelling separately meant the private-range check ran
  * a v4 regex that could not match, the address fell through to "not private", and
  * `--tls` registered a LAN broker that the dotted form correctly refuses. Every classifier below
  * therefore sees the normalized form, which keeps loopback/overlay/private answers identical
@@ -231,8 +235,7 @@ function normalizeLegacyV4(host: string): string {
  * Anything that is not a v4-mapped literal is returned unchanged.
  */
 function normalizeMappedV4(host: string): string {
-  // Tolerate the `::ffff:0:` variant too, and a zone id, before the mapped tail.
-  const m = host.match(/^::ffff:(?:0:)?([0-9a-f.:]+)$/i);
+  const m = host.match(/^::ffff:([0-9a-f.:]+)$/i);
   if (!m) return host;
   const tail = m[1];
   const dotted = tail.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
@@ -240,11 +243,11 @@ function normalizeMappedV4(host: string): string {
     const p = dotted.slice(1).map(Number);
     return p.some((n) => n > 255) ? host : p.join(".");
   }
-  // A mapped tail may itself use a legacy spelling (`::ffff:3232235786`).
-  if (/^[0-9a-fx.]+$/i.test(tail) && !tail.includes(":")) {
-    const legacy = normalizeLegacyV4(tail);
-    if (legacy !== tail) return legacy;
-  }
+  // Only the two RFC 4291 tails are mapped. A legacy-spelled tail (`::ffff:3232235786`) is not
+  // handled here and does not need to be: `new URL()` rejects it as an invalid IPv6 literal
+  // before this function is ever called, so the target is refused as "not a URL" — a stricter
+  // answer than any collapse. Adding a branch for it would be unreachable code that no test
+  // could kill, and the address does not resolve anyway (a socket reports ENOTFOUND).
   const hex = tail.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
   if (hex) {
     const hi = parseInt(hex[1], 16);

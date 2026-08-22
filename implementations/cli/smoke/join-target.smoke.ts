@@ -153,7 +153,6 @@ for (const policy of [TODAY, WITH_TLS]) {
   refuses("nats://[::ffff:192.168.1.10]:4222", "v4-mapped RFC1918, dotted tail", policy);
   refuses("nats://[::ffff:c0a8:010a]:4222", "v4-mapped RFC1918, hex tail — the same address", policy);
   refuses("nats://[::ffff:10.0.0.5]:4222", "v4-mapped 10/8", policy);
-  refuses("nats://[::ffff:0:192.168.1.10]:4222", "the ::ffff:0: spelling too", policy);
   refuses("nats://[::ffff:169.254.1.1]:4222", "v4-mapped link-local", policy);
 }
 // The mapping is a NORMALIZATION, not a blanket refusal: mapped loopback and mapped overlay keep
@@ -198,6 +197,44 @@ permits("nats://09.0.0.1:4222", "public-tls", WITH_TLS);   // 09 is not octal an
 permits("nats://999.1.1.1:4222", "public-tls", WITH_TLS);  // octet out of range: a hostname
 permits("nats://1.2.3.4.5:4222", "public-tls", WITH_TLS);  // five parts: not an IPv4 literal
 refuses("nats://broker.example.com:4222", "a hostname without required TLS is still refused", TODAY);
+
+console.log("\nthe OTHER direction — a canonicalizer must not OVER-collapse a lookalike");
+// Everything above asks "is a private address under-refused?". This asks the mirror question a
+// canonicalizer also has to answer: does a spelling that is NOT the same address wrongly inherit
+// a permitted verdict? `::ffff:0:127.0.0.1` reads like the mapped loopback but is a DIFFERENT
+// address — a socket dials it ENETUNREACH where `::ffff:127.0.0.1` connects — and
+// `::ffff:3232235786` does not resolve at all (ENOTFOUND), so neither may borrow loopback,
+// overlay or public-tls from the address it merely resembles. RFC 4291 mapped form is exactly
+// `::ffff:a.b.c.d` / `::ffff:xxxx:xxxx`.
+// The claim being pinned is precise: a lookalike must not INHERIT loopback or overlay, the two
+// classes that are permitted WITHOUT required TLS. It is not that every lookalike is refused
+// outright — under required TLS a non-private v6 literal is legitimately `public-tls`, and
+// asserting a blanket refusal would be over-claiming (an earlier draft of this block did exactly
+// that and went red here, which is how the real contract got written down).
+for (const policy of [TODAY, ACKED]) {
+  refuses("nats://[::ffff:0:127.0.0.1]:4222", "::ffff:0: is NOT the mapped loopback (ENETUNREACH), so nothing waives TLS for it", policy);
+  refuses("nats://[::ffff:0:7f00:1]:4222", "::ffff:0: hex tail is NOT the mapped loopback either", policy);
+  refuses("nats://[::ffff:0:100.64.0.1]:4222", "::ffff:0: must NOT inherit the overlay verdict, even with the overlay acked", policy);
+  refuses("nats://[::ffff:0:192.168.1.10]:4222", "::ffff:0: is not that private address either", policy);
+  // Refused EARLIER than the classifier: `new URL()` rejects it as an invalid IPv6 literal, so it
+  // never reaches normalization at all. Pinned here because that is the behaviour we rely on — if
+  // a future parser accepted it, this cell holds the line rather than letting a collapse appear.
+  refuses("nats://[::ffff:3232235786]:4222", "a dword inside a mapped tail is not a valid literal (and does not resolve)", policy);
+}
+// Under REQUIRED TLS they are ordinary public literals: permitted, but as `public-tls` — never as
+// loopback, which is the class that would have let them skip the transport guarantee entirely.
+// (`[::ffff:3232235786]` is excluded here: it is not even a parseable IPv6 literal, so it is
+// refused earlier as "not a URL" — a stricter answer than public-tls, pinned in the loop above.)
+for (const raw of ["nats://[::ffff:0:127.0.0.1]:4222", "nats://[::ffff:0:7f00:1]:4222", "nats://[::ffff:0:100.64.0.1]:4222"]) {
+  const t = classifyJoinTarget(raw, WITH_TLS);
+  check(`  ${raw} classifies public-tls under required TLS, never loopback or overlay`,
+    t.reach === "public-tls", t);
+}
+// And the true equivalents must STILL collapse, or the over-collapse fix has gone too far the
+// other way — these are the cells that fail if `::ffff:` handling is deleted wholesale.
+permits("nats://[::ffff:127.0.0.1]:4222", "loopback", WITH_TLS);
+permits("nats://[::ffff:7f00:1]:4222", "loopback", WITH_TLS);
+refuses("nats://[::ffff:192.168.1.10]:4222", "the real mapped RFC1918 stays refused", WITH_TLS);
 // --force is a liveness escape, not a policy escape: no force-like field exists on DialPolicy,
 // and smuggling one in changes nothing.
 const FORCED = { tlsRequired: false, allowUnencryptedOverlay: false, force: true } as unknown as Parameters<typeof classifyJoinTarget>[1];
