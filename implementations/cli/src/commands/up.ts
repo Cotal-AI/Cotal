@@ -160,6 +160,9 @@ export const upFlags: FlagSpec[] = [
   { name: "open", type: "boolean", description: "unauthenticated dev mesh (no JWT/ACLs)" },
   { name: "user-auth", type: "boolean", description: "per-USER auth: login + bearer through the space's auth service" },
   { name: "idp", type: "string", value: "<url>", description: "with --user-auth: the IdP auth base URL to pin (first enable)" },
+  { name: "exchange-public-port", type: "string", value: "<n>", description: "with --user-auth: also serve the PUBLIC exchange face on this loopback port (TLS terminates at a reverse proxy)" },
+  { name: "exchange-public-url", type: "string", value: "<https://…>", description: "with --exchange-public-port: the advertised public base URL (the reverse proxy's address)" },
+  { name: "exchange-trusted-proxy", type: "boolean", description: "with --exchange-public-port: attribute peers by the last X-Forwarded-For hop (opt-in; default: socket address)" },
   { name: "rotate-sys", type: "boolean", description: "renew the expired/expiring $SYS creds by rotating the system account (agents, data and creds survive; needs a stopped mesh)" },
   { name: "detach", type: "boolean", description: "run in the background (stop with `cotal down`)" },
   { name: "runtime", type: "string", value: "<name>", description: "agent runtime for the mesh manager (default pty; extension runtimes are explicit-only, see `cotal runtimes`); with -f overrides the manifest's runtime" },
@@ -185,6 +188,7 @@ export function upComplete(argv: string[]): CompletionResult {
 export async function up(args: ParsedArgs): Promise<void> {
   const values = args.values as {
     server?: string; "store-dir"?: string; space?: string; open?: boolean; "user-auth"?: boolean; idp?: string;
+    "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean;
     channels?: string; detach?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean;
     restore?: string; "restore-only"?: string; "accept-missing-source"?: boolean; "rotate-sys"?: boolean;
     "tls-cert"?: string; "tls-key"?: string;
@@ -447,6 +451,7 @@ export async function up(args: ParsedArgs): Promise<void> {
   if (values.idp && !wantUser && !values.file) {
     throw new Error('--idp is for user-auth spaces; pair it with --user-auth, or set broker.auth: "user" in a manifest');
   }
+  const publicExchange = publicExchangeArgs(values, wantUser);
   // An open mesh has no operator, no system account, and no $SYS creds, so there is nothing to
   // rotate; the request is a misunderstanding to name, never a silent no-op that reports success.
   if (values["rotate-sys"] && values.open) {
@@ -748,7 +753,7 @@ export async function up(args: ParsedArgs): Promise<void> {
           console.error(c.red(`✗ ${(e as Error).message}`));
           process.exit(1);
         }
-        const svc = await startUserAuthService(held.space, server, { prepared, stateDir });
+        const svc = await startUserAuthService(held.space, server, { prepared, stateDir }, publicExchange);
         userAuth = svc.userAuth;
         // The refresh IS the recovery command — a heal that didn't heal must not exit 0.
         if (!svc.ok) process.exitCode = 1;
@@ -829,6 +834,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       open: values.open,
       userAuth: wantUser ? { idpUrl: values.idp } : undefined,
       rotateSys: values["rotate-sys"],
+      publicExchange,
       channels: values.channels,
       // The RAW flag, not the loopback-defaulted `host` above: `startMeshDetached` applies the same
       // default itself, and what it records must distinguish "the operator asked for this address"
@@ -997,7 +1003,7 @@ export async function up(args: ParsedArgs): Promise<void> {
     // every user-mode connect to this broker is denied, so `up` must not report a usable user mesh
     // (nor let agents race it) on a half-started auth plane. (Foreground `up` doesn't exit here, so
     // `ok` has no exit code to carry — the red consequence line above is the operator signal.)
-    const svc = await startUserAuthService(space, server, setup);
+    const svc = await startUserAuthService(space, server, setup, publicExchange);
     // Record BEFORE the control plane comes up: the manager's fail-closed mode detection requires
     // an authoritative registry entry (marker-without-registry is a refused start, not a guess),
     // so the record must exist by the time it boots. A manager/delivery failure after this leaves
@@ -1633,6 +1639,28 @@ async function completeResumeActivation(
   }
 }
 
+/** Validate + assemble the auth-service daemon's public-exchange argv from `up`'s flags. The three
+ *  flags travel with --user-auth (an open mesh has no exchange to publish); --exchange-public-url
+ *  and --exchange-trusted-proxy modify the public listener, so they require its port. Returned as
+ *  an argv ARRAY — the daemon re-exec never shell-interpolates. */
+function publicExchangeArgs(
+  v: { "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean },
+  wantUser: boolean,
+): string[] {
+  const port = v["exchange-public-port"];
+  const url = v["exchange-public-url"];
+  const proxy = Boolean(v["exchange-trusted-proxy"]);
+  if (port === undefined && url === undefined && !proxy) return [];
+  if (!wantUser)
+    throw new Error("--exchange-public-port/--exchange-public-url/--exchange-trusted-proxy are for user-auth spaces - pair them with --user-auth");
+  if (port === undefined) throw new Error("--exchange-public-url/--exchange-trusted-proxy require --exchange-public-port");
+  return [
+    "--exchange-public-port", port,
+    ...(url !== undefined ? ["--exchange-public-url", url] : []),
+    ...(proxy ? ["--exchange-trusted-proxy"] : []),
+  ];
+}
+
 /** Bring the space's USER-AUTH service up with the broker (user mode only — `setup.prepared` is the
  *  provider's output). Loud both ways (U5): a ready service prints the login line; a service that
  *  never became ready prints the exact consequence + recourse. Returns the registry metadata either
@@ -1644,10 +1672,15 @@ async function startUserAuthService(
   space: string,
   server: string,
   setup?: { prepared?: AuthPrepared; stateDir?: string },
+  publicExchange?: string[],
 ): Promise<{ userAuth?: UserAuthInfo; ok: boolean }> {
   if (!setup?.prepared || !setup.stateDir) return { ok: true };
   try {
-    const endpoints = await ensureAuthService({ space, server, stateDir: setup.stateDir, prepared: setup.prepared });
+    const raw = await ensureAuthService({ space, server, stateDir: setup.stateDir, prepared: setup.prepared, extraArgs: publicExchange });
+    // The PUBLIC face's advertised URL (when enabled) supersedes the loopback bind in the registry's
+    // convenience endpoint — the discovery bundle is GENERATED from what the daemon actually serves,
+    // never hand-written. The provider reports it; nothing here reads provider state files.
+    const endpoints = { url: typeof raw.publicUrl === "string" ? raw.publicUrl : raw.url };
     const info = assertUserAuthInfo({ ...setup.prepared.publicAuth, endpoints });
     console.log(c.green("✓ user-auth service up") + c.dim(` - sign in with: cotal login --idp ${info.idp.url}`));
     return { userAuth: info, ok: true };
@@ -1906,6 +1939,9 @@ export interface DetachOpts {
   seed?: ChannelRegistryFile;
   /** Live boot lines, tailed from the server's log file (safe for a detached child). */
   onLine?: (line: string) => void;
+  /** PUBLIC-exchange daemon argv (`--exchange-public-port` et al), threaded verbatim to the
+   *  auth-service daemon when THIS boot starts it. */
+  publicExchange?: string[];
   /** Manifest launch (`cotal up -f`): the ONE control-plane manager started alongside the broker
    *  carries this runtime + resolved launch-spec path — never a second supervise (singleton lease). */
   runtime?: string;
@@ -2022,7 +2058,7 @@ export async function startMeshDetached(
     }
   }
   // USER MODE: the auth service comes up FIRST among the daemons (see the foreground path).
-  const svc = await startUserAuthService(space, server, setup);
+  const svc = await startUserAuthService(space, server, setup, opts.publicExchange);
   // Record BEFORE the control plane: the manager's fail-closed mode detection needs the
   // authoritative registry entry at boot (marker-without-registry refuses). Detached: the entry
   // outlives this process — `cotal down` removes it.
