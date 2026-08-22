@@ -6,7 +6,7 @@
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/membership-feed-reconnect.json",
   "why": [
     "The live pre-fix reproduction proves the stale membership-feed cache fails after reconnect; the pinned client aborts that path after the named read failure, so it is not misreported as a mutation kill.",
-    "The three completing mutations isolate watch rearm, awaitable caller-stop broker deletion, and fresh-connection predecessor cleanup after terminal close. Transient rejected-chain recovery remains a direct regression cell; removing its reset perturbs earlier cleanup ordering before that named cell and is not misreported as an isolated kill."
+    "The four completing mutations isolate watch rearm, awaitable caller-stop broker deletion, fresh-connection predecessor cleanup after terminal close, and ownership of a newly created consumer during the stop-versus-arm race. Transient rejected-chain recovery remains a direct regression cell; removing its reset perturbs earlier cleanup ordering before that named cell and is not misreported as an isolated kill."
   ],
   "mutations": [
     {
