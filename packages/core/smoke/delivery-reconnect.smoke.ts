@@ -157,6 +157,15 @@ try {
     for (let i = 0; i < 20 && terminalChanges === 0; i++) await wait(50);
   } finally { await terminalNc.drain(); }
   check("the membership watch stays live after terminal self-heal", terminalChanges > 0, { terminalChanges });
+
+  // A transient failed arm leaves a rejected promise in the per-watch queue. A later rebuild must
+  // reset that rejection before appending cleanup/rearm work, or this watch is poisoned forever.
+  const terminalIntent = [...(observer as unknown as { membershipFeedWatches: Set<{ arm: Promise<void> }> }).membershipFeedWatches][0];
+  terminalIntent.arm = Promise.reject(new Error("transient membership arm failure"));
+  void terminalIntent.arm.catch(() => {}); // handled, but intentionally still the rejected queue value
+  let recoveredFromRejectedArm = false;
+  try { await observer.reconnect(); recoveredFromRejectedArm = true; } catch { /* cell below names it */ }
+  check("a later rebuild recovers a membership watch after a transient arm rejection", recoveredFromRejectedArm);
   terminalWatch.stop();
 
   console.log(`\nDELIVERY-RECONNECT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

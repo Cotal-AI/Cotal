@@ -1,14 +1,12 @@
 {
   "suite": "packages/core/smoke/delivery-reconnect.smoke.ts",
-  "guard": "membership feed reads and caller-owned watches reopen across manual and terminal reconnects, with exactly one broker consumer per live watch and no predecessor leak",
+  "guard": "membership reads and caller-owned watches recover across manual and terminal reconnects, with one broker consumer per live watch and no predecessor leak",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:delivery-reconnect:auth",
   "completionMarker": "DELIVERY-RECONNECT SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/membership-feed-reconnect.json",
   "why": [
-    "The live pre-fix reproduction proves the stale membership-feed cache fails after reconnect; the pinned",
-    "client aborts that path before a terminal summary, so it is not misreported as a mutation kill.",
-    "The three completing mutations grade the new watch rearm, broker-consumer deletion, and the required",
-    "pre-drain cleanup wait. Each reaches a named terminal assertion."
+    "The live pre-fix reproduction proves the stale membership-feed cache fails after reconnect; the pinned client aborts that path after the named read failure, so it is not misreported as a mutation kill.",
+    "The four completing mutations grade watch rearm, caller-stop deletion, fresh-connection predecessor cleanup after terminal close, and rejected-chain recovery."
   ],
   "mutations": [
     {
@@ -21,40 +19,31 @@
       "note": "The old iterator is retired and the intent never gets a successor, so the post-reconnect membership-rw write produces no callback."
     },
     {
-      "name": "reconnect stops the local membership iterator but leaves its broker consumer",
+      "name": "stopping a membership watch leaves its ordered broker consumer",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    await consumer?.delete().catch(() => false);\n",
-      "replace": "",
-      "expectRed": "reconnect deletes the predecessor membership consumer instead of accumulating one",
-      "cell": "reconnect deletes the predecessor membership consumer instead of accumulating one",
-      "note": "Local iterator stop is not broker deletion. The predecessor remains until the ordered consumer inactive threshold while a successor is created."
-    },
-    {
-      "name": "reconnect drains the old connection before membership consumer deletion finishes",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "      await Promise.all([...this.membershipFeedWatches].map((watch) => watch.arm));\n",
-      "replace": "",
-      "expectRed": "reconnect deletes the predecessor membership consumer instead of accumulating one",
-      "cell": "reconnect deletes the predecessor membership consumer instead of accumulating one",
-      "note": "clearConnectionScoped schedules consumer deletion. The rebuild must await it while the old connection is still usable; otherwise the delete is lost and the predecessor lingers."
+      "find": "    const deleted = await consumer?.delete().catch(() => false);\n",
+      "replace": "    const deleted = false;\n",
+      "expectRed": "stopping the membership watch deletes its broker consumer",
+      "cell": "stopping the membership watch deletes its broker consumer",
+      "note": "The caller stop has no later rearm, so local iterator stop alone leaves the ordered consumer until its inactivity threshold."
     },
     {
       "name": "terminal self-heal forgets the closed-epoch consumer identity before fresh cleanup",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    if (watch.consumerStream && watch.consumerName) {\n",
-      "replace": "    if (false && watch.consumerStream && watch.consumerName) {\n",
+      "find": "    if (watch.consumerStream && watch.consumerName) {\n      const jsm = await jetstreamManager(this.nc!);\n      await jsm.consumers.delete(watch.consumerStream, watch.consumerName).catch(() => false);\n      watch.consumerStream = undefined;\n      watch.consumerName = undefined;\n    }\n",
+      "replace": "    watch.consumerStream = undefined;\n    watch.consumerName = undefined;\n",
       "expectRed": "terminal self-heal creates one successor and deletes the closed-epoch predecessor",
       "cell": "terminal self-heal creates one successor and deletes the closed-epoch predecessor",
-      "note": "Old-connection delete cannot run after nc.closed. The fresh connection must delete the recorded stream/name before creating the successor."
+      "note": "Old-connection deletion cannot run after nc.closed. The fresh connection must delete the recorded stream/name before creating the successor."
     },
     {
       "name": "a rejected watch arm permanently poisons the serialized lifecycle chain",
       "file": "packages/core/src/endpoint.ts",
-      "find": "watch.arm.catch(() => {}).then",
-      "replace": "watch.arm.then",
-      "expectRed": "the membership watch stays live after terminal self-heal",
-      "cell": "the membership watch stays live after terminal self-heal",
-      "note": "The catch resets a previously rejected arm promise so later disarm/rearm handlers can execute instead of inheriting the rejection forever."
+      "find": "      watch.arm = watch.arm.catch(() => {}).then(async () => {\n",
+      "replace": "      watch.arm = watch.arm.then(async () => {\n",
+      "expectRed": "a later rebuild recovers a membership watch after a transient arm rejection",
+      "cell": "a later rebuild recovers a membership watch after a transient arm rejection",
+      "note": "The catch resets a rejected queue before later cleanup/rearm work is appended. Without it, the next rebuild inherits the rejection and cannot recover the watch."
     }
   ]
 }
