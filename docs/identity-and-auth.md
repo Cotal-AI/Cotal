@@ -124,7 +124,11 @@ cannot publish or subscribe, but consumers must still take the bundle only from 
 origin and must verify TLS. `--exchange-trusted-proxy` opts into peer attribution by the **last**
 `X-Forwarded-For` hop; use it only when the listener is reachable solely through a proxy you control.
 Without it, forwarded headers are ignored and the socket address is the peer key. Public failure
-buckets are per-source and separate from loopback exchange budgets.
+buckets are per-source and separate from loopback exchange budgets. The in-process LRU retains at
+most 1024 peer buckets: that bounds memory and isolates ordinary sources, but an attacker cycling
+more than 1024 trusted-proxy last hops can evict earlier 429 state. It is not a mint bypass—a valid
+credential is still required—so use upstream reverse-proxy rate limiting when that throttle-escape
+matters to the deployment.
 
 The service starts with the broker, is torn down by `cotal down`, and holds the
 data-account signing key for the callout (a running manager is the other standing holder, for

@@ -126,7 +126,8 @@ current.
 
 ```bash
 cotal up [--detach] [--open] [--space <s>] [--server <url>] [--channels <path>] [--runtime <name>]
-cotal up --tls-cert <cert.pem> --tls-key <key.pem>   # serve TLS (both, or neither)
+cotal up --user-auth --idp <url> [--exchange-public-port <n> --exchange-public-url <https://…> [--exchange-trusted-proxy]]
+cotal up --tls-cert <cert.pem> --tls-key <key.pem>   # serve broker TLS (both, or neither)
 cotal up --restore <dir> [--restore-only registry] [--accept-missing-source]
 cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 ```
@@ -144,6 +145,9 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--open` | off (auth) | Unauthenticated dev mesh: no JWT, no ACLs |
 | `--user-auth` | off | Per-user auth: people `cotal login`; connects are authorized against the actor ledger |
 | `--idp <url>` | — | With `--user-auth`: the IdP auth base URL to pin on first enable |
+| `--exchange-public-port <n>` | — | With `--user-auth`: add the public exchange face on this loopback port, for an HTTPS reverse proxy to forward to |
+| `--exchange-public-url <https://…>` | — | With `--exchange-public-port`: advertise the reverse proxy's HTTPS URL in discovery |
+| `--exchange-trusted-proxy` | off | With `--exchange-public-port`: attribute public failure buckets to the last `X-Forwarded-For` hop. Enable only when the listener is reachable solely through a trusted proxy; otherwise the socket address is used |
 | `--detach` | off | Run in the background (stop with `cotal down`) |
 | `--tls-cert <path>` | — | PEM certificate to serve TLS with. Must be given together with `--tls-key`. The pair is validated **before** the broker starts — readability, private-key mode, that the two match, the validity window, and that the certificate covers the host clients will dial — because `nats-server` starts happily on an expired certificate and only the client then fails. The decision is recorded, so a later bare `cotal up` after a `cotal down` keeps serving TLS rather than silently reverting to cleartext |
 | `--tls-key <path>` | — | PEM private key for `--tls-cert`. Refused if group- or other-readable (tighten to `600`) |
@@ -159,9 +163,10 @@ stays fail-loud on collision. `--detach` also brings up the control plane (deliv
 mode, then the manager). The `-f` form is a [manifest deploy](#manifest-deploys); see
 [Run a mesh](run-a-mesh.md).
 
-`--user-auth --idp <url>` starts the space's auth service alongside the broker (the NATS
-auth callout plus the loopback token exchange); it is torn down with `cotal down`, and a
-re-run of `cotal up` heals a dead service on a running broker. `--user-auth` and `--open`
+`--user-auth --idp <url>` starts the space's auth service alongside the broker: the NATS
+auth callout plus its capability-gated local exchange, and optionally the closed public exchange
+face configured by the three `--exchange-*` flags above. The service is torn down with `cotal down`,
+and a re-run of `cotal up` heals a dead service on a running broker. `--user-auth` and `--open`
 contradict each other and are refused loudly; a running broker cannot change auth mode
 without a `cotal down` first. See [identity & auth](identity-and-auth.md).
 
@@ -1238,13 +1243,16 @@ daemon comes up automatically with `cotal up --detach` in auth mode.
 
 ```bash
 cotal deliver --space <s> [--server <url>] [--creds <file>]
-cotal auth-service --space <s> --server <url> [--port <n>]
+cotal auth-service --space <s> --server <url> [--port <n>] [--exchange-public-port <n>] [--exchange-public-url <https://…>] [--exchange-trusted-proxy]
 cotal feedback-intake --keys <keys.json> [--port <n>] [--creds <file>]
 ```
 
-`auth-service` runs a user-auth space's identity plane (the NATS auth callout plus the
-loopback token exchange and JWKS); `cotal up --user-auth` starts and supervises it for you,
-so you run it directly only to recover one by hand.
+`auth-service` runs a user-auth space's identity plane: the NATS auth callout, the
+capability-gated local exchange and JWKS, and—when `--exchange-public-port` is set—the closed public
+exchange/discovery face forwarded by an HTTPS reverse proxy. `--exchange-public-url` is the proxy URL
+advertised to clients; `--exchange-trusted-proxy` opts into last-hop `X-Forwarded-For` attribution.
+`cotal up --user-auth` starts and supervises the service for you, so you run it directly only to
+recover one by hand.
 
 `deliver` runs the server-side Plane-3 delivery daemon: the durable backstop and membership/ACL
 authority. It is auth-mode-only and single-instance (`--shard`/`--shards` accept only `N=1`);
