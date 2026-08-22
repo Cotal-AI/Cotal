@@ -382,7 +382,12 @@ export class MeshAgent extends EventEmitter {
         if (item.mentionsMe) this.emit("mention-wake", item);
         return;
       }
-      const pullOnly = snapshottedPullOnly || (!item.mentionsMe && this.classificationUnsafe);
+      // Historical channel ambient is pull-only (#775): a join backfill is context, not instruction.
+      // Delivered as automatic it becomes a storm of user turns for host-mode drive loops — measured
+      // on a real mesh as 119 injected digests / 0 assistant turns and an emergency compaction before
+      // the seat's first real order could run. It stays recallable (cotal_inbox, recall), and a
+      // historical @mention stays automatic: directed catch-up is the reader's call, not noise.
+      const pullOnly = snapshottedPullOnly || (!item.mentionsMe && (item.historical || this.classificationUnsafe));
       if (pullOnly) this.excludeFromFocus(item);
       this.buffer(item, delivery.ack, pullOnly);
       return;

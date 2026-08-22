@@ -1,0 +1,42 @@
+{
+  "suite": "extensions/connector-core/smoke/history-flood.smoke.ts",
+  "guard": "historical channel ambient is buffered pull-only so a join backfill can never drive automatic turns, while directed traffic (mentions, DMs) and live ambient keep their automatic delivery",
+  "command": "pnpm smoke:history-flood",
+  "completionMarker": "history-flood smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/history-flood.json",
+  "why": [
+    "The defect this suite exists for shipped and was invisible to every green gate: the live E2E",
+    "mesh is seconds old, so no suite ever delivered a message with historical=true into a host-mode",
+    "drive loop. On the first real mesh join the backlog arrived as automatic user turns - measured",
+    "as 119 injected digests / 0 assistant turns and provider-side emergency compaction before the",
+    "seat's first actual work order could run.",
+    "",
+    "The mutations are the three ways the one-line rule can silently rot: dropping the historical",
+    "term (the shipped defect verbatim), inverting it to poison directed catch-up (a mention rides",
+    "the same flag), and widening it to all ambient (silent degradation of open-mode wake, the same",
+    "coin's other face - live peers would stop waking the seat and the mesh would look dead)."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the shipped defect: historical no longer forces pull-only",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "(!item.mentionsMe && (item.historical || this.classificationUnsafe))",
+      "replace": "(!item.mentionsMe && this.classificationUnsafe)",
+      "expectRed": "automatic delivery after a 119-message backfill is EXACTLY the live work order"
+    },
+    {
+      "name": "M2 the mention exemption is lost: directed catch-up classified as noise",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "(!item.mentionsMe && (item.historical || this.classificationUnsafe))",
+      "replace": "(item.historical || (!item.mentionsMe && this.classificationUnsafe))",
+      "expectRed": "the historical mention stays automatic while plain history does not"
+    },
+    {
+      "name": "M3 the rule widens to all channel ambient: live traffic stops waking the seat",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "(!item.mentionsMe && (item.historical || this.classificationUnsafe))",
+      "replace": "!item.mentionsMe",
+      "expectRed": "live channel ambient remains automatic under open attention"
+    }
+  ]
+}
