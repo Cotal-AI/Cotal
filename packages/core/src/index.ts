@@ -50,6 +50,7 @@ export * from "./agent-file.js";
 export * from "./launch.js";
 export * from "./fs-safe.js";
 export * from "./secret-fs.js";
+export * from "./launch-material.js";
 export * from "./connector-config.js";
 export * from "./kv-scan.js";
 export * from "./endpoint.js";

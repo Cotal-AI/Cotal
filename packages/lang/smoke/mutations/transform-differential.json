@@ -268,8 +268,8 @@
     {
       "name": "a matrix row cites a sentence the runtime suite's list does not carry, and the cross-package half stops being checked",
       "file": "packages/lang/smoke/differential.smoke.ts",
-      "find": "\"and it is stamped with the version of the ENGINE that ran it, not with the current language\",",
-      "replace": "\"and it is stamped with the version of the engine that ran it, not with the current language\",",
+      "find": "\"and it is stamped with the version of the ENGINE that ran it, not the walker's\",",
+      "replace": "\"and it is stamped with the version of the engine that ran it, not the walker's\",",
       "expectRed": "the dispatcher rows and that suite's own list name the same sentences, each exactly once",
       "cell": "the dispatcher rows and that suite's own list name the same sentences, each exactly once",
       "note": "The same drift across the package line, where it is likelier and worse: the dispatcher rows are asserted in implementations/runtime, which cannot be reached from a lang suite except by reading its source, and a lang author has no reason to look there. One word loses its capitals and the citation resolves to nothing. If this cell did not exist, the matrix would keep claiming eight rows while three of them named sentences no suite anywhere prints."
@@ -286,7 +286,7 @@
     {
       "name": "a row's citation is deleted, so the runtime suite lists a cell no row indexes",
       "file": "packages/lang/smoke/differential.smoke.ts",
-      "find": "\"and the refusal says the record names none, rather than interpolating the missing value\",\n    ]],",
+      "find": "\"and the refusal names the type it met rather than interpolating it into a version claim\",\n    ]],",
       "replace": "    ]],",
       "expectRed": "the dispatcher rows and that suite's own list name the same sentences, each exactly once",
       "cell": "the dispatcher rows and that suite's own list name the same sentences, each exactly once",

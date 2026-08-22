@@ -28,7 +28,7 @@ export type HookHandle = (agent: MeshAgent, ev: HookEvent) => Promise<Record<str
  *  explicit op, NOT a disguised hook event. */
 type ControlFrame =
   | { token?: unknown; event?: unknown; handoff?: unknown; op?: undefined }
-  | { token?: unknown; op?: "shutdown" };
+  | { token?: unknown; op?: "shutdown" | "session" };
 
 /** One line a handoff-aware client writes back once the reply has cleared ITS output to the runtime.
  *  Content is irrelevant — arrival is the signal — but a stable token keeps a transcript readable. */
@@ -52,6 +52,10 @@ export interface ControlServerOpts {
    *  its own clean teardown (close the server, `agent.stop()` to leave the mesh, then exit) — the
    *  server never owns `process.exit`. Absent → shutdown frames are accepted + acked but inert. */
   onShutdown?: () => void;
+  /** Read-only host-session identity. A manager uses this after Pi joins to bind supervised crash
+   *  recovery to the exact Pi JSONL session, never to a newest-session heuristic. Undefined means
+   *  the connector has not reached session_start yet. */
+  onSession?: () => string | undefined;
   /** Called once per handled hook frame, after the reply has been written, with whether it reached a
    *  LIVE client. A hook reply is the only vehicle for the peer messages a handler injects, and it is
    *  not guaranteed to arrive: the relay abandons the exchange after its own timeout, and the runtime
@@ -104,11 +108,22 @@ function fmtItem(i: InboxItem): string {
   return `• #${i.channel} ${who(i)}${h}: ${i.text}`;
 }
 
-/** The context block injected into a turn when peer messages are waiting (else undefined). */
+/** The context block injected into a turn when peer messages are waiting (else undefined).
+ *
+ *  The tail names the ORDER OF OPERATIONS, not just the reply verbs. A peer message is frequently a
+ *  work order, and it arrives at the moment the model is choosing its next action: a tail that lists
+ *  only reply tools reads as "this is a chat turn, answer it", and an answer that sounds finished is
+ *  cheaper for a weak model than the work itself. Dogfooding a live seat produced exactly that — a
+ *  confirmation DM claiming a file had been written, sent seconds after the order, with no file tool
+ *  called and no file on disk, twice in a row. Naming the sequence (do it, verify it, then report
+ *  what the tools actually returned) is the part the connector owns; the model is still free to
+ *  disregard it, so this narrows the failure mode rather than closing it. */
 export function formatInjection(items: InboxItem[]): string | undefined {
   if (!items.length) return undefined;
   const head = `📨 Cotal — ${items.length} new message${items.length === 1 ? "" : "s"} from peers:`;
-  const tail = `(Reply with cotal_send / cotal_dm, or cotal_roster to see who's here.)`;
+  const tail =
+    `(If this asks for work, do it with your own tools first and verify the result, then reply with ` +
+    `cotal_dm / cotal_send — never report an action you did not actually perform. cotal_roster shows who's here.)`;
   return `${head}\n${items.map(fmtItem).join("\n")}\n${tail}`;
 }
 
@@ -244,13 +259,23 @@ export function startControlServer(
         sock.destroy(); // unauthenticated — drop hard before handle/onShutdown (no half-open)
         return;
       }
-      if ((frame as { op?: unknown }).op === "shutdown") {
+      const op = (frame as { op?: unknown }).op;
+      if (op === "shutdown") {
         try {
           sock.end(JSON.stringify({ ok: true }) + "\n");
         } catch {
           /* client gone */
         }
         opts.onShutdown?.();
+        return;
+      }
+      if (op === "session") {
+        const sessionId = opts.onSession?.();
+        try {
+          sock.end(JSON.stringify(sessionId ? { ok: true, sessionId } : { ok: false, error: "session not ready" }) + "\n");
+        } catch {
+          /* client gone */
+        }
         return;
       }
       const ev = ((frame as { event?: unknown }).event ?? {}) as HookEvent;

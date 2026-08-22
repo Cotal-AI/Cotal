@@ -35,6 +35,8 @@ import {
   ensureEventWalDir,
   resolveEventsStateRoot,
   type InboxItem,
+  controlFromEnv,
+  scrubLaunchMaterial,
 } from "@cotal-ai/connector-core";
 import { principalKey } from "@cotal-ai/core";
 import { randomUUID } from "node:crypto";
@@ -64,6 +66,10 @@ export const cotal: Plugin = async () => {
   }
   if (guard.__cotalOpencodeHooks) return guard.__cotalOpencodeHooks; // one agent; reuse the hooks
   const config = configFromEnv();
+  const control = controlFromEnv();
+  // Both readers of the launch material have now read it, so the pointer is dropped: the shells and
+  // tools this seat runs from here on inherit no reference to its credential or control token.
+  scrubLaunchMaterial();
   config.connector = "opencode"; // advertise the host harness on our AgentCard (meta.connector)
   const serverUrl = process.env.COTAL_OPENCODE_SERVER_URL?.trim();
   const serverUsername = process.env.OPENCODE_SERVER_USERNAME?.trim() || "opencode";
@@ -212,14 +218,12 @@ export const cotal: Plugin = async () => {
       process.exit(0);
     }
   };
-  const controlPath = process.env.COTAL_CONTROL_SOCKET?.trim();
-  const controlToken = process.env.COTAL_CONTROL_TOKEN?.trim();
-  if (controlPath && controlToken) {
+  if (control) {
     const handle = async (): Promise<Record<string, unknown>> => ({
       ok: false,
       error: "opencode runs cotal hooks in-process; only the shutdown control op is supported",
     });
-    controlServer = startControlServer(agent, { path: controlPath, token: controlToken }, handle, {
+    controlServer = startControlServer(agent, control, handle, {
       fatalBind: true,
       onShutdown: () => void shutdown(),
     });

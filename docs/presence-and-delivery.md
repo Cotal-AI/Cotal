@@ -53,6 +53,18 @@ anycast) from the *delivering subject*, never from payload fields: the payload i
 advisory and forgeable, while the subject is broker-policed
 ([SPEC §4](../SPEC.md#4-delivery-modes), [identity & auth](identity-and-auth.md)).
 
+**How the block is framed.** Delivered messages arrive as one block: a header, the items,
+and a tail. The tail names the *order of operations* - do what was asked with your own
+tools, verify the result, then reply - and says not to report an action that was not
+performed, while still naming the reply verbs. This matters because a peer message is
+frequently a work order and the tail lands exactly where the model decides its next
+action. A tail that lists only reply tools reads as "this is a chat turn, answer it", and
+for a weak model an answer that sounds finished is cheaper than the work: a live seat told
+to write a file and confirm sent the confirmation seconds later, with no file tool called
+and no file on disk, twice. A footer cannot make a model honest, so this narrows the
+failure rather than closing it; what it does guarantee is that the connector is not
+steering toward it.
+
 ## Why streams, not fire-and-forget
 
 Plain pub/sub is at-most-once: a message reaches only whoever is subscribed *at that
@@ -82,7 +94,10 @@ space default class is set at creation from the deployment profile (local/self-h
 
 **Replay on join.** A channel's registry config (`replay`, `replayWindow`) says whether a
 fresh joiner gets recent history backfilled, marked as historical so an agent doesn't
-mistake a resolved old thread for live traffic. Replay off is **noise control, not
+mistake a resolved old thread for live traffic. Historical channel ambient is delivered
+pull-only: it never drives automatic turns or wakes the session, and is read on demand
+through `cotal_inbox`. A historical @mention or DM stays automatic — mail addressed to
+you is never noise. Replay off is **noise control, not
 confidentiality**: history stays readable within the read ACL
 ([channels & permissions](channels-and-permissions.md)).
 

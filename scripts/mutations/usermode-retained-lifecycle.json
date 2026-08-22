@@ -1,0 +1,18 @@
+{
+  "grades": "bin/smoke/backup-usermode-live.smoke.ts",
+  "guard": "the retained managed agent's provisioning cell observes the lifecycle uid the caller minted, not merely that a uid exists",
+  "command": "pnpm smoke:backup-usermode:live",
+  "progressPattern": "\u2713",
+  "why": "READ THIS BEFORE RUNNING IT: the harness will refuse today, and that refusal is correct. smoke:backup-usermode:live is UNGATED and is RED on main at section D, on a space backup inventory mismatch naming twelve broker resources the backup captured that the expected inventory does not list. That red is a separate matter already routed to the backup-validator work, and mutation-proof rightly declines to grade an already-red suite because red would not be attributable. The mutation below was therefore run BY HAND against a byte backup, and it behaved exactly as predicted: with lifecycleUid stripped from the grant call, the old cell \"retained managed agent principal provisioned\" stayed GREEN and the new cell went RED, reporting a row uid of ibnx22g1pck5r0b8yul9lcjvv5scfc against a minted bzdfpczcq0t8lgi4bwixsnh9xqcv465. Those two values ARE the finding: the ledger writes row.lifecycleUid ?? mintLifecycleUid(), so a row always carries a uid and a presence check would have been just as blind as the cell it replaces. Only the caller's own value can fail. Run this config for real the moment section D goes green.",
+  "mutations": [
+    {
+      "name": "the grant stops carrying the lifecycle uid the caller minted",
+      "file": "bin/smoke/backup-usermode-live.smoke.ts",
+      "find": "    lifecycleUid: RETAINED_UID,\n",
+      "replace": "",
+      "expectRed": "the retained agent's ledger row carries the lifecycle uid THIS grant minted",
+      "cell": "the retained agent's ledger row carries the lifecycle uid THIS grant minted",
+      "note": "The mutation is in the SMOKE file, not in a built package, so no rebuild is needed and no dist copy can disagree with it."
+    }
+  ]
+}

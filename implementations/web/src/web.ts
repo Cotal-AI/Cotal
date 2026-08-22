@@ -241,6 +241,27 @@ async function within<T>(p: Promise<T>, until: Promise<typeof LATE>): Promise<T 
  *  dashboard breaking. */
 export class BadRequest extends Error {}
 
+/** A body the caller sent that this server declines to READ, which is a different fact from a body
+ *  it read and disliked, and carries its own status. Deliberately NOT a `BadRequest`: 400 says
+ *  "what you sent is wrong", 413 says "I stopped before finding out", and a caller that retries on
+ *  400 by fixing its payload would loop forever on a size it never learns is the problem. */
+export class PayloadTooLarge extends Error {}
+
+/** The most a request body may weigh before the one write route refuses to keep reading it.
+ *
+ *  THE ROUTE'S BODY HAS ONE FIELD, a channel name, and `assertValidChannel` bounds a usable name
+ *  to dotted `[A-Za-z0-9_-]` segments that the wire will carry as a subject. The dashboard's own
+ *  delete sends about sixty bytes. 8 KiB is therefore not a guess at a working size, it is two
+ *  orders of magnitude ABOVE any name the broker would accept, chosen so that no legitimate
+ *  caller can meet it and an abusive one meets it immediately.
+ *
+ *  MEASURED, before this existed, against the shipped route over a local broker with a raw socket
+ *  rather than `fetch`, because `fetch` hides how much of the body actually left the client:
+ *    30,000,000 bytes posted -> ALL 30,000,000 sent, 70,000,144 bytes of refusal returned,
+ *    peak RSS +1.39 GB, 1022 ms. The read was unbounded and ran to completion before the route
+ *    formed an opinion, so the refusal was the expensive part rather than the cheap one. */
+const MAX_BODY_BYTES = 8 * 1024;
+
 /** THE LIMIT, PARSED ONCE, because three routes each re-deriving
  *  `query.get("limit") ? Number(...) : N` is how they came to disagree about the same parameter.
  *
@@ -785,7 +806,14 @@ export async function web(args: ParsedArgs): Promise<void> {
     // pre-minted at startup (auth mode) or the connection creds (open / --creds), NOT the account
     // seed (which we dropped). A wildcard / missing channel is a 400.
     if (path === "/api/channel/delete" && req.method === "POST") {
-      const body = await readBody(req).catch(() => ({}) as { channel?: string });
+      const body = await readBody(req).catch((e: unknown) => {
+        // A body this server DECLINED TO READ is not a body with no channel in it. Flattening the
+        // refusal into `{}` here would answer "channel required", which tells the caller to add a
+        // field it already sent and never mentions the size, so the loud refusal has to survive
+        // this catch. A malformed body still means "channel required", unchanged.
+        if (e instanceof PayloadTooLarge) throw e;
+        return {} as { channel?: string };
+      });
       const channel = typeof body.channel === "string" ? body.channel : "";
       if (!channel) {
         res.writeHead(400, { "content-type": "application/json" });
@@ -835,11 +863,47 @@ export async function web(args: ParsedArgs): Promise<void> {
       const why = e instanceof Error ? e.message : String(e);
       // A caller error and a server fault are different facts and must not share a status. Before
       // this split, a malformed query read in the log exactly like the dashboard breaking.
-      const status = e instanceof BadRequest ? 400 : 500;
-      console.error(c[status === 400 ? "yellow" : "red"](`${status === 400 ? "~" : "!"} ${req.method ?? "GET"} ${req.url ?? "/"} ${status === 400 ? "refused" : "failed"}: ${why}`));
+      const status = e instanceof PayloadTooLarge ? 413 : e instanceof BadRequest ? 400 : 500;
+      const caller = status < 500;
+      console.error(c[caller ? "yellow" : "red"](`${caller ? "~" : "!"} ${req.method ?? "GET"} ${req.url ?? "/"} ${caller ? "refused" : "failed"}: ${why}`));
       if (res.headersSent) return void res.end();
-      res.writeHead(status, { "content-type": "application/json" });
+      // END THE CONNECTION A REFUSED BODY WAS RIDING ON, or the cap bounds only what the caller
+      // volunteers. On a keep-alive connection Node wants the socket back, so rather than closing
+      // under a caller that is still uploading it reads and discards the rest of the body first.
+      // The refusal is on the wire in 2 ms either way and the caller still gets to send all of it.
+      //
+      // MEASURED against the shipped route, one 30,000,000 byte post per row:
+      //   connection: close        3,211,264 of 30,000,000 accepted, +0 MB,   508 ms
+      //   connection: keep-alive  30,000,000 of 30,000,000 accepted, +32 MB, 6516 ms
+      // and with this header the keep-alive row becomes 3,407,872 accepted, +0 MB, 505 ms.
+      // The connection itself also stops lingering: a refused keep-alive request ends in 3 to 4 ms
+      // rather than sitting until the platform gives up on the body it was promised, at 6003 ms.
+      //
+      // The trade, stated rather than assumed: a caller can now force a new connection per refusal.
+      // That is cheaper than letting it spend the server's memory and six seconds of reading, and a
+      // caller that wanted connection churn could open connections without our help. Section 7 of
+      // the suite carries the negative arm: an ordinary within-cap request keeps its socket.
+      //
+      // WHAT THIS DOES NOT REACH. It is the connection this process owns. A reverse proxy that
+      // buffers a request before forwarding it owns its own ingress bound, and `connection` is
+      // hop-by-hop, so nothing here configures anything upstream of this server.
+      res.writeHead(status, e instanceof PayloadTooLarge
+        ? { "content-type": "application/json", connection: "close" }
+        : { "content-type": "application/json" });
       res.end(JSON.stringify({ error: why }));
+      // NO DRAIN HERE, DELIBERATELY. An earlier version resumed the request after answering, on the
+      // theory that discarding the remainder let more closes be clean and so let more callers read
+      // the 413. Three independent measurements, two of them from other people on another machine,
+      // could not reproduce any effect: the direction did not hold, and a real `fetch` client read
+      // the refusal in every arm with or without it. A line whose only defence is that it is
+      // harmless is not worth carrying, and once the refusal closes the connection there is no
+      // socket being kept for it to be for.
+      //
+      // WHETHER THE UPLOADING PEER READS THE 413 IS BEST EFFORT AND NOT CLAIMED. Cutting a caller
+      // off mid-upload leaves unread bytes in its receive buffer, that close goes out as an RST,
+      // and an RST makes the peer discard the response it had already buffered. That is the trade
+      // the cap exists to make, and the alternative is the unbounded read this replaces. The
+      // refusal that is never lost is the operator line above, written before the response is.
     });
   });
 
@@ -1037,10 +1101,32 @@ function debounce(fn: () => void, ms: number): () => void {
 }
 
 async function readBody(req: IncomingMessage): Promise<{ channel?: string }> {
+  // A DECLARED size over the cap is refused before a single body byte is read. A declaration can
+  // lie, in either direction, so this is the cheap gate and the loop below is the real one.
+  const declared = Number(req.headers["content-length"]);
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw tooLarge(declared, "declared");
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
+  let seen = 0;
+  for await (const chunk of req) {
+    seen += (chunk as Buffer).length;
+    // AT the threshold, not after it. Throwing here abandons the iterator, so the rest of the
+    // upload is never read into this process, and the frame's reply closes the connection under
+    // a caller that is still sending. Truncating to the cap instead would be worse than not
+    // capping at all: a shortened channel name is a name the caller did not send, which is the
+    // aliasing shape the validator on this same route exists to refuse.
+    if (seen > MAX_BODY_BYTES) throw tooLarge(seen, "read");
+    chunks.push(chunk as Buffer);
+  }
   const raw = Buffer.concat(chunks).toString("utf8");
   return raw ? JSON.parse(raw) : {};
+}
+
+/** The refusal names the limit and how the limit was met, so an operator reading one line knows
+ *  whether the caller announced an oversized body or simply sent one. */
+function tooLarge(bytes: number, how: "declared" | "read"): PayloadTooLarge {
+  return new PayloadTooLarge(
+    `request body ${how === "declared" ? "declares" : "exceeds"} ${bytes} bytes, over the ${MAX_BODY_BYTES} byte limit for this route`,
+  );
 }
 
 /** Best-effort open of the dashboard in the default browser. The URL is already

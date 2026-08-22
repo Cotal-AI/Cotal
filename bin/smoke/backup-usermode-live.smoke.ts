@@ -49,7 +49,7 @@ const { toNodeHandler } = await fromAuth("better-auth/node");
 
 const { CotalEndpoint, isReachable, mintCreds, mintLifecycleUid, newIdentity, principalKey } = await import("@cotal-ai/core");
 const { authDir, loadSoleSpaceAuth, spaceSegment, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
-const { cotalAuthProvider, establishIdpSession } = await import("@cotal-ai/auth");
+const { cotalAuthProvider, establishIdpSession, findActorUnified } = await import("@cotal-ai/auth");
 type DeviceLoginPrompt = import("@cotal-ai/auth").DeviceLoginPrompt;
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
 
@@ -191,12 +191,35 @@ try {
   const OWNER = await cotalAuthProvider.ownerForLogin({ store: workspaceSecretStore(root), dir: stateDir, space: SPACE });
   // A retained MANAGED agent principal: real user-mode agent authority (ledger row + sentinel +
   // actor token), the material a same-principal resume must reuse rather than replace.
+  // The uid is minted into a NAMED value rather than inline, because the assertion below compares
+  // against it. See the comment on that cell for why nothing weaker works.
+  const RETAINED_UID = mintLifecycleUid();
   const retained = await cotalAuthProvider.grantAgent({
     store: workspaceSecretStore(root), dir: stateDir, space: SPACE, owner: OWNER, actor: "worker",
     scope: [], allowSubscribe: [CHANNEL], allowPublish: [CHANNEL], role: "worker", parent: `${OWNER}.cli`,
-    lifecycleUid: mintLifecycleUid(),
+    lifecycleUid: RETAINED_UID,
   });
   check("retained managed agent principal provisioned", !!retained.actorToken && !!retained.sentinelCreds);
+  // ...and the provisioning cell above CANNOT SEE the field the retention actually rests on. It
+  // reads the grant's return value, which is `{ actorToken, sentinelCreds }` and carries no uid, so
+  // it passes identically whether or not the grant was given one. `lifecycleUid` is what SPEC 13.1's
+  // predecessor-bearer defence is built on: it is stamped into the bearer so a predecessor
+  // incarnation's still-unexpired bearer can never be minted the successor's broker authority at
+  // connect. A cell that provisions a retained principal and reports success without ever observing
+  // that field proves nothing about the property the field exists for.
+  //
+  // Presence on the row is NOT the assertion either, and this is the trap worth naming: the ledger
+  // writes `row.lifecycleUid ?? mintLifecycleUid()`, so a row ALWAYS carries one. Stripping the
+  // field from the grant above would leave the row populated with a uid the ledger invented, and a
+  // presence check would stay green while the caller's value was silently discarded. Only the uid
+  // THIS caller minted can fail, so that is what is compared. `grantAgent`'s options do declare
+  // `lifecycleUid` required and the `??` exists for the ledger's other writer, but that declaration
+  // is not what makes this cell safe: no build type-checks this file, so a call that drops the
+  // field still runs, and a review dropped it and watched it run. The runtime equality is the
+  // enforcement; the signature is only where the intent is written down.
+  const retainedRow = findActorUnified(stateDir, OWNER, "worker");
+  check("the retained agent's ledger row carries the lifecycle uid THIS grant minted",
+    retainedRow?.lifecycleUid === RETAINED_UID, { row: retainedRow?.lifecycleUid, minted: RETAINED_UID });
   await must("seed channel registry",
     ["channels", "set", "preserved", "--desc", "survives user-mode restore", "--space", SPACE]);
   await must("user-mode send seeds a CHAT message", ["send", "msg", CHANNEL, SEEDED_TEXT, "--space", SPACE]);

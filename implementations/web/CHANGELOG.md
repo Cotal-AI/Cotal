@@ -1,5 +1,142 @@
 # @cotal-ai/web
 
+## 0.27.0
+
+## 0.26.0
+
+## 0.25.0
+
+### Minor Changes
+
+- de4f0ee: Open the graph view's live feed as the page loads, not after it.
+
+  The connection pill is driven by the `/feed` EventSource opening, and the page chained that behind
+  its whole bootstrap. The bootstrap reads the activity and DM backfills, both bounded by the
+  aggregation deadline, so on a slow link the graph's connection pill stayed down for the entire load
+  window and only then went live. Measured in Chrome against a local broker behind an 80ms-each-way
+  link with 40 channels: the pill first said `live` at 8052ms, tracking the slowest bootstrap read at
+  8044ms. With the feed opened first it says `live` at 89ms while that read still runs to 8066ms. An earlier fix stopped the bootstrap from rejecting, which guaranteed the feed
+  would be opened but not that it would be opened soon.
+
+  The feed now opens first and the bootstrap fills in around it, which is what the Monitor page has
+  always done. A page showing stale data is exactly the one that needs its live feed most.
+
+  Opening it first introduces an ordering the chained boot could not produce, so the change carries the
+  rule for it. Every bootstrap read is issued before its value is applied, so a snapshot is at least as
+  old as the moment it was requested, while a live event is newer than that moment. A roster or
+  membership arriving mid-bootstrap was therefore reverted when the older snapshot landed, and the
+  agent the feed had just announced disappeared from the graph. Both channels carry a full snapshot
+  through the same apply, so a live event now replaces the read rather than being overwritten by it.
+
+  What is superseded is the source, not the snapshot. Membership speaks in two sentences, a snapshot
+  and a refusal, and either side can say either one, so the rule covers all four: a live refusal is no
+  longer erased by an older successful read, and a startup read that refuses no longer overrules a
+  newer live snapshot. Both of those ended with the header pill making a claim about the mesh that was
+  really a claim about one read, which is the one thing that pill exists not to do.
+
+- b501ec5: Parse the dashboard's history limit once, and bound the single-channel read.
+
+  Three history routes each re-derived the same limit parse, so a value that was not a whole number
+  took a different wrong path through each of them. `Number("abc")` is `NaN` and every comparison
+  against `NaN` is false, so the endpoint's `limit <= 0` guard never fired and its widening history
+  search could never reach either exit: the read did not return everything, it never returned, and the
+  abandoned request kept consuming CPU long after its caller had gone. `Infinity` reached the same
+  hole from the other end and returned a channel's entire retained history.
+
+  The limit is now parsed in one place and a value that is not a whole number is refused with a 400
+  naming what it received, so a caller's mistake is no longer reported as a server fault. The same
+  holds for the channel name in the URL: an escape that cannot be percent-decoded is a caller's typo
+  and is answered as a bad request rather than as the server having broken.
+
+  For every caller that does not go through those routes, the endpoint now requires a history limit to
+  be a whole number of messages it can count exactly, not merely a finite one. A page is taken with
+  `slice(-limit)` and slice truncates toward zero, so any limit between zero and one became `slice(0)`
+  and returned the subject's entire retained history; a magnitude past exact counting did the same. The
+  check sits above the empty-page check on purpose, since `-Infinity` is less than zero and would
+  otherwise be folded into a silent empty page.
+
+  The single-channel history read now carries the same per-request deadline as the aggregate routes,
+  with a named refusal, because the console view re-reads it on every poll. Zero still means zero,
+  negatives still mean an empty page, and an absent or empty limit still means the route's default.
+
+- 6959679: The dashboard survives a poll that fails, and its aggregation answers instead of failing.
+
+  A failed poll used to clear the peers and the channels. A 500's body is valid JSON and `fetch` does
+  not reject on one, so the refusal arrived as a successful parse and was stored as the snapshot. Reads
+  now refuse a non-200 by name, a refused read leaves the value the page already holds exactly where it
+  is, and the header says which source is stale and why. Recovery is the next successful read.
+
+  `/api/activity` no longer fans out every channel's history at once with no upper bound, where one
+  channel's rejection became the whole route's 500 and a slow link produced a 34-second success.
+  Sources race one shared deadline through a bounded pool, and the page always carries `partial`, the
+  counts, the named missing sources, and the deadline it used, so a short page cannot be mistaken for a
+  complete one. `/api/dms` is one read with no subset to serve, so its bound is a 503 that names the
+  deadline. A channel list that cannot be read is a refusal that says so rather than a page claiming
+  the space is empty.
+
+  The elevated observer/admin credential can now delete consumers on its own presence bucket. A KV
+  watch rebuilds itself when the link stalls and each rebuild deletes its predecessor; without that
+  grant the cleanup was refused, so orphaned consumers accumulated until their inactivity threshold and
+  the broker logged a violation every time.
+
+- 0f16f21: web: a refusal renders the value it names, instead of echoing it back invisibly
+
+  The dashboard quotes a caller's own value in two places: the 400 body and the line the request
+  frame prints for an operator. Both used `JSON.stringify`, which was doing double duty. It is a JSON
+  serializer and it is good at that; it is not a renderer for a human, and it never claimed to be.
+
+  Measured against the shipped server before the change, driving `/api/activity?limit=` with each
+  codepoint percent-encoded and reading the answer as bytes: `ESC` and `LF` came back escaped, because
+  `JSON.stringify` closes all of C0. `DEL`, `U+0085`, `U+009B`, `U+202E`, `U+2028` and `U+2029` came
+  back raw, in the body and in the operator's line alike. The issue named three of those; the class is
+  wider than the sample, and `U+202E` is the sharpest case, since it does not vanish but reverses the
+  rendering of everything after it.
+
+  Values are now quoted through one helper that escapes what `JSON.stringify` leaves: DEL and the C1
+  controls, the soft hyphen, the zero-width and bidi marks, the line and paragraph separators, and the
+  BOM. The escape is `\uXXXX`, so the body stays valid JSON and parses back to exactly what the caller
+  sent. Ordinary text is untouched, accents and non-Latin scripts included, because a quoter that
+  escaped everything over ASCII would make a refusal about a name a human typed unreadable, which is
+  the same defect pointed the other way.
+
+  Review of that fix found the list wrong in the way a hand-written list is always wrong: it was
+  missing U+061C, U+2060, the variation selectors and the tag characters, every one of them exactly
+  the thing the list said it closed. The class is now the Unicode property
+  `Default_Ignorable_Code_Point` plus the four codepoints no property carries: DEL, the C1 range, and
+  the line and paragraph separators. Astral members leave as their surrogate pair, because the
+  five-hex form is not a JSON escape and a body carrying it would stop parsing.
+
+  Review also found a second, older defect at the same boundary, and this fixes it too. The dashboard
+  took a channel name from the caller in the history path and in the delete body and handed it
+  straight to the wire, which rewrites anything outside `[A-Za-z0-9_-]` to `_` rather than refusing
+  it. Two different names were therefore one channel: a history read under a name carrying an
+  invisible character returned another channel's messages, and the delete route purged that other
+  channel while answering with the name the caller typed. Both boundaries now refuse a name the wire
+  would rewrite, using the validator core already had for the same aliasing gap on the ACL side.
+  Rendering the old answer readably would only have made the lie legible.
+
+  A second review pass found the property boundary still short: the interlinear annotation controls
+  U+FFF9 to U+FFFB are format characters and not default-ignorable, so they arrived raw. They are the
+  clearest form of the harm in the issue, since they mark a span as base text plus its gloss and a
+  reader whose terminal does not implement them sees the two runs concatenated into a sentence nobody
+  wrote. The class now carries both properties, which adds 32 codepoints, none of them a letter or a
+  digit. A swept cell puts every codepoint from 0 to 0x10FFFF through the quoter and compares the
+  result against the union the code claims, so a dropped alternative or a mistyped range is caught for
+  every codepoint rather than for the ones a list happens to name.
+
+  Review then pushed on the boundary from the other side, with U+0338 COMBINING LONG SOLIDUS OVERLAY
+  arriving raw, which is a fair question against the harm as it was first stated: it does change what
+  a reader sees. It is excluded, and the exclusion is now asserted rather than described. A combining
+  mark makes a visible mark on a visible base, and the property carrying it also carries the accent
+  in a name written in NFD, the Devanagari vowel signs, the Arabic and Hebrew points and the
+  Vietnamese tones; escaping marks would take about 2280 codepoints of ordinary written language and
+  render an accented name as its escapes, which is the same defect this change refuses to open on the
+  letter side. The stated class is narrowed to say what the code does, characters that produce no
+  glyph of their own or that reorder the text around them, and three cells pin the exclusion,
+  including the strongest case against it, a mark over an equals sign rendering as a not-equals sign.
+  That case is the confusable problem, which needs no combining mark to exist and is not answered by
+  a quoter.
+
 ## 0.24.0
 
 ## 0.23.0

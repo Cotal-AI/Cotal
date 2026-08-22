@@ -261,7 +261,7 @@ log(votes.a.status);
   const store = { append: async (e: JournalEntry) => { entries.push(e); } } as JournalStore;
 
   let dispatched = 0;
-  const counting = new Proxy(new SimHandler({ now: () => NOW }), {
+  const counting = new Proxy(new SimHandler({ clock: { start: NOW } }), {
     get(t: SimHandler, k: string | symbol) {
       const v = (t as unknown as Record<string | symbol, unknown>)[k];
       if (typeof v !== "function") return v;

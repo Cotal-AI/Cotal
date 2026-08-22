@@ -268,10 +268,11 @@ const check = (name: string, cond: boolean, extra?: unknown): void => {
  *  floor; see the population cells for why. */
 type Seam = { fn: string; key: string; sites: number; untypecheckedSites: number };
 const SEAMS: Seam[] = [
-  // 94/67 -> 95/68: one call site added under `smoke/`, in
-  // `packages/core/smoke/presence-watch-rebuild.smoke.ts`, which opens its own client to read the
-  // consumers a presence watch leaves behind. It states `tls`, so only the population moved.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 95, untypecheckedSites: 68 },
+  // 95/68 -> 98/71: three call sites added under `smoke/`, in
+  // `implementations/manager/smoke/manager-reconcile-startup.smoke.ts`, which opens the real
+  // lifecycle-executor, provisioner, and caller clients for the #755 orphan-reconcile fixture.
+  // Every site states `tls`, so only the deliberate population census moved.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 98, untypecheckedSites: 71 },
 ];
 
 /**

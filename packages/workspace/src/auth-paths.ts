@@ -406,6 +406,62 @@ export function findCotalRoot(start: string = process.cwd()): string {
   }
 }
 
+/** What the CWD WALK would have resolved, when that disagrees with the root a command actually used.
+ *
+ *  This exists because the two can disagree silently and the disagreement is invisible in the
+ *  output. `findCotalRoot` accepts any directory merely NAMED `.cotal`, and `~/.cotal` is one on
+ *  every install, because that is where the mesh registry lives. So every cwd under `$HOME` that is
+ *  not inside a project walks up to the HOME directory, and if that directory's auth holds the same
+ *  space under a different trust chain - an older mesh, a decommissioned one, a copy - a command
+ *  that re-derives its seed from the cwd mints a credential the broker never trusted. That was
+ *  issue #722: the failure reached the operator as a bare `Authorization Violation` naming neither
+ *  root.
+ *
+ *  Comparison is on the account PUBLIC key: it identifies the chain, and no secret material is read
+ *  for the answer or available to a caller rendering it. Returns undefined when there is nothing to
+ *  say - the walk agrees with the resolved root, or the walked root holds no auth for this space, or
+ *  it holds the SAME chain (a second checkout of the same mesh, which is legitimate and silent).
+ *
+ *  It REPORTS. It does not choose: a caller that silently preferred one root over the other would be
+ *  the same defect with a different winner. It also never THROWS - a fault reading either root is
+ *  reported as nothing to say, because a detector that can abort its caller is that same defect once
+ *  more, wearing the cwd's failure instead of its answer. */
+export function divergentCwdAnchor(resolvedRoot: string, space: string, cwd?: string): { cwdRoot: string } | undefined {
+  // A detector that can THROW is the cwd deciding the command's fate by another route, which is the
+  // defect this function exists to end rather than relocate. `loadSpaceAuth` refuses unreadable
+  // trust material loudly - right for a root a command is about to USE, wrong for one it has just
+  // declared it is not using: a half-written `~/.cotal/auth/broker.json` would kill an attach whose
+  // seed came from elsewhere, and on the reconnect path that throw is classified transient and
+  // retried forever, printing a disk-parse error as though the link were down.
+  //
+  // Silence here is not a fallback, it is the accurate answer. The question is "does the walked root
+  // hold a DIFFERENT chain for this space", and it can only be answered by comparing two legible
+  // chains: an unreadable walked root asserts nothing, and an unreadable RESOLVED root leaves
+  // nothing to compare against, so claiming divergence would be a statement this code cannot make.
+  // Neither case hides a real problem, because corruption in the root the command actually reads
+  // still surfaces loudly from the path that reads it.
+  // `findCotalRoot` is INSIDE the guard rather than before it, because its default argument is
+  // `process.cwd()`, which throws when the process's working directory has been deleted out from
+  // under it. That is the one input on which this function could still end its caller, and a
+  // contract that says it never throws has to hold for every statement, not only for the ones the
+  // fault was found in. The comment sits out here and not in the block because the block is a
+  // mutation anchor, and an anchor that spans prose breaks the moment someone rewords the prose.
+  let cwdRoot: string;
+  let here: SpaceAuth | undefined;
+  let there: SpaceAuth | undefined;
+  try {
+    cwdRoot = findCotalRoot(cwd);
+    if (resolve(cwdRoot) === resolve(resolvedRoot)) return undefined;
+    here = loadSpaceAuth(authDir(cwdRoot), space);
+    there = here ? loadSpaceAuth(authDir(resolvedRoot), space) : undefined;
+  } catch {
+    return undefined;
+  }
+  if (!here) return undefined;
+  if (there && here.account.pub === there.account.pub) return undefined;
+  return { cwdRoot };
+}
+
 // ---- broker trust and space accounts are SEPARATE persisted authorities (W4) ----
 //
 // A nats-server trusts exactly one operator and one system account, so broker trust is per-BROKER

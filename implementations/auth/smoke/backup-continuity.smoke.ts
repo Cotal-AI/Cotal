@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSpaceAuth } from "@cotal-ai/core";
+import { createSpaceAuth, mintLifecycleUid } from "@cotal-ai/core";
 import { userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import {
   cotalAuthProvider,
@@ -103,6 +103,9 @@ try {
     allowPublish: ["general"],
     role: "worker",
     parent: `${OWNER}.cli`,
+    // Required by grantAgent; distinct per grant, which is what the row-B-at-row-A-path swap below
+    // needs the two managed rows to be.
+    lifecycleUid: mintLifecycleUid(),
   });
 
   console.log("A. canonical trust fingerprint");
@@ -289,6 +292,7 @@ try {
     scope: [],
     allowSubscribe: ["general"],
     allowPublish: [],
+    lifecycleUid: mintLifecycleUid(),
   });
   const workerBPath = join(managedDir, `${OWNER}.worker_b.json`);
   writeFileSync(workerPath, readFileSync(workerBPath));

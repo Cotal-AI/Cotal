@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hardenPrivate, loadAgentFile, registry, writeSecretFile, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchEnv, mcpServerEnvKeys, userAuthEnv } from "@cotal-ai/connector-core";
+import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchEnv, materialEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
 const MCP_SERVER_NAME = "cotal";
@@ -74,6 +74,7 @@ export const claudeConnector: Connector = {
   launchHint: "press Enter at the dev-channels prompt", // Claude Code opens on that one-time gate
 
   buildLaunch(opts: LaunchOpts): LaunchSpec {
+    if (opts.continueSession) throw new Error("claude connector does not support exact-session continuation");
     if (opts.variant) throw new Error("claude connector: model variants are not supported");
     // Operator MCP servers shared with this agent (default none — see the --mcp-config block).
     const shared = opts.mcpServers ?? {};
@@ -81,22 +82,33 @@ export const claudeConnector: Connector = {
     // The OS allow-list (PATH/HOME/TERM/…) is the only thing inherited from the manager env, plus
     // — only when a shared server declares them via `${VAR}` — the named secrets it needs (mcpKeys,
     // by name). The operator's unrelated secrets don't reach the child (P3).
-    // The session's local control endpoint: the in-process MCP server LISTENS on it (auth), and the
-    // lifecycle hooks (child processes of `claude`, which inherit this env) CONNECT to it. Both read
-    // path+token from the env — never recomputed from public identity — and the manager keeps the
-    // pair (returned as `control` below) to drive a cooperative shutdown on Windows.
+    // The session's local control endpoint: the MCP server LISTENS on it (auth), and the lifecycle
+    // hooks (child processes of `claude`, which inherit this env) CONNECT to it. Both read the
+    // SOCKET PATH from the env and the TOKEN from the launch-material file the env points at, never
+    // recomputed from public identity, and the manager keeps the pair (returned as `control` below)
+    // to drive a cooperative shutdown on Windows.
+    //
+    // This connector is the one that CANNOT drop the material reference after startup, and that is a
+    // property of the host rather than an oversight: its readers are short-lived children (the MCP
+    // server, one process per hook event) that start after the session is running, so the reference
+    // has to stay reachable in `claude`'s environment for them to find it. A shell `claude` runs
+    // therefore still inherits a path to the material file. Narrowing that further means handing the
+    // MCP server its material through the --mcp-config `env` block and giving the hooks a separate
+    // control-only file, which depends on host behaviour that has to be verified against a live
+    // `claude` first. Tracked separately rather than guessed at here.
     const control = controlEndpoint(opts.space, opts.name);
     const env: Record<string, string> = {
-      ...launchEnv({ mcpKeys: mcpServerEnvKeys(shared) }),
+      ...launchEnv({ mcpKeys: mcpServerEnvKeys(shared), envAllow: opts.envAllow }),
       ...aclEnv(opts),
-      ...userAuthEnv(opts),
+      // Creds, broker URL and the control token ride a 0600 file; only its path is exported, so the
+      // shells, builds and third-party CLIs this session runs no longer inherit live authority.
+      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
       // Force the connector to emit channel wake-nudges: Claude doesn't advertise the
       // `claude/channel` capability back over MCP, so auto-detection would see it "off".
       COTAL_CHANNEL: "1",
       COTAL_CONTROL_SOCKET: control.path,
-      COTAL_CONTROL_TOKEN: control.token, // env only — never argv/logs/persisted (token hygiene)
     };
     // The AG-UI event plane. `COTAL_EVENTS` ARMS the emitter and is what makes a grant meaningful:
     // holding publish rights on a channel is not a request to publish to it. `COTAL_WORKSPACE_ROOT`
@@ -118,8 +130,6 @@ export const claudeConnector: Connector = {
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
-    if (opts.creds) env.COTAL_CREDS = opts.creds;
-    if (opts.servers) env.COTAL_SERVERS = opts.servers;
 
     // A leading positional is claude's first message, auto-submitted on start —
     // so a driving session can greet the operator the moment it joins.
