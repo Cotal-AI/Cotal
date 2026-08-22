@@ -414,7 +414,8 @@ restore only when its details prove manager commit and its exact recorded listen
 ```bash
 cotal meshes
 cotal meshes add                      # guided, on a terminal
-cotal meshes add <space> --server <url> [--root <dir>] [--mode auth|open] [--force]
+cotal meshes add <space> --server <url> [--root <dir>] [--mode auth|open|user] [--tls] [--force]
+cotal meshes add <space> --mode user (--user-auth-file <bundle.json> | --from <https url>)
 cotal meshes rm <space> [<space> …] [--force]
 cotal use <space>
 cotal status [--space <s>] [--server <url>]
@@ -436,11 +437,25 @@ a terminal - a script, an agent, CI - nothing prompts and the flag form's errors
 speak for: one running on another machine, a shared broker, a hosted space. `--root` is the folder
 whose `.cotal/auth` holds that mesh's credentials and whose `.cotal/agents` holds its personas
 (default: the project you run it in) — the registry stores that path, never a secret. `--mode`
-defaults to `auth` when the root holds the space's account record and to `open` otherwise; a
-user-auth space cannot be registered by hand, because its IdP pins are trust that only
-`cotal up --user-auth` establishes. The broker is probed before anything is recorded, so a wrong
-address, or credentials that mesh will not accept, fails here instead of at the first `spawn`;
-`--force` records without verifying (and replaces an existing record).
+defaults to `auth` when the root holds the space's account record and to `open` otherwise. The
+broker is probed before anything is recorded, so a wrong address, or credentials that mesh will
+not accept, fails here instead of at the first `spawn`; `--force` records without verifying (and
+replaces an existing record).
+
+A hostname or public address is registrable only when the connection will **require TLS**: pass
+`--tls`, or use a `tls://` URL — the scheme is recorded as enforced intent, so every later dial
+through the record demands the handshake (and `meshes add tls://…` against a plaintext broker is
+refused at registration). Without required TLS the fence is unchanged: loopback and
+private-overlay literals only, and RFC1918 addresses are refused in both modes — a cafe LAN is
+private, not yours.
+
+A **user-auth** mesh registers from supplied pinned trust, never guessed: `--user-auth-file`
+takes the bundle exported where the mesh runs; `--from` fetches its
+`/.well-known/cotal-mesh` discovery document (HTTPS only), displays the pins, and asks before
+adopting them. Registration verifies the pinned exchange answers `/health` and `/jwks` as the
+pinned issuer, and that the broker itself refuses a bare connect — the auth-required refusal is
+the pass. The sentinel credentials land in a 0600 file under the entry's root; the registry
+records only the path.
 
 `meshes rm` drops records — it never stops a mesh. For a mesh running on this machine `cotal down`
 is the right verb, and `rm` says so unless you pass `--force`. A record you added by hand is only

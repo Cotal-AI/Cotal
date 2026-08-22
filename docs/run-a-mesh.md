@@ -158,27 +158,36 @@ useful when the mesh is simply down right now).
 #### Which addresses you may register
 
 Registering a mesh is how this machine starts sending agent credentials to a broker it does not
-run, and this build has no way to demand an encrypted connection yet: NATS announces itself in
-plaintext before anyone authenticates, so an attacker on the path can pose as the broker and read
-the credential out of the connect. A `tls://` URL does not help, because it is the connect
-options, not the scheme, that make the client insist.
+run. NATS announces itself in plaintext before anyone authenticates, so an attacker on the path
+can pose as the broker and read the credential out of the connect — unless the connection
+**requires TLS**, which is recorded on the entry and enforced on every dial through it.
 
-So the address is the gate, and only two kinds are accepted:
+What the record will require decides what you may register:
 
-- **loopback** — `127.0.0.0/8` or `::1`, where nothing leaves the machine;
-- **your private overlay** — `100.64.0.0/10` or `fd7a:115c:a1e0::/48`, but only with
+- **Without required TLS**, the address is the gate: **loopback** (`127.0.0.0/8`, `::1`), or
+  **your private overlay** (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) with
   `--allow-unencrypted-overlay`, because the protection is real only while the tunnel is running
-  and this command cannot check that for you.
+  and this command cannot check that for you. Hostnames are refused — whoever answers the lookup
+  would be choosing which machine receives your credentials.
+- **With required TLS** (`--tls`, or a `tls://` URL — the scheme is recorded and enforced, not
+  cosmetic), a **hostname or public address** is accepted too: the certificate chain and
+  hostname check pick the peer, not the resolver. A `tls://` registration against a broker that
+  cannot complete the handshake fails — at registration, and on every later dial.
 
-Everything else is refused, including ordinary private ranges like `10.x` and `192.168.x`: a
-café's wifi is a private network too, and being private is not the same as being yours. `--force`
-does not waive this — it exists for a mesh that is *down*, not for sending credentials somewhere
-unsafe.
+Ordinary private ranges like `10.x` and `192.168.x` are refused in **both** modes: a café's wifi
+is a private network too, being private is not the same as being yours, and no public CA issues
+certificates for those ranges. `--force` does not waive any of this — it exists for a mesh that
+is *down*, not for sending credentials somewhere unsafe.
 
-Hostnames are refused as well, even ones that resolve somewhere allowed, because then whoever
-answers the lookup would be choosing which machine receives your credentials. Pass the address
-itself. When serving the broker over TLS arrives, the client will verify the certificate's
-hostname and names become safe to use again.
+#### Registering a hosted user-auth mesh
+
+A user-auth space's IdP pins are established where the mesh runs and are never guessed. Register
+one from **supplied** trust: `--user-auth-file bundle.json` (exported on the mesh's machine), or
+`--from https://…/.well-known/cotal-mesh`, which fetches the discovery document over HTTPS,
+shows you the pins, and asks before adopting them. Registration checks that the pinned exchange
+answers `/health` and `/jwks` as the pinned issuer and that the broker refuses a bare connect —
+that refusal is the pass. The bundle's sentinel credentials are written to a private (0600) file
+under the entry's root; the registry itself never carries the secret.
 
 An overlay address is **refused unless you accept the dependency explicitly**, with
 `--allow-unencrypted-overlay`. The address is not the guarantee: it is protected while the tunnel
