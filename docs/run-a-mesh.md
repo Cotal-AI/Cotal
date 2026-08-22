@@ -181,6 +181,11 @@ is *down*, not for sending credentials somewhere unsafe.
 
 #### Registering a hosted user-auth mesh
 
+> **Not yet enabled:** registering a remote user-auth mesh currently refuses. Support arrives with
+> remote-exchange clients, which teach `cotal spawn` and `cotal console` to connect through a
+> mesh's pinned exchange and sentinel. Until then a user-auth space is usable where
+> `cotal up --user-auth` provisioned it. This section describes what will be enabled.
+
 A user-auth space's IdP pins are established where the mesh runs and are never guessed. Register
 one from **supplied** trust: `--user-auth-file bundle.json` (exported on the mesh's machine), or
 `--from https://…/.well-known/cotal-mesh`, which fetches the discovery document over HTTPS,

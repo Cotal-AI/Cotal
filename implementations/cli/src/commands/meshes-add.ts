@@ -209,6 +209,30 @@ export function checkEnforcement(mode: MeshEntry["mode"], enforces: "auth" | "op
   return good(undefined);
 }
 
+// ---- the sequencing fence: the producer stays shut until its consumer exists ------------------
+
+/** The escape hatch for developing the consumer lane. NOT a user-facing feature and deliberately
+ *  undocumented: it exists so the remote-exchange client work can register a remote entry to
+ *  develop against, and it disappears with {@link checkRemoteConsumable}. */
+const REMOTE_DEV_ENV = "COTAL_REMOTE_REGISTRATION_DEV";
+
+/** Remote user-auth registration is REFUSED by default until the connect path can consume it.
+ *
+ *  The record this command writes is complete and validated, but no production connect reads it
+ *  yet: `implementations/auth/src/provider.ts` requires user-auth material provisioned on THIS
+ *  machine and refuses with "remote discovery is not supported yet". Registering anyway would
+ *  print `✓ registered` and could select a durable default mesh whose every later `spawn` or
+ *  `console` deterministically hits that refusal — a success result the operator cannot act on.
+ *
+ *  A refusal is the honest contract until the consumer lands: this fence is deleted by the
+ *  remote-exchange client work, in the same change that deletes the provider's refusal. */
+export function checkRemoteConsumable(): Check<void> {
+  if (process.env[REMOTE_DEV_ENV] === "1") return good(undefined);
+  return bad(
+    `✗ remote user-auth connect is not yet supported, so registering a remote user-auth mesh is refused - registration will be enabled with remote-exchange clients, which teach \`cotal spawn\`/\`console\` to use a mesh's pinned exchange and sentinel. Until then a recorded remote entry could not be connected to, and nothing was registered. A user-auth space is usable where \`cotal up --user-auth\` provisioned it`,
+  );
+}
+
 // ---- the user arm: supplied pinned trust ----------------------------------------------------
 
 /** What a remote user-auth registration supplies: the pins nothing on this machine could derive.

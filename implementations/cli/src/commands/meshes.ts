@@ -18,6 +18,7 @@ import {
   checkDialPolicy,
   checkEnforcement,
   checkMode,
+  checkRemoteConsumable,
   checkRoot,
   checkServer,
   checkTrust,
@@ -214,6 +215,9 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
  *  probe is the PASS. The registration still goes THROUGH the dial-policy fence — never around
  *  it — with the bundle's recorded strictness as the policy input. */
 async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<void> {
+  // FIRST, before the bundle is read, before --from touches the network, and long before anything
+  // is written: the connect path cannot consume a remote entry yet, so this registration refuses.
+  take(checkRemoteConsumable());
   if (v.mode !== undefined && v.mode !== "user") {
     console.error(c.red(`✗ --user-auth-file/--from register a user-auth mesh - they cannot be combined with --mode ${v.mode}`));
     process.exit(1);
