@@ -28,18 +28,22 @@
  * overlay is actually up on this machine; the same literal with the overlay down is just a CGNAT
  * address.
  *
- * WHERE THIS GOES NEXT, so the next editor does not relax it for the wrong reason. Measured on
- * this stack: the `tls` connect option verifies the certificate CHAIN AND THE HOSTNAME (Node
- * defaults, `rejectUnauthorized: true`, servername from the URL), so a redirected name cannot
- * complete the handshake and hostnames become safe — but only once something REQUIRES TLS. The
- * relaxation is therefore a function of recorded strictness, not of time passing, and the agreed
- * eventual shape is `classifyJoinTarget(url, { tlsRequired })` rather than a third verdict: one
- * place keeps answering "may this machine send credentials to that address", with strictness as
- * an input it cannot otherwise see. Two counterintuitive consequences worth keeping in view:
- * the overlay ranges are the AWKWARD case under TLS (CGNAT space, no public CA will issue for it,
- * verifying a literal needs an IP SAN, so it implies a private CA on every joiner), while the
- * `<host>.ts.net` names refused below are the EASY case (publicly resolvable, publicly-trusted
- * certs). Do not pre-relax: with nothing requiring TLS today, literals-only is the correct rule.
+ * WHERE THIS WENT, so the next editor knows the relaxation below is the authorized one. The
+ * previous header said, measured on this stack: the `tls` connect option verifies the certificate
+ * CHAIN AND THE HOSTNAME (Node defaults, `rejectUnauthorized: true`, servername from the URL), so
+ * a redirected name cannot complete the handshake and hostnames become safe — but only once
+ * something REQUIRES TLS. The relaxation is a function of recorded strictness, not of time
+ * passing, and the agreed shape is `classifyJoinTarget(url, { tlsRequired })` rather than a third
+ * verdict: one place keeps answering "may this machine send credentials to that address", with
+ * strictness as an input it cannot otherwise see. THAT PRECONDITION HAS NOW LANDED: the broker
+ * can serve TLS and the mesh record carries `tlsRequired`, so with `tlsRequired: true` a hostname
+ * or a public literal classifies as {@link JoinReach} `"public-tls"`. Two counterintuitive
+ * consequences remain in force: the overlay ranges are the AWKWARD case under TLS (CGNAT space,
+ * no public CA will issue for it, verifying a literal needs an IP SAN, so it implies a private CA
+ * on every joiner), while the `<host>.ts.net` names are the EASY case (publicly resolvable,
+ * publicly-trusted certs). With `tlsRequired: false` nothing is relaxed: literals-only stays the
+ * rule, verbatim. And ordinary private ranges are refused in BOTH modes — no public CA issues for
+ * them, so required TLS cannot make them verifiable, and a cafe LAN is private too.
  */
 
 /** The address class a permitted target belongs to. This is a REACHABILITY allowlist: it says the
@@ -52,7 +56,11 @@ export type JoinReach =
   /** A private-overlay literal. Permitted TODAY without required TLS, carrying a
    *  {@link JoinTarget.residual} that says so; it becomes conditional on TLS in step two. The
    *  address alone is not a guarantee - see {@link DialPolicy.tlsRequired}. */
-  | "overlay";
+  | "overlay"
+  /** A hostname or public literal dialed with REQUIRED TLS ({@link DialPolicy.tlsRequired}):
+   *  the certificate chain + hostname check is the authority, so the resolver no longer picks
+   *  the peer. Never produced with `tlsRequired: false`. */
+  | "public-tls";
 
 export interface JoinTarget {
   /** The normalized dial URL, port defaulted. */
@@ -83,11 +91,11 @@ export interface DialPolicy {
    * DHCP or routing can answer a dial to it. So the address class establishes only that we are
    * willing to consider the target; requiring TLS is what makes it safe.
    *
-   * There is no field on the mesh record to source this from yet — it arrives with the work that
-   * teaches the broker to serve TLS — so callers pass `false` today, and with it false an overlay
-   * literal is refused unless {@link DialPolicy.allowUnencryptedOverlay} says the operator
-   * accepted the tunnel dependency. When this can be `true` the acceptance stops being needed:
-   * the transport is then proven rather than promised, and the flag can go.
+   * The mesh record now carries this intent (`MeshEntry.tlsRequired`), so callers pass the
+   * record's real strictness. With it `false` an overlay literal is refused unless
+   * {@link DialPolicy.allowUnencryptedOverlay} says the operator accepted the tunnel dependency.
+   * With it `true` the acceptance stops being needed — the transport is proven rather than
+   * promised — and a hostname or public literal becomes registrable as `"public-tls"`.
    */
   tlsRequired: boolean;
   /**
@@ -134,6 +142,24 @@ function isOverlayLiteral(host: string): boolean {
     return parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127;
   }
   return /^fd7a:115c:a1e0:/i.test(host);
+}
+
+/** Ordinary private ranges: RFC1918, link-local, and the non-overlay ULA/link-local v6 space.
+ *  Refused in BOTH modes — a cafe LAN is private too, and no public CA issues certificates for
+ *  these ranges, so required TLS cannot make an address here verifiable. */
+function isPrivateLiteral(host: string): boolean {
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const p = v4.slice(1).map(Number);
+    if (p.some((n) => n > 255)) return false; // not an IP literal at all; treated as a hostname
+    if (p[0] === 10) return true; // 10.0.0.0/8
+    if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true; // 172.16.0.0/12
+    if (p[0] === 192 && p[1] === 168) return true; // 192.168.0.0/16
+    if (p[0] === 169 && p[1] === 254) return true; // 169.254.0.0/16 link-local
+    return false;
+  }
+  // ULA fc00::/7 and link-local fe80::/10; the overlay's fd7a:115c:a1e0::/48 is classified first.
+  return /^(f[cd][0-9a-f]{2}:|fe[89ab][0-9a-f]{0,2}:)/i.test(host);
 }
 
 /** A URL's hostname with an IPv6 literal's brackets removed (`[::1]` -> `::1`). */
@@ -187,6 +213,18 @@ export function classifyJoinTarget(raw: string, policy: DialPolicy): JoinTarget 
         `  answers the dial receives the credentials this machine will send. Keep the tunnel up, and expect this to\n` +
         `  become a refusal once the broker can be served over TLS and the record can say TLS is required.`,
     };
+  }
+
+  // Recorded strictness relaxes the fence, exactly as the header pre-authorized: with TLS
+  // REQUIRED, the `tls` connect option verifies the certificate chain and the hostname, so a
+  // hostname or a public literal is safe — the resolver stops choosing the peer. Private ranges
+  // stay refused: no public CA issues for them, and a cafe LAN is private too.
+  if (policy.tlsRequired) {
+    if (!isPrivateLiteral(host)) return { server, reach: "public-tls" };
+    throw new Error(
+      `${JSON.stringify(raw)} refused: ${host} is a private-range address, and requiring TLS does not make it verifiable - no public CA issues certificates for RFC1918 or link-local space, and a cafe LAN is private, not yours.\n` +
+        `  Register the broker by its public name or address, or run it on this machine and use a loopback literal.`,
+    );
   }
 
   throw new Error(

@@ -32,7 +32,7 @@ const WITH_TLS = { tlsRequired: true, allowUnencryptedOverlay: false };
 const ACKED = { tlsRequired: false, allowUnencryptedOverlay: true };
 
 /** Classify, expecting a permitted verdict. */
-const permits = (url: string, reach: "loopback" | "overlay", policy = TODAY, server?: string) => {
+const permits = (url: string, reach: "loopback" | "overlay" | "public-tls", policy = TODAY, server?: string) => {
   const t = classifyJoinTarget(url, policy);
   check(`permits ${url} as ${reach}`, t.reach === reach, t);
   if (server) check(`  normalizes to ${server}`, t.server === server, t.server);
@@ -98,15 +98,20 @@ permits("nats://[fd7a:115c:a1e0::1]:4222", "overlay", WITH_TLS);
 permits("nats://100.64.0.1:4222", "overlay", ACKED); // only with explicit acceptance
 
 console.log("\nthe boundary of 100.64.0.0/10 — off-by-one here silently widens the fence");
-// Checked under WITH_TLS so a boundary failure cannot hide behind the blanket no-TLS refusal.
-refuses("nats://100.63.255.255:4222", "just below the overlay range", WITH_TLS);
-refuses("nats://100.63.255.255:4222", "just below the range, even WITH the opt-in", ACKED);
-refuses("nats://100.128.0.1:4222", "just above the overlay range", WITH_TLS);
-refuses("nats://100.0.0.1:4222", "100.x but outside the /10", WITH_TLS);
+// Pinned as a REACH assertion under WITH_TLS: just outside the /10 these are public space and
+// classify public-tls; a widened overlay detector would flip them to "overlay" and go red here.
+// Under the overlay opt-in alone (no TLS) they stay refused — the opt-in buys overlay passage only.
+permits("nats://100.63.255.255:4222", "public-tls", WITH_TLS);
+refuses("nats://100.63.255.255:4222", "just below the range, even WITH the overlay opt-in", ACKED);
+permits("nats://100.128.0.1:4222", "public-tls", WITH_TLS);
+refuses("nats://100.128.0.1:4222", "just above the range, even WITH the overlay opt-in", ACKED);
+permits("nats://100.0.0.1:4222", "public-tls", WITH_TLS);
 
 console.log("\nprivate does NOT mean safe — hostile wifi is an RFC1918 network");
-// Under WITH_TLS too: these are refused on address class, never merely for lacking TLS. If
-// someone later widens the overlay detector to "private ranges", these go red.
+// Under WITH_TLS too: these are refused on address class, never merely for lacking TLS. A cafe
+// LAN is private too — no public CA issues for these ranges, so "required TLS" cannot make them
+// verifiable, and public-tls must never absorb them. If someone later widens the overlay
+// detector to "private ranges", these go red.
 for (const policy of [TODAY, WITH_TLS]) {
   refuses("nats://192.168.1.10:4222", "RFC1918: a coffee-shop LAN is private and hostile", policy);
   refuses("nats://10.0.0.5:4222", "RFC1918", policy);
@@ -118,15 +123,46 @@ console.log("\npublic addresses — the case this exists to stop");
 const publicMsg = refuses("nats://203.0.113.7:4222", "a public address in the clear");
 check("  the refusal names the permitted classes", /Only a loopback literal/i.test(publicMsg), publicMsg);
 check("  and says private is not the same as yours", /private is not the same/i.test(publicMsg), publicMsg);
-refuses("nats://203.0.113.7:4222", "still refused even with TLS required — wrong address class", WITH_TLS);
-refuses("tls://203.0.113.7:4222", "tls:// is cosmetic in this client and must not buy passage");
+refuses("tls://203.0.113.7:4222", "tls:// is cosmetic in this client and must not buy passage without recorded strictness");
 
-console.log("\nhostnames — a verdict must never depend on a lookup someone else answers");
-for (const policy of [TODAY, WITH_TLS]) {
-  refuses("nats://localhost:4222", "resolver-dependent, even though it 'is' loopback", policy);
-  refuses("nats://hub.example.ts.net:4222", "MagicDNS name: whoever answers the lookup picks the peer", policy);
-  refuses("nats://broker.internal:4222", "hostname", policy);
-}
+console.log("\npublic-tls — recorded strictness is what relaxes the fence, exactly as the doc block promised");
+// The header pre-authorized this: the `tls` connect option verifies chain AND hostname, so once
+// the record REQUIRES TLS, a hostname or public literal becomes safe to dial. Without it, every
+// verdict below must be byte-identical to the old refusal — the relaxation is a function of
+// recorded strictness, never of the address looking respectable.
+permits("nats://203.0.113.7:4222", "public-tls", WITH_TLS, "nats://203.0.113.7:4222");
+permits("tls://203.0.113.7:4222", "public-tls", WITH_TLS);
+permits("nats://broker.example.com:4222", "public-tls", WITH_TLS, "nats://broker.example.com:4222");
+permits("tls://broker.example.com", "public-tls", WITH_TLS, "tls://broker.example.com:4222");
+const publicTls = classifyJoinTarget("tls://broker.example.com:4222", WITH_TLS);
+check("  a public-tls verdict carries no residual — the transport is proven, not promised", publicTls.residual === undefined, publicTls);
+// The same hostname WITHOUT recorded strictness keeps the existing sentence, verbatim in intent:
+const hostMsg = refuses("nats://broker.example.com:4222", "hostname without required TLS", TODAY);
+check("  the no-TLS hostname refusal is the existing sentence", /Only a loopback literal/i.test(hostMsg) && /whoever answers the lookup/i.test(hostMsg), hostMsg);
+// A cafe LAN is private too: RFC1918 stays refused in BOTH modes (also pinned in the loop above).
+refuses("nats://192.168.1.10:4222", "RFC1918 never becomes public-tls", WITH_TLS);
+refuses("nats://10.1.2.3:4222", "RFC1918 never becomes public-tls", WITH_TLS);
+refuses("nats://169.254.1.1:4222", "link-local never becomes public-tls", WITH_TLS);
+// --force is a liveness escape, not a policy escape: no force-like field exists on DialPolicy,
+// and smuggling one in changes nothing.
+const FORCED = { tlsRequired: false, allowUnencryptedOverlay: false, force: true } as unknown as Parameters<typeof classifyJoinTarget>[1];
+refuses("nats://203.0.113.7:4222", "--force does not waive the dial policy", FORCED);
+refuses("nats://broker.example.com:4222", "--force does not waive the dial policy for hostnames", FORCED);
+// Negative control: the pre-existing classes are untouched by the new reach (asserted throughout
+// the loopback/overlay sections above; re-pinned here at the boundary).
+permits("nats://127.0.0.1:4222", "loopback", WITH_TLS);
+permits("nats://100.64.0.1:4222", "overlay", WITH_TLS);
+
+console.log("\nhostnames — without recorded strictness a verdict must never depend on a lookup someone else answers");
+refuses("nats://localhost:4222", "resolver-dependent, even though it 'is' loopback", TODAY);
+refuses("nats://hub.example.ts.net:4222", "MagicDNS name: whoever answers the lookup picks the peer", TODAY);
+refuses("nats://broker.internal:4222", "hostname", TODAY);
+// With required TLS the hostname is verified by the certificate chain + hostname check, so the
+// resolver stops being the authority — the doc block's EASY case (e.g. publicly-resolvable
+// MagicDNS names with publicly-trusted certs).
+permits("nats://hub.example.ts.net:4222", "public-tls", WITH_TLS);
+permits("nats://broker.internal:4222", "public-tls", WITH_TLS);
+permits("nats://localhost:4222", "public-tls", WITH_TLS); // a hostname like any other: the cert check is the authority now
 
 console.log("\nmalformed input fails loud rather than defaulting to something");
 refuses("not-a-url", "not a URL");
