@@ -109,6 +109,10 @@ try {
 
   const lease = await daemon.readDeliveryLease(0);
   check("the delivery lease is still readable after reconnect (deliveryKv reopened)", lease?.ready === true);
+  let membershipReadOk = false;
+  try { await observer.readMembership(); membershipReadOk = true; }
+  catch (e) { console.log(`    (post-reconnect membership read threw: ${(e as Error).message})`); }
+  check("the membership feed read re-opens on the fresh connection", membershipReadOk);
 
   const membershipRwCreds = await mintCreds(auth, newIdentity(), "membership-rw");
   const membershipNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: membershipRwCreds, tls: false }) });
