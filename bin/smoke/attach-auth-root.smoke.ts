@@ -32,16 +32,15 @@
  * space yield same-named accounts with different keys. That is the fossil-anchor situation exactly,
  * without needing a decommissioned mesh to have existed.
  *
- * ANCHOR HYGIENE IS PART OF THE MEASUREMENT, NOT SETUP. Cell 1 asserts this suite's own base
- * directory has no ancestor `.cotal` before anything is measured. That is not defensive habit: on
- * the machine this was written `/private/tmp/.cotal` exists, left by unrelated tooling, so every
- * temp directory beneath it resolves THERE - and a suite that built its tree under `tmpdir()`
- * without checking would silently measure a foreign anchor and report a green.
+ * ANCHOR HYGIENE IS PART OF THE MEASUREMENT, NOT SETUP. The suite selects a writable OS temp parent
+ * whose ancestry it first proves has no `.cotal`; on POSIX `/dev/shm` is the second candidate when
+ * the ordinary temp tree is contaminated. It then asserts the selected base is still unanchored.
+ * This keeps the refusal honest without making a persistent `/tmp/.cotal` poison every hosted rerun.
  *
  * COTAL_HOME and XDG_CONFIG_HOME are sandboxed; kills ONLY the PIDs it spawns. Needs nats-server on PATH.
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -113,8 +112,17 @@ const SPACE = "authroot";
 const SEAT = "seat1";
 const BIN = join(import.meta.dirname, "..", "cotal.ts");
 
-// The tree. `tmpdir()` is the default here, and cell 1 is what makes using it honest.
-const base = mkdtempSync(join(tmpdir(), "cotal-authroot-"));
+// Select a temp tree whose ancestry is actually unanchored. The ordinary temp root may be shared
+// across suites and carry `/tmp/.cotal`; `/dev/shm` gives POSIX runners an independent temp ancestry.
+let base: string | undefined;
+for (const parent of process.platform === "win32" ? [tmpdir()] : [tmpdir(), "/dev/shm"]) {
+  try {
+    const candidate = mkdtempSync(join(parent, "cotal-authroot-"));
+    if (resolve(findCotalRoot(candidate)) === resolve(candidate)) { base = candidate; break; }
+    rmSync(candidate, { recursive: true, force: true });
+  } catch { /* candidate unavailable or unwritable; try the next measured parent */ }
+}
+if (!base) throw new Error("FAIL (rig): no writable unanchored temp parent is available");
 const rootLive = join(base, "live");
 const rootFossil = join(base, "fossil");
 const rootTwin = join(base, "twin");
@@ -215,12 +223,12 @@ const detectorSays = (resolvedRoot: string, cwd: string): string => {
 
 let mgr: InstanceType<typeof Manager> | undefined;
 try {
-  // ---- 1. the measurement is only valid in an unanchored tree ---------------------------------
+  // ---- 1. the measurement is only valid in the selected unanchored tree -------------------------
   const walked = findCotalRoot(base);
   must(
-    "the base tree has NO ancestor .cotal, so the anchor under test is the only one in play",
+    "the selected base has NO ancestor .cotal, so the anchors under test are the only ones in play",
     resolve(walked) === resolve(base),
-    { base, walked, why: "an ancestor anchor captures every root below and would green this suite against the wrong tree" },
+    { base, walked },
   );
 
   // ---- 2. two trust chains, one space name ------------------------------------------------------
