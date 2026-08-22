@@ -281,6 +281,17 @@ registry.register(recNoResumeCon);
     check("claude: prompt+resume → --resume still emitted", a.includes("--resume"), a);
     check("claude: prompt+resume → --fork-session still emitted", a.includes("--fork-session"), a);
   }
+  // Exact-session continuation is Pi-only. Every other connector throws instead of silently fresh-launching.
+  const noContinue = onWin ? [claudeConnector, opencodeConnector] : [claudeConnector, opencodeConnector, hermesConnector];
+  for (const con of noContinue) {
+    let threw = false;
+    try { con.buildLaunch({ ...base, continueSession: "current" }); } catch { threw = true; }
+    check(`${con.name}: buildLaunch({continueSession}) throws`, threw);
+  }
+  let codexContinueThrew = false;
+  try { (await import("@cotal-ai/connector-codex")).codexConnector.buildLaunch({ ...base, continueSession: "current" }); } catch { codexContinueThrew = true; }
+  check("codex: buildLaunch({continueSession}) throws", codexContinueThrew);
+
   // opencode + hermes THROW on resume and produce NO command (fail loud, never spawn fresh silently).
   // Hermes is excluded on win32 (its buildLaunch throws Unix-only regardless — asserted in §3).
   const unsupportedResume = onWin ? [opencodeConnector] : [opencodeConnector, hermesConnector];

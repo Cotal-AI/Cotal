@@ -1,5 +1,36 @@
 # @cotal-ai/delivery
 
+## 0.27.0
+
+### Patch Changes
+
+- Updated dependencies [900f630]
+  - @cotal-ai/workspace@0.27.0
+  - @cotal-ai/core@0.27.0
+
+## 0.26.0
+
+### Patch Changes
+
+- Updated dependencies [aa1fe5f]
+  - @cotal-ai/workspace@0.26.0
+  - @cotal-ai/core@0.26.0
+
+## 0.25.0
+
+### Patch Changes
+
+- Updated dependencies [636b4b8]
+- Updated dependencies [c83e600]
+- Updated dependencies [b501ec5]
+- Updated dependencies [a087c2b]
+- Updated dependencies [0b602e4]
+- Updated dependencies [34caaf4]
+- Updated dependencies [8e38835]
+- Updated dependencies [6959679]
+  - @cotal-ai/core@0.25.0
+  - @cotal-ai/workspace@0.25.0
+
 ## 0.24.0
 
 ### Patch Changes
