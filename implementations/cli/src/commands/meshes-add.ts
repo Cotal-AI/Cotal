@@ -213,7 +213,13 @@ export function checkEnforcement(mode: MeshEntry["mode"], enforces: "auth" | "op
 
 /** The escape hatch for developing the consumer lane. NOT a user-facing feature and deliberately
  *  undocumented: it exists so the remote-exchange client work can register a remote entry to
- *  develop against, and it disappears with {@link checkRemoteConsumable}. */
+ *  develop against, and it disappears with {@link checkRemoteConsumable}.
+ *
+ *  CONDITION ON THAT SILENCE, recorded here because it outlives any review thread: leaving this
+ *  undocumented is only defensible while it is TEMPORARY. If the fence is still here once the
+ *  consumer lane has landed — or if it otherwise outlives the release it was introduced in — then
+ *  this variable is no longer a dev hatch but an undocumented way to turn a refusal off, and it
+ *  must at that point be either documented or deleted. Do not let it become permanent and silent. */
 const REMOTE_DEV_ENV = "COTAL_REMOTE_REGISTRATION_DEV";
 
 /** Remote user-auth registration is REFUSED by default until the connect path can consume it.
@@ -301,7 +307,26 @@ export function assertPinnedFetchUrl(u: URL, what: string): string | undefined {
   // a NAME and gets no exception, however it starts — `localhost` included, since a hosts entry or
   // a poisoned lookup can point it anywhere.
   if (u.protocol === "http:" && isLoopbackHost(u.hostname)) return undefined;
-  return `✗ ${what} must be https:// (got ${u.protocol}//) - the pins this registration adopts cannot be fetched over a channel the network can rewrite`;
+  // Name the ACTUAL rule. "must be https://" alone misleads the developer whose local flow used
+  // http://localhost: it blames the scheme, when the same scheme on 127.0.0.1 would have passed.
+  return (
+    `✗ ${what} must be https:// (got ${u.protocol}//) - the pins this registration adopts cannot be fetched over a channel the network can rewrite` +
+    (u.protocol === "http:"
+      ? `. Plain http is accepted only for a loopback LITERAL (127.0.0.1, ::1), where nothing leaves this machine - "${u.hostname}" is a name, and a hosts entry or a poisoned lookup could point it anywhere, so use the literal`
+      : "")
+  );
+}
+
+/** The pinned-fetch policy's verdict for ONE url, as data — so a suite can assert WHY a fetch was
+ *  refused rather than only that something failed. A cert error, a timeout and a refused redirect
+ *  are all "it did not work"; only this distinguishes them. Test seam, no production caller. */
+export async function pinnedFetchProbe(target: string): Promise<{ refused: boolean; message: string }> {
+  try {
+    await pinnedFetch(target, "the pinned exchange");
+    return { refused: false, message: "" };
+  } catch (e) {
+    return { refused: true, message: (e as Error).message };
+  }
 }
 
 /** One hop, no downgrade, no redirect-following. */

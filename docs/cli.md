@@ -459,7 +459,9 @@ takes the bundle exported where the mesh runs; `--from` asks before it dials the
 then fetches its `/.well-known/cotal-mesh` discovery document (HTTPS only), displays the pins, and
 asks again before adopting them. Neither fetch follows redirects: a 302 can move a pinned fetch
 onto plaintext or onto another host, so it is refused rather than followed, and the pinned
-exchange must itself be an `https://` URL. Registration verifies that exchange answers `/health`
+exchange must itself be an `https://` URL — except for an exchange on this machine, where plain
+`http://` is accepted for a loopback *literal* (`127.0.0.1`, `::1`, any spelling of them) but not
+for `localhost`, which is a name rather than an address. Registration verifies that exchange answers `/health`
 and `/jwks` as the pinned issuer, and that the broker itself refuses a bare connect — the
 auth-required refusal is the pass. The sentinel credentials land in a 0600 file under the entry's root; the registry
 records only the path.

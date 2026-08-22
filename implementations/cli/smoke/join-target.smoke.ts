@@ -31,9 +31,21 @@ const WITH_TLS = { tlsRequired: true, allowUnencryptedOverlay: false };
 /** The operator explicitly accepted the tunnel dependency (`--allow-unencrypted-overlay`). */
 const ACKED = { tlsRequired: false, allowUnencryptedOverlay: true };
 
-/** Classify, expecting a permitted verdict. */
+/** Classify, expecting a permitted verdict.
+ *
+ *  A REFUSAL IS A FAILURE OF THIS CELL, NOT AN ABORT OF THE SUITE. Calling the classifier bare
+ *  meant an unexpected throw propagated out of the whole run, so every later cell went unreported
+ *  and a mutation said only that SOMETHING died — never which cell. An illegible kill set is close
+ *  to no mutation testing at all, so the throw is converted into this cell's own failure and the
+ *  run continues to the cells that follow. */
 const permits = (url: string, reach: "loopback" | "overlay" | "public-tls", policy = TODAY, server?: string) => {
-  const t = classifyJoinTarget(url, policy);
+  let t: ReturnType<typeof classifyJoinTarget>;
+  try {
+    t = classifyJoinTarget(url, policy);
+  } catch (e) {
+    check(`permits ${url} as ${reach}`, false, `REFUSED: ${(e as Error).message.split("\n")[0]}`);
+    return;
+  }
   check(`permits ${url} as ${reach}`, t.reach === reach, t);
   if (server) check(`  normalizes to ${server}`, t.server === server, t.server);
 };
@@ -235,6 +247,41 @@ for (const raw of ["nats://[::ffff:0:127.0.0.1]:4222", "nats://[::ffff:0:7f00:1]
 permits("nats://[::ffff:127.0.0.1]:4222", "loopback", WITH_TLS);
 permits("nats://[::ffff:7f00:1]:4222", "loopback", WITH_TLS);
 refuses("nats://[::ffff:192.168.1.10]:4222", "the real mapped RFC1918 stays refused", WITH_TLS);
+
+console.log("\nthe parser dependency, asserted DIRECTLY rather than by proxy");
+// The mapped-form handler deliberately does NOT canonicalize a legacy-spelled tail, on the stated
+// grounds that `new URL()` rejects those before classification runs. That is a load-bearing
+// dependency on runtime behaviour, and asserting it only through the refusal cells is a PROXY:
+// simulate a parser that accepts and canonicalizes such a host and those cells stay green. Assert
+// the parser itself, so the day Node changes this, the failure names the assumption rather than
+// surfacing as a mysterious classification.
+for (const literal of ["[::ffff:3232235786]", "[::ffff:0xC0A8010A]", "[::ffff:192.168.257]"]) {
+  let rejected = false;
+  try { new URL(`nats://${literal}:4222`); } catch { rejected = true; }
+  check(`new URL() rejects ${literal} — the assumption the mapped-form handler relies on`, rejected);
+}
+
+console.log("\ndirection gaps the testing lens named — each verdict measured, then pinned");
+// LEADING ZEROS. `192.168.01.10` is octal-per-part and still 192.168.1.10, so it must be refused;
+// `010.0.0.5` is octal 8.0.0.5, which is genuinely PUBLIC and must not be over-collapsed into the
+// 10/8 block it merely resembles. Both directions in one place, because the risk here is symmetric.
+for (const policy of [TODAY, WITH_TLS]) {
+  refuses("nats://192.168.01.10:4222", "leading-zero octal octets are still RFC1918", policy);
+  refuses("nats://192.168.1.0010:4222", "a wider octal final octet is still RFC1918", policy);
+}
+permits("nats://010.0.0.5:4222", "public-tls", WITH_TLS); // octal 010 = 8, so 8.0.0.5: public
+// OVERLAY PREFIX WIDTH. The overlay is fd7a:115c:a1e0::/48. A /32 reading would swallow the whole
+// fd7a:115c::/32 space and hand `overlay` — permitted WITHOUT required TLS — to addresses that are
+// not the overlay. Pinned with the ack policy, where a wrong verdict is most costly.
+permits("nats://[fd7a:115c:a1e0::1]:4222", "overlay", ACKED);
+refuses("nats://[fd7a:115c:ffff::1]:4222", "same /32, different /48 — not the overlay", ACKED);
+refuses("nats://[fd7a:115c::1]:4222", "the /32 prefix itself is not the overlay", ACKED);
+// NATIVE PUBLIC IPv6 had no coverage at all: neither documentation range nor a real public address
+// was asserted in either mode. A v6 literal that is not private must behave like any public host.
+for (const raw of ["nats://[2001:db8::1]:4222", "nats://[2606:4700::1111]:4222"]) {
+  permits(raw, "public-tls", WITH_TLS);
+  refuses(raw, "native public IPv6 without required TLS is refused like any public address", TODAY);
+}
 // --force is a liveness escape, not a policy escape: no force-like field exists on DialPolicy,
 // and smuggling one in changes nothing.
 const FORCED = { tlsRequired: false, allowUnencryptedOverlay: false, force: true } as unknown as Parameters<typeof classifyJoinTarget>[1];

@@ -172,7 +172,8 @@ What the record will require decides what you may register:
 - **With required TLS** (`--tls`, or a `tls://` URL — the scheme is recorded and enforced, not
   cosmetic), a **hostname or public address** is accepted too: the certificate chain and
   hostname check pick the peer, not the resolver. A `tls://` registration against a broker that
-  cannot complete the handshake fails — at registration, and on every later dial.
+  cannot complete the handshake fails at registration — unless you pass `--force`, which records
+  the entry without verifying it at all — and on every later dial regardless.
 
 Ordinary private ranges like `10.x` and `192.168.x` are refused in **both** modes: a café's wifi
 is a private network too, being private is not the same as being yours, and no public CA issues
@@ -193,18 +194,28 @@ one from **supplied** trust: `--user-auth-file bundle.json` (exported on the mes
 `--from https://…/.well-known/cotal-mesh`, which asks before it contacts the address at all,
 fetches the discovery document over HTTPS, shows you the pins, and asks again before adopting
 them. Redirects are refused rather than followed — a 302 can walk a pinned fetch down to
-plaintext or onto another host — and the pinned exchange must be an `https://` URL too. Registration checks that the pinned exchange
+plaintext or onto another host — and the pinned exchange must be an `https://` URL too. The one
+exception is an exchange on **this machine**, where nothing leaves the box: plain `http://` is
+accepted for a loopback *literal* (`127.0.0.1`, `::1`, and any spelling of them), but **not** for
+`localhost`, which is a name a hosts entry or a poisoned lookup could point elsewhere — use the
+literal. Registration checks that the pinned exchange
 answers `/health` and `/jwks` as the pinned issuer and that the broker refuses a bare connect —
 that refusal is the pass. The bundle's sentinel credentials are written to a private (0600) file
 under the entry's root; the registry itself never carries the secret.
 
-An overlay address is **refused unless you accept the dependency explicitly**, with
-`--allow-unencrypted-overlay`. The address is not the guarantee: it is protected while the tunnel
-is up, and if the tunnel is down that range is ordinary carrier-grade NAT and whoever answers the
-dial receives your credentials. Only you can know which it is, so the command asks you to say so.
-Your acceptance is recorded on the mesh entry rather than printed and forgotten. The guided form
-asks the same question instead of taking the flag, and the flag disappears once the broker can be
-served over TLS.
+**Without required TLS**, an overlay address is **refused unless you accept the dependency
+explicitly**, with `--allow-unencrypted-overlay`. The address is not the guarantee: it is protected
+while the tunnel is up, and if the tunnel is down that range is ordinary carrier-grade NAT and
+whoever answers the dial receives your credentials. Only you can know which it is, so the command
+asks you to say so. Your acceptance is recorded on the mesh entry rather than printed and
+forgotten, and the guided form asks the same question instead of taking the flag.
+
+**With required TLS** (`--tls`, or a `tls://` URL) that consent is no longer asked for, and the
+flag is not needed: the handshake is what protects the connection, so the acceptance it stood in
+for has been replaced by proof rather than promise. `cotal meshes add <space> --server
+nats://100.64.0.1 --tls` registers an overlay address with no prompt, no flag and no recorded
+acceptance — this is the "the flag disappears once the broker can be served over TLS" case, and it
+has now arrived.
 
 This gate is on **registration**. `cotal join --creds --server <url>` deliberately takes an
 explicit connection at face value and does not consult the registry, so it is not covered — join

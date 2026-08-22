@@ -22,7 +22,7 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -87,6 +87,8 @@ async function freePort(): Promise<number> {
 }
 
 const roots: string[] = [];
+
+
 /** A project root that looks like a mesh checkout (a `.cotal/`, no trust material). */
 function projectRoot(label: string): string {
   const root = mkdtempSync(join(tmpdir(), `cotal-${label}-`));
@@ -110,10 +112,28 @@ broker.on("error", () => {
   process.exit(1);
 });
 for (let i = 0; i < 50 && !(await isReachable(LIVE)); i++) await new Promise((r) => setTimeout(r, 100));
+// THE AUTH BROKER NEEDS THE SAME WAIT. Without it a startup race lets the user-arm cells see
+// "unreachable" where they mean to see "auth-required" — the right outcome for the wrong reason,
+// and intermittently, which is the worst kind. A refused bare connect IS reachability here, so
+// probe for either answer rather than for success.
+{
+  const { probeEnforcement } = await import("../src/commands/meshes-add.js");
+  for (let i = 0; i < 50; i++) {
+    if ((await probeEnforcement(AUTH_LIVE)) === "auth") break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
 
 const cwd = process.cwd();
 try {
   assert.ok(await isReachable(LIVE), "the test broker never came up");
+  // Asserted, not assumed: the auth broker must be answering AND enforcing before any user-arm
+  // cell reads its refusal as evidence.
+  {
+    const { probeEnforcement } = await import("../src/commands/meshes-add.js");
+    const enforces = await probeEnforcement(AUTH_LIVE);
+    assert.equal(enforces, "auth", `the auth broker never came up enforcing (probe said "${enforces}")`);
+  }
   const root = projectRoot("remote");
 
   // ── add: verified registration of a mesh this machine did not start ────────────────────────────
@@ -242,10 +262,14 @@ try {
   });
   await new Promise<void>((r) => exchange.listen(0, "127.0.0.1", r));
   const exchangeUrl = `http://127.0.0.1:${(exchange.address() as { port: number }).port}`;
+  // VALID JWKS ON PURPOSE. With an empty key set this fixture refuses for TWO reasons at once, and
+  // the issuer cell then passes even with the issuer comparison deleted — it was pinning the empty
+  // JWKS, not the foreign issuer. A non-empty key set makes the foreign issuer the ONLY thing
+  // wrong, so the cell can only pass if the issuer really is compared.
   const wrongExchange = createHttpServer((req, res) => {
     res.setHeader("content-type", "application/json");
     if (req.url === "/health") return void res.end(JSON.stringify({ ok: true, issuer: "https://someone-else.test/" }));
-    if (req.url === "/jwks") return void res.end(JSON.stringify({ keys: [] }));
+    if (req.url === "/jwks") return void res.end(JSON.stringify({ keys: [{ kid: "k1", kty: "RSA" }] }));
     res.statusCode = 404;
     res.end("{}");
   });
@@ -304,6 +328,12 @@ try {
       !JSON.stringify(hostedEntry).includes("sentinel-secret-material"), hostedEntry);
   const sentinelStat = statSentinel(hostedEntry!.userAuth!.sentinelCredsPath!);
   check("the sentinel lands 0600", (sentinelStat.mode & 0o777) === 0o600, sentinelStat.mode.toString(8));
+  // ASSERT THE VALUE, not merely that a 0600 file exists. Presence+mode alone is satisfied by any
+  // nonempty decoy, so this cell passed without the bundle's actual creds ever being written — the
+  // same false-green shape as an issuer check that only asks whether a string is nonempty.
+  check("…carrying the bundle's ACTUAL sentinel creds, byte for byte",
+    readFileSync(hostedEntry!.userAuth!.sentinelCredsPath!, "utf8") === SENTINEL_BLOB,
+    { path: hostedEntry!.userAuth!.sentinelCredsPath });
   // Round-trip: the recorded entry resolves to a usable user-mode target.
   const { targetFromEntry } = await import("@cotal-ai/workspace");
   const hostedTarget = targetFromEntry(hostedEntry!, hostedEntry!.server, "registry");
@@ -332,8 +362,21 @@ try {
   // The user arm's enforcement check: an OPEN broker cannot be a user-auth mesh.
   writeFileSync(bundlePath, JSON.stringify(bundleFor({ server: LIVE })));
   const openUser = await run(["add", "hosted"], { mode: "user", "user-auth-file": bundlePath, root: hostedRoot });
+  // ASSERT THE REASON, NOT JUST THE REFUSAL. Exit 1 + no record is also what a DEAD SOCKET
+  // produces, so this cell passed when pointed at an unreachable address — "it refused" is not
+  // "it refused because the broker accepts unauthenticated connections". Match the open-broker
+  // sentence, and prove the dead-socket path is a DIFFERENT sentence (below).
   check("add --mode user against an OPEN broker refuses (auth-required is the pass)",
-    openUser.code === 1 && findMesh("hosted") === undefined, openUser.out);
+    openUser.code === 1 && findMesh("hosted") === undefined
+      && /accepts unauthenticated connections/.test(openUser.out), openUser.out);
+  // The discriminating control: an UNREACHABLE broker must refuse with its own reason, never with
+  // the open-broker one. Without this, the cell above cannot tell the two apart.
+  writeFileSync(bundlePath, JSON.stringify(bundleFor({ server: DEAD })));
+  const deadUser = await run(["add", "hosted"], { mode: "user", "user-auth-file": bundlePath, root: hostedRoot });
+  check("…and an UNREACHABLE broker refuses for a different, named reason",
+    deadUser.code === 1 && findMesh("hosted") === undefined
+      && /no broker answered/.test(deadUser.out)
+      && !/accepts unauthenticated connections/.test(deadUser.out), deadUser.out);
   // The dial-policy fence is NOT waived for user mode: a hostname without TLS intent stays refused.
   writeFileSync(bundlePath, JSON.stringify(bundleFor({ server: "nats://hosted.example.com:4222" })));
   const userHostNoTls = await run(["add", "hosted"], { mode: "user", "user-auth-file": bundlePath, root: hostedRoot });
@@ -366,7 +409,7 @@ try {
   await new Promise<void>((r) => redirector.listen(0, "127.0.0.1", r));
   const redirectorUrl = `http://127.0.0.1:${(redirector.address() as { port: number }).port}`;
 
-  const { verifyUserExchange, assertPinnedFetchUrl } = await import("../src/commands/meshes-add.js");
+  const { verifyUserExchange, assertPinnedFetchUrl, pinnedFetchProbe } = await import("../src/commands/meshes-add.js");
   // A non-loopback plain-http exchange base is refused outright: the pin cannot ride plaintext.
   check("a plain-http (non-loopback) exchange base is refused by the pinned-fetch policy",
     assertPinnedFetchUrl(new URL("http://exchange.example.com"), "x") !== undefined,
@@ -396,6 +439,29 @@ try {
   check("the exchange probe refuses a 302 instead of following it",
     !redirected.ok && /redirect/i.test(redirected.ok ? "" : redirected.message), redirected);
   check("…and the redirect target is never contacted", exchangeHits === 0, { exchangeHits });
+
+  // THE ACTUAL ATTACK: an HTTPS → HTTP DOWNGRADE. The redirector above is http→http, so it pins
+  // "a 302 is refused" but NOT the cross-scheme walk that this lane's security fix exists for —
+  // code that followed https redirects while refusing http ones would pass it. This fixture is a
+  // real TLS server (self-signed, trusted only for this process) whose 302 points at a plaintext
+  // origin, which is the shape an on-path attacker uses.
+  // Driven through `pinnedFetch`'s own policy rather than a live TLS origin. A self-signed TLS
+  // server CANNOT prove this here: the fetch fails on certificate verification BEFORE the redirect
+  // is reached, so the cell would go green on the wrong reason (measured: "did not answer /health
+  // (fetch failed)", downgrade target never contacted) and would stay green with redirect-following
+  // re-enabled for https. Trusting the cert would need NODE_EXTRA_CA_CERTS, which Node reads only
+  // at startup, and disabling verification would remove the very check that masks the result.
+  //
+  // So assert the DISCRIMINATING fact instead: the refusal must name a REDIRECT and quote the
+  // plaintext Location. A cert failure, a timeout, or a 404 cannot satisfy that, and code that
+  // followed https redirects would return the followed body rather than a redirect refusal.
+  exchangeHits = 0;
+  const httpsToHttp = await pinnedFetchProbe(`${redirectorUrl}/health`);
+  check("an HTTPS→HTTP downgrade redirect is refused by naming the redirect, not followed",
+    httpsToHttp.refused && /redirect/i.test(httpsToHttp.message)
+      && httpsToHttp.message.includes(downgradeUrl), httpsToHttp);
+  check("…and the plaintext downgrade target is never contacted",
+    exchangeHits === 0, { exchangeHits });
   redirector.close();
   downgrade.close();
 
@@ -441,20 +507,24 @@ try {
   process.chdir(bare);
   const rootless = await run(["add", "rootless"], { server: LIVE });
   process.chdir(prevCwd2);
-  if (ancestorProject === undefined) {
-    check("add outside any project requires --root", rootless.code === 1 && findMesh("rootless") === undefined, rootless.out);
-    check("…and names --root as the fix", rootless.out.includes("--root"), rootless.out);
-  } else {
-    // The same rule seen from the other side: a real `.cotal` up-tree IS a project, so the walk-up
-    // is used rather than refused — and the recorded root is that project, never the cwd.
-    // Compared canonically: the walk resolves through symlinks (macOS /var → /private/var), so a
-    // raw string compare would fail on the spelling rather than the behaviour.
-    const canon = (p: string) => { try { return realpathSync.native(p); } catch { return p; } };
-    check(`add uses the nearest genuine project up-tree (${ancestorProject})`,
-      rootless.code === 0 && canon(findMesh("rootless")?.root ?? "") === canon(ancestorProject),
-      { out: rootless.out, entry: findMesh("rootless") });
-    removeMesh("rootless");
-  }
+  // ONE cell either way, so the TOTAL COUNT IS THE SAME ON EVERY BOX. The two arms used to run a
+  // different NUMBER of checks (2 when no ancestor project, 1 when one existed), which made the
+  // suite total ambient-dependent — 152 under a `/tmp/.cotal` left by another run, 153 without —
+  // so a number quoted from one machine was a property of the box, not of the commit. The RULE is
+  // still asserted from whichever side the environment presents; only the arity is now fixed.
+  // Compared canonically: the walk resolves through symlinks (macOS /var → /private/var), so a raw
+  // string compare would fail on the spelling rather than the behaviour.
+  const canon = (p: string) => { try { return realpathSync.native(p); } catch { return p; } };
+  check(
+    ancestorProject === undefined
+      ? "add outside any project requires --root, and names --root as the fix"
+      : `add uses the nearest genuine project up-tree (${ancestorProject}), never the cwd`,
+    ancestorProject === undefined
+      ? rootless.code === 1 && findMesh("rootless") === undefined && rootless.out.includes("--root")
+      : rootless.code === 0 && canon(findMesh("rootless")?.root ?? "") === canon(ancestorProject),
+    { out: rootless.out, entry: findMesh("rootless"), ancestorProject },
+  );
+  if (ancestorProject !== undefined) removeMesh("rootless");
 
   // An EXPLICIT --root is not exempt from being a real directory.
   const notADir = join(bare, "a-file");
