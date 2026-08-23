@@ -18,6 +18,9 @@ if (!socketPath) {
 }
 log({ ev: "argv", argv: process.argv.slice(2), env: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("COTAL_") || key.startsWith("JCODE_"))) });
 
+let attachedExisting;
+let createdFresh = false;
+
 const server = createServer((socket) => {
   let buffered = "";
   socket.setEncoding("utf8");
@@ -31,13 +34,29 @@ const server = createServer((socket) => {
       if (!line) continue;
       const frame = JSON.parse(line);
       log({ ev: "request", frame });
+      // Recorded so a test can assert WHICH path the host took, not merely that it started.
+      if (frame.req === "create_session" || frame.req === "attach_session") {
+        log({ ev: "session_path", req: frame.req, session_id: frame.session_id ?? null });
+      }
       const reply = (body) => socket.write(JSON.stringify({ v: 1, reply_to: frame.id, ...body }) + "\n");
       const event = (body) => socket.write(JSON.stringify({ v: 1, ...body }) + "\n");
       switch (frame.req) {
         case "hello":
           reply({ ev: "hello_ok", version: 1, server: "fake-jcode/1", capabilities: ["sessions", "streaming"] });
           break;
+        // A prior session is offered only when the harness is told to have one, so the same fake
+        // covers both a first launch (nothing to resume) and a restart (exactly one candidate).
+        case "list_sessions": {
+          const preset = process.env.FAKE_JCODE_SESSIONS;
+          reply({ ev: "sessions", sessions: preset ? JSON.parse(preset) : [] });
+          break;
+        }
+        case "attach_session":
+          attachedExisting = frame.session_id;
+          reply({ ev: "attached", session: { session_id: frame.session_id, working_dir: frame.working_dir, status: "idle" } });
+          break;
         case "create_session":
+          createdFresh = true;
           reply({ ev: "attached", session: { session_id: "fake-session", working_dir: frame.working_dir, status: "idle" } });
           break;
         case "set_model":
