@@ -1,7 +1,7 @@
 {
   "suite": "bin/smoke/discovery-bundle-consumable.smoke.ts",
   "guard": "the discovery document a real auth-service serves is accepted by the real consumer `cotal meshes add --from` validates it with; reverting the producer to the flat shape must be caught at the seam, not merely noticed by the producer's own fixtures",
-  "command": "pnpm --filter @cotal-ai/auth build && pnpm smoke:discovery-bundle-consumable:live",
+  "command": "pnpm --filter @cotal-ai/auth... build && pnpm smoke:discovery-bundle-consumable:live",
   "completionMarker": "discovery-bundle-consumable:",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/discovery-bundle-consumable.json",
   "why": [
@@ -49,7 +49,7 @@
       "file": "implementations/auth/src/service.ts",
       "find": "    bundle.userAuth = { provider: AUTH_PROVIDER_NAME, idp: idpPins, endpoints: { url: publicUrl } };",
       "replace": "    delete bundle.userAuth;",
-      "afterRestore": "pnpm --filter @cotal-ai/auth build",
+      "afterRestore": "pnpm --filter @cotal-ai/auth... build",
       "expectRed": "the LIVE served document is accepted by checkUserBundle",
       "cell": "the LIVE served document is accepted by checkUserBundle (the `meshes add --from` consumer)",
       "note": "The original defect, reintroduced as it would actually be served. Deleting the pre-bind line alone is NOT the reversion (the post-bind write would restore a correct wrapper), so this removes the wrapper at the point the served document is finalized. Predicted kill is the seam cell whose absence let the bug ship."
@@ -59,7 +59,7 @@
       "file": "implementations/auth/src/service.ts",
       "find": "    bundle.userAuth = { provider: AUTH_PROVIDER_NAME, idp: idpPins, endpoints: { url: publicUrl } };",
       "replace": "    void publicUrl;",
-      "afterRestore": "pnpm --filter @cotal-ai/auth build",
+      "afterRestore": "pnpm --filter @cotal-ai/auth... build",
       "expectRed": "the LIVE served document is accepted by checkUserBundle",
       "cell": "the LIVE served document is accepted by checkUserBundle (the `meshes add --from` consumer)",
       "note": "The two-phase trap: the wrapper survives but keeps its pre-bind empty URL. MEASURED, after a wrong first prediction: this does NOT parse. assertUserAuthInfo drops an empty endpoints.url and checkUserBundle refuses with `pins no exchange endpoint`, so the kill lands on the seam cell, not the pinned-URL cell. Distinct from M1 in what it breaks (a present-but-hollow wrapper vs an absent one), even though both surface at the same assertion."
