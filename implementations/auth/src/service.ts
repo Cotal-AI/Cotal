@@ -437,6 +437,13 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
   const trustedProxy = v["exchange-trusted-proxy"] !== undefined;
   if (publicPort === undefined && (publicUrlFlag !== undefined || trustedProxy))
     throw new Error("auth-service: --exchange-public-url/--exchange-trusted-proxy require --exchange-public-port");
+  const advertisedServer = v["advertised-server"];
+  if (advertisedServer !== undefined && publicPort === undefined)
+    throw new Error("auth-service: --advertised-server rides the public bundle - it requires --exchange-public-port");
+  if (advertisedServer !== undefined) {
+    const badAdvertised = checkAdvertisedServer(advertisedServer);
+    if (badAdvertised) throw new Error(badAdvertised);
+  }
 
   // The provider's space-scoped state dir for NON-SEAM material (ledger, IdP pin, discovery). The
   // layout fact is workspace-owned (userAuthStateDir); this daemon never touches `.cotal/auth/auth.json`.
@@ -530,14 +537,15 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
     // the flags, the callout material — so it cannot drift from what this process enforces.
     // `endpoints.url` is finalized AFTER bind (the closure sees the mutation): with `--port 0`
     // the pre-bind port would advertise an address nothing listens on.
-    const bundle: Record<string, unknown> = {
+    const bundle = composeUserBundle({
       space,
-      server,
-      tlsRequired: true,
+      // What participants DIAL, not what the callout dials: the daemon reaches the broker on its
+      // loopback/LAN address (--server), which is meaningless off this machine. --advertised-server
+      // is the publicly dialable address (e.g. wss://… through the reverse proxy).
+      server: advertisedServer ?? server,
       idp: { url: idp.url, issuer: idp.issuer, audience: idp.audience },
-      endpoints: { url: "" },
       sentinelCreds: callout.sentinelCreds,
-    };
+    });
     publicHttp = createServer(makePublicHandler(ctx, makePublicPolicy(trustedProxy), bundle));
     await new Promise<void>((resolvePort, reject) => {
       publicHttp!.once("error", reject);
@@ -546,7 +554,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
     const paddr = publicHttp.address();
     const boundPublic = typeof paddr === "object" && paddr ? paddr.port : publicPort;
     publicUrl = publicUrlFlag ?? `http://127.0.0.1:${boundPublic}`;
-    bundle.endpoints = { url: publicUrl };
+    finalizeUserBundleEndpoint(bundle, publicUrl);
   }
 
   // All planes bound — NOW write the discovery file (its existence is the readiness signal).
@@ -826,6 +834,55 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
     console.error(`auth-service: refused an exchange: ${reason}`);
     return send(res, 401, { error: reason });
   }
+}
+
+/** The advertised broker address the public bundle carries — the URL participants will dial, so
+ *  the same scheme family `cotal meshes add` accepts. Exported for the producer/consumer contract
+ *  smoke; returns the refusal sentence, or undefined when the address is usable. */
+export function checkAdvertisedServer(raw: string): string | undefined {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return `auth-service: --advertised-server is not a URL, got "${raw}"`;
+  }
+  if (!["nats:", "tls:", "ws:", "wss:"].includes(u.protocol))
+    return `auth-service: --advertised-server must be a broker URL (nats://, tls://, ws:// or wss://), got ${u.protocol}//`;
+  return undefined;
+}
+
+/** Compose the user bundle the public face serves at /.well-known/cotal-mesh. ONE producer,
+ *  exported so the consumer contract (`checkUserBundle` in the CLI) can be asserted against the
+ *  real composition rather than a copy. The trust pins ride a `userAuth` arm because that is the
+ *  shape the consumer records: registration passes it through `assertUserAuthInfo` and lands it
+ *  in the registry entry (plus `remote: true` and the sentinel PATH). `endpoints.url` starts
+ *  empty — the daemon finalizes it with {@link finalizeUserBundleEndpoint} after the public
+ *  listener binds. */
+export function composeUserBundle(args: {
+  space: string;
+  server: string;
+  idp: { url: string; issuer: string; audience: string };
+  sentinelCreds: string;
+}): Record<string, unknown> {
+  return {
+    space: args.space,
+    server: args.server,
+    tlsRequired: true,
+    userAuth: {
+      // The same provider name the LOCAL arm records (provider.ts registers publicAuth with
+      // provider "cotal") — a remote entry must dispatch to the same provider a local one does.
+      provider: "cotal",
+      idp: args.idp,
+      endpoints: { url: "" },
+    },
+    sentinelCreds: args.sentinelCreds,
+  };
+}
+
+/** Pin the bundle's exchange endpoint once the public listener is bound (with `--port 0` the
+ *  pre-bind port would advertise an address nothing listens on). */
+export function finalizeUserBundleEndpoint(bundle: Record<string, unknown>, publicUrl: string): void {
+  (bundle.userAuth as { endpoints: { url: string } }).endpoints = { url: publicUrl };
 }
 
 /** Build the PUBLIC listener's request handler: its own closed route table (/health, /jwks,

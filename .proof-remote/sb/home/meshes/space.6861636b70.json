@@ -1,0 +1,21 @@
+{
+  "space": "hackp",
+  "server": "wss://broker.example.com:443/mesh-ws",
+  "root": "/Users/david/Projects/Cotal-AI/Cotal-wt-stock/.proof-remote/sb/root",
+  "mode": "user",
+  "tlsRequired": true,
+  "userAuth": {
+    "provider": "cotal",
+    "idp": {
+      "url": "http://127.0.0.1:51915/idp",
+      "issuer": "https://iss.example",
+      "audience": "https://iss.example"
+    },
+    "endpoints": {
+      "url": "http://127.0.0.1:51915/ex"
+    },
+    "remote": true,
+    "sentinelCredsPath": "/Users/david/Projects/Cotal-AI/Cotal-wt-stock/.proof-remote/sb/root/.cotal/auth/space.6861636b70/sentinel.creds"
+  },
+  "ts": "2026-08-23T20:14:46.422Z"
+}

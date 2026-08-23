@@ -1,0 +1,21 @@
+{
+  "space": "plaintext",
+  "server": "wss://x.example:443/ws",
+  "root": "/Users/david/Projects/Cotal-AI/Cotal-wt-stock/.proof-remote/sb/root",
+  "mode": "user",
+  "tlsRequired": true,
+  "userAuth": {
+    "provider": "cotal",
+    "idp": {
+      "url": "http://127.0.0.1:51915/idp",
+      "issuer": "i",
+      "audience": "a"
+    },
+    "endpoints": {
+      "url": "http://203.0.113.7:8080"
+    },
+    "remote": true,
+    "sentinelCredsPath": "/Users/david/Projects/Cotal-AI/Cotal-wt-stock/.proof-remote/sb/root/.cotal/auth/space.706c61696e74657874/sentinel.creds"
+  },
+  "ts": "2026-08-23T20:14:46.436Z"
+}
