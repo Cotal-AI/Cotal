@@ -449,11 +449,6 @@ refused at registration). Without required TLS the fence is unchanged: loopback 
 private-overlay literals only, and RFC1918 addresses are refused in both modes — a cafe LAN is
 private, not yours.
 
-> **Not yet enabled:** registering a remote user-auth mesh currently refuses. Support arrives with
-> remote-exchange clients, which teach `cotal spawn` and `cotal console` to connect through a
-> mesh's pinned exchange and sentinel. Until then a user-auth space is usable where
-> `cotal up --user-auth` provisioned it. The form below is what will be enabled.
-
 A **user-auth** mesh registers from supplied pinned trust, never guessed: `--user-auth-file`
 takes the bundle exported where the mesh runs; `--from` asks before it dials the address at all,
 then fetches its `/.well-known/cotal-mesh` discovery document (HTTPS only), displays the pins, and

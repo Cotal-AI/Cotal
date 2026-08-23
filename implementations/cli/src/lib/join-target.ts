@@ -347,15 +347,20 @@ export function classifyJoinTarget(raw: string, policy: DialPolicy): JoinTarget 
   } catch {
     throw new JoinRefusal("not-a-url", `${JSON.stringify(raw)} is not a URL - pass a broker address like nats://100.64.0.1:4222`);
   }
-  if (url.protocol !== "nats:" && url.protocol !== "tls:")
-    throw new JoinRefusal("bad-scheme", `${JSON.stringify(raw)} must be a nats:// or tls:// URL, not ${url.protocol}//`);
+  if (url.protocol !== "nats:" && url.protocol !== "tls:" && url.protocol !== "ws:" && url.protocol !== "wss:")
+    throw new JoinRefusal("bad-scheme", `${JSON.stringify(raw)} must be a nats://, tls://, ws:// or wss:// URL, not ${url.protocol}//`);
   // ONE address, ONE verdict: every legacy IPv4 spelling (decimal dword, octal, hex, short form)
   // and every v4-mapped v6 literal is collapsed to canonical dotted form BEFORE any classifier
   // runs, so an alternate spelling cannot walk past the private-range fence.
   const host = normalizeLegacyV4(normalizeMappedV4(bareHost(url)));
   if (!host) throw new JoinRefusal("no-host", `${JSON.stringify(raw)} has no host`);
-  const port = url.port || String(DEFAULT_PORT);
-  const server = `${url.protocol}//${url.hostname}:${port}`;
+  // A websocket broker rides the web's ports and may live under a PATH (`wss://host/mesh-ws`
+  // behind an HTTPS edge) - the path is part of the address and must survive into the record,
+  // where a plain NATS URL has no path to keep.
+  const ws = url.protocol === "ws:" || url.protocol === "wss:";
+  const port = url.port || String(ws ? (url.protocol === "wss:" ? 443 : 80) : DEFAULT_PORT);
+  const path = ws && url.pathname !== "/" ? url.pathname : "";
+  const server = `${url.protocol}//${url.hostname}:${port}${path}`;
 
   // Loopback is the one class that needs no transport guarantee: nothing leaves the machine, so
   // there is nothing on a wire for anyone to sit on.

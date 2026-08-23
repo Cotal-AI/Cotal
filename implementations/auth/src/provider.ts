@@ -14,7 +14,10 @@
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
 import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type SecretStore } from "@cotal-ai/core";
-import { assertUserAuthInfo, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
+import { assertUserAuthInfo, findMesh, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
+import { readFileSync } from "node:fs";
+import { isIPv4, isIPv6 } from "node:net";
+import { resolve, sep } from "node:path";
 import { fetchIdpJwt, loadIdpSession, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, grantManagedActor, newActorToken, revokeManagedActor } from "./ledger.js";
@@ -123,10 +126,10 @@ export const cotalAuthProvider: AuthProvider = {
   async userCredentials({ store, dir, space, actor, view }: { store: SecretStore; dir: string; space: string; actor: string; view?: string }) {
     const idp = loadPinnedIdp(dir);
     const callout = await loadCalloutAuth(store, space);
-    if (!idp || !callout)
-      throw new Error(
-        `space "${space}" has no user-auth material on this machine - user-mode connects run where \`cotal up --user-auth\` provisioned the space (remote discovery is not supported yet)`,
-      );
+    // No local material: this machine may still hold a REMOTE registration (\`cotal meshes add
+    // --from\`), whose registry entry pinned the IdP + public exchange at registration time. The
+    // remote arm consumes exactly what registration pinned - it discovers nothing at connect time.
+    if (!idp || !callout) return remoteUserCredentials(dir, space, actor, view);
     // The no-fallback login gate: throws the exact `cotal login --idp …` line when not signed in.
     const session = requireIdpSession(homeCotalDir(), idp.url);
     // Daemon liveness BEFORE the IdP round-trip: a down auth service must surface its exact
@@ -283,3 +286,114 @@ export const cotalAuthProvider: AuthProvider = {
 };
 
 registry.register(cotalAuthProvider);
+
+/** The loopback-literal exception for the pinned exchange, decided by PARSING the host as an
+ *  address - never by how the text begins. A NAME gets no exception however it starts
+ *  (`127.evil.com`, `localhost`): names resolve wherever DNS says, and the exchange body carries
+ *  the login proof. Mirrors the registration-side pinned-fetch policy in `meshes add --from`,
+ *  which verified this same URL under the same rule before recording it. */
+function isLoopbackLiteral(hostname: string): boolean {
+  const h = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (isIPv4(h)) return h.startsWith("127.");
+  if (isIPv6(h)) {
+    if (h === "::1") return true;
+    const mapped = h.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    return mapped !== null && mapped[1].startsWith("127.");
+  }
+  return false;
+}
+
+/** The pinned exchange base -> the POST target. Same composition as `agent-bearer
+ *  --exchange-url` (append `/exchange`, drop search/hash), same transport rule as the
+ *  registration probe: HTTPS, with a loopback-LITERAL http exception (nothing leaves the box;
+ *  it is also what keeps the suites honest without a TLS fixture). */
+function pinnedExchangeUrl(base: string, space: string): string {
+  let u: URL;
+  try {
+    u = new URL(base);
+  } catch {
+    throw new Error(
+      `space "${space}" pins a malformed exchange URL (${JSON.stringify(base)}) - re-register with \`cotal meshes add ${space} --from <url>\``,
+    );
+  }
+  if (u.protocol !== "https:" && !(u.protocol === "http:" && isLoopbackLiteral(u.hostname)))
+    throw new Error(
+      `space "${space}" pins a non-HTTPS exchange (${base}) - the login proof rides the request body and must never cross plaintext off this machine; re-register with \`cotal meshes add ${space} --from <https-url>\``,
+    );
+  u.pathname = `${u.pathname.replace(/\/$/, "")}/exchange`;
+  u.search = "";
+  u.hash = "";
+  return u.toString();
+}
+
+/** Client side of a REMOTE user mesh: the registry entry `cotal meshes add --from` recorded is
+ *  the whole trust position (IdP pins, public exchange URL, sentinel path) - registration pinned
+ *  it, connect consumes it, nothing is discovered here. The flow mirrors the local arm exactly
+ *  (login session -> fresh IdP JWT -> exchange -> bearer + sentinel), with two deliberate
+ *  differences: the POST goes to the PUBLIC exchange face (capless - the idpToken IS the
+ *  credential; the 0600 capability file exists only where the daemon runs), and the sentinel
+ *  creds come from the 0600 file registration landed rather than the local secret store. */
+async function remoteUserCredentials(
+  dir: string,
+  space: string,
+  actor: string,
+  view?: string,
+): Promise<{ bearer: string; sentinelCreds: string }> {
+  const entry = findMesh(space);
+  const ua = entry?.mode === "user" ? entry.userAuth : undefined;
+  // Bind the registry entry to the CALLER'S state dir: `dir` was derived from the target's root,
+  // so an entry for the same space under a different root must not answer for it.
+  const bound =
+    ua?.remote === true &&
+    typeof ua.endpoints?.url === "string" &&
+    typeof ua.sentinelCredsPath === "string" &&
+    resolve(ua.sentinelCredsPath).startsWith(resolve(dir) + sep);
+  if (!bound)
+    throw new Error(
+      `space "${space}" has no user-auth material on this machine - run \`cotal up --user-auth\` where the mesh runs, or register a remote user mesh with \`cotal meshes add ${space} --from <url>\` and sign in with \`cotal login --idp <idp-url>\``,
+    );
+  const remote = ua as UserAuthInfo & { endpoints: { url: string }; sentinelCredsPath: string };
+  let sentinelCreds: string;
+  try {
+    sentinelCreds = readFileSync(remote.sentinelCredsPath, "utf8");
+  } catch (e) {
+    throw new Error(
+      `space "${space}" is registered as a remote user mesh but its sentinel credential at ${remote.sentinelCredsPath} cannot be read (${e instanceof Error ? e.message : String(e)}) - re-register with \`cotal meshes add ${space} --from <url>\``,
+    );
+  }
+  // The pin's transport rule is a STATIC check - run it before spending an IdP round trip on a
+  // mint that is doomed either way (same ordering discipline as the local arm's liveness-first).
+  const exchangeUrl = pinnedExchangeUrl(remote.endpoints.url, space);
+  // The no-fallback login gate: throws the exact `cotal login --idp ...` line when not signed in.
+  const session = requireIdpSession(homeCotalDir(), remote.idp.url);
+  // Fresh short-lived IdP proof per connect - IdP-side revocation bites HERE, at the next fetch.
+  const idpJwt = await fetchIdpJwt(remote.idp.url, session.token);
+  let res: Response;
+  try {
+    res = await fetch(exchangeUrl, {
+      method: "POST",
+      // NO Authorization header: the public face is capless by design - the idpToken in the body
+      // is the whole credential, and the loopback capability never leaves the daemon's machine.
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ idpToken: idpJwt, actor, ...(view !== undefined ? { view } : {}) }),
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch (e) {
+    throw new Error(
+      `the exchange for space "${space}" did not answer at ${exchangeUrl} (${e instanceof Error ? e.message : String(e)}) - check the network, or re-register with \`cotal meshes add ${space} --from <url>\` if the mesh moved`,
+    );
+  }
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    // A refused exchange is an authenticated denial with the reason; surface it verbatim - the
+    // service's copy is already operator-exact (elevated views, for one, are refused on the
+    // public face by policy, and its refusal names that).
+    throw new Error(
+      `signed in, but the exchange for actor "${actor}"${view ? ` (view "${view}")` : ""} was refused: ${body.error ?? `HTTP ${res.status}`}`,
+    );
+  }
+  const out = (await res.json().catch(() => ({}))) as { token?: string };
+  if (typeof out.token !== "string" || !out.token)
+    throw new Error(`the exchange at ${exchangeUrl} returned no token - the mesh's auth service build may be stale`);
+  return { bearer: out.token, sentinelCreds };
+}

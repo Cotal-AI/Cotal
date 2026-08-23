@@ -8,7 +8,6 @@ import {
   checkDialPolicy,
   checkEnforcement,
   checkMode,
-  checkRemoteConsumable,
   checkRoot,
   checkServer,
   checkTrust,
@@ -18,6 +17,7 @@ import {
   probeEnforcement,
   spacesAtRoot,
   tlsIntent,
+  userExchangeIssuer,
   verifyTarget,
   verifyUserExchange,
   writeRecord,
@@ -269,10 +269,6 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
     // form calls (meshes-add.ts owns them); this branch only asks for the file and presents
     // failures.
     if (next === "bundle") {
-      // The same sequencing fence the flag form hits, before the operator is asked for a path:
-      // the rule lives in meshes-add.ts so neither front end can register what nothing can dial.
-      const consumable = checkRemoteConsumable();
-      if (!consumable.ok) { io.log.error(consumable.message); return cancelled(io, "Nothing was registered."); }
       const path = await io.text({
         message: "Path to the trust bundle (bundle.json)",
         placeholder: "exported where the mesh runs",
@@ -291,7 +287,7 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
       const userTls = b.tlsRequired || tlsIntent(server as string, false);
       const userDial = checkDialPolicy(server as string, { tlsRequired: userTls, allowUnencryptedOverlay: ackedFor === server });
       if (!userDial.ok) { io.log.error(userDial.message); return cancelled(io, "Nothing was registered."); }
-      const exch = await verifyUserExchange(b.userAuth.endpoints!.url!, b.userAuth.idp.issuer);
+      const exch = await verifyUserExchange(b.userAuth.endpoints!.url!, userExchangeIssuer(b.space));
       if (!exch.ok) { io.log.error(exch.message); return cancelled(io, "Nothing was registered."); }
       const enforce = checkEnforcement("user", enforces, server as string, b.space, root);
       if (!enforce.ok) { io.log.error(enforce.message); return cancelled(io, "Nothing was registered."); }

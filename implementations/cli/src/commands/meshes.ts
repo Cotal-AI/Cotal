@@ -18,7 +18,6 @@ import {
   checkDialPolicy,
   checkEnforcement,
   checkMode,
-  checkRemoteConsumable,
   checkRoot,
   checkServer,
   checkTrust,
@@ -27,6 +26,7 @@ import {
   probeEnforcement,
   spacesAtRoot,
   tlsIntent,
+  userExchangeIssuer,
   verifyUserExchange,
   verifyTarget,
   writeRecord,
@@ -215,9 +215,6 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
  *  probe is the PASS. The registration still goes THROUGH the dial-policy fence — never around
  *  it — with the bundle's recorded strictness as the policy input. */
 async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<void> {
-  // FIRST, before the bundle is read, before --from touches the network, and long before anything
-  // is written: the connect path cannot consume a remote entry yet, so this registration refuses.
-  take(checkRemoteConsumable());
   if (v.mode !== undefined && v.mode !== "user") {
     console.error(c.red(`✗ --user-auth-file/--from register a user-auth mesh - they cannot be combined with --mode ${v.mode}`));
     process.exit(1);
@@ -348,7 +345,7 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
   // design (preflightTarget refuses user targets outright for exactly that reason). Both run even
   // under --force: unlike a static mesh, there is no "register it while it is down" story here —
   // an unverifiable pin set is not a record worth writing.
-  take(await verifyUserExchange(bundle.userAuth.endpoints!.url!, bundle.userAuth.idp.issuer));
+  take(await verifyUserExchange(bundle.userAuth.endpoints!.url!, userExchangeIssuer(bundle.space)));
   take(checkEnforcement("user", await probeEnforcement(server), server, space, root));
 
   const result = persistRemoteUserEntry(space, server, root, bundle, tlsRequired, Boolean(dial.residual));

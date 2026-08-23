@@ -351,6 +351,7 @@ const authCommands: Command[] = [
       { name: "exchange-public-port", type: "string", value: "<n>", description: "also serve the PUBLIC exchange face on this loopback port (TLS terminates at a reverse proxy)" },
       { name: "exchange-public-url", type: "string", value: "<https://…>", description: "with --exchange-public-port: the advertised public base URL (the reverse proxy's address)" },
       { name: "exchange-trusted-proxy", type: "boolean", description: "with --exchange-public-port: attribute peers by the last X-Forwarded-For hop (opt-in; default: socket address)" },
+      { name: "advertised-server", type: "string", value: "<url>", description: "with --exchange-public-port: the broker address the public bundle advertises - what participants dial (default: --server)" },
     ],
     run: (args) => legibly(() => runAuthService(args)),
   },

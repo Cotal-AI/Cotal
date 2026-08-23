@@ -83,7 +83,11 @@ export function checkServer(raw: string): Check<string> {
     return bad(`✗ --server must not embed credentials ("${u.username}:***@…") - the registry records this URL and prints it back; pass trust material under --root instead`);
   if (u.search || u.hash)
     return bad(`✗ --server must be a bare broker URL - drop its ${u.search ? "query string" : "fragment"}`);
-  if (u.pathname && u.pathname !== "/") return bad("✗ --server must be a bare broker URL - drop its path");
+  // A path is refused on nats:// and tls:// because the NATS wire protocol has no notion of one,
+  // but on ws:// and wss:// it addresses the websocket route (`wss://host/mesh-ws` behind a
+  // reverse proxy) — the same contract classifyJoinTarget and the dial already honour.
+  if (u.pathname && u.pathname !== "/" && u.protocol !== "ws:" && u.protocol !== "wss:")
+    return bad("✗ --server must be a bare broker URL - drop its path");
   if (!u.hostname) return bad("✗ --server names no host - a broker URL needs one (e.g. nats://127.0.0.1:4222)");
   return good(raw);
 }
@@ -124,7 +128,10 @@ export function checkDialPolicy(server: string, policy: DialPolicy): Check<JoinT
 export function tlsIntent(server: string, tlsFlag: boolean): boolean {
   if (tlsFlag) return true;
   try {
-    return new URL(server).protocol === "tls:";
+    const p = new URL(server).protocol;
+    // `wss:` is typed intent the same way `tls:` is - the websocket transport performs the TLS
+    // handshake itself, so recording it strict is stating what the dial already enforces.
+    return p === "tls:" || p === "wss:";
   } catch {
     return false; // checkServer refuses the malformed URL; this never decides anything for it
   }
@@ -207,36 +214,6 @@ export function checkEnforcement(mode: MeshEntry["mode"], enforces: "auth" | "op
   if (mode === "user" && enforces === "unreachable")
     return bad(`✗ no broker answered at ${server} - a user-auth registration is verified by the broker's own auth-required refusal, so it cannot be recorded while the broker is unreachable`);
   return good(undefined);
-}
-
-// ---- the sequencing fence: the producer stays shut until its consumer exists ------------------
-
-/** The escape hatch for developing the consumer lane. NOT a user-facing feature and deliberately
- *  undocumented: it exists so the remote-exchange client work can register a remote entry to
- *  develop against, and it disappears with {@link checkRemoteConsumable}.
- *
- *  CONDITION ON THAT SILENCE, recorded here because it outlives any review thread: leaving this
- *  undocumented is only defensible while it is TEMPORARY. If the fence is still here once the
- *  consumer lane has landed — or if it otherwise outlives the release it was introduced in — then
- *  this variable is no longer a dev hatch but an undocumented way to turn a refusal off, and it
- *  must at that point be either documented or deleted. Do not let it become permanent and silent. */
-const REMOTE_DEV_ENV = "COTAL_REMOTE_REGISTRATION_DEV";
-
-/** Remote user-auth registration is REFUSED by default until the connect path can consume it.
- *
- *  The record this command writes is complete and validated, but no production connect reads it
- *  yet: `implementations/auth/src/provider.ts` requires user-auth material provisioned on THIS
- *  machine and refuses with "remote discovery is not supported yet". Registering anyway would
- *  print `✓ registered` and could select a durable default mesh whose every later `spawn` or
- *  `console` deterministically hits that refusal — a success result the operator cannot act on.
- *
- *  A refusal is the honest contract until the consumer lands: this fence is deleted by the
- *  remote-exchange client work, in the same change that deletes the provider's refusal. */
-export function checkRemoteConsumable(): Check<void> {
-  if (process.env[REMOTE_DEV_ENV] === "1") return good(undefined);
-  return bad(
-    `✗ remote user-auth connect is not yet supported, so registering a remote user-auth mesh is refused - registration will be enabled with remote-exchange clients, which teach \`cotal spawn\`/\`console\` to use a mesh's pinned exchange and sentinel. Until then a recorded remote entry could not be connected to, and nothing was registered. A user-auth space is usable where \`cotal up --user-auth\` provisioned it`,
-  );
 }
 
 // ---- the user arm: supplied pinned trust ----------------------------------------------------
@@ -340,6 +317,15 @@ async function pinnedFetch(target: string, what: string): Promise<Response> {
       `✗ ${what} answered ${res.status} (a redirect to ${JSON.stringify(res.headers.get("location") ?? "")}) - a redirect can move a pinned fetch onto plaintext or onto another host, so it is refused rather than followed; publish the document at the pinned URL itself`,
     );
   return res;
+}
+
+/** The issuer a space's exchange answers /health with — the auth daemon's own token issuer, a
+ *  stable URN derived from the space (auth's `spaceIssuer`), deliberately NOT the IdP issuer:
+ *  the IdP names who vouches for humans, this names the exchange minting for the space. The cli
+ *  package carries no runtime dependency on @cotal-ai/auth, so the derivation is restated here
+ *  and the user-bundle smoke pins the two against each other across the package boundary. */
+export function userExchangeIssuer(space: string): string {
+  return `urn:cotal:auth:${space}`;
 }
 
 /** The user arm of trust composition: the pinned exchange must ANSWER, and answer as itself.
