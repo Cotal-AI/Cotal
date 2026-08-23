@@ -23,7 +23,7 @@
  * and the bundle generation under test are the real ones; a hand-rolled in-process start would
  * bypass exactly the path that was broken.
  *
- * Run: pnpm smoke:discovery-bundle-consumable   (pnpm build first — the daemon child runs built
+ * Run: pnpm smoke:discovery-bundle-consumable:live   (pnpm build first — the daemon child runs built
  * dist; needs nats-server + node on PATH)
  */
 
