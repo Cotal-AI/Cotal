@@ -26,6 +26,7 @@ import {
   probeEnforcement,
   spacesAtRoot,
   tlsIntent,
+  userExchangeIssuer,
   verifyUserExchange,
   verifyTarget,
   writeRecord,
@@ -344,7 +345,7 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
   // design (preflightTarget refuses user targets outright for exactly that reason). Both run even
   // under --force: unlike a static mesh, there is no "register it while it is down" story here —
   // an unverifiable pin set is not a record worth writing.
-  take(await verifyUserExchange(bundle.userAuth.endpoints!.url!, bundle.userAuth.idp.issuer));
+  take(await verifyUserExchange(bundle.userAuth.endpoints!.url!, userExchangeIssuer(bundle.space)));
   take(checkEnforcement("user", await probeEnforcement(server), server, space, root));
 
   const result = persistRemoteUserEntry(space, server, root, bundle, tlsRequired, Boolean(dial.residual));

@@ -7,8 +7,8 @@
  * own suite notices when they disagree — this smoke pins the round trip: what the daemon serves is
  * what registration accepts, field for field, including the pins registration goes on to record.
  */
-import { checkAdvertisedServer, composeUserBundle, finalizeUserBundleEndpoint } from "@cotal-ai/auth";
-import { checkUserBundle } from "../src/commands/meshes-add.js";
+import { checkAdvertisedServer, composeUserBundle, finalizeUserBundleEndpoint, spaceIssuer } from "@cotal-ai/auth";
+import { checkUserBundle, userExchangeIssuer } from "../src/commands/meshes-add.js";
 
 let ran = 0;
 let failed = 0;
@@ -72,7 +72,16 @@ cell(
 );
 cell("advertised-server refuses a non-URL", (checkAdvertisedServer("not a url") ?? "").includes("is not a URL"));
 
-const EXPECTED_CELLS = 11;
+// The issuer registration pins for the exchange probe is the daemon's OWN issuer (its /health
+// reports `spaceIssuer(space)`), restated in the cli package because cli carries no runtime
+// dependency on auth — this cell is the only thing keeping the two derivations identical.
+cell(
+  "the issuer registration pins equals the issuer the daemon's /health reports",
+  userExchangeIssuer("hack") === spaceIssuer("hack"),
+  `cli derives ${JSON.stringify(userExchangeIssuer("hack"))}, auth derives ${JSON.stringify(spaceIssuer("hack"))}`,
+);
+
+const EXPECTED_CELLS = 12;
 if (ran !== EXPECTED_CELLS) {
   console.error(`ACCOUNTING BROKEN: ran ${ran} cells, expected ${EXPECTED_CELLS}`);
   process.exit(1);

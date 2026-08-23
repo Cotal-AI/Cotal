@@ -315,6 +315,15 @@ async function pinnedFetch(target: string, what: string): Promise<Response> {
   return res;
 }
 
+/** The issuer a space's exchange answers /health with — the auth daemon's own token issuer, a
+ *  stable URN derived from the space (auth's `spaceIssuer`), deliberately NOT the IdP issuer:
+ *  the IdP names who vouches for humans, this names the exchange minting for the space. The cli
+ *  package carries no runtime dependency on @cotal-ai/auth, so the derivation is restated here
+ *  and the user-bundle smoke pins the two against each other across the package boundary. */
+export function userExchangeIssuer(space: string): string {
+  return `urn:cotal:auth:${space}`;
+}
+
 /** The user arm of trust composition: the pinned exchange must ANSWER, and answer as itself.
  *  `/health` must report the pinned issuer (a base that answers with a foreign issuer is a
  *  different authority, however reachable) and `/jwks` must serve a non-empty key set (the

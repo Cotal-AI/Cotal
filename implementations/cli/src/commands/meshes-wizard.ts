@@ -17,6 +17,7 @@ import {
   probeEnforcement,
   spacesAtRoot,
   tlsIntent,
+  userExchangeIssuer,
   verifyTarget,
   verifyUserExchange,
   writeRecord,
@@ -286,7 +287,7 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
       const userTls = b.tlsRequired || tlsIntent(server as string, false);
       const userDial = checkDialPolicy(server as string, { tlsRequired: userTls, allowUnencryptedOverlay: ackedFor === server });
       if (!userDial.ok) { io.log.error(userDial.message); return cancelled(io, "Nothing was registered."); }
-      const exch = await verifyUserExchange(b.userAuth.endpoints!.url!, b.userAuth.idp.issuer);
+      const exch = await verifyUserExchange(b.userAuth.endpoints!.url!, userExchangeIssuer(b.space));
       if (!exch.ok) { io.log.error(exch.message); return cancelled(io, "Nothing was registered."); }
       const enforce = checkEnforcement("user", enforces, server as string, b.space, root);
       if (!enforce.ok) { io.log.error(enforce.message); return cancelled(io, "Nothing was registered."); }
