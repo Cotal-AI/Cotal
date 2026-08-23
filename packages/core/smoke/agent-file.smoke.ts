@@ -1,5 +1,5 @@
 /** Round-trip + safety proof for the yaml-backed agent-file parser (launchOptions map support). */
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadAgentFile, saveAgentFile, type AgentDef } from "../src/agent-file.js";
@@ -81,9 +81,13 @@ for (const [label, value] of [
   ok(`a ${label} allowPublish survives a save`, JSON.stringify(back.allowPublish) === JSON.stringify(value), back.allowPublish);
 }
 // An UNSET field stays unset: emitting on "is set" must not invent a field the author never wrote,
-// or every persona grows three keys and omitted stops being distinguishable from declared-empty.
-const bare = reread(join(dir, "policy-unset.md"), { name: "policy" });
-ok("an unset subscribe stays unset", bare.subscribe === undefined, bare.subscribe);
+// or every persona grows keys and omitted stops being distinguishable from declared-empty.
+//
+// Only `subscribe` is required. The other two have defaults that are answers rather than guesses:
+// allowSubscribe omitted means "exactly what it subscribes to", and allowPublish omitted means deny.
+// Neither can silently widen access, so neither needs to be spelled out. The read set had no such
+// answer, which is why it is the one field a saver must state.
+const bare = reread(join(dir, "policy-unset.md"), { name: "policy", subscribe: [] });
 ok("an unset allowSubscribe stays unset", bare.allowSubscribe === undefined, bare.allowSubscribe);
 ok("an unset allowPublish stays unset", bare.allowPublish === undefined, bare.allowPublish);
 
@@ -166,6 +170,19 @@ throws("launchOptions as scalar throws", "---\nname: x\nlaunchOptions: nope\n---
 throws("launchOptions as sequence throws", "---\nname: x\nlaunchOptions:\n  - a\n---\n");
 throws("renamed field 'channels' still fails loud", "---\nname: x\nchannels: [general]\n---\n");
 throws("malformed YAML fails loud", "---\nname: x\n  bad: : indent\n\t- weird\n---\n");
+
+// 7) Saving refuses a persona with no declared read set. The channels an agent reads must be said,
+//    because the two available defaults are both wrong: inheriting a channel grants one nobody
+//    chose, and filling in an empty list turns forgetting into a declaration and destroys the
+//    difference between them permanently. Refusing costs the caller one field and keeps the file
+//    honest about what its author meant.
+let refused = false;
+try { saveAgentFile(join(dir, "scopeless.md"), { name: "scopeless", persona: "x" }); } catch { refused = true; }
+ok("saving a persona with no read set is refused", refused);
+ok("the refusal writes no file", !existsSync(join(dir, "scopeless.md")));
+let emptyOk = true;
+try { saveAgentFile(join(dir, "declared-none.md"), { name: "declarednone", persona: "x", subscribe: [] }); } catch { emptyOk = false; }
+ok("declaring an empty read set is accepted", emptyOk);
 
 console.log(`\nagent-file yaml smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

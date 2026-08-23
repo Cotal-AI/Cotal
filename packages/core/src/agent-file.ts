@@ -229,6 +229,19 @@ export function loadAgentFile(path: string): AgentDef {
 export function saveAgentFile(path: string, def: AgentDef): void {
   if (!def.name) throw new Error('saveAgentFile: "name" is required');
   assertValidName(def.name);
+  // The read set must be SAID, not inferred. A persona saved without one used to inherit a channel
+  // nobody chose, and the file gave a later reader no way to tell a deliberate silence from a
+  // forgotten field. Refusing here rather than filling in an empty list keeps that distinction:
+  // auto-filling would turn every omission into a declaration and destroy the difference for good.
+  //
+  // This is the writer, so it binds every caller that builds a definition and saves it, including
+  // ones added later. It cannot see a file written as literal text, which is why the shipped
+  // templates are asserted separately.
+  if (!def.subscribe)
+    throw new Error(
+      `saveAgentFile: "subscribe" is required for "${def.name}" - list the channels it reads, ` +
+        `or [] for none (an agent with no channels is still reachable by direct message and anycast)`,
+    );
   // Build the frontmatter mapping in read order, then serialize with the `yaml` library — it owns
   // all quoting/escaping (a value with a `:`/`#`/`[`/quote round-trips safely, which the old
   // hand-rolled writer had to special-case). `lineWidth: 0` keeps scalars on one line (no folding).

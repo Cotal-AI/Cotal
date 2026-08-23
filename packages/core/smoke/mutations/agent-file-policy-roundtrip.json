@@ -29,7 +29,13 @@
     "depends on the mutated code; it cannot show that a real entry point reaches it. The redefine cells",
     "replay what the manager does when a persona is defined over an existing name, so that plant breaks",
     "the replay itself and leaves the writer correct, which is the only way to see the cells grade the",
-    "path rather than the function underneath it."
+    "path rather than the function underneath it.",
+    "",
+    "The read set is the one policy field a saver must state. The other two have defaults that answer",
+    "the question rather than guess at it: an omitted read ACL means exactly what the agent subscribes",
+    "to, and an omitted post ACL means deny. Neither can widen access by being absent. An omitted read",
+    "set had no such answer, so it was filled in by whatever default was current, and the file recorded",
+    "a channel nobody chose."
   ],
   "mutations": [
     {
@@ -51,13 +57,13 @@
       "note": "allowPublish is default-deny, so an explicit empty post ACL and an omitted one resolve alike today; the file must still record which one the author wrote."
     },
     {
-      "name": "the read set is emitted unconditionally, inventing a field the author never wrote",
+      "name": "the post ACL is emitted unconditionally, inventing a field the author never wrote",
       "file": "packages/core/src/agent-file.ts",
-      "find": "  if (def.subscribe) fm.subscribe = def.subscribe;",
-      "replace": "  fm.subscribe = def.subscribe ?? [];",
-      "expectRed": "an unset subscribe stays unset",
-      "cell": "an unset subscribe stays unset",
-      "note": "The overcorrection: every saved persona gains an empty read set that reads as a deliberate declaration. Same distinction lost, opposite direction."
+      "find": "  if (def.allowPublish) fm.allowPublish = def.allowPublish;",
+      "replace": "  fm.allowPublish = def.allowPublish ?? [];",
+      "expectRed": "an unset allowPublish stays unset",
+      "cell": "an unset allowPublish stays unset",
+      "note": "The overcorrection: every saved persona gains an empty post ACL that reads as a deliberate declaration. Same distinction lost, opposite direction. Aimed at allowPublish because subscribe is now required and cannot be unset."
     },
     {
       "name": "the redefine path is graded only through the writer, not through a real caller",
@@ -67,6 +73,15 @@
       "expectRed": "a redefine keeps the declared-empty read set",
       "cell": "a redefine keeps the declared-empty read set",
       "note": "Plants the old behaviour INSIDE the replayed redefine sequence rather than in the writer, so the cell is shown to grade the caller's own path. Without this the redefine cells could pass for the writer's reasons alone."
+    },
+    {
+      "name": "the writer accepts a persona with no declared read set",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "  if (!def.subscribe)\n    throw new Error(",
+      "replace": "  if (false)\n    throw new Error(",
+      "expectRed": "saving a persona with no read set is refused",
+      "cell": "saving a persona with no read set is refused",
+      "note": "Removes the guard while leaving its message in place, so the suite cannot pass on the error text existing. A scopeless persona becomes writable again and the refusal cell names it."
     }
   ]
 }

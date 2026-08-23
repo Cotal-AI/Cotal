@@ -5691,7 +5691,14 @@ export class Manager {
     } else {
       // Fresh name: create with content + owner = caller. The privileged tier suffices (creating a
       // brand-new persona isn't admin-only); the creator becomes its owner.
-      def = { name, model, persona, owner: caller };
+      //
+      // The read set is EMPTY, and that is a policy decision made here rather than a field left
+      // blank. A peer cannot name its own channels through this path by design (see CONTENT vs
+      // POLICY above): letting it would make defining a persona a way to grant reads. So the only
+      // safe scope for a peer-created persona is none, and an operator widens it afterwards. It is
+      // written explicitly so the file states it, instead of being an omission a later default
+      // could reinterpret.
+      def = { name, model, persona, owner: caller, subscribe: [] };
     }
     try {
       saveAgentFile(path, def);

@@ -104,6 +104,7 @@
     "smoke:self-serve-join-coverage:auth": "tsx packages/core/smoke/self-serve-join-coverage-auth.smoke.ts",
     "smoke:e2e:acl": "tsx packages/core/smoke/e2e-acl.smoke.ts",
     "smoke:agent-file": "tsx packages/core/smoke/agent-file.smoke.ts",
+    "smoke:persona-templates": "tsx implementations/cli/smoke/persona-templates.smoke.ts",
     "smoke:control-auth": "tsx packages/core/smoke/control-auth.smoke.ts",
     "smoke:manager-split": "tsx packages/core/smoke/manager-split-auth.smoke.ts",
     "smoke:cred-lifetime": "tsx packages/core/smoke/cred-lifetime-auth.smoke.ts",
