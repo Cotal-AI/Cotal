@@ -119,7 +119,9 @@ the pinned JWKS, issuer, and audience. An agent presents its spawn-time actor to
 match a fresh managed-ledger row. Elevated `view` exchanges stay loopback-only.
 
 The well-known response contains the IdP pins and the actual deny-all sentinel credential remote
-agents need before the bearer-driven auth callout. Treat it as bootstrap material: the sentinel
+agents need before the bearer-driven auth callout. Auth configuration is served under the canonical
+`userAuth` wrapper; the previously-flat keys remain alongside it for compatibility. Treat it as
+bootstrap material: the sentinel
 cannot publish or subscribe, but consumers must still take the bundle only from the intended HTTPS
 origin and must verify TLS. `--exchange-trusted-proxy` opts into peer attribution by the **last**
 `X-Forwarded-For` hop; use it only when the listener is reachable solely through a proxy you control.
