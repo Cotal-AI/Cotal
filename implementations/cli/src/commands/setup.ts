@@ -588,7 +588,7 @@ function writeDemoAgent(path: string, body: string): void {
  *  then the user's to shape. Unlike the demo team it's never refreshed (seed-if-absent), so any
  *  edits stand; deleting it just means the next `cotal setup` writes a fresh copy.
  *
- *  Read scope is split intentionally: the ACTIVE set (`subscribe`) is just `general`, so a fresh
+ *  Read scope is split intentionally: the ACTIVE set (`subscribe`) is EMPTY, so a fresh
  *  agent isn't firehosed every channel on the mesh at boot, while the read ACL (`allowSubscribe:
  *  [">"]`) still PERMITS it to read anything — it just has to `cotal_join` a channel to start
  *  receiving it. (`subscribe: [">"]` would auto-subscribe to every channel, the old behavior.) */
@@ -597,9 +597,9 @@ name: default_agent
 role: default
 description: An agent on the mesh
 tags: []
-subscribe: [general]
+subscribe: []
 allowSubscribe: [">"]
-allowPublish: [">"]
+allowPublish: []
 capabilities: [spawn]
 ---
 
@@ -639,8 +639,8 @@ name: david
 role: cotal-tech
 description: "the engineer: how Cotal works (the wire, NATS, connectors, integration)."
 tags: [cotal, technical, help]
-subscribe: [general]
-allowPublish: [general]
+subscribe: [welcome]
+allowPublish: [welcome]
 ---
 
 You are david, Cotal's engineer, live on the web for agents with the operator who just set Cotal
@@ -661,8 +661,8 @@ name: sven
 role: cotal-guide
 description: "the guide: what to build with Cotal (examples, setups, getting the most out of it)."
 tags: [cotal, examples, help]
-subscribe: [general]
-allowPublish: [general]
+subscribe: [welcome]
+allowPublish: [welcome]
 ---
 
 You are sven, Cotal's guide, live on the web for agents with the operator who just set Cotal up.
@@ -681,8 +681,8 @@ name: me
 role: operator
 description: "your own session on the Cotal mesh."
 tags: [cotal]
-subscribe: [general]
-allowPublish: [general]
+subscribe: [welcome]
+allowPublish: [welcome]
 capabilities: [spawn]
 ---
 

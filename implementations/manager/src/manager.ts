@@ -3361,7 +3361,7 @@ export class Manager {
       subscribe = opts.subscribe ?? def.subscribe;
       // Defaulted the same way the loader/provisioner do — minted into the creds (the broker
       // boundary); runtime durable joins are re-authorized against the committed ACL by the daemon.
-      allowSubscribe = opts.allowSubscribe ?? def.allowSubscribe ?? subscribe ?? ["general"];
+      allowSubscribe = opts.allowSubscribe ?? def.allowSubscribe ?? subscribe ?? [];
       allowPublish = opts.allowPublish ?? def.allowPublish;
       capabilities = def.capabilities;
       // #651: fold the persona's model into the launch record, mirroring the variant line below
