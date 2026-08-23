@@ -130,10 +130,12 @@ writeFileSync(live, [
   "The original persona text.",
 ].join("\n"));
 const redefine = (file: string, persona: string, model?: string) => {
-  const d0 = loadAgentFile(file);                 // manager.ts: load the stored file
-  if (model !== undefined) d0.model = model;      //   patch model only when provided
-  d0.persona = persona;                           //   overwrite content
-  saveAgentFile(file, d0);                        //   write it back
+  // The manager's sequence, verbatim: load the stored file, patch model only when one was given,
+  // overwrite the content, write it back.
+  const d0 = loadAgentFile(file);
+  if (model !== undefined) d0.model = model;
+  d0.persona = persona;
+  saveAgentFile(file, d0);
 };
 redefine(live, "Rewritten persona text.");
 const afterRedefine = loadAgentFile(live);
