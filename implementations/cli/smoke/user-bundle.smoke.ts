@@ -8,7 +8,7 @@
  * what registration accepts, field for field, including the pins registration goes on to record.
  */
 import { checkAdvertisedServer, composeUserBundle, finalizeUserBundleEndpoint, spaceIssuer } from "@cotal-ai/auth";
-import { checkUserBundle, userExchangeIssuer } from "../src/commands/meshes-add.js";
+import { checkServer, checkUserBundle, userExchangeIssuer } from "../src/commands/meshes-add.js";
 
 let ran = 0;
 let failed = 0;
@@ -72,6 +72,13 @@ cell(
 );
 cell("advertised-server refuses a non-URL", (checkAdvertisedServer("not a url") ?? "").includes("is not a URL"));
 
+// Registration runs the bundle's server through checkServer AFTER checkUserBundle accepts it, so a
+// bundle can pass the round trip above and still be refused at the gate that actually records it.
+// A websocket broker legitimately lives under a path (`wss://host/mesh-ws` behind a reverse
+// proxy) — the bundle's own server URL must clear checkServer, while nats:// stays bare.
+cell("checkServer accepts the bundle's path-carrying wss server", checkServer(bundle.server).ok, JSON.stringify(checkServer(bundle.server)));
+cell("checkServer still refuses a path on nats://", !checkServer("nats://10.0.0.7:4222/subject").ok);
+
 // The issuer registration pins for the exchange probe is the daemon's OWN issuer (its /health
 // reports `spaceIssuer(space)`), restated in the cli package because cli carries no runtime
 // dependency on auth — this cell is the only thing keeping the two derivations identical.
@@ -81,7 +88,7 @@ cell(
   `cli derives ${JSON.stringify(userExchangeIssuer("hack"))}, auth derives ${JSON.stringify(spaceIssuer("hack"))}`,
 );
 
-const EXPECTED_CELLS = 12;
+const EXPECTED_CELLS = 14;
 if (ran !== EXPECTED_CELLS) {
   console.error(`ACCOUNTING BROKEN: ran ${ran} cells, expected ${EXPECTED_CELLS}`);
   process.exit(1);

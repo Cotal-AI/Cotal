@@ -83,7 +83,11 @@ export function checkServer(raw: string): Check<string> {
     return bad(`✗ --server must not embed credentials ("${u.username}:***@…") - the registry records this URL and prints it back; pass trust material under --root instead`);
   if (u.search || u.hash)
     return bad(`✗ --server must be a bare broker URL - drop its ${u.search ? "query string" : "fragment"}`);
-  if (u.pathname && u.pathname !== "/") return bad("✗ --server must be a bare broker URL - drop its path");
+  // A path is refused on nats:// and tls:// because the NATS wire protocol has no notion of one,
+  // but on ws:// and wss:// it addresses the websocket route (`wss://host/mesh-ws` behind a
+  // reverse proxy) — the same contract classifyJoinTarget and the dial already honour.
+  if (u.pathname && u.pathname !== "/" && u.protocol !== "ws:" && u.protocol !== "wss:")
+    return bad("✗ --server must be a bare broker URL - drop its path");
   if (!u.hostname) return bad("✗ --server names no host - a broker URL needs one (e.g. nats://127.0.0.1:4222)");
   return good(raw);
 }

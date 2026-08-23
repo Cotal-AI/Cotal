@@ -335,10 +335,15 @@ try {
   const { statSync: statSentinel } = await import("node:fs");
   const { createServer: createHttpServer } = await import("node:http");
   const ISSUER = "https://idp.example.test/";
-  // A stand-in exchange: answers /health with the pinned issuer and /jwks with a key set.
+  // The probe pins the exchange's OWN issuer, derived from the bundle's space — NOT the IdP's
+  // (the daemon's /health answers `urn:cotal:auth:<space>`). Derive it with the same function
+  // registration uses, so this fixture can never drift from the pin again.
+  const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
+  const EXCHANGE_ISSUER = userExchangeIssuer("hosted");
+  // A stand-in exchange: answers /health with its own issuer and /jwks with a key set.
   const exchange = createHttpServer((req, res) => {
     res.setHeader("content-type", "application/json");
-    if (req.url === "/health") return void res.end(JSON.stringify({ ok: true, issuer: ISSUER }));
+    if (req.url === "/health") return void res.end(JSON.stringify({ ok: true, issuer: EXCHANGE_ISSUER }));
     if (req.url === "/jwks") return void res.end(JSON.stringify({ keys: [{ kty: "OKP" }] }));
     res.statusCode = 404;
     res.end("{}");
@@ -611,7 +616,8 @@ try {
   check("add refuses a --root that is not a directory", fileRoot.code === 1 && findMesh("filey") === undefined, fileRoot.out);
   const missingRoot = await run(["add", "missy"], { server: LIVE, root: join(bare, "nope", "nope") });
   check("add refuses a --root that does not exist", missingRoot.code === 1 && findMesh("missy") === undefined, missingRoot.out);
-  // …and the URL contract it claims: a bare broker URL has no path either.
+  // …and the URL contract it claims: a nats:// broker URL has no path (ws/wss may carry one - the
+  // websocket route - which the user-bundle smoke pins on the accepting side).
   const pathy = await run(["add", "pathy"], { server: `${LIVE}/subject`, root });
   check("add refuses a --server with a path", pathy.code === 1 && findMesh("pathy") === undefined, pathy.out);
 
