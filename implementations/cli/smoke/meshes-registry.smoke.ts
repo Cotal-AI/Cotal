@@ -251,12 +251,9 @@ try {
   const authless = await run(["add", "needs-auth"], { server: LIVE, root, mode: "auth" });
   check("add --mode auth without that space's trust material fails loud", authless.code === 1 && authless.out.includes("trust material"), authless.out);
   check("add --mode auth recorded nothing", findMesh("needs-auth") === undefined, loadMeshes());
-  // The pins-must-be-supplied rule outlives the sequencing fence (it is what U3 keeps), so it is
-  // asserted behind the development opt-in — otherwise the fence would answer first and this cell
-  // would silently stop proving anything about pinned trust.
-  process.env.COTAL_REMOTE_REGISTRATION_DEV = "1";
+  // The pins-must-be-supplied rule remains the user arm's first trust gate: enabling remote
+  // consumption does not permit a user-auth record whose IdP and exchange pins were guessed.
   const userMode = await run(["add", "hosted"], { server: LIVE, root, mode: "user" });
-  delete process.env.COTAL_REMOTE_REGISTRATION_DEV;
   check("add --mode user WITHOUT pinned trust is refused (pins must be supplied, not guessed)",
     userMode.code === 1 && userMode.out.includes("--user-auth-file") && userMode.out.includes("--from"), userMode.out);
   const badMode = await run(["add", "hosted"], { server: LIVE, root, mode: "sideways" });
@@ -374,38 +371,37 @@ try {
   writeFileSync(bundlePath, JSON.stringify(bundleFor()));
   const hostedRoot = projectRoot("hosted");
 
-  // ── THE SEQUENCING FENCE ─────────────────────────────────────────────────────────────────────
-  // No production connect can consume a remote entry yet (the auth provider still refuses with
-  // "remote discovery is not supported yet"), so registering one by DEFAULT is refused: a
-  // `✓ registered` that selects a durable mesh nothing can dial is a lie to the operator. These
-  // cells are what must go red the day the fence is deleted without its consumer.
-  const fencedFile = await run(["add", "hosted"], { mode: "user", "user-auth-file": bundlePath, root: hostedRoot });
-  check("remote user-auth registration is REFUSED by default (no consumer yet)",
-    fencedFile.code === 1 && fencedFile.out.includes("remote user-auth connect is not yet supported"), fencedFile.out);
-  check("…the refusal names the sequencing, not a generic failure",
-    fencedFile.out.includes("remote-exchange clients"), fencedFile.out);
-  check("…and it records NOTHING on the refused path",
-    findMesh("hosted") === undefined, loadMeshes());
-  check("…no partial-success wording ever reaches the operator",
-    !fencedFile.out.includes("✓ registered"), fencedFile.out);
-  // The fence is hit BEFORE --from touches the network: a refused registration must not fetch.
+  // ── REMOTE CONSUMER IS LIVE ───────────────────────────────────────────────────────────────────
+  // The remote bearer client consumes the pinned exchange and sentinel carried by this entry, so
+  // registration is now enabled with NO development hatch. Keep these as the inverse of the old
+  // fail-closed cells: the same real registration must succeed, record, and tell the operator so.
+  const userAdd = await run(["add", "hosted"], { mode: "user", "user-auth-file": bundlePath, root: hostedRoot });
+  check("remote user-auth registration succeeds without a development hatch",
+    userAdd.code === 0, userAdd.out);
+  check("…the success names the registered remote user-auth mesh",
+    userAdd.out.includes("registered") && userAdd.out.includes("hosted"), userAdd.out);
+  check("…and it records the user-mode entry",
+    findMesh("hosted")?.mode === "user", loadMeshes());
+  check("…without any obsolete sequencing refusal",
+    !userAdd.out.includes("not yet supported") && !userAdd.out.includes("remote-exchange clients"), userAdd.out);
+  // `--from` still owns its independent HTTPS + consent gates. Prove it now reaches those gates,
+  // rather than the deleted sequencing fence, while a plain-http discovery address remains inert.
   let discoHits = 0;
   const countingDisco = createHttpServer((_req, res) => { discoHits++; res.statusCode = 404; res.end("{}"); });
   await new Promise<void>((r) => countingDisco.listen(0, "127.0.0.1", r));
   const discoUrl = `http://127.0.0.1:${(countingDisco.address() as { port: number }).port}`;
-  const fencedFrom = await run(["add", "hosted"], { mode: "user", from: `${discoUrl}/.well-known/cotal-mesh`, root: hostedRoot });
-  check("--from is refused by the same fence, before any fetch",
-    fencedFrom.code === 1 && discoHits === 0 && findMesh("hosted") === undefined, { out: fencedFrom.out, discoHits });
+  removeMesh("hosted");
+  const fromHttpGate = await run(["add", "hosted"], { mode: "user", from: `${discoUrl}/.well-known/cotal-mesh`, root: hostedRoot });
+  check("--from reaches its HTTPS trust gate, not an obsolete consumer fence",
+    fromHttpGate.code === 1 && fromHttpGate.out.includes("must be an https:// URL") && discoHits === 0
+      && findMesh("hosted") === undefined, { out: fromHttpGate.out, discoHits });
   countingDisco.close();
 
-  // Everything below exercises the registration machinery itself, which is complete and must stay
-  // proven while the fence holds. It runs behind the consumer lane's development opt-in — the same
-  // switch the remote-exchange client work uses, and the fence's only escape.
-  process.env.COTAL_REMOTE_REGISTRATION_DEV = "1";
-
-  const userAdd = await run(["add", "hosted"], { mode: "user", "user-auth-file": bundlePath, root: hostedRoot });
+  const userAddAgain = await run(["add", "hosted"], { mode: "user", "user-auth-file": bundlePath, root: hostedRoot });
+  check("the pinned bundle remains registrable after the independent --from refusal",
+    userAddAgain.code === 0 && findMesh("hosted")?.mode === "user", userAddAgain.out);
   check("add --mode user with a pinned bundle records a remote entry",
-    userAdd.code === 0 && findMesh("hosted")?.mode === "user", userAdd.out);
+    userAddAgain.code === 0 && findMesh("hosted")?.mode === "user", userAddAgain.out);
   const hostedEntry = findMesh("hosted");
   check("…marked remote, with the pinned exchange as a stated trust position",
     hostedEntry?.userAuth?.remote === true && hostedEntry?.userAuth?.endpoints?.url === exchangeUrl, hostedEntry);
@@ -566,7 +562,6 @@ try {
     fromNoTty.code === 1 && fromConnects === 0 && findMesh("hosted") === undefined, { out: fromNoTty.out, fromConnects });
   fromSocket.close();
 
-  delete process.env.COTAL_REMOTE_REGISTRATION_DEV;
   exchange.close();
   wrongExchange.close();
 

@@ -8,7 +8,6 @@ import {
   checkDialPolicy,
   checkEnforcement,
   checkMode,
-  checkRemoteConsumable,
   checkRoot,
   checkServer,
   checkTrust,
@@ -269,10 +268,6 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
     // form calls (meshes-add.ts owns them); this branch only asks for the file and presents
     // failures.
     if (next === "bundle") {
-      // The same sequencing fence the flag form hits, before the operator is asked for a path:
-      // the rule lives in meshes-add.ts so neither front end can register what nothing can dial.
-      const consumable = checkRemoteConsumable();
-      if (!consumable.ok) { io.log.error(consumable.message); return cancelled(io, "Nothing was registered."); }
       const path = await io.text({
         message: "Path to the trust bundle (bundle.json)",
         placeholder: "exported where the mesh runs",
