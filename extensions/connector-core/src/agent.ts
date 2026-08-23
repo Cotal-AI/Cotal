@@ -112,6 +112,12 @@ export function afterRecallMark(a: RecallMark, b: RecallMark): boolean {
 }
 
 const MAX_INBOX = 200;
+/** How many times overflow may evict the SAME directed id before it is acked and given up on.
+ *  The un-ack reprieve exists so a sacrificed message can be redelivered once there is room; if the
+ *  inbox is still full on the Nth redelivery, room is not coming and the cycle is pure cost. */
+const OVERFLOW_REDELIVERY_LIMIT = 5;
+/** Bound on the eviction bookkeeping itself, so tracking churn cannot become a leak of its own. */
+const OVERFLOW_EVICTION_CAP = 4 * MAX_INBOX;
 /** How many future-stamped recall ids one session will remember having handed over. See
  *  {@link MeshAgent.recallAheadRoom}. */
 const MAX_AHEAD = 256;
@@ -164,6 +170,9 @@ export class MeshAgent extends EventEmitter {
    *  permanently degrades unknown ambient to pull-only for this session rather than risk a late
    *  live/durable copy changing from quiet to automatic. */
   private evictedClassifications = new Map<string, { pullOnly: boolean; channel: string }>();
+  /** How many times overflow has evicted each directed id without it ever being handled. Bounds the
+   *  un-ack reprieve so a redelivery cycle cannot run forever — see the eviction path in `buffer`. */
+  private overflowEvictions = new Map<string, number>();
   /** Surfaced to the host but not yet committed or abandoned, counted per holding frame because
    *  frames overlap. See {@link holdInFlight}. */
   private inFlightIds = new Map<string, number>();
@@ -431,7 +440,41 @@ export class MeshAgent extends EventEmitter {
         // A directed message is never acked on overflow: leaving it un-acked lets JetStream redeliver
         // it once we have room, which turns unrecoverable loss into a delay. Channel ambient is still
         // acked, because replaying it is what the history flood was (#775).
-        if (!this.inFlightIds.has(evicted.item.id) && !sacrificingDirected) evicted.ack();
+        //
+        // ...but a delay only helps if it ENDS. An un-acked id is one the broker may hand straight
+        // back, into an inbox that is still full, to be evicted again - a cycle that spends broker
+        // and connector throughput while every seat involved looks healthy. So the reprieve is
+        // counted: after OVERFLOW_REDELIVERY_LIMIT evictions of the SAME id we stop hoping for room
+        // and ack it, recording the loss loudly. A message lost with a log line beats a mesh that
+        // quietly stops moving (#807).
+        //
+        // The counter is keyed on the id and cleared whenever that id is actually handled
+        // ({@link drainInboxIds}), so an id that eventually lands never accumulates toward the cap.
+        let giveUp = false;
+        if (sacrificingDirected) {
+          const seen = (this.overflowEvictions.get(evicted.item.id) ?? 0) + 1;
+          if (seen >= OVERFLOW_REDELIVERY_LIMIT) {
+            giveUp = true;
+            this.overflowEvictions.delete(evicted.item.id);
+            // Reported on stderr via the existing log path, NOT emit("error"): an EventEmitter with
+            // no "error" listener turns an emit into an unhandled exception that takes the process
+            // down, so announcing a dropped message would kill the seat that was trying to survive
+            // the flood. Nothing else in this class emits "error" either.
+            this.log(
+              `overflow: dropping directed message ${evicted.item.id} after ${seen} evictions - ` +
+                `the inbox has stayed full across every redelivery, so the reprieve is not helping`,
+            );
+          } else {
+            this.overflowEvictions.set(evicted.item.id, seen);
+            if (this.overflowEvictions.size > OVERFLOW_EVICTION_CAP) {
+              // Bounded bookkeeping: the map must not become its own leak under a sustained flood.
+              // Dropping the oldest entry only forgives a message, never destroys one.
+              const oldest = this.overflowEvictions.keys().next();
+              if (!oldest.done) this.overflowEvictions.delete(oldest.value);
+            }
+          }
+        }
+        if (!this.inFlightIds.has(evicted.item.id) && (!sacrificingDirected || giveUp)) evicted.ack();
       }
     }
     this.emit("incoming", item);
@@ -571,6 +614,10 @@ export class MeshAgent extends EventEmitter {
     for (const id of requested) {
       if (!present.has(id)) this.markHandled(id, pullOnly.get(id) ?? false);
       this.evictedClassifications.delete(id);
+      // An id that actually landed is not churning, whatever it survived on the way here: clear its
+      // overflow tally so a message that is redelivered, evicted, then finally handled never carries
+      // history toward the give-up cap.
+      this.overflowEvictions.delete(id);
     }
     return { items, missingIds: requested.filter((id) => !present.has(id)) };
   }
