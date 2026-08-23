@@ -15,6 +15,7 @@ import {
   type NatsConnection,
   type Subscription,
 } from "@nats-io/transport-node";
+import { wsconnect } from "@nats-io/nats-core";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import { inspectCredHealth } from "./provision.js";
 import { resolveService, invokeCommand, submitAndFollowGoal, type ResolvedService } from "./endpoint-invoke.js";
@@ -886,7 +887,7 @@ export class CotalEndpoint extends EventEmitter {
       const stale = !this.currentCreds || credsRenewalDelayMs(this.currentCreds) <= 0;
       if (stale) await this.refreshCreds(!this.currentCreds);
     }
-    this.nc = await connect({
+    this.nc = await dialerFor(this.servers)({
       servers: this.servers,
       // In USER MODE the connection `name` carries the client-chosen inbox nonce (= connId) the callout
       // scopes `_INBOX_<connId>.>` on (see EndpointOptions.bearer); otherwise it's the display handle.
@@ -4604,12 +4605,26 @@ export function isPublishPermissionDenied(e: unknown): boolean {
   return typed?.operation === "publish";
 }
 
+/** Pick the dial function by SCHEME: `ws://`/`wss://` servers go through nats-core's
+ *  `wsconnect` (the websocket transport - e.g. a broker published through an HTTPS edge at
+ *  `wss://host/path`), everything else through the TCP transport. One list, one transport: a
+ *  mixed tcp+ws server list would race two transports over one identity, so the first entry's
+ *  scheme decides and the options are otherwise identical. */
+function dialerFor(servers: string): typeof connect {
+  const first = (servers.split(",")[0] ?? "").trim();
+  return /^wss?:\/\//i.test(first) ? (wsconnect as unknown as typeof connect) : connect;
+}
+
 /** Parse a NATS server URL (`nats://host:port`, `host:port`, a bare host, or a comma list — the
  *  first entry wins) into a host+port for {@link tcpInfoProbe}. Defaults the port to 4222. */
 function hostPort(server: string): { host: string; port: number } {
-  const first = (server.split(",")[0] ?? "").trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, ""); // strip scheme
+  const raw = (server.split(",")[0] ?? "").trim();
+  const scheme = raw.match(/^([a-z][a-z0-9+.-]*):\/\//i)?.[1]?.toLowerCase();
+  const first = raw.replace(/^[a-z][a-z0-9+.-]*:\/\//i, ""); // strip scheme
   const u = new URL(`http://${first}`); // http:// so .hostname/.port resolve (incl. bracketed IPv6)
-  return { host: u.hostname, port: u.port ? Number(u.port) : 4222 };
+  // A websocket broker rides the web's ports, not NATS's: `wss://host/path` reaches TCP 443.
+  const fallback = scheme === "wss" ? 443 : scheme === "ws" ? 80 : 4222;
+  return { host: u.hostname, port: u.port ? Number(u.port) : fallback };
 }
 
 /** Silent credless liveness probe. Opens a plain TCP connection and confirms a NATS server is there
@@ -4715,7 +4730,7 @@ export async function isReachable(
   const started = Date.now();
   if (!(await tcpDialable(servers, timeoutMs))) return false;
   try {
-    const nc = await connect({
+    const nc = await dialerFor(servers)({
       servers,
       timeout: Math.max(1, timeoutMs - (Date.now() - started)),
       reconnect: false,
@@ -4764,7 +4779,7 @@ export async function probeConnect(
   // `connect()`'s own `timeout` always covered its handshake too.
   if (!(await tcpDialable(server, timeoutMs))) return classifyProbeFailure(undefined, opts);
   try {
-    const nc = await connect({
+    const nc = await dialerFor(server)({
       servers: server,
       timeout: Math.max(1, timeoutMs - (Date.now() - started)),
       reconnect: false,

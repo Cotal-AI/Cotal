@@ -33,7 +33,7 @@ let attempted = 0;
 const failures: string[] = [];
 /** How many cells this suite must run. A cell silently skipped or silently added is a defect in
  *  its own right, and one this file has already shipped once (an ambient-dependent arm). */
-const EXPECTED_CELLS = 142;
+const EXPECTED_CELLS = 146;
 /**
  * Every code the classifier may emit, IMPORTED from production rather than restated here.
  *
@@ -457,7 +457,16 @@ permits("nats://localhost:4222", "public-tls", WITH_TLS); // a hostname like any
 console.log("\nmalformed input fails loud rather than defaulting to something");
 refuses("not-a-url", "not a URL", TODAY, "not-a-url");
 refuses("http://127.0.0.1:4222", "not a broker scheme", TODAY, "bad-scheme");
-refuses("ws://127.0.0.1:4222", "websocket is not classified by this policy", TODAY, "bad-scheme");
+// Websocket brokers are classified by the SAME fences as their TCP twins - the scheme changes
+// the transport, not the trust question. `ws://` is plaintext exactly like `nats://`; `wss://`
+// carries the TLS handshake itself, so registration derives required-TLS from the scheme
+// ({@link tlsIntent}) and the classifier answers it like `tls://`. The canonical server string
+// keeps the PATH and the web default port: behind an HTTPS edge the path IS part of the
+// broker's address, where a plain NATS URL has no path to keep.
+permits("ws://127.0.0.1:4222", "loopback");
+refuses("ws://203.0.113.7:4222", "plaintext websocket to a public address sends credentials in the clear", TODAY, "unprotected-target");
+refuses("wss://broker.example.com/mesh-ws", "a wss hostname handed to a policy WITHOUT recorded strictness still fails closed", TODAY, "unprotected-target");
+permits("wss://broker.example.com/mesh-ws", "public-tls", WITH_TLS, "wss://broker.example.com:443/mesh-ws");
 refuses("nats://999.1.1.1:4222", "octet out of range is a hostname, not an IP", TODAY, "unprotected-target");
 
 // THE EPILOGUE IS THE GATE, AND IT DECIDES DIRECTLY — never through `check()`.

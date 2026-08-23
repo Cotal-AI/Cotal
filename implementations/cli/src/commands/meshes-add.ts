@@ -124,7 +124,10 @@ export function checkDialPolicy(server: string, policy: DialPolicy): Check<JoinT
 export function tlsIntent(server: string, tlsFlag: boolean): boolean {
   if (tlsFlag) return true;
   try {
-    return new URL(server).protocol === "tls:";
+    const p = new URL(server).protocol;
+    // `wss:` is typed intent the same way `tls:` is - the websocket transport performs the TLS
+    // handshake itself, so recording it strict is stating what the dial already enforces.
+    return p === "tls:" || p === "wss:";
   } catch {
     return false; // checkServer refuses the malformed URL; this never decides anything for it
   }

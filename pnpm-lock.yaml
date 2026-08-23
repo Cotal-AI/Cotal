@@ -590,6 +590,9 @@ importers:
       '@nats-io/kv':
         specifier: ^3.4.0
         version: 3.4.0
+      '@nats-io/nats-core':
+        specifier: ^3.4.0
+        version: 3.4.0
       '@nats-io/nkeys':
         specifier: ^2.0.3
         version: 2.0.3

@@ -53,6 +53,7 @@
     "@nats-io/jwt": "0.0.10-5",
     "@nats-io/kv": "^3.4.0",
     "@nats-io/obj": "^3.4.0",
+    "@nats-io/nats-core": "^3.4.0",
     "@nats-io/nkeys": "^2.0.3",
     "@nats-io/transport-node": "^3.4.0",
     "ajv": "^8.20.0",
