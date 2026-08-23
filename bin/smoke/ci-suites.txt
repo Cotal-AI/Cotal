@@ -442,3 +442,10 @@ smoke:remote-exchange:live
 # a live seat answered NO PRIOR CONTEXT about work in its own 112 KB journal, while the TUI, spawned
 # with --resume, showed a human the history the agent could not recall.
 smoke:jcode-session-resume
+
+# A seat must name the provider actually carrying its model, and refuse a provider-prefixed model id
+# at the boundary (#785). Measured: one route reported three identities - requested gemini-3.7-flash
+# under a cliproxy default, logged as prv:OpenRouter, died in a cursor_plugin_error - and none of the
+# three appeared in the roster, the spawn confirmation, or the manager exit line. RuntimeInfo already
+# carried provider and routes in the response the model check reads; they were discarded.
+smoke:jcode-route-identity

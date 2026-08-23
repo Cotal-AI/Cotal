@@ -1,0 +1,68 @@
+{
+  "suite": "extensions/connector-jcode/smoke/route-identity.smoke.ts",
+  "guard": "a seat names the provider actually serving its model, preferring the matching route over the session default, reports an unknown route rather than guessing or going quiet, and refuses a provider-prefixed model id at the boundary while naming the accepted bare form",
+  "command": "pnpm smoke:jcode-route-identity",
+  "completionMarker": "route identity:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/route-identity.json",
+  "why": [
+    "Measured on a dying seat. One route carried three provider identities: requested as",
+    "gemini-3.7-flash through a config whose default provider was cliproxy, logged every line as",
+    "prv:OpenRouter, and died inside a cursor_plugin_error. None of the three appeared in the roster,",
+    "the spawn confirmation, or the manager's exit line, so establishing which was true meant reading",
+    "the seat's private log by hand (#785).",
+    "",
+    "The connector already refuses to join under a model label it did not receive, and that guarantee",
+    "stopped at the model: a seat can be truthfully labelled while its traffic is carried by a",
+    "component nobody named. RuntimeInfo already carried provider and routes in the same response the",
+    "model check reads, so this was a reporting gap, not a discovery problem.",
+    "",
+    "The mutations attack each way the report can go wrong: reporting the session default instead of",
+    "the route serving this model (the exact confusion that produced three stories), going silent on",
+    "an unknown route (silence is what made it expensive), dropping the api_method, ignoring an",
+    "unavailable route, and forwarding a prefixed specifier instead of refusing it."
+  ],
+  "mutations": [
+    {
+      "name": "M1 report the session default instead of the route serving this model",
+      "file": "extensions/connector-jcode/src/route-identity.ts",
+      "find": "  const provider = matched?.provider ?? runtime?.provider;",
+      "replace": "  const provider = runtime?.provider ?? matched?.provider;",
+      "expectRed": "names the provider actually serving THIS model"
+    },
+    {
+      "name": "M2 go quiet when the route is unknown",
+      "file": "extensions/connector-jcode/src/route-identity.ts",
+      "find": "  if (!provider) return `model ${model} is served by an unreported provider (the Harness API named none)`;",
+      "replace": "  if (!provider) return \"\";",
+      "expectRed": "no routes and no provider says so explicitly"
+    },
+    {
+      "name": "M3 drop the api method, losing the wire shape",
+      "file": "extensions/connector-jcode/src/route-identity.ts",
+      "find": "  const via = matched?.api_method ? ` via ${matched.api_method}` : \"\";",
+      "replace": "  const via = \"\";",
+      "expectRed": "names the api method, so the wire shape is on the record"
+    },
+    {
+      "name": "M4 ignore a route that reports itself unavailable",
+      "file": "extensions/connector-jcode/src/route-identity.ts",
+      "find": "  const unavailable = matched && matched.available === false ? \" (route reports itself UNAVAILABLE)\" : \"\";",
+      "replace": "  const unavailable = \"\";",
+      "expectRed": "an unavailable route is flagged"
+    },
+    {
+      "name": "M5 accept a provider-prefixed id and forward it into a model_not_found",
+      "file": "extensions/connector-jcode/src/route-identity.ts",
+      "find": "  if (slash <= 0 || slash === model.length - 1) return { ok: true };",
+      "replace": "  return { ok: true };\n  if (slash <= 0 || slash === model.length - 1) return { ok: true };",
+      "expectRed": "a provider-prefixed id is refused"
+    },
+    {
+      "name": "M6 treat a trailing slash as a prefix (refusing a legitimate id)",
+      "file": "extensions/connector-jcode/src/route-identity.ts",
+      "find": "  if (slash <= 0 || slash === model.length - 1) return { ok: true };",
+      "replace": "  if (slash <= 0) return { ok: true };",
+      "expectRed": "a trailing slash is not a prefix"
+    }
+  ]
+}
