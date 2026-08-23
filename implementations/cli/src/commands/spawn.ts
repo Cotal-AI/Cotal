@@ -680,7 +680,7 @@ async function provisionUserForeground(
       owner,
       actor: name,
       scope: (opts.capabilities ?? []).filter((s) => s === "spawn" || s === "admin" || /^role:[A-Za-z0-9_-]+$/.test(s)),
-      allowSubscribe: opts.allowSubscribe?.length ? opts.allowSubscribe : (opts.subscribe?.length ? opts.subscribe : ["general"]),
+      allowSubscribe: opts.allowSubscribe?.length ? opts.allowSubscribe : (opts.subscribe ?? []),
       allowPublish: publish,
       role: opts.role,
       parent: `${owner}.cli`,

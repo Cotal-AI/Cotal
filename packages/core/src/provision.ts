@@ -740,7 +740,7 @@ export async function provisionAgentDurables(
   opts: ProvisionOpts = {},
 ): Promise<string[]> {
   const uid = assertLifecycleToken(pr.lifecycleUid); // hard cut: every provisioned footprint is lifecycle-keyed (SPEC 13.1)
-  const subscribe = opts.subscribe?.length ? opts.subscribe : ["general"];
+  const subscribe = opts.subscribe ?? [];
   const allowSubscribe = opts.allowSubscribe?.length ? opts.allowSubscribe : subscribe;
   // Reject channel names the wire layer would rewrite (the pre-created filter rides token() too).
   for (const ch of [...subscribe, ...allowSubscribe]) assertValidChannel(ch);
@@ -1078,7 +1078,7 @@ export function permissionsFor(
   if (profile !== "agent")
     throw new Error(`permissionsFor: unhandled profile "${profile}" - add an explicit arm, do not fall through to agent`);
   const allowPublish = opts.allowPublish ?? []; // post ACL — DEFAULT-DENY (publish must be declared)
-  const allowSubscribe = opts.allowSubscribe?.length ? opts.allowSubscribe : ["general"]; // read ACL
+  const allowSubscribe = opts.allowSubscribe ?? []; // read ACL — no floor: undeclared reads nothing
   // Re-assert at the mint chokepoint (covers mint/spawn paths that bypass the file loader): a policy
   // channel must equal its wire token, or the minted grant would alias the logical ACL.
   for (const ch of [...allowSubscribe, ...allowPublish]) assertValidChannel(ch);

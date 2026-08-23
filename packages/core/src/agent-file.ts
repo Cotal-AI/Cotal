@@ -158,7 +158,7 @@ export function loadAgentFile(path: string): AgentDef {
     }
   // Invariant (fail-loud at load): the active read set must be within the read ACL. Defaults:
   // subscribe ⇒ [general]; allowSubscribe ⇒ subscribe (read exactly what you subscribe to).
-  const effSubscribe = subscribe?.length ? subscribe : ["general"];
+  const effSubscribe = subscribe ?? [];
   const effAllow = allowSubscribe?.length ? allowSubscribe : effSubscribe;
   for (const ch of effSubscribe)
     if (!channelInAllow(effAllow, ch))

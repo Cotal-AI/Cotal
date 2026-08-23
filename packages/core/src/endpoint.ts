@@ -607,7 +607,7 @@ export class CotalEndpoint extends EventEmitter {
     this.user = opts.user;
     this.pass = opts.pass;
     this.tls = opts.tls ?? false;
-    this.channels = opts.channels ?? ["general"];
+    this.channels = opts.channels ?? [];
     this.heartbeatMs = opts.heartbeatMs ?? 2000;
     this.ttlMs = opts.ttlMs ?? 6000;
     this.doRegister = opts.registerPresence ?? true;
@@ -1243,7 +1243,11 @@ export class CotalEndpoint extends EventEmitter {
     // Publish must target a concrete sub-channel — you can't broadcast to a
     // wildcard. Default to the first concrete channel we're on (channels[0] may
     // itself be a wildcard subscription like `team.>`).
-    const channel = opts?.channel ?? this.channels.find(isConcreteChannel) ?? "general";
+    const channel = opts?.channel ?? this.channels.find(isConcreteChannel);
+    if (!channel)
+      throw new Error(
+        "send() needs a channel: this endpoint is on no concrete channel, so there is no default to fall back to - pass opts.channel",
+      );
     if (!isConcreteChannel(channel))
       throw new Error(`cannot publish to wildcard channel "${channel}" - pick a concrete sub-channel`);
     const msg: CotalMessage = {
