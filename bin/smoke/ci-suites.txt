@@ -462,3 +462,11 @@ smoke:jcode-session-resume
 smoke:jcode-route-identity
 
 smoke:orientation
+
+# A signing key must not expire unattended. The manager minted its session key once at boot with a
+# flat 24h window and handed back that frozen anchor forever, so any manager with >24h uptime lost
+# its session plane: every attach failed closed with "outside its validity window", recoverable only
+# by restarting the manager, which kills every live session. It happened three times in one day.
+# Failing closed is correct (SPEC 13.10); never renewing is the defect. Rotate early, keep the old
+# key verifiable across an overlap, and never drop the newest.
+smoke:anchor-renewal

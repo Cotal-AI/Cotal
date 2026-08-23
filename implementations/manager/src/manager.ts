@@ -77,6 +77,8 @@ import {
   rawDigest,
   STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC,
   newArtifactSigner,
+  RotatingSigner,
+  generationAnchor,
   sessionsBucket,
   SESSION_GRANT_MAX_TTL_MS,
   type LifecycleStateTransport,
@@ -710,6 +712,9 @@ export class Manager {
    *  presents the refreshed cred on the next reconnect after a half-TTL renewal — the goal-writer
    *  precedent). Auth mode only; an open mesh runs the plane over a bare connection. */
   private sessionLedgerConn?: { nc: NatsConnection; creds?: string };
+  /** Renews the session signing key long before its window closes. A key that expires unattended
+   *  takes the whole session plane down until the manager is restarted, which kills live sessions. */
+  private sessionKeyRenewTimer?: ReturnType<typeof setInterval>;
   /** P2 item 6: credentialId → the nkey that credential was minted for, for the live per-session
    *  SERVING credentials. The §13.1 ledger row records the holder principal, and the row is written
    *  at stage time (after the mint), so the two steps need this one hop. Entries are dropped at
@@ -1627,6 +1632,7 @@ export class Manager {
   async stop(): Promise<void> {
     if (this.leaseTimer) clearInterval(this.leaseTimer);
     if (this.credRenewTimer) clearInterval(this.credRenewTimer);
+    if (this.sessionKeyRenewTimer) clearInterval(this.sessionKeyRenewTimer);
     if (this.maintenanceState === "active" && !this.resumeRequired) {
       await this.teardownManagedAgents(); // normal shutdown stays destructive (#159 B2)
     } else {
@@ -4901,12 +4907,32 @@ export class Manager {
     if (serveEpoch === undefined)
       throw new Error("the manager session plane needs the serve grant epoch; registerManagerService must run first");
     const ledgerKv = await openSessionLedgerKv(nc, sessionsBucket(this.space));
-    const signer = newArtifactSigner();
-    const keyId = `mgr-sessions-${identity.id.slice(0, 12)}`;
-    const anchor: SignerAnchor = {
-      keyId, publicKey: signer.publicKey, owner: MANAGER_ENDPOINT, roles: ["sessions"],
-      scope: { sessions: [MANAGER_ENDPOINT] }, validFrom: Date.now() - 60_000, validTo: Date.now() + SESSION_GRANT_MAX_TTL_MS,
-    };
+    // The session signing key ROTATES. It used to be minted once here with a flat 24h window and
+    // handed back frozen forever, so a manager that stayed up past 24h lost its session plane
+    // permanently: every attach failed closed with "outside its validity window", and the only
+    // recovery was restarting the manager, which kills every live session. It happened three times
+    // in one day. Failing closed on an expired key is correct (SPEC 13.10); the defect was that
+    // nothing ever renewed the key, so the correct refusal became permanent.
+    //
+    // Renewal is driven from two places on purpose - a timer below, and opportunistically before
+    // each signature. A timer alone stops if the loop is starved or the host suspends; an
+    // opportunistic check alone never fires on an idle plane that must sign after a long quiet
+    // period. Expiry now requires both to fail at once.
+    const rotating = new RotatingSigner((seq, now) => {
+      const kp = newArtifactSigner();
+      const keyId = seq === 0
+        ? `mgr-sessions-${identity.id.slice(0, 12)}`
+        : `mgr-sessions-${identity.id.slice(0, 12)}-g${seq}`;
+      return {
+        keyId,
+        keyPair: kp,
+        anchor: generationAnchor({
+          keyId, publicKey: kp.publicKey, owner: MANAGER_ENDPOINT, roles: ["sessions"],
+          scope: { sessions: [MANAGER_ENDPOINT] }, now, ttlMs: SESSION_GRANT_MAX_TTL_MS,
+        }),
+      };
+    }, Date.now());
+    const keyId = rotating.current().keyId;
     this.sessionPlane = new ManagerSessionPlane({
       space: this.space,
       // The session's serving identity is the persisted REGISTRATION instanceId (item 3), not the
@@ -4914,12 +4940,32 @@ export class Manager {
       // an ADVANCED epoch, so a client re-attaches by the same instance while the epoch fences the
       // old incarnation's sessions (item 6's restart-refusal composed with item 3's addressing).
       serving: { instanceId: this.managerInstanceId, epoch: serveEpoch },
-      signer: { keyId, keyPair: signer }, resolveAnchor: (id) => (id === keyId ? anchor : undefined),
+      // Read through the rotator on EVERY use rather than capturing a key: signing takes the newest
+      // generation, and resolution accepts any generation still inside its overlap so an artifact
+      // signed a moment before a swap is not orphaned a moment after it.
+      signer: {
+        get keyId() { rotating.maybeRenew(Date.now()); return rotating.current().keyId; },
+        keyPair: { sign: (input: Uint8Array) => rotating.current().keyPair.sign(input) },
+      },
+      resolveAnchor: (id) => rotating.resolve(id),
       ledgerKv, ttlMs: SESSION_GRANT_MAX_TTL_MS,
       servingCredential: this.sessionServingCredentials(),
       ...(this.maxSessions !== undefined ? { maxSessions: this.maxSessions } : {}),
     });
     this.sessionLedgerConn = sw;
+    // The belt to the signing path's braces: renew on a timer as well, so a plane that sits idle
+    // for longer than a window still holds a live key when work finally arrives. Checked well
+    // inside the renewal margin, unref'd so it never holds the process open.
+    const renewTimer = setInterval(() => {
+      const rotated = rotating.maybeRenew(Date.now());
+      if (rotated)
+        console.error(
+          `manager session signing key rotated to ${rotated} (previous generations stay verifiable ` +
+            `through their overlap; a key is never allowed to expire unattended)`,
+        );
+    }, 15 * 60 * 1000);
+    renewTimer.unref?.();
+    this.sessionKeyRenewTimer = renewTimer;
     console.error(`manager session plane standing (endpoint ${MANAGER_ENDPOINT}, epoch ${serveEpoch}, ${this.auth ? "scoped session-ledger cred, §13.1 family-staged" : "open/bare"})`);
   }
 
