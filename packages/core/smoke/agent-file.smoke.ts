@@ -4,9 +4,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadAgentFile, saveAgentFile, type AgentDef } from "../src/agent-file.js";
 
+// Every cell runs and the suite reports at the end. Throwing on the first failure stopped the run
+// before the summary line, which reads as "stopped early" rather than "this cell is red" — the
+// mutation proof cannot tell a named failure from a crash, and the cells after the first are never
+// exercised at all, so one mutation could only ever be graded against one assertion.
 let pass = 0;
+let fail = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
-  if (!cond) throw new Error(`FAIL: ${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
+  if (!cond) {
+    fail++;
+    console.log(`  ✗ FAIL: ${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
+    return;
+  }
   pass++;
   console.log(`  ✓ ${name}`);
 };
@@ -116,4 +125,5 @@ throws("launchOptions as sequence throws", "---\nname: x\nlaunchOptions:\n  - a\
 throws("renamed field 'channels' still fails loud", "---\nname: x\nchannels: [general]\n---\n");
 throws("malformed YAML fails loud", "---\nname: x\n  bad: : indent\n\t- weird\n---\n");
 
-console.log(`\nagent-file yaml smoke: ${pass} checks passed`);
+console.log(`\nagent-file yaml smoke: ${pass} passed, ${fail} failed`);
+process.exit(fail === 0 ? 0 : 1);
