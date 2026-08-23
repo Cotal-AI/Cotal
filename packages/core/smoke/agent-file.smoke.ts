@@ -184,5 +184,18 @@ let emptyOk = true;
 try { saveAgentFile(join(dir, "declared-none.md"), { name: "declarednone", persona: "x", subscribe: [] }); } catch { emptyOk = false; }
 ok("declaring an empty read set is accepted", emptyOk);
 
+// 8) An unmodelled frontmatter key survives a round trip. Callers record provenance this way (the
+//    manager marks a persona it created with no read set, because that path cannot offer its caller
+//    the choice), and nothing in those callers can tell whether the key still survives: they hand it
+//    to the writer and never see it again. If the meta sweep were ever narrowed to an allowlist,
+//    every such record would vanish silently and the file would go back to being ambiguous with no
+//    test anywhere going red. This is that test.
+const provenance = join(dir, "provenance.md");
+saveAgentFile(provenance, { name: "prov", persona: "x", subscribe: [], meta: { scope_source: "wire-default" } });
+const provBack = loadAgentFile(provenance);
+ok("an unmodelled key survives a save and reload", provBack.meta?.scope_source === "wire-default", provBack.meta);
+saveAgentFile(provenance, provBack);
+ok("and survives a second cycle, so a redefine cannot erode it", loadAgentFile(provenance).meta?.scope_source === "wire-default");
+
 console.log(`\nagent-file yaml smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

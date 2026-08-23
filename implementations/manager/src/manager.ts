@@ -5692,6 +5692,10 @@ export class Manager {
       // if an operator has since given it a real read set, the marker is a stale claim about a state
       // that no longer holds, and a marker that outlives its condition is worse than none: it tells
       // a census the scope was never chosen when someone chose it.
+      //
+      // The condition is the READ SET specifically, not any channel field. `allowSubscribe` alone is
+      // a ceiling on what the agent may read, not the set it reads, so a persona given only that
+      // still reads nothing and the marker still describes it correctly.
       if (def.meta?.scope_source === "wire-default" && def.subscribe?.length) {
         const { scope_source: _dropped, ...rest } = def.meta;
         def.meta = Object.keys(rest).length ? rest : undefined;
