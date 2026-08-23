@@ -198,7 +198,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   // Gate 1 (user-mode agent launch): the machine-facing bearer refresh a spawned agent execs.
   "agent-bearer": {
-    flags: ["actor:string", "dir:string", "health-file:string", "owner:string", "space:string", "token-file:string"],
+    flags: ["actor:string", "dir:string", "exchange-url:string", "health-file:string", "owner:string", "space:string", "token-file:string"],
     positionals: false,
   },
 };
