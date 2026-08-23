@@ -477,4 +477,4 @@ smoke:anchor-renewal
 # Each side's own tests built the shape that side expected, so nothing ever fed the server's actual
 # response to the consumer. This suite is that crossing: live daemon, fetch over the wire, raw bytes
 # into the shipped consumer.
-smoke:discovery-bundle-consumable
+smoke:discovery-bundle-consumable:live
