@@ -170,6 +170,13 @@ smoke:spawn-args
 smoke:own-agent-control
 smoke:views
 smoke:agent-file
+
+# Every persona this repo SHIPS declares the channels it reads, and the set of code paths that write
+# into the persona catalog is enumerated by output path rather than by function name. The writer
+# refuses a definition with no read set, but setup writes its personas as literal template strings
+# and never reaches it, so a template that forgot the field would ship an agent whose read set is
+# whatever the current default happens to be.
+smoke:persona-templates
 smoke:card-host
 smoke:attach-auth
 smoke:attach-host-persistence

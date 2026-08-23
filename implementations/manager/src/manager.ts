@@ -5688,10 +5688,35 @@ export class Manager {
       // PATCH content: overwrite model only when provided, so a persona-only redefine can't wipe an existing model.
       if (model !== undefined) def.model = model;
       def.persona = persona;
+      // A redefine cannot change scope, so a file that still has no channels keeps its marker. But
+      // if an operator has since given it a real read set, the marker is a stale claim about a state
+      // that no longer holds, and a marker that outlives its condition is worse than none: it tells
+      // a census the scope was never chosen when someone chose it.
+      //
+      // The condition is the READ SET specifically, not any channel field. `allowSubscribe` alone is
+      // a ceiling on what the agent may read, not the set it reads, so a persona given only that
+      // still reads nothing and the marker still describes it correctly.
+      if (def.meta?.scope_source === "wire-default" && def.subscribe?.length) {
+        const { scope_source: _dropped, ...rest } = def.meta;
+        def.meta = Object.keys(rest).length ? rest : undefined;
+      }
     } else {
       // Fresh name: create with content + owner = caller. The privileged tier suffices (creating a
       // brand-new persona isn't admin-only); the creator becomes its owner.
-      def = { name, model, persona, owner: caller };
+      //
+      // The read set is EMPTY, and that is a policy decision made here rather than a field left
+      // blank. A peer cannot name its own channels through this path by design (see CONTENT vs
+      // POLICY above): letting it would make defining a persona a way to grant reads. So the only
+      // safe scope for a peer-created persona is none, and an operator widens it afterwards. It is
+      // written explicitly so the file states it, instead of being an omission a later default
+      // could reinterpret.
+      //
+      // `scope_source` records WHY it is empty. Everywhere else an empty read set means the author
+      // chose none; here the author was never offered the choice, and the two are indistinguishable
+      // in the file without this. A reader counting deliberate empties would otherwise credit this
+      // path with an intent nobody expressed. An operator setting a real read set should drop the
+      // marker, and `cotal personas edit` re-validates on save.
+      def = { name, model, persona, owner: caller, subscribe: [], meta: { scope_source: "wire-default" } };
     }
     try {
       saveAgentFile(path, def);
