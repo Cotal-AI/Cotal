@@ -453,3 +453,5 @@ smoke:jcode-session-resume
 # three appeared in the roster, the spawn confirmation, or the manager exit line. RuntimeInfo already
 # carried provider and routes in the response the model check reads; they were discarded.
 smoke:jcode-route-identity
+
+smoke:orientation

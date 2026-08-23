@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 import { z } from "zod";
 import { isConcreteChannel, channelInAllow, AmbiguousPeerError, isPermissionDenied, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
-import { FEEDBACK_URL, PUBLIC_FEEDBACK_URL, type AgentConfig } from "./config.js";
+import { FEEDBACK_URL, PUBLIC_FEEDBACK_URL, isAuthed, type AgentConfig } from "./config.js";
 import { buildOrientation, renderOrientation, type OrientationTool } from "./orientation.js";
 import { runDocs } from "./docs.js";
 
@@ -499,12 +499,17 @@ export function channelMeta(i: InboxItem): Record<string, string> {
  *  hosting connector and is stamped onto outgoing feedback. */
 export function cotalToolSpecs(config: AgentConfig, source = "connector"): CotalToolSpec[] {
   // Manager-op tools (cotal_spawn / cotal_persona) ride the `spawn` capability — publish to the
-  // privileged control subject. The cred layer is the real boundary: in auth mode an agent without
-  // it is denied at the wire (nats-server); open mode mints no creds, so anyone may spawn. Mirror
-  // that here so the advertised surface is truthful — an agent only sees these when it can actually
-  // use them, instead of discovering the denial by trying. cotal_despawn stays (its no-name
-  // self-despawn is granted to all). controlFailure remains the backstop if a wire denial slips by.
-  const canSpawn = !config.creds || (config.capabilities?.includes("spawn") ?? false);
+  // privileged control subject. The AUTH layer is the real boundary: on an authed mesh an agent
+  // without the capability is denied at the wire (nats-server); open mode mints no identity, so
+  // anyone may spawn. Mirror that here so the advertised surface is truthful — an agent only sees
+  // these when it can actually use them, instead of discovering the denial by trying. cotal_despawn
+  // stays (its no-name self-despawn is granted to all). controlFailure remains the backstop if a
+  // wire denial slips by.
+  //
+  // Gate on AUTHENTICATED, not on "has static creds". A user-auth agent carries no static creds by
+  // construction, so `!config.creds` read every one of them as open mode and advertised both tools
+  // to every agent on a user-auth mesh — inverting the guarantee the paragraph above states.
+  const canSpawn = !isAuthed(config) || (config.capabilities?.includes("spawn") ?? false);
   const specs: CotalToolSpecDecl[] = [
     {
       name: "cotal_orientation",

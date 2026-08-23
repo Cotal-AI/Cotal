@@ -1,0 +1,62 @@
+{
+  "suite": "extensions/connector-core/smoke/orientation.smoke.ts",
+  "guard": "the advertised tool surface and the orientation card gate on AUTHENTICATED (static creds or user-mode auth), never on \"has static creds\", and open mode and token mode stay ungated",
+  "command": "pnpm smoke:orientation",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/orientation-identity-plane.json",
+  "_note": "No completionMarker on purpose. This suite is fail-fast (node:assert throws at the first red), so its only terminal line is a success banner, and a killed run by construction never reaches it. Declaring it graded all five genuine kills INCONCLUSIVE — the exact inversion mutation-proof.mjs documents at its marker check: a fail-fast suite with no line common to both outcomes should not declare one.",
+  "why": [
+    "The defect (#740) is one expression read in the wrong dimension, so the kills are split by the",
+    "direction each cell has to hold rather than by line. A1 restores the exact defect and must be",
+    "caught by the user-auth cell; A2 restores it at the second site, the orientation card's access",
+    "line, which nothing on the wire would correct.",
+    "",
+    "A3 and A4 are the regression guard, and they are the reason it exists. Gating open mode as well",
+    "is the natural way to get this wrong, so A3 removes the open-mode escape and must be caught by",
+    "the open-mode cell. A4 is the subtler half: counting a shared connection token as an identity",
+    "plane looks like completeness and is not, because a token connection carries no owner+actor",
+    "grant and no per-agent publish ACL, so the broker gates nothing per agent for it and hiding the",
+    "tools there is the same untruth pointing the other way.",
+    "",
+    "A5 keeps the fix from degrading into a blanket hide. It leaves static creds alone on purpose:",
+    "an unconditional hide is already caught by cell 1, which would grade a kill without saying",
+    "anything about the user-auth cells this change added. Breaking ONLY the user-auth branch is",
+    "what makes the kill a statement about 6b."
+  ],
+  "mutations": [
+    {
+      "name": "A1 the defect itself — gate on \"has static creds\" again, so a user-auth agent reads as open mode",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  const canSpawn = !isAuthed(config) || (config.capabilities?.includes(\"spawn\") ?? false);",
+      "replace": "  const canSpawn = !config.creds || (config.capabilities?.includes(\"spawn\") ?? false);",
+      "expectRed": "740:user-auth without the spawn capability must not be advertised cotal_spawn"
+    },
+    {
+      "name": "A2 the second site — the orientation card calls a broker-enforced user-auth mesh \"open mode\"",
+      "file": "extensions/connector-core/src/orientation.ts",
+      "find": "      authMode: isAuthed(config),",
+      "replace": "      authMode: !!config.creds,",
+      "expectRed": "740:a user-auth mesh is auth mode, not open mode, on the orientation card"
+    },
+    {
+      "name": "A3 THE REGRESSION — gate open mode too, by dropping the unauthenticated escape entirely",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  const canSpawn = !isAuthed(config) || (config.capabilities?.includes(\"spawn\") ?? false);",
+      "replace": "  const canSpawn = (config.capabilities?.includes(\"spawn\") ?? false);",
+      "expectRed": "740:open mode must still be advertised cotal_spawn with no capability"
+    },
+    {
+      "name": "A4 over-reach the other way — treat a shared connection token as an identity plane",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  const canSpawn = !isAuthed(config) || (config.capabilities?.includes(\"spawn\") ?? false);",
+      "replace": "  const canSpawn = !(isAuthed(config) || Boolean(config.token)) || (config.capabilities?.includes(\"spawn\") ?? false);",
+      "expectRed": "740:token mode is not an identity plane and must still be advertised cotal_spawn"
+    },
+    {
+      "name": "A5 a blanket hide on the user-auth plane — the capability stops granting anything there",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  const canSpawn = !isAuthed(config) || (config.capabilities?.includes(\"spawn\") ?? false);",
+      "replace": "  const canSpawn = !isAuthed(config) || (!config.userAuth && (config.capabilities?.includes(\"spawn\") ?? false));",
+      "expectRed": "740:user-auth with the spawn capability must still be advertised cotal_spawn"
+    }
+  ]
+}
