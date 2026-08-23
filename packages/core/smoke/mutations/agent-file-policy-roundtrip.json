@@ -39,13 +39,13 @@
   ],
   "mutations": [
     {
-      "name": "the read set reverts to emit-only-when-non-empty",
+      "name": "the writer turns a declared-empty read set back into inherited general",
       "file": "packages/core/src/agent-file.ts",
       "find": "  if (def.subscribe) fm.subscribe = def.subscribe;",
-      "replace": "  if (def.subscribe?.length) fm.subscribe = def.subscribe;",
+      "replace": "  if (def.subscribe) fm.subscribe = def.subscribe.length ? def.subscribe : [\"general\"];",
       "expectRed": "a empty subscribe survives a save",
       "cell": "a empty subscribe survives a save",
-      "note": "The exact pre-fix condition. A declared-empty read set is dropped on save and reads back as undefined."
+      "note": "The writer must state the declared empty set now that omission is refused. Reintroducing the old inherited channel keeps the file well-formed and the run complete, but widens a deliberate no-channel policy to general; the empty round-trip cell names it."
     },
     {
       "name": "the post ACL reverts to emit-only-when-non-empty",
