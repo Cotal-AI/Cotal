@@ -1,0 +1,57 @@
+{
+  "suite": "packages/core/smoke/agent-file.smoke.ts",
+  "guard": "Saving an agent file preserves the three channel-policy fields exactly as set, an EMPTY list included, and a second save changes nothing.",
+  "command": "pnpm smoke:agent-file",
+  "completionMarker": "agent-file yaml smoke:",
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/agent-file-policy-roundtrip.json   # --config resolves against the repo root, never the cwd",
+  "why": [
+    "The writer emitted each policy field only when it was non-empty, so an explicit `subscribe: []`",
+    "did not survive a save: load-then-save returned a file with no `subscribe` key at all. Two",
+    "different declarations, 'this agent reads no channels' and 'this file never said', collapsed",
+    "into the second one, and the collapse happened silently on a path nobody thinks of as an edit.",
+    "",
+    "That path is the persona redefine, which loads the stored file and saves it back. So redefining",
+    "the content of an agent that had declined every channel also rewrote its stored channel policy,",
+    "and the next reader could no longer tell a deliberate empty read set from a field the author",
+    "forgot. The distinction is the whole input to any future default, so losing it is not cosmetic.",
+    "",
+    "The old suite could not catch this: every round-trip it exercised used NON-EMPTY lists, which the",
+    "length gate emits, so the writer looked faithful precisely because nothing ever handed it the",
+    "value it dropped. The first two mutations restore the old condition on the fields whose empty",
+    "state carries meaning; the empty cell names them.",
+    "",
+    "The third mutation guards the other direction. Emitting on 'is set' must not become emitting",
+    "always, or an unset field is written as an empty one and every persona silently grows three keys",
+    "that read as a deliberate empty declaration. That would destroy the same distinction from the",
+    "opposite side, so the unset cells refuse it."
+  ],
+  "mutations": [
+    {
+      "name": "the read set reverts to emit-only-when-non-empty",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "  if (def.subscribe) fm.subscribe = def.subscribe;",
+      "replace": "  if (def.subscribe?.length) fm.subscribe = def.subscribe;",
+      "expectRed": "a empty subscribe survives a save",
+      "cell": "a empty subscribe survives a save",
+      "note": "The exact pre-fix condition. A declared-empty read set is dropped on save and reads back as undefined."
+    },
+    {
+      "name": "the post ACL reverts to emit-only-when-non-empty",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "  if (def.allowPublish) fm.allowPublish = def.allowPublish;",
+      "replace": "  if (def.allowPublish?.length) fm.allowPublish = def.allowPublish;",
+      "expectRed": "a empty allowPublish survives a save",
+      "cell": "a empty allowPublish survives a save",
+      "note": "allowPublish is default-deny, so an explicit empty post ACL and an omitted one resolve alike today; the file must still record which one the author wrote."
+    },
+    {
+      "name": "the read set is emitted unconditionally, inventing a field the author never wrote",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "  if (def.subscribe) fm.subscribe = def.subscribe;",
+      "replace": "  fm.subscribe = def.subscribe ?? [];",
+      "expectRed": "an unset subscribe stays unset",
+      "cell": "an unset subscribe stays unset",
+      "note": "The overcorrection: every saved persona gains an empty read set that reads as a deliberate declaration. Same distinction lost, opposite direction."
+    }
+  ]
+}

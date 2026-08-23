@@ -1,5 +1,5 @@
 /** Round-trip + safety proof for the yaml-backed agent-file parser (launchOptions map support). */
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadAgentFile, saveAgentFile, type AgentDef } from "../src/agent-file.js";
@@ -54,7 +54,57 @@ const blk = loadAgentFile(join(dir, "blk.md"));
 ok("block-style list parses", JSON.stringify(blk.subscribe) === JSON.stringify(["general", "team"]), blk.subscribe);
 ok("block-style launchOptions map parses", JSON.stringify(blk.launchOptions) === JSON.stringify({ "model-args": "--fast", depth: 4 }), blk.launchOptions);
 
-// 3) Fail-loud cases.
+// 3) The channel-policy fields survive a save unchanged, EMPTY INCLUDED — an empty read set is a
+//    declaration ("no channels"), and a writer that drops it turns a persona that declined every
+//    channel into one that never named the field. `cotal_persona` redefine is load-then-save, so a
+//    dropped field is not cosmetic: it rewrites the stored policy of a live agent.
+const reread = (file: string, d: AgentDef): AgentDef => { saveAgentFile(file, d); return loadAgentFile(file); };
+for (const [label, value] of [
+  ["empty", [] as string[]],
+  ["one channel", ["ops"]],
+  ["several", ["general", "ops"]],
+] as const) {
+  const back = reread(join(dir, `policy-${label.replace(/ /g, "-")}.md`), {
+    name: "policy", subscribe: value, allowSubscribe: value, allowPublish: value,
+  });
+  ok(`a ${label} subscribe survives a save`, JSON.stringify(back.subscribe) === JSON.stringify(value), back.subscribe);
+  ok(`a ${label} allowSubscribe survives a save`, JSON.stringify(back.allowSubscribe) === JSON.stringify(value), back.allowSubscribe);
+  ok(`a ${label} allowPublish survives a save`, JSON.stringify(back.allowPublish) === JSON.stringify(value), back.allowPublish);
+}
+// An UNSET field stays unset: emitting on "is set" must not invent a field the author never wrote,
+// or every persona grows three keys and omitted stops being distinguishable from declared-empty.
+const bare = reread(join(dir, "policy-unset.md"), { name: "policy" });
+ok("an unset subscribe stays unset", bare.subscribe === undefined, bare.subscribe);
+ok("an unset allowSubscribe stays unset", bare.allowSubscribe === undefined, bare.allowSubscribe);
+ok("an unset allowPublish stays unset", bare.allowPublish === undefined, bare.allowPublish);
+
+// 4) Saving is idempotent from the second application. The FIRST save of a hand-written file may
+//    canonicalize key ORDER (the writer emits a fixed read order), so a mass redefine shows a
+//    reorder-only diff once per file; what must never happen is two saves disagreeing, which would
+//    make every redefine churn the tree forever and hide real edits in the noise.
+const hand = join(dir, "hand-ordered.md");
+writeFileSync(hand, [
+  "---",
+  "name: handy",
+  "model: opus",                 // deliberately BEFORE the policy fields, unlike the writer's order
+  "subscribe:",
+  "  - review.one",
+  "allowPublish:",
+  "  - review.one",
+  "---",
+  "body",
+].join("\n"));
+saveAgentFile(hand, loadAgentFile(hand));
+const once = readFileSync(hand, "utf8");
+saveAgentFile(hand, loadAgentFile(hand));
+const twice = readFileSync(hand, "utf8");
+ok("a second save changes nothing (fixpoint in one save)", once === twice, { once, twice });
+const handBack = loadAgentFile(hand);
+ok("canonicalizing key order preserves every value",
+  handBack.model === "opus" && JSON.stringify(handBack.subscribe) === JSON.stringify(["review.one"])
+  && JSON.stringify(handBack.allowPublish) === JSON.stringify(["review.one"]), handBack);
+
+// 5) Fail-loud cases.
 const throws = (name: string, body: string) => {
   writeFileSync(join(dir, "bad.md"), body);
   let threw = false;
