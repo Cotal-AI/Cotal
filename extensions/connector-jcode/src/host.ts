@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { JcodeClient, type ApiEvent } from "@1jehuang/jcode-sdk";
 import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
 import { mirrorJcodeCredentials, shortSocketHome } from "./private-state.js";
+import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
 import { bareModelId, describeRoute } from "./route-identity.js";
 import {
   MeshAgent,
@@ -330,7 +331,30 @@ export async function runJcodeHost(): Promise<void> {
       inheritLogins: false,
       env: { JCODE_DISABLE_CLAUDE_MCP: "1" },
     });
-    const session = await client.createSession(cwd);
+    // A restart must come back to the session it left. Calling createSession unconditionally forked
+    // a blank session and orphaned the real transcript, so a restarted seat reported for duty looking
+    // healthy while remembering nothing - and the TUI, spawned with --resume below, showed a human the
+    // very history the agent could not recall (#789). listSessions failing is not fatal: a seat that
+    // cannot enumerate still deserves to start, it just starts fresh and says so.
+    let prior: ResumeCandidate | undefined;
+    try {
+      prior = chooseSessionToResume(await client.listSessions(), cwd);
+    } catch (error) {
+      process.stderr.write(
+        `[cotal-jcode] could not list prior sessions, starting fresh: ${(error as Error).message}\n`,
+      );
+    }
+    let session;
+    if (prior) {
+      session = await client.attachSession(prior.session_id);
+      process.stderr.write(
+        `[cotal-jcode] resumed session ${prior.session_id} (${prior.transcript_bytes} bytes of transcript)\n`,
+      );
+    } else {
+      session = await client.createSession(cwd);
+      process.stderr.write(`[cotal-jcode] started a fresh session (no resumable prior session in this home)\n`);
+    }
+    const resumed = prior !== undefined;
     sessionId = session.session_id;
     agent.setContextId(sessionId);
     // A `provider/model` specifier was forwarded verbatim to an endpoint that wants a bare id, and
@@ -344,7 +368,11 @@ export async function runJcodeHost(): Promise<void> {
         );
     }
     if (config.model) await client.setModel(sessionId, config.model);
-    await client.sendMessage(sessionId, instructions(config, def?.persona || undefined), { noReply: true });
+    // On a resume the persona/instructions are already the first thing in this transcript. Re-sending
+    // them would replay the whole briefing on every restart and grow the context without adding to it.
+    if (!resumed) {
+      await client.sendMessage(sessionId, instructions(config, def?.persona || undefined), { noReply: true });
+    }
     // Jcode registers MCP tools asynchronously. A first workload turn before its tools appear is
     // a silent mesh failure: the seat looks online yet cannot answer peers. Prove the exact cotal
     // surface is callable first. The Harness API exposes no MCP-ready event, so an absent call is
