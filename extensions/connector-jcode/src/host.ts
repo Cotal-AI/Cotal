@@ -9,6 +9,7 @@ import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
 import { mirrorJcodeCredentials, shortSocketHome } from "./private-state.js";
 import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
 import { bareModelId, describeRoute } from "./route-identity.js";
+import { ERROR_RETRY_INITIAL_MS, nextRetryDelay, shouldRetry } from "./retry-policy.js";
 import {
   MeshAgent,
   ORIENTATION_BOOTSTRAP,
@@ -268,6 +269,39 @@ export async function runJcodeHost(): Promise<void> {
     }
   };
 
+  /** Retry pacing for a failed turn. A turn's batch is acked only on success, so a failure leaves
+   *  `pendingWake()` positive and the naive re-drive is instantaneous and unbounded. */
+  const ERROR_RETRY_INITIAL_MS = 1_000;
+  const ERROR_RETRY_MAX_MS = 60_000;
+  /** After this many consecutive failures the seat stops re-driving and stays visibly degraded,
+   *  rather than burning tokens forever against a provider that is not answering. */
+  const ERROR_RETRY_GIVE_UP = 8;
+  let errorRetryMs = ERROR_RETRY_INITIAL_MS;
+  let errorRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  let consecutiveFailures = 0;
+
+  /** Re-drive after a growing delay, at most one timer in flight, never while shutting down. */
+  const scheduleErrorRetry = (): void => {
+    if (stopping || errorRetryTimer) return;
+    if (consecutiveFailures >= ERROR_RETRY_GIVE_UP) {
+      process.stderr.write(
+        `[cotal-jcode] giving up after ${consecutiveFailures} consecutive failed turns - the batch stays ` +
+          `un-acked and will redeliver; the seat stays degraded until a new wake arrives\n`,
+      );
+      return;
+    }
+    if (agent.pendingWake() === 0 && !wakeQueued) return;
+    const delay = errorRetryMs;
+    errorRetryMs = Math.min(errorRetryMs * 2, ERROR_RETRY_MAX_MS);
+    errorRetryTimer = setTimeout(() => {
+      errorRetryTimer = undefined;
+      if (stopping || driving || turnActive) return;
+      if (agent.pendingWake() > 0 || wakeQueued) void drive();
+    }, delay);
+    // Never hold the process open on a pending retry.
+    errorRetryTimer.unref?.();
+  };
+
   const drive = async (override?: string): Promise<void> => {
     if (stopping || !initialized || driving || turnActive || !client || !sessionId) return;
     wakeQueued = false;
@@ -292,13 +326,34 @@ export async function runJcodeHost(): Promise<void> {
     try {
       await client.run(sessionId, parts.join("\n\n"), { autoApprove: true });
       if (ids.length) agent.drainInboxIds(ids);
+      // A turn that SUCCEEDS clears the backoff: the next failure starts from the short delay again
+      // rather than inheriting a penalty the seat has already recovered from.
+      errorRetryMs = ERROR_RETRY_INITIAL_MS;
+      consecutiveFailures = 0;
     } catch (error) {
-      process.stderr.write(`[cotal-jcode] turn failed: ${(error as Error).message}\n`);
+      consecutiveFailures++;
+      process.stderr.write(
+        `[cotal-jcode] turn failed (${consecutiveFailures} in a row): ${(error as Error).message}\n`,
+      );
     } finally {
       turnActive = false;
       driving = false;
-      void agent.setStatus("idle").catch(() => {});
-      if (agent.pendingWake() > 0 || wakeQueued) void drive();
+      // The ack lives inside the try, so a failed turn leaves its batch UN-acked and pendingWake()
+      // stays positive. Re-driving immediately therefore re-sends the same batch to the same
+      // provider with no delay and no limit - one deterministic failure became a hot loop that
+      // re-paid the full injection in tokens on every pass (#790, measured at 62 resends).
+      //
+      // The codex host already solved this with scheduleErrorRetry; this is the same shape.
+      if (consecutiveFailures > 0) {
+        // "waiting", not "idle": PresenceStatus has no degraded state, and idle is a lie here - the
+        // seat is not ready for work, it is holding an un-acked batch and pacing a retry. An idle
+        // label is exactly what made a hot-looping seat look healthy in the roster.
+        void agent.setStatus("waiting").catch(() => {});
+        scheduleErrorRetry();
+      } else {
+        void agent.setStatus("idle").catch(() => {});
+        if (agent.pendingWake() > 0 || wakeQueued) void drive();
+      }
     }
   };
 
