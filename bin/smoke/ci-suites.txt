@@ -470,3 +470,11 @@ smoke:orientation
 # Failing closed is correct (SPEC 13.10); never renewing is the defect. Rotate early, keep the old
 # key verifiable across an overlap, and never drop the newest.
 smoke:anchor-renewal
+
+# The auth-service serves the mesh discovery document that `cotal meshes add --from` registers from,
+# and it was emitted flat while the consumer required the canonical `userAuth` wrapper — so the real
+# served bytes were refused ("a provider name is required") and remote registration could not work.
+# Each side's own tests built the shape that side expected, so nothing ever fed the server's actual
+# response to the consumer. This suite is that crossing: live daemon, fetch over the wire, raw bytes
+# into the shipped consumer.
+smoke:discovery-bundle-consumable

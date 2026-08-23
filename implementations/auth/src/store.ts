@@ -44,6 +44,12 @@ import {
 
 const STORE_VER = 1;
 
+/** The registered auth-provider name, as it appears in a mesh registry entry's `userAuth.provider`
+ *  and in the generated discovery bundle. ONE constant, because those two must agree: the bundle is
+ *  the input `cotal meshes add --from` registers from, so a bundle naming a different provider than
+ *  the provider that serves it would register an entry nothing can resolve. */
+export const AUTH_PROVIDER_NAME = "cotal" as const;
+
 /** Canonical {@link SecretStore} keys of the four secret kinds — one builder per kind, mirroring
  *  today's `.cotal/auth/<space>/<file>` layout so the local filesystem composition is unchanged.
  *  A hosted adapter treats them as opaque ids (its own resolve adds tenant scope). The space

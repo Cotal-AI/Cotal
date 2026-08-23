@@ -85,6 +85,7 @@ import {
   ledgerAuthorizeGrant,
 } from "./ledger.js";
 import {
+  AUTH_PROVIDER_NAME,
   clearAuthServiceInfo,
   loadCalloutAuth,
   loadIssuer,
@@ -530,12 +531,27 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
     // the flags, the callout material — so it cannot drift from what this process enforces.
     // `endpoints.url` is finalized AFTER bind (the closure sees the mutation): with `--port 0`
     // the pre-bind port would advertise an address nothing listens on.
+    //
+    // SHAPE: `userAuth` is the canonical wrapper the rest of the tree speaks (the mesh registry,
+    // connect, launch material) and the one `cotal meshes add --from` requires — this document is
+    // that command's input, so it must parse there. It was originally emitted FLAT, which no
+    // consumer accepted: `checkUserBundle` refused the real served bytes with "a provider name is
+    // required", i.e. `--from <origin>` could not register against a live mesh at all. Each side
+    // had passed review because each side's tests built the shape that side expected; nothing fed
+    // the server's actual bytes to the consumer (bin/smoke/discovery-bundle-consumable now does).
+    //
+    // The flat keys are kept ALONGSIDE the wrapper, not replaced: they shipped in #786, and
+    // dropping a shipped field inside a minor would break any reader already parsing them. They
+    // are written from the SAME values as the wrapper (one source per fact), so the two views
+    // cannot disagree about what this daemon enforces.
+    const idpPins = { url: idp.url, issuer: idp.issuer, audience: idp.audience };
     const bundle: Record<string, unknown> = {
       space,
       server,
       tlsRequired: true,
-      idp: { url: idp.url, issuer: idp.issuer, audience: idp.audience },
+      idp: idpPins,
       endpoints: { url: "" },
+      userAuth: { provider: AUTH_PROVIDER_NAME, idp: idpPins, endpoints: { url: "" } },
       sentinelCreds: callout.sentinelCreds,
     };
     publicHttp = createServer(makePublicHandler(ctx, makePublicPolicy(trustedProxy), bundle));
@@ -546,7 +562,9 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
     const paddr = publicHttp.address();
     const boundPublic = typeof paddr === "object" && paddr ? paddr.port : publicPort;
     publicUrl = publicUrlFlag ?? `http://127.0.0.1:${boundPublic}`;
+    // Both views of the exchange endpoint are finalized from the one post-bind value.
     bundle.endpoints = { url: publicUrl };
+    bundle.userAuth = { provider: AUTH_PROVIDER_NAME, idp: idpPins, endpoints: { url: publicUrl } };
   }
 
   // All planes bound — NOW write the discovery file (its existence is the readiness signal).

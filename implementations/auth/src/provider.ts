@@ -20,6 +20,7 @@ import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, grantManagedActor, newActorToken, revokeManagedActor } from "./ledger.js";
 import { userAuthTrustFingerprint, validateRetainedManagedAgent } from "./continuity.js";
 import {
+  AUTH_PROVIDER_NAME,
   authCalloutKey,
   authIssuerKey,
   authOwnerSecretKey,
@@ -47,7 +48,7 @@ function pidAlive(pid: number): boolean {
 
 export const cotalAuthProvider: AuthProvider = {
   kind: "auth-provider",
-  name: "cotal",
+  name: AUTH_PROVIDER_NAME,
   async prepareServer(input: AuthPrepareInput): Promise<AuthPrepared> {
     const { space, store, dir, idpUrl } = input;
     // Fail BEFORE mutation: a degenerate space (`.`/`..`/empty) must be refused before the IdP
@@ -70,7 +71,7 @@ export const cotalAuthProvider: AuthProvider = {
     await saveServiceKeys(store, space, { dataAccount: { pub: input.account.pub, signingSeed: input.account.signingSeed } });
 
     const publicAuth: UserAuthInfo = assertUserAuthInfo({
-      provider: "cotal",
+      provider: AUTH_PROVIDER_NAME,
       idp: { url: idp.url, issuer: idp.issuer, audience: idp.audience },
     });
     return {
