@@ -69,10 +69,10 @@
       "name": "the redefine path is graded only through the writer, not through a real caller",
       "file": "packages/core/smoke/agent-file.smoke.ts",
       "find": "  saveAgentFile(file, d0);\n};\nredefine(live, \"Rewritten persona text.\");",
-      "replace": "  saveAgentFile(file, { ...d0, subscribe: d0.subscribe?.length ? d0.subscribe : undefined });\n};\nredefine(live, \"Rewritten persona text.\");",
+      "replace": "  saveAgentFile(file, { ...d0, subscribe: d0.subscribe?.length ? d0.subscribe : [\"general\"] });\n};\nredefine(live, \"Rewritten persona text.\");",
       "expectRed": "a redefine keeps the declared-empty read set",
       "cell": "a redefine keeps the declared-empty read set",
-      "note": "Plants the old behaviour INSIDE the replayed redefine sequence rather than in the writer, so the cell is shown to grade the caller's own path. Without this the redefine cells could pass for the writer's reasons alone."
+      "note": "Plants the pre-fix inherit INSIDE the replayed redefine rather than in the writer, so the cell is shown to grade the caller's path. It restores the old default rather than dropping the field, because dropping it now hits the writer's refusal and would crash the run instead of reddening this cell."
     },
     {
       "name": "the writer accepts a persona with no declared read set",
