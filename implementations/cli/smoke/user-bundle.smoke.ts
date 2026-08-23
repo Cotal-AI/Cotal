@@ -22,17 +22,17 @@ function cell(name: string, ok: boolean, detail?: string): void {
   console.error(`FAILED - ${name}${detail ? `\n    ${detail}` : ""}`);
 }
 
-const IDP = { url: "https://hack.example/api/auth", issuer: "https://hack.example", audience: "https://hack.example" };
+const IDP = { url: "https://hosted.example/api/auth", issuer: "https://hosted.example", audience: "https://hosted.example" };
 const SENTINEL = "-----BEGIN NATS USER JWT-----\nstub\n------END NATS USER JWT------\n";
 
 // The lifecycle exactly as runAuthService drives it: compose, bind, finalize.
 const bundle = composeUserBundle({
-  space: "hack",
+  space: "hosted",
   server: "wss://broker.example.com:443/mesh-ws",
   idp: IDP,
   sentinelCreds: SENTINEL,
 });
-finalizeUserBundleEndpoint(bundle, "https://hack.example");
+finalizeUserBundleEndpoint(bundle, "https://hosted.example");
 
 const parsed = checkUserBundle(JSON.stringify(bundle));
 cell(
@@ -53,7 +53,7 @@ if (parsed.ok) {
   );
   cell(
     "the finalized public URL is the pinned exchange endpoint (userAuth.endpoints.url)",
-    b.userAuth.endpoints?.url === "https://hack.example",
+    b.userAuth.endpoints?.url === "https://hosted.example",
     `got ${JSON.stringify(b.userAuth.endpoints?.url)}`,
   );
   cell("the IdP pins ride through", b.userAuth.idp.url === IDP.url && b.userAuth.idp.issuer === IDP.issuer && b.userAuth.idp.audience === IDP.audience);
@@ -64,11 +64,11 @@ if (parsed.ok) {
 }
 
 // --advertised-server takes the same scheme family `cotal meshes add` dials.
-cell("advertised-server accepts wss", checkAdvertisedServer("wss://hack.example/mesh-ws") === undefined);
+cell("advertised-server accepts wss", checkAdvertisedServer("wss://hosted.example/mesh-ws") === undefined);
 cell("advertised-server accepts nats", checkAdvertisedServer("nats://10.0.0.7:4222") === undefined);
 cell(
   "advertised-server refuses a non-broker scheme",
-  (checkAdvertisedServer("https://hack.example") ?? "").includes("must be a broker URL"),
+  (checkAdvertisedServer("https://hosted.example") ?? "").includes("must be a broker URL"),
 );
 cell("advertised-server refuses a non-URL", (checkAdvertisedServer("not a url") ?? "").includes("is not a URL"));
 
@@ -84,8 +84,8 @@ cell("checkServer still refuses a path on nats://", !checkServer("nats://10.0.0.
 // dependency on auth — this cell is the only thing keeping the two derivations identical.
 cell(
   "the issuer registration pins equals the issuer the daemon's /health reports",
-  userExchangeIssuer("hack") === spaceIssuer("hack"),
-  `cli derives ${JSON.stringify(userExchangeIssuer("hack"))}, auth derives ${JSON.stringify(spaceIssuer("hack"))}`,
+  userExchangeIssuer("hosted") === spaceIssuer("hosted"),
+  `cli derives ${JSON.stringify(userExchangeIssuer("hosted"))}, auth derives ${JSON.stringify(spaceIssuer("hosted"))}`,
 );
 
 const EXPECTED_CELLS = 14;
