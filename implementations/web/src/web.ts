@@ -647,7 +647,7 @@ export async function web(args: ParsedArgs): Promise<void> {
   // on every feed change (debounced; the client re-reads the snapshot). Best-effort — a space without the
   // feed (no delivery daemon, or provisioned before this feature) simply never emits, and the graph
   // degrades to traffic-only. The admin cred carries the read grant; agents never do.
-  let membershipWatch: { stop(): void } | undefined;
+  let membershipWatch: { stop(): Promise<void> } | undefined;
   const pushMembership = debounce(() => {
     // A swallowed rejection here left the graph showing its LAST GOOD snapshot indefinitely, which
     // is worse than the HTTP case: the display was not merely empty, it was stale and confident.
@@ -931,7 +931,7 @@ export async function web(args: ParsedArgs): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     clearInterval(ping);
-    membershipWatch?.stop();
+    await membershipWatch?.stop();
     for (const res of clients) res.end();
     httpServer.close();
     await ep.stop();

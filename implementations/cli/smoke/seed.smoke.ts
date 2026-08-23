@@ -18,7 +18,7 @@
  * Run: pnpm smoke:seed
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import { defaultAgentType } from "@cotal-ai/workspace";
@@ -93,11 +93,29 @@ check("path spec: a registry name is NOT a path (versioned)", !isPathSpec("conne
   const ever = readJson(join(sd, "authority.json")).everSeeded.slice().sort();
   check("auto-seed: authority records all seven first-party exts", ever.join(",") === "claude,codex,hermes,jcode,opencode,pi,web", ever);
 
-  // 2. idempotent no-op: stamp untouched on a second boot.
+  // The operator-global seed-store write must not be silent (#593): re-seeding `~/.config/cotal/seed/store`
+  // from a non-released checkout makes those bytes the machine-wide payload for the version key, so the
+  // reconcile announces each materialization with its path on the provenance channel (stderr).
+  const storeRoot = join(cfg, "cotal", "seed", "store");
+  // The EXACT destination, not merely the store root: a line naming the root, or a sibling under it,
+  // would satisfy a substring check while no longer naming the directory that was actually written.
+  const generation = readJson(join(sd, "stamp.json")).generation;
+  const openCodePayload = join(storeRoot, generation, "opencode");
+  check("provenance: the machine-wide seed-store write is announced with its path (not silent)",
+    first.stderr.includes("wrote operator-global seed store payload") && first.stderr.includes(storeRoot),
+    first.stderr);
+  check("provenance: the announced destination is the payload directory itself, not just the store root",
+    first.stderr.includes(`operator-global seed store payload (opencode): ${openCodePayload}`) && existsSync(join(openCodePayload, "package.json")),
+    first.stderr);
+
+  // 2. idempotent no-op: stamp untouched on a second boot, and NO seed-store write is announced, since
+  // the announce tracks a real materialization, not every boot (the fast path copies nothing).
   const m1 = statSync(join(sd, "stamp.json")).mtimeMs;
-  listNames(cfg);
+  const second = cotal(cfg, ["ext", "list"]);
   const m2 = statSync(join(sd, "stamp.json")).mtimeMs;
   check("idempotent: stamp untouched across boots (fast-path, no re-seed)", m1 === m2);
+  check("provenance: the idempotent no-op boot announces no seed-store write (announce tracks writes, not boots)",
+    !second.stderr.includes("seed store payload"), second.stderr);
 }
 
 // ── direct `supervise` (the agent supervisor) SEEDS on a fresh config — it is NOT a skipped daemon ─
@@ -297,8 +315,36 @@ check("path spec: a registry name is NOT a path (versioned)", !isPathSpec("conne
       writeJson(p2, a);
     }
   }
-  const names = listNames(cfg); // any auto command must notice the unaccounted built-in and seed it
+  // Drive it through `cotal` directly rather than listNames(), because this block is the one place a
+  // command reaches the stager with an INTACT payload already in the store: codex was stripped from
+  // the manifest and from disk but never from `store/<generation>/codex`, so the re-seed takes the
+  // stager's idempotent early return. That path copies nothing, so it must announce nothing, and the
+  // only way to see that is to read this command's stderr.
+  const reseed = cotal(cfg, ["ext", "list"]); // any auto command must notice the unaccounted built-in and seed it
+  const names = ["claude", "opencode", "codex", "hermes", "pi"].filter((n) => reseed.stdout.includes(`connector:${n}`));
   check("same-generation built-in add: auto reconcile seeds the missing built-in", names.includes("codex"), names);
+  check("provenance: a re-seed that reuses an intact payload announces no seed-store write",
+    !reseed.stderr.includes("seed store payload"), reseed.stderr);
+}
+
+// ── 8c. the store's DESTRUCTIVE step is announced too (#593) ─────────────────────────────────────
+{
+  const cfg = track(freshCfg());
+  listNames(cfg); // seed once, so a live generation exists beside the one we plant
+  const sd = seedDir(cfg);
+  const storeRoot = join(sd, "store");
+  // Plant an unreferenced older generation: no manifest entry installs from it, which is exactly the
+  // condition gcSeedStore removes on. It is a directory with a payload in it, not an empty shell, so
+  // the removal is a real recursive delete of operator-global bytes.
+  const stale = join(storeRoot, "0.0.1-stale", "opencode");
+  mkdirSync(stale, { recursive: true });
+  writeJson(join(stale, "package.json"), { name: "@cotal-ai/connector-opencode", version: "0.0.1-stale" });
+  const forced = cotal(cfg, ["ext", "seed", "--force"]);
+  check("gc: the unreferenced generation is actually removed", forced.status === 0 && !existsSync(join(storeRoot, "0.0.1-stale")), forced.stderr);
+  check("provenance: the machine-wide seed-store DELETE is announced with its path (not silent)",
+    forced.stderr.includes("removed operator-global seed store generation (0.0.1-stale)") &&
+      forced.stderr.includes(join(storeRoot, "0.0.1-stale")),
+    forced.stderr);
 }
 
 // ── 9. operator-pinned official entry not auto-refreshed on upgrade (source-aware) ───────────────

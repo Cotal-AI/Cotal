@@ -303,6 +303,7 @@ smoke:manager-deregister
 smoke:scatter-pinned-probe
 smoke:agui-close-run
 smoke:claude-events-arm
+smoke:claude-run-error
 smoke:events-grant
 smoke:spawn-foreground-events
 smoke:seat-input
@@ -343,6 +344,11 @@ smoke:agui-opencode-map
 smoke:agui-opencode-source
 smoke:opencode-events-arm
 smoke:opencode-events-reset
+smoke:opencode-run-error
+# Beside the swap rather than at the end, because it grades the other half of the same event: what
+# that session leaves on disk once the wire is settled. It spawns two processes of its own and holds
+# one drain past the swap bound on purpose, so it is the slower of the pair.
+smoke:opencode-events-release
 smoke:goal-follow
 smoke:required-arg-seam
 smoke:attach-stdin
@@ -410,5 +416,42 @@ smoke:history-flood
 
 # The delete route reads its request body under a hard cap so an unbounded client cannot balloon the process (#721).
 smoke:web-body-cap
+
+# The block that carries peer messages into a turn must name the order of operations, not just the
+# reply verbs (#782). Found by dogfooding a live jcode seat: told to write a file and confirm, it
+# sent the confirmation five seconds later with zero file tool calls and no file on disk, twice.
+# The old tail offered three ways to reply and never mentioned doing the work, at the exact moment
+# the model chooses its next action.
+smoke:injection-framing
+
+# The inbox overflow valve must not let channel volume silence directed mail (#791). pullOnly is
+# `!mentionsMe && historical` and mentionsMe comes from a forgeable payload field, so a peer that
+# stamped the victim's name on every flooded message made none of its traffic pull-only: eviction
+# fell through to the oldest entry, a waiting DM, and acked it unhandled. Plain ambient volume did
+# the same with no forgery. The suite shipped with #776 buffered 120 against MAX_INBOX 200, so it
+# never crossed this valve at all.
+smoke:inbox-overflow-directed
+
+# The optional remote-exchange face: a real auth-service with both listeners proves the public
+# four-route allowlist, capless credential proof, loopback negative control, immediate revocation,
+# public-only view refusal, Origin/body hardening, peer isolation and bearer refresh after expiry.
+smoke:remote-exchange:live
+
+# A remotely enrolled managed agent uses its already-issued actor token + sentinel to mint through
+# the pinned public exchange, then connects and publishes on the real broker with no local auth service.
+smoke:remote-agent-bearer:live
+
+# A restarted seat must resume the session it left, not silently start blank (#789). The host called
+# createSession unconditionally, so stop+respawn forked a new session and orphaned the transcript:
+# a live seat answered NO PRIOR CONTEXT about work in its own 112 KB journal, while the TUI, spawned
+# with --resume, showed a human the history the agent could not recall.
+smoke:jcode-session-resume
+
+# A seat must name the provider actually carrying its model, and refuse a provider-prefixed model id
+# at the boundary (#785). Measured: one route reported three identities - requested gemini-3.7-flash
+# under a cliproxy default, logged as prv:OpenRouter, died in a cursor_plugin_error - and none of the
+# three appeared in the roster, the spawn confirmation, or the manager exit line. RuntimeInfo already
+# carried provider and routes in the response the model check reads; they were discarded.
+smoke:jcode-route-identity
 
 smoke:orientation

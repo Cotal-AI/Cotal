@@ -32,6 +32,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     flags: [
       "channels:string", "detach:boolean", "dry-run:boolean", "file:string:f", "host:string",
       "idp:string", "open:boolean", "runtime:string", "server:string", "space:string",
+      // The optional PUBLIC remote-exchange face, threaded to the auth-service daemon.
+      "exchange-public-port:string", "exchange-public-url:string", "exchange-trusted-proxy:boolean",
       "restore:string", "restore-only:string", "accept-missing-source:boolean",
       // `--rotate-sys` (2026-08): the class-3 renewal, which rotates the system account and re-mints the
       // two $SYS creds, which nothing re-signs in place (issue #338).
@@ -49,7 +51,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // `--allow-unencrypted-overlay` (2026-08): registering an overlay address is refused unless the
   // operator accepts, explicitly, that it is protected only while the tunnel is up. A printed
   // warning was not a fence (stderr is unread by scripts, and it was not persisted).
-  meshes: { flags: ["allow-unencrypted-overlay:boolean", "force:boolean", "mode:string", "root:string", "server:string"], positionals: true },
+  // Remote registration (2026-08): `--tls` records enforced TLS intent (a tls:// --server implies
+  // it), and `--mode user` registers from supplied pinned trust via `--user-auth-file` or `--from`.
+  meshes: { flags: ["allow-unencrypted-overlay:boolean", "force:boolean", "from:string", "mode:string", "root:string", "server:string", "tls:boolean", "user-auth-file:string"], positionals: true },
   status: { flags: ["server:string", "space:string"], positionals: false },
   doctor: { flags: ["fix:boolean", "space:string"], positionals: true },
   use: { flags: [], positionals: true },
@@ -185,10 +189,16 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     ],
     positionals: true,
   },
-  "auth-service": { flags: ["port:string", "server:string", "space:string"], positionals: false },
+  "auth-service": {
+    flags: [
+      "exchange-public-port:string", "exchange-public-url:string", "exchange-trusted-proxy:boolean",
+      "port:string", "server:string", "space:string",
+    ],
+    positionals: false,
+  },
   // Gate 1 (user-mode agent launch): the machine-facing bearer refresh a spawned agent execs.
   "agent-bearer": {
-    flags: ["actor:string", "dir:string", "health-file:string", "owner:string", "space:string", "token-file:string"],
+    flags: ["actor:string", "dir:string", "exchange-url:string", "health-file:string", "owner:string", "space:string", "token-file:string"],
     positionals: false,
   },
 };

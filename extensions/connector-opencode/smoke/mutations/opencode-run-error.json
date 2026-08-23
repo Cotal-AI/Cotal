@@ -1,0 +1,57 @@
+{
+  "suite": "extensions/connector-opencode/smoke/agui-run-error.smoke.ts",
+  "guard": "a turn OpenCode killed is published as a run error carrying its reason, and a turn a person stopped is not",
+  "command": "pnpm smoke:opencode-run-error",
+  "completionMarker": "opencode-run-error smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-opencode/smoke/mutations/opencode-run-error.json",
+  "why": [
+    "CELLS NAMED BEFORE THE RUN, not chosen from the wreckage afterwards.",
+    "",
+    "O1 is the state this connector shipped in: `session.error` closed the run exactly as a finish",
+    "does, so an upstream API error and a completed turn were byte-identical on the wire. It is the",
+    "mutation that reproduces the defect, and the cell it must redden is the one that reproduced it.",
+    "",
+    "O2 is the OPPOSITE failure and it is here because it is the easy one to ship by accident. A",
+    "person pressing Stop reaches this handler through the same bus event as a provider outage; a",
+    "blanket \"session.error means the run failed\" passes every failure cell in the suite and still",
+    "publishes a user's own cancellation as an error. Without O2 the suite could not tell a mapping",
+    "from a blanket.",
+    "",
+    "O3 is the reason, and it matters separately from the type: a RUN_ERROR that names no code tells",
+    "a reader the turn failed and refuses to say how, which is most of the value of publishing it.",
+    "",
+    "NOT REGISTERED, and named rather than left as a hole: nothing mutates the ORDER of the flush and",
+    "the close. Reversing them is a real defect and the reset suite already grades it; here it would",
+    "be a second copy of someone else's cell, and a mutation whose kill belongs to another file reads",
+    "as coverage this suite does not have."
+  ],
+  "mutations": [
+    {
+      "name": "O1 a failed turn closes exactly as a finished one does, which is the state this connector shipped in",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "          eventHolder?.closeRun(Date.now(), interrupted ? undefined : runErrorOf(event.properties.error));",
+      "replace": "          eventHolder?.closeRun(Date.now());",
+      "expectRed": "fail:and that close is RUN_ERROR, not RUN_FINISHED",
+      "cell": "fail:and that close is RUN_ERROR, not RUN_FINISHED — THE DEFECT",
+      "note": "The pre-fix line, restored verbatim. An APIError turn is published as a run that ended, carrying no outcome, and a reader cannot tell it from a turn that succeeded."
+    },
+    {
+      "name": "O2 every session.error becomes a failure, so a person's own Stop is published as one",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "interrupted ? undefined : runErrorOf(event.properties.error)",
+      "replace": "runErrorOf(event.properties.error)",
+      "expectRed": "abort:and THAT close is RUN_FINISHED",
+      "cell": "abort:and THAT close is RUN_FINISHED — a Stop is not a failed turn, and a blanket mapping would fail here",
+      "note": "The plausible over-reach rather than a contrived one: the guard reads like a special case until you notice a user cancellation arrives on the same event."
+    },
+    {
+      "name": "O3 the failure loses OpenCode's own error name, so the wire says a turn failed and not how",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    const code = typeof e.name === \"string\" && e.name ? e.name : undefined;",
+      "replace": "    const code = undefined;",
+      "expectRed": "fail:the RUN_ERROR carries the harness's own message and error name as the code",
+      "cell": "fail:the RUN_ERROR carries the harness's own message and error name as the code",
+      "note": "The union's tag is the only thing that separates a provider auth failure from an upstream outage for a consumer. Dropping it leaves a type with no content."
+    }
+  ]
+}

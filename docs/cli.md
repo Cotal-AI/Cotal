@@ -126,7 +126,8 @@ current.
 
 ```bash
 cotal up [--detach] [--open] [--space <s>] [--server <url>] [--channels <path>] [--runtime <name>]
-cotal up --tls-cert <cert.pem> --tls-key <key.pem>   # serve TLS (both, or neither)
+cotal up --user-auth --idp <url> [--exchange-public-port <n> --exchange-public-url <https://…> [--exchange-trusted-proxy]]
+cotal up --tls-cert <cert.pem> --tls-key <key.pem>   # serve broker TLS (both, or neither)
 cotal up --restore <dir> [--restore-only registry] [--accept-missing-source]
 cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 ```
@@ -144,6 +145,9 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--open` | off (auth) | Unauthenticated dev mesh: no JWT, no ACLs |
 | `--user-auth` | off | Per-user auth: people `cotal login`; connects are authorized against the actor ledger |
 | `--idp <url>` | — | With `--user-auth`: the IdP auth base URL to pin on first enable |
+| `--exchange-public-port <n>` | none | With `--user-auth`: add the public exchange face on this loopback port, for an HTTPS reverse proxy to forward to |
+| `--exchange-public-url <https://…>` | none | With `--exchange-public-port`: advertise the reverse proxy's HTTPS URL in discovery |
+| `--exchange-trusted-proxy` | off | With `--exchange-public-port`: attribute public failure buckets to the last `X-Forwarded-For` hop. Enable only when the listener is reachable solely through a trusted proxy; otherwise the socket address is used |
 | `--detach` | off | Run in the background (stop with `cotal down`) |
 | `--tls-cert <path>` | — | PEM certificate to serve TLS with. Must be given together with `--tls-key`. The pair is validated **before** the broker starts — readability, private-key mode, that the two match, the validity window, and that the certificate covers the host clients will dial — because `nats-server` starts happily on an expired certificate and only the client then fails. The decision is recorded, so a later bare `cotal up` after a `cotal down` keeps serving TLS rather than silently reverting to cleartext |
 | `--tls-key <path>` | — | PEM private key for `--tls-cert`. Refused if group- or other-readable (tighten to `600`) |
@@ -159,9 +163,10 @@ stays fail-loud on collision. `--detach` also brings up the control plane (deliv
 mode, then the manager). The `-f` form is a [manifest deploy](#manifest-deploys); see
 [Run a mesh](run-a-mesh.md).
 
-`--user-auth --idp <url>` starts the space's auth service alongside the broker (the NATS
-auth callout plus the loopback token exchange); it is torn down with `cotal down`, and a
-re-run of `cotal up` heals a dead service on a running broker. `--user-auth` and `--open`
+`--user-auth --idp <url>` starts the space's auth service alongside the broker: the NATS
+auth callout plus its capability-gated local exchange, and optionally the closed public exchange
+face configured by the three `--exchange-*` flags above. The service is torn down with `cotal down`,
+and a re-run of `cotal up` heals a dead service on a running broker. `--user-auth` and `--open`
 contradict each other and are refused loudly; a running broker cannot change auth mode
 without a `cotal down` first. See [identity & auth](identity-and-auth.md).
 
@@ -409,7 +414,8 @@ restore only when its details prove manager commit and its exact recorded listen
 ```bash
 cotal meshes
 cotal meshes add                      # guided, on a terminal
-cotal meshes add <space> --server <url> [--root <dir>] [--mode auth|open] [--force]
+cotal meshes add <space> --server <url> [--root <dir>] [--mode auth|open|user] [--tls] [--force]
+cotal meshes add <space> --mode user (--user-auth-file <bundle.json> | --from <https url>)
 cotal meshes rm <space> [<space> …] [--force]
 cotal use <space>
 cotal status [--space <s>] [--server <url>]
@@ -431,11 +437,34 @@ a terminal - a script, an agent, CI - nothing prompts and the flag form's errors
 speak for: one running on another machine, a shared broker, a hosted space. `--root` is the folder
 whose `.cotal/auth` holds that mesh's credentials and whose `.cotal/agents` holds its personas
 (default: the project you run it in) — the registry stores that path, never a secret. `--mode`
-defaults to `auth` when the root holds the space's account record and to `open` otherwise; a
-user-auth space cannot be registered by hand, because its IdP pins are trust that only
-`cotal up --user-auth` establishes. The broker is probed before anything is recorded, so a wrong
-address, or credentials that mesh will not accept, fails here instead of at the first `spawn`;
-`--force` records without verifying (and replaces an existing record).
+defaults to `auth` when the root holds the space's account record and to `open` otherwise. The
+broker is probed before anything is recorded, so a wrong address, or credentials that mesh will
+not accept, fails here instead of at the first `spawn`; `--force` records without verifying (and
+replaces an existing record).
+
+A hostname or public address is registrable only when the connection will **require TLS**: pass
+`--tls`, or use a `tls://` URL — the scheme is recorded as enforced intent, so every later dial
+through the record demands the handshake (and `meshes add tls://…` against a plaintext broker is
+refused at registration). Without required TLS the fence is unchanged: loopback and
+private-overlay literals only, and RFC1918 addresses are refused in both modes — a cafe LAN is
+private, not yours.
+
+> **Not yet enabled:** registering a remote user-auth mesh currently refuses. Support arrives with
+> remote-exchange clients, which teach `cotal spawn` and `cotal console` to connect through a
+> mesh's pinned exchange and sentinel. Until then a user-auth space is usable where
+> `cotal up --user-auth` provisioned it. The form below is what will be enabled.
+
+A **user-auth** mesh registers from supplied pinned trust, never guessed: `--user-auth-file`
+takes the bundle exported where the mesh runs; `--from` asks before it dials the address at all,
+then fetches its `/.well-known/cotal-mesh` discovery document (HTTPS only), displays the pins, and
+asks again before adopting them. Neither fetch follows redirects: a 302 can move a pinned fetch
+onto plaintext or onto another host, so it is refused rather than followed, and the pinned
+exchange must itself be an `https://` URL — except for an exchange on this machine, where plain
+`http://` is accepted for a loopback *literal* (`127.0.0.1`, `::1`, any spelling of them) but not
+for `localhost`, which is a name rather than an address. Registration verifies that exchange answers `/health`
+and `/jwks` as the pinned issuer, and that the broker itself refuses a bare connect — the
+auth-required refusal is the pass. The sentinel credentials land in a 0600 file under the entry's root; the registry
+records only the path.
 
 `meshes rm` drops records — it never stops a mesh. For a mesh running on this machine `cotal down`
 is the right verb, and `rm` says so unless you pass `--force`. A record you added by hand is only
@@ -1238,13 +1267,16 @@ daemon comes up automatically with `cotal up --detach` in auth mode.
 
 ```bash
 cotal deliver --space <s> [--server <url>] [--creds <file>]
-cotal auth-service --space <s> --server <url> [--port <n>]
+cotal auth-service --space <s> --server <url> [--port <n>] [--exchange-public-port <n>] [--exchange-public-url <https://…>] [--exchange-trusted-proxy]
 cotal feedback-intake --keys <keys.json> [--port <n>] [--creds <file>]
 ```
 
-`auth-service` runs a user-auth space's identity plane (the NATS auth callout plus the
-loopback token exchange and JWKS); `cotal up --user-auth` starts and supervises it for you,
-so you run it directly only to recover one by hand.
+`auth-service` runs a user-auth space's identity plane: the NATS auth callout, the
+capability-gated local exchange and JWKS, and, when `--exchange-public-port` is set, the closed public
+exchange/discovery face forwarded by an HTTPS reverse proxy. `--exchange-public-url` is the proxy URL
+advertised to clients; `--exchange-trusted-proxy` opts into last-hop `X-Forwarded-For` attribution.
+`cotal up --user-auth` starts and supervises the service for you, so you run it directly only to
+recover one by hand.
 
 `deliver` runs the server-side Plane-3 delivery daemon: the durable backstop and membership/ACL
 authority. It is auth-mode-only and single-instance (`--shard`/`--shards` accept only `N=1`);
@@ -1258,5 +1290,9 @@ include `--host`/`--port`, `--store`, `--space`/`--channel`, `--max-bytes`, and 
 `cotal __complete <words…>` is the internal entry the shell-completion stubs call to emit candidates
 for the current command line; you never run it directly. `cotal agent-bearer` is machine-facing
 plumbing on user-auth meshes: spawned agents exec it to print a fresh short-lived bearer from their
-spawn-time secret; you never run it directly either. (`cotal start` is a removed tombstone: it
+spawn-time secret; you never run it directly either. Its local arm uses `--dir` to discover the
+capability-gated loopback service. A remotely enrolled, already-granted agent instead receives
+`--exchange-url <https://base>` in its launch argv: that arm sends `{owner, actor, actorToken}` to the
+pinned public exchange with no local capability, follows no redirects, and refuses every non-HTTPS
+URL because the actor token is the credential in the request body. (`cotal start` is a removed tombstone: it
 errors and points you to `cotal spawn --detach`.)

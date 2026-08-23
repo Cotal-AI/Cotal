@@ -116,7 +116,7 @@ the session. They are not operator knobs; listed so you recognize them in a proc
 |---|---|
 | `COTAL_ID` | Stable agent id chosen by the launcher (static meshes) |
 | `COTAL_LIFECYCLE_UID` | The incarnation's lifecycle UID, minted once per spawn; the session binds its lifecycle-keyed DM/delivery/history consumers by it (its credential pins the same names). Required for an authed launch (`COTAL_CREDS` or user-mode); config parsing fails loud without it. Open mode omits it (the endpoint self-mints per session) |
-| `COTAL_OWNER` / `COTAL_ACTOR` / `COTAL_SENTINEL_CREDS` / `COTAL_BEARER_CMD` | User-auth launch identity: the agent's principal, its sentinel creds path, and the exec-able bearer command; all four together, mutually exclusive with `COTAL_CREDS`. A launcher-spawned seat carries them in its launch material instead of its environment |
+| `COTAL_OWNER` / `COTAL_ACTOR` / `COTAL_SENTINEL_CREDS` / `COTAL_BEARER_CMD` | User-auth launch identity: the agent's principal, its sentinel creds path, and the exec-able bearer command; all four together, mutually exclusive with `COTAL_CREDS`. A launcher-spawned seat carries them in its launch material instead of its environment. A remote enrollment's bearer argv uses `agent-bearer --exchange-url <https://base>`; the token never falls back to a local service file |
 | `COTAL_LAUNCH_MATERIAL` | Path to this launch's private 0600 material file (see [Launch material](#launch-material) below). Carries the broker URL, the creds path, the auth token, the user-auth identity, and the control token. A PATH, never a secret |
 | `COTAL_CONTROL_SOCKET` | The session's local control endpoint path. The MCP server listens on it and the lifecycle hooks connect to it; the token that authenticates the first frame rides the launch material, not the environment |
 | `COTAL_BRIDGE_SOCKET` / `COTAL_TOOLS_FILE` / `COTAL_PARENT_PID` | Hermes sidecar plumbing (bridge socket, generated tool descriptors, launcher pid to watch) |
@@ -271,6 +271,17 @@ Distinct from `~/.cotal`. Location: `$XDG_CONFIG_HOME/cotal`, else `~/.config/co
 | `config.json` | Operator-level connector config (the base layer above) |
 | `extensions/` | `cotal ext` install prefix: its own npm root (`node_modules`) plus an `extensions.json` provider/command-display cache. Built-in connectors install here too, seeded on first run |
 | `seed/` | Built-in-connector seeding state: the `ever-seeded` authority (+ durable backup), the init witness, the version stamp, the crash cursor, and `store/<version>/<name>` (the stable payloads `ext add --install-links` reifies each seeded connector from) |
+
+Both `extensions/` and `seed/store/` are operator-global: shared by every space, project directory, and
+checkout on the machine, and moved only by `$XDG_CONFIG_HOME` (a fresh project dir isolates `.cotal/`,
+not these). Running `cotal up`, or any command that seeds, from a tree that is not a released install
+re-seeds `seed/store/<version>` with that tree's packages under the same version key, so every later
+mesh on the machine materializes those bytes while `cotal ext ls` still reports the published version.
+To keep the machine-wide store untouched when running from a non-released checkout, point
+`$XDG_CONFIG_HOME` at an isolated dir (on Windows, `%APPDATA%` relocates them). The reconcile names on
+stderr both the store payloads it writes and any old generation it removes, so a machine-wide re-seed
+or cleanup is visible when it happens. Those lines are provenance output: a run whose stderr is closed
+or redirected away keeps the write and loses the line.
 
 For how `cotal setup` populates the machine state and the plugin, and how the built-in connectors are
 seeded as removable extensions, see [setup internals](setup-internals.md).

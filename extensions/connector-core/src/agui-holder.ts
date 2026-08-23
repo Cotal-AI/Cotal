@@ -42,6 +42,13 @@ export class AguiEmitterHolder<T> {
    * emitter refuses.
    */
   private dead?: Error;
+  /**
+   * Terminal, and NOT a failure. Set by {@link close} when the owner releases this holder: it never
+   * starts, pumps or closes a run again, `failure` stays empty, and `onError` is not called. Kept
+   * apart from `dead` for exactly that reason: a release read as an error puts a line in the log
+   * that tells an operator the event plane broke when it was retired on purpose.
+   */
+  private shut = false;
   /** ALL mutation runs on this chain. Hook events arrive concurrently on the control socket, so
    *  without it two flushes could read the source at the same cursor. */
   private chain: Promise<void> = Promise.resolve();
@@ -76,6 +83,39 @@ export class AguiEmitterHolder<T> {
   get failure(): Error | undefined {
     return this.dead;
   }
+
+  /** True once {@link close} has run. Distinct from {@link failure}: released, not broken. */
+  get closed(): boolean {
+    return this.shut;
+  }
+
+  /**
+   * Release this holder: refuse every later adopt, flush and run-close, then await what is already
+   * queued.
+   *
+   * THE REFUSAL IS TAKEN SYNCHRONOUSLY, before anything is awaited, so a hook arriving while the
+   * settle is still outstanding is refused rather than racing it. Nothing is cancelled: work already
+   * on the chain runs to completion, so a caller that cannot wait unboundedly has to bound this
+   * itself, exactly as it bounds {@link settled}.
+   *
+   * WHAT IT DOES NOT RELEASE, because those lifetimes are not this object's to decide. The
+   * write-ahead log and the principal lock are created by the `startEmitter` its owner injected: the
+   * log outlives this holder whenever a later start could still recover from it, and the lock
+   * outlives it because a lock is per principal while a holder is per thread. A holder that removed
+   * either would be deciding a policy it cannot see. It closes the seam; the owner closes what the
+   * seam was holding open.
+   *
+   * AND IT REFUSES AT THE DOOR RATHER THAN AT THE WORK, which is the distinction that keeps it from
+   * quietly cancelling. The refusal is in {@link enqueue}, so a call arriving after close never gets
+   * onto the chain, while a flush already on it still reads its source and publishes. A refusal
+   * placed on the far side would have turned every abandoned drain into a silently dropped one, and
+   * an abandoned drain is uncancelled by design: its owner stopped waiting, it did not stop.
+   */
+  async close(): Promise<void> {
+    this.shut = true;
+    await this.chain;
+  }
+
 
   /** The path this holder bound to on first adopt, if it has adopted. */
   get path(): string | undefined {
@@ -119,12 +159,21 @@ export class AguiEmitterHolder<T> {
    * It deliberately does NOT start an emitter. A session that never adopted a transcript has nothing
    * open and nothing to close, and starting one here would reach the broker on the way OUT of a
    * turn that published nothing.
+   *
+   * **`error` CLOSES THE RUN WITH `RUN_ERROR` INSTEAD**, for a turn the connector knows FAILED. It
+   * is one parameter on the one close rather than a second method, because `RUN_ERROR` closes a run
+   * by itself and a run must never carry both terminals: one call builds one terminal, and the
+   * caller cannot ask for the other afterwards because the run is no longer open. This holder does
+   * not decide what counts as a failure — that is a claim about a harness, and it belongs at the
+   * connector's own mapping site where the harness's record is in hand.
    */
-  closeRun(timestamp: number): void {
+  closeRun(timestamp: number, error?: { message: string; code?: string }): void {
     this.enqueue(async () => {
       const emitter = this.emitter;
       if (this.dead || !emitter || emitter.stopped) return;
-      const runId = await emitter.closeRun({ timestamp });
+      const runId = await emitter.closeRun({ timestamp, ...(error ? { error } : {}) });
+      // Reported for EITHER terminal. The mapper's job here is to stop attributing records to a run
+      // the published stream has closed, and an error close closes it exactly as a finish does.
       if (runId !== null) this.onRunClosed?.(runId);
     });
   }
@@ -153,6 +202,11 @@ export class AguiEmitterHolder<T> {
     if (this.emitter) return this.emitter;
 
     if (this.boundPath === undefined) {
+      // A CLOSED HOLDER NEVER STARTS, even for work that was already queued when it closed. Starting
+      // reaches the broker and opens a write-ahead log for a holder its owner has already released,
+      // which is the opposite of releasing it. Pumping an emitter that is ALREADY running is a
+      // different act and is deliberately still allowed: see the note on `close`.
+      if (this.shut) return undefined;
       this.boundPath = path;
       try {
         // WHAT KEEPS THIS TO ONE EMITTER IS THE `boundPath` GATE ABOVE, AND ONLY IT. It is set on
@@ -205,6 +259,9 @@ export class AguiEmitterHolder<T> {
   }
 
   private enqueue(step: () => Promise<void>): void {
+    // THE ONE PLACE A CLOSED HOLDER REFUSES, so `adopt`, `flush` and `closeRun` cannot drift apart
+    // and a door added later is refused by being a door. It refuses ADMISSION only; see `close`.
+    if (this.shut) return;
     this.chain = this.chain.then(step).catch((e) => this.die(e as Error));
   }
 

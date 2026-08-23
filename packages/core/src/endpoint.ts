@@ -38,7 +38,9 @@ import {
   type ConsumerInfo,
   type JsMsg,
 } from "@nats-io/jetstream";
-import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
+import { type PushConsumer } from "@nats-io/jetstream";
+import { Kvm, type KV, type KvEntry, type KvWatchEntry } from "@nats-io/kv";
+import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 
 import type {
   AgentCard,
@@ -293,6 +295,19 @@ export function fitHistoryPage(items: CotalMessage[], budget: number): CotalMess
   return first === items.length ? [] : items.slice(first);
 }
 
+type MembershipFeedWatch = {
+  onChange: () => void;
+  iter?: { stop(): void };
+  consumer?: PushConsumer;
+  consumerStream?: string;
+  consumerName?: string;
+  stopped: boolean;
+  arm: Promise<void>;
+  stopPromise?: Promise<void>;
+  resolveStop?: () => void;
+  rejectStop?: (err: unknown) => void;
+};
+
 export class CotalEndpoint extends EventEmitter {
   readonly card: AgentCard;
   readonly space: string;
@@ -338,6 +353,9 @@ export class CotalEndpoint extends EventEmitter {
   private deliveryKv?: KV;
   private managerLeaseKv?: KV;
   private membershipFeedKv?: KV;
+  /** Caller-owned membership watches survive a connection rebuild as INTENT. Their iterators are
+   *  connection-scoped and are stopped/re-created around the epoch swap. */
+  private readonly membershipFeedWatches = new Set<MembershipFeedWatch>();
   /** The live `ctl.delivery` serve subscription (delivery daemon) — re-created on every (re)connect by
    *  {@link armDeliveryControl}; tracked so the stale one is dropped on reconnect. */
   private deliveryServeSub?: import("@nats-io/transport-node").Subscription;
@@ -967,6 +985,10 @@ export class CotalEndpoint extends EventEmitter {
       }, this.heartbeatMs);
     }
 
+    // Caller-owned membership watches are INTENT rather than one-connection iterators. Re-open them
+    // before reporting the endpoint connected, so a successful reconnect does not leave the graph stale.
+    await this.rearmMembershipWatches();
+
     // Re-arm Plane-3 (delivery-daemon-hosted fan-out + trusted reader + ctl.delivery) on every (re)connect — no-op unless this
     // endpoint hosts it. The first arm comes from startPlane3 (after start()); this re-binds the loops
     // a reconnect's clearConnectionScoped() tore down, so a broker blip doesn't silently kill the backstop.
@@ -1011,6 +1033,8 @@ export class CotalEndpoint extends EventEmitter {
     this.joinSeq.clear();
     this.channelConfigs.clear();
     this.channelDefaults = {};
+    for (const watch of this.membershipFeedWatches)
+      watch.arm = watch.arm.catch(() => {}).then(() => this.disarmMembershipWatch(watch));
   }
 
   /** If stop() ran during a rebuild's `await connectAndBind`, the just-bound connection +
@@ -1074,6 +1098,10 @@ export class CotalEndpoint extends EventEmitter {
     this.reconnecting = true;
     try {
       this.clearConnectionScoped();
+      // Manual reconnect still has a live old epoch: complete broker-consumer cleanup before drain.
+      // Terminal self-heal has an already-closed epoch: disarm retains stream/name for fresh cleanup.
+      if (oldNc && !oldNc.isClosed())
+        await Promise.all([...this.membershipFeedWatches].map((watch) => watch.arm));
       this.nc = undefined;
       this.js = undefined;
       this.jsm = undefined;
@@ -1084,6 +1112,7 @@ export class CotalEndpoint extends EventEmitter {
       // handle after a reconnect).
       this.membersKv = undefined;
       this.aclKv = undefined;
+      this.membershipFeedKv = undefined;
       this.deliveryKv = undefined;
       this.emit("connection", { connected: false }); // null window opened — not live until the rebind below
       try {
@@ -1164,6 +1193,24 @@ export class CotalEndpoint extends EventEmitter {
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     if (this.bearerTimer) clearTimeout(this.bearerTimer);
     if (this.credsTimer) clearTimeout(this.credsTimer);
+    for (const watch of this.membershipFeedWatches) {
+      watch.stopped = true;
+      watch.arm = watch.arm.catch(() => {}).then(async () => {
+        await this.disarmMembershipWatch(watch);
+        await this.deleteRetainedMembershipConsumer(watch);
+      });
+    }
+    // Permanent endpoint shutdown has no future epoch. Try strict cleanup on the current live epoch;
+    // if the broker is already gone, terminate local ownership rather than hanging shutdown forever.
+    await Promise.all([...this.membershipFeedWatches].map((watch) => watch.arm.catch((err) => {
+      if (this.nc && !this.nc.isClosed()) throw err;
+    })));
+    for (const watch of this.membershipFeedWatches) {
+      watch.resolveStop?.();
+      watch.resolveStop = undefined;
+      watch.rejectStop = undefined;
+    }
+    this.membershipFeedWatches.clear();
     for (const msgs of this.streamMsgs) {
       try {
         msgs.stop();
@@ -2086,16 +2133,152 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Watch the membership feed for changes (admin/observer): `onChange` fires on every KV entry,
-   *  including the initial replay — the caller debounces + re-reads {@link readMembership}. Returns a
-   *  stop handle. Best-effort: a feed the cred can't read (or absent) surfaces as an `error` event and
-   *  the dashboard keeps its last snapshot. */
-  async watchMembership(onChange: () => void): Promise<{ stop(): void }> {
+   *  including the initial replay — the caller debounces + re-reads {@link readMembership}. The async
+   *  stop handle resolves only after its ordered broker consumer is deleted. Best-effort: a feed the
+   *  cred can't read (or absent) surfaces as an `error` event and the dashboard keeps its last snapshot. */
+  async watchMembership(onChange: () => void): Promise<{ stop(): Promise<void> }> {
+    if (this.stopped) throw new Error("endpoint stopped - cannot watch membership");
+    const watch: MembershipFeedWatch = { onChange, stopped: false, arm: Promise.resolve() };
+    this.membershipFeedWatches.add(watch);
+    watch.arm = watch.arm.catch(() => {}).then(() => this.armMembershipWatch(watch));
+    try { await watch.arm; }
+    catch (err) {
+      watch.stopped = true;
+      this.membershipFeedWatches.delete(watch);
+      await this.disarmMembershipWatch(watch);
+      throw err;
+    }
+    return { stop: async () => {
+      if (watch.stopPromise) return watch.stopPromise;
+      watch.stopped = true;
+      watch.stopPromise = new Promise<void>((resolve, reject) => {
+        watch.resolveStop = resolve;
+        watch.rejectStop = reject;
+      });
+      watch.arm = watch.arm.catch(() => {}).then(async () => {
+        await this.disarmMembershipWatch(watch);
+        await this.deleteRetainedMembershipConsumer(watch);
+        if (watch.consumerStream || watch.consumerName) return;
+        this.finishMembershipWatchStop(watch);
+      }).catch((err) => {
+        // A real authorization/server failure remains loud. A terminal close is retained rather than
+        // rejected by the cleanup helpers, so its promise stays pending for fresh-epoch cleanup.
+        watch.rejectStop?.(err);
+      });
+      return watch.stopPromise;
+    } };
+  }
+
+  /** Bind one caller-owned membership-watch intent to the CURRENT connection. Arming is serialized
+   *  per intent, so a public watch call cannot race a reconnect rearm into two consumers. */
+  private async armMembershipWatch(watch: MembershipFeedWatch): Promise<void> {
+    if (watch.stopped) return;
     const kv = await this.membershipFeedRegistry();
-    const iter = await kv.watch();
-    void (async () => {
-      for await (const _ of iter) onChange();
-    })().catch((err) => this.emit("error", err as Error));
-    return { stop: () => iter.stop() };
+    await this.deleteRetainedMembershipConsumer(watch);
+    if (!(kv instanceof Bucket)) throw new Error("membership watch needs the @nats-io/kv Bucket implementation");
+    const cc = kv._buildCC(">", KvWatchInclude.LastValue, { headers_only: false });
+    const consumer = await kv.js.consumers.getPushConsumer(kv.stream, cc);
+    const info = await consumer.info(true);
+    // The broker resource exists now. Record its identity BEFORE consume() so a concurrent stop or
+    // connection close always leaves enough state for strict cleanup or fresh-epoch retry.
+    watch.consumer = consumer;
+    watch.consumerStream = info.stream_name;
+    watch.consumerName = info.name;
+    let pending = info.num_pending;
+    let iter: Awaited<ReturnType<PushConsumer["consume"]>>;
+    try { iter = await consumer.consume({ callback: (msg) => {
+      const isUpdate = pending === 0 || --pending === 0;
+      const entry: KvWatchEntry = kv.jmToWatchEntry(msg, isUpdate);
+      if (!watch.stopped && watch.consumer === consumer) watch.onChange();
+      void entry;
+    } }); }
+    catch (err) {
+      await this.disarmMembershipWatch(watch);
+      throw err;
+    }
+    watch.iter = iter;
+    if (watch.stopped) {
+      await this.disarmMembershipWatch(watch);
+      return;
+    }
+    iter.closed().then(() => {
+      if (!watch.stopped && watch.consumer === consumer) this.emit("error", new Error("membership watch closed"));
+    }).catch(() => {});
+  }
+
+  /** Delete identity retained across a failed/closed-epoch consumer object using the CURRENT connection. */
+  private async deleteRetainedMembershipConsumer(watch: MembershipFeedWatch): Promise<void> {
+    if (!watch.consumerStream || !watch.consumerName) return;
+    // A terminal close is not deletion success and not a public-stop failure. Keep the identity
+    // endpoint-owned; rearmMembershipWatches retries it through the next live JetStream manager.
+    if (!this.nc || this.nc.isClosed()) return;
+    const jsm = await jetstreamManager(this.nc);
+    if (await this.deleteMembershipConsumer(jsm, watch.consumerStream, watch.consumerName)) {
+      watch.consumerStream = undefined;
+      watch.consumerName = undefined;
+    }
+  }
+
+  private finishMembershipWatchStop(watch: MembershipFeedWatch): void {
+    if (!watch.stopped || watch.consumer || watch.iter || watch.consumerStream || watch.consumerName) return;
+    this.membershipFeedWatches.delete(watch);
+    watch.resolveStop?.();
+    watch.resolveStop = undefined;
+    watch.rejectStop = undefined;
+  }
+
+  /** Delete one membership-watch consumer, swallowing ONLY already-gone. */
+  private async deleteMembershipConsumer(jsm: JetStreamManager, stream: string, name: string): Promise<boolean> {
+    try { return await jsm.consumers.delete(stream, name); }
+    catch (err) {
+      if ((err as { code?: number }).code === 404 || /(consumer|stream) not found/i.test((err as Error).message)) return true;
+      throw err;
+    }
+  }
+
+  /** Stop the local iterator AND delete its ordered consumer. The admin/observer grant already holds
+   *  the bucket-scoped consumer-delete row, so a reconnect leaves no five-minute predecessor. */
+  private async disarmMembershipWatch(watch: MembershipFeedWatch): Promise<void> {
+    const iter = watch.iter;
+    const consumer = watch.consumer;
+    watch.iter = undefined;
+    watch.consumer = undefined;
+    try { iter?.stop(); } catch { /* already closed */ }
+    if (consumer) {
+      try {
+        const deleted = await consumer.delete();
+        if (deleted) { watch.consumerStream = undefined; watch.consumerName = undefined; }
+      } catch (err) {
+        if ((err as { code?: number }).code === 404 || /(consumer|stream) not found/i.test((err as Error).message)) {
+          watch.consumerStream = undefined;
+          watch.consumerName = undefined;
+        } else {
+          // A timeout is deferred only for an epoch that is actually closing/rebuilding; live timeouts stay loud.
+          const closedEpoch = (err as Error).name === "ClosedConnectionError" || /^closed connection$/i.test((err as Error).message);
+          const dyingEpochTimeout = /timeout/i.test((err as Error).message) && (this.reconnecting || !this.nc || this.nc.isClosed());
+          if (!closedEpoch && !dyingEpochTimeout) throw err;
+        }
+        // A terminal close leaves stream/name intact. The endpoint-owned stopped intent is retried
+        // through the fresh JetStream manager before its public stop promise may resolve.
+      }
+    }
+  }
+
+  /** Rebind every live membership-watch intent after a connection rebuild. */
+  private async rearmMembershipWatches(): Promise<void> {
+    await Promise.all([...this.membershipFeedWatches].map(async (watch) => {
+      // clearConnectionScoped already resets a rejected prior arm before scheduling disarm. At this
+      // point the queue is the completing cleanup promise; append fresh-epoch cleanup first.
+      watch.arm = watch.arm.catch(() => {}).then(async () => {
+        await this.disarmMembershipWatch(watch);
+        await this.deleteRetainedMembershipConsumer(watch);
+        if (!watch.stopped) await this.armMembershipWatch(watch);
+      });
+      try {
+        await watch.arm;
+        this.finishMembershipWatchStop(watch);
+      } catch (err) { this.emit("error", err as Error); }
+    }));
   }
 
   /** Fetch recent messages from a channel's JetStream backlog. */
