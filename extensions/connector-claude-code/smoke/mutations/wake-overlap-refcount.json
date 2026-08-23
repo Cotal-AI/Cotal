@@ -1,0 +1,33 @@
+{
+  "suite": "extensions/connector-claude-code/smoke/wake-path.smoke.ts",
+  "guard": "overlapping hook frames count ownership of the same surfaced ids so one delivery verdict cannot release another frame's protection",
+  "command": "pnpm --filter @cotal-ai/connector-claude-code... build && pnpm smoke:claude-wake",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/wake-overlap-refcount.json",
+  "why": [
+    "The old cell inferred a refcount property from later overflow eviction and JetStream redelivery timing. It failed nondeterministically on unrelated branches because the selected live-inbox batch could change during redelivery.",
+    "The replacement drives the MeshAgent hold/release state machine directly with a unique synthetic id. Existing boolean observability is sufficient: after two holds, the first release must leave the id protected and the second must release it.",
+    "W1 restores boolean-set behavior: the second frame no longer increments an existing hold. W2 makes the first verdict delete the hold regardless of the second frame. Both must red at the surviving-protection cell."
+  ],
+  "mutations": [
+    {
+      "name": "W1 a second overlapping frame does not increment the existing hold",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    for (const id of ids) this.inFlightIds.set(id, (this.inFlightIds.get(id) ?? 0) + 1);",
+      "replace": "    for (const id of ids) this.inFlightIds.set(id, 1);",
+      "expectRed": "one frame's verdict does not unprotect the overlapping id",
+      "cell": "one frame's verdict does not unprotect the overlapping id",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build",
+      "note": "Recreates the boolean hold that let one frame's verdict speak for another."
+    },
+    {
+      "name": "W2 the first frame verdict releases an id another frame still holds",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      if (held <= 1) this.inFlightIds.delete(id);\n      else this.inFlightIds.set(id, held - 1);",
+      "replace": "      this.inFlightIds.delete(id);",
+      "expectRed": "one frame's verdict does not unprotect the overlapping id",
+      "cell": "one frame's verdict does not unprotect the overlapping id",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build",
+      "note": "Recreates the premature release the counted hold prevents."
+    }
+  ]
+}
