@@ -38,6 +38,7 @@ import { connect } from "@nats-io/transport-node";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, standaloneConnectOpts, principalKey, DEV_OWNER,
+  loadAgentFile, saveAgentFile,
   epCall, epRequestSubject, epCallerReplyFilter, EpEnvelopeError,
   contractStoreContext, fetchContractClosure, contractRefToHex, compileContract,
   resolveService, invokeCommand,
@@ -300,9 +301,27 @@ try {
   {
     const rDef = await A.call("define-persona", { name: "eppersona", persona: "You are the ep persona.", model: "m9" });
     check("definePersona creates the persona (content-only write)", rDef.reply.ok === true && existsSync(join(workspaceRoot, ".cotal", "agents", "eppersona.md")), rDef.reply);
+    // The tool takes no scope argument by design, so a peer cannot name its own channels here. The
+    // persona is therefore created reading nothing, and records WHY: everywhere else an empty read
+    // set is a choice, and on this path the caller was never offered one. Without the marker a
+    // census cannot tell the two apart and credits this path with an intent nobody expressed.
+    const defined = loadAgentFile(join(workspaceRoot, ".cotal", "agents", "eppersona.md"));
+    check("a wire-defined persona reads no channels", JSON.stringify(defined.subscribe) === "[]", defined.subscribe);
+    check("and records that the caller could not choose", defined.meta?.scope_source === "wire-default", defined.meta);
+
     const rDefB = await B.call("define-persona", { name: "eppersona", persona: "takeover" });
     check("a FOREIGN redefine refuses (ownership preserved through the ep door)",
       rDefB.reply.ok === false && String(rDefB.reply.error?.message ?? "").includes("not authorized to redefine"), rDefB.reply);
+    // A marker that outlives its condition is worse than none. Once an operator gives the persona a
+    // real read set, the claim "scope was never chosen" is false, so a later redefine drops it.
+    const eppPath = join(workspaceRoot, ".cotal", "agents", "eppersona.md");
+    saveAgentFile(eppPath, { ...loadAgentFile(eppPath), subscribe: ["general"], allowSubscribe: ["general"] });
+    const rDefC = await A.call("define-persona", { name: "eppersona", persona: "widened by the operator, redefined after" });
+    const widened = loadAgentFile(eppPath);
+    check("a redefine drops the marker once the persona has a real read set",
+      rDefC.reply.ok === true && widened.meta?.scope_source === undefined, { meta: widened.meta, reply: rDefC.reply });
+    check("and leaves the operator's read set alone", JSON.stringify(widened.subscribe) === '["general"]', widened.subscribe);
+
     const rModels = await A.call("models", {});
     const catalogs = (rModels.reply.data as { catalogs: Array<{ agent: string; supported: boolean }> })?.catalogs;
     check("models answers the NORMALIZED catalog list (stub connector: supported=false)",
