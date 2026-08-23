@@ -1,5 +1,6 @@
 ---
 "@cotal-ai/auth": minor
+"@cotal-ai/connector-core": patch
 ---
 
 The generated mesh discovery document now carries the canonical `userAuth` wrapper, so it parses in the consumer `cotal meshes add --from` validates it with.
