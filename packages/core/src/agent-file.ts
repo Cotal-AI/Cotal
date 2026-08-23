@@ -237,9 +237,14 @@ export function saveAgentFile(path: string, def: AgentDef): void {
   if (def.kind) fm.kind = def.kind;
   if (def.description) fm.description = def.description;
   if (def.tags?.length) fm.tags = def.tags;
-  if (def.subscribe?.length) fm.subscribe = def.subscribe;
-  if (def.allowSubscribe?.length) fm.allowSubscribe = def.allowSubscribe;
-  if (def.allowPublish?.length) fm.allowPublish = def.allowPublish;
+  // The three channel-policy fields emit whenever they are SET, empty included: an empty list is a
+  // declaration ("no channels"), not an absent one, and the two are different states a reader and a
+  // future default can tell apart. Gating these on `.length` made a load-then-save silently rewrite
+  // an explicit `subscribe: []` into an omitted field, so a persona that declined every channel came
+  // back from a redefine indistinguishable from one that never named the field at all.
+  if (def.subscribe) fm.subscribe = def.subscribe;
+  if (def.allowSubscribe) fm.allowSubscribe = def.allowSubscribe;
+  if (def.allowPublish) fm.allowPublish = def.allowPublish;
   if (def.quiet?.length) fm.quiet = def.quiet;
   if (def.muted?.length) fm.muted = def.muted;
   if (def.model) fm.model = def.model;
