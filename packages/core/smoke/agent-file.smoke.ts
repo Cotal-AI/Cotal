@@ -113,7 +113,47 @@ ok("canonicalizing key order preserves every value",
   handBack.model === "opus" && JSON.stringify(handBack.subscribe) === JSON.stringify(["review.one"])
   && JSON.stringify(handBack.allowPublish) === JSON.stringify(["review.one"]), handBack);
 
-// 5) Fail-loud cases.
+// 5) The redefine path itself, not just the writer under it. The mutation table proves the suite
+//    depends on saveAgentFile; it cannot show a real caller reaches it. This replays what the
+//    manager does on `cotal_persona` against an existing name (load, patch content only, save) and
+//    asserts the channel policy comes through untouched — that sequence is the whole reason the
+//    dropped field mattered, since it edits prose and must not edit access.
+const live = join(dir, "live-agent.md");
+writeFileSync(live, [
+  "---",
+  "name: liveagent",
+  "subscribe: []",              // this agent deliberately reads NO channels
+  "allowSubscribe: []",
+  "allowPublish: []",
+  "model: opus",
+  "---",
+  "The original persona text.",
+].join("\n"));
+const redefine = (file: string, persona: string, model?: string) => {
+  const d0 = loadAgentFile(file);                 // manager.ts: load the stored file
+  if (model !== undefined) d0.model = model;      //   patch model only when provided
+  d0.persona = persona;                           //   overwrite content
+  saveAgentFile(file, d0);                        //   write it back
+};
+redefine(live, "Rewritten persona text.");
+const afterRedefine = loadAgentFile(live);
+ok("a redefine keeps the declared-empty read set", JSON.stringify(afterRedefine.subscribe) === JSON.stringify([]), afterRedefine.subscribe);
+ok("a redefine keeps the declared-empty read ACL", JSON.stringify(afterRedefine.allowSubscribe) === JSON.stringify([]), afterRedefine.allowSubscribe);
+ok("a redefine keeps the declared-empty post ACL", JSON.stringify(afterRedefine.allowPublish) === JSON.stringify([]), afterRedefine.allowPublish);
+ok("a redefine still rewrites the content it was asked to", afterRedefine.persona === "Rewritten persona text.", afterRedefine.persona);
+ok("a redefine without a model keeps the stored one", afterRedefine.model === "opus", afterRedefine.model);
+
+// A non-empty policy must survive the same path: the bug's mirror image is a redefine that widens
+// or narrows a real read set, which would be an access change made by a content edit.
+const live2 = join(dir, "live-agent-2.md");
+writeFileSync(live2, "---\nname: liveagent2\nsubscribe: [ops]\nallowPublish: [ops]\n---\nbefore\n");
+redefine(live2, "after", "sonnet");
+const after2 = loadAgentFile(live2);
+ok("a redefine keeps a non-empty read set exactly", JSON.stringify(after2.subscribe) === JSON.stringify(["ops"]), after2.subscribe);
+ok("a redefine keeps a non-empty post ACL exactly", JSON.stringify(after2.allowPublish) === JSON.stringify(["ops"]), after2.allowPublish);
+ok("a redefine applies an explicit model override", after2.model === "sonnet", after2.model);
+
+// 6) Fail-loud cases.
 const throws = (name: string, body: string) => {
   writeFileSync(join(dir, "bad.md"), body);
   let threw = false;
