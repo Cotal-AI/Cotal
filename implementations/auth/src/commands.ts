@@ -248,12 +248,12 @@ async function runActor(args: ParsedArgs): Promise<void> {
 async function runAgentBearer(args: ParsedArgs): Promise<void> {
   const v = args.values as {
     dir?: string; space?: string; owner?: string; actor?: string;
-    "token-file"?: string; "health-file"?: string;
+    "token-file"?: string; "health-file"?: string; "exchange-url"?: string;
   };
   const { dir, space, owner, actor } = v;
   const tokenFile = v["token-file"];
-  if (!dir || !space || !owner || !actor || !tokenFile)
-    throw new Error("usage: cotal agent-bearer --dir <state-dir> --space <s> --owner <u_…> --actor <a> --token-file <path> [--health-file <path>]");
+  if (!space || !owner || !actor || !tokenFile || (!dir && !v["exchange-url"]))
+    throw new Error("usage: cotal agent-bearer [--dir <state-dir> | --exchange-url <https://base>] --space <s> --owner <u_…> --actor <a> --token-file <path> [--health-file <path>]");
   // Every attempt's outcome lands in the manager-composed health file (core's AgentAuthHealth) —
   // the `ps` window into a detached agent's bearer life. Best-effort: health reporting must never
   // turn a successful exchange into a failure.
@@ -271,30 +271,58 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
     } catch (e) {
       throw new Error(`agent-bearer: can't read the actor token file at ${tokenFile} (${e instanceof Error ? e.message : String(e)}) - respawn this agent to re-provision it`);
     }
-    const info = loadAuthServiceInfo(dir);
-    // Proof required: only `alive` counts as running. The old two-state probe called EPERM dead, so
-    // a service running as ANOTHER USER produced "not running - restart it with `cotal up`" about a
-    // service that was up the whole time; the contract resolves EPERM to alive and fixes exactly
-    // that. `unknown` still refuses, because telling an operator to talk to an endpoint whose
-    // liveness cannot be established is worse than telling them to restart.
-    const svc = info === undefined ? "absent" : probeLiveness(info.pid);
-    if (svc === "unknown")
-      throw new Error(
-        `agent-bearer: the user-auth service for space "${space}" records pid ${info!.pid}, whose liveness cannot be determined - the kernel answered neither "running" nor "no such process" (a seccomp filter or LSM policy does this inside some sandboxes). Refusing rather than reporting it down: verify with \`ps -p ${info!.pid}\` before restarting anything.`,
-      );
-    if (svc !== "alive" || info === undefined)
-      throw new Error(`agent-bearer: the user-auth service for space "${space}" is not running - restart it with \`cotal up\``);
+    const remote = v["exchange-url"];
+    let exchangeUrl: string;
+    let headers: Record<string, string> = { "content-type": "application/json" };
+    if (remote) {
+      let u: URL;
+      try { u = new URL(remote); }
+      catch { throw new Error(`agent-bearer: --exchange-url is not a URL (got ${JSON.stringify(remote)})`); }
+      // No plain-http exception. A remote actorToken is the credential that proves this request;
+      // sending it over anything but HTTPS hands the spawn-time secret to the network. Requiring
+      // HTTPS unconditionally avoids the hostname-vs-address exception that has repeatedly been
+      // mistaken for a string-prefix question elsewhere.
+      if (u.protocol !== "https:")
+        throw new Error(`agent-bearer: --exchange-url must be https:// (got ${u.protocol}//) - the actor token is sent in the request body and must never cross plaintext`);
+      u.pathname = `${u.pathname.replace(/\/$/, "")}/exchange`;
+      u.search = "";
+      u.hash = "";
+      exchangeUrl = u.toString();
+    } else {
+      const info = loadAuthServiceInfo(dir!);
+      // Proof required: only `alive` counts as running. The old two-state probe called EPERM dead, so
+      // a service running as ANOTHER USER produced "not running - restart it with `cotal up`" about a
+      // service that was up the whole time; the contract resolves EPERM to alive and fixes exactly
+      // that. `unknown` still refuses, because telling an operator to talk to an endpoint whose
+      // liveness cannot be established is worse than telling them to restart.
+      const svc = info === undefined ? "absent" : probeLiveness(info.pid);
+      if (svc === "unknown")
+        throw new Error(
+          `agent-bearer: the user-auth service for space "${space}" records pid ${info!.pid}, whose liveness cannot be determined - the kernel answered neither "running" nor "no such process" (a seccomp filter or LSM policy does this inside some sandboxes). Refusing rather than reporting it down: verify with \`ps -p ${info!.pid}\` before restarting anything.`,
+        );
+      if (svc !== "alive" || info === undefined)
+        throw new Error(`agent-bearer: the user-auth service for space "${space}" is not running - restart it with \`cotal up\``);
+      exchangeUrl = `${info.url}/exchange`;
+      headers = { ...headers, authorization: `Bearer ${info.cap}` };
+    }
     let res: Response;
     try {
-      res = await fetch(`${info.url}/exchange`, {
+      res = await fetch(exchangeUrl, {
         method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${info.cap}` },
+        headers,
+        redirect: "manual",
         body: JSON.stringify({ owner, actor, actorToken }),
         signal: AbortSignal.timeout(15_000),
       });
     } catch (e) {
-      throw new Error(`agent-bearer: the user-auth service did not answer at ${info.url} (${e instanceof Error ? e.message : String(e)}) - restart it with \`cotal up\``);
+      throw new Error(
+        remote
+          ? `agent-bearer: the pinned exchange did not answer at ${exchangeUrl} (${e instanceof Error ? e.message : String(e)})`
+          : `agent-bearer: the user-auth service did not answer at ${exchangeUrl.replace(/\/exchange$/, "")} (${e instanceof Error ? e.message : String(e)}) - restart it with \`cotal up\``,
+      );
     }
+    if (res.status >= 300 && res.status < 400)
+      throw new Error(`agent-bearer: the pinned exchange answered ${res.status} with redirect Location ${JSON.stringify(res.headers.get("location") ?? "")} - redirects are refused so an HTTPS pin cannot walk the actor token onto plaintext or another host`);
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       throw new Error(`agent-bearer: exchange refused: ${body.error ?? `HTTP ${res.status}`}`);
@@ -351,9 +379,10 @@ const authCommands: Command[] = [
     name: "agent-bearer",
     group: "Manager",
     summary: "print one fresh agent bearer for a spawned user-mode agent (machine-facing; exec'd by agent endpoints)",
-    usage: "agent-bearer --dir <state-dir> --space <s> --owner <u_…> --actor <a> --token-file <path>",
+    usage: "agent-bearer [--dir <state-dir> | --exchange-url <https://base>] --space <s> --owner <u_…> --actor <a> --token-file <path>",
     flags: [
-      { name: "dir", type: "string", value: "<state-dir>", description: "the space's user-auth state dir" },
+      { name: "dir", type: "string", value: "<state-dir>", description: "local arm: the space's user-auth state dir" },
+      { name: "exchange-url", type: "string", value: "<https://base>", description: "remote arm: pinned public exchange base URL (HTTPS required; no local capability)" },
       { name: "space", type: "string", value: "<s>", description: "the space the bearer is scoped to" },
       { name: "owner", type: "string", value: "<u_…>", description: "the agent's owner token" },
       { name: "actor", type: "string", value: "<a>", description: "the agent's actor token" },

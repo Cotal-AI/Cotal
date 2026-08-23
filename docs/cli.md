@@ -1266,5 +1266,9 @@ include `--host`/`--port`, `--store`, `--space`/`--channel`, `--max-bytes`, and 
 `cotal __complete <words…>` is the internal entry the shell-completion stubs call to emit candidates
 for the current command line; you never run it directly. `cotal agent-bearer` is machine-facing
 plumbing on user-auth meshes: spawned agents exec it to print a fresh short-lived bearer from their
-spawn-time secret; you never run it directly either. (`cotal start` is a removed tombstone: it
+spawn-time secret; you never run it directly either. Its local arm uses `--dir` to discover the
+capability-gated loopback service. A remotely enrolled, already-granted agent instead receives
+`--exchange-url <https://base>` in its launch argv: that arm sends `{owner, actor, actorToken}` to the
+pinned public exchange with no local capability, follows no redirects, and refuses every non-HTTPS
+URL because the actor token is the credential in the request body. (`cotal start` is a removed tombstone: it
 errors and points you to `cotal spawn --detach`.)

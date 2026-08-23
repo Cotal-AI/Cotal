@@ -436,3 +436,7 @@ smoke:inbox-overflow-directed
 # four-route allowlist, capless credential proof, loopback negative control, immediate revocation,
 # public-only view refusal, Origin/body hardening, peer isolation and bearer refresh after expiry.
 smoke:remote-exchange:live
+
+# A remotely enrolled managed agent uses its already-issued actor token + sentinel to mint through
+# the pinned public exchange, then connects and publishes on the real broker with no local auth service.
+smoke:remote-agent-bearer:live
