@@ -272,7 +272,9 @@ const SEAMS: Seam[] = [
   // `packages/core/smoke/delivery-reconnect.smoke.ts`, which opens membership-rw probes and a
   // cleanup admin connection for the reconnect and terminal-shutdown lifecycle cells.
   // Every site states `tls`, so only the deliberate population census moved.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 101, untypecheckedSites: 74 },
+  // 101/74 -> 102/75: the remote-agent-bearer live smoke opens the already-enrolled managed
+  // actor with bearer+sentinel and an explicit plaintext-broker `tls: false` decision.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 102, untypecheckedSites: 75 },
 ];
 
 /**
