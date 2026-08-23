@@ -1,7 +1,7 @@
 import { statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { probeConnect, type SpaceAuth } from "@cotal-ai/core";
-import { classifyJoinTarget, type JoinTarget } from "../lib/join-target.js";
+import { mkSecretDir, probeConnect, writeSecretFileAtomic, type SpaceAuth } from "@cotal-ai/core";
+import { classifyJoinTarget, isLoopbackHost, type DialPolicy, type JoinTarget } from "../lib/join-target.js";
 import {
   authDir,
   findCotalRoot,
@@ -10,13 +10,16 @@ import {
   homeCotalDir,
   listSpaceAccounts,
   loadSpaceAuth,
+  assertUserAuthInfo,
   personaDir,
   preflightTarget,
   recordMesh,
   setCurrent,
+  userAuthStateDir,
   type MeshEntry,
   type MeshTarget,
   type PreflightFailure,
+  type UserAuthInfo,
 } from "@cotal-ai/workspace";
 
 /**
@@ -91,31 +94,39 @@ export function checkServer(raw: string): Check<string> {
  * Registering a mesh is how a machine joins a broker it does not run, and every later command then
  * dials that address with an agent credential in the CONNECT line. NATS sends the initial INFO in
  * plaintext and unauthenticated, so an on-path attacker forges one that does not set
- * `tls_required` and reads the credential; the client side is the only fence, and this build has
- * no client-TLS surface yet. So the address itself is the gate. See {@link classifyJoinTarget} for
- * the ranges and for why hostnames are refused even when they resolve somewhere permitted.
+ * `tls_required` and reads the credential; the client side is the only fence. The address class
+ * and the RECORDED TLS INTENT together are the gate: see {@link classifyJoinTarget} for the
+ * ranges, why hostnames need required TLS, and why RFC1918 is refused in both modes.
+ *
+ * `policy.tlsRequired` is the strictness this registration will record — sourced from `--tls` or
+ * a `tls://` scheme ({@link tlsIntent}) — and it is what the dial will ENFORCE, because the
+ * candidate target and the written record carry the same value and preflight requires the
+ * handshake off it.
  *
  * This is a SAFETY rule, not a liveness check, which is why it sits with {@link checkServer} above
  * the `--force` branch rather than inside it. `--force` exists to register a mesh that is *down*
  * right now; it must not double as permission to ship credentials across an untrusted network,
  * where there is nothing to verify later and no error to come back and fix.
  */
-export function checkDialPolicy(server: string, allowUnencryptedOverlay = false): Check<JoinTarget> {
+export function checkDialPolicy(server: string, policy: DialPolicy): Check<JoinTarget> {
   try {
-    // WHEN THE RECORD CAN CARRY TLS INTENT, THIS LINE CHANGES AND THIS COMMENT GOES.
-    // `tlsRequired` is a property of the connection this registration will produce, and no field
-    // records it yet; it arrives with the work that teaches the broker to serve TLS. Passing a
-    // hardcoded `false` is honest rather than lazy: today no dial can require TLS.
-    //
-    // What that means CONCRETELY: public addresses, ordinary private ranges and hostnames are
-    // refused outright. An overlay literal is refused TOO unless the operator passed the explicit
-    // opt-in, because a printed warning is not a fence — stderr is not read by scripts, and the
-    // warning was never persisted, so nothing repeated it at the dials that followed. With the
-    // opt-in it is permitted and returns a residual, which the caller both prints AND records as
-    // consent. When the TLS field exists this passes the record's real intent and the opt-in goes.
-    return good(classifyJoinTarget(server, { tlsRequired: false, allowUnencryptedOverlay }));
+    return good(classifyJoinTarget(server, policy));
   } catch (e) {
     return bad(`✗ ${(e as Error).message}`);
+  }
+}
+
+/** The TLS intent this registration records, from its two sources: the explicit `--tls` flag, or
+ *  a `tls://` scheme. The scheme is typed intent — and today nats.js connects PLAINTEXT to
+ *  `tls://host` with empty options, so honoring it here is what converts typed-but-unenforced
+ *  intent into enforcement: the record carries `tlsRequired: true`, and every dial resolved
+ *  through it requires the handshake rather than tolerating plaintext. */
+export function tlsIntent(server: string, tlsFlag: boolean): boolean {
+  if (tlsFlag) return true;
+  try {
+    return new URL(server).protocol === "tls:";
+  } catch {
+    return false; // checkServer refuses the malformed URL; this never decides anything for it
   }
 }
 
@@ -137,15 +148,16 @@ export function checkRoot(flag: string | undefined, cwd: string): Check<string> 
 }
 
 /** The recorded auth mode: what the operator said, or what `--root` proves. A root holding this
- *  space's account record means auth; anything else is an open broker. */
-export function checkMode(space: string, root: string, accounts: string[], flag: string | undefined): Check<MeshEntry["mode"]> {
+ *  space's account record means auth; anything else is an open broker. `--mode user` is permitted
+ *  IFF the pinned trust was SUPPLIED (`userTrustSupplied`) — the old blanket refusal reasoned
+ *  that IdP pins must be established, never guessed, and supplying them (a bundle exported where
+ *  the mesh runs, or a confirmed HTTPS discovery document) satisfies exactly that reasoning. */
+export function checkMode(space: string, root: string, accounts: string[], flag: string | undefined, userTrustSupplied = false): Check<MeshEntry["mode"]> {
   if (flag !== undefined && flag !== "auth" && flag !== "open" && flag !== "user")
-    return bad(`✗ --mode must be auth or open (got "${flag}")`);
-  // A user-auth mesh is registered by the login/exchange trust it was configured with — an issuer,
-  // an audience and an IdP URL pinned at `cotal up --user-auth`, not derivable from a broker URL.
-  // Guessing them would be inventing trust.
-  if (flag === "user")
-    return bad(`✗ --mode user cannot be registered by hand - a user-auth space carries pinned IdP trust (issuer, audience, login URL) that only \`cotal up --user-auth\` establishes, in the root where its broker runs`);
+    return bad(`✗ --mode must be auth, open or user (got "${flag}")`);
+  if (flag === "user" && !userTrustSupplied)
+    return bad(`✗ --mode user needs its pinned trust SUPPLIED, never guessed - a user-auth space carries IdP pins (issuer, audience, login URL) established where the mesh runs. Pass --user-auth-file <bundle.json> exported there, or --from <https://…/.well-known/cotal-mesh> to fetch, review and confirm them`);
+  if (flag === "user") return good("user");
   const mode = flag ?? (accounts.includes(space) ? "auth" : "open");
   if (mode === "auth" && !accounts.includes(space))
     return bad(`✗ --mode auth needs "${space}"'s trust material under ${authDir(root)}${accounts.length ? ` (it holds "${accounts.join('", "')}")` : " (it holds none)"} - copy the mesh's account + creds there, point --root at where they already are, or register it --mode open` + CA_COST);
@@ -181,44 +193,240 @@ export async function probeEnforcement(server: string): Promise<"auth" | "open" 
   return bare.reason === "auth-required" ? "auth" : "unreachable";
 }
 
-/** The claimed mode must match what the broker actually enforces, in both directions. */
+/** The claimed mode must match what the broker actually enforces, in both directions. The USER
+ *  arm reads the refusal as the evidence: a user-mode target has no probe credential by design,
+ *  so a credless probe against a user-auth broker reporting auth-required IS the pass — the one
+ *  fact a bare connect can prove about a broker whose admission runs through the callout. */
 export function checkEnforcement(mode: MeshEntry["mode"], enforces: "auth" | "open" | "unreachable", server: string, space: string, root: string): Check<void> {
   if (mode === "auth" && enforces === "open")
     return bad(`✗ the broker at ${server} accepts unauthenticated connections, so it cannot be registered as an auth mesh - it enforces no credentials; register it \`--mode open\`, or point --server at the authenticated broker for "${space}"`);
   if (mode === "open" && enforces === "auth")
     return bad(`✗ the broker at ${server} requires auth, so it cannot be registered as an open mesh - copy that mesh's account + creds under ${authDir(root)} and re-run with --mode auth` + CA_COST);
+  if (mode === "user" && enforces === "open")
+    return bad(`✗ the broker at ${server} accepts unauthenticated connections, so it cannot be registered as a user-auth mesh - user auth means the broker REFUSES a bare connect and admits only exchanged bearers; check that the bundle's server points at the user-auth broker for "${space}"`);
+  if (mode === "user" && enforces === "unreachable")
+    return bad(`✗ no broker answered at ${server} - a user-auth registration is verified by the broker's own auth-required refusal, so it cannot be recorded while the broker is unreachable`);
   return good(undefined);
+}
+
+// ---- the sequencing fence: the producer stays shut until its consumer exists ------------------
+
+/** The escape hatch for developing the consumer lane. NOT a user-facing feature and deliberately
+ *  undocumented: it exists so the remote-exchange client work can register a remote entry to
+ *  develop against, and it disappears with {@link checkRemoteConsumable}.
+ *
+ *  CONDITION ON THAT SILENCE, recorded here because it outlives any review thread: leaving this
+ *  undocumented is only defensible while it is TEMPORARY. If the fence is still here once the
+ *  consumer lane has landed — or if it otherwise outlives the release it was introduced in — then
+ *  this variable is no longer a dev hatch but an undocumented way to turn a refusal off, and it
+ *  must at that point be either documented or deleted. Do not let it become permanent and silent. */
+const REMOTE_DEV_ENV = "COTAL_REMOTE_REGISTRATION_DEV";
+
+/** Remote user-auth registration is REFUSED by default until the connect path can consume it.
+ *
+ *  The record this command writes is complete and validated, but no production connect reads it
+ *  yet: `implementations/auth/src/provider.ts` requires user-auth material provisioned on THIS
+ *  machine and refuses with "remote discovery is not supported yet". Registering anyway would
+ *  print `✓ registered` and could select a durable default mesh whose every later `spawn` or
+ *  `console` deterministically hits that refusal — a success result the operator cannot act on.
+ *
+ *  A refusal is the honest contract until the consumer lands: this fence is deleted by the
+ *  remote-exchange client work, in the same change that deletes the provider's refusal. */
+export function checkRemoteConsumable(): Check<void> {
+  if (process.env[REMOTE_DEV_ENV] === "1") return good(undefined);
+  return bad(
+    `✗ remote user-auth connect is not yet supported, so registering a remote user-auth mesh is refused - registration will be enabled with remote-exchange clients, which teach \`cotal spawn\`/\`console\` to use a mesh's pinned exchange and sentinel. Until then a recorded remote entry could not be connected to, and nothing was registered. A user-auth space is usable where \`cotal up --user-auth\` provisioned it`,
+  );
+}
+
+// ---- the user arm: supplied pinned trust ----------------------------------------------------
+
+/** What a remote user-auth registration supplies: the pins nothing on this machine could derive.
+ *  Exported where the mesh runs; carried by `--user-auth-file`, or served at the space's
+ *  `/.well-known/cotal-mesh` for `--from`. */
+export interface UserBundle {
+  space: string;
+  server: string;
+  tlsRequired: boolean;
+  userAuth: UserAuthInfo;
+  /** The sentinel creds blob. IN THE BUNDLE ONLY — registration lands it in a 0600 file under
+   *  the entry's root and records the PATH; the registry document never carries the blob. */
+  sentinelCreds: string;
+}
+
+/** Validate a user-auth bundle, fail-loud on every missing pin. The `userAuth` arm goes through
+ *  {@link assertUserAuthInfo} — the same boundary every provider blob crosses — and additionally
+ *  requires the pinned exchange URL: for a remote entry the endpoints are a trust position, not a
+ *  convenience, because no local `up` exists to re-derive them. */
+export function checkUserBundle(raw: string): Check<UserBundle> {
+  let doc: Partial<UserBundle> & { userAuth?: unknown };
+  try {
+    doc = JSON.parse(raw) as never;
+  } catch {
+    return bad("✗ the user-auth bundle is not JSON - export it where the mesh runs and pass the file unmodified");
+  }
+  if (doc === null || typeof doc !== "object") return bad("✗ the user-auth bundle must be a JSON object");
+  if (typeof doc.space !== "string" || !doc.space) return bad("✗ the user-auth bundle names no space");
+  if (typeof doc.server !== "string" || !doc.server) return bad("✗ the user-auth bundle names no broker server");
+  if (typeof doc.tlsRequired !== "boolean") return bad("✗ the user-auth bundle must state tlsRequired explicitly (true or false) - transport strictness is part of what the export pins");
+  let userAuth: UserAuthInfo;
+  try {
+    userAuth = assertUserAuthInfo(doc.userAuth);
+  } catch (e) {
+    return bad(`✗ user-auth bundle: ${(e as Error).message}`);
+  }
+  if (!userAuth.endpoints?.url)
+    return bad("✗ the user-auth bundle pins no exchange endpoint (userAuth.endpoints.url) - for a remote registration that URL is trust, and it must come from the export, never be guessed");
+  if (typeof doc.sentinelCreds !== "string" || !doc.sentinelCreds)
+    return bad("✗ the user-auth bundle carries no sentinelCreds - the sentinel identity is part of the export");
+  return good({ space: doc.space, server: doc.server, tlsRequired: doc.tlsRequired, userAuth, sentinelCreds: doc.sentinelCreds });
+}
+
+/** Budget for the exchange trust probe — same posture as the mode probe above: run once, at
+ *  registration, where patience is cheaper than a wrong record. */
+const EXCHANGE_PROBE_TIMEOUT_MS = 5_000;
+
+/**
+ * Fetch that CANNOT be walked off HTTPS.
+ *
+ * `fetch` follows redirects by default and will happily follow `https://` → `http://`, so a
+ * 302 from anyone on the path turns a pinned, encrypted fetch into a plaintext one — and the
+ * document being fetched IS the trust being adopted. `redirect: "manual"` stops the hop here;
+ * a redirect is then reported as the refusal it is, rather than silently followed.
+ *
+ * Loopback `http://` stays usable for tests and for an exchange on this machine (nothing leaves
+ * the box), which is also what keeps the suites honest without a TLS fixture. Everything else
+ * must be `https:`.
+ */
+export function assertPinnedFetchUrl(u: URL, what: string): string | undefined {
+  if (u.protocol === "https:") return undefined;
+  // The loopback exception is decided by PARSING the host as an address, never by how the text
+  // begins: `/^127\./` also matched `127.evil.com`, `127.0.0.1.nip.io` and `127.com`, which anyone
+  // can register, and it missed real spellings like `0177.0.0.1`. `isLoopbackHost` is the one
+  // authority for the question, canonicalization included. A name that does not parse as an IP is
+  // a NAME and gets no exception, however it starts — `localhost` included, since a hosts entry or
+  // a poisoned lookup can point it anywhere.
+  if (u.protocol === "http:" && isLoopbackHost(u.hostname)) return undefined;
+  // Name the ACTUAL rule. "must be https://" alone misleads the developer whose local flow used
+  // http://localhost: it blames the scheme, when the same scheme on 127.0.0.1 would have passed.
+  return (
+    `✗ ${what} must be https:// (got ${u.protocol}//) - the pins this registration adopts cannot be fetched over a channel the network can rewrite` +
+    (u.protocol === "http:"
+      ? `. Plain http is accepted only for a loopback LITERAL (127.0.0.1, ::1), where nothing leaves this machine - "${u.hostname}" is a name, and a hosts entry or a poisoned lookup could point it anywhere, so use the literal`
+      : "")
+  );
+}
+
+/** The pinned-fetch policy's verdict for ONE url, as data — so a suite can assert WHY a fetch was
+ *  refused rather than only that something failed. A cert error, a timeout and a refused redirect
+ *  are all "it did not work"; only this distinguishes them. Test seam, no production caller. */
+export async function pinnedFetchProbe(target: string): Promise<{ refused: boolean; message: string }> {
+  try {
+    await pinnedFetch(target, "the pinned exchange");
+    return { refused: false, message: "" };
+  } catch (e) {
+    return { refused: true, message: (e as Error).message };
+  }
+}
+
+/** One hop, no downgrade, no redirect-following. */
+async function pinnedFetch(target: string, what: string): Promise<Response> {
+  const u = new URL(target);
+  const bad = assertPinnedFetchUrl(u, what);
+  if (bad) throw new Error(bad);
+  const res = await fetch(u, { redirect: "manual", signal: AbortSignal.timeout(EXCHANGE_PROBE_TIMEOUT_MS) });
+  if (res.status >= 300 && res.status < 400)
+    throw new Error(
+      `✗ ${what} answered ${res.status} (a redirect to ${JSON.stringify(res.headers.get("location") ?? "")}) - a redirect can move a pinned fetch onto plaintext or onto another host, so it is refused rather than followed; publish the document at the pinned URL itself`,
+    );
+  return res;
+}
+
+/** The user arm of trust composition: the pinned exchange must ANSWER, and answer as itself.
+ *  `/health` must report the pinned issuer (a base that answers with a foreign issuer is a
+ *  different authority, however reachable) and `/jwks` must serve a non-empty key set (the
+ *  verification material the pins promise). Nothing here trusts the response beyond consistency
+ *  with the pins the operator supplied. */
+export async function verifyUserExchange(base: string, issuer: string): Promise<Check<void>> {
+  const url = (p: string) => new URL(p, base.endsWith("/") ? base : `${base}/`).toString();
+  // The exchange base is a PIN. It must be an https URL (or loopback), and neither probe below
+  // may be redirected off it — otherwise the "pinned" exchange is whatever a 302 chooses.
+  try {
+    const badBase = assertPinnedFetchUrl(new URL(base), `the pinned exchange at ${base}`);
+    if (badBase) return bad(badBase);
+  } catch {
+    return bad(`✗ the bundle's pinned exchange endpoint ${JSON.stringify(base)} is not a URL`);
+  }
+  let health: { ok?: boolean; issuer?: string };
+  try {
+    const res = await pinnedFetch(url("health"), `the pinned exchange at ${base}`);
+    if (!res.ok) return bad(`✗ the pinned exchange at ${base} answered /health with ${res.status} - it is not serving as the bundle promises`);
+    health = (await res.json()) as never;
+  } catch (e) {
+    const m = (e as Error).message;
+    if (m.startsWith("✗")) return bad(m);
+    return bad(`✗ the pinned exchange at ${base} did not answer /health (${m}) - the bundle's endpoint must be reachable to register against it`);
+  }
+  if (health.issuer !== issuer)
+    return bad(`✗ the exchange at ${base} answers for issuer ${JSON.stringify(health.issuer)} but the bundle pins ${JSON.stringify(issuer)} - a different issuer is a different authority; nothing was registered`);
+  try {
+    const res = await pinnedFetch(url("jwks"), `the pinned exchange at ${base}`);
+    if (!res.ok) return bad(`✗ the pinned exchange at ${base} answered /jwks with ${res.status}`);
+    const jwks = (await res.json()) as { keys?: unknown[] };
+    if (!Array.isArray(jwks.keys) || jwks.keys.length === 0)
+      return bad(`✗ the pinned exchange at ${base} serves an empty /jwks - it holds no verification keys for the trust the bundle pins`);
+  } catch (e) {
+    const m = (e as Error).message;
+    if (m.startsWith("✗")) return bad(m);
+    return bad(`✗ the pinned exchange at ${base} did not answer /jwks (${m})`);
+  }
+  return good(undefined);
+}
+
+/** Land the sentinel and write the remote user entry — ONE writer for both front ends, so the
+ *  wizard cannot drift from the flag form on what a remote record looks like. The sentinel blob
+ *  goes into a 0600 file under the entry's own root (its space-scoped user-auth state dir) and
+ *  the record carries the PATH: the registry document is echoed by `cotal meshes` and `status`,
+ *  and secret material must never ride a file that gets printed. */
+export function persistRemoteUserEntry(
+  space: string,
+  server: string,
+  root: string,
+  bundle: UserBundle,
+  tlsRequired: boolean,
+  overlayConsent: boolean,
+): ReturnType<typeof writeRecord> {
+  const dir = userAuthStateDir(root, space);
+  mkSecretDir(dir);
+  const sentinelCredsPath = join(dir, "sentinel.creds");
+  writeSecretFileAtomic(sentinelCredsPath, bundle.sentinelCreds);
+  return writeRecord({
+    space,
+    server,
+    root,
+    mode: "user",
+    origin: "manual",
+    ...(tlsRequired ? { tlsRequired: true } : {}),
+    ...(overlayConsent ? { unencryptedOverlay: true } : {}),
+    userAuth: { ...bundle.userAuth, remote: true, sentinelCredsPath },
+    ts: new Date().toISOString(),
+  });
 }
 
 /** The target this registration would resolve to. `flag-server` is the source that can never
  *  classify as a prune — nothing is recorded yet, so no entry may be blamed for a failure. */
-export function candidateTarget(space: string, server: string, root: string, mode: MeshEntry["mode"], auth: SpaceAuth | undefined): MeshTarget {
+export function candidateTarget(space: string, server: string, root: string, mode: MeshEntry["mode"], auth: SpaceAuth | undefined, tlsRequired: boolean): MeshTarget {
   return {
     root,
     server,
     space,
     mode,
-    // A probe target for a registration that has not happened yet, so there is no recorded
-    // transport to honour and this stays non-strict. That reason stands on its own and is the
-    // whole justification.
-    //
-    // WHAT USED TO BE WRITTEN HERE WAS FALSE, and it is worth saying so rather than quietly
-    // deleting it. This comment claimed the scheme could not enforce because "`MeshEntry` cannot
-    // persist the intent" — a constraint removed three commits earlier by adding
-    // `MeshEntry.tlsRequired`. A dead premise was holding a live decision in place, and it is
-    // exactly why that field had no writers.
-    //
-    // The open question is now genuinely open: `tls://` is COSMETIC at the client (nats.js connects
-    // plaintext to `tls://host` with empty options; only the explicit `tls` option refuses), so an
-    // operator who types `tls://` today gets a record that resolves to a plaintext-tolerant client.
-    // Deriving `tlsRequired` from the scheme would make that typed intent real.
-    //
-    // It is deliberately NOT done in this change, for a reason that is true: it converts `meshes
-    // add tls://…` against a plaintext broker from a successful registration into a refusal. That
-    // is a behaviour change to this command's accept/refuse contract, it belongs with the dial-policy
-    // work being done in this file by another lane, and it is not one of the downgrades this branch
-    // exists to close. Tracked, owned, and not smuggled in beside them.
-    tlsRequired: false,
+    // The SAME source the dial policy read ({@link tlsIntent}) — the decision the old comment here
+    // reserved for the dial-policy work, now taken. A candidate that probed non-strict while the
+    // record it vouched for said strict would verify a connection the record's own dials refuse;
+    // carrying the real intent means `meshes add tls://…` against a plaintext broker is a REFUSAL
+    // at registration, not a surprise at the first spawn.
+    tlsRequired,
     ...(auth ? { auth } : {}),
     personaRoot: personaDir(root),
     source: "flag-server",

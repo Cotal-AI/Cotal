@@ -2,18 +2,24 @@ import * as p from "@clack/prompts";
 import { findMesh, type MeshEntry } from "@cotal-ai/workspace";
 import { bold, brand, brandBold, dim, ok } from "../lib/theme.js";
 import { abortIfCancel } from "../lib/cancel.js";
+import { readFileSync } from "node:fs";
 import {
   candidateTarget,
   checkDialPolicy,
   checkEnforcement,
   checkMode,
+  checkRemoteConsumable,
   checkRoot,
   checkServer,
   checkTrust,
+  checkUserBundle,
   isDir,
+  persistRemoteUserEntry,
   probeEnforcement,
   spacesAtRoot,
+  tlsIntent,
   verifyTarget,
+  verifyUserExchange,
   writeRecord,
 } from "./meshes-add.js";
 
@@ -142,8 +148,9 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
             // Classified as a CANDIDATE here (acceptance granted for the check) so an overlay
             // address survives the prompt and reaches the question below. Refusing it here made
             // that question unreachable: the operator could never say yes to something the
-            // validator had already rejected.
-            const d = checkDialPolicy(v, true);
+            // validator had already rejected. TLS intent comes from the typed scheme — the
+            // guided form's one source for it.
+            const d = checkDialPolicy(v, { tlsRequired: tlsIntent(v, false), allowUnencryptedOverlay: true });
             return d.ok ? undefined : d.message.replace(/^✗ /, "");
           },
         });
@@ -154,7 +161,7 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
         server = undefined;
         continue;
       }
-      const dial = checkDialPolicy(server, true); // candidate; the ask below decides
+      const dial = checkDialPolicy(server, { tlsRequired: tlsIntent(server, false), allowUnencryptedOverlay: true }); // candidate; the ask below decides
       if (!dial.ok) {
         io.log.error(dial.message);
         server = undefined;
@@ -170,7 +177,7 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
     // register an overlay mesh at all, and silently accepting would be the warning-and-continue
     // shape that was just removed.
     if (ackedFor !== server) {
-      const probe = checkDialPolicy(server, true);
+      const probe = checkDialPolicy(server, { tlsRequired: tlsIntent(server, false), allowUnencryptedOverlay: true });
       if (probe.ok && probe.value.residual) {
         io.log.warn(probe.value.residual);
         // DEFAULT DENY. This is the one confirmation in the wizard where pressing Enter must not
@@ -183,7 +190,7 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
     }
     // Re-checked with the REAL answer, so the decision is enforced by the same rule the flag form
     // uses rather than by the branch above happening to be right.
-    const settled = checkDialPolicy(server, ackedFor === server);
+    const settled = checkDialPolicy(server, { tlsRequired: tlsIntent(server, false), allowUnencryptedOverlay: ackedFor === server });
     if (!settled.ok) { io.log.error(settled.message); server = undefined; continue; }
     overlayResidual = Boolean(settled.value.residual);
 
@@ -252,10 +259,58 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
         message: "That folder holds no credentials for this broker. What next?",
         options: [
           { value: "root", label: "Point at a different folder", hint: "one that already holds its credentials" },
+          { value: "bundle", label: "It is a hosted user-auth mesh - I have its trust bundle", hint: "a bundle.json exported where the mesh runs" },
           { value: "cancel", label: "Cancel" },
         ],
       });
     if (next === "cancel") return cancelled(io);
+    // THE ONE GUIDED USER-AUTH BRANCH. No rule lives here: the bundle validation, the exchange
+    // trust probe, the auth-required PASS, and the record writer are the same functions the flag
+    // form calls (meshes-add.ts owns them); this branch only asks for the file and presents
+    // failures.
+    if (next === "bundle") {
+      // The same sequencing fence the flag form hits, before the operator is asked for a path:
+      // the rule lives in meshes-add.ts so neither front end can register what nothing can dial.
+      const consumable = checkRemoteConsumable();
+      if (!consumable.ok) { io.log.error(consumable.message); return cancelled(io, "Nothing was registered."); }
+      const path = await io.text({
+        message: "Path to the trust bundle (bundle.json)",
+        placeholder: "exported where the mesh runs",
+        validate: (p) => (p ? undefined : "Required - the bundle carries the pins this registration adopts."),
+      });
+      let rawBundle: string;
+      try {
+        rawBundle = readFileSync(path, "utf8");
+      } catch (e) {
+        io.log.error(`Cannot read ${path} (${(e as Error).message})`);
+        return cancelled(io, "Nothing was registered.");
+      }
+      const parsed = checkUserBundle(rawBundle);
+      if (!parsed.ok) { io.log.error(parsed.message); return cancelled(io, "Nothing was registered."); }
+      const b = parsed.value;
+      const userTls = b.tlsRequired || tlsIntent(server as string, false);
+      const userDial = checkDialPolicy(server as string, { tlsRequired: userTls, allowUnencryptedOverlay: ackedFor === server });
+      if (!userDial.ok) { io.log.error(userDial.message); return cancelled(io, "Nothing was registered."); }
+      const exch = await verifyUserExchange(b.userAuth.endpoints!.url!, b.userAuth.idp.issuer);
+      if (!exch.ok) { io.log.error(exch.message); return cancelled(io, "Nothing was registered."); }
+      const enforce = checkEnforcement("user", enforces, server as string, b.space, root);
+      if (!enforce.ok) { io.log.error(enforce.message); return cancelled(io, "Nothing was registered."); }
+      io.note(
+        [
+          `space     ${b.space}`,
+          `broker    ${server}${userTls ? "  (TLS required)" : ""}`,
+          `issuer    ${b.userAuth.idp.issuer}`,
+          `audience  ${b.userAuth.idp.audience}`,
+          `exchange  ${b.userAuth.endpoints?.url}`,
+        ].join("\n"),
+        brand("About to record (user-auth, pinned)"),
+      );
+      const goUser = await io.confirm({ message: "Register this user-auth mesh?" });
+      if (!goUser) return cancelled(io, "Nothing was registered.");
+      persistRemoteUserEntry(b.space, server as string, root, b, userTls, Boolean(userDial.value.residual));
+      io.outro(ok(`Registered "${b.space}"`));
+      return true;
+    }
     root = undefined; // ask for a path; never re-infer, or this offers the same dead end again
     defaultRoot = undefined; // …and never offer the folder we just rejected as the default
   }
@@ -330,7 +385,7 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
 
   // ── 5. verify for real, then confirm ──────────────────────────────────────────────────────────
   if (!unverified) {
-    const target = candidateTarget(space, server as string, root, mode, trust.value);
+    const target = candidateTarget(space, server as string, root, mode, trust.value, tlsIntent(server as string, false));
     const spin = io.spinner();
     spin.start(mode === "auth" ? `Checking this folder's credentials for "${space}"` : `Checking the connection to "${space}"`);
     const verified = await verifyTarget(target);
@@ -367,6 +422,9 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
   // opt-in replaced, one surface over.
   const entry: MeshEntry = {
     space, server: server as string, root, mode, origin: "manual",
+    // The guided form's TLS intent is the typed scheme, persisted the same way the flag form
+    // persists it — recorded strictness is what the dial policy relaxed on, so it must be carried.
+    ...(tlsIntent(server as string, false) ? { tlsRequired: true } : {}),
     // From the FINAL classification, never from "the operator accepted something earlier". The
     // flag form persists `dial.residual` for the same reason: the field is evidence about the
     // recorded target, and evidence that can detach from its subject is worse than none, because

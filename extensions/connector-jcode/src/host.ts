@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { JcodeClient, type ApiEvent } from "@1jehuang/jcode-sdk";
 import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
 import { mirrorJcodeCredentials, shortSocketHome } from "./private-state.js";
+import { bareModelId, describeRoute } from "./route-identity.js";
 import {
   MeshAgent,
   ORIENTATION_BOOTSTRAP,
@@ -332,6 +333,16 @@ export async function runJcodeHost(): Promise<void> {
     const session = await client.createSession(cwd);
     sessionId = session.session_id;
     agent.setContextId(sessionId);
+    // A `provider/model` specifier was forwarded verbatim to an endpoint that wants a bare id, and
+    // the refusal came back as `model_not_found` naming neither the connector nor the prefix as the
+    // cause. Refuse it here, where the accepted form can actually be named (#785).
+    if (config.model) {
+      const spec = bareModelId(config.model);
+      if (!spec.ok)
+        throw new Error(
+          `jcode connector: model ${JSON.stringify(config.model)} carries a provider prefix, but the Harness API expects a bare model id — pass ${JSON.stringify(spec.bare)} (the ${JSON.stringify(spec.prefix)} provider is selected by configuration, not by the model id)`,
+        );
+    }
     if (config.model) await client.setModel(sessionId, config.model);
     await client.sendMessage(sessionId, instructions(config, def?.persona || undefined), { noReply: true });
     // Jcode registers MCP tools asynchronously. A first workload turn before its tools appear is
@@ -366,6 +377,12 @@ export async function runJcodeHost(): Promise<void> {
         throw new Error(
           `jcode connector: requested model ${JSON.stringify(config.model)} but the Harness API reports ${JSON.stringify(runtime.model)} — refusing a mislabelled mesh seat`,
         );
+      // The model is checked above; the PROVIDER carrying it was fetched in the same response and
+      // then thrown away. That gap cost real time: a seat requested as one model logged under a
+      // second provider's name and died inside a third component, and establishing which was true
+      // meant reading the seat's private log by hand. RuntimeInfo already knows, so record it where
+      // an operator looks first (#785).
+      process.stderr.write(`[cotal-jcode] ${describeRoute(runtime, config.model)}\n`);
     }
 
     initialized = true;
