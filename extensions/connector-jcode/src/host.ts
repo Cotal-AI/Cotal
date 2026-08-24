@@ -250,6 +250,16 @@ export async function runJcodeHost(): Promise<void> {
   let initialized = false;
   let wakeQueued = false;
 
+  const launchTui = (): void => {
+    const runtime = join(socketHome.jcodeHome, "run");
+    tui = spawn(binary, ["--socket", join(runtime, "jcode.sock"), "--resume", sessionId!], {
+      cwd,
+      env: { ...noCotalEnv(), JCODE_HOME: socketHome.jcodeHome, JCODE_RUNTIME_DIR: runtime, JCODE_SOCKET: join(runtime, "jcode.sock") },
+      stdio: "inherit",
+    });
+    tui.once("exit", (code) => void shutdown(code ?? 0));
+  };
+
   const shutdown = async (code = 0): Promise<void> => {
     if (stopping) return;
     stopping = true;
@@ -373,18 +383,21 @@ export async function runJcodeHost(): Promise<void> {
     if (!resumed) {
       await client.sendMessage(sessionId, instructions(config, def?.persona || undefined), { noReply: true });
     }
-    // Jcode registers MCP tools asynchronously. A first workload turn before its tools appear is
-    // a silent mesh failure: the seat looks online yet cannot answer peers. Prove the exact cotal
-    // surface is callable first. The Harness API exposes no MCP-ready event, so an absent call is
-    // not retried or guessed over — the launch fails before it advertises presence.
-    const readiness = await client.run(
-      sessionId,
-      "Call the cotal_orientation tool exactly once now. Do not perform any other work and do not write a response.",
-      { autoApprove: true },
-    );
-    if (!readiness.toolCalls.some((call) => /(?:^|__)cotal_orientation$/.test(call.name)))
+    const useTui = tuiOverride ? /^(1|true|yes|on)$/i.test(tuiOverride) : Boolean(process.stdout.isTTY);
+    // The viewer needs only the fresh session's socket. Start it before the readiness LLM turn so
+    // a foreground operator sees boot activity while presence remains gated on readiness below.
+    if (useTui) launchTui();
+    // Jcode registers MCP tools asynchronously. Its first turn can lock the pre-MCP tool snapshot
+    // just before cotal connects, then rebuild that snapshot. Repeat the exact proof once for this
+    // measured race; a second absence is terminal, never a polling loop or a guessed success.
+    const readinessPrompt = "Call the cotal_orientation tool exactly once now. Do not perform any other work and do not write a response.";
+    const hasOrientation = (run: Awaited<ReturnType<JcodeClient["run"]>>) =>
+      run.toolCalls.some((call) => /(?:^|__)cotal_orientation$/.test(call.name));
+    let readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });
+    if (!hasOrientation(readiness)) readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });
+    if (!hasOrientation(readiness))
       throw new Error(
-        "jcode connector: the cotal MCP bridge did not become callable during its mandatory readiness turn — refusing to join a mesh seat without its tool surface",
+        "jcode connector: the cotal MCP bridge did not become callable during its two mandatory readiness turns — refusing to join a mesh seat without its tool surface",
       );
     client.on("close", () => void shutdown(1));
     client.on("session_status", (event: ApiEvent) => {
@@ -414,19 +427,16 @@ export async function runJcodeHost(): Promise<void> {
     }
 
     initialized = true;
-    agent.start();
+    await agent.start();
+    // The readiness proof necessarily precedes mesh join. Tell the session that its bootstrap
+    // orientation card was pre-join so it cannot later mistake that truthful old snapshot for its
+    // current connection state (#778).
+    await client.sendMessage(
+      sessionId,
+      `You are now connected to the Cotal mesh as "${config.name}". The earlier cotal_orientation result was captured before this join; use cotal_orientation again for live context.`,
+      { noReply: true },
+    );
     if (bootPrompt) await drive(bootPrompt);
-
-    const useTui = tuiOverride ? /^(1|true|yes|on)$/i.test(tuiOverride) : Boolean(process.stdout.isTTY);
-    if (useTui) {
-      const runtime = join(socketHome.jcodeHome, "run");
-      tui = spawn(binary, ["--socket", join(runtime, "jcode.sock"), "--resume", sessionId], {
-        cwd,
-        env: { ...noCotalEnv(), JCODE_HOME: socketHome.jcodeHome, JCODE_RUNTIME_DIR: runtime, JCODE_SOCKET: join(runtime, "jcode.sock") },
-        stdio: "inherit",
-      });
-      tui.once("exit", (code) => void shutdown(code ?? 0));
-    }
   } catch (error) {
     startControl?.close();
     await closeServer(relayServer);

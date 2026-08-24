@@ -57,8 +57,11 @@ try {
   operator = new CotalEndpoint({ space: "jcodehost", servers, card: { name: "operator", kind: "agent", id: "operator" }, channels: ["team"] });
   operator.on("error", () => {});
   let peerId: string | undefined;
+  const announced = new Set<string>();
   operator.on("presence", (event: { type: string; presence: { card: { id: string; name: string } } }) => {
-    if (event.type !== "offline" && event.presence.card.name === "jcodepeer") peerId = event.presence.card.id;
+    if (event.type === "offline") return;
+    announced.add(event.presence.card.name);
+    if (event.presence.card.name === "jcodepeer") peerId = event.presence.card.id;
   });
   await operator.start();
 
@@ -108,10 +111,120 @@ try {
   check("mesh DM becomes a Harness API turn", JSON.stringify(turn).includes("mesh-wake"), turn);
   const bootTurns = entries().filter((entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" && !(entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("cotal_orientation"));
   check("host runs the mandatory cotal MCP readiness turn before joining", bootTurns.length === 1, bootTurns);
+  const joinNotice = entries().find((entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" && (entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("earlier cotal_orientation result was captured before this join"));
+  check("post-join context supersedes the pre-join orientation card", Boolean(joinNotice), joinNotice);
 
   child.kill("SIGTERM");
   await Promise.race([once(child, "exit"), sleep(10_000)]);
   check("host exits cleanly on SIGTERM", child.exitCode === 0, { code: child.exitCode, stderr });
+
+  // #777 reproduction: Jcode can lock the first turn's tool snapshot before cotal connects. The
+  // old host makes one proof turn and rejects this otherwise healthy launch before it can join.
+  const raceLog = join(root, "readiness-race.jsonl");
+  const race = spawn(tsx, [host], {
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: raceLog,
+      FAKE_JCODE_ORIENTATION_DELAY_TURNS: "1",
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "racepeer",
+      COTAL_ID: "racepeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_CONTROL_SOCKET: join(root, "race-control.sock"),
+      COTAL_CONTROL_TOKEN: "race-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let raceErr = "";
+  race.stderr?.on("data", (chunk: Buffer) => (raceErr += chunk.toString()));
+  await Promise.race([once(race, "exit"), sleep(20_000)]);
+  const raceEntries = readFileSync(raceLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>;
+  const raceTurns = raceEntries.filter((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply && String(entry.frame?.content).includes("cotal_orientation"));
+  check("a first-turn MCP snapshot race recovers on one bounded retry", announced.has("racepeer") && raceTurns.length === 2, { code: race.exitCode, turns: raceTurns, stderr: raceErr });
+  if (race.exitCode === null) race.kill("SIGTERM");
+  await Promise.race([once(race, "exit"), sleep(10_000)]);
+  check("the recovered readiness launch exits cleanly", race.exitCode === 0, { code: race.exitCode, stderr: raceErr });
+
+  // A bridge that never publishes the tool must still fail loud after the bounded retry and must
+  // never advertise presence. This distinguishes the recovery from a false-online fallback.
+  const absentLog = join(root, "readiness-absent.jsonl");
+  const absent = spawn(tsx, [host], {
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: absentLog,
+      FAKE_JCODE_NEVER_ORIENTATION: "1",
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "absentpeer",
+      COTAL_ID: "absentpeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_CONTROL_SOCKET: join(root, "absent-control.sock"),
+      COTAL_CONTROL_TOKEN: "absent-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let absentErr = "";
+  absent.stderr?.on("data", (chunk: Buffer) => (absentErr += chunk.toString()));
+  await Promise.race([once(absent, "exit"), sleep(20_000)]);
+  const absentCode = absent.exitCode;
+  if (absentCode === null) absent.kill("SIGKILL");
+  const absentEntries = readFileSync(absentLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>;
+  const absentTurns = absentEntries.filter((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply && String(entry.frame?.content).includes("cotal_orientation"));
+  check("a permanently absent cotal tool gets exactly two readiness turns", absentTurns.length === 2, absentTurns);
+  check("a permanently absent cotal tool ends the launch", absentCode !== null && absentCode !== 0, { code: absentCode, stderr: absentErr });
+  check("a permanently absent cotal tool never reaches the roster", !announced.has("absentpeer"), [...announced]);
+
+  // #779 reproduction: the foreground observer belongs beside the session, before the slow
+  // readiness request. The old host only spawns it after that request has completed.
+  const tuiLog = join(root, "tui-order.jsonl");
+  const foreground = spawn(tsx, [host], {
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: tuiLog,
+      FAKE_JCODE_TURN_DELAY_MS: "1000",
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "tuipeer",
+      COTAL_ID: "tuipeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "1",
+      COTAL_CONTROL_SOCKET: join(root, "tui-control.sock"),
+      COTAL_CONTROL_TOKEN: "tui-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let foregroundErr = "";
+  foreground.stderr?.on("data", (chunk: Buffer) => (foregroundErr += chunk.toString()));
+  await waitFor("foreground TUI", () => existsSync(tuiLog) && readFileSync(tuiLog, "utf8").includes('"ev":"tui"') ? true : undefined);
+  await waitFor("foreground readiness proof", () => existsSync(tuiLog) && readFileSync(tuiLog, "utf8").includes('"ev":"orientation_done"') ? true : undefined);
+  const tuiEntries = readFileSync(tuiLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>;
+  const tuiAt = tuiEntries.findIndex((entry) => entry.ev === "tui");
+  const readinessDoneAt = tuiEntries.findIndex((entry) => entry.ev === "orientation_done");
+  check("foreground TUI starts before its readiness turn finishes", tuiAt >= 0 && tuiAt < readinessDoneAt, { tuiAt, readinessDoneAt, entries: tuiEntries });
+  foreground.kill("SIGTERM");
+  await Promise.race([once(foreground, "exit"), sleep(10_000)]);
+  check("the early foreground TUI launch exits cleanly", foreground.exitCode === 0, { code: foreground.exitCode, stderr: foregroundErr });
 
   // Deliberate failing case: project MCP files would override Jcode's private cotal config, so the
   // host must refuse before it starts an API bridge rather than silently loading another server.

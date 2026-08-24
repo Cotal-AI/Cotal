@@ -1,0 +1,41 @@
+{
+  "suite": "extensions/connector-jcode/smoke/jcode-host.smoke.ts",
+  "guard": "Jcode retries a first readiness turn that used its pre-MCP tool snapshot exactly once, still refuses a never-callable bridge without presence, opens the foreground TUI before readiness completes, and records that bootstrap orientation predates mesh join",
+  "command": "pnpm smoke:jcode-host",
+  "completionMarker": "JCODE HOST SMOKE PASSED",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/jcode-readiness.json",
+  "why": [
+    "Jcode locks its first turn's tool list before asynchronous MCP registration can complete. The connector cannot treat that first absent call as a permanent bridge failure, but must not advertise without a real later tool call either (#777).",
+    "The remaining cells pin the same boot ordering: the foreground observer must start while readiness is in flight (#779), and the transcript must explicitly supersede the truthful but stale pre-join orientation result (#778)."
+  ],
+  "mutations": [
+    {
+      "name": "M1 remove the bounded retry after the pre-MCP snapshot",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    if (!hasOrientation(readiness)) readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });",
+      "replace": "    if (false) readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });",
+      "expectRed": "a first-turn MCP snapshot race recovers on one bounded retry"
+    },
+    {
+      "name": "M2 join without proving orientation after the retry",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    if (!hasOrientation(readiness))\n      throw new Error(",
+      "replace": "    if (false)\n      throw new Error(",
+      "expectRed": "a permanently absent cotal tool ends the launch"
+    },
+    {
+      "name": "M3 move the foreground TUI behind readiness again",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    if (useTui) launchTui();",
+      "replace": "    if (false) launchTui();",
+      "expectRed": "foreground TUI starts before its readiness turn finishes"
+    },
+    {
+      "name": "M4 omit the post-join correction for stale bootstrap context",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "      `You are now connected to the Cotal mesh as \"${config.name}\". The earlier cotal_orientation result was captured before this join; use cotal_orientation again for live context.`,",
+      "replace": "      `You are connected.`,",
+      "expectRed": "post-join context supersedes the pre-join orientation card"
+    }
+  ]
+}

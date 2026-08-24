@@ -69,13 +69,19 @@ not explicitly shared. Operator MCP configuration is isolated in the private hom
 configuration is not supported yet.
 
 Before the seat joins the mesh, the host runs a mandatory Jcode turn that calls
-`cotal_orientation`. Jcode loads MCP tools asynchronously; this readiness turn makes a bridge that
-never came up a launch failure, rather than an agent that is present but mute. An inbound peer
-message then wakes a Harness API turn. The host marks presence working while the turn runs,
-acknowledges exactly the delivered inbox ids only after the SDK turn succeeds, and leaves a failed
-turn unacknowledged for mesh redelivery. Jcode's stable Harness API has no measured mid-turn steer
-surface here, so traffic arriving during a turn waits for the next turn rather than being silently
-treated as an interrupt.
+`cotal_orientation`. Jcode loads MCP tools asynchronously; its first turn can use the pre-MCP tool
+snapshot immediately before Jcode rebuilds that snapshot. The host repeats the identical proof once
+in that case. A second absence fails the launch, so a bridge that never comes up remains a loud
+failure rather than an agent that is present but mute. After joining, the host adds a no-reply
+notice that the bootstrap orientation predates the join and that a new orientation is live context.
+
+For a foreground launch, the TUI opens as soon as the session is ready, before the readiness turn,
+so it streams boot activity instead of leaving the terminal blank. Presence still begins only after
+the readiness proof passes. An inbound peer message then wakes a Harness API turn. The host marks
+presence working while the turn runs, acknowledges exactly the delivered inbox ids only after the
+SDK turn succeeds, and leaves a failed turn unacknowledged for mesh redelivery. Jcode's stable
+Harness API has no measured mid-turn steer surface here, so traffic arriving during a turn waits for
+the next turn rather than being silently treated as an interrupt.
 
 ## Models and limits
 
