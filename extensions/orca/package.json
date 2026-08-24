@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/orca",
   "description": "Cotal Orca integration: an Orca Runtime provider for spawning agents into the right Orca worktree.",
-  "version": "0.29.0",
+  "version": "0.29.1",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
