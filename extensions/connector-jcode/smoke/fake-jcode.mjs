@@ -74,7 +74,7 @@ const server = createServer((socket) => {
               session_id: frame.session_id,
               v: 1,
               code: "invalid_request",
-              message: "model_not_found: model parameter rejected-model-id was refused by provider",
+              message: JSON.stringify({ error: { code: "model_not_found", message: "model parameter rejected-model-id was refused by provider" } }),
             });
           } else if (frame.no_reply) {
             reply({ ev: "ok" });

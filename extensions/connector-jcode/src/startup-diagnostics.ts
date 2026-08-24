@@ -35,6 +35,12 @@ function providerCode(message: string, body: ProviderBody | undefined): string |
   return prefix && SAFE_CODE.test(prefix) ? prefix : undefined;
 }
 
+function classifiedCode(message: string, body: ProviderBody | undefined): string {
+  // The SDK error is `invalid_request`; a provider may put its own code in JSON or as a textual
+  // prefix. Prefer the provider’s code when safely present, otherwise name the SDK's stable code.
+  return providerCode(message, body) ?? "invalid_request";
+}
+
 function rejectedParameter(message: string): { parameter: "model" | "reasoning effort"; value: string } | undefined {
   const match = /\b(model(?:[ _-]?(?:id|parameter))?|reasoning[ _-]?effort|effort(?:[ _-]?tier)?)\s*(?:=|:|is|was)?\s*["'`]?([A-Za-z0-9][A-Za-z0-9._:/-]{0,255})/i.exec(message);
   if (!match || !SAFE_VALUE.test(match[2]!)) return undefined;
@@ -48,7 +54,7 @@ function rejectedParameter(message: string): { parameter: "model" | "reasoning e
 export function classifyReadinessProviderRefusal(error: unknown): JcodeReadinessProviderRefusal | undefined {
   if (!(error instanceof HarnessError) || error.code !== "invalid_request") return undefined;
   const body = providerBody(error.message);
-  const code = providerCode(error.message, body);
+  const code = classifiedCode(error.message, body);
   const parameter = rejectedParameter(typeof body?.message === "string" ? body.message : error.message);
-  return code && parameter ? new JcodeReadinessProviderRefusal(code, parameter.parameter, parameter.value) : undefined;
+  return parameter ? new JcodeReadinessProviderRefusal(code, parameter.parameter, parameter.value) : undefined;
 }
