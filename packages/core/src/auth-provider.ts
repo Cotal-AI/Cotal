@@ -60,6 +60,20 @@ export interface AuthProvider extends Extension {
    */
   ownerForLogin(opts: { store: SecretStore; dir: string; space: string }): Promise<string>;
   /**
+   * CLIENT side of a REMOTE mesh's agent-provisioning endpoint (a discovery bundle advertising
+   * `agentProvisioningUrl`): present this machine's login proof for `idpUrl` to `url`, asking it
+   * to provision `actor`, and return the endpoint's parsed JSON answer verbatim. This method
+   * lives on the provider because the LOGIN PROOF rides the request — the caller never touches
+   * the session cache. The transport discipline is the provider's too: redirects are refused
+   * (a 302 could walk the proof onto another host), and every failure MUST throw one sentence
+   * with the exact operator action — not signed in names the `cotal login --idp …` line, an
+   * endpoint refusal surfaces the endpoint's own reason. The caller owns validating the returned
+   * material's shape; this method proves and carries, it does not interpret. Optional: a
+   * provider without a remote-provisioning story simply lacks it, and the caller refuses with
+   * its own named message.
+   */
+  postAgentProvisioning?(opts: { url: string; idpUrl: string; actor: string }): Promise<unknown>;
+  /**
    * Read-only OFFLINE introspection for status surfaces (`cotal status`): this machine's cached
    * login for the space and — where the space's ledger is locally readable — whether that login's
    * `actor` is granted. Never network-bound and never a mint; "not signed in" is a REPORTED state

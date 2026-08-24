@@ -38,7 +38,6 @@ import {
   agentSecretFilePaths,
   agentSentinelCredsKey,
   authDir,
-  homeCotalDir,
   credsFlag,
   defaultAgentOverride,
   defaultAgentType,
@@ -59,7 +58,6 @@ import {
   workspaceSecretStore,
   type MeshTarget,
 } from "@cotal-ai/workspace";
-import { requireIdpSession } from "@cotal-ai/auth";
 import { c } from "../ui.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
@@ -726,43 +724,27 @@ async function provisionRemoteUserForeground(
   const idpUrl = target.userAuth?.idp.url;
   if (!idpUrl) return fail(`mesh "${space}" records no IdP to sign in against - re-register it with \`cotal meshes add ${space} --from <url> --mode user\``);
   let provider: ReturnType<typeof resolveAuthProvider>;
-  let session: { token: string };
   try {
     provider = resolveAuthProvider();
-    session = requireIdpSession(homeCotalDir(), idpUrl);
-  } catch {
-    return fail(`not signed in to ${idpUrl} - run \`cotal login --idp ${idpUrl}\` first, then spawn again`);
+  } catch (e) {
+    return fail((e as Error).message);
   }
-  const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = agentSecretFilePaths(target.root, name);
-  let material: RemoteAgentMaterial;
+  // The login proof rides the provisioning request, so the POST is the PROVIDER's (this package
+  // never touches the session cache); its thrown sentences are already operator-exact — the
+  // no-login gate names the `cotal login --idp …` line, a refusal carries the mesh's own reason.
+  if (!provider.postAgentProvisioning)
+    return fail(`the registered auth provider "${provider.name}" cannot provision agents on a remote mesh - run the agent where the mesh runs`);
+  let body: unknown;
   try {
-    let res: Response;
-    try {
-      res = await fetch(provisioningUrl, {
-        method: "POST",
-        // `redirect: "manual"` for the same reason registration refuses redirects: this request
-        // carries the login bearer, and a 302 must never walk it onto another host or plaintext.
-        redirect: "manual",
-        headers: { "content-type": "application/json", authorization: `Bearer ${session.token}` },
-        body: JSON.stringify({ actor: name }),
-        signal: AbortSignal.timeout(30_000),
-      });
-    } catch (e) {
-      return fail(`the mesh's agent-provisioning endpoint did not answer at ${provisioningUrl} (${e instanceof Error ? e.message : String(e)})`);
-    }
-    if (res.status >= 300 && res.status < 400)
-      return fail(`the mesh's agent-provisioning endpoint answered ${res.status} with redirect Location ${JSON.stringify(res.headers.get("location") ?? "")} - redirects are refused so the login bearer cannot be walked onto another host`);
-    const body: unknown = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const reason = (body as { error?: string }).error ?? `HTTP ${res.status}`;
-      // 401 is the one refusal with a local remedy; everything else is the mesh's own word.
-      return fail(res.status === 401
-        ? `the mesh refused this login for agent provisioning: ${reason} - your session may have expired; re-run \`cotal login --idp ${idpUrl}\``
-        : `the mesh refused to provision agent "${name}": ${reason}`);
-    }
-    const checked = checkRemoteAgentMaterial(body, name);
-    if (!checked.ok) return fail(checked.message);
-    material = checked.material;
+    body = await provider.postAgentProvisioning({ url: provisioningUrl, idpUrl, actor: name });
+  } catch (e) {
+    return fail((e as Error).message);
+  }
+  const checked = checkRemoteAgentMaterial(body, name);
+  if (!checked.ok) return fail(checked.message);
+  const material = checked.material;
+  const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = agentSecretFilePaths(target.root, name);
+  try {
     // Land both secrets 0600 through the store, exactly as the local path does — the bearer
     // re-exec and the launch handoff read FILES.
     await store.put(agentActorTokenKey(name), material.actorToken);

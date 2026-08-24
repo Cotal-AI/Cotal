@@ -187,6 +187,43 @@ export const cotalAuthProvider: AuthProvider = {
     return deriveOwnerForIdpSubject(secret, idp.issuer, session.sub);
   },
 
+  /** Client half of remote agent provisioning (U6 §2): the login proof for `idpUrl` rides the
+   *  request, so the POST lives here — the CLI names the pinned URL and the actor, and validates
+   *  the material that comes back; this method never touches the session cache's contents beyond
+   *  presenting them. Redirects are refused for the same reason registration refuses them: a 302
+   *  could walk the proof onto another host or onto plaintext. */
+  async postAgentProvisioning({ url, idpUrl, actor }: { url: string; idpUrl: string; actor: string }): Promise<unknown> {
+    // The no-fallback login gate: throws the exact `cotal login --idp …` line when not signed in.
+    const session = requireIdpSession(homeCotalDir(), idpUrl);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        redirect: "manual",
+        headers: { "content-type": "application/json", authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({ actor }),
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (e) {
+      throw new Error(`the mesh's agent-provisioning endpoint did not answer at ${url} (${e instanceof Error ? e.message : String(e)})`);
+    }
+    if (res.status >= 300 && res.status < 400)
+      throw new Error(
+        `the mesh's agent-provisioning endpoint answered ${res.status} with redirect Location ${JSON.stringify(res.headers.get("location") ?? "")} - redirects are refused so the login proof cannot be walked onto another host`,
+      );
+    const body: unknown = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const reason = (body as { error?: string }).error ?? `HTTP ${res.status}`;
+      // 401 is the one refusal with a local remedy; everything else is the mesh's own word.
+      throw new Error(
+        res.status === 401
+          ? `the mesh refused this login for agent provisioning: ${reason} - your session may have expired; re-run \`cotal login --idp ${idpUrl}\``
+          : `the mesh refused to provision agent "${actor}": ${reason}`,
+      );
+    }
+    return body;
+  },
+
   /** Offline status read: the pinned IdP, this machine's cached login, and (when the local ledger
    *  has material) the actor's grant row. No IdP round trip, no service call, no mint — `cotal
    *  status` must be able to say "not signed in" without becoming a connect. */

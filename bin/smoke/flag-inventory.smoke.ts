@@ -37,6 +37,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       // discovery bundle advertises - what participants dial, which is not the address the callout
       // dials (--server is loopback/LAN and meaningless off the machine).
       "advertised-server:string",
+      // `--agent-provisioning-url` (2026-08): the U6 remote agent-provisioning endpoint the public
+      // bundle advertises, threaded to the auth-service daemon like --advertised-server.
+      "agent-provisioning-url:string",
       "exchange-public-port:string", "exchange-public-url:string", "exchange-trusted-proxy:boolean",
       "restore:string", "restore-only:string", "accept-missing-source:boolean",
       // `--rotate-sys` (2026-08): the class-3 renewal, which rotates the system account and re-mints the
@@ -201,6 +204,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       // `--advertised-server` (2026-08): rides the public bundle, so it is threaded from `up` to
       // this daemon and must appear in both inventories.
       "advertised-server:string",
+      // `--agent-provisioning-url` (2026-08): threaded from `up` like --advertised-server; both
+      // inventories carry it.
+      "agent-provisioning-url:string",
       "exchange-public-port:string", "exchange-public-url:string", "exchange-trusted-proxy:boolean",
       "port:string", "server:string", "space:string",
     ],
