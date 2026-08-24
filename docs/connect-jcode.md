@@ -88,7 +88,7 @@ it is not the requested model; a seat is never allowed to join under a model lab
 receive. The connector does not currently offer a Cotal model catalog because the Harness API's
 `listModels()` is session-scoped and provider-specific. If the mandatory readiness turn receives a
 provider `invalid_request` refusal for a model id or reasoning-effort value, the launch diagnostic
-names that provider error code and rejected value. Other provider response text remains scrubbed, so
+names the provider error code (or `invalid_request` when none is supplied) and rejected value. Other provider response text remains scrubbed, so
 an external observer/UI can correct connector-visible input without exposing private harness output.
 
 The following fail loud before a new session is provisioned where the manager can preflight them,

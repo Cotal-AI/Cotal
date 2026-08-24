@@ -19,8 +19,11 @@ const SAFE_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
 type ProviderBody = { code?: unknown; message?: unknown };
 
 function providerBody(message: string): ProviderBody | undefined {
+  // HarnessError prefixes the wire message with its stable SDK code (`invalid_request: ...`),
+  // so a provider's JSON body can begin after that prefix rather than at byte zero.
+  const json = message.slice(message.indexOf("{"));
   try {
-    const parsed = JSON.parse(message) as { error?: unknown };
+    const parsed = JSON.parse(json) as { error?: unknown };
     const body = parsed.error ?? parsed;
     if (!body || typeof body !== "object") return undefined;
     return body as ProviderBody;
@@ -37,7 +40,7 @@ function providerCode(message: string, body: ProviderBody | undefined): string |
 
 function classifiedCode(message: string, body: ProviderBody | undefined): string {
   // The SDK error is `invalid_request`; a provider may put its own code in JSON or as a textual
-  // prefix. Prefer the provider’s code when safely present, otherwise name the SDK's stable code.
+  // prefix. Prefer the provider's code when safely present, otherwise name the SDK's stable code.
   return providerCode(message, body) ?? "invalid_request";
 }
 

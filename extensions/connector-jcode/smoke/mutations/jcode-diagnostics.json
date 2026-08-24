@@ -10,7 +10,7 @@
     "#828 was measured at the readiness-turn boundary: a provider gateway rejected a model id, but",
     "the operator saw only `startup failed (unknown)` and had to inspect private harness logs.",
     "The host smoke drives the SDK event that JcodeClient.run turns into HarnessError and proves",
-    "the public line contains only the classified invalid_request code and rejected model id.",
+    "the public line contains only the classified provider code and rejected model id.",
     "#827 was measured as a Jcode seat joining minutes after the manager's generic 30s window.",
     "The live readiness smoke runs an actual manager and child process: the child joins after a",
     "shortened generic window but inside the connector-declared Jcode-shaped bound.",

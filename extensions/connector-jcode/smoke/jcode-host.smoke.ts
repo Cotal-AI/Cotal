@@ -178,7 +178,7 @@ try {
   await waitFor("provider refusal host exit", () => refusal.exitCode === null ? undefined : refusal.exitCode, 20_000);
   check(
     "provider readiness refusal names its code and rejected model parameter",
-    refusal.exitCode === 1 && /invalid_request/.test(refusalErr) && /rejected-model-id/.test(refusalErr),
+    refusal.exitCode === 1 && /model_not_found/.test(refusalErr) && /rejected-model-id/.test(refusalErr),
     {
       exitCode: refusal.exitCode,
       signalCode: refusal.signalCode,
@@ -188,7 +188,7 @@ try {
   );
   check(
     "provider readiness refusal stays scrubbed beyond the classified fields",
-    !refusalErr.includes("model_not_found") && !refusalErr.includes("was refused by provider"),
+    !refusalErr.includes("was refused by provider"),
     refusalErr,
   );
   console.log(`\nJCODE HOST SMOKE PASSED (${pass} checks)`);
