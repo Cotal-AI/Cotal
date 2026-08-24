@@ -132,6 +132,80 @@ try {
   await Promise.race([once(child, "exit"), sleep(10_000)]);
   check("host exits cleanly on SIGTERM", child.exitCode === 0, { code: child.exitCode, stderr });
 
+  // Real Jcode can complete its first readiness turn against the pre-MCP tool snapshot, then rebuild
+  // that snapshot once the cotal server connects. The host gets exactly one second proof turn: enough
+  // to cross the measured race, never an open-ended wait that turns a missing bridge into a launch.
+  const raceLog = join(root, "readiness-race.jsonl");
+  const race = spawn(tsx, [host], {
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: raceLog,
+      FAKE_JCODE_ORIENTATION_DELAY_TURNS: "1",
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "racepeer",
+      COTAL_ID: "racepeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_CONTROL_SOCKET: join(root, "race-control.sock"),
+      COTAL_CONTROL_TOKEN: "race-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let raceErr = "";
+  race.stderr?.on("data", (chunk: Buffer) => (raceErr += chunk.toString()));
+  await Promise.race([
+    once(race, "exit"),
+    waitFor("readiness-race peer", () => announced.has("racepeer") ? true : undefined),
+  ]);
+  const raceEntries = readFileSync(raceLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>;
+  const raceTurns = raceEntries.filter((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply && String(entry.frame?.content).includes("cotal_orientation"));
+  check("a first-turn MCP snapshot race is retried once", announced.has("racepeer") && raceTurns.length === 2, { code: race.exitCode, turns: raceTurns });
+  race.kill("SIGTERM");
+  await Promise.race([once(race, "exit"), sleep(10_000)]);
+  check("the recovered readiness launch exits cleanly", race.exitCode === 0, { code: race.exitCode, stderr: raceErr });
+
+  // Permanent absence remains terminal after the bounded second proof; the retry is not a fallback.
+  const absentLog = join(root, "readiness-absent.jsonl");
+  const absent = spawn(tsx, [host], {
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: absentLog,
+      FAKE_JCODE_NEVER_ORIENTATION: "1",
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "absentpeer",
+      COTAL_ID: "absentpeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_CONTROL_SOCKET: join(root, "absent-control.sock"),
+      COTAL_CONTROL_TOKEN: "absent-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let absentErr = "";
+  absent.stderr?.on("data", (chunk: Buffer) => (absentErr += chunk.toString()));
+  await Promise.race([once(absent, "exit"), sleep(20_000)]);
+  const absentCode = absent.exitCode;
+  if (absentCode === null) absent.kill("SIGKILL");
+  const absentEntries = readFileSync(absentLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>;
+  const absentTurns = absentEntries.filter((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply && String(entry.frame?.content).includes("cotal_orientation"));
+  check("a permanently absent cotal tool gets exactly two readiness turns", absentTurns.length === 2, absentTurns);
+  check("a permanently absent cotal tool ends the launch", absentCode !== null && absentCode !== 0, { code: absentCode, stderr: absentErr });
+  check("a permanently absent cotal tool never reaches the roster", !announced.has("absentpeer"), [...announced]);
+
   // Deliberate failing case: Jcode owns the per-model effort ladder, so a tier its provider rejects
   // must end the launch rather than leave a seat running at an effort nobody chose. The refusal has
   // to NAME the model, or an operator cannot tell which ladder refused them.

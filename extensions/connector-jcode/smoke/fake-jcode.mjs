@@ -29,6 +29,7 @@ log({ ev: "argv", argv: process.argv.slice(2), env: Object.fromEntries(Object.en
 
 let attachedExisting;
 let createdFresh = false;
+let orientationTurns = 0;
 
 const server = createServer((socket) => {
   let buffered = "";
@@ -96,8 +97,12 @@ const server = createServer((socket) => {
           } else {
             event({ ev: "message_accepted", session_id: frame.session_id });
             setTimeout(() => {
-              if (String(frame.content).includes("cotal_orientation"))
-                event({ ev: "tool_done", session_id: frame.session_id, call_id: "orientation", name: "mcp__cotal__cotal_orientation", output: "ok" });
+              if (String(frame.content).includes("cotal_orientation")) {
+                orientationTurns++;
+                const readyAfter = Number(process.env.FAKE_JCODE_ORIENTATION_DELAY_TURNS ?? "0");
+                if (process.env.FAKE_JCODE_NEVER_ORIENTATION !== "1" && orientationTurns > readyAfter)
+                  event({ ev: "tool_done", session_id: frame.session_id, call_id: "orientation", name: "mcp__cotal__cotal_orientation", output: "ok" });
+              }
               event({ ev: "text_delta", session_id: frame.session_id, text: "fake reply" });
               event({ ev: "turn_done", session_id: frame.session_id });
             }, 10);

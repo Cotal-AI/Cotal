@@ -14,3 +14,7 @@ and names the accepted set when it refuses; the connector keeps no copy of it.
 A rejected tier, or a model with no reasoning-effort surface, ends the launch
 with that reason rather than clamping to a neighbouring effort. Omitting the
 variant keeps Jcode's own configured default.
+
+The mandatory `cotal_orientation` readiness proof now repeats once when Jcode's first turn ran
+against the pre-MCP tool snapshot. A second absence still refuses the launch; the retry is bounded
+and never advertises an agent whose mesh tools were not proven callable.

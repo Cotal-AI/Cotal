@@ -69,8 +69,10 @@ not explicitly shared. Operator MCP configuration is isolated in the private hom
 configuration is not supported yet.
 
 Before the seat joins the mesh, the host runs a mandatory Jcode turn that calls
-`cotal_orientation`. Jcode loads MCP tools asynchronously; this readiness turn makes a bridge that
-never came up a launch failure, rather than an agent that is present but mute. An inbound peer
+`cotal_orientation`. Jcode loads MCP tools asynchronously; if the first turn finishes on the
+pre-MCP tool snapshot and Jcode rebuilds it after the server connects, the host repeats the same
+proof exactly once. A second absence fails the launch. This makes a bridge that never came up a
+launch failure, rather than an agent that is present but mute. An inbound peer
 message then wakes a Harness API turn. The host marks presence working while the turn runs,
 acknowledges exactly the delivered inbox ids only after the SDK turn succeeds, and leaves a failed
 turn unacknowledged for mesh redelivery. Jcode's stable Harness API has no measured mid-turn steer

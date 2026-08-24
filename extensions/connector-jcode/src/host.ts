@@ -390,16 +390,18 @@ export async function runJcodeHost(): Promise<void> {
     }
     // Jcode registers MCP tools asynchronously. A first workload turn before its tools appear is
     // a silent mesh failure: the seat looks online yet cannot answer peers. Prove the exact cotal
-    // surface is callable first. The Harness API exposes no MCP-ready event, so an absent call is
-    // not retried or guessed over — the launch fails before it advertises presence.
-    const readiness = await client.run(
-      sessionId,
-      "Call the cotal_orientation tool exactly once now. Do not perform any other work and do not write a response.",
-      { autoApprove: true },
-    );
-    if (!readiness.toolCalls.some((call) => /(?:^|__)cotal_orientation$/.test(call.name)))
+    // surface is callable first. Jcode can finish that first turn on the pre-MCP tool snapshot, then
+    // rebuild the snapshot once the server connects. Repeat the SAME proof exactly once for that
+    // measured race; a second absence is terminal, never a polling loop or a guessed success.
+    const readinessPrompt = "Call the cotal_orientation tool exactly once now. Do not perform any other work and do not write a response.";
+    let readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });
+    const hasOrientation = (run: typeof readiness) =>
+      run.toolCalls.some((call) => /(?:^|__)cotal_orientation$/.test(call.name));
+    if (!hasOrientation(readiness))
+      readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });
+    if (!hasOrientation(readiness))
       throw new Error(
-        "jcode connector: the cotal MCP bridge did not become callable during its mandatory readiness turn — refusing to join a mesh seat without its tool surface",
+        "jcode connector: the cotal MCP bridge did not become callable during its mandatory readiness turns — refusing to join a mesh seat without its tool surface",
       );
     client.on("close", () => void shutdown(1));
     client.on("session_status", (event: ApiEvent) => {

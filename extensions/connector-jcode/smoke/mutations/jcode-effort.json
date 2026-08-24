@@ -1,6 +1,6 @@
 {
   "command": "pnpm smoke:jcode-host",
-  "progressPattern": "✓",
+  "progressPattern": "\u2713",
   "minTicks": 12,
   "mutations": [
     {
@@ -13,7 +13,7 @@
     {
       "name": "Jcode host refuses the launch when the provider rejects the tier",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "        throw new Error(`jcode connector: reasoning effort ${JSON.stringify(config.variant)} was refused for model ${JSON.stringify(model ?? \"(the provider default)\")} — ${(error as Error).message}`);",
+      "find": "        throw new Error(`jcode connector: reasoning effort ${JSON.stringify(config.variant)} was refused for model ${JSON.stringify(model ?? \"(the provider default)\")} \u2014 ${(error as Error).message}`);",
       "replace": "        void error;",
       "expectRed": "a tier the provider refuses ends the launch"
     },
@@ -23,6 +23,20 @@
       "find": "error.message.startsWith(\"jcode connector: reasoning effort \")",
       "replace": "error.message.includes(\"jcode connector: reasoning effort \")",
       "expectRed": "child stderr forging the refusal's wording does not reach the operator"
+    },
+    {
+      "name": "Jcode host retries the mandatory readiness proof after the first-turn MCP snapshot race",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    if (!hasOrientation(readiness))\n      readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });",
+      "replace": "    if (false)\n      readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });",
+      "expectRed": "a first-turn MCP snapshot race is retried once"
+    },
+    {
+      "name": "Jcode host still refuses a permanently absent cotal tool after the bounded retry",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    if (!hasOrientation(readiness))\n      throw new Error(\n        \"jcode connector: the cotal MCP bridge did not become callable during its mandatory readiness turns \u2014 refusing to join a mesh seat without its tool surface\",\n      );",
+      "replace": "    if (false) throw new Error(\"mutant\");",
+      "expectRed": "a permanently absent cotal tool ends the launch"
     }
   ]
 }
