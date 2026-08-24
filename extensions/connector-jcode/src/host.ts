@@ -302,8 +302,9 @@ export async function runJcodeHost(): Promise<void> {
     driving = true;
     turnActive = true;
     void agent.setStatus("working").catch(() => {});
+    let turnClient: JcodeClient | undefined;
     try {
-      const turnClient = client;
+      turnClient = client;
       await turnClient.run(sessionId, parts.join("\n\n"), { autoApprove: true });
       // The SDK's event iterator returns normally when its socket closes. That is not a successful
       // turn: the model may never have received the injection, so preserving the inbox batch is the
@@ -317,7 +318,10 @@ export async function runJcodeHost(): Promise<void> {
       turnActive = false;
       driving = false;
       void agent.setStatus("idle").catch(() => {});
-      if (!reconnecting && (agent.pendingWake() > 0 || wakeQueued)) void drive();
+      // The recovering client owns the one post-close redrive. An old turn that finishes after
+      // replacement must not race it and make the recovery look successful while its own work is
+      // merely retried by a stale finally block.
+      if (!reconnecting && client === turnClient && (agent.pendingWake() > 0 || wakeQueued)) void drive();
     }
   };
 
