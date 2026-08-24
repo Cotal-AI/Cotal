@@ -213,6 +213,7 @@ smoke:adoption-proof
 smoke:adoption-swap-strand
 smoke:adoption-passive-preflight
 smoke:renewal-record-honesty
+smoke:component-health
 smoke:reload-deadline-queue
 smoke:adoption-doctor-e2e
 smoke:membership-rw-renewal
