@@ -18,6 +18,13 @@
       "expectRed": "refuses resume"
     },
     {
+      "name": "Jcode connector carries the requested reasoning-effort tier",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "      env.COTAL_VARIANT = variant;",
+      "replace": "      env.COTAL_VARIANT = \"low\";",
+      "expectRed": "variant rides env as the reasoning effort"
+    },
+    {
       "name": "Jcode inbox relay preserves peek",
       "file": "extensions/connector-jcode/src/host.ts",
       "find": "spec.name === \"cotal_inbox\" ? { ...args, scope: \"pull-only\" } : args,",

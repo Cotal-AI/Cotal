@@ -179,6 +179,8 @@ try {
       COTAL_QUIET: "team",
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
+      COTAL_MODEL: "fake-model",
+      COTAL_VARIANT: "high",
       COTAL_CONTROL_SOCKET: join(root, "control.sock"),
       COTAL_CONTROL_TOKEN: "jcode-host-smoke-control-token",
     },
@@ -258,6 +260,13 @@ try {
   check("host runs the mandatory cotal MCP readiness turn before joining", bootTurns.length === 1, bootTurns);
   const joinNotice = entries().find((entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" && (entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("earlier cotal_orientation result was captured before this join"));
   check("post-join context supersedes the pre-join orientation card", Boolean(joinNotice), joinNotice);
+  const requests = entries().filter((entry) => entry.ev === "request");
+  const effortAt = requests.findIndex((entry) => (entry.frame as { req?: string }).req === "set_reasoning_effort");
+  const effortFrame = effortAt < 0 ? undefined : (requests[effortAt].frame as { effort?: string; session_id?: string });
+  check("requested variant reaches the session as its reasoning effort", effortFrame?.effort === "high", effortFrame);
+  check("reasoning effort is applied to the host's own session", effortFrame?.session_id === "fake-session", effortFrame);
+  const firstTurnAt = requests.findIndex((entry) => (entry.frame as { req?: string; no_reply?: boolean }).req === "send_message" && !(entry.frame as { no_reply?: boolean }).no_reply);
+  check("reasoning effort is set before the session's first turn", effortAt >= 0 && firstTurnAt > effortAt, { effortAt, firstTurnAt });
 
   child.kill("SIGTERM");
   await Promise.race([once(child, "exit"), sleep(10_000)]);
@@ -333,6 +342,57 @@ try {
   check("a permanently absent cotal tool gets exactly two readiness turns", absentTurns.length === 2, absentTurns);
   check("a permanently absent cotal tool ends the launch", absentCode !== null && absentCode !== 0, { code: absentCode, stderr: absentErr });
   check("a permanently absent cotal tool never reaches the roster", !announced.has("absentpeer"), [...announced]);
+
+  // A structured downstream effort rejection is untrusted. Before the repair, this exact canary
+  // reached the external observer/UI because host-main rendered the host-composed refusal verbatim.
+  const effortCanary = "JCODE-REFUSAL-CANARY-3c5e9d77-DO-NOT-PRINT";
+  const refusedLog = join(root, "refused-effort.jsonl");
+  const refused = spawn(tsx, [host], {
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: refusedLog,
+      FAKE_JCODE_REFUSE_EFFORT: "xhigh",
+      FAKE_JCODE_EFFORT_ERROR: `provider rejected xhigh; accepted tiers: minimal, low, high; ${effortCanary}`,
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "refusedpeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_MODEL: "fake-model",
+      COTAL_VARIANT: "xhigh",
+      COTAL_CONTROL_SOCKET: join(root, "refused-control.sock"),
+      COTAL_CONTROL_TOKEN: "refused-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let refusedErr = "";
+  refused.stderr?.on("data", (chunk: Buffer) => (refusedErr += chunk.toString()));
+  await Promise.race([once(refused, "exit"), sleep(20_000)]);
+  const refusedCode = refused.exitCode;
+  if (refusedCode === null) refused.kill("SIGKILL");
+  check("a tier the provider refuses ends the launch", refusedCode !== null && refusedCode !== 0, { code: refusedCode, stderr: refusedErr });
+  check(
+    "effort refusal keeps only its requested tier, effective model, fixed provider code, and accepted ladder",
+    /requested tier "xhigh"/.test(refusedErr) &&
+      /effective model "fake-model"/.test(refusedErr) &&
+      /provider code invalid_request/.test(refusedErr) &&
+      /accepted tiers: minimal, low, high/.test(refusedErr),
+    refusedErr,
+  );
+  check("downstream effort-refusal text never reaches stderr", !refusedErr.includes(effortCanary), refusedErr);
+  check("a seat whose effort was refused never reaches the roster", !announced.has("refusedpeer"), [...announced]);
+  const refusedEntries = existsSync(refusedLog) ? readFileSync(refusedLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev: string; frame?: { req?: string; no_reply?: boolean } }> : [];
+  check(
+    "a seat whose effort was refused never takes a turn",
+    !refusedEntries.some((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply),
+    refusedEntries.filter((entry) => entry.ev === "request").map((entry) => entry.frame?.req),
+  );
 
   // #845 reproduction: `MeshAgent.start()` retries in the background. A post-join notice sent
   // immediately after it is not evidence of a completed join: the broker below is deliberately
