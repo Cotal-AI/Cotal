@@ -490,8 +490,8 @@ export class MeshAgent extends EventEmitter {
         //
         // The counter is keyed on the RECEIVE key — the wire id for real messages, the minted key
         // for id-less ones — so two id-less deliveries never share one tally (#624). It is cleared
-        // whenever the message is actually handled ({@link drainInboxIds}), so one that eventually
-        // lands never accumulates toward the cap.
+        // whenever the message is actually handled ({@link drainInboxDeliveries}), so one that
+        // eventually lands never accumulates toward the cap.
         let giveUp = false;
         if (sacrificingDirected) {
           const seen = (this.overflowEvictions.get(evicted.item.recvKey) ?? 0) + 1;
