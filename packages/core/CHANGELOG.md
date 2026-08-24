@@ -1,5 +1,14 @@
 # @cotal-ai/core
 
+## 0.28.1
+
+### Patch Changes
+
+- 2a383fe: ws/wss dials no longer pass a `tls` block (the URL scheme already decides TLS on the
+  websocket transport, which refuses the option outright), and the standalone channel
+  helpers now pick their transport by scheme instead of always dialing TCP — so
+  `channels list`, `send`, and every endpoint connect work against a `wss://` broker.
+
 ## 0.28.0
 
 ### Minor Changes
