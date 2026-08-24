@@ -156,7 +156,13 @@ try {
   let refusedErr = "";
   refused.stderr?.on("data", (chunk: Buffer) => (refusedErr += chunk.toString()));
   await Promise.race([once(refused, "exit"), sleep(20_000)]);
-  check("a tier the provider refuses ends the launch", refused.exitCode !== 0, { code: refused.exitCode, stderr: refusedErr });
+  const refusedCode = refused.exitCode;
+  if (refusedCode === null) refused.kill("SIGKILL"); // only reachable if the refusal was swallowed; do not leak the seat
+  // `exitCode` is null while the child is STILL RUNNING, and `null !== 0` reads as a refusal — so a
+  // seat that swallowed the rejection and stayed up would pass this cell. Demand a real exit with a
+  // real failure status. (Measured: mutation-proof graded the swallow-the-refusal mutant WRONG-RED
+  // against the looser form, because this cell went green for a host that never exited at all.)
+  check("a tier the provider refuses ends the launch", refusedCode !== null && refusedCode !== 0, { code: refusedCode, stderr: refusedErr });
   check("the refusal names the tier and the model", /"xhigh"/.test(refusedErr) && /"fake-model"/.test(refusedErr), refusedErr);
   const refusedEntries = readFileSync(refusedLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev: string; frame?: { req?: string; no_reply?: boolean } }>;
   check(
