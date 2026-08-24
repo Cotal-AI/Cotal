@@ -1,0 +1,21 @@
+{
+  "command": "pnpm smoke:jcode-host",
+  "progressPattern": "✓",
+  "minTicks": 12,
+  "mutations": [
+    {
+      "name": "Jcode host applies the requested reasoning effort to its session",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "        await client.setReasoningEffort(sessionId, config.variant);",
+      "replace": "        void sessionId;",
+      "expectRed": "requested variant reaches the session as its reasoning effort"
+    },
+    {
+      "name": "Jcode host refuses the launch when the provider rejects the tier",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "        throw new Error(`jcode connector: reasoning effort ${JSON.stringify(config.variant)} was refused for model ${JSON.stringify(model ?? \"(the provider default)\")} — ${(error as Error).message}`);",
+      "replace": "        void error;",
+      "expectRed": "a tier the provider refuses ends the launch"
+    }
+  ]
+}

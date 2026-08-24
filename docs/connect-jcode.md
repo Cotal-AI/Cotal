@@ -9,7 +9,7 @@ the normal `cotal_*` tool surface through Jcode's documented stdio MCP configura
 **Beta** means the supported path is deliberately narrow: a fresh private session, prompt
 injection, presence, managed start/stop, and an attached TUI work. Features that do not preserve
 that private session's mesh surface fail loud: `--resume`, exact-session continuation,
-`--variant`, `--share-tools`, `--events`, and connector `--opt` values are not supported.
+`--share-tools`, `--events`, and connector `--opt` values are not supported.
 
 ## Install
 
@@ -85,12 +85,26 @@ it is not the requested model; a seat is never allowed to join under a model lab
 receive. The connector does not currently offer a Cotal model catalog because the Harness API's
 `listModels()` is session-scoped and provider-specific.
 
+`--variant` is the session's **reasoning effort**, applied after the model and before the seat's
+first turn — so a seat never serves a turn at an effort nobody chose. A persona's `variant:` is the
+default and `--variant` overrides it, the same way `model:` and `--model` work:
+
+```bash
+cotal spawn --agent jcode --model gpt-5.6-sol --variant high
+```
+
+Which tiers exist depends on the provider **and** the model (`low`/`medium`/`high`, plus `minimal`,
+`xhigh`, `max`, or `none` on the providers that offer them). The connector does not carry its own
+copy of those ladders: it passes the requested tier to Jcode, which validates it against the active
+model's ladder and names the accepted set when it refuses. A tier the provider rejects — and a model
+with no reasoning-effort surface at all — ends the launch with that reason, rather than quietly
+starting the seat at some other effort. Omit `--variant` to keep Jcode's own configured default.
+
 The following fail loud before a new session is provisioned where the manager can preflight them,
 or at connector launch as a backstop:
 
 - **Resume / continuation:** a Cotal seat owns a new private Jcode instance. Reusing a session from
   an operator or another seat would violate that ownership boundary.
-- **Variants:** Jcode reasoning effort is an API operation but has no Cotal variant mapping yet.
 - **Tool sharing:** Jcode resolves its MCP configuration from several global and project sources.
   The connector owns a private configuration containing only `cotal`, rather than claim a chosen
   subset can be safely merged.

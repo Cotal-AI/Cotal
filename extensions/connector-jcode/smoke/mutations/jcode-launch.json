@@ -16,6 +16,13 @@
       "find": "if (opts.resume)\n      throw new Error(\"jcode connector: resuming an existing session is not supported — the private Harness API instance never shares a session with another seat\");",
       "replace": "if (false) throw new Error(\"mutant\");",
       "expectRed": "refuses resume"
-    }
+    },
+    {
+      "name": "Jcode connector carries the REQUESTED reasoning-effort tier, not a substituted one",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "      env.COTAL_VARIANT = variant;",
+      "replace": "      env.COTAL_VARIANT = \"low\";",
+      "expectRed": "variant rides env as the reasoning effort"
+    },
   ]
 }

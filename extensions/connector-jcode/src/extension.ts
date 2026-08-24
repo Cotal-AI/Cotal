@@ -19,6 +19,12 @@ export const jcodeConnector: Connector = {
   kind: "connector",
   name: "jcode",
   requires: ["jcode"],
+  // variant = Jcode's per-session reasoning effort (`set_reasoning_effort`). The accepted tiers are
+  // per provider AND per model, and the Harness API publishes no ladder to check against — so the
+  // tier is carried verbatim and validated at launch by Jcode itself, which owns that catalog and
+  // names the accepted set when it refuses. Copying the ladder here would be a second table that
+  // can disagree with the one that decides.
+  supportsModelVariant: true,
   launchHint: "starting Jcode and joining the mesh",
 
   buildLaunch(opts: LaunchOpts): LaunchSpec {
@@ -28,8 +34,6 @@ export const jcodeConnector: Connector = {
       throw new Error("jcode connector does not support exact-session continuation — its private Harness API instance is retired with the seat");
     if (opts.resume)
       throw new Error("jcode connector: resuming an existing session is not supported — the private Harness API instance never shares a session with another seat");
-    if (opts.variant)
-      throw new Error("jcode connector: model variants are not supported");
     if (opts.mcpServers && Object.keys(opts.mcpServers).length > 0)
       throw new Error("jcode connector: tool-sharing (connectors.jcode.mcpServers) is not implemented — the connector owns the private MCP configuration that carries cotal_*");
 
@@ -60,12 +64,24 @@ export const jcodeConnector: Connector = {
     }
 
     let model = opts.model;
+    let variant = opts.variant;
     if (opts.configPath) {
       const path = resolve(opts.configPath);
       env.COTAL_AGENT_FILE = path;
-      model ??= loadAgentFile(path).model;
+      const def = loadAgentFile(path);
+      model ??= def.model;
+      variant ??= def.variant;
     }
     if (model) env.COTAL_MODEL = model;
+    // The reasoning effort the host applies to the session before its first turn. A whitespace-only
+    // tier is refused rather than dropped: it would otherwise read as an honored request while the
+    // seat silently ran at Jcode's own default.
+    if (variant !== undefined) {
+      variant = variant.trim();
+      if (!variant)
+        throw new Error("jcode connector: a model variant was given but it is empty — there is no reasoning effort to select");
+      env.COTAL_VARIANT = variant;
+    }
 
     // The Harness API exposes model selection, but no stable generic equivalent to arbitrary
     // CLI/config overrides. Do not accept `--opt` merely because Jcode's TUI has flags: an option

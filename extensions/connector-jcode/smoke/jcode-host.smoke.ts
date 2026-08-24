@@ -83,6 +83,8 @@ try {
       COTAL_ALLOW_PUBLISH: "team",
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
+      COTAL_MODEL: "fake-model",
+      COTAL_VARIANT: "high",
       COTAL_CONTROL_SOCKET: join(root, "control.sock"),
       COTAL_CONTROL_TOKEN: "jcode-host-smoke-control-token",
     },
@@ -109,9 +111,59 @@ try {
   const bootTurns = entries().filter((entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" && !(entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("cotal_orientation"));
   check("host runs the mandatory cotal MCP readiness turn before joining", bootTurns.length === 1, bootTurns);
 
+  // The Cotal variant IS the session's reasoning effort. Assert the requested TIER reaches the
+  // Harness API — the value on the wire, not that some call happened — and that it lands before the
+  // first turn, so no turn is ever served at an effort the operator did not ask for.
+  const requests = entries().filter((entry) => entry.ev === "request");
+  const effortAt = requests.findIndex((entry) => (entry.frame as { req?: string }).req === "set_reasoning_effort");
+  const effortFrame = effortAt < 0 ? undefined : (requests[effortAt].frame as { effort?: string; session_id?: string });
+  check("requested variant reaches the session as its reasoning effort", effortFrame?.effort === "high", effortFrame);
+  check("reasoning effort is applied to the host's own session", effortFrame?.session_id === "fake-session", effortFrame);
+  const firstTurnAt = requests.findIndex((entry) => (entry.frame as { req?: string; no_reply?: boolean }).req === "send_message" && !(entry.frame as { no_reply?: boolean }).no_reply);
+  check("reasoning effort is set before the session's first turn", effortAt >= 0 && firstTurnAt > effortAt, { effortAt, firstTurnAt });
+
   child.kill("SIGTERM");
   await Promise.race([once(child, "exit"), sleep(10_000)]);
   check("host exits cleanly on SIGTERM", child.exitCode === 0, { code: child.exitCode, stderr });
+
+  // Deliberate failing case: Jcode owns the per-model effort ladder, so a tier its provider rejects
+  // must end the launch rather than leave a seat running at an effort nobody chose. The refusal has
+  // to NAME the model, or an operator cannot tell which ladder refused them.
+  const refusedLog = join(root, "refused.jsonl");
+  const refused = spawn(tsx, [host], {
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: refusedLog,
+      FAKE_JCODE_REFUSE_EFFORT: "xhigh",
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "refusedpeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_MODEL: "fake-model",
+      COTAL_VARIANT: "xhigh",
+      COTAL_CONTROL_SOCKET: join(root, "refused-control.sock"),
+      COTAL_CONTROL_TOKEN: "refused-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let refusedErr = "";
+  refused.stderr?.on("data", (chunk: Buffer) => (refusedErr += chunk.toString()));
+  await Promise.race([once(refused, "exit"), sleep(20_000)]);
+  check("a tier the provider refuses ends the launch", refused.exitCode !== 0, { code: refused.exitCode, stderr: refusedErr });
+  check("the refusal names the tier and the model", /"xhigh"/.test(refusedErr) && /"fake-model"/.test(refusedErr), refusedErr);
+  const refusedEntries = readFileSync(refusedLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev: string; frame?: { req?: string; no_reply?: boolean } }>;
+  check(
+    "a seat whose effort was refused never takes a turn",
+    !refusedEntries.some((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply),
+    refusedEntries.filter((entry) => entry.ev === "request").map((entry) => entry.frame?.req),
+  );
 
   // Deliberate failing case: project MCP files would override Jcode's private cotal config, so the
   // host must refuse before it starts an API bridge rather than silently loading another server.

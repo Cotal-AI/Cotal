@@ -64,6 +64,20 @@ const server = createServer((socket) => {
         case "ping":
           reply({ ev: frame.req === "ping" ? "pong" : "ok" });
           break;
+        // Real Jcode validates the tier against the active provider's ladder and refuses the ones
+        // outside it. FAKE_JCODE_REFUSE_EFFORT names the tier this harness rejects, so the same fake
+        // covers an accepted effort and a provider that will not serve the requested one.
+        case "set_reasoning_effort":
+          if (process.env.FAKE_JCODE_REFUSE_EFFORT === frame.effort) {
+            reply({
+              ev: "error",
+              code: "invalid_request",
+              message: `Reasoning effort '${frame.effort}' is not supported by the current model/profile (available: low, medium, high)`,
+            });
+          } else {
+            reply({ ev: "ok" });
+          }
+          break;
         case "get_runtime_info":
           reply({ ev: "runtime_info", session_id: frame.session_id, model: "fake-model", routes: [] });
           break;

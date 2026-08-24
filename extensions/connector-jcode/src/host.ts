@@ -368,6 +368,21 @@ export async function runJcodeHost(): Promise<void> {
         );
     }
     if (config.model) await client.setModel(sessionId, config.model);
+    // The Cotal variant IS Jcode's per-session reasoning effort. It is applied here — after the
+    // model, before the instructions and the readiness turn — so no turn this seat serves ever runs
+    // at an effort its operator did not choose. The accepted tiers are per provider AND per model,
+    // and the Harness API publishes no ladder to check against, so the tier is validated by the
+    // component that owns that catalog: Jcode refuses, naming the set it would have taken, and the
+    // refusal ends the launch. Clamping to a neighbouring tier would put a seat on the mesh
+    // deliberating at a level nobody asked for, which is the failure this whole path exists to stop.
+    if (config.variant) {
+      const model = (await client.getRuntimeInfo(sessionId)).model ?? config.model;
+      try {
+        await client.setReasoningEffort(sessionId, config.variant);
+      } catch (error) {
+        throw new Error(`jcode connector: reasoning effort ${JSON.stringify(config.variant)} was refused for model ${JSON.stringify(model ?? "(the provider default)")} — ${(error as Error).message}`);
+      }
+    }
     // On a resume the persona/instructions are already the first thing in this transcript. Re-sending
     // them would replay the whole briefing on every restart and grow the context without adding to it.
     if (!resumed) {

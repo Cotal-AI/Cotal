@@ -85,9 +85,20 @@ try {
   })());
 
   const persona = join(dir, "agent.md");
-  writeFileSync(persona, "---\nname: seat\nmodel: from-file\n---\nPersona\n");
+  writeFileSync(persona, "---\nname: seat\nmodel: from-file\nvariant: medium\n---\nPersona\n");
   check("uses agent-file model as a default", jcodeConnector.buildLaunch({ space: "s", name: "seat", configPath: persona }).env?.COTAL_MODEL === "from-file");
   check("explicit model wins over agent file", jcodeConnector.buildLaunch({ space: "s", name: "seat", configPath: persona, model: "flag" }).env?.COTAL_MODEL === "flag");
+
+  // The variant IS Jcode's per-session reasoning effort. The connector carries the requested tier
+  // verbatim; the tier is validated at launch by the provider that owns the ladder (the host calls
+  // set_reasoning_effort and lets Jcode refuse), so nothing here re-implements that catalog.
+  check("variant support is declared", jcodeConnector.supportsModelVariant === true);
+  const tiered = jcodeConnector.buildLaunch({ space: "space", name: "seat", model: "gpt-5.6-sol", variant: "xhigh" });
+  check("variant rides env as the reasoning effort", tiered.env?.COTAL_VARIANT === "xhigh", tiered.env);
+  check("variant reaches the host config seam", configFromEnv(tiered.env).variant === "xhigh");
+  check("variant is absent when unrequested", base.env?.COTAL_VARIANT === undefined);
+  check("uses agent-file variant as a default", jcodeConnector.buildLaunch({ space: "s", name: "seat", configPath: persona }).env?.COTAL_VARIANT === "medium");
+  check("explicit variant wins over agent file", jcodeConnector.buildLaunch({ space: "s", name: "seat", configPath: persona, variant: "max" }).env?.COTAL_VARIANT === "max");
 
   // Jcode decorates its MCP calls with these two harness fields. The bridge extends only the
   // advertised host schema and strips them before relaying; arbitrary Cotal inputs remain closed.
@@ -99,7 +110,7 @@ try {
   throws("refuses empty prompt", () => jcodeConnector.buildLaunch({ space: "s", name: "n", prompt: "  " }), /empty/);
   throws("refuses resume", () => jcodeConnector.buildLaunch({ space: "s", name: "n", resume: "old" }), /resum/i);
   throws("refuses exact-session continuation", () => jcodeConnector.buildLaunch({ space: "s", name: "n", continueSession: "old" }), /continuation/);
-  throws("refuses variants", () => jcodeConnector.buildLaunch({ space: "s", name: "n", variant: "high" }), /variants/);
+  throws("refuses an empty variant", () => jcodeConnector.buildLaunch({ space: "s", name: "n", variant: "  " }), /empty/);
   throws("refuses tool sharing", () => jcodeConnector.buildLaunch({ space: "s", name: "n", mcpServers: { extra: { command: "x" } } }), /tool-sharing/);
   throws("refuses unsupported launch options", () => jcodeConnector.buildLaunch({ space: "s", name: "n", launchOptions: { profile: "full" } }), /launch options are not supported/);
   throws("still validates malformed launch option keys", () => jcodeConnector.buildLaunch({ space: "s", name: "n", launchOptions: { "a=b": "x" } }), /not a valid flag name/);
