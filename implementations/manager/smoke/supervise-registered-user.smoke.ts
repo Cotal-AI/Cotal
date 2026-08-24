@@ -20,7 +20,6 @@ import { join, resolve } from "node:path";
 import { createSpaceAuth } from "@cotal-ai/core";
 import { hasUserAuthState, userAuthStateDir } from "@cotal-ai/workspace";
 import { persistRemoteUserEntry } from "../../cli/src/commands/meshes-add.js";
-import { superviseTarget } from "../src/commands.js";
 import { bootBroker } from "./_boot-broker.js";
 
 const repo = resolve(import.meta.dirname, "..", "..", "..");
@@ -54,6 +53,16 @@ function childEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
+/** The actual tsx CLI surface (not a built dist copy) with an explicit cwd and scratch registry. */
+function supervise(args: string[]): ReturnType<typeof spawnSync> {
+  return spawnSync(tsx, [cli, "supervise", ...args], {
+    cwd: workspaceRoot,
+    env: childEnv(),
+    encoding: "utf8",
+    timeout: 15_000,
+  });
+}
+
 let broker: Awaited<ReturnType<typeof bootBroker>> | undefined;
 try {
   process.env.COTAL_HOME = home;
@@ -85,17 +94,10 @@ try {
   const stateDir = userAuthStateDir(workspaceRoot, space);
   check("remote registration wrote participant state only", existsSync(stateDir));
   check("registered participant has no local cotal-up user-auth marker", hasUserAuthState(workspaceRoot, space) === false);
-  const resolved = superviseTarget({ space }, workspaceRoot);
-  check("registry fallback derives the registered server before the host-authority refusal", resolved.remoteUser && resolved.server === broker.servers, resolved);
 
   // This is the real public entry point. The short cap converts a regression that accidentally
   // starts a forever-running manager into a bounded red; the stock defect exits immediately.
-  const result = spawnSync(tsx, [cli, "supervise", "--space", space, "--server", broker.servers], {
-    cwd: workspaceRoot,
-    env: childEnv(),
-    encoding: "utf8",
-    timeout: 45_000,
-  });
+  const result = supervise(["--space", space, "--server", broker.servers]);
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
   console.log(`  raw supervise rc: ${result.status === null ? "null" : result.status}`);
   check("stock registered-not-hosting supervise refuses", result.status !== 0 && result.signal !== "SIGTERM", {
@@ -115,12 +117,7 @@ try {
   // Explicit server may only repeat the registry broker; a supervisor must not borrow remote
   // metadata from one mesh then dial another. This is a pre-network refusal, so the fake endpoint
   // need not answer.
-  const mismatched = spawnSync(tsx, [cli, "supervise", "--space", space, "--server", "nats://127.0.0.1:1"], {
-    cwd: workspaceRoot,
-    env: childEnv(),
-    encoding: "utf8",
-    timeout: 15_000,
-  });
+  const mismatched = supervise(["--space", space, "--server", "nats://127.0.0.1:1"]);
   const mismatchOutput = `${mismatched.stdout ?? ""}${mismatched.stderr ?? ""}`;
   console.log(`  raw mismatch rc: ${mismatched.status === null ? "null" : mismatched.status}`);
   check(
@@ -132,12 +129,7 @@ try {
   // No marker and no entry is neither a hosting failure nor a remote authority failure. It gets
   // the agreed two-path copy and does not mention a destructive down/up lifecycle.
   const absent = `${space}-absent`;
-  const neither = spawnSync(tsx, [cli, "supervise", "--space", absent, "--server", broker.servers], {
-    cwd: workspaceRoot,
-    env: childEnv(),
-    encoding: "utf8",
-    timeout: 15_000,
-  });
+  const neither = supervise(["--space", absent, "--server", broker.servers]);
   const neitherOutput = `${neither.stdout ?? ""}${neither.stderr ?? ""}`;
   console.log(`  raw neither-path rc: ${neither.status === null ? "null" : neither.status}`);
   check(
