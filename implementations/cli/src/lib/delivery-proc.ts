@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, openSync, closeSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import {
   DEFAULT_SERVER,
+  LEASE_TTL_MS,
   mintCreds,
   newIdentity,
   waitForDeliveryLease,
@@ -156,17 +157,34 @@ export async function ensureDelivery(o: Opts = {}, probe: LivenessProbe = probeL
         `Cotal will not guess: reusing it would report a daemon that is not there, and starting a second would put two daemons on one fanout.\n` +
         `NEXT: verify the process yourself (\`ps -p <pid>\`). If it is gone, remove \`.cotal/delivery.pid\` and re-run. If it is running, use it or stop it.`,
     );
+  let launched: number | undefined;
   if (deliveryState !== "alive") {
     // The store's put hardens `.cotal/` first (the cred is born under a private ACL, no race) and
     // lands it atomically — same path and bytes as before the seam.
     await credsStore().put(DELIVERY_CREDS_KEY, creds);
-    startDeliveryDetached({ ...o, space, server });
+    launched = startDeliveryDetached({ ...o, space, server });
   }
   // ALWAYS wait for the daemon to be READY (lease flipped ready AFTER it bound ctl.delivery) before
   // returning — for a fresh launch AND a reused live daemon — so agents the manager spawns next find the
   // responder for their boot self-join. Non-fatal on timeout: the boot self-join reconciles with backoff,
   // which is the real safety net for a slow start or a later outage.
-  const ready = await waitForDeliveryLease({ servers: server, space, creds, id: id.id });
+  //
+  // WHOSE readiness matters. A fresh launch waits for THE DAEMON IT JUST STARTED: its lease holder is
+  // the endpoint id of the cred written above (the daemon adopts `idFromCreds` of that file), so the
+  // wait cannot be answered by some other daemon's — or a dead one's — leftover `ready:true` record.
+  // A reuse adopts a daemon that was already running and cannot know its id, so it waits for any.
+  const ready = await waitForDeliveryLease({ servers: server, space, creds, id: id.id, holder: launched !== undefined ? id.id : undefined });
+  // A launch we performed whose process is GONE is not a slow start, and reporting it as one is the
+  // #837 false-green: the daemon lost the single-flight CAS to a live-or-stale lease and exited (it
+  // says so in `.cotal/delivery.log`), while this returned `running: true` over a pidfile fronting a
+  // dead pid. No fallback — the caller hears it.
+  if (!ready && launched !== undefined && probe(launched) === "dead")
+    throw new Error(
+      `the delivery daemon started for space "${space}" (pid ${launched}) exited without becoming ready, and the shard-0 lease is not held by it.\n` +
+        `That is what a lost single-flight CAS looks like: another daemon holds the lease, or a crashed holder's lease has not yet expired (it does after ${LEASE_TTL_MS / 1000}s).\n` +
+        `Refusing to report a daemon that is not running. The daemon logged its own reason to ${cotalPath("delivery.log")}.\n` +
+        `NEXT: read that log; if no other daemon is running, wait for the stale lease to expire and re-run.`,
+    );
   if (!ready)
     console.error("• delivery daemon not yet ready (responder not bound) - boot durable joins will reconcile when it is");
   return { running: true };

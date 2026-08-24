@@ -56,6 +56,17 @@ credential** co-located with the broker: never an allow-all cred, and it never h
 signing key. One daemon serves a space (a single-flight lease guards against a second binding the
 same durables).
 
+It inherits the mesh's transport on **every** launch, including the relaunch a bare `cotal up`
+performs when the daemon is missing. A TLS-required mesh always starts it with TLS demanded, so it
+refuses a plaintext listener rather than upgrading on the server's unauthenticated greeting — it
+holds a standing credential and reconnects unattended, so a downgrade here would repeat with nobody
+watching. See [transport.md](transport.md).
+
+`cotal up` reports the daemon **only when it is actually serving**. If a daemon it started exits
+without taking the single-flight lease — another daemon holds it, or a crashed holder's lease has
+not expired yet — `up` says so and exits non-zero instead of printing a healthy control plane over a
+daemon that is not there. The daemon writes its own reason to `.cotal/delivery.log`.
+
 **Open dev mode has no delivery daemon.** Open mode is deliberately **live-only**: there is no
 trusted reader, so there is no durable backstop. Run an auth mesh if you need durable channels.
 

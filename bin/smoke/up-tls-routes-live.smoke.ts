@@ -283,6 +283,20 @@ function admitOverTls(port: number, caFile: string, servername: string, timeoutM
 }
 
 const homes: { home: string; port: number; cwd: string }[] = [];
+/** The live delivery child's argv for a given broker port, or "" when there is none. Routes M and
+ *  S11 both gate on the FLAG the launcher passed, not on daemon readiness: a flagless daemon is
+ *  healthy-looking by construction, so readiness cannot distinguish it.
+ *
+ *  Matched on the ARGV SHAPE (`deliver --space`), not on the bare word: a checkout whose PATH
+ *  contains "delivery" makes every cotal process — the manager's `supervise` included — match a
+ *  substring search, so the control "no delivery process survives" reported one that was not there. */
+function deliveryArgv(port: number): string {
+  const ps = spawnSync("bash", ["-lc",
+    `ps -ax -o args= | grep -F 'deliver --space' | grep -F '${port}' | grep -v grep || true`],
+    { encoding: "utf8" });
+  return (ps.stdout ?? "").trim().split("\n").filter(Boolean)[0] ?? "";
+}
+
 function sandbox(): { home: string; cwd: string } {
   const home = join(root, `home-${homes.length}`);
   const cwd = join(root, `proj-${homes.length}`);
@@ -871,15 +885,69 @@ async function main(): Promise<void> {
     assert.match(up.out, /delivery/, `CONTROL: summary should mention delivery:\n${up.out}`);
 
     // Inspect the live delivery child. Prefer ps argv containing this server/space.
-    const ps = spawnSync("bash", ["-lc",
-      `ps -ax -o args= 2>/dev/null | grep -F 'deliver' | grep -F '${port}' | grep -v grep || true`],
-      { encoding: "utf8" });
-    const line = (ps.stdout ?? "").trim().split("\n").filter(Boolean)[0] ?? "";
+    const line = deliveryArgv(port);
     assert.ok(line, `CONTROL: no delivery process found for port ${port};\nup out:\n${up.out}`);
     assert.match(line, /--tls\b/,
       `GATE FAILED (S9): delivery launched WITHOUT --tls (flagless auto-upgrade):\n${line}`);
 
     console.log("  ✓ S9: fresh TLS detach launches delivery with --tls");
+    cotal(["down"], home, cwd);
+  });
+
+  // ── N': S11 (#836) — A REFRESH THAT RELAUNCHES DELIVERY MUST CARRY THE TRANSPORT IT DECIDED. ───
+  //    Route M covers the FRESH detach. This covers the same-root refresh, which decided the fact
+  //    from the mesh REGISTRY entry (reconciled against live INFO) and then handed it to nobody:
+  //    `startDeliveryWithBroker` re-derived it from `<root>/.cotal/broker-policy.json` instead. The
+  //    two durable records are written by different paths, so wherever the policy file is absent —
+  //    a root registered with `cotal meshes add --tls`, or a mesh predating the policy file — the
+  //    relaunched daemon went out FLAGLESS against a TLS broker and looked entirely healthy,
+  //    because it still upgrades on the unauthenticated INFO. It holds a STANDING credential and
+  //    reconnects unattended, so that is a repeating exposure, not a one-shot.
+  //
+  //    The precondition is that divergence and nothing else: policy file gone, registry entry
+  //    (tlsRequired) intact, listener still live and still TLS. Everything after it is the real CLI.
+  await route("delivery-refresh-keeps-tls", async () => {
+    const { home, cwd } = sandbox();
+    const port = await freePort();
+    homes.push({ home, port, cwd });
+    const up = cotal(["up", "--detach", "--server", `nats://127.0.0.1:${port}`,
+      "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
+    assert.equal(up.status, 0, `TLS auth mesh must start:\n${up.out}`);
+
+    // Stop ONLY the delivery daemon, so the refresh below has one to relaunch — and so the argv
+    // grepped afterwards is provably the NEW child. Without this control the assertion would be
+    // satisfied by the original, correctly-flagged daemon still running.
+    const pidFile = join(cwd, ".cotal", "delivery.pid");
+    assert.ok(existsSync(pidFile), `CONTROL: fresh TLS up must leave a delivery pidfile:\n${up.out}`);
+    const oldPid = Number(readFileSync(pidFile, "utf8").trim());
+    try { process.kill(oldPid, "SIGTERM"); } catch { /* already gone */ }
+    for (let i = 0; i < 100; i++) {
+      try { process.kill(oldPid, 0); } catch { break; }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    rmSync(pidFile, { force: true });
+    assert.equal(deliveryArgv(port), "", `CONTROL: no delivery process may survive for port ${port}`);
+
+    // The divergence: this root now records the TLS requirement ONLY in the mesh registry.
+    const policy = join(cwd, ".cotal", "broker-policy.json");
+    assert.ok(existsSync(policy), "CONTROL: fresh TLS up must have committed a policy file");
+    rmSync(policy, { force: true });
+
+    const refresh = cotal(["up", "--server", `nats://127.0.0.1:${port}`], home, cwd);
+    assert.equal(refresh.status, 0, `bare refresh of a live TLS mesh must succeed:\n${refresh.out}`);
+    assert.equal((await serverInfo(port))?.tls_required, true, "CONTROL: listener must still be TLS");
+
+    let line = "";
+    for (let i = 0; i < 100; i++) {
+      line = deliveryArgv(port);
+      if (line) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(line, `CONTROL: refresh started no delivery daemon for port ${port};\n${refresh.out}`);
+    assert.match(line, /--tls\b/,
+      `GATE FAILED (S11/#836): refresh relaunched delivery WITHOUT --tls against a TLS-required broker:\n${line}`);
+
+    console.log("  ✓ S11: same-root refresh relaunches delivery with --tls from the registry record");
     cotal(["down"], home, cwd);
   });
 
@@ -944,11 +1012,11 @@ async function main(): Promise<void> {
     if (!o.ok) console.log((o.err ?? "").split("\n").map((l) => `        ${l}`).join("\n"));
   }
   const failed = outcomes.filter((o) => !o.ok);
-  if (outcomes.length !== 15)
-    throw new Error(`HARNESS: expected 15 routes, recorded ${outcomes.length} — a route did not run at all`);
+  if (outcomes.length !== 16)
+    throw new Error(`HARNESS: expected 16 routes, recorded ${outcomes.length} — a route did not run at all`);
   if (failed.length > 0)
-    throw new Error(`${failed.length}/15 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
-  console.log("✓ up-tls-routes: 15/15 routes encrypt or refuse; admission proved on each, one variable apart");
+    throw new Error(`${failed.length}/16 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
+  console.log("✓ up-tls-routes: 16/16 routes encrypt or refuse; admission proved on each, one variable apart");
 }
 
 try {

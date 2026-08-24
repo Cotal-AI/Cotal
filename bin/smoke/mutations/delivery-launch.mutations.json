@@ -1,0 +1,70 @@
+{
+  "suite": "bin/smoke/up-tls-routes-live.smoke.ts (M1), bin/smoke/up-stack-live.smoke.ts (M2, M3)",
+  "guard": "the delivery daemon is launched with the transport its mesh requires (#836), and a launch that never took the lease is reported as the failure it is rather than as a healthy control plane (#837)",
+  "command": "pnpm build > /dev/null && pnpm smoke:up-stack:live",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/delivery-launch.mutations.json",
+  "why": [
+    "BOTH DEFECTS LOOK HEALTHY FROM THE OUTSIDE, which is why the assertions are on the LAUNCH and on",
+    "the EXIT CODE rather than on anything the daemon reports about itself. A daemon started without",
+    "`--tls` against a TLS broker still connects - it upgrades on the server's unauthenticated INFO -",
+    "so no readiness check can distinguish it from a correctly launched one. M1 therefore reddens an",
+    "assertion about the ARGV the launcher passed.",
+    "",
+    "M2 AND M3 ARE THE TWO HALVES OF ONE ANSWER, and each is load-bearing on its own. M2 restores the",
+    "unscoped wait: readiness is then satisfied by the OTHER daemon's ready lease, so the launch reads",
+    "as a slow start that finished. M3 leaves the wait scoped but restores the silent return: the wait",
+    "correctly fails and the caller reports success anyway. Either one alone re-opens #837, so both",
+    "must redden the same assertion - the exit code of a refresh whose child is already dead.",
+    "",
+    "M2/M3 RUN THE CLI AS A SUBPROCESS, so they mutate a module that only `dist/` delivers to it:",
+    "`@cotal-ai/cli` resolves to its build. Every mutation here builds first and rebuilds in",
+    "`afterRestore` - `dist/` is gitignored, so git cannot be the recovery for a tree left holding a",
+    "build compiled from the mutant.",
+    "",
+    "ONLY M1 DECLARES A `completionMarker`. Its suite prints the per-route table pass or fail, so a",
+    "run that never reaches it died of something other than the route. `up-stack` is fail-fast (its",
+    "`ok` throws), so it has no line common to both outcomes and declaring one would grade every",
+    "genuine kill INCONCLUSIVE.",
+    "",
+    "M3 DISABLES ITS BRANCH WITH A TRAILING `&& false`, AND BOTH OTHER SHAPES WERE MEASURED FIRST.",
+    "Prefixing the condition with `false &&` stops TypeScript narrowing `launched` for the `probe(launched)`",
+    "call two operands later: the build failed with TS2345 and the run graded WRONG-RED at ZERO marks,",
+    "having never reached the suite - a mutation that cannot compile grades the compiler. Asking the probe",
+    "for \"alive\" instead compiles, and is worse: the guard then fires on a daemon that is merely SLOW, so",
+    "the mutant reddened an EARLIER assertion in the healthy first `up --detach` and graded WRONG-RED at 8",
+    "marks. Only the trailing `&& false` leaves narrowing and every healthy path intact and removes exactly",
+    "the refusal under test - which is why the anchor is the condition alone rather than the two-line",
+    "condition-plus-throw the first version used."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the delivery launcher re-derives the transport from the broker policy instead of taking the caller's decision (#836)",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "    await ensureControlPlane({ space, server, tls: tlsRequired, ...(mgr ?? {}) });",
+      "replace": "    void tlsRequired;\n    await ensureControlPlane({ space, server, tls: readBrokerPolicy(cotalRoot())?.transport.kind === \"tls-required\", ...(mgr ?? {}) });",
+      "expectRed": "GATE FAILED (S11/#836): refresh relaunched delivery WITHOUT --tls against a TLS-required broker",
+      "note": "The exact shape that shipped: the caller's decision present and unused, the callee consulting a SECOND durable record. A root that records tlsRequired in the mesh registry without a broker-policy file - which is what the S11 route builds, and what a refresh of an adopted mesh looks like - then launches the daemon flagless. `void tlsRequired` keeps the parameter used so the mutant compiles; a mutation that cannot build grades the compiler, not the suite.",
+      "command": "pnpm build > /dev/null && pnpm smoke:up-tls-routes",
+      "completionMarker": "── route outcomes ──",
+      "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M2 the readiness wait stops naming the daemon it launched, so another daemon's ready lease answers for it (#837)",
+      "file": "implementations/cli/src/lib/delivery-proc.ts",
+      "find": "holder: launched !== undefined ? id.id : undefined });",
+      "replace": "holder: undefined });",
+      "expectRed": "a refresh whose delivery launch loses the single-flight lease exits non-zero",
+      "note": "The false-green as it reached operators: `up` exits 0 and prints a healthy control plane while the daemon it started has already exited on a lost CAS, leaving a pidfile that fronts a dead pid.",
+      "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M3 a launch that is provably dead is reported as a slow start instead of a failure (#837)",
+      "file": "implementations/cli/src/lib/delivery-proc.ts",
+      "find": "if (!ready && launched !== undefined && probe(launched) === \"dead\")",
+      "replace": "if (!ready && launched !== undefined && probe(launched) === \"dead\" && false)",
+      "expectRed": "a refresh whose delivery launch loses the single-flight lease exits non-zero",
+      "note": "The scoped wait alone is not enough: it returns false, the caller prints a note about a daemon that will be ready shortly, and returns running:true for a process that is gone. `probe(launched) === \"dead\"` is what separates a slow start from a dead one, and only a launch WE performed is ours to judge.",
+      "afterRestore": "pnpm build > /dev/null"
+    }
+  ]
+}

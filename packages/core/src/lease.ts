@@ -62,12 +62,21 @@ export async function openDeliveryRegistry(
  *  or the timeout elapses. Used by the CLI's `ensureDelivery` to wait for readiness before the manager
  *  spawns agents (so their boot self-join finds the responder). Connects with the daemon's own scoped
  *  creds (`id` sets the `_INBOX_<id>` prefix the cred's `sub.allow` permits for the kv.get reply).
- *  Returns false on timeout / unreachable — the caller treats it as non-fatal (boot self-join reconciles). */
+ *  Returns false on timeout / unreachable — the caller treats it as non-fatal (boot self-join reconciles).
+ *
+ *  `holder` is WHOSE readiness is being waited for, and it is NOT optional information (#837).
+ *  This used to accept ANY ready lease, which made it answer a question nobody asked: a daemon that
+ *  was SIGKILLed leaves its `ready:true` record behind for the rest of the bucket TTL, so a freshly
+ *  launched replacement that LOST the CAS and exited was reported ready off the corpse's lease —
+ *  `up` printed green with no daemon running at all. Pass the launched daemon's endpoint id
+ *  (`idFromCreds` of the cred it was given) to demand that daemon; pass `undefined` only when
+ *  ADOPTING a daemon that was already running, whose id is genuinely not knowable from here. */
 export async function waitForDeliveryLease(opts: {
   servers: string;
   space: string;
   creds: string;
   id: string;
+  holder: string | undefined;
   timeoutMs?: number;
 }): Promise<boolean> {
   const deadline = Date.now() + (opts.timeoutMs ?? 8000);
@@ -83,8 +92,13 @@ export async function waitForDeliveryLease(opts: {
     while (Date.now() < deadline) {
       const e = await kv.get(leaseKey(0));
       if (e && e.operation !== "DEL" && e.operation !== "PURGE") {
-        // Wait for READY (responder bound), not just lease existence (single-flight slot claimed).
-        try { if (e.json<DeliveryLeaseInfo>().ready === true) return true; } catch { /* re-poll */ }
+        // READY (responder bound), not merely lease existence (single-flight slot claimed) — AND
+        // held by the daemon we are waiting for, when the caller named one. A foreign or stale
+        // holder's ready flag says nothing about ours.
+        try {
+          const info = e.json<DeliveryLeaseInfo>();
+          if (info.ready === true && (opts.holder === undefined || info.holder === opts.holder)) return true;
+        } catch { /* re-poll */ }
       }
       await new Promise((r) => setTimeout(r, 200));
     }
