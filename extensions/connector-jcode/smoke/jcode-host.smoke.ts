@@ -6,6 +6,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { CotalEndpoint, isReachable, seedChannelRegistry } from "@cotal-ai/core";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -51,6 +53,93 @@ const check = (name: string, condition: boolean, actual?: unknown): void => {
 const entries = (): Array<{ ev: string; [key: string]: unknown }> =>
   existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
 
+type JcodeMcpEntry = { command: string; args: string[]; env: Record<string, string> };
+
+function jcodeMcpEntry(home: string): JcodeMcpEntry {
+  const mcp = join(home, "mcp.json");
+  return (JSON.parse(readFileSync(mcp, "utf8")) as { servers: { cotal: JcodeMcpEntry } }).servers.cotal;
+}
+
+async function callJcodeMcp(
+  home: string,
+  socket: string,
+  token: string,
+  arguments_: Record<string, unknown>,
+): Promise<{ text: string; isError?: boolean }> {
+  const entry = jcodeMcpEntry(home);
+  const client = new Client({ name: "jcode-host-smoke", version: "0.0.0" });
+  const transport = new StdioClientTransport({
+    command: entry.command,
+    args: entry.args,
+    cwd: root,
+    env: { ...entry.env, COTAL_JCODE_MCP_SOCKET: socket, COTAL_JCODE_MCP_TOKEN: token },
+    stderr: "pipe",
+  });
+  try {
+    await client.connect(transport);
+    const result = await client.callTool({ name: "cotal_inbox", arguments: arguments_ });
+    return {
+      text: result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n"),
+      isError: result.isError,
+    };
+  } finally {
+    await client.close().catch(() => {});
+  }
+}
+
+/** Send the generated stdio MCP command raw JSON-RPC so JSON-own prototype keys reach the server.
+ * The SDK client builds a JavaScript params object first, which is not an equivalent wire probe. */
+async function callJcodeMcpRaw(
+  home: string,
+  socket: string,
+  token: string,
+  argsJson: string,
+): Promise<{ text: string; isError?: boolean }> {
+  const entry = jcodeMcpEntry(home);
+  const bridge = spawn(entry.command, entry.args, {
+    cwd: root,
+    env: { ...entry.env, COTAL_JCODE_MCP_SOCKET: socket, COTAL_JCODE_MCP_TOKEN: token },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let pending = "";
+  const frames = new Map<number, (frame: Record<string, unknown>) => void>();
+  bridge.stdout?.setEncoding("utf8");
+  bridge.stdout?.on("data", (chunk: string) => {
+    pending += chunk;
+    for (;;) {
+      const newline = pending.indexOf("\n");
+      if (newline < 0) return;
+      const line = pending.slice(0, newline);
+      pending = pending.slice(newline + 1);
+      const frame = JSON.parse(line) as Record<string, unknown>;
+      if (typeof frame.id === "number") frames.get(frame.id)?.(frame);
+    }
+  });
+  const request = (id: number, json: string): Promise<Record<string, unknown>> =>
+    new Promise((resolve) => {
+      frames.set(id, (frame) => {
+        frames.delete(id);
+        resolve(frame);
+      });
+      bridge.stdin?.write(json + "\n");
+    });
+
+  try {
+    await request(1, '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"jcode-host-smoke","version":"0.0.0"}}}');
+    bridge.stdin?.write('{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}\n');
+    const frame = await request(2, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"cotal_inbox","arguments":${argsJson}}}`);
+    const result = frame.result as { content?: Array<{ type?: string; text?: string }>; isError?: boolean } | undefined;
+    if (!result) throw new Error(`raw MCP call returned no result: ${JSON.stringify(frame)}`);
+    return {
+      text: result.content?.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n") ?? "",
+      isError: result.isError,
+    };
+  } finally {
+    bridge.kill("SIGTERM");
+    await Promise.race([once(bridge, "exit"), sleep(5_000)]);
+  }
+}
+
 try {
   mkdirSync(shimDir, { recursive: true });
   writeFileSync(shim, `#!/bin/sh\nexec "${process.execPath}" "${fake}" "$@"\n`);
@@ -87,6 +176,7 @@ try {
       COTAL_SUBSCRIBE: "team",
       COTAL_ALLOW_SUBSCRIBE: "team",
       COTAL_ALLOW_PUBLISH: "team",
+      COTAL_QUIET: "team",
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: join(root, "control.sock"),
@@ -108,6 +198,58 @@ try {
   const managedHome = join(root, ".cotal", "jcode", "jcodehost-jcodepeer-3276792e8714");
   check("host copies auth mirror rather than linking it", lstatSync(join(managedHome, "auth.json")).isFile() && !lstatSync(join(managedHome, "auth.json")).isSymbolicLink());
   check("host copied auth mirror is owner-only", (statSync(join(managedHome, "auth.json")).mode & 0o777) === 0o600);
+
+  // Jcode invokes this actual stdio MCP bridge, which relays across the live per-seat Unix socket
+  // into the host's MeshAgent. A schema-valid explicit `peek:false` must not be rejected by either
+  // hop: the bug was an adapter-only no-argument branch that advertised this input then refused it.
+  const privateMcp = JSON.parse(readFileSync(join(managedHome, "mcp.json"), "utf8")) as {
+    servers: { cotal: { env: Record<string, string> } };
+  };
+  const relaySocket = privateMcp.servers.cotal.env.COTAL_JCODE_MCP_SOCKET!;
+  const relayToken = privateMcp.servers.cotal.env.COTAL_JCODE_MCP_TOKEN!;
+  await operator.multicast("quiet buffered", { channel: "team" });
+  await sleep(100);
+  const peekFalse = await callJcodeMcp(managedHome, relaySocket, relayToken, {
+    peek: false,
+    accept_large_output: true,
+    intent: "read buffered messages",
+  });
+  check("Jcode cotal_inbox accepts explicit peek:false and strips harness metadata through the live relay", !peekFalse.isError && peekFalse.text.includes("quiet buffered"), peekFalse);
+
+  await operator.multicast("peek survives", { channel: "team" });
+  await sleep(100);
+  const peekTrue = await callJcodeMcp(managedHome, relaySocket, relayToken, { peek: true });
+  check("Jcode cotal_inbox peek:true reaches the host and returns buffered traffic", !peekTrue.isError && peekTrue.text.includes("peek survives"), peekTrue);
+  const afterPeek = await callJcodeMcp(managedHome, relaySocket, relayToken, {});
+  check("Jcode cotal_inbox peek:true leaves the returned message for the following normal read", !afterPeek.isError && afterPeek.text.includes("peek survives"), afterPeek);
+  const unknownInboxArg = await callJcodeMcp(managedHome, relaySocket, relayToken, { unknown: true });
+  check("Jcode cotal_inbox still refuses unknown non-metadata arguments", unknownInboxArg.isError === true && unknownInboxArg.text.includes("unknown"), unknownInboxArg);
+
+  // JSON.parse is required: an object-literal __proto__ is special syntax, not an own JSON key.
+  // A rejected unknown argument must not fall through to the destructive default inbox read.
+  await operator.multicast("prototype-key witness", { channel: "team" });
+  await sleep(100);
+  const protoInboxArg = await callJcodeMcpRaw(managedHome, relaySocket, relayToken, '{"__proto__":true}');
+  const afterProtoInboxArg = await callJcodeMcp(managedHome, relaySocket, relayToken, {});
+  check(
+    "Jcode cotal_inbox refuses JSON-own __proto__ without consuming the buffered message",
+    protoInboxArg.isError === true && protoInboxArg.text.includes("__proto__") &&
+      !afterProtoInboxArg.isError && afterProtoInboxArg.text.includes("prototype-key witness"),
+    { protoInboxArg, afterProtoInboxArg },
+  );
+
+  for (const key of ["constructor", "prototype"]) {
+    const witness = `${key}-key witness`;
+    await operator.multicast(witness, { channel: "team" });
+    await sleep(100);
+    const rejected = await callJcodeMcp(managedHome, relaySocket, relayToken, { [key]: true });
+    const afterRejected = await callJcodeMcp(managedHome, relaySocket, relayToken, {});
+    check(
+      `Jcode cotal_inbox refuses ${key} without consuming the buffered message`,
+      rejected.isError === true && rejected.text.includes(key) && !afterRejected.isError && afterRejected.text.includes(witness),
+      { rejected, afterRejected },
+    );
+  }
 
   await operator.unicast(peerId!, "mesh-wake");
   const turn = await waitFor("Harness API turn", () => entries().find((entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" && !(entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("mesh-wake")));

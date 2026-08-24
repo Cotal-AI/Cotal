@@ -84,16 +84,24 @@ interface CotalToolSpecDecl extends Omit<CotalToolSpec, "schema"> {
  * caller can see and repair beats a right-looking call that quietly did something else.
  */
 export function parseToolArgs(spec: CotalToolSpec, args: unknown): Record<string, unknown> {
-  const parsed = spec.schema.safeParse(args ?? {});
-  if (parsed.success) return parsed.data as Record<string, unknown>;
-  const unknownKeys = parsed.error.issues.flatMap((i) => (i.code === "unrecognized_keys" ? i.keys : []));
   const accepted = Object.keys(spec.schema.shape);
+  const input = args === undefined ? {} : args;
+  // Zod's strict object rejects ordinary unknown keys, but it treats a JSON-own `__proto__` as
+  // inherited and silently drops it. Check the raw own keys before schema parsing so every caller
+  // gets a genuine closed set and no unrecognised input can fall through to a destructive default.
+  const rawKeys = input && typeof input === "object" && !Array.isArray(input) ? Object.keys(input) : [];
+  const unknownKeys = rawKeys.filter((key) => !Object.hasOwn(spec.schema.shape, key));
+  if (unknownKeys.length)
+    throw new Error(
+      `${spec.name}: unknown argument(s): ${unknownKeys.join(", ")} — ${accepted.length ? `this tool accepts only: ${accepted.join(", ")}` : "this tool takes no arguments"}`,
+    );
+
+  const parsed = spec.schema.safeParse(input);
+  if (parsed.success) return parsed.data as Record<string, unknown>;
   throw new Error(
-    unknownKeys.length
-      ? `${spec.name}: unknown argument(s): ${unknownKeys.join(", ")} — ${accepted.length ? `this tool accepts only: ${accepted.join(", ")}` : "this tool takes no arguments"}`
-      : `${spec.name}: invalid arguments: ${parsed.error.issues
-          .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
-          .join("; ")}`,
+    `${spec.name}: invalid arguments: ${parsed.error.issues
+      .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+      .join("; ")}`,
   );
 }
 
