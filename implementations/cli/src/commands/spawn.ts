@@ -423,8 +423,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   let credsPath: string | undefined;
   // The incarnation's lifecycle UID (SPEC 13.1), minted once per spawn: the launched endpoint binds
   // its lifecycle-keyed dm/dlv/chathist durables by it (auth modes pin the same names in the cred;
-  // open mode still needs it for the durable names). A foreground spawn is one lifecycle.
-  const lifecycleUid = mintLifecycleUid();
+  // open mode still needs it for the durable names). A foreground spawn is one lifecycle. `let`
+  // because a REMOTE provisioning replaces it below: the mesh minted that incarnation, and its
+  // durables and ledger row are keyed on ITS uid — a locally minted one can never match them.
+  let lifecycleUid = mintLifecycleUid();
   let userAuth: LaunchOpts["userAuth"];
   let userCleanup: (() => Promise<void>) | undefined;
   // The agent's access policy (flags > persona file) — minted into the creds AND forwarded to the
@@ -465,6 +467,11 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     if (remote.material.subscribe) subscribe = remote.material.subscribe;
     if (remote.material.allowSubscribe) allowSubscribe = remote.material.allowSubscribe;
     if (remote.material.allowPublish) allowPublish = remote.material.allowPublish;
+    // Same authority rule for the incarnation uid: the mesh provisioned the durables and wrote the
+    // ledger row keyed on THIS uid, and the auth callout mints the agent's dm/dlv/chathist grants
+    // from the row. Launching with the locally minted uid instead leaves the agent asking for
+    // durables its credential does not name — an endless bind/violation loop, not a clean refusal.
+    lifecycleUid = remote.material.lifecycleUid;
   } else if (target.mode === "user") {
     // USER mesh: the agent runs as a ledger-granted (owner, actor) principal under the LOGGED-IN
     // operator's owner — never a static identity (U10). Provisioning + grant + a one-shot bearer
