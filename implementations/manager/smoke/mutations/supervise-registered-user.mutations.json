@@ -10,8 +10,8 @@
       "file": "implementations/manager/src/commands.ts",
       "find": "    if (target.mode === \"user\" && target.userAuth?.remote === true) {\n      if (v.server !== undefined && v.server !== target.server)\n        throw new Error(`--server ${v.server} does not match registered space \"${target.space}\" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);\n      return { space: target.space, server: target.server, remoteUser: true };\n    }",
       "replace": "    if (false) {\n      if (v.server !== undefined && v.server !== target.server)\n        throw new Error(`--server ${v.server} does not match registered space \"${target.space}\" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);\n      return { space: target.space, server: target.server, remoteUser: true };\n    }",
-      "expectRed": "registered participant gets the honest host-required workaround, never the false down/up advice",
-      "cell": "registered participant gets the honest host-required workaround, never the false down/up advice",
+      "expectRed": "registered participant without login/authority refuses before manager start, never false down/up advice",
+      "cell": "registered participant without login/authority refuses before manager start, never false down/up advice",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"
     },
     {
