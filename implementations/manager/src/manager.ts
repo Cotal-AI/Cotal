@@ -270,6 +270,29 @@ export interface ManagerOptions {
    *  the right number is deployment-shaped — the browser console holds one session per open pane.
    *  {@link ManagerSessionPlaneDeps.maxSessions} carries the per-caller-scoping residual. */
   maxSessions?: number;
+  /** Remote manager-service prepare material. The participant owns every private seed; the host
+   * returned only scoped JWTs. When present, local signer/static trust is forbidden and the
+   * manager follows the remote authority path. */
+  remoteAuthority?: {
+    owner: string;
+    actors: import("@cotal-ai/core").RemoteManagerActors;
+    instanceId: string;
+    lifecycleUid: string;
+    identities: {
+      supervisor: Identity;
+      executor: Identity;
+      serve: Identity;
+      goalWriter: Identity;
+      sessionLedger: Identity;
+    };
+    supervisorCreds: string;
+    executorCreds: string;
+    serveCreds: string;
+    goalWriterCreds: string;
+    sessionLedgerCreds: string;
+    serveGrant: EpServeGrant;
+    mintSessionServing: (args: { identity: Identity; endpoint: string; sessionId: string; epoch: number; exp: number }) => Promise<string>;
+  };
 }
 
 export type ManagerMaintenanceState = "active" | "preserving" | "preserved";
@@ -811,6 +834,7 @@ export class Manager {
   private resumeFinalized = false;
   private resumeDurableCommitToken?: string;
   private readonly resumedAgentNames = new Set<string>();
+  private readonly remoteAuthority?: NonNullable<ManagerOptions["remoteAuthority"]>;
 
   constructor(opts: ManagerOptions) {
     this.space = opts.space;
@@ -818,6 +842,8 @@ export class Manager {
     this.name = opts.name ?? "manager";
     this.workspaceRoot = opts.workspaceRoot ?? findCotalRoot();
     this.maxSessions = opts.maxSessions;
+    this.remoteAuthority = opts.remoteAuthority;
+    if (opts.remoteAuthority) this.managerLifecycleUid = opts.remoteAuthority.lifecycleUid;
     this.secrets = opts.secretStore ?? workspaceSecretStore(this.workspaceRoot);
     this.installedExtensions = opts.installedExtensions ?? false;
     this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.space}`);
@@ -906,21 +932,23 @@ export class Manager {
     // the local `.cotal/auth/auth.json` FS default), so a HOSTED composition mints from its KMS/Vault
     // and no signing seed is ever read from the hosted disk. `this.space` cross-checks the bundle.
     this.auth = await getSpaceAuth(this.secrets, this.space);
+    if (this.remoteAuthority && this.auth)
+      throw new Error("remote manager-service authority cannot be combined with local space signing trust - choose one authority path, never a fallback");
     // USER-MODE detection is FAIL-CLOSED on the on-disk marker (the space-scoped state dir), never
     // on the mutable mesh registry alone — registry drift/tamper must not let a user-auth space
     // take the static self-mint branch. A marker/registry disagreement is a refused start with the
     // repair, not a guess.
-    this.userMode = hasUserAuthState(this.workspaceRoot, this.space);
+    this.userMode = this.remoteAuthority !== undefined || hasUserAuthState(this.workspaceRoot, this.space);
     const recorded = loadMeshes().find((m) => m.space === this.space);
-    if (recorded && (recorded.mode === "user") !== this.userMode)
+    if (!this.remoteAuthority && recorded && (recorded.mode === "user") !== this.userMode)
       throw new Error(
         `mesh registry says space "${this.space}" is ${recorded.mode}-mode but the on-disk user-auth marker ${this.userMode ? "exists" : "is missing"} (${userAuthStateDir(this.workspaceRoot, this.space)}) - \`cotal down\` and re-\`cotal up\` this space to reconcile before running a manager`,
       );
-    if (this.userMode && !recorded)
+    if (!this.remoteAuthority && this.userMode && !recorded)
       throw new Error(
         `space "${this.space}" has user-auth state on disk but no mesh registry entry - a user-mode manager needs the authoritative record (\`cotal up\` writes it before the control plane); \`cotal up --user-auth\` this space, or remove the stale ${userAuthStateDir(this.workspaceRoot, this.space)}`,
       );
-    if (this.userMode && !this.auth)
+    if (!this.remoteAuthority && this.userMode && !this.auth)
       throw new Error(
         `space "${this.space}" has user-auth state but no auth.json under ${authDir(this.workspaceRoot)} - the pre-flip manager still needs the space trust bundle; re-run \`cotal up --user-auth\` here`,
       );
@@ -931,6 +959,10 @@ export class Manager {
     // manager in a DIFFERENT workspace root is a DIFFERENT logical id by construction (its own state
     // dir) - two managers in ONE space are two workspace roots.
     {
+      if (this.remoteAuthority) {
+        this.managerInstanceId = this.remoteAuthority.instanceId;
+        this.managerServeIdentity = this.remoteAuthority.identities.serve;
+      } else {
       const persisted = loadManagerInstanceIdentity(this.workspaceRoot, this.space);
       if (persisted !== undefined) {
         this.managerInstanceId = persisted.instanceId;
@@ -940,10 +972,15 @@ export class Manager {
         this.managerServeIdentity = newIdentity();
         saveManagerInstanceIdentity(this.workspaceRoot, this.space, { instanceId: this.managerInstanceId, serveIdentity: this.managerServeIdentity });
       }
+      }
     }
     let creds: (() => Promise<string>) | undefined;
     let id: string | undefined;
-    if (this.auth) {
+    if (this.remoteAuthority) {
+      const remote = this.remoteAuthority;
+      id = remote.identities.supervisor.id;
+      creds = async () => remote.supervisorCreds;
+    } else if (this.auth) {
       const identity = newIdentity();
       const auth = this.auth;
       id = identity.id;
@@ -968,7 +1005,7 @@ export class Manager {
       // own launch chain (the operator command IS its launcher): its incarnation uid is the
       // per-process `managerLifecycleUid` field (also the `managerInstance` audit coordinate on
       // every static activation, Unit B).
-      lifecycleUid: this.managerLifecycleUid,
+      lifecycleUid: this.remoteAuthority?.lifecycleUid ?? this.managerLifecycleUid,
       // The supervisor serves control + watches presence; it never consumes chat/dm/task
       // (no message handler). consume:false avoids binding consumers it doesn't use — and
       // under auth avoids trying to bind its own DM/task durables that nothing pre-created.
@@ -978,7 +1015,7 @@ export class Manager {
       // pull/display), so skip the channel-registry watch — the supervisor cred (residual 2) then
       // holds no channel-KV read grant. Presence (the roster) is still watched.
       watchChannels: false,
-      card: { id, name: this.name, role: "manager", kind: "endpoint" },
+      card: { id, ...(this.remoteAuthority ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.supervisor } : {}), name: this.name, role: "manager", kind: "endpoint" },
     });
     // Surface endpoint errors (incl. NATS permission denials) — without a listener an
     // emitted "error" would crash the supervisor.
@@ -4519,11 +4556,13 @@ export class Manager {
    *  gate CAS, the mint fence, and the spec/governance writes ride a one-shot scoped authority —
    *  NEVER the manager's standing seed/supervisor connection (the panel's "no seed shortcut"). */
   private async withEndpointServeExecutor<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> {
-    if (!this.auth) throw new Error("withEndpointServeExecutor: no space auth (an open mesh has no service registry)");
-    const identity = newIdentity();
-    const creds = await mintCreds(this.auth, identity, "endpoint-serve-executor", {
-      endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId },
-    });
+    const identity = this.remoteAuthority?.identities.executor ?? newIdentity();
+    const creds = this.remoteAuthority?.executorCreds ?? (this.auth
+      ? await mintCreds(this.auth, identity, "endpoint-serve-executor", {
+          endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId },
+        })
+      : undefined);
+    if (!creds) throw new Error("withEndpointServeExecutor: no scoped executor authority (an open mesh must use the bare path)");
     const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
@@ -4578,6 +4617,43 @@ export class Manager {
    *  old open-mesh ctl trust ("open = single-trusted-host"). */
   private async registerManagerService(): Promise<void> {
     const auth = this.auth;
+    if (this.remoteAuthority) {
+      const remote = this.remoteAuthority;
+      this.goalWriterIdentity = remote.identities.goalWriter;
+      this.sessionLedgerIdentity = remote.identities.sessionLedger;
+      this.goalWriterCreds = remote.goalWriterCreds;
+      this.sessionLedgerCreds = remote.sessionLedgerCreds;
+      const state = {
+        handle: undefined as unknown as EpServeHandle,
+        nc: undefined as unknown as NatsConnection,
+        identity: remote.identities.serve,
+        grant: remote.serveGrant,
+        creds: remote.serveCreds,
+      };
+      const enc = new TextEncoder();
+      const nc = await connect({
+        servers: this.servers ?? DEFAULT_SERVER,
+        authenticator: (nonce?: string) => credsAuthenticator(enc.encode(state.creds))(nonce),
+        inboxPrefix: `_INBOX_${state.identity.id}`,
+        maxReconnectAttempts: -1,
+      });
+      try {
+        state.handle = serveEndpoint(nc, this.space, state.grant, this.managerServiceDefs(), { public: true }, {
+          resolveTarget: (t) => {
+            const key = principalKey(t.owner, t.actor).key;
+            for (const a of this.agents.values()) if (a.id === key) return { lifecycleUid: a.lifecycleUid, mappingRevision: 0 };
+            return undefined;
+          },
+        });
+      } catch (e) {
+        await nc.drain().catch(() => nc.close());
+        throw e;
+      }
+      state.nc = nc;
+      this.serviceServe = state;
+      console.error(`remote manager service endpoint activated: ${MANAGER_ENDPOINT}/${this.managerInstanceId} (epoch ${state.grant.epoch})`);
+      return;
+    }
     // The §13.7 contract store is REGISTRATION's dependency, ensured here MODE-NEUTRALLY (1c.2c):
     // it used to ride the static-only lifecycle reconcile, so a USER-mode manager registered
     // against an absent stream and its artifact publish died no-responders (live-repro'd). A
@@ -4801,15 +4877,15 @@ export class Manager {
    *  KV + JS + JSM to this one connection and space (SPEC 13.4), so a composition mixup cannot splice
    *  goal state across brokers. */
   private async startGoalWriter(): Promise<void> {
-    const identity = this.auth ? this.goalWriterIdentity! : newIdentity();
+    const identity = (this.auth || this.remoteAuthority) ? this.goalWriterIdentity! : newIdentity();
     const enc = new TextEncoder();
     // The mutable holder captured by the authenticator (mirrors the serve connection): a half-TTL
     // renewal updates `gw.creds` and the next (re)connect presents the refreshed credential.
     const gw: { nc: NatsConnection; ctx: ActionContext; creds?: string; identity: Identity; gate?: EpIssuanceGate } =
-      { nc: undefined as unknown as NatsConnection, ctx: undefined as unknown as ActionContext, creds: this.auth ? this.goalWriterCreds : undefined, identity };
+      { nc: undefined as unknown as NatsConnection, ctx: undefined as unknown as ActionContext, creds: (this.auth || this.remoteAuthority) ? this.goalWriterCreds : undefined, identity };
     const nc = await connect({
       servers: this.servers ?? DEFAULT_SERVER,
-      ...(this.auth ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(gw.creds!))(nonce) } : {}),
+      ...((this.auth || this.remoteAuthority) ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(gw.creds!))(nonce) } : {}),
       inboxPrefix: `_INBOX_${identity.id}`,
       maxReconnectAttempts: -1,
     });
@@ -4840,7 +4916,7 @@ export class Manager {
     // cluster-verified eviction BEFORE the epoch advance); an open mesh gets none.
     gw.gate = serveIssuanceGateKv(await new Kvm(nc).open(epAuthBucket(this.space)), this.space, { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId });
     this.goalWriter = gw;
-    console.error(`manager goal-writer standing (endpoint ${MANAGER_ENDPOINT}, ${this.auth ? "scoped cred, §13.1 family-staged" : "open/bare"})`);
+    console.error(`manager goal-writer standing (endpoint ${MANAGER_ENDPOINT}, ${(this.auth || this.remoteAuthority) ? "scoped cred, §13.1 family-staged" : "open/bare"})`);
   }
 
   /** Drain the goal-writer connection (best-effort, both exit paths). */
@@ -4901,15 +4977,15 @@ export class Manager {
    *  per-session caller cred is the holder's real fence). The plane's ledger lives in the DEDICATED
    *  sessions bucket (createEndpointStreams provisioned it at registration). */
   private async startSessionPlane(): Promise<void> {
-    const identity = this.auth ? this.sessionLedgerIdentity! : newIdentity();
+    const identity = (this.auth || this.remoteAuthority) ? this.sessionLedgerIdentity! : newIdentity();
     const enc = new TextEncoder();
     // The mutable holder captured by the authenticator (mirrors the goal-writer): a half-TTL renewal
     // updates `sw.creds` and the next (re)connect presents the refreshed credential.
     const sw: { nc: NatsConnection; creds?: string } =
-      { nc: undefined as unknown as NatsConnection, creds: this.auth ? this.sessionLedgerCreds : undefined };
+      { nc: undefined as unknown as NatsConnection, creds: (this.auth || this.remoteAuthority) ? this.sessionLedgerCreds : undefined };
     const nc = await connect({
       servers: this.servers ?? DEFAULT_SERVER,
-      ...(this.auth ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(sw.creds!))(nonce) } : {}),
+      ...((this.auth || this.remoteAuthority) ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(sw.creds!))(nonce) } : {}),
       inboxPrefix: `_INBOX_${identity.id}`,
       maxReconnectAttempts: -1,
     });
@@ -4978,7 +5054,7 @@ export class Manager {
     }, 15 * 60 * 1000);
     renewTimer.unref?.();
     this.sessionKeyRenewTimer = renewTimer;
-    console.error(`manager session plane standing (endpoint ${MANAGER_ENDPOINT}, epoch ${serveEpoch}, ${this.auth ? "scoped session-ledger cred, §13.1 family-staged" : "open/bare"})`);
+    console.error(`manager session plane standing (endpoint ${MANAGER_ENDPOINT}, epoch ${serveEpoch}, ${(this.auth || this.remoteAuthority) ? "scoped session-ledger cred, §13.1 family-staged" : "open/bare"})`);
   }
 
   /**
@@ -5006,6 +5082,19 @@ export class Manager {
       mint: async (grant) => {
         // Open mesh: no auth to mint from. The id still names the session so the ledger row and the
         // teardown path are identical in both modes.
+        if (this.remoteAuthority) {
+          const identity = newIdentity();
+          const creds = await this.remoteAuthority.mintSessionServing({
+            identity,
+            endpoint: grant.endpoint,
+            sessionId: grant.sessionId,
+            epoch: grant.serving.epoch,
+            exp: Math.floor(grant.exp / 1000),
+          });
+          const id = rawDigest(creds).replace("sha256:", "sha256-");
+          this.sessionServingKeys.set(id, identity.id);
+          return { id, creds, exp: grant.exp };
+        }
         if (!this.auth) return { id: `${grant.sessionId}.s`, creds: "", exp: grant.exp };
         const identity = newIdentity();
         const creds = await mintCreds(this.auth, identity, "session-serving", {
@@ -5021,7 +5110,7 @@ export class Manager {
       observeGate: async (_endpoint, instanceId) => {
         // Open mesh: nothing is minted and nothing is staged, so there is no gate to pin (see
         // ServingGatePin.gate — the stage refuses loudly if this is ever missing on an auth mesh).
-        if (!this.auth) return { key: epgateKey(MANAGER_ENDPOINT, instanceId), revision: 0 };
+        if (!this.auth && !this.remoteAuthority) return { key: epgateKey(MANAGER_ENDPOINT, instanceId), revision: 0 };
         return gate(async (authKv) => {
           const observed = await serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId }).observe();
           if (observed === null)
@@ -5032,7 +5121,7 @@ export class Manager {
         });
       },
       stage: async (grant, cred, pin) => {
-        if (!this.auth) return; // open mesh: nothing minted, so nothing to make revocable
+        if (!this.auth && !this.remoteAuthority) return; // open mesh: nothing minted, so nothing to make revocable
         const key = this.sessionServingKeys.get(cred.id);
         if (key === undefined)
           throw new Error(`no minted identity for session credential ${cred.id}; the stage cannot record a holder it did not mint (SPEC 13.1)`);
@@ -5065,11 +5154,11 @@ export class Manager {
       open: async (cred) => {
         // FAIL LOUD: there is deliberately no shared connection to fall back to. Serving a session
         // without its own credential is exactly the standing-writer shape this design removes.
-        const opts = this.auth ? standaloneConnectOpts({ creds: cred.creds, /* not yet wired to a recorded transport */ tls: false }) : {};
+        const opts = (this.auth || this.remoteAuthority) ? standaloneConnectOpts({ creds: cred.creds, /* not yet wired to a recorded transport */ tls: false }) : {};
         return connect({ servers: this.servers ?? DEFAULT_SERVER, ...opts, maxReconnectAttempts: -1 });
       },
       revoke: async (credentialId) => {
-        if (!this.auth) return; // open mesh: nothing was minted
+        if (!this.auth && !this.remoteAuthority) return; // open mesh: nothing was minted
         await gate(async (authKv) => {
           await markLedgerRowRevoked(authKv, epcredRowKey(MANAGER_ENDPOINT, iid, credentialId));
         });

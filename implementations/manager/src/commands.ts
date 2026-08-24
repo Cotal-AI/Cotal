@@ -10,6 +10,9 @@ import {
   mintCreds,
   mintLifecycleUid,
   newIdentity,
+  rawDigest,
+  remoteManagerActors,
+  resolveAuthProvider,
   standaloneConnectOpts,
   DEFAULT_SERVER,
   DEFAULT_SPACE,
@@ -33,6 +36,9 @@ import { loadRoster } from "./roster.js";
 import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./launch.js";
 import { type RuntimeMode } from "./runtime/index.js";
 import { c } from "./ui.js";
+import { loadOrCreateRemoteManagerIdentity, materialCredential, remoteManagerAuthorityRequest } from "./remote-authority.js";
+import { registerRemoteManagerAuthority } from "./remote-register.js";
+import { managerAuthorityContractSource, managerClusterArtifacts } from "./manager-service-contract.js";
 
 type Values = Record<string, string | undefined>;
 
@@ -161,12 +167,89 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
     process.exit(1);
   }
   const { space, server } = target;
+  let remoteAuthority: NonNullable<ConstructorParameters<typeof Manager>[0]["remoteAuthority"]> | undefined;
   if (target.remoteUser) {
-    console.error(c.red(
-      `✗ hosting space "${space}" is required to supervise it today - this machine is registered to the mesh at ${server} but does not hold the host's manager authority. ` +
-      `You can run agents in the foreground with \`cotal spawn\` (without \`--detach\`); detached/managed agents need the space host.`,
-    ));
-    process.exit(1);
+    try {
+      const state = loadOrCreateRemoteManagerIdentity(findCotalRoot(), space);
+      const provider = resolveAuthProvider();
+      if (!provider.managerServiceAuthority)
+        throw new Error(`the registered auth provider "${provider.name}" does not implement the typed manager-service authority protocol`);
+      const request = remoteManagerAuthorityRequest(state, "cli", "prepare");
+      const material = await provider.managerServiceAuthority({
+        store: workspaceSecretStore(findCotalRoot()),
+        dir: join(findCotalRoot(), ".cotal", "auth", space),
+        request,
+      });
+      const actors = remoteManagerActors(state.instanceId);
+      if (material.owner.length === 0 || material.instanceId !== state.instanceId || material.lifecycleUid !== state.lifecycleUid ||
+          JSON.stringify(material.actors) !== JSON.stringify(actors))
+        throw new Error("the host returned manager-service material for different lifecycle coordinates");
+      const registered = await registerRemoteManagerAuthority({
+        space,
+        server,
+        owner: material.owner,
+        instanceId: state.instanceId,
+        serveActor: actors.serve,
+        prepareCreds: materialCredential(material, "executor", state.identities.executor),
+      });
+      const artifacts = managerClusterArtifacts();
+      const contractArtifacts = [
+        ...managerAuthorityContractSource().artifacts,
+        artifacts.document,
+        artifacts.manifest,
+      ];
+      const registrationProof = rawDigest(JSON.stringify({
+        v: 1,
+        space,
+        owner: material.owner,
+        instanceId: state.instanceId,
+        lifecycleUid: state.lifecycleUid,
+        actors,
+        identities: request.identities,
+        artifactDigests: contractArtifacts.map((value) => rawDigest(JSON.stringify(value))),
+      }));
+      const activate = await provider.managerServiceAuthority({
+        store: workspaceSecretStore(findCotalRoot()),
+        dir: join(findCotalRoot(), ".cotal", "auth", space),
+        request: remoteManagerAuthorityRequest(state, "cli", "activate", registrationProof, contractArtifacts),
+      });
+      remoteAuthority = {
+        owner: material.owner,
+        actors,
+        instanceId: state.instanceId,
+        lifecycleUid: state.lifecycleUid,
+        identities: state.identities,
+        supervisorCreds: materialCredential(material, "supervisor", state.identities.supervisor),
+        executorCreds: materialCredential(material, "executor", state.identities.executor),
+        serveCreds: materialCredential(activate, "serve", state.identities.serve),
+        goalWriterCreds: materialCredential(activate, "goalWriter", state.identities.goalWriter),
+        sessionLedgerCreds: materialCredential(activate, "sessionLedger", state.identities.sessionLedger),
+        serveGrant: registered.serveGrant,
+        mintSessionServing: async (session) => {
+          const sessionMaterial = await provider.managerServiceAuthority!({
+            store: workspaceSecretStore(findCotalRoot()),
+            dir: join(findCotalRoot(), ".cotal", "auth", space),
+            request: remoteManagerAuthorityRequest(state, "cli", "session", rawDigest(JSON.stringify({
+              v: 1, space, owner: material.owner, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid,
+              actors, identities: request.identities, artifactDigests: [],
+            })), undefined, {
+              id: session.identity.id,
+              endpoint: session.endpoint,
+              sessionId: session.sessionId,
+              epoch: session.epoch,
+              exp: session.exp,
+            }),
+          });
+          return materialCredential(sessionMaterial, "sessionServing", session.identity);
+        },
+      };
+    } catch (e) {
+      console.error(c.red(
+        `✗ remote supervision for space "${space}" was refused: ${(e as Error).message}. ` +
+        `Foreground \`cotal spawn\` remains available; detached/managed agents require a live host-approved manager-service authority.`,
+      ));
+      process.exit(1);
+    }
   }
   // Parse the roster + launch spec before touching the network — a malformed file should fail fast,
   // before the manager comes up or any agent is spawned.
@@ -210,6 +293,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       installedExtensions: true,
       resumeAttemptId: v["resume-attempt"],
       resumeDurableCommitToken: v["resume-commit-token"],
+      remoteAuthority,
     });
   } catch (e) {
     console.error(c.red(`✗ ${(e as Error).message}`));

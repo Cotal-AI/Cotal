@@ -104,7 +104,7 @@ export interface UserAuthInfo {
    *  `agentProvisioningUrl` is the deployment's remote agent-provisioning endpoint (U6) when it
    *  advertises one — where `cotal spawn` POSTs the login bearer to mint a managed agent in the
    *  owner's envelope. Optional: a mesh without one has no self-service remote spawn. */
-  endpoints?: { url?: string; agentProvisioningUrl?: string };
+  endpoints?: { url?: string; agentProvisioningUrl?: string; managerAuthorityUrl?: string };
   /** Present and `true` when this entry was registered for a mesh running elsewhere
    *  (`cotal meshes add --mode user`): its pins were SUPPLIED (bundle or discovery document), not
    *  established by a local `cotal up --user-auth`, so nothing on this machine can re-derive them
@@ -129,8 +129,9 @@ export function assertUserAuthInfo(v: unknown): UserAuthInfo {
     throw new Error("auth provider publicAuth: idp { url, issuer, audience } trust pins are required");
   if (o.endpoints !== undefined && (o.endpoints === null || typeof o.endpoints !== "object" ||
       (o.endpoints.url !== undefined && typeof o.endpoints.url !== "string") ||
-      (o.endpoints.agentProvisioningUrl !== undefined && typeof o.endpoints.agentProvisioningUrl !== "string")))
-    throw new Error("auth provider publicAuth: endpoints, when present, must be { url?: string, agentProvisioningUrl?: string }");
+      (o.endpoints.agentProvisioningUrl !== undefined && typeof o.endpoints.agentProvisioningUrl !== "string") ||
+      (o.endpoints.managerAuthorityUrl !== undefined && typeof o.endpoints.managerAuthorityUrl !== "string")))
+    throw new Error("auth provider publicAuth: endpoints, when present, must be { url?: string, agentProvisioningUrl?: string, managerAuthorityUrl?: string }");
   if (o.remote !== undefined && o.remote !== true)
     throw new Error("auth provider publicAuth: remote, when present, must be exactly true");
   if (o.sentinelCredsPath !== undefined && (typeof o.sentinelCredsPath !== "string" || !o.sentinelCredsPath))
@@ -144,6 +145,7 @@ export function assertUserAuthInfo(v: unknown): UserAuthInfo {
     ...(o.endpoints ? { endpoints: {
       ...(o.endpoints.url ? { url: o.endpoints.url } : {}),
       ...(o.endpoints.agentProvisioningUrl ? { agentProvisioningUrl: o.endpoints.agentProvisioningUrl } : {}),
+      ...(o.endpoints.managerAuthorityUrl ? { managerAuthorityUrl: o.endpoints.managerAuthorityUrl } : {}),
     } } : {}),
     ...(o.remote === true ? { remote: true } : {}),
     ...(o.sentinelCredsPath ? { sentinelCredsPath: o.sentinelCredsPath } : {}) };

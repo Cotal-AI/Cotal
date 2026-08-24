@@ -1,5 +1,6 @@
 import { registry, type Extension } from "./registry.js";
 import type { SecretStore } from "./secret-store.js";
+import type { RemoteManagerAuthorityMaterial, RemoteManagerAuthorityRequest } from "./remote-manager-authority.js";
 
 /**
  * The one extension kind an identity/auth implementation registers so a composition root can turn
@@ -51,6 +52,19 @@ export interface AuthProvider extends Extension {
    * `spawn -f`) ride. An under-scoped or unknown view MUST fail loud with the exact re-grant.
    */
   userCredentials(opts: { store: SecretStore; dir: string; space: string; actor: string; view?: string }): Promise<{ bearer: string; sentinelCreds: string }>;
+  /**
+   * Request the closed remote manager-service authority material from the host's loopback/operator
+   * exchange. This is an explicitly typed lifecycle protocol, not a generic profile mint: the
+   * provider must authenticate the signed-in human, fresh-check `supervise`, bind the returned
+   * material to the requested manager instance/lifecycle, and refuse public or managed-agent paths.
+   * Optional so providers without remote supervision fail loud at the caller rather than falling
+   * back to static/local trust.
+   */
+  managerServiceAuthority?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteManagerAuthorityRequest;
+  }): Promise<RemoteManagerAuthorityMaterial>;
   /**
    * The derived owner token (`u_…`) of THIS machine's cached login for the given space — resolved
    * offline from the login session + the space's local user-auth material (no IdP round trip).

@@ -1686,7 +1686,8 @@ async function startUserAuthService(
     // The PUBLIC face's advertised URL (when enabled) supersedes the loopback bind in the registry's
     // convenience endpoint — the discovery bundle is GENERATED from what the daemon actually serves,
     // never hand-written. The provider reports it; nothing here reads provider state files.
-    const endpoints = { url: typeof raw.publicUrl === "string" ? raw.publicUrl : raw.url };
+    const base = typeof raw.publicUrl === "string" ? raw.publicUrl : String(raw.url);
+    const endpoints = { url: base, ...(typeof raw.publicUrl === "string" ? { managerAuthorityUrl: `${base.replace(/\/$/, "")}/manager-service-authority` } : {}) };
     const info = assertUserAuthInfo({ ...setup.prepared.publicAuth, endpoints });
     console.log(c.green("✓ user-auth service up") + c.dim(` - sign in with: cotal login --idp ${info.idp.url}`));
     return { userAuth: info, ok: true };

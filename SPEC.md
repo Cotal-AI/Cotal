@@ -11,7 +11,7 @@
 > [Reference docs](docs/README.md#reference); those describe the TypeScript implementation,
 > not this contract.
 >
-> **Editors:** Cotal maintainers. **Last updated:** 2026-08-18. Changes are tracked in
+> **Editors:** Cotal maintainers. **Last updated:** 2026-08-24. Changes are tracked in
 > [Appendix D](#appendix-d-change-log); versioning rules are §11.
 >
 > **v0.5 binding revision: workflow runs.** A deployment MAY host **durable workflow runs**: programs
@@ -1129,6 +1129,37 @@ KICKed). The `cred.`/`epcred.` families hold ONLY conformant ledger rows:
 implementation staging, half-minted state, and tombstone fences live in a distinct
 `stage.` family, never under a ledger prefix a barrier enumerates.
 
+**Remote manager-service authority (user-auth only).** `manager-service` is one CLOSED,
+server-authored authority view, not a profile name, arbitrary bearer profile, or client-supplied
+permission set. It exists only for a signed-in human whose current actor-ledger row contains the
+dedicated `supervise` scope. `spawn` and `admin` never imply `supervise`, and `supervise` never
+implies either. Only the loopback/operator exchange MAY issue this view; the public exchange and
+every managed-agent secret exchange MUST refuse it. The callout re-reads the ledger row at exchange
+and connect, so a missing, narrowed, or revoked `supervise` scope denies the next view exchange and
+new connection with the full re-grant requirement. A plain user bearer remains `agent`-scoped.
+
+The view names exactly one ordinary derived owner, a fixed server-selected manager actor, that
+actor's lifecycle UID, and one opaque locally selected `instanceId`. The actor and instance id are
+not client-selectable, and the view grants no second manager instance, other endpoint, or other owner.
+It may reach only the manager instance's own `svc.manager.<instanceId>` registration/status,
+pre-authorized immutable contract publication, endpoint rails, and the disjoint
+`epgate.manager.<instanceId>` / `epcred.manager.<instanceId>.<credentialId>` family. It does not
+confer the space signer, callout signer, owner secret, static provisioner credential, generic
+stream/KV authority, or authority over another instance's gate, records, contracts, or
+credentials. A manager-service credential is ledgered and gated exactly as this section requires;
+its `holderPrincipal` is the derived-owner/fixed-actor principal, never the endpoint name.
+
+The host, not the participant, issues every data-account credential requiring the account signing
+key. The only remote path is the lifecycle- and instance-bound typed protocol of §13.6; a broader
+bearer or a generic credential-mint endpoint is non-conformant. Its gate is frozen before staged
+material becomes usable; every release is preceded by the ledger write and gate CAS; and all
+replay/idempotency coordinates bind the owner, fixed actor, lifecycle UID, instanceId, operation,
+and public nkey. A remote manager may provision a managed descendant only after the host validates
+that its current owner equals the manager-service owner and the current manager grant; that is a
+same-owner validation seam, not delegated signer authority. Revocation freezes the one family,
+rejects fresh material and new connections, and proceeds through the bounded renewal/verified
+revocation policy below. It MUST NOT silently substitute static or local authority.
+
 **A read is never a fence; only a CAS write is.** JetStream `DIRECT.GET` may be served by a
 follower or mirror and gives NO read-your-writes guarantee (a mint that *reads* the gate can
 observe a stale `open` after a barrier froze it on the leader), so the auth bucket sets
@@ -1315,6 +1346,17 @@ tokens**: `(endpoint, instanceId)` is the complete routable instance address. Tw
 wanting the "same" name use their own reverse-DNS names; an owner-qualified shared-name form,
 if ever wanted, would be a later additive subject form, not a change to these. This trades an
 already-forbidden expressiveness for structurally smaller subjects and credentials.
+
+**Remote manager service.** The core `manager` name remains operator-governed: a
+`manager-service` bearer (§13.1) does not transfer its name authority or create a generic
+user-owned endpoint. It is the one closed user-auth exception to the single-owner endpoint rule:
+the host may authorize one `manager` service instance whose service-record owner and serving
+principal are the bearer's derived owner plus fixed server-selected manager actor. The exception is
+scoped by the server-authorized lifecycle UID and opaque globally unique instance id, so the
+`(manager, instanceId)` route stays unambiguous and no registration can be mistaken for another
+owner's. The standard `ep` grammar is unchanged: the bearer reaches only that exact manager
+instance, while the manager's own agent-control requests use the existing owner and same-owner
+descendant checks. No endpoint name, target form, or wildcard is added for this view.
 
 The target's **lifecycle UID is body-carried, not a subject token** (`target.lifecycleUid`,
 §13.3): a grant could only ever wildcard it (targets are dynamic; the UID is unknowable at
@@ -2081,6 +2123,39 @@ a new establishment). Routing is authenticated broker routing end to end; there 
 or out-of-band transport in the contract, and cross-machine reachability is exactly broker
 reachability.
 
+**Remote manager service registration.** A remote registered user becomes a manager only through
+one host-operated, typed `prepare → activate → renew` exchange. It is not a generic credential
+mint surface and is available only on the loopback/operator face to a signed-in human holding the
+closed `manager-service` view (§13.1); the public exchange and managed-agent secret exchange
+refuse every stage. All inputs and stored stage records are closed schemas. An operation is keyed
+by `{ owner, managerActor, lifecycleUid, instanceId, operationId }`, where `managerActor` and the
+lifecycle UID come from the server-authorized view, `instanceId` is opaque and collision-resistant,
+and `operationId` is caller-generated for replay convergence. A repeated operation with the same
+fingerprint returns its recorded result; a different fingerprint at the same coordinate is
+`conflict`; a retired lifecycle or instance is never revived.
+
+`prepare` fresh-checks the ledger scope and lifecycle, freezes only
+`epgate.manager.<instanceId>`, and durably stages the exact service registration, contract closure,
+status coordinate, requested public nkey, and credential lifetime. It releases no usable material.
+`activate` re-checks that same live ledger row and gate, creates the exact `svc.manager.<instanceId>`
+registration, publishes only the staged immutable contract artifacts, and asks the host to sign
+NATS JWT material for that public nkey. The host writes the matching
+`epcred.manager.<instanceId>.<credentialId>` row before the gate-finalize CAS and returns the JWT
+only after that CAS; it never returns a signing seed. `renew` is the only way to obtain successor
+public-nkey JWT material. It re-checks the live `supervise` grant, owner, actor, lifecycle,
+instance, current gate, and bounded renewal window, then records and releases a replacement under
+the same family. It cannot create another instance or broaden a staged contract, record, endpoint,
+or credential grant. A crashed operation resumes only from its durable stage and operation id.
+
+Renewal is bounded and denial is fail-closed. When a manager cannot renew because its login,
+ledger scope, or host service is unavailable, it reports degraded state, retains already-live
+agents only while their independently valid authority remains usable, and refuses new starts,
+restarts, replacement credentials, and unsafe recovery. It MUST NOT turn a transient failure into
+static authority or kill a live agent merely to make the state look healthy. When the current
+family expires or is revoked, the host's verified revocation path closes it; a later restart still
+requires a new successful prepare/activate operation. Same-owner descendant provisioning is
+host-validated at every request, and loss of that validation also refuses a new start or restart.
+
 **Virtual endpoints.** An endpoint MAY be virtual: registered (`spec.activation = on-demand`)
 with no live instance. A virtual endpoint's commands MUST be journal-class: the buffered
 ingress path is the ordinary submission plane (`epj` is durable and needs no live
@@ -2579,6 +2654,18 @@ endpoint's descriptor public, in which case no view is consulted and the answer 
 Descriptor visibility is never inferred from reachability of `describe` alone. A KV browse
 index (record kind `contracts`) is an advisory convenience copy; `describe` is authoritative.
 
+**Manager-service records.** A remote manager registration is one closed, opaque-instance family:
+its `svc.manager.<instanceId>` spec/status pair, its instance-bound contract closure, and its
+`epgate.manager.<instanceId>` / `epcred.manager.<instanceId>.<credentialId>` rows all name the
+same server-authorized `{ owner, managerActor, lifecycleUid, instanceId }` tuple. The registration
+mediator MUST reject any tuple mismatch, instance collision, contract substitution, or status/gate
+operation from another principal or lifecycle. It may publish only the contract artifacts staged by
+`prepare`; it may not use manager-service authority to publish a contract for any other endpoint.
+Retiring the family retires the instance record and gate together; no stale stage, registration,
+contract, status, or credential can activate a new lifecycle or another instance. `describe` and
+status report the manager instance's serving/degraded state without treating discovery as
+authorization (§13.9).
+
 **Invocation binding.** The digests are not caller courtesy but a two-sided requirement
 (§13.3): a caller MUST pin `op.inputDigest`/`op.outputDigest` on every command except
 `describe` (the discovery bootstrap), and a serving member MUST reject their absence
@@ -2907,6 +2994,20 @@ authority; reverse-DNS names bind to their registered owner. The registry is dis
 serve grant is the authority: a foreign credential cannot subscribe a class rail, answer as
 an instance, or enter a frozen scatter set.
 
+**Remote manager-service grant.** The server-authored `manager-service` view is an
+instance-scoped authority family, not a reusable host profile. Its generated grant is the exact
+union of the one manager instance's serve rows, its one service registration/status mediator,
+its staged contract-publication row, `epgate.manager.<instanceId>`, and
+`epcred.manager.<instanceId>.<credentialId>`; no wildcard may span an instance, manager actor,
+owner, endpoint, record kind, contract digest, or credential id. The trusted auth path alone owns
+gate/ledger writes and all host signing. The manager service's descendant-provision request is
+mediated by that host path and MUST re-derive the requested agent's owner from the authenticated
+caller, require it to equal the manager-service owner, and fresh-validate the active grant before
+minting any child material. It is never a raw provisioner, stream, KV, consumer, signer, or
+cross-owner control grant. The registration and renewal operations are typed/idempotent as §13.6
+requires, and their stage records remain inaccessible to every ordinary agent, observer, admin,
+or managed-agent exchange.
+
 **The ownership matrix (normative).** Every profile × resource × transition is classified
 **mediated** or **direct**, in an independently reviewed matrix from which grants are
 generated (never the reverse). Each row names the writer PROFILE, the exact subject/API
@@ -3072,6 +3173,7 @@ keeps the read's result from silently falsifying the CAS or effect it feeds.
 | Session `.out` subscribe | the session's caller (per-session credential) | `eps.<endpoint>.<sessionId>.<epoch>.out` exact | direct read |
 | Session ledger (one-use redemption, credential ids, revocation state, authenticated close) | the trusted auth path (§9/§10) | `$KV.cotal_auth_<space>.session.<sessionId>`, create-only CAS per `sessionId`, monotonic state (§13.6) | mediated |
 | Credential ledger (issuance gate, descendant enumeration, lineage index, revocation) | the trusted auth path (§9/§10) | writes: `$KV.cotal_auth_<space>.cred.<lifecycleUid>.<credentialId>` + `….gate.<lifecycleUid>` (the issuance gate, revision-pinned CAS is the mint fence, §13.1) + `….epgate.<endpoint>.<instanceId>` + `….epcred.<endpoint>.<instanceId>.<credentialId>` (the disjoint endpoint gate/credential families, §13.1: same protocol, explicit prefixes, never arity) + `….stage.>` (implementation staging/tombstone fences; NEVER under `cred.`/`epcred.`, §13.1) + `….srcgate.<issuerKeyId>.<id>` (per-handle source gate, §13.1) + `….bysrc.<issuerKeyId>.<id>.<lifecycleUid>.<credentialId>` (the per-ancestor lineage index) + `….session.<sessionId>` (create-CAS `issuing`, finalize-CAS `active`, §13.6) + `….plane` (the ONE plane-ownership claim row, §13.13: create/revision-CAS by the barrier profile only, exact arity, never `plane.>`); reads: **leader-served `$JS.API.STREAM.MSG.GET.KV_cotal_auth_<space>`** (with `allow_direct=false` a KV get is exactly this body-selected `last_by_subj` call against the stream LEADER; read-your-writes, not a follower-served `DIRECT.GET`; the body-selection is safe here because this profile IS the trusted auth path, and it is granted to no other profile) for gate/session/row state, which is why the mint and session fences are revision-pinned CAS *writes* rather than reads (a read is never a fence, §13.1); and **fence-free prefix enumeration through the SEALED auth-ledger scanner, never a runtime consumer create**: no standing or runtime-reachable auth credential (the takeover/retirement/handle-revocation barrier, the session sweep, any replayable executor) holds `$JS.API.CONSUMER.CREATE` on `cotal_auth_<space>`, because a consumer-create request BODY is not subject-ACL confinable: an extended `CONSUMER.CREATE.<stream>.<name>.<filter>` grant still admits a body with `durable_name` (equal to the subject name token) and a push `deliver_subject`, a DURABLE exporter of every current and future row that SURVIVES the credential's connection close and revocation; a subject ACL cannot constrain that body, so the only safe runtime grant is none. The dynamic-enumeration `CONSUMER.CREATE` lives in exactly ONE profile, a SEALED scanner the trusted auth process opens for itself and NEVER hands out: its credential, connection, and identity seed reach no caller, child, log, or persistence (a process-memory compromise reaches it, the SAME residual class as the account signing seed the process already holds; never broker confinement, never a network-reachable JWT). The scanner is pinned to ONE literal consumer name under a FORCED config: pull (no `deliver_subject`), ephemeral (no `durable_name`), `AckPolicy.None`, `DeliverPolicy.LastPerSubject`, memory storage, bounded inactivity; re-read and bind-verified before use and unconditionally deleted after, with every scan over the stream serialized on that one name, and the injected scanner bonded to its exact space so a hand-assembled or foreign-space scanner never enumerates. The scan is FENCE-FREE by construction: under the history=1 store a same-subject `active→revoked` overwrite EVICTS the pre-scan revision, so a sequence/`STREAM.INFO` cutoff would DROP that subject and leave its holder un-revoked; a LastPerSubject read carries no upper cutoff and, draining to a freshly re-observed zero pending (never a stale local count), returns each subject's CURRENT last, so a concurrent overwrite is SEEN, never dropped. It enumerates exactly `cred.<lifecycleUid>.>`, `bysrc.<issuerKeyId>.<id>.>`, `stage.>` (operation-intent discovery), or `session.>`. The barrier's family enumeration and the expiry sweep are executable reads, not prose. No profile OTHER than the sealed scanner and this trusted write path holds ANY grant on `cotal_auth_<space>` | mediated |
+| Remote manager-service registration and renewal (§13.1/§13.6) | the trusted auth path is the sole gate/ledger writer and host JWT issuer; a user manager presents only the server-authored closed view | exactly one staged `{ owner, managerActor, lifecycleUid, instanceId }` family: `svc.manager.<instanceId>`, the stage-pinned contract artifacts, `epgate.manager.<instanceId>`, and `epcred.manager.<instanceId>.<credentialId>`. `prepare` freezes/stages; `activate` creates the matching service record and releases host-signed material only after ledger + gate finalization; `renew` is bounded, rechecks the live ledger scope, and can replace material only inside that family. Descendant provisioning is a mediated same-owner request revalidated by the host. No row grants signer material, generic stream/KV/consumer authority, another instance, or a public/managed-agent exchange path | mediated, closed family; revocation/renewal failure denies new authority and unsafe restarts while retaining live agents only within their independently valid lifetimes |
 | Auth-ledger enumeration (the SEALED scanner profile, the credential-ledger row's enumeration seam) | the trusted auth process's DEDICATED self-minted scanner principal; opened for the process itself, NEVER handed out (full rationale in the credential-ledger row above) | exactly `$JS.API.INFO` + `$JS.API.STREAM.INFO.KV_cotal_auth_<space>` + `$JS.API.CONSUMER.CREATE.KV_cotal_auth_<space>.cotal-ledger-scan.$KV.cotal_auth_<space>.>` + `$JS.API.CONSUMER.INFO.KV_cotal_auth_<space>.cotal-ledger-scan` + `$JS.API.CONSUMER.MSG.NEXT.KV_cotal_auth_<space>.cotal-ledger-scan` + `$JS.API.CONSUMER.DELETE.KV_cotal_auth_<space>.cotal-ledger-scan` + its connection-scoped `_INBOX_<connId>.>` subscribe, and NOTHING else (no records-stream grant, no KV write, no `DIRECT.GET`, no `$JS.ACK`: an `AckPolicy.None` scan acks nothing); `cotal-ledger-scan` is the ONE pinned literal consumer name every auth-stream scan serializes on, and this profile plus the records scanner below are the ONLY DYNAMIC-ENUMERATION `CONSUMER.CREATE` holders on the two authority streams (the provisioning row's pre-created full-tail reader durables, CREATE+DELETE by the provisioner and INFO/MSG.NEXT/ACK bind by the read mediator, are the one other records-stream consumer authority, and the reader-config seam REFUSES an authority-control record kind so no reader durable can target the `oblig.` subtree the records scanner owns), re-audited mechanically per this section's closing clause | mediated |
 | Obligation enumeration (the SEALED records scanner profile, the acceptance-obligation row's enumeration seam, ONE instance per space) | the trusted process's DEDICATED self-minted records-scanner principal; opened for the process itself, NEVER handed out (full rationale in the acceptance-obligation row below; every scan over the literal name serializes process-wide per space, so a second instance can never interleave with a live scan and hand back a partial result, and the scanner handle is immutable once branded) | exactly `$JS.API.INFO` + `$JS.API.STREAM.INFO.KV_cotal_records_<space>` + `$JS.API.CONSUMER.CREATE.KV_cotal_records_<space>.cotal-records-scan.$KV.cotal_records_<space>.oblig.>` (the CREATE filter is confined to the `oblig.` subtree) + `$JS.API.CONSUMER.INFO.KV_cotal_records_<space>.cotal-records-scan` + `$JS.API.CONSUMER.MSG.NEXT.KV_cotal_records_<space>.cotal-records-scan` + `$JS.API.CONSUMER.DELETE.KV_cotal_records_<space>.cotal-records-scan` + its connection-scoped `_INBOX_<connId>.>` subscribe, and NOTHING else; `cotal-records-scan` is the ONE pinned literal consumer name, disjoint from the auth scanner's (one scanner instance, lock, and literal name PER STREAM) | mediated |
 | Work-pool enqueue | the endpoint's canonicalizer (from accepted decisions only) | `epw.<endpoint>.>` publish, create-per-subject (`Nats-Expected-Last-Subject-Sequence: 0`; the acceptance identity is the subject, §13.2) | mediated |
@@ -3912,6 +4014,12 @@ single-function profiles, each granting only the verbs its function needs and no
 - `membership-rw`: the derived channel-membership graph feed reader/writer.
 - `operator`, `purger`, `teardown`, `channel-writer`, `control-caller-*`, `deployer`, `probe`: the
   human-CLI and maintenance surfaces, each scoped to its verbs.
+- `manager-service` is NOT a generic host profile: on a per-user-auth space only the
+  loopback/operator exchange may issue this closed, one-owner/one-fixed-manager-actor/one-instance
+  view to a signed-in user with ledger scope `supervise` (§13.1/§13.6). It reaches exactly the
+  staged manager registration, contract, status, gate, credential, and same-owner descendant
+  provisioning family; public exchange, managed-agent secret exchange, plain user bearers, and all
+  other instances are refused.
 
 Standing host credentials are **bounded and renewed**: one-shot profiles carry minutes-scale
 expiry; `supervisor`/`delivery`/`membership-rw` carry a 24h expiry with the manager as the named
@@ -3956,6 +4064,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-08-24 | **Remote user manager authority.** A closed server-authored `manager-service` view permits one registered user-auth participant to operate one opaque manager instance only when their live actor-ledger row carries the dedicated `supervise` scope. `supervise` is distinct from `spawn` and `admin`; public and managed-agent exchanges refuse the view, and plain user bearers remain unprivileged. The host, never the participant, issues public-nkey JWT material through a lifecycle- and instance-bound, typed, replay-safe `prepare → activate → renew` protocol. The family is confined to one derived owner, fixed server-selected manager actor, lifecycle UID, instance registration/contracts/status, gate, and credential rows; descendant provisioning is host-validated for the same owner only. Revocation and renewal deny new material and unsafe restarts fail-closed while retaining live agents only within their independently valid authority. **Breaking pre-1.0 authority change: minor.** |
 | 2026-08-18 | **v0.5 binding revision: workflow runs (§14), additive.** A deployment MAY host durable workflow runs: programs in the Cotal workflow language, defined by the new normative reference [`spec/cotal-lang.md`](spec/cotal-lang.md) (language version `1`: the syntax table, values and the boundary rule, the library, the effect primitives with their hashed projections, the four concurrency scopes and the clock-decided `race`, the step key grammar, journal entry schema, input hash and request id, resume, migrate and fork), whose every effect is recorded in a per-run step journal on the new per-space `WFJ_<space>` stream (one subject per run, no age eviction, no Direct Get, every append fenced by the run subject's own sequence, replay-then-activate takeover with a fencing-token authorization tuple, an ordinal chain and a `journalHigh` anchor). Four core record kinds join §13.7: `run` (split; the resolved pin set on the spec half, holder/lease/`journalHigh` on the status half; driver-minted, never-reused ids), `answer` (atomic, content-derived id, keyed per answer because every presenter is the driver), `notice` (split; addressee keyed by a digest of the name; consumption as status), `migration` (split; content-derived id; application as a create-only status). Driver grants are per run and per takeover, with no wildcard form. `languageVersion` is pinned per run and moves independently of the wire version. No existing kind, subject, grant row or shipped datum changes. |
 | 2026-08-16 | **A caller declares the incarnation it resolved against, and a responder that is not it refuses before any effect.** A class-addressed request is delivered to one member of a queue group, and the member that answers need not be the one the caller's `describe` resolved against. The caller could only detect that AFTERWARDS, from the reply subject, by which point the command had run: the split was observable but never preventable, and the reference client's recovery repeated the command. `bind` (§13.3) is the caller's declaration of `{ instanceId, epoch }`, checked by the responder against its own identity at the pre-effect seam, ahead of the governed gate and every handler. A mismatch is `failed-precondition` for a different instance and `expired` for another epoch of the same one, both carrying `details[].kind = ai.cotal.ep.bind-refused` and, per §13.3, `outcome: not-executed`. **ADDITIVE**: `bind` is MAY, a responder that does not implement the fence ignores it under §5 and executes, so the caller-side check remains the only protection in a skewed pair and `protocolVersion` stays 0.4. It confers nothing and narrows only, so it satisfies monotonic attenuation: a request carrying it reaches exactly the instances the subject already routes it to, and can only make one of them refuse. Absent on `describe` (the bootstrap that produces the bind) and on the scatter rail (which addresses every incarnation by construction); on the `inst` rail it MUST name the subject's instance and adds the epoch the subject grammar has no token for. Attribution still comes from the reply subject, never from this block: it is what the caller bound, not a claim about who answered. |
 | 2026-08-16 | **A command declares whether repeating it is safe, a responder reports whether a refusal already executed, and the two are separated from idempotency by `id`.** Three gaps that only bite together. **(1) `effect` (§13.7).** Nothing in a resolved command distinguished a read from a mutation — every manager command declares `class: "ephemeral"`, and `traits` carries no repeat-safety — so a client deciding whether to retry had nothing to consult, and the reference client repeats a mutation on a split. Precisely: the automatic repeat belongs to the high-level helper, not to the primitive — `invokeCommand` raises the post-reply currency refusal and stops, and the `invokeService` wrapper around it catches exactly that code, re-resolves, and invokes a second time. Measured on a live broker under a forced instance split, counting at the handler rather than on the wire, the repeated command executes TWICE. `effect` is `read` or `write`, with `read` defined OPERATIONALLY — repeating it changes nothing the command is TRYING to change, and the only excluded difference is the incidental trace of having been called (request ids, spans, logs, metrics, timing) — because the intuitive definition, indistinguishable to every observer, is satisfiable by no real command and would make the field decorative. The state in question is not only the endpoint's own: a command whose intended effect lands elsewhere is still a `write`, and `evictPrincipal` fixes that boundary, since dropping live broker connections while leaving the endpoint's own records untouched is the point of calling it. **(2) `error.outcome` (§13.3).** A refusal code cannot say whether the effect happened: the same code is correct for a request that ran and one that never left. `outcome` is emitted by the RESPONDER, which is the only party that knows — `not-executed` when it refuses before the handler, `executed` when it refuses after, `unknown` when it cannot tell. It describes a reply and only a reply — a caller-side refusal is not an `EndpointReply` and carries no `outcome` field — but it does NOT follow that the caller knows nothing, and the first cut of this amendment wrongly collapsed four distinguishable local cases into `unknown`. A refusal raised BEFORE publication is `not-executed`: the request never left, and calling that `unknown` suppresses a retry that is provably safe even for a `write`. A refusal raised while HOLDING a reply — the §13.2 post-reply currency check is the case in this document — takes what it knows from that reply: `ok:true` means the handler ran, and an `ok:false` reply carries the responder's own `outcome`, which the caller adopts rather than overwrites. A **broker-attested no-responders answer** on the reserved sentinel is also `not-executed`: it is positive evidence that the subject had zero subscribers, trusted only on that sentinel because the same status on an ordinary reply subject is a responder's own claim. Only "no reply observed at all" (deadline, transport failure after publication) is `unknown`. And **a reply proves the request was HANDLED, never that it was EXECUTED** — the version, class, target, sender, authz, contract, and guard checks all publish `ok:false` having executed nothing. It is also not a goal's terminal state (§13.6 owns that) and must not be used as one. **(3) Repeat versus resubmission (§13.8).** `effect` and "idempotent by `id`" are different axes and were unreconciled. They are now separated by CONVERGENCE rather than by token: a **resubmission** is a re-send the responder converges onto the decision it already recorded, a **repeat** is one it accepts as new work, and `effect` governs repeats whatever `id` they carry. Defining the split by the token instead left a hole — a post-horizon re-send under a reused `id` is accepted as new work, so it executes, while formally escaping a prohibition written as "under a fresh `id`". Reusing the token is how a caller ASKS for convergence; it is not the answer. Within the horizon `id` is what convergence is keyed on — and `id` is the whole key on the ephemeral rail but only ONE of the effect-defining dimensions the journal fingerprint binds — endpoint, command, `id`, `goalId`, `class`, args, both contract digests, the authorization mode, the target, `auth`, and the caller — where same id + different args is neither dedup nor a fresh call but a loud `conflict`. **Both rails are bounded by a horizon**, realized by decision-fact and result retention rather than by a clock, and outside it neither rule applies: the `id` carries no history, a re-send under it is a fresh call that WILL execute, and the same `id` with different args is no longer a `conflict`. A finite horizon is what keeps the decision store finite, so this is a fact callers must hold rather than a hole to close — and because a repeat is defined by acceptance rather than by token, a post-horizon same-`id` re-send of a `write` is exactly what §13.7 forbids a client to make automatically. A command idempotent by `id` is therefore NOT thereby `read`: safe to resubmit is not safe to repeat — and the dangerous reading is a reasonable one, since an operator who retries after a timeout mints a fresh `id` because the old request is gone. **NON-ADDITIVE, and versioned as such:** a client that ignored `effect` would keep performing exactly the retry the field exists to stop, so it rides `protocol.v` — the marker that ALREADY EXISTS on the service record spec and the describe descriptor, never a new field on the cluster document, which has no `protocol` and where §7 would drop it unread by exactly the clients this must stop. An instance whose clusters declare `effect` registers and describes at `v:2`; `v:1` descriptors stay valid, carry no `effect`, and every command served under one reads as `write`. The caller-side refusal of a `protocol.v` it does not implement is a requirement this cut CREATES, not one already met: today `describe`'s pinned output schema fixes `descriptor.protocol.v` to the constant `1`, so an unamended responder cannot publish a `v:2` descriptor at all, and the registry reader refuses a service record that is not `v:1` — but the resolving caller validates neither, and the shape it reads does not carry `protocol`. The responder-side fence is what protects old clients today, and only until this cut widens that constant. **Release order was the wrong instrument and is withdrawn**: a same-release ordering rule has no observable runtime meaning, since a release is not a deployment and an already-running v1 caller is unchanged by whatever a new artifact contains. **The cutover rule is §11's, and §13.7 does not state one.** Moving to `protocol.v: 2` IS a non-additive discovery change, so the §11 rule for one (previous row, landed first) is the sole authority on how it rolls out. §13.7 carries only what is specific to `2`: a caller that resolves a descriptor whose `protocol.v` it does not implement MUST fail the resolve (`unsupported-version`) and MUST NOT invoke against it — a descriptor it cannot read is no descriptor, and reading it as `v:1` reinstates the repeat — and implementing that refusal is what makes a caller count as having ADOPTED the section for §11's condition. Two intermediate drafts had to be withdrawn to reach that: one sited the cutover in §13.7 as a same-release ordering clause, which has no observable runtime meaning because a release is not a deployment; the next stated the cutover in BOTH sections, which is a single-source-of-truth defect, since two normative statements of one rule agree until either is edited and then silently become two conformance rules. The reason it cannot be sited here is the durable part: the condition is a property of the whole deployment, and a responder cannot evaluate it — no in-band negotiation, no caller version on the wire — so a rule stated here would bind the one party unable to check it. |
