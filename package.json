@@ -316,6 +316,7 @@
     "smoke:manager-deregister": "tsx implementations/manager/smoke/manager-deregister.smoke.ts",
     "smoke:manager-restart-live": "tsx implementations/manager/smoke/manager-restart-live.smoke.ts",
     "smoke:supervise-registered-user": "tsx implementations/manager/smoke/supervise-registered-user.smoke.ts",
+    "smoke:supervise-registered-user-authority": "tsx implementations/manager/smoke/supervise-registered-user-authority.smoke.ts",
     "smoke:preserve-state": "tsx implementations/manager/smoke/preserve-state.smoke.ts",
     "smoke:ep-serve:auth": "tsx packages/core/smoke/endpoint-serve-auth.smoke.ts",
     "smoke:scatter-liveness": "tsx packages/core/smoke/scatter-liveness.smoke.ts",
