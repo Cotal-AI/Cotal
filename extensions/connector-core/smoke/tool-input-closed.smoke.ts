@@ -41,7 +41,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { configFromEnv } from "../src/config.js";
-import { cotalToolSpecs } from "../src/tool-specs.js";
+import { cotalToolSpecs, parseToolArgs } from "../src/tool-specs.js";
 import { registerCotalTools } from "../src/tools.js";
 import type { MeshAgent } from "../src/agent.js";
 
@@ -84,15 +84,22 @@ check(`the set contains BOTH argument-bearing and zero-argument tools, so neithe
 // Identity-shaped on purpose: this is the confused-deputy case, not a generic typo. A tool that
 // accepted `owner` would be speaking for whoever the caller named.
 const IDENTITY_EXTRA = { owner: "u_attacker", actor: "someone-else" };
+const PROTOTYPE_EXTRA = JSON.parse('{"__proto__":true}') as Record<string, unknown>;
 const notClosed: string[] = [];
+const prototypeClosed: string[] = [];
 for (const spec of specs) {
   const probe = spec.schema.safeParse({ ...IDENTITY_EXTRA });
   const refusedTheExtras = !probe.success &&
     probe.error.issues.some((i) => i.code === "unrecognized_keys" && i.keys.some((k) => k in IDENTITY_EXTRA));
   if (!refusedTheExtras) notClosed.push(spec.name);
+  try {
+    parseToolArgs(spec, PROTOTYPE_EXTRA);
+    prototypeClosed.push(spec.name);
+  } catch {}
 }
 check(`every tool schema REFUSES an unmodelled key rather than stripping it (${specs.length} schemas, ${zeroArg.length} of them zero-argument)`,
   notClosed.length === 0, { notClosed });
+check("the shared parser refuses JSON-own __proto__ before Zod can strip it", prototypeClosed.length === 0, { prototypeClosed });
 
 // ── 3-5. the shared MCP renderer, against a real server and a real client ──
 // The witness for "the handler never ran" is the AGENT, and it has to be: `registerCotalTools`

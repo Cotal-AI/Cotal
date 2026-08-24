@@ -41,7 +41,7 @@
     {
       "name": "M2 ack a sacrificed directed message (loss becomes unrecoverable again)",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "        if (!this.inFlightIds.has(evicted.item.id) && !sacrificingDirected) evicted.ack();",
+      "find": "        if (!this.inFlightIds.has(evicted.item.id) && (!sacrificingDirected || giveUp)) evicted.ack();",
       "replace": "        if (!this.inFlightIds.has(evicted.item.id)) evicted.ack();",
       "expectRed": "sacrificed DMs are NOT acked, so the broker can redeliver them"
     },

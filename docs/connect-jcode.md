@@ -68,6 +68,12 @@ space/name and is owner-only. Jcode's own credential inheritance is used for the
 so provider logins work without copying its transcript/config tree into the seat. The spawned
 Jcode process does not inherit `COTAL_*` values or the Cotal launch-material pointer.
 
+If a provider failure closes the private Harness API connection during a mesh-driven turn, the
+connector leaves that turn's inbox batch unacknowledged and makes one private replacement
+connection to the same session. The seat reports `waiting` while it reconnects, then redrives that
+unacknowledged batch only after the session attaches. A failed replacement, or a second disconnect,
+ends the seat rather than silently retrying bridges without bound.
+
 Jcode currently supports **stdio** MCP servers. The connector writes only its own `cotal` entry to
 the private `JCODE_HOME/mcp.json`; it starts a stdio MCP bridge for that entry and relays its calls
 to the host's one `MeshAgent`. The Jcode/MCP child receives a per-launch relay capability, but not
@@ -78,13 +84,27 @@ not explicitly shared. Operator MCP configuration is isolated in the private hom
 configuration is not supported yet.
 
 Before the seat joins the mesh, the host runs a mandatory Jcode turn that calls
-`cotal_orientation`. Jcode loads MCP tools asynchronously; this readiness turn makes a bridge that
-never came up a launch failure, rather than an agent that is present but mute. An inbound peer
-message then wakes a Harness API turn. The host marks presence working while the turn runs,
-acknowledges exactly the delivered inbox ids only after the SDK turn succeeds, and leaves a failed
-turn unacknowledged for mesh redelivery. Jcode's stable Harness API has no measured mid-turn steer
-surface here, so traffic arriving during a turn waits for the next turn rather than being silently
-treated as an interrupt.
+`cotal_orientation`. Jcode loads MCP tools asynchronously; its first turn can use the pre-MCP tool
+snapshot immediately before Jcode rebuilds that snapshot. The host repeats the identical proof once
+in that case. A second absence fails the launch, so a bridge that never comes up remains a loud
+failure rather than an agent that is present but mute. A managed Jcode seat has a **three-minute
+bounded readiness window**: first boot can download model material, start the MCP bridge, and wait
+through the provider-backed readiness turns. If that window expires, the launch is `uncertain`, not
+a failed or cleanup verdict; use `cotal attach <name>` or `cotal ps` to inspect it and do not stop
+it solely because the window elapsed. The host then waits for the mesh connection and presence bind
+to complete before it adds a no-reply notice that the bootstrap orientation predates the join and
+that a new orientation is live context. During a broker outage, it stays waiting and sends no
+connected notice.
+
+For a foreground launch, the TUI opens as soon as the session is ready, before the readiness turn,
+so it streams boot activity instead of leaving the terminal blank. Presence still begins only after
+the readiness proof passes. An inbound peer message then wakes a Harness API turn. The host marks
+presence working while the turn runs, acknowledges exactly the delivered inbox ids only after the
+SDK turn succeeds, and leaves a failed turn unacknowledged for mesh redelivery. Jcode's stable
+Harness API has no measured mid-turn steer surface here, so traffic arriving during a turn waits for
+the next turn rather than being silently treated as an interrupt. `cotal_inbox` pulls only buffered
+quiet ambient from that host-owned queue; its shared optional `peek` argument is supported, so
+`peek: true` shows those messages without clearing them.
 
 ## Models and limits
 
@@ -92,7 +112,10 @@ treated as an interrupt.
 against the active provider, then the connector reads runtime identity back and refuses startup if
 it is not the requested model; a seat is never allowed to join under a model label it did not
 receive. The connector does not currently offer a Cotal model catalog because the Harness API's
-`listModels()` is session-scoped and provider-specific.
+`listModels()` is session-scoped and provider-specific. If the mandatory readiness turn receives a
+provider `invalid_request` refusal for a model id or reasoning-effort value, the launch diagnostic
+names the provider error code (or `invalid_request` when none is supplied) and rejected value. Other provider response text remains scrubbed, so
+an external observer/UI can correct connector-visible input without exposing private harness output.
 
 The following fail loud before a new session is provisioned where the manager can preflight them,
 or at connector launch as a backstop:

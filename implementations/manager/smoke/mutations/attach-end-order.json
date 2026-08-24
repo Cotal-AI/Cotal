@@ -1,0 +1,22 @@
+{
+  "suite": "implementations/manager/smoke/mesh-attach-plane.smoke.ts",
+  "guard": "the serving bridge does not let its unsequenced close control overtake a distinct end frame while an earlier output frame is still inside the caller's async consumer",
+  "command": "pnpm smoke:mesh-attach-plane",
+  "completionMarker": "mesh-attach-plane 6b:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/attach-end-order.json",
+  "why": [
+    "The defect requires three real pieces at once: the serving bridge queues terminal output and an end frame, the CLI mesh transport awaits an async output consumer, and the core rail receives an unsequenced close control. Synchronous frame observers cannot witness it because they accept the earlier output before close can overtake anything.",
+    "",
+    "The smoke holds a real PTY echo frame inside meshSessionTransport.onData, ends the serving bridge while that handler is pending, and first proves no close-derived reason appears during the hold. After release it requires the queued target-despawn reason. Restoring immediate close makes peer-closed win and reddens the named cell."
+  ],
+  "mutations": [
+    {
+      "name": "close the serving rail immediately, discarding a queued distinct end behind async caller output",
+      "file": "implementations/manager/src/session/bridge.ts",
+      "find": "    void (async () => {\n      try { await opts.nc.flush(); } catch { /* connection already gone */ }\n      if (endSeq !== undefined) {\n        const deadline = Date.now() + Math.max(END_ACK_GRACE_MS, (opts.idleCreditMs ?? 1_000) + 500);\n        while (rail.stats().ackedThrough < endSeq && Date.now() < deadline)\n          await new Promise<void>((resolve) => setTimeout(resolve, 10));\n      }\n      rail.close();\n      opts.onEnd?.(reason);\n    })();",
+      "replace": "    void endSeq;\n    rail.close();\n    opts.onEnd?.(reason);",
+      "expectRed": "an unsequenced close does not overtake output still inside the async caller handler",
+      "cell": "an unsequenced close does not overtake output still inside the async caller handler"
+    }
+  ]
+}
