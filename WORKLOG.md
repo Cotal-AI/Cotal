@@ -15,4 +15,5 @@
 - Reproduced #778 by asserting the post-`await agent.start()` no-reply session notice that marks bootstrap orientation as pre-join and directs the seat to request live orientation.
 - Implemented bounded readiness retry, early TUI spawn, post-join context notice, `docs/connect-jcode.md` update, a fixed-group patch changeset, and `extensions/connector-jcode/smoke/mutations/jcode-readiness.json`.
 - Evidence: `pnpm smoke:jcode-host` passed 19 checks; `pnpm build && pnpm typecheck` passed; readiness mutation proof killed M1–M4 against their named cells; `pnpm changeset status` reports the fixed group at patch.
-- Commits: `6c13f38c`, `403e7c94`, `72feb90d`.
+- Commits: `6c13f38c`, `403e7c94`, `72feb90d`, `c6ba73e7`.
+- Pushed `fix/jcode-readiness-stabilization`; opened PR #845 at exact SHA `c6ba73e7b266f32db84fe37380f5c07c5462f1c7`.
