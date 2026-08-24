@@ -144,9 +144,10 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
    *  the message), because the label is a courtesy and the message is the product. */
   const unconfirmed = new Set<string>();
 
-  /** Flag ids whose delivery this process could not confirm, so a re-surface is labelled a possible
-   *  repeat. Past the cap the labels go, never the messages: an unlabelled repeat is cosmetic, a
-   *  dropped message is not. */
+  /** Flag deliveries whose confirmation this process could not obtain (keyed by receive key, #624:
+   *  an id-less item's wire id is "", so raw-id keying would label EVERY later id-less message a
+   *  repeat), so a re-surface is labelled a possible repeat. Past the cap the labels go, never the
+   *  messages: an unlabelled repeat is cosmetic, a dropped message is not. */
   const markUnconfirmed = (ids: readonly string[]): void => {
     if (unconfirmed.size + ids.length <= REPEAT_LABEL_CAP) for (const id of ids) unconfirmed.add(id);
     else unconfirmed.clear();
@@ -167,7 +168,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     if (!items.length) return undefined;
     const body = formatInjection(items);
     if (!body) return undefined;
-    const ids = items.map((i) => i.id);
+    const ids = items.map((i) => i.recvKey);
     // These stay in the inbox until the verdict, so the overflow valve could otherwise ack one out
     // from under us mid-delivery — unrecoverable, since an acked id is never redelivered. If the
     // agent cannot protect the whole batch (too many frames already open), DO NOT SURFACE IT: an
@@ -290,7 +291,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     }
     for (const id of ids) unconfirmed.delete(id);
     try {
-      agent.drainInboxIds(ids);
+      agent.drainInboxDeliveries(ids);
     } catch {
       // The ack itself failed — a JetStream ack publishes, so a closed connection throws. Whatever
       // did not ack is also not marked handled, so JetStream redelivers it and nothing is lost. But
@@ -402,7 +403,7 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
   // receive-time pull-only ambient never nudges (a quiet @mention remains automatic). `muted` never reaches
   // here (ack-dropped at ingest); in `focus`, ambient/mentions never reach "incoming" either.
   agent.on("incoming", (item: InboxItem) => {
-    const automatic = agent.inboxScope(item.id) === "automatic";
+    const automatic = agent.inboxScope(item.recvKey) === "automatic";
     const directedOrMention = item.kind !== "channel" || item.mentionsMe;
     const ambientWakes = agent.attention === "open" && agent.status !== "working";
     if (automatic && (directedOrMention || ambientWakes)) nudge(item);

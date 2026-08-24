@@ -11,7 +11,7 @@
  *    model replies itself via cotal_send / cotal_dm — and, because the app-server is the MCP
  *    client, they work on a turn someone typed into the attached TUI just as well as on a
  *    mesh-driven one;
- *  • ack-on-completion with EXACT ids: a turn's surfaced messages are drainInboxIds-acked
+ *  • ack-on-completion with EXACT ids: a turn's surfaced messages are drainInboxDeliveries-acked
  *    ONLY when the turn reaches `completed`. A `failed` turn (transient model/upstream error)
  *    leaves them un-acked and retries with bounded backoff; an `interrupted` turn leaves them
  *    for redelivery — matching the OpenCode connector's semantics — and an app-server CRASH
@@ -532,7 +532,7 @@ export async function runCodexHost(): Promise<void> {
       } else {
         const items = agent.peekInbox("automatic");
         if (items.length === 0) return;
-        ids = items.map((i) => i.id);
+        ids = items.map((i) => i.recvKey);
         const inj = formatInjection(items);
         if (inj) parts.push(inj);
       }
@@ -585,7 +585,7 @@ export async function runCodexHost(): Promise<void> {
         steerSettled = rpc.catch(() => false);
         if (!(await rpc)) return; // declined — the boundary drive handles them
         if (!awaitingTurnEnd) return; // turn closed while the accept was in flight — redeliver
-        surfaced.push(...items.map((i) => i.id));
+        surfaced.push(...items.map((i) => i.recvKey));
       }
     } finally {
       steering = false;
@@ -627,7 +627,7 @@ export async function runCodexHost(): Promise<void> {
       awaitingTurnEnd = false;
       const ids = surfaced;
       surfaced = [];
-      if (wasOpen && ids.length > 0 && status === "completed") agent.drainInboxIds(ids); // the sole ack site
+      if (wasOpen && ids.length > 0 && status === "completed") agent.drainInboxDeliveries(ids); // the sole ack site
       if (status === "failed") scheduleErrorRetry();
       else clearErrorRetry(true);
       void (async () => {
@@ -963,7 +963,7 @@ export async function runCodexHost(): Promise<void> {
   // directed message always drives; ambient drives only in `open` (dnd/focus hold it for the next
   // boundary). Receive-time pull-only never reaches "incoming" as automatic; `muted` never at all.
   agent.on("incoming", (item: InboxItem) => {
-    const automatic = agent.inboxScope(item.id) === "automatic";
+    const automatic = agent.inboxScope(item.recvKey) === "automatic";
     if (!automatic) return;
     const directed = item.kind !== "channel" || item.mentionsMe;
     if (driver.busy || awaitingTurnEnd) {

@@ -511,3 +511,5 @@ smoke:jcode-retry-policy
 # which path gave up the slot, and what the runtime saw when the child ended — and a runtime that
 # cannot see the exit must say so rather than print a fabricated code 0.
 smoke:seat-exit-cause
+smoke:empty-id-ingest
+smoke:hermes-empty-id

@@ -62,6 +62,9 @@ function harness(): H {
       text: `${id}: body`,
       mentionsMe: false,
       historical: false,
+      // The ingest seam mints recvKey (= the wire id for real ids) before buffer() ever sees an
+      // item; fabricating below that seam means carrying the invariant here too.
+      recvKey: id,
     } as InboxItem;
     (agent as unknown as { buffer: (i: InboxItem, a: () => void, p: boolean) => void }).buffer(
       item,
@@ -125,8 +128,8 @@ console.log("\n3. landing the message clears its history");
   check("evictions accumulate toward the cap", tally() === LIMIT - 1, { tally: tally() });
 
   h.push(victim);
-  (h.agent as unknown as { drainInboxIds: (ids: string[]) => unknown }).drainInboxIds([victim]);
-  // Assert the TALLY, not the ack set. `drainInboxIds` acks a handled message by design, so
+  (h.agent as unknown as { drainInboxDeliveries: (keys: string[]) => unknown }).drainInboxDeliveries([victim]);
+  // Assert the TALLY, not the ack set. `drainInboxDeliveries` acks a handled message by design, so
   // "was it acked" cannot distinguish a successful delivery from a give-up - an earlier version of
   // this cell made exactly that mistake and failed against correct code.
   check("handling the message clears its eviction history", tally() === undefined, { tally: tally() });

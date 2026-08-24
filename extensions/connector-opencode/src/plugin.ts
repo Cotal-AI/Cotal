@@ -372,7 +372,7 @@ export const cotal: Plugin = async () => {
   // Set on the first connector-submitted turn whether or not there was a briefing to send: the flag
   // records that the attempt was made, so an empty briefing is not retried on every later turn.
   let briefed = false;
-  let surfaced: string[] = []; // ids surfaced into the current turn, acked on completion (by id, not count)
+  let surfaced: string[] = []; // receive keys surfaced into the current turn, acked on completion (per delivery, not count)
   let awaitingTurnEnd = false; // a turn is in flight → ignore a duplicate idle that isn't its end
   let errorRetryTimer: ReturnType<typeof setTimeout> | undefined;
   let errorRetryMs = ERROR_RETRY_INITIAL_MS;
@@ -931,7 +931,7 @@ export const cotal: Plugin = async () => {
       } else {
         const items = agent.peekInbox("automatic");
         if (items.length === 0) return;
-        ids = items.map((i) => i.id);
+        ids = items.map((i) => i.recvKey);
         const inj = formatInjection(items);
         if (inj) parts.push({ type: "text", text: inj });
       }
@@ -1028,12 +1028,12 @@ export const cotal: Plugin = async () => {
     await drive();
   })();
 
-  /** Ack exactly the surfaced ids. Quiet ambient may be physically interleaved ahead of them, and
-   *  overflow may already have removed some; MeshAgent marks every confirmed id handled while only
-   *  acking entries still present. */
+  /** Ack exactly the surfaced deliveries by their receive keys (#624: an id-less item's wire id
+   *  would be "", unaddressable). Overflow may already have removed some; MeshAgent marks every
+   *  confirmed delivery handled while only acking entries still present. */
   function ackSurfaced(): void {
     if (surfaced.length === 0) return;
-    agent.drainInboxIds(surfaced);
+    agent.drainInboxDeliveries(surfaced);
     surfaced = [];
   }
 
@@ -1057,7 +1057,7 @@ export const cotal: Plugin = async () => {
     );
     if (!textPart) return;
     textPart.text = `${inj}\n\n${textPart.text}`;
-    surfaced = items.map((i) => i.id);
+    surfaced = items.map((i) => i.recvKey);
     awaitingTurnEnd = true;
     busy = true;
   }
@@ -1088,7 +1088,7 @@ export const cotal: Plugin = async () => {
   // (ack-dropped at ingest); in `focus`, ambient/@mentions never reach "incoming" either.
   agent.on("incoming", (item: InboxItem) => {
     if (busy) return; // buffer; chat.message or completeTurn drives at the next safe boundary
-    const automatic = agent.inboxScope(item.id) === "automatic";
+    const automatic = agent.inboxScope(item.recvKey) === "automatic";
     const directed = item.kind !== "channel" || item.mentionsMe;
     if (automatic && (directed || agent.attention === "open")) void drive();
   });

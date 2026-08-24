@@ -36,6 +36,7 @@ const ok = (condition: unknown, message: string): void => {
 function item(id: string, overrides: Partial<InboxItem> = {}): InboxItem {
   return {
     id,
+    recvKey: id,
     ts: new Date().toISOString(),
     fromId: `sender-${id}`,
     fromName: "sender",
@@ -67,14 +68,14 @@ class FakeMesh {
     return drained;
   }
 
-  drainInboxIds(ids: readonly string[]): ExactDrainResult {
-    const wanted = new Set(ids);
-    const drained = this.items.filter((value) => wanted.has(value.id));
-    this.items = this.items.filter((value) => !wanted.has(value.id));
+  drainInboxDeliveries(keys: readonly string[]): ExactDrainResult {
+    const wanted = new Set(keys);
+    const drained = this.items.filter((value) => wanted.has(value.recvKey));
+    this.items = this.items.filter((value) => !wanted.has(value.recvKey));
     this.drained.push(...drained.map((value) => value.id));
     for (const value of drained) this.pullOnly.delete(value.id);
-    const present = new Set(drained.map((value) => value.id));
-    return { items: drained, missingIds: [...wanted].filter((id) => !present.has(id)) };
+    const present = new Set(drained.map((value) => value.recvKey));
+    return { items: drained, missingKeys: [...wanted].filter((key) => !present.has(key)) };
   }
 
   channelMode(channel?: string): "quiet" | "muted" | undefined {

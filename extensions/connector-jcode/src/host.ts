@@ -368,7 +368,7 @@ export async function runJcodeHost(): Promise<void> {
       const inbox = agent.peekInbox("automatic");
       const injection = formatInjection(inbox);
       if (!injection) return;
-      ids = inbox.map((item) => item.id);
+      ids = inbox.map((item) => item.recvKey);
       parts.push(injection);
     }
     if (!briefed) {
@@ -388,7 +388,7 @@ export async function runJcodeHost(): Promise<void> {
       // only safe outcome. The reconnect path redrives it after it reattaches the owned session.
       if (reconnecting || client !== turnClient)
         throw new Error("Jcode Harness connection closed during the turn; leaving the inbox batch unacknowledged");
-      if (ids.length) agent.drainInboxIds(ids);
+      if (ids.length) agent.drainInboxDeliveries(ids);
       // A turn that SUCCEEDS clears the backoff: the next failure starts from the short delay again
       // rather than inheriting a penalty the seat has already recovered from.
       errorRetryMs = ERROR_RETRY_INITIAL_MS;

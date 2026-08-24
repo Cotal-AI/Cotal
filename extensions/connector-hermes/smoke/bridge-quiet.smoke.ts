@@ -18,8 +18,8 @@ const socketPath = join(dir, "bridge.sock");
 class FakeAgent extends EventEmitter {
   attention = "open" as const;
   items: InboxItem[] = [
-    { id: "quiet", ts: 1, fromId: "q", fromName: "Quiet", kind: "channel", channel: "quiet", mentionsMe: false, historical: false, text: "quiet body" },
-    { id: "dm", ts: 2, fromId: "d", fromName: "Direct", kind: "dm", mentionsMe: false, historical: false, text: "dm body" },
+    { id: "quiet", recvKey: "quiet", ts: 1, fromId: "q", fromName: "Quiet", kind: "channel", channel: "quiet", mentionsMe: false, historical: false, text: "quiet body" },
+    { id: "dm", recvKey: "dm", ts: 2, fromId: "d", fromName: "Direct", kind: "dm", mentionsMe: false, historical: false, text: "dm body" },
   ];
   pullOnly = new Set(["quiet"]);
 
@@ -32,7 +32,7 @@ class FakeAgent extends EventEmitter {
     return this.remove(selected.map((item) => item.id)).items;
   }
 
-  drainInboxIds(ids: readonly string[]): ExactDrainResult {
+  drainInboxDeliveries(ids: readonly string[]): ExactDrainResult {
     return this.remove(ids);
   }
 
@@ -44,12 +44,13 @@ class FakeAgent extends EventEmitter {
     return Promise.resolve({ items: [], droppedChannels: [] });
   }
 
-  private remove(ids: readonly string[]): ExactDrainResult {
-    const wanted = new Set(ids);
-    const items = this.items.filter((item) => wanted.has(item.id));
-    this.items = this.items.filter((item) => !wanted.has(item.id));
-    const present = new Set(items.map((item) => item.id));
-    return { items, missingIds: [...wanted].filter((id) => !present.has(id)) };
+  private remove(keys: readonly string[]): ExactDrainResult {
+    // Keys are receive keys now (the bridge addresses deliveries by InboxItem.recvKey, #624).
+    const wanted = new Set(keys);
+    const items = this.items.filter((item) => wanted.has(item.recvKey));
+    this.items = this.items.filter((item) => !wanted.has(item.recvKey));
+    const present = new Set(items.map((item) => item.recvKey));
+    return { items, missingKeys: [...wanted].filter((key) => !present.has(key)) };
   }
 }
 
@@ -111,7 +112,7 @@ try {
   assert.match(String(tool.text), /quiet body/, "cotal_inbox must destructively surface quiet ambient");
   assert.deepEqual(agent.items.map((item) => item.id), ["dm"], "the pull must leave connector-managed automatic traffic untouched");
 
-  client.write(JSON.stringify({ t: "delivered", id: "dm" }) + "\n");
+  client.write(JSON.stringify({ t: "delivered", recvKey: "dm" }) + "\n");
   for (let i = 0; i < 50 && agent.items.length; i++) await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(agent.items.length, 0, "Hermes completion must exact-ack the delivered DM");
   client.destroy();

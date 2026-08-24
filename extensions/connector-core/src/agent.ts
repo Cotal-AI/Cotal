@@ -71,6 +71,14 @@ function execBearerCmd(argv: string[]): Promise<string> {
 /** A message that has arrived for us, normalized for the agent to read. */
 export interface InboxItem {
   id: string;
+  /** Opaque per-delivery RECEIVE key (#624): the address a host uses to drain/ack THIS buffered
+   *  delivery. It is the wire `id` for every message that carries one; a message whose `id` is the
+   *  empty string gets a minted key, because an empty id is never a dedup key and never a
+   *  selectable one. It is NOT wire identity and NOT dedup authority: nothing coalesces on it, so
+   *  a redelivered copy of an id-less message mints its own key and surfaces again (at-least-once,
+   *  the disclosed cost). It exists so the exact-id drains and in-flight protection can select the
+   *  DELIVERY rather than an id value that two distinct messages share. */
+  recvKey: string;
   ts: number;
   fromId: string;
   fromName: string;
@@ -108,6 +116,13 @@ export interface RecallMark {
 
 /** Total order on {@link RecallMark}: by time, then by id, so items sharing a millisecond still queue. */
 export function afterRecallMark(a: RecallMark, b: RecallMark): boolean {
+  // #624: recall marks and items are addressed by RECEIVE key (never the wire id), and a minted
+  // key is never the empty string, so the tie-break comparator never sees an empty id on either
+  // side: the only empty id in a RecallMark is the initial cursor {ts: 0, id: ""}, whose ts
+  // differs from every real item and so never reaches the id comparison. (The empty-id guard this
+  // comparator once carried was removed after a root chase showed it unreachable: with the wire id
+  // out of the marks, no real path can put two empty ids, or an empty id against a real one, into
+  // the comparison.)
   return a.ts !== b.ts ? a.ts > b.ts : a.id > b.id;
 }
 
@@ -129,11 +144,22 @@ export type InboxScope = "all" | "automatic" | "pull-only";
 
 export interface ExactDrainResult {
   items: InboxItem[];
-  missingIds: string[];
+  missingKeys: string[];
 }
+
+import { randomUUID } from "node:crypto";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/** The dedup key a received message id contributes to ingest's coalescing, or undefined when the id
+ *  is EMPTY: an empty id is never a dedup key (#624). Undefined means "no identity to coalesce on",
+ *  so every id-keyed lookup in {@link MeshAgent.ingest} is skipped for such a message and it flows to
+ *  the buffer on its own merits. Real ids are returned unchanged: their coalescing (live/durable
+ *  copies of one message, and redelivery after handle) is untouched. */
+function ingestDedupKey(id: string): string | undefined {
+  return id === "" ? undefined : id;
 }
 
 /**
@@ -201,9 +227,14 @@ export class MeshAgent extends EventEmitter {
    *  published after it ("since you entered focus"). Undefined unless in focus. */
   private focusSince?: number;
   private enteringFocus = false;
-  /** IDs received under quiet/muted while focused must never reappear through stream recall after a
-   *  mode toggle. If this bounded exclusion history fills, recall for the affected channel fails
-   *  closed and reports the channel as incomplete. */
+  /** The receive-key namespace secret (#624): a per-session random value minted at construction,
+   *  never written to any wire or log. Minted receive keys are `${secret}.${seq}`, so they are
+   *  DISJOINT from wire ids by construction: an attacker-chosen wire id cannot equal one, so one
+   *  verdict can never select two entries through a forged collision. Recognition is FUNCTIONAL
+   * (the key starts with the secret), so it cannot saturate the way a bounded set would: every
+   * minted key stays recognizable for the session's life, with nothing to expire or overflow. */
+  private readonly recvKeySecret = randomUUID().replace(/-/g, "");
+  private recvKeySeq = 0;
   private focusExcludedIds = new Map<string, string>();
   private focusRecallUnsafeChannels = new Set<string>();
   private stopping = false;
@@ -321,15 +352,24 @@ export class MeshAgent extends EventEmitter {
   // ---- inbox ---------------------------------------------------------------
 
   private ingest(m: CotalMessage, delivery: Delivery, meta?: MessageMeta): void {
+    // #624: an EMPTY id is never a dedup key. The id-keyed coalescing below exists to collapse the
+    // copies of ONE message across the live/durable paths, and identity is what makes that safe. A
+    // message that carries an empty id asserts no identity (SPEC §5 requires a unique id; the sender
+    // already violated it), so keying the coalescing on "" reads empty-equals-empty as a duplicate
+    // and silently drops every empty-id message after the first: measured live, two distinct
+    // empty-id messages arrived and only the first ever buffered. Treating an empty id as NO id
+    // costs the coalescing for those messages only (a redelivered copy can surface twice), which is
+    // the wire contract's at-least-once stance; collapsing distinct messages is not a stance at all.
+    const key = ingestDedupKey(m.id);
     // Already SURFACED and drained? This is a post-handle cross-path duplicate (the transition window's
     // second copy, arriving after the first was handled). Don't surface it again; if it's the durable
     // copy, ack it so JetStream stops redelivering — safe because the logical message was already
     // handled (handledIds is recorded at drain time, never at receive time).
-    if (this.handledIds.has(m.id) || this.handledIdsPrev.has(m.id)) {
+    if (key !== undefined && (this.handledIds.has(key) || this.handledIdsPrev.has(key))) {
       if (delivery.durable) delivery.ack();
       return;
     }
-    if (this.protectedPullOnlyIds.has(m.id) || this.protectedDropIds.has(m.id)) {
+    if (key !== undefined && (this.protectedPullOnlyIds.has(key) || this.protectedDropIds.has(key))) {
       if (delivery.durable) delivery.ack();
       return;
     }
@@ -342,7 +382,7 @@ export class MeshAgent extends EventEmitter {
     // dropped as-is. A durable duplicate also re-announces the still-pending item through the
     // ordinary `incoming` policy path. That turns JetStream redelivery into a timer-free retry for
     // a wake the host dropped, without bypassing quiet/attention or adapter in-flight guards.
-    const existing = this.inbox.find((p) => p.item.id === m.id);
+    const existing = key === undefined ? undefined : this.inbox.find((p) => p.item.id === key);
     if (existing) {
       if (delivery.durable) {
         existing.ack = delivery.ack;
@@ -379,7 +419,7 @@ export class MeshAgent extends EventEmitter {
         delivery.ack();
         return;
       }
-      const remembered = this.evictedClassifications.get(item.id);
+      const remembered = item.id === "" ? undefined : this.evictedClassifications.get(item.id); // #624: an empty id never carries a remembered classification
       if (remembered) this.evictedClassifications.delete(item.id);
       const snapshottedPullOnly = !item.mentionsMe && (remembered?.pullOnly ?? cm === "quiet");
       if (cm === "quiet" || snapshottedPullOnly) this.excludeFromFocus(item);
@@ -434,7 +474,7 @@ export class MeshAgent extends EventEmitter {
         // surfaced batch is made of, so without this an arrival can ack a message a host is still
         // trying to hand to its runtime. Evicting bounds memory; acking is what makes it
         // unrecoverable — gone from the buffer, never marked handled, no longer redeliverable. Left
-        // un-acked it redelivers; and if the delivery does succeed, {@link drainInboxIds} marks the
+        // un-acked it redelivers; and if the delivery does succeed, {@link drainInboxDeliveries} marks the
         // now-missing id handled so that redelivery is silently acked.
         //
         // A directed message is never acked on overflow: leaving it un-acked lets JetStream redeliver
@@ -444,28 +484,30 @@ export class MeshAgent extends EventEmitter {
         // ...but a delay only helps if it ENDS. An un-acked id is one the broker may hand straight
         // back, into an inbox that is still full, to be evicted again - a cycle that spends broker
         // and connector throughput while every seat involved looks healthy. So the reprieve is
-        // counted: after OVERFLOW_REDELIVERY_LIMIT evictions of the SAME id we stop hoping for room
-        // and ack it, recording the loss loudly. A message lost with a log line beats a mesh that
-        // quietly stops moving (#807).
+        // counted: after OVERFLOW_REDELIVERY_LIMIT evictions of the SAME message we stop hoping for
+        // room and ack it, recording the loss loudly. A message lost with a log line beats a mesh
+        // that quietly stops moving (#807).
         //
-        // The counter is keyed on the id and cleared whenever that id is actually handled
-        // ({@link drainInboxIds}), so an id that eventually lands never accumulates toward the cap.
+        // The counter is keyed on the RECEIVE key — the wire id for real messages, the minted key
+        // for id-less ones — so two id-less deliveries never share one tally (#624). It is cleared
+        // whenever the message is actually handled ({@link drainInboxDeliveries}), so one that
+        // eventually lands never accumulates toward the cap.
         let giveUp = false;
         if (sacrificingDirected) {
-          const seen = (this.overflowEvictions.get(evicted.item.id) ?? 0) + 1;
+          const seen = (this.overflowEvictions.get(evicted.item.recvKey) ?? 0) + 1;
           if (seen >= OVERFLOW_REDELIVERY_LIMIT) {
             giveUp = true;
-            this.overflowEvictions.delete(evicted.item.id);
+            this.overflowEvictions.delete(evicted.item.recvKey);
             // Reported on stderr via the existing log path, NOT emit("error"): an EventEmitter with
             // no "error" listener turns an emit into an unhandled exception that takes the process
             // down, so announcing a dropped message would kill the seat that was trying to survive
             // the flood. Nothing else in this class emits "error" either.
             this.log(
-              `overflow: dropping directed message ${evicted.item.id} after ${seen} evictions - ` +
+              `overflow: dropping directed message ${evicted.item.recvKey} after ${seen} evictions - ` +
                 `the inbox has stayed full across every redelivery, so the reprieve is not helping`,
             );
           } else {
-            this.overflowEvictions.set(evicted.item.id, seen);
+            this.overflowEvictions.set(evicted.item.recvKey, seen);
             if (this.overflowEvictions.size > OVERFLOW_EVICTION_CAP) {
               // Bounded bookkeeping: the map must not become its own leak under a sustained flood.
               // Dropping the oldest entry only forgives a message, never destroys one.
@@ -474,7 +516,7 @@ export class MeshAgent extends EventEmitter {
             }
           }
         }
-        if (!this.inFlightIds.has(evicted.item.id) && (!sacrificingDirected || giveUp)) evicted.ack();
+        if (!this.inFlightIds.has(evicted.item.recvKey) && (!sacrificingDirected || giveUp)) evicted.ack();
       }
     }
     this.emit("incoming", item);
@@ -482,6 +524,7 @@ export class MeshAgent extends EventEmitter {
 
   private rememberEvicted(p: Pending): void {
     if (p.item.kind !== "channel" || p.item.mentionsMe || !p.item.channel) return;
+    if (p.item.id === "") return; // #624: an empty id is never a key; one delivery's classification must not inherit to another
     if (this.classificationUnsafe) return;
     if (!this.evictedClassifications.has(p.item.id) && this.evictedClassifications.size >= CLASSIFICATION_CAP) {
       this.classificationUnsafe = true;
@@ -504,6 +547,7 @@ export class MeshAgent extends EventEmitter {
   }
 
   private protectDisposition(id: string, disposition: "pull-only" | "drop"): void {
+    if (id === "") return; // #624: an empty id is never a dedup key, so it is never recorded as one
     const ids = disposition === "drop" ? this.protectedDropIds : this.protectedPullOnlyIds;
     if ((disposition === "drop" ? this.dropUnsafe : this.classificationUnsafe) || ids.has(id)) return;
     if (ids.size >= PROTECTED_DISPOSITION_CAP) {
@@ -524,6 +568,10 @@ export class MeshAgent extends EventEmitter {
     const text = partsToText(m.parts);
     return {
       id: m.id,
+      // The wire id when there is one; a minted opaque key when the id is the empty string (#624:
+      // an empty id is never a dedup key, so it is never an address either; but the delivery still
+      // needs to be individually drainable/ackable, or it can never clear and never commit).
+      recvKey: m.id !== "" ? m.id : `${this.recvKeySecret}.${++this.recvKeySeq}`,
       ts: m.ts,
       fromId: m.from.id,
       fromName: m.from.name,
@@ -561,6 +609,11 @@ export class MeshAgent extends EventEmitter {
    *  valve free to ack them. Declining to surface costs a deferral: the messages stay buffered and go
    *  out on a later frame, once a verdict releases capacity. */
   holdInFlight(ids: readonly string[]): boolean {
+    // #624: the keys here are RECEIVE keys. An id-less delivery's wire id is "", so raw-id keying
+    // merged the counts of DISTINCT empty-id deliveries, and the eviction valve's in-flight check
+    // then deferred acking an evicted id-less item while any other id-less batch was held:
+    // cross-delivery interference in the safe direction, but interference. Receive keys are unique
+    // per delivery, so each is protected exactly for the frames holding it.
     let fresh = 0;
     for (const id of ids) if (!this.inFlightIds.has(id)) fresh++;
     if (this.inFlightIds.size + fresh > MAX_INBOX * 2) return false;
@@ -592,34 +645,48 @@ export class MeshAgent extends EventEmitter {
     const eligible = this.inbox.filter((p) => this.inScope(p, scope));
     const n = limit && limit > 0 ? Math.min(limit, eligible.length) : eligible.length;
     const selected = eligible.slice(0, n);
-    const ids = new Set(selected.map((p) => p.item.id));
-    this.inbox = this.inbox.filter((p) => !ids.has(p.item.id));
+    // Remove by OBJECT IDENTITY, not by a set of wire ids (#624): the id-less entries share "", so
+    // an id set would remove every id-less neighbor beyond the limit and outside the scope while
+    // acking only the selected — silent loss by selection. Identity removes exactly what was taken.
+    const taken = new Set(selected);
+    this.inbox = this.inbox.filter((p) => !taken.has(p));
     return this.commitPending(selected);
   }
 
-  /** Ack exact surfaced ids without assuming they still form the physical inbox prefix. Every
-   *  requested id is marked handled, including an item overflow-evicted during the turn. */
-  drainInboxIds(ids: readonly string[]): ExactDrainResult {
-    const requested = [...new Set(ids)];
+  /** Ack exact surfaced deliveries without assuming they still form the physical inbox prefix.
+   *  Takes RECEIVE keys ({@link InboxItem.recvKey}): the wire id for real messages, a minted key
+   *  for id-less ones, and selects by them, so a host that surfaced one empty-id item drains THAT
+   *  delivery, never its neighbors: the sweep the raw id produced (every pending empty-id item
+   *  acked and marked handled in one call) is closed by construction, not by filtering. Every
+   *  requested key whose item is present is acked and (for a real id) marked handled, including an
+   *  item overflow-evicted during the turn. */
+  drainInboxDeliveries(keys: readonly string[]): ExactDrainResult {
+    const requested = [...new Set(keys)];
     const wanted = new Set(requested);
-    const selected = this.inbox.filter((p) => wanted.has(p.item.id));
-    const present = new Set(selected.map((p) => p.item.id));
-    const pullOnly = new Map(selected.map((p) => [p.item.id, p.pullOnly]));
+    const selected = this.inbox.filter((p) => wanted.has(p.item.recvKey));
+    const present = new Set(selected.map((p) => p.item.recvKey));
+    const pullOnly = new Map(selected.map((p) => [p.item.recvKey, p.pullOnly]));
     for (const id of requested) {
-      const remembered = this.evictedClassifications.get(id);
+      const remembered = id !== "" ? this.evictedClassifications.get(id) : undefined;
       if (!pullOnly.has(id) && remembered) pullOnly.set(id, remembered.pullOnly);
     }
-    this.inbox = this.inbox.filter((p) => !present.has(p.item.id));
+    this.inbox = this.inbox.filter((p) => !present.has(p.item.recvKey));
     const items = this.commitPending(selected);
     for (const id of requested) {
-      if (!present.has(id)) this.markHandled(id, pullOnly.get(id) ?? false);
-      this.evictedClassifications.delete(id);
-      // An id that actually landed is not churning, whatever it survived on the way here: clear its
-      // overflow tally so a message that is redelivered, evicted, then finally handled never carries
-      // history toward the give-up cap.
+      // A MINTED key (an id-less delivery) is never handled-authority: its wire id is "", which
+      // markHandled already refuses, so skipping it here is the same at-least-once stance rather
+      // than a new one. Recording the minted key itself would pollute handledIds with a string a
+      // future REAL id could legitimately equal, arming the exact suppression this change removes.
+      if (!present.has(id) && !id.startsWith(`${this.recvKeySecret}.`)) {
+        this.markHandled(id, pullOnly.get(id) ?? false);
+        this.evictedClassifications.delete(id);
+      }
+      // A message that actually landed is not churning, whatever it survived on the way here: clear
+      // its overflow tally so one that is redelivered, evicted, then finally handled never carries
+      // history toward the give-up cap. Keyed on the receive key, like the tally itself.
       this.overflowEvictions.delete(id);
     }
-    return { items, missingIds: requested.filter((id) => !present.has(id)) };
+    return { items, missingKeys: requested.filter((key) => !present.has(key)) };
   }
 
   private commitPending(taken: Pending[]): InboxItem[] {
@@ -639,6 +706,7 @@ export class MeshAgent extends EventEmitter {
    *  two rotating windows: when the live set fills, it becomes the previous window and a fresh one
    *  starts — so memory stays ~2× the cap while the lookup horizon never shrinks below it. */
   private markHandled(id: string, pullOnly = false): void {
+    if (id === "") return; // #624: an empty id is never a dedup key, so it is never recorded as one
     if (pullOnly) this.protectDisposition(id, "pull-only");
     this.handledIds.add(id);
     if (this.handledIds.size >= 4096) {
@@ -751,9 +819,10 @@ export class MeshAgent extends EventEmitter {
     this.aheadDelivered.clear();
   }
 
-  /** Buffered receive-time lane for one id. Undefined means it is no longer pending. */
-  inboxScope(id: string): Exclude<InboxScope, "all"> | undefined {
-    const pending = this.inbox.find((p) => p.item.id === id);
+  /** Buffered receive-time lane for one delivery, addressed by its receive key. Undefined means it
+   *  is no longer pending. */
+  inboxScope(key: string): Exclude<InboxScope, "all"> | undefined {
+    const pending = this.inbox.find((p) => p.item.recvKey === key);
     return pending ? (pending.pullOnly ? "pull-only" : "automatic") : undefined;
   }
 

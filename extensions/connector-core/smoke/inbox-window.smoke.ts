@@ -196,7 +196,7 @@ try {
   // ── 6) FOCUS: the response carries two lanes, and only one of them is destructive ──────────────
   //
   // In focus mode the reply mixes the live buffer (DMs/anycast, clearable) with read-only channel
-  // recall pulled back from the stream. Passing a recall id to drainInboxIds would not merely be
+  // recall pulled back from the stream. Passing a recall id to drainInboxDeliveries would not merely be
   // untidy: ids are marked HANDLED there, so a later live copy of that message would be dropped as
   // a duplicate: mail lost by a read that never owned it.
   //
@@ -502,7 +502,7 @@ try {
     Object.defineProperty(agent, "attention", { get: () => "focus" });
     (agent as unknown as { recallAmbient: () => Promise<unknown> }).recallAmbient = async () => ({
       items: Array.from({ length: 30 }, (_, n) => ({
-        id: `PK-${n}`, ts: 2_000 + n, fromId: "peer", fromName: "Peer", kind: "channel" as const,
+        id: `PK-${n}`, recvKey: `PK-${n}`, ts: 2_000 + n, fromId: "peer", fromName: "Peer", kind: "channel" as const,
         channel: "general", mentionsMe: false, historical: false, text: `${"p".repeat(3_000)} PK_${n}`,
       })),
       droppedChannels: [],
@@ -542,6 +542,7 @@ try {
     // Twins at index 14 and 15, which is where a window of ~3,000-character items falls.
     const items = Array.from({ length: 30 }, (_, n) => ({
       id: `TW-${n}`,
+      recvKey: `TW-${n}`,
       ts: 5_000 + (n === 15 ? 14 : n),
       fromId: "peer",
       fromName: "Peer",
@@ -601,6 +602,7 @@ try {
       ...Array.from({ length: 6 }, (_, n) => ({ id: `S-${n}`, ts: 9_001 + n, text: `${"s".repeat(500)} SMALL_${n}` })),
     ].map((i) => ({
       ...i,
+      recvKey: i.id,
       fromId: "peer",
       fromName: "Peer",
       kind: "channel" as const,
@@ -646,7 +648,7 @@ try {
       { id: "B", ts: 30_002, text: `${"b".repeat(25_000)} SKIP_B` },
       { id: "C", ts: 30_003, text: `${"c".repeat(400)} SKIP_C` },
     ].map((i) => ({
-      ...i, fromId: "peer", fromName: "Peer", kind: "channel" as const,
+      ...i, recvKey: i.id, fromId: "peer", fromName: "Peer", kind: "channel" as const,
       channel: "general", mentionsMe: false, historical: false,
     }));
     (agent as unknown as { recallAmbient: () => Promise<unknown> }).recallAmbient = async () => ({
@@ -727,6 +729,7 @@ try {
         Object.defineProperty(agent, "attention", { get: () => "focus" });
         const items = shape.map((size, n) => ({
           id: `E-${n}`,
+          recvKey: `E-${n}`,
           // Tied mode puts every pair in one millisecond, which is what a replay burst does. Ahead
           // mode stamps the odd items in the far future, the way a peer with a wrong or chosen clock
           // does, so every shape is walked with both lanes carrying part of it.
@@ -814,7 +817,7 @@ try {
     agent.on("error", () => {});
     Object.defineProperty(agent, "attention", { get: () => "focus" });
     const mk = (id: string, ts: number) => ({
-      id, ts, fromId: "peer", fromName: id === "SKEW" ? "Skewed" : "Peer", kind: "channel" as const,
+      id, recvKey: id, ts, fromId: "peer", fromName: id === "SKEW" ? "Skewed" : "Peer", kind: "channel" as const,
       channel: "general", mentionsMe: false, historical: false, text: `body ${id}_X`,
     });
     let items = [mk("A", 1_000), mk("B", 1_100), mk("SKEW", 9_000_000_000_000)];
@@ -852,12 +855,12 @@ try {
     agent.on("error", () => {});
     Object.defineProperty(agent, "attention", { get: () => "focus" });
     const forged = Array.from({ length: 400 }, (_, n) => ({
-      id: `FORGE-${n}`, ts: 9_000_000_000_000 + n, fromId: "adv", fromName: "Adversary",
+      id: `FORGE-${n}`, recvKey: `FORGE-${n}`, ts: 9_000_000_000_000 + n, fromId: "adv", fromName: "Adversary",
       kind: "channel" as const, channel: "general", mentionsMe: false, historical: false,
       text: `forged ${n}`,
     }));
     const honest = [1_000, 1_100, 1_200].map((ts, n) => ({
-      id: `HON-${n}`, ts, fromId: "peer", fromName: "Peer", kind: "channel" as const,
+      id: `HON-${n}`, recvKey: `HON-${n}`, ts, fromId: "peer", fromName: "Peer", kind: "channel" as const,
       channel: "general", mentionsMe: false, historical: false, text: `honest HON_${n}`,
     }));
     (agent as unknown as { recallAmbient: () => Promise<unknown> }).recallAmbient = async () => ({
@@ -950,7 +953,7 @@ try {
     agent.on("error", () => {});
     Object.defineProperty(agent, "attention", { get: () => "focus" });
     const items = [{
-      id: "DECAY", ts: Date.now() + 80, fromId: "peer", fromName: "Peer", kind: "channel" as const,
+      id: "DECAY", recvKey: "DECAY", ts: Date.now() + 80, fromId: "peer", fromName: "Peer", kind: "channel" as const,
       channel: "general", mentionsMe: false, historical: false, text: "body DECAY_MARK",
     }];
     (agent as unknown as { recallAmbient: () => Promise<unknown> }).recallAmbient = async () => ({
@@ -1122,7 +1125,7 @@ try {
         items, droppedChannels: [],
       }));
     const item = (id: string, ts: number, mark: string) => ({
-      id, ts, fromId: "peer", fromName: "Peer", kind: "channel" as const, channel: "general",
+      id, recvKey: id, ts, fromId: "peer", fromName: "Peer", kind: "channel" as const, channel: "general",
       mentionsMe: false, historical: false, text: `body ${mark}`,
     });
 
