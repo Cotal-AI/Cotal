@@ -20,21 +20,21 @@
     {
       "name": "Jcode host redacts downstream effort rejection text",
       "file": "extensions/connector-jcode/src/host-main.ts",
-      "find": "if (!(error instanceof JcodeEffortRefusal)) return undefined;",
-      "replace": "if (!(error instanceof Error)) return undefined;",
+      "find": "  if (!(error instanceof JcodeEffortRefusal)) return undefined;\n  const ladder = error.acceptedLadder.length ? `; accepted tiers: ${error.acceptedLadder.join(\", \")}` : \"\";\n  return `Jcode reasoning effort refused: requested tier ${JSON.stringify(error.requestedTier)}; effective model ${JSON.stringify(error.effectiveModel)}; provider code ${error.providerCode}${ladder}`;",
+      "replace": "  if (!(error instanceof Error)) return undefined;\n  return error.message;",
       "expectRed": "downstream effort-refusal text never reaches stderr"
     },
     {
       "name": "Jcode host retries the mandatory readiness proof after the first-turn MCP snapshot race",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "      if (!hasOrientation(readiness)) readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });",
-      "replace": "      if (false) readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });",
+      "find": "      if (!hasOrientation(readiness)) {\n        readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });\n      }",
+      "replace": "      if (false) {\n        readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });\n      }",
       "expectRed": "a first-turn MCP snapshot race is retried once"
     },
     {
       "name": "Jcode host still refuses a permanently absent cotal tool after the bounded retry",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "    if (!hasOrientation(readiness))\n      throw new Error(\n        \"jcode connector: the cotal MCP bridge did not become callable during its two mandatory readiness turns \\u2014 refusing to join a mesh seat without its tool surface\",\n      );",
+      "find": "    if (!hasOrientation(readiness))\n      throw new Error(\n        \"jcode connector: the cotal MCP bridge did not become callable during its two mandatory readiness turns — refusing to join a mesh seat without its tool surface\",\n      );",
       "replace": "    if (false) throw new Error(\"mutant\");",
       "expectRed": "a permanently absent cotal tool ends the launch"
     }

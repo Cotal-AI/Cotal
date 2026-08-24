@@ -346,6 +346,7 @@ try {
   // A structured downstream effort rejection is untrusted. Before the repair, this exact canary
   // reached the external observer/UI because host-main rendered the host-composed refusal verbatim.
   const effortCanary = "JCODE-REFUSAL-CANARY-3c5e9d77-DO-NOT-PRINT";
+  const acceptedLadder = "minimal, low, high";
   const refusedLog = join(root, "refused-effort.jsonl");
   const refused = spawn(tsx, [host], {
     cwd: root,
@@ -354,7 +355,7 @@ try {
       PATH: `${shimDir}:${env.PATH ?? ""}`,
       FAKE_JCODE_LOG: refusedLog,
       FAKE_JCODE_REFUSE_EFFORT: "xhigh",
-      FAKE_JCODE_EFFORT_ERROR: `provider rejected xhigh; accepted tiers: minimal, low, high; ${effortCanary}`,
+      FAKE_JCODE_EFFORT_ERROR: `provider rejected xhigh; accepted tiers: ${acceptedLadder}; ${effortCanary}`,
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodehost",
       COTAL_NAME: "refusedpeer",
@@ -382,10 +383,10 @@ try {
     /requested tier "xhigh"/.test(refusedErr) &&
       /effective model "fake-model"/.test(refusedErr) &&
       /provider code invalid_request/.test(refusedErr) &&
-      /accepted tiers: minimal, low, high/.test(refusedErr),
+      refusedErr.includes(`accepted tiers: ${acceptedLadder}`),
     refusedErr,
   );
-  check("downstream effort-refusal text never reaches stderr", !refusedErr.includes(effortCanary), refusedErr);
+  check("downstream effort-refusal text never reaches stderr", !refusedErr.includes(effortCanary) && !refusedErr.includes("provider rejected xhigh"), refusedErr);
   check("a seat whose effort was refused never reaches the roster", !announced.has("refusedpeer"), [...announced]);
   const refusedEntries = existsSync(refusedLog) ? readFileSync(refusedLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev: string; frame?: { req?: string; no_reply?: boolean } }> : [];
   check(

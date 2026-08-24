@@ -570,7 +570,9 @@ export async function runJcodeHost(): Promise<void> {
     let readiness;
     try {
       readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });
-      if (!hasOrientation(readiness)) readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });
+      if (!hasOrientation(readiness)) {
+        readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });
+      }
     } catch (error) {
       // A readiness-turn provider refusal is different from arbitrary Harness API failure: Jcode
       // supplied an invalid-request code and a rejected model/effort value the connector can safely
