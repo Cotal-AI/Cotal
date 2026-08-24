@@ -1,6 +1,5 @@
 ---
 "@cotal-ai/connector-jcode": patch
-"@cotal-ai/connector-core": patch
 ---
 
 `--variant` now selects a Jcode seat's reasoning effort instead of failing loud.
