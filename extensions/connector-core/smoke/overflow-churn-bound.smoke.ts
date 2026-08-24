@@ -62,6 +62,9 @@ function harness(): H {
       text: `${id}: body`,
       mentionsMe: false,
       historical: false,
+      // The ingest seam mints recvKey (= the wire id for real ids) before buffer() ever sees an
+      // item; fabricating below that seam means carrying the invariant here too.
+      recvKey: id,
     } as InboxItem;
     (agent as unknown as { buffer: (i: InboxItem, a: () => void, p: boolean) => void }).buffer(
       item,

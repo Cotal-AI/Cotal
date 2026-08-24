@@ -50,6 +50,9 @@ function harness(): Harness {
       text: "x",
       mentionsMe: false,
       historical: false,
+      // The ingest seam mints recvKey (= the wire id for real ids) before buffer() ever sees an
+      // item; fabricating below that seam means carrying the invariant here too.
+      recvKey: partial.id,
       ...partial,
     } as InboxItem;
     // Reach the private valve directly: this suite grades eviction, not ingest classification.
