@@ -500,3 +500,8 @@ smoke:overflow-churn-bound
 # grades the served provider name against the REGISTERED provider's own name, so the two cannot
 # drift back apart behind a re-hardcoded literal.
 smoke:discovery-bundle-consumable:live
+# A failed jcode turn must not become a hot loop (#790). The batch is acked only on success, so a
+# failure leaves pendingWake() positive and the finally re-drives the SAME batch instantly - one
+# stalled turn re-paid the full injection 62 times. The codex host has had scheduleErrorRetry the
+# whole time; this grades the same rule for jcode: growing delay, ceiling, one timer, give up.
+smoke:jcode-retry-policy
