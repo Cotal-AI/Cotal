@@ -202,6 +202,40 @@ only on a signed-in human exchange (an agent's managed exchange never mints one)
 authorized against the fresh ledger row at every connect, and expire with the bearer, so
 narrowing or revoking a grant bites within minutes here too.
 
+### Remote manager authority
+
+A registered user remains an ordinary `agent` bearer by default. Running a detached manager
+on a remote user-auth mesh needs the closed server-authored **`manager-service`** view, which
+is distinct from every general-purpose profile. The operator grants it only by adding
+`supervise` to that user's actor-ledger scope. `supervise` is deliberately distinct from
+`spawn` and `admin`: spawn controls your agents, admin permits the separate cross-owner
+operations, and neither grants persistent manager registration authority.
+
+Only a signed-in human may request this view from the loopback/operator exchange. The public
+exchange and every managed-agent secret exchange refuse it. At exchange and each connection,
+the auth service re-reads the actor row; revoking or removing `supervise` therefore denies the
+next view exchange and connection. A grant must carry the whole requested row just like every
+other actor update, so re-grant its channel envelope, role, and all wanted scope tokens, not
+only `supervise`.
+
+The service is one opaque manager instance for the user's derived owner and a fixed
+server-selected manager actor. Its authority is limited to that instance's manager
+registration, contracts, status, endpoint rails, gate and credential family; it cannot read or
+write another owner or instance. It never exposes a signer, static provisioner credential, owner
+secret, raw stream/KV/consumer authority, or a generic credential-mint API. The host creates the
+public-nkey JWT material through the typed lifecycle-bound protocol: **prepare → activate →
+renew**. Each request is replay-safe and idempotent at its lifecycle/instance operation
+coordinate; the host writes its credential ledger row and finalizes the gate before it releases
+usable material.
+
+A remote manager can provision only descendants of the same derived owner, and the host
+validates that relation and the current manager grant for every provision. It cannot broaden the
+user's envelope or provision a sibling owner's agent. Renewals are bounded. If login, the
+`supervise` grant, or the host manager authority service is unavailable, the manager reports a
+degraded state and refuses new agents, restarts, or replacement credentials rather than
+substituting local/static authority. Existing live agents remain running only while their own
+valid authority permits it; recovery requires the host service and a fresh successful renewal.
+
 **A hard branch, not a fallback.** On a user-auth space, commands never fall back to
 static minting or credless connects: a missing login or a down auth service is one
 sentence naming the exact recovery, and static agent/observer/admin minting is refused

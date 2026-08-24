@@ -61,6 +61,27 @@ Stop one part without tearing down the mesh by naming its registered component: 
 manager`, `cotal down delivery`, or `cotal down web`. Component names from installed extensions
 join the same surface; `cotal down` with no names retains whole-stack behavior.
 
+## Remote supervised agents
+
+On a remote user-auth mesh, foreground `cotal spawn` remains the default participant path. A
+participant can run detached agents only after the host advertises and operates the remote manager
+authority service, and the participant's actor-ledger row includes `supervise`. This is not implied
+by `spawn` or `admin`.
+
+The participant's loopback/operator exchange obtains one closed `manager-service` view for its
+ordinary derived owner, a fixed server-selected manager actor, and one opaque manager instance.
+The host, not the participant, issues the public-nkey JWT material via the replay-safe,
+lifecycle-bound prepare → activate → renew exchange. It never exports the space signer, a static
+provisioner credential, or generic storage authority. The manager may provision only descendants
+of that same owner, with host validation at each provision.
+
+When the authority service, login, or renewal is unavailable, the remote manager degrades
+fail-closed: it refuses new agents, restarts, and credential replacement rather than pretending
+local authority exists. Existing agents remain live only while their independent credentials are
+valid. Restore service and renew successfully before asking it to recover an agent. See
+[Identity & auth](identity-and-auth.md#remote-manager-authority) and the [CLI
+reference](cli.md#supervise).
+
 ## Spawning agents
 
 ```bash

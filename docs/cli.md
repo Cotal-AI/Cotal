@@ -854,11 +854,19 @@ directly to recover a dead manager or drive a custom runtime. Default runtime is
 optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, `@cotal-ai/cmux`, or `@cotal-ai/herdr`) and
 select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.md).
 
-A `meshes add --mode user` entry is a **participant** registration, not hosting authority. Its
-broker address is usable by `supervise` for an exact diagnostic, but a participant cannot supervise
-that user-auth space yet: the manager needs host-side service authority. Run `cotal spawn` without
-`--detach` to launch a foreground agent, or ask the space host to run the manager for detached
-agents. Do not run `cotal down` or `cotal up` on a participant machine to repair this condition.
+A `meshes add --mode user` entry is a **participant** registration, not hosting authority. A
+participant may run `supervise` only when the host advertises the remote manager authority service
+and the signed-in actor has the dedicated `supervise` ledger scope. The CLI obtains the closed,
+loopback-only `manager-service` view; `spawn` and `admin` do not substitute for that scope. The
+host issues the manager's public-nkey JWT material through its lifecycle-bound prepare → activate
+→ renew protocol, never by handing the participant a signer or static provisioner credential.
+
+Without that advertised host service or scope, `supervise` refuses before it starts a manager.
+Run `cotal spawn` without `--detach` to launch a foreground agent, or ask the space host to enable
+the authority service and grant `supervise` for detached agents. If a running remote manager loses
+renewal, it reports degraded state and refuses unsafe new starts and restarts; live agents are not
+silently replaced. Do not run `cotal down` or `cotal up` on a participant machine to repair this
+condition.
 
 ## reconcile-gate
 
@@ -1127,7 +1135,7 @@ cotal actor list
 | `--space <s>` | the folder's | Space whose ledger to manage |
 | `--sub <subject>` | — | The IdP subject (shown by `cotal login`) the actor belongs to |
 | `--owner <u_…>` | — | The derived owner token (alternative to `--sub`) |
-| `--scope <a,b>` | `spawn,role:default` | Capability scope (`''` = none; `spawn` = may run agents, `role:<r>` = may delegate role r, `admin` = cross-agent control) |
+| `--scope <a,b>` | `spawn,role:default` | Capability scope (`''` = none; `spawn` = may run agents; `role:<r>` = may delegate role r; `admin` = cross-agent control; `supervise` = eligible for the closed remote manager-service view when the host enables it) |
 | `--allow-subscribe <a,b>` | `>` (all channels) | Channel read ACL; the user's envelope, their agents can never read beyond it |
 | `--allow-publish <a,b>` | `>` (all channels) | Channel post ACL; also the envelope for their agents' posting |
 | `--role <r>` | — | Role (scopes the task-queue consumer) |
@@ -1139,8 +1147,10 @@ re-grant **replaces the whole row**, not the one field you name, so to add a cap
 every field out: the new scope plus the row's current read set, post set, role and label
 (`cotal actor list` shows what a row holds). A field left off does not stay as it was, it
 reverts to the wide default in the table above, which is how a narrow reader becomes a reader
-of every channel. `revoke` denies the next exchange and the next connect with no restart, and
-evicts the principal's live connections. Managed-agent rows
+of every channel. `supervise` is separate from `spawn` and `admin`: it only makes a signed-in
+person eligible for the host-provided closed remote manager-service view; it does not grant
+management of another owner or a general host profile. `revoke` denies the next exchange and
+the next connect with no restart, and evicts the principal's live connections. Managed-agent rows
 (written by the spawn path) live in a disjoint row space this command never touches. See
 [identity & auth](identity-and-auth.md).
 
