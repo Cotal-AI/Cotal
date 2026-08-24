@@ -1,7 +1,9 @@
 import { createConnection } from "node:net";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { ReadBuffer, serializeMessage } from "@modelcontextprotocol/sdk/shared/stdio.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import type { JSONRPCMessage, RequestId } from "@modelcontextprotocol/sdk/types.js";
 import { cotalToolSpecs, parseToolArgs, type AgentConfig, type ToolResult } from "@cotal-ai/connector-core";
 
 const MAX_REPLY_BYTES = 4 * 1024 * 1024;
@@ -12,61 +14,78 @@ const MAX_REPLY_BYTES = 4 * 1024 * 1024;
  * empty argument object. Reject that key while it is still raw JSON; all other framing and
  * validation stays in the SDK transport.
  */
-class ClosedStdioServerTransport extends StdioServerTransport {
-  private buffer = "";
+class ClosedStdioServerTransport implements Transport {
+  onclose?: () => void;
+  onerror?: (error: Error) => void;
+  onmessage?: Transport["onmessage"];
+  private readonly input = new ReadBuffer();
+  private raw = Buffer.alloc(0);
+  private started = false;
 
-  override async start(): Promise<void> {
-    if ((this as unknown as { _started: boolean })._started)
-      throw new Error("StdioServerTransport already started!");
-    (this as unknown as { _started: boolean })._started = true;
-    process.stdin.setEncoding("utf8");
+  async start(): Promise<void> {
+    if (this.started) throw new Error("ClosedStdioServerTransport already started!");
+    this.started = true;
     process.stdin.on("data", this.read);
     process.stdin.on("error", this.onError);
   }
 
-  override async close(): Promise<void> {
+  async close(): Promise<void> {
     process.stdin.off("data", this.read);
     process.stdin.off("error", this.onError);
     if (process.stdin.listenerCount("data") === 0) process.stdin.pause();
-    (this as unknown as { _readBuffer: { clear(): void } })._readBuffer.clear();
+    this.input.clear();
     this.onclose?.();
+  }
+
+  async send(message: JSONRPCMessage): Promise<void> {
+    await new Promise<void>((resolve) => {
+      if (process.stdout.write(serializeMessage(message))) resolve();
+      else process.stdout.once("drain", resolve);
+    });
   }
 
   private onError = (error: Error): void => this.onerror?.(error);
 
-  private read = (chunk: string): void => {
-    this.buffer += chunk;
+  private rejectPrototypeKey(id: unknown): void {
+    if (typeof id !== "string" && typeof id !== "number") return;
+    void this.send({
+      jsonrpc: "2.0",
+      id: id as RequestId,
+      result: { content: [{ type: "text", text: "cotal tool: unknown argument(s): __proto__ — the argument is not accepted" }], isError: true },
+    });
+  }
+
+  private dispatch(line: Buffer): void {
+    this.input.append(Buffer.concat([line, Buffer.from("\n")]));
     for (;;) {
-      const newline = this.buffer.indexOf("\n");
-      if (newline < 0) return;
-      const line = this.buffer.slice(0, newline);
-      this.buffer = this.buffer.slice(newline + 1);
-      if (!line) continue;
       try {
-        const frame = JSON.parse(line) as { id?: unknown; method?: unknown; params?: { arguments?: unknown } };
+        const message = this.input.readMessage();
+        if (message === null) return;
+        this.onmessage?.(message);
+      } catch (error) {
+        this.onerror?.(error as Error);
+      }
+    }
+  }
+
+  private read = (chunk: Buffer): void => {
+    this.raw = Buffer.concat([this.raw, chunk]);
+    for (;;) {
+      const newline = this.raw.indexOf(0x0a);
+      if (newline < 0) return;
+      const line = this.raw.subarray(0, newline);
+      this.raw = this.raw.subarray(newline + 1);
+      if (line.length === 0) continue;
+      try {
+        const frame = JSON.parse(line.toString("utf8")) as { id?: unknown; method?: unknown; params?: { arguments?: unknown } };
         if (frame.method === "tools/call" && Object.hasOwn(frame.params?.arguments ?? {}, "__proto__")) {
-          if (frame.id !== undefined)
-            void this.send({
-              jsonrpc: "2.0",
-              id: frame.id as never,
-              result: { content: [{ type: "text", text: "cotal tool: unknown argument(s): __proto__ — the argument is not accepted" }], isError: true },
-            } as never);
+          this.rejectPrototypeKey(frame.id);
           continue;
         }
       } catch {
         // The SDK receives malformed frames and reports the protocol error.
       }
-      const readBuffer = (this as unknown as { _readBuffer: { append(chunk: Buffer): void; readMessage(): unknown } })._readBuffer;
-      readBuffer.append(Buffer.from(line + "\n"));
-      for (;;) {
-        try {
-          const message = readBuffer.readMessage();
-          if (message === null) break;
-          this.onmessage?.(message as never);
-        } catch (error) {
-          this.onerror?.(error as Error);
-        }
-      }
+      this.dispatch(line);
     }
   };
 }
