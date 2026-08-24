@@ -1,7 +1,7 @@
 {
   "suite": "extensions/connector-jcode/smoke/jcode-host.smoke.ts",
   "guard": "a provider invalid_request during Jcode's mandatory readiness turn exposes only the safely classified provider code and rejected model/effort value; slow Jcode bootstrap receives its declared bounded manager readiness window rather than an early generic uncertainty verdict",
-  "command": "pnpm smoke:jcode-host && pnpm smoke:jcode-args && pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/connector-core build && pnpm --filter @cotal-ai/manager build && pnpm --filter @cotal-ai/cli build && pnpm smoke:readiness:live",
+  "command": "pnpm smoke:jcode-host && pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/connector-core build && pnpm --filter @cotal-ai/manager build && pnpm --filter @cotal-ai/cli build && pnpm smoke:readiness:live",
   "progressPattern": "✓",
   "minTicks": 5,
   "completionMarker": "provider readiness refusal names its code and rejected model parameter",
@@ -29,8 +29,8 @@
       "file": "extensions/connector-jcode/src/extension.ts",
       "find": "  readinessTimeoutMs: 180_000,",
       "replace": "  readinessTimeoutMs: 1_000,",
-      "expectRed": "declares a bounded three-minute bootstrap window",
-      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/connector-core build && pnpm --filter @cotal-ai/manager build && pnpm --filter @cotal-ai/cli build"
+      "command": "pnpm smoke:jcode-args",
+      "expectRed": "declares a bounded three-minute bootstrap window"
     }
   ]
 }
