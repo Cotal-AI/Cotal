@@ -513,3 +513,9 @@ smoke:jcode-retry-policy
 smoke:seat-exit-cause
 smoke:empty-id-ingest
 smoke:hermes-empty-id
+# A manager that may no longer SERVE must not destroy the agents it was serving. The lease-loss exit
+# path did both in one act: it hard-stopped every managed child and deprovisioned its credential and
+# durables. Stopping serving is the right conclusion there; killing the seats is a separate act that
+# a connectivity fact does not license. Four occurrences on the live space "main" reached the
+# neighbouring branch and survived only because the lease re-read answered.
+smoke:detach-not-teardown
