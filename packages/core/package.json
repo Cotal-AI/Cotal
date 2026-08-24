@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/core",
   "description": "The Cotal protocol: endpoint, subjects, message types, the NATS client layer, and the extension contracts.",
-  "version": "0.28.1",
+  "version": "0.28.2",
   "license": "Apache-2.0",
   "keywords": [
     "cotal",
