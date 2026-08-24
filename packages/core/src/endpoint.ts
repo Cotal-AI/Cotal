@@ -4615,6 +4615,15 @@ export function wsServers(servers: string): boolean {
   return /^wss?:\/\//i.test((servers.split(",")[0] ?? "").trim());
 }
 
+/** Default probe budget by TRANSPORT. 1s was tuned for the loopback/LAN TCP brokers every local
+ *  probe dials; a ws(s) broker is by definition published through an HTTPS edge (CDN tunnel,
+ *  reverse proxy), where TLS + upgrade + INFO + the auth round-trip routinely exceeds 1s cold —
+ *  measured ~60% spurious "not reachable" against a Cloudflare-fronted broker. Callers passing an
+ *  explicit `timeoutMs` are untouched. */
+function defaultProbeTimeoutMs(servers: string): number {
+  return wsServers(servers) ? 5000 : 1000;
+}
+
 /** Pick the dial function by SCHEME: `ws://`/`wss://` servers go through nats-core's
  *  `wsconnect` (the websocket transport - e.g. a broker published through an HTTPS edge at
  *  `wss://host/path`), everything else through the TCP transport. The websocket dial OWNS its
@@ -4732,7 +4741,7 @@ export async function isReachable(
   servers: string = DEFAULT_SERVER,
   opts: AuthOpts & { timeoutMs?: number } = {},
 ): Promise<boolean> {
-  const timeoutMs = opts.timeoutMs ?? 1000;
+  const timeoutMs = opts.timeoutMs ?? defaultProbeTimeoutMs(servers);
   if (!opts.creds && !opts.token && !opts.user && !opts.pass && !opts.tls) {
     // A websocket broker rides an HTTPS edge: the plaintext INFO probe reads TLS bytes and
     // declares a perfectly live broker down (which then blocks spawn/connect with a wrong
@@ -4797,7 +4806,7 @@ export async function probeConnect(
   server: string = DEFAULT_SERVER,
   opts: AuthOpts & { timeoutMs?: number } = {},
 ): Promise<ProbeResult> {
-  const timeoutMs = opts.timeoutMs ?? 1000;
+  const timeoutMs = opts.timeoutMs ?? defaultProbeTimeoutMs(server);
   const started = Date.now();
   // Reach the address on a socket we own BEFORE handing it to `connect()`, which orphans the
   // connection it never established (see {@link tcpDialable} for the upstream mechanism, #389).
