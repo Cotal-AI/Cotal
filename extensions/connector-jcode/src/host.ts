@@ -18,7 +18,6 @@ import {
   feedbackLine,
   formatInjection,
   parseToolArgs,
-  refuseAnyArgs,
   scrubLaunchMaterial,
   startControlServer,
   cotalToolSpecs,
@@ -177,13 +176,15 @@ async function startRelay(agent: MeshAgent, config: AgentConfig, endpoint: Relay
           if (!constantTokenMatches(frame.token, endpoint.token)) return socket.destroy();
           if (typeof frame.name !== "string" || !specs.has(frame.name)) throw new Error("unknown cotal tool");
           const spec = specs.get(frame.name)!;
-          let result: ToolResult;
-          if (spec.name === "cotal_inbox") {
-            const refused = refuseAnyArgs(spec.name, frame.args);
-            result = refused ? { text: refused, isError: true } : await spec.run(agent, config, { scope: "pull-only" });
-          } else {
-            result = await spec.run(agent, config, parseToolArgs(spec, frame.args));
-          }
+          const args = parseToolArgs(spec, frame.args);
+          // The Jcode host owns automatic inbox delivery, so this bridge pulls only its buffered
+          // ambient queue. Unlike the other host-owned variants, Jcode still exposes the shared
+          // `peek` control and must carry it through to the spec rather than replacing it.
+          const result: ToolResult = await spec.run(
+            agent,
+            config,
+            spec.name === "cotal_inbox" ? { ...args, scope: "pull-only" } : args,
+          );
           socket.end(JSON.stringify({ result }) + "\n");
         } catch (error) {
           socket.end(JSON.stringify({ error: (error as Error).message }) + "\n");

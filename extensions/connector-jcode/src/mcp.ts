@@ -2,7 +2,7 @@ import { createConnection } from "node:net";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { cotalToolSpecs, parseToolArgs, refuseAnyArgs, type AgentConfig, type ToolResult } from "@cotal-ai/connector-core";
+import { cotalToolSpecs, parseToolArgs, type AgentConfig, type ToolResult } from "@cotal-ai/connector-core";
 
 const MAX_REPLY_BYTES = 4 * 1024 * 1024;
 
@@ -80,11 +80,6 @@ export async function runMcpBridge(): Promise<void> {
           // harness metadata, not Cotal tool arguments; passing them into a closed Cotal schema
           // makes every otherwise-valid call fail before the host can enforce its own contract.
           const { accept_large_output: _acceptLargeOutput, intent: _intent, ...candidate } = args;
-          if (spec.name === "cotal_inbox") {
-            const refused = refuseAnyArgs(spec.name, candidate);
-            if (refused) return content({ text: refused, isError: true });
-            return content(await invoke(spec.name, {}));
-          }
           return content(await invoke(spec.name, parseToolArgs(spec, candidate)));
         } catch (error) {
           return content({ text: `${spec.name}: ${(error as Error).message}`, isError: true });

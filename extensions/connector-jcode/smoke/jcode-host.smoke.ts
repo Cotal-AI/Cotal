@@ -6,6 +6,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { CotalEndpoint, isReachable, seedChannelRegistry } from "@cotal-ai/core";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -48,6 +50,36 @@ const check = (name: string, condition: boolean, actual?: unknown): void => {
 const entries = (): Array<{ ev: string; [key: string]: unknown }> =>
   existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
 
+async function callJcodeMcp(
+  home: string,
+  socket: string,
+  token: string,
+  arguments_: Record<string, unknown>,
+): Promise<{ text: string; isError?: boolean }> {
+  const mcp = join(home, "mcp.json");
+  const entry = JSON.parse(readFileSync(mcp, "utf8")) as {
+    servers: { cotal: { command: string; args: string[]; env: Record<string, string> } };
+  };
+  const client = new Client({ name: "jcode-host-smoke", version: "0.0.0" });
+  const transport = new StdioClientTransport({
+    command: entry.servers.cotal.command,
+    args: entry.servers.cotal.args,
+    cwd: root,
+    env: { ...entry.servers.cotal.env, COTAL_JCODE_MCP_SOCKET: socket, COTAL_JCODE_MCP_TOKEN: token },
+    stderr: "pipe",
+  });
+  try {
+    await client.connect(transport);
+    const result = await client.callTool({ name: "cotal_inbox", arguments: arguments_ });
+    return {
+      text: result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n"),
+      isError: result.isError,
+    };
+  } finally {
+    await client.close().catch(() => {});
+  }
+}
+
 try {
   mkdirSync(shimDir, { recursive: true });
   writeFileSync(shim, `#!/bin/sh\nexec "${process.execPath}" "${fake}" "$@"\n`);
@@ -81,6 +113,7 @@ try {
       COTAL_SUBSCRIBE: "team",
       COTAL_ALLOW_SUBSCRIBE: "team",
       COTAL_ALLOW_PUBLISH: "team",
+      COTAL_QUIET: "team",
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: join(root, "control.sock"),
@@ -102,6 +135,32 @@ try {
   const managedHome = join(root, ".cotal", "jcode", "jcodehost-jcodepeer-3276792e8714");
   check("host copies auth mirror rather than linking it", lstatSync(join(managedHome, "auth.json")).isFile() && !lstatSync(join(managedHome, "auth.json")).isSymbolicLink());
   check("host copied auth mirror is owner-only", (statSync(join(managedHome, "auth.json")).mode & 0o777) === 0o600);
+
+  // Jcode invokes this actual stdio MCP bridge, which relays across the live per-seat Unix socket
+  // into the host's MeshAgent. A schema-valid explicit `peek:false` must not be rejected by either
+  // hop: the bug was an adapter-only no-argument branch that advertised this input then refused it.
+  const privateMcp = JSON.parse(readFileSync(join(managedHome, "mcp.json"), "utf8")) as {
+    servers: { cotal: { env: Record<string, string> } };
+  };
+  const relaySocket = privateMcp.servers.cotal.env.COTAL_JCODE_MCP_SOCKET!;
+  const relayToken = privateMcp.servers.cotal.env.COTAL_JCODE_MCP_TOKEN!;
+  await operator.multicast("quiet buffered", { channel: "team" });
+  await sleep(100);
+  const peekFalse = await callJcodeMcp(managedHome, relaySocket, relayToken, {
+    peek: false,
+    accept_large_output: true,
+    intent: "read buffered messages",
+  });
+  check("Jcode cotal_inbox accepts explicit peek:false and strips harness metadata through the live relay", !peekFalse.isError && peekFalse.text.includes("quiet buffered"), peekFalse);
+
+  await operator.multicast("peek survives", { channel: "team" });
+  await sleep(100);
+  const peekTrue = await callJcodeMcp(managedHome, relaySocket, relayToken, { peek: true });
+  check("Jcode cotal_inbox peek:true reaches the host and returns buffered traffic", !peekTrue.isError && peekTrue.text.includes("peek survives"), peekTrue);
+  const afterPeek = await callJcodeMcp(managedHome, relaySocket, relayToken, {});
+  check("Jcode cotal_inbox peek:true leaves the returned message for the following normal read", !afterPeek.isError && afterPeek.text.includes("peek survives"), afterPeek);
+  const unknownInboxArg = await callJcodeMcp(managedHome, relaySocket, relayToken, { unknown: true });
+  check("Jcode cotal_inbox still refuses unknown non-metadata arguments", unknownInboxArg.isError === true && unknownInboxArg.text.includes("unknown"), unknownInboxArg);
 
   await operator.unicast(peerId!, "mesh-wake");
   const turn = await waitFor("Harness API turn", () => entries().find((entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" && !(entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("mesh-wake")));

@@ -1,0 +1,10 @@
+# Work log — issue #838
+
+- 2026-08-24: Commissioned to remediate Jcode `cotal_inbox` schema/relay semantics on `fix/jcode-inbox-peek` from `9b1128c8`.
+- Tracker read: the advertised optional `peek` input is rejected by the Jcode relay, which causes schema-valid `peek: false` calls to fail before reaching the core inbox implementation.
+- Initial tracker command was blocked by GitHub's deprecated classic-project GraphQL field; the issue and comments were then retrieved through GitHub's REST API.
+- Read `docs/connect-jcode.md`, Jcode source, and the installed version-exact Cotal connector guide. Matched the record-driven host smoke discipline introduced by PR #841.
+- **RED reproduced live:** after building the required workspace outputs under the worktree-local `XDG_CONFIG_HOME`, `pnpm smoke:jcode-host` invokes the actual managed Jcode stdio MCP bridge over its per-seat Unix relay. Its `cotal_inbox({peek:false})` call fails at `extensions/connector-jcode/src/mcp.ts` with `cotal_inbox: unknown argument(s): peek — this tool takes no arguments` (exit 1). The test reached the live host and relay; this is a code finding, not an environment verdict.
+- **Fix:** both Jcode relay hops now validate the shared inbox schema and retain `peek`; the host appends only its `scope: "pull-only"` override. The MCP bridge still strips Jcode-owned `accept_large_output` / `intent` fields and closed-schema validation still rejects unrecognised inputs.
+- **Green evidence:** `pnpm smoke:jcode-args` (28 checks), `pnpm smoke:jcode-host` (15 checks, live private stdio MCP plus Unix relay), `pnpm --filter @cotal-ai/connector-jcode typecheck`, and `pnpm changeset status` all pass. `pnpm mutation-proof --config extensions/connector-jcode/smoke/mutations/jcode-launch.json` kills all three mutations, including the named `Jcode inbox relay preserves peek` mutation on `Jcode cotal_inbox peek:true leaves the returned message for the following normal read`.
+- Commit `3ae24d55` contains the fix, smoke, mutation, docs, changeset, and log. Next: package build, push, open PR, and report the final SHA.

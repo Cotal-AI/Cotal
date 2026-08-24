@@ -75,7 +75,9 @@ message then wakes a Harness API turn. The host marks presence working while the
 acknowledges exactly the delivered inbox ids only after the SDK turn succeeds, and leaves a failed
 turn unacknowledged for mesh redelivery. Jcode's stable Harness API has no measured mid-turn steer
 surface here, so traffic arriving during a turn waits for the next turn rather than being silently
-treated as an interrupt.
+treated as an interrupt. `cotal_inbox` pulls only buffered quiet ambient from that host-owned queue;
+its shared optional `peek` argument is supported, so `peek: true` shows those messages without
+clearing them.
 
 ## Models and limits
 
