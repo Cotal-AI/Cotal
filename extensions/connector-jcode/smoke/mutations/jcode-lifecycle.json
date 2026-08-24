@@ -2,8 +2,10 @@
   "suite": "extensions/connector-jcode/smoke/jcode-lifecycle.smoke.ts",
   "guard": "the connector never returns - on startup failure or graceful stop - while the private Jcode daemon tree it launched is still executing; teardown is proven from the seat's own records with bounded SIGTERM then exact-PID/group SIGKILL escalation, and a survivor is a thrown error, never a clean report",
   "command": "pnpm smoke:jcode-lifecycle",
-  "completionMarker": "JCODE LIFECYCLE SMOKE PASSED",
+  "progressPattern": "✓",
+  "minTicks": 3,
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/jcode-lifecycle.json",
+  "_note": "assert-and-die suite: a red run can never print the PASSED banner, so completion is guarded by the tick floor (the target assertions sit at marks 4 and 5 of 9), not a completionMarker.",
   "why": [
     "A live seat hit a readiness refusal at startup; the host exited non-zero, the manager retired",
     "the seat's mesh credential, and the private `jcode serve` daemon it had launched kept running",
