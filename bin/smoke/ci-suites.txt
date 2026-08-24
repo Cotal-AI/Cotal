@@ -470,3 +470,10 @@ smoke:orientation
 # Failing closed is correct (SPEC 13.10); never renewing is the defect. Rotate early, keep the old
 # key verifiable across an overlap, and never drop the newest.
 smoke:anchor-renewal
+
+# A manager that may no longer SERVE must not destroy the agents it was serving. The lease-loss exit
+# path did both in one act: it hard-stopped every managed child and deprovisioned its credential and
+# durables. Stopping serving is the right conclusion there; killing the seats is a separate act that
+# a connectivity fact does not license. Four occurrences on the live space "main" reached the
+# neighbouring branch and survived only because the lease re-read answered.
+smoke:detach-not-teardown

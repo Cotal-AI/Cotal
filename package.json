@@ -315,6 +315,7 @@
     "smoke:manager-multi-live": "tsx implementations/manager/smoke/manager-multi-live.smoke.ts",
     "smoke:manager-deregister": "tsx implementations/manager/smoke/manager-deregister.smoke.ts",
     "smoke:manager-restart-live": "tsx implementations/manager/smoke/manager-restart-live.smoke.ts",
+    "smoke:detach-not-teardown": "tsx implementations/manager/smoke/detach-not-teardown.smoke.ts",
     "smoke:preserve-state": "tsx implementations/manager/smoke/preserve-state.smoke.ts",
     "smoke:ep-serve:auth": "tsx packages/core/smoke/endpoint-serve-auth.smoke.ts",
     "smoke:scatter-liveness": "tsx packages/core/smoke/scatter-liveness.smoke.ts",

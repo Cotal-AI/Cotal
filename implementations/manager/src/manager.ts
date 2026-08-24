@@ -1803,14 +1803,57 @@ export class Manager {
     return { kind: "held", revision: current.revision };
   }
 
+  /**
+   * Release ownership of every managed agent WITHOUT stopping it and WITHOUT deprovisioning its
+   * footprint — the child disposition for an exit this instance did not choose.
+   *
+   * WHY THIS IS NOT {@link teardownManagedAgents}. Losing the argument about who may SERVE a space
+   * is not a finding about whether these agents should die. The two were one act on the lease-loss
+   * path, so a supervisor that could not reach the broker for a lease TTL killed every seat it held
+   * and revoked their credentials. That is the wrong conclusion drawn from a connectivity fact, and
+   * on a live mesh it is reached over a timeout the very next retry would have cleared.
+   *
+   * WHAT IT LEAVES BEHIND, AND WHY THAT IS SAFE. Each agent is marked `suppressCleanup` before it
+   * leaves the map, so no later call site in this process can select it for deprovision, and its
+   * credential, durables and broker footprint outlive us. That is EXACTLY the state an abrupt death
+   * leaves (SIGKILL, OOM, power loss), which the next manager's static reconcile sweep already
+   * recovers by terminalizing an active slot with no live managed owner. The difference is that
+   * this one is announced.
+   *
+   * WHAT IT DOES NOT CLAIM. Detaching does not make a child outlive the process. A `node-pty` child
+   * dies when its spawning process exits, measured, and no manager-side policy changes that; only a
+   * runtime whose child is owned elsewhere (tmux/herdr/cmux) actually survives. This method removes
+   * the manager's DELIBERATE kill and revoke, which is the half the manager controls.
+   */
+  private detachManagedAgents(reason: string): void {
+    const managed = [...this.agents.values()];
+    for (const a of managed) {
+      // Set BEFORE the map delete: the flag is what every deprovision call site filters on, and an
+      // agent that left the map without it is one a concurrent path could still select.
+      a.suppressCleanup = true;
+      this.agents.delete(a.name);
+    }
+    if (managed.length === 0) return;
+    const seats = managed.map((a) => `${a.name} (${a.id}${a.handle.pid !== undefined ? `, pid ${a.handle.pid}` : ""})`).join(", ");
+    console.error(
+      `! manager instance ${this.managerInstanceId} detached ${managed.length} managed agent(s) - ${reason}\n` +
+        `  Left running and NOT stopped by this manager; their credentials and durables are RETAINED, not revoked: ${seats}\n` +
+        `  A child owned by this process (the pty runtime) still dies with it; a child owned elsewhere (tmux/herdr/cmux) keeps running.\n` +
+        `  NEXT: start a manager for space "${this.space}" - its reconcile sweep recovers any seat whose child did not survive.`,
+    );
+  }
+
   /** Stop serving and end this process, naming what was PROVED rather than what merely failed. */
   private async failClosedOnLeaseLoss(proof: string): Promise<never> {
     console.error(`! manager instance ${this.managerInstanceId} lost its liveness lease for space "${this.space}": ${proof} - shutting down THIS instance (its serving only; siblings keep the space)`);
     if (this.leaseTimer) clearInterval(this.leaseTimer);
-    // Tear down our managed agents' footprints too (#159 B2) — this exit path leaks them otherwise. Do
-    // NOT release the lease key (it may belong to the replacement holder). Best-effort, like ep/attach.
+    // DETACH rather than tear down — but ONLY from the active state. A cut that has committed and
+    // not finalized still has an inventory the successor will replay, and children left running
+    // would be spawned a SECOND time under the same identities; that window keeps the retained stop
+    // (which stops the child but does not deprovision it). Do NOT release the lease key (it may
+    // belong to the replacement holder). Best-effort, like ep/attach.
     try {
-      if (this.maintenanceState === "active" && !this.resumeRequired) await this.teardownManagedAgents();
+      if (this.maintenanceState === "active" && !this.resumeRequired) this.detachManagedAgents(`lease loss: ${proof}`);
       else await this.stopRetainedAgentsOnExit();
     } catch { /* best effort */ }
     await this.stopServiceServe();
