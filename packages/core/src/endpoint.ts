@@ -4609,14 +4609,24 @@ export function isPublishPermissionDenied(e: unknown): boolean {
   return typed?.operation === "publish";
 }
 
+/** Whether a server list dials over websocket: the FIRST entry's scheme decides (one list, one
+ *  transport — a mixed tcp+ws list would race two transports over one identity). */
+export function wsServers(servers: string): boolean {
+  return /^wss?:\/\//i.test((servers.split(",")[0] ?? "").trim());
+}
+
 /** Pick the dial function by SCHEME: `ws://`/`wss://` servers go through nats-core's
  *  `wsconnect` (the websocket transport - e.g. a broker published through an HTTPS edge at
- *  `wss://host/path`), everything else through the TCP transport. One list, one transport: a
- *  mixed tcp+ws server list would race two transports over one identity, so the first entry's
- *  scheme decides and the options are otherwise identical. */
-function dialerFor(servers: string): typeof connect {
-  const first = (servers.split(",")[0] ?? "").trim();
-  return /^wss?:\/\//i.test(first) ? (wsconnect as unknown as typeof connect) : connect;
+ *  `wss://host/path`), everything else through the TCP transport. The websocket dial OWNS its
+ *  transport options: the URL scheme already decides TLS there, and the w3c transport refuses a
+ *  `tls` block outright ("'tls' is not configurable"), so it is stripped here — at the one point
+ *  that knows which transport is dialing — rather than at every caller composing auth options. */
+export function dialerFor(servers: string): typeof connect {
+  if (!wsServers(servers)) return connect;
+  return ((opts: Parameters<typeof connect>[0]) => {
+    const { tls: _tls, ...rest } = (opts ?? {}) as Record<string, unknown>;
+    return (wsconnect as unknown as typeof connect)(rest as Parameters<typeof connect>[0]);
+  }) as typeof connect;
 }
 
 /** Parse a NATS server URL (`nats://host:port`, `host:port`, a bare host, or a comma list — the
