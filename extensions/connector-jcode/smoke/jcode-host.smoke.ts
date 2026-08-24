@@ -175,8 +175,7 @@ try {
         entry.ev === "request" && entry.frame?.req === "send_message" && entry.frame.content?.includes("cotal_orientation"),
     );
   });
-  await Promise.race([once(refusal, "exit"), sleep(10_000)]);
-  if (refusal.exitCode === null) refusal.kill("SIGKILL");
+  await waitFor("provider refusal host exit", () => refusal.exitCode === null ? undefined : refusal.exitCode, 20_000);
   check(
     "provider readiness refusal names its code and rejected model parameter",
     refusal.exitCode === 1 && /invalid_request/.test(refusalErr) && /rejected-model-id/.test(refusalErr),
