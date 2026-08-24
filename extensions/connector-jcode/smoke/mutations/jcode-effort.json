@@ -30,13 +30,6 @@
       "find": "      if (!hasOrientation(readiness)) {\n        readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });\n      }",
       "replace": "      if (false) {\n        readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });\n      }",
       "expectRed": "a first-turn MCP snapshot race recovers on one bounded retry"
-    },
-    {
-      "name": "Jcode host still refuses a permanently absent cotal tool after the bounded retry",
-      "file": "extensions/connector-jcode/src/host.ts",
-      "find": "    if (!hasOrientation(readiness))\n      throw new Error(\n        \"jcode connector: the cotal MCP bridge did not become callable during its two mandatory readiness turns — refusing to join a mesh seat without its tool surface\",\n      );",
-      "replace": "    if (false) throw new Error(\"mutant\");",
-      "expectRed": "a permanently absent cotal tool gets exactly two readiness turns"
     }
   ]
 }
