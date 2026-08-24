@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cotal · galaxy</title>
+  <style>
+    :root { --font: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #04060c; color: #cdd6e2; font-family: var(--font); overflow: hidden; }
+    #stage { position: fixed; inset: 0; z-index: 0; }
+    #vignette { position: fixed; inset: 0; pointer-events: none; z-index: 2; background: radial-gradient(ellipse 72% 72% at 50% 47%, rgba(0,0,0,0) 52%, rgba(2,4,8,.62) 100%); }
+    .panel { position: fixed; z-index: 5; backdrop-filter: blur(8px); background: rgba(10,16,26,.55); border: 1px solid rgba(120,150,200,.18); border-radius: 10px; padding: 12px 14px; font-size: 12px; line-height: 1.55; }
+    #hud { top: 14px; left: 14px; min-width: 210px; }
+    #hud b { color: #eaf1ff; font-weight: 600; }
+    #hud .big { font-size: 26px; color: #eaf1ff; font-weight: 700; letter-spacing: .5px; }
+    #hud .msg { font-size: 30px; color: #7fe3ff; font-weight: 700; letter-spacing: .5px; text-shadow: 0 0 18px rgba(80,210,255,.45); }
+    #hud .sub { color: #8fa3c0; }
+    #hud .rule { height: 1px; background: rgba(120,150,200,.18); margin: 9px 0; }
+    #hud .foot { color: #8fa3c0; margin-top: 8px; }
+    #hud .ops { color: #5a6678; font-size: 11px; line-height: 1.5; opacity: .7; }
+    #hud .ops b { color: #8893a4; font-weight: 600; }
+    body.chrome-off .panel { display: none; }
+    #legend { bottom: 14px; left: 14px; color: #9aa6b5; }
+    #legend i { display: inline-block; width: 14px; height: 14px; border-radius: 50%; margin-right: 7px; vertical-align: middle; }
+    #legend .hint { color: #6f8099; margin-top: 5px; }
+    #title { top: 14px; right: 14px; text-align: right; color: #8fa3c0; }
+    #title b { color: #eaf1ff; font-size: 14px; }
+    #footer { bottom: 14px; right: 14px; color: #5d6b80; font-size: 11px; text-align: right; padding: 6px 10px; }
+    #tip { position: fixed; pointer-events: none; opacity: 0; transition: opacity .08s; z-index: 10; padding: 7px 10px; font-size: 12px; line-height: 1.4; }
+    #tip b { color: #eaf1ff; }
+  </style>
+</head>
+<body>
+  <div id="stage"></div>
+  <div id="vignette"></div>
+  <div id="hud" class="panel">
+    <div><span class="big" id="nodes">0</span> agents</div>
+    <div class="sub">live on the mesh</div>
+    <div class="rule"></div>
+    <div><span class="msg" id="msgs">0</span></div>
+    <div class="sub">messages delivered · <b id="rate">0</b>/s</div>
+    <div class="sub">DM <b id="dm">0</b> · channel <b id="chan">0</b> · anycast <b id="any">0</b> /s</div>
+    <div class="sub">avg delivery <b id="lat">0</b> ms</div>
+    <div class="rule"></div>
+    <div class="ops">broker <b id="bcpu">0</b>% cpu · <b id="bmem">0</b> MB</div>
+    <div class="ops"><b id="bconn">0</b> conns · <b id="links">0</b> edges · <b id="fps">0</b> fps</div>
+  </div>
+  <div id="title" class="panel"><b>Cotal</b><br />a live agent mesh</div>
+  <div id="legend" class="panel">
+    <div>colour = role · node size = connections · large nodes = channel hubs</div>
+    <div style="margin-top:6px"><i style="background:#0072B2"></i>planner <i style="background:#009E73"></i>builder <i style="background:#F0E442"></i>reviewer <i style="background:#CC79A7"></i>researcher <i style="background:#D55E00"></i>ops <i style="background:#6edcf2"></i>channel · <span style="color:#e8b890">warm lines = bridges</span></div>
+    <div class="hint">hover a node for its role &amp; peers · click to isolate · click away to release</div>
+  </div>
+  <div id="footer" class="panel">real endpoints over Cotal · GPU-rendered</div>
+  <div id="tip" class="panel"></div>
+  <script type="module" src="/galaxy.js"></script>
+</body>
+</html>

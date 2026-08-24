@@ -1,0 +1,20 @@
+{
+  "name": "@cotal-ai/example-05-scale-showcase",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "demo": "tsx src/showcase.ts",
+    "swarm": "tsx src/swarm.ts",
+    "serve": "tsx src/observe.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@cotal-ai/core": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.22.4"
+  }
+}
