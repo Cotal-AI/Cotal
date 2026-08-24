@@ -260,9 +260,9 @@ export class MeshAgent extends EventEmitter {
     this._contextId = clean ? clean : undefined;
   }
 
-  /** Begin connecting (with background retry). Returns immediately. */
-  start(retryMs = 3000): void {
-    void this.connectLoop(retryMs);
+  /** Begin connecting with background retry. Resolves after the first completed mesh join. */
+  start(retryMs = 3000): Promise<void> {
+    return this.connectLoop(retryMs);
   }
 
   private async connectLoop(retryMs: number): Promise<void> {
