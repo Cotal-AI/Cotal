@@ -1,5 +1,104 @@
 # @cotal-ai/connector-core
 
+## 0.30.0
+
+### Minor Changes
+
+- 569f4d3: An empty message id is never a dedup key, and an id-less delivery is individually addressable at the drain seam.
+
+  Two distinct messages that each carry an empty id collapsed to one: the receiver-side id
+  dedup read empty-equals-empty as a duplicate, silently dropped the second, and once the
+  first was handled it dropped every later empty-id message on arrival. Measured live, two
+  such messages arrived on the wire and only the first was ever delivered.
+
+  An empty id is now treated as no id: the ingest coalescing (pending, handled, protected)
+  is skipped for it in both directions, so distinct messages that carry an empty id are all
+  delivered. At the drain seam a per-delivery receive key (the wire id when there is one, a
+  per-session secret-namespaced minted key when the id is empty, never on any wire) is what
+  hosts, adapters, and the exact-key drain select by: cotal_inbox, the Claude Code hooks,
+  the OpenCode plugin, the Codex host, the Hermes bridge and its Python sidecar, and the pi
+  driver. The drain API is renamed for what it takes (drainInboxDeliveries, missingKeys).
+  Eviction classification, in-flight holds, scope routing, the focus-recall tie-break, and
+  the scoped drain's selection no longer key on the empty id either. The Hermes bridge no
+  longer wedges on an empty-id message. Delivery pumps in core now treat an absent or
+  non-string id as a malformed envelope per SPEC section 5 (durable terminate, live drop,
+  history and recall skip).
+
+  What this restores: before the receive key, an id-less delivery was unaddressable: the
+  raw id swept every pending empty-id item in one drain call, and once filtering closed
+  that, the item could never be drained or acked, was re-shown on every windowed inbox
+  read, and on a durable channel accumulated as an unretirable entry until the 200-entry
+  overflow valve evicted it, roughly a model turn of churn per entry, while one hostile
+  empty-id ambient publish self-drove back-to-back host turns on the pi adapter. This was
+  a violation of the SPEC section 8 ack-only-after-surfaced obligation at the receiver,
+  not only an adapter defect.
+
+  The cost is stated rather than hidden: with no id there is no coalescing either, so a
+  redelivered copy of an empty-id message can surface twice on a path that is already
+  at-least-once (live remains at-most-once). Dedup for real ids is unchanged: their
+  receive key is their wire id and their coalescing is untouched. SPEC section 4, section
+  7 item 5, section 8, and section 12 item 12 now state the receiver-scoped rule, and the
+  client-builder guidance mirrors it.
+
+  One named follow-up stays open: Plane-3 durable fan-out derives its publish msgID from
+  the message id, so distinct empty-id messages can still be collapsed inside the broker's
+  duplicate window on a durable channel before this receiver sees them. That path is its
+  own issue; this change's guarantee is the receiver.
+
+### Patch Changes
+
+- 68a8041: The inbox overflow valve now gives up on a directed message that keeps cycling. Leaving a
+  sacrificed directed message un-acked lets the broker redeliver it once there is room, which turns
+  permanent loss into a delay - but an un-acked id can be handed straight back into a still-full
+  inbox and evicted again, indefinitely, spending broker and connector throughput while every seat
+  involved reports healthy. Evictions are now counted per id and the reprieve ends after five, acking
+  the message and reporting the drop on stderr. The tally clears whenever a message is actually
+  handled, so one that eventually lands never carries history toward the cap, and the bookkeeping
+  itself is bounded so tracking churn cannot become a leak.
+- c6db901: The auth provider name is one exported constant shared by the provider and the discovery bundle, and the seam between the served document and the consumer that registers from it is now tested live.
+
+  The auth-service's public face serves `/.well-known/cotal-mesh`, and that document is exactly what
+  `cotal meshes add --from <origin>` fetches and registers from. The document's shape was fixed
+  separately; what was still held only by agreement is the provider NAME. It appeared as a bare
+  `"cotal"` literal at three sites, two of which are the two ends of one contract: the name the
+  registered `AuthProvider` answers to, and the name the served document advertises. A document naming
+  a provider other than the one serving it parses cleanly — the consumer requires a provider name, not
+  any particular one — and registers an entry that resolves to nothing. Those sites now read a single
+  exported `AUTH_PROVIDER_NAME`.
+
+  The regression guard lives at the composition root (`bin/smoke/discovery-bundle-consumable`), which
+  is the only tier permitted to import both the auth daemon and the CLI's consumer — the seam the
+  original defect hid behind is precisely the boundary those two packages may not cross directly. It
+  starts a real auth-service against a real broker and IdP, fetches the document over the wire, and
+  hands the raw bytes to the shipped `checkUserBundle`. Nothing in it constructs the shape it hopes to
+  see. That crossing is the part that had never existed: both sides had passed review because each
+  side's own tests build the shape that side expects, so the producer's smoke asserted the fields it
+  had just written and the consumer's smoke fed itself a hand-written fixture.
+
+  The provider-name cell compares the served name against `cotalAuthProvider.name` — the registered
+  provider's own identity — rather than against a string the test also chose, so it grades the outcome
+  (the two names agree) instead of the mechanism (both sites read one constant). Grading the mechanism
+  would pass a tree where both sites moved together, which is the failure this is for.
+
+  Scope, stated exactly: this unifies the provider name and proves the served document parses. It does
+  not change the document's shape or its fields, and registration applies further gates after that
+  parse — `checkServer`, TLS intent, and the dial policy on the bundle's `server` — so a deployment
+  that cannot publish an honestly dialable broker coordinate is still not registrable, and nothing
+  here weakens those gates or invents a coordinate to satisfy them.
+
+- 3443c57: Stabilize Jcode startup around asynchronous MCP registration: retry the mandatory orientation proof once, preserve loud refusal when it remains unavailable, open the foreground TUI during readiness, and issue the stale-orientation notice only after a completed mesh join.
+- 196dddb: Spec text plus one corrected source comment, carried into the embedded docs bundle: the `goaleff` and `epname` value
+  machines are now stated in the wire spec (phases, states, legal edges, per-phase field sets,
+  actor roles, and the rule that a settle requires the goal's terminal fact to exist first),
+  and three key-authority claims are corrected. `epmig` records cutover runs and supplies key
+  material nowhere else, so the `goaleff` generation token is the accepted submission's EPJ
+  `sourceSeq` and only that. `goalidx` gets its writer named as the goal-writer principal
+  rather than the bare commit principal. `effect` is marked as reachable only under
+  `protocol.v: 2`. The spec also now says explicitly that it does not decide which principal
+  may act as a sweeper, rather than leaving that to be inferred from a role name. The `epmig` record
+  kind's own source comment carried the same wrong claim the spec sentence corrects, and is fixed in
+  the same change so the two cannot drift apart again.
+
 ## 0.29.2
 
 ## 0.29.1
