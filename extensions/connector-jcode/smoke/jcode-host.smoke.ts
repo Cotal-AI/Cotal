@@ -57,8 +57,14 @@ try {
   operator = new CotalEndpoint({ space: "jcodehost", servers, card: { name: "operator", kind: "agent", id: "operator" }, channels: ["team"] });
   operator.on("error", () => {});
   let peerId: string | undefined;
+  // Every seat this operator ever SAW announce itself. A launch that must fail is graded on the
+  // outcome an operator cares about — that no such seat ever appeared on the roster — not merely on
+  // the exit status of the process that was supposed to produce it.
+  const announced = new Set<string>();
   operator.on("presence", (event: { type: string; presence: { card: { id: string; name: string } } }) => {
-    if (event.type !== "offline" && event.presence.card.name === "jcodepeer") peerId = event.presence.card.id;
+    if (event.type === "offline") return;
+    announced.add(event.presence.card.name);
+    if (event.presence.card.name === "jcodepeer") peerId = event.presence.card.id;
   });
   await operator.start();
 
@@ -164,12 +170,56 @@ try {
   // against the looser form, because this cell went green for a host that never exited at all.)
   check("a tier the provider refuses ends the launch", refusedCode !== null && refusedCode !== 0, { code: refusedCode, stderr: refusedErr });
   check("the refusal names the tier and the model", /"xhigh"/.test(refusedErr) && /"fake-model"/.test(refusedErr), refusedErr);
+  // The tier and the model say what was rejected; only the provider's own list says what to ask for
+  // instead. Losing it turns a self-service fix into a log-dig.
+  check("the refusal carries the ladder the provider would accept", /available: low, medium, high/.test(refusedErr), refusedErr);
+  check("a seat whose effort was refused never reaches the roster", !announced.has("refusedpeer"), [...announced]);
   const refusedEntries = readFileSync(refusedLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev: string; frame?: { req?: string; no_reply?: boolean } }>;
   check(
     "a seat whose effort was refused never takes a turn",
     !refusedEntries.some((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply),
     refusedEntries.filter((entry) => entry.ev === "request").map((entry) => entry.frame?.req),
   );
+
+  // Deliberate failing case, and the adversarial half of the one above. The host renders its OWN
+  // effort refusal in full, and redacts every other startup error to a fixed code — because the SDK
+  // appends the dying child's last stderr to those, and that can be anything the provider printed.
+  // Those two rules meet here: a child whose stderr FORGES the refusal's wording must still be
+  // redacted. The exception is keyed to messages this host composes (the refusal is the WHOLE
+  // message, from its first character), never to text appearing somewhere in a message — the second
+  // is a key that captured stderr can reach, and reaching it is all a leak needs.
+  const canary = "PROVIDER-TOKEN-a4c1f0d2-DO-NOT-PRINT";
+  const forgery = `jcode connector: reasoning effort "high" was refused for model "x" — ${canary}`;
+  const forged = spawn(tsx, [host], {
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: join(root, "forged.jsonl"),
+      FAKE_JCODE_STARTUP_STDERR: forgery,
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "forgedpeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_CONTROL_SOCKET: join(root, "forged-control.sock"),
+      COTAL_CONTROL_TOKEN: "forged-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let forgedErr = "";
+  forged.stderr?.on("data", (chunk: Buffer) => (forgedErr += chunk.toString()));
+  await Promise.race([once(forged, "exit"), sleep(30_000)]);
+  const forgedCode = forged.exitCode;
+  if (forgedCode === null) forged.kill("SIGKILL");
+  check("a child that dies during startup still ends the launch", forgedCode !== null && forgedCode !== 0, { code: forgedCode, stderr: forgedErr });
+  check("captured child stderr stays redacted to a fixed code", /Jcode host startup failed \((?:startup_failed|startup_timeout)\)/.test(forgedErr), forgedErr);
+  check("child stderr forging the refusal's wording does not reach the operator", !forgedErr.includes(canary), forgedErr);
+  check("a seat whose harness died never reaches the roster", !announced.has("forgedpeer"), [...announced]);
 
   // Deliberate failing case: project MCP files would override Jcode's private cotal config, so the
   // host must refuse before it starts an API bridge rather than silently loading another server.

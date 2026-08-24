@@ -16,6 +16,13 @@
       "find": "        throw new Error(`jcode connector: reasoning effort ${JSON.stringify(config.variant)} was refused for model ${JSON.stringify(model ?? \"(the provider default)\")} — ${(error as Error).message}`);",
       "replace": "        void error;",
       "expectRed": "a tier the provider refuses ends the launch"
+    },
+    {
+      "name": "The render-in-full exception stays keyed to messages this host composes",
+      "file": "extensions/connector-jcode/src/host-main.ts",
+      "find": "error.message.startsWith(\"jcode connector: reasoning effort \")",
+      "replace": "error.message.includes(\"jcode connector: reasoning effort \")",
+      "expectRed": "child stderr forging the refusal's wording does not reach the operator"
     }
   ]
 }

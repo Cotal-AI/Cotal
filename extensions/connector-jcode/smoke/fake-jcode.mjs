@@ -10,6 +10,15 @@ if (process.argv[2] !== "api-bridge") {
   process.stderr.write(`fake-jcode: expected api-bridge, got ${process.argv.slice(2).join(" ")}\n`);
   process.exit(2);
 }
+// Real Jcode can die during startup with anything at all on stderr — a provider's rejection, a
+// token, a stack. The SDK appends the last of it to its startup error, which is exactly why the
+// host redacts those. FAKE_JCODE_STARTUP_STDERR lets a test put chosen bytes on that path and prove
+// they never reach an operator's terminal.
+const startupStderr = process.env.FAKE_JCODE_STARTUP_STDERR;
+if (startupStderr) {
+  process.stderr.write(`${startupStderr}\n`);
+  process.exit(3);
+}
 const at = process.argv.indexOf("--api-socket");
 const socketPath = at >= 0 ? process.argv[at + 1] : undefined;
 if (!socketPath) {
