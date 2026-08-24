@@ -20,8 +20,8 @@
     {
       "name": "Jcode host redacts downstream effort rejection text",
       "file": "extensions/connector-jcode/src/host-main.ts",
-      "find": "  if (!(error instanceof JcodeEffortRefusal)) return undefined;\n  const ladder = error.acceptedLadder.length ? `; accepted tiers: ${error.acceptedLadder.join(\", \")}` : \"\";\n  return `Jcode reasoning effort refused: requested tier ${JSON.stringify(error.requestedTier)}; effective model ${JSON.stringify(error.effectiveModel)}; provider code ${error.providerCode}${ladder}`;",
-      "replace": "  if (!(error instanceof Error)) return undefined;\n  return error.message;",
+      "find": "  return `Jcode reasoning effort refused: requested tier ${JSON.stringify(error.requestedTier)}; effective model ${JSON.stringify(error.effectiveModel)}; provider code ${error.providerCode}${ladder}`;",
+      "replace": "  return error.downstreamMessage;",
       "expectRed": "downstream effort-refusal text never reaches stderr"
     },
     {

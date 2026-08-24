@@ -23,6 +23,9 @@ export class JcodeEffortRefusal extends Error {
     readonly requestedTier: string,
     readonly effectiveModel: string,
     readonly acceptedLadder: readonly string[],
+    // Retained only for internal diagnosis. host-main must render the typed allowlist above,
+    // never this arbitrary downstream text.
+    readonly downstreamMessage: string,
   ) {
     super("Jcode reasoning effort was refused");
   }
@@ -83,7 +86,12 @@ function acceptedEffortLadder(error: unknown): string[] {
 /** Compose a bounded effort-refusal diagnostic. `invalid_request` is intentionally fixed: Jcode
  * rejected this API operation, while provider-supplied codes and text are untrusted. */
 export function jcodeEffortRefusal(error: unknown, requestedTier: string, effectiveModel: string): JcodeEffortRefusal {
-  return new JcodeEffortRefusal(requestedTier, effectiveModel, acceptedEffortLadder(error));
+  return new JcodeEffortRefusal(
+    requestedTier,
+    effectiveModel,
+    acceptedEffortLadder(error),
+    error instanceof Error ? error.message : "",
+  );
 }
 
 /**
