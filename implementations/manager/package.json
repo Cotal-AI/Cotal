@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/manager",
   "description": "Cotal agent supervisor: spawns and manages mesh nodes via a pluggable runtime (pty/tmux/cmux/orca/herdr).",
-  "version": "0.28.0",
+  "version": "0.28.1",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
