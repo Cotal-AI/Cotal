@@ -1,5 +1,5 @@
 ---
-"@cotal-ai/auth": minor
+"@cotal-ai/auth": patch
 "@cotal-ai/connector-core": patch
 ---
 
