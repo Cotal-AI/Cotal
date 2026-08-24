@@ -31,6 +31,27 @@
  * suite whose instrument never fires reads identically to a suite whose subject behaved. Cell 0
  * drives the ORDINARY shutdown path, which is deliberately left destructive, and requires the same
  * counter to reach 1. Without that, every zero below is unearned.
+ *
+ * ── NAMED RESIDUALS (adversarial review, 2026-08-24) ────────────────────────────────────────
+ * Two properties this change does NOT establish. Both are answered by the adoption slice, and both
+ * are named here rather than left for a reader to discover, because detaching without adoption is
+ * a deliberate intermediate state and its edges should be legible from the suite that created it.
+ *
+ * R1 — A ~10s PARTITION CAN DETACH A HEALTHY MANAGER. The lease TTL is the whole budget, so a brief
+ * broker partition still ends a manager that was working perfectly. What it leaves is now
+ * crash-shaped rather than destroyed, which is strictly better, but nothing ADOPTS it: there is no
+ * auto-adopt, and the slots stay instance-owned until a successor terminalizes them. Detach turns a
+ * catastrophe into a recoverable state; it does not perform the recovery. The explicit acknowledged
+ * handover control op plus `Runtime.adopt` is the designed answer, and R1 is its acceptance case.
+ *
+ * R2 — A `--resume-attempt` SUCCESSOR DOES NOT CHECK HOST-SESSION OCCUPANCY. After an active-state
+ * detach, a successor started with `--resume-attempt` reaches `launchPreparedResume` and
+ * `runtime.spawn` without asking whether a detached child is still occupying that host session. On
+ * a runtime whose children genuinely outlive their manager (tmux/herdr/cmux) that is a second live
+ * process for one identity. It requires a coordinator to replay an inventory that this change's own
+ * recovery story says should be adopted instead, so it is misuse rather than a path the manager
+ * offers — but "only reachable by misuse" is not a fence, and it earns a named cell in the adoption
+ * slice rather than a sentence here.
  */
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

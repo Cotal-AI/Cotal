@@ -83,11 +83,11 @@
     {
       "name": "CONTROL and invariant: the ordinary shutdown path detaches too, so Ctrl-C leaves every agent running",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      await this.teardownManagedAgents(); // normal shutdown stays destructive (#159 B2)",
-      "replace": "      this.detachManagedAgents(\"ordinary stop\"); // MUTANT",
+      "find": "      await this.teardownManagedAgents();",
+      "replace": "      this.detachManagedAgents(\"ordinary stop\");",
       "expectRed": "CONTROL: the ordinary stop path stops the child",
       "cell": "CONTROL: the ordinary stop path stops the child (instrument fires)",
-      "note": "Doubles as the positive control for the `stops` counter and as the guard on the opposite failure: an operator who asked for a shutdown must get one."
+      "note": "Doubles as the positive control for the `stops` counter and as the guard on the opposite failure: an operator who asked for a shutdown must get one. Anchored on the bare call with no trailing comment: `teardownManagedAgents()` is invoked exactly once, so the code-only anchor is unique, and a `find` that spanned the inline comment would have been disarmed by anyone tidying prose (smoke:mutation-fixtures refuses it for that reason)."
     },
     {
       "name": "the detached agents stay in the managed map, owned by a manager that is exiting",
