@@ -1,4 +1,5 @@
 import { runJcodeHost } from "./host.js";
+import { JcodeReadinessProviderRefusal } from "./startup-diagnostics.js";
 
 const STARTUP_FAILURE_CODES = new Set([
   "project_mcp_config",
@@ -22,7 +23,15 @@ function startupFailureCode(error: unknown): string {
 runJcodeHost().catch((error) => {
   // The SDK appends captured child stderr to startup errors. A Jcode auth failure can therefore
   // carry sensitive provider material. Keep the SDK's fixed error code for diagnosis, but never
-  // render the caught message, stack, or child bytes. The live smoke prints this controlled reason.
-  process.stderr.write(`[cotal-jcode] fatal: Jcode host startup failed (${startupFailureCode(error)}); inspect the private Jcode logs.\n`);
+  // render the caught message, stack, or child bytes. The one narrow exception is a classified
+  // readiness-turn provider refusal: it contains only the provider code plus the rejected
+  // model/effort value the connector parsed from that response (#828).
+  if (error instanceof JcodeReadinessProviderRefusal) {
+    process.stderr.write(
+      `[cotal-jcode] fatal: Jcode readiness turn refused ${error.parameter} ${JSON.stringify(error.value)} (${error.providerCode}); inspect the private Jcode logs for other details.\n`,
+    );
+  } else {
+    process.stderr.write(`[cotal-jcode] fatal: Jcode host startup failed (${startupFailureCode(error)}); inspect the private Jcode logs.\n`);
+  }
   process.exit(1);
 });

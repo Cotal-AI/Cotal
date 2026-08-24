@@ -102,6 +102,34 @@ const slowCon: Connector = {
 };
 registry.register(slowCon);
 
+// The measured jcode shape: the private Harness API is still alive while its first readiness turn
+// waits on provider work, so presence lands after the manager's generic 30s backstop but before the
+// connector's declared boot budget. The manager must honor the connector's explicit window rather
+// than label that live launch uncertain and invite an operator to stop it (#827).
+const JCODE_JOIN_DELAY_MS = 3_000;
+const JCODE_READINESS_WINDOW_MS = 4_000;
+const jcodeSlowCon: Connector = {
+  kind: "connector",
+  name: "jcode-slow-e2e",
+  requires: ["node"],
+  readinessTimeoutMs: JCODE_READINESS_WINDOW_MS,
+  buildLaunch: (o) => ({
+    command: "node",
+    args: ["-e", CHILD],
+    env: {
+      PATH: process.env.PATH ?? "",
+      CORE_DIST: coreDist,
+      JOIN_DELAY_MS: String(JCODE_JOIN_DELAY_MS),
+      COTAL_SPACE: o.space,
+      COTAL_SERVERS: o.servers ?? "",
+      COTAL_ID: o.id ?? "",
+      COTAL_LIFECYCLE_UID: o.lifecycleUid ?? "",
+      COTAL_NAME: o.name,
+    },
+  }),
+};
+registry.register(jcodeSlowCon);
+
 // The GHOST connector: a real child that stays alive and NEVER registers presence. This is the
 // shape a connector whose boot outruns the readiness window presents to the manager (#605), and it
 // is the only way to drive the `uncertain` backstop rather than the join or the exit.
@@ -176,7 +204,45 @@ try {
     ok("...and reports the spawned identity", (reply.data as { name?: string })?.name === "slowlaunch", reply.data);
   }
 
-  // C. the UNCERTAIN backstop carries the MANAGER's guidance, not core's generic line (#605).
+  // C. A Jcode seat arriving after the generic window is still a successful launch when it arrives
+  // inside the connector's declared budget (#827). This is a real child and a real presence join,
+  // not a constructed Manager result: the generic window is deliberately shorter than Jcode's
+  // declared window, then the check observes the action terminal through the normal launch rail.
+  {
+    const restore = (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs;
+    const GENERIC_WINDOW_MS = 1_000;
+    const CLIENT_MS = 12_000;
+    (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = GENERIC_WINDOW_MS;
+    try {
+      const jcodeRun = "readiness03";
+      writeFileSync(
+        join(workspaceRoot, ".cotal", "run", `${jcodeRun}.json`),
+        JSON.stringify({
+          apiVersion: "cotal-launch/v1",
+          space: SPACE,
+          runId: jcodeRun,
+          agents: [{ name: "jcodeslow", agent: "jcode-slow-e2e", subscribe: [], allowSubscribe: [], allowPublish: [], hash: "abc123" }],
+        }),
+      );
+      const t0 = Date.now();
+      const r = await ep.invokeService("manager", "launch", { runId: jcodeRun, name: "jcodeslow" }, { deadlineMs: CLIENT_MS, follow: true });
+      const elapsed = Date.now() - t0;
+      ok(
+        "a Jcode seat that joins after the generic window but inside its declared window starts",
+        r.reply.ok === true,
+        { reply: r.reply, elapsed, genericWindowMs: GENERIC_WINDOW_MS, jcodeWindowMs: JCODE_READINESS_WINDOW_MS },
+      );
+      ok(
+        "...and the successful terminal waits for the real late presence, not the generic backstop",
+        elapsed >= JCODE_JOIN_DELAY_MS && elapsed < CLIENT_MS,
+        elapsed,
+      );
+    } finally {
+      (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = restore;
+    }
+  }
+
+  // D. the UNCERTAIN backstop carries the MANAGER's guidance, not core's generic line (#605).
   //
   // WHY THIS CELL EXISTS. The backstop's operational value is entirely in its WORDS: it names the
   // agent and says INSPECT RATHER THAN RE-ISSUE. Before the fix the manager built exactly that
@@ -230,7 +296,7 @@ try {
 
   // Tear the spawned keepalives down through the manager (they don't exit on broker loss):
   // inspect resolves the wire target, then the targeted ep despawn (the CLI's stop shape).
-  for (const name of ["slowpoke", "slowlaunch", "ghost"]) {
+  for (const name of ["slowpoke", "slowlaunch", "jcodeslow", "ghost"]) {
     const info = await ep.invokeService("manager", "inspect", { name });
     ok(`inspect resolves ${name}`, info.reply.ok === true, info.reply);
     const row = info.reply.data as { id: string; lifecycleUid: string };
