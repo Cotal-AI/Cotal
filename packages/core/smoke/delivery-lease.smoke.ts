@@ -2,7 +2,8 @@
  * delivery single-flight lease smoke. Two clients binding the same `fanout`/`reader` durable name SPLIT
  * delivery, so the daemon CAS-acquires a per-shard lease BEFORE binding and refuses (loud exit) if a live
  * lease exists. Asserts: a second acquire on the same shard THROWS; the lease flips ready only after a
- * mark; release frees it so a fresh acquire succeeds.
+ * mark; a ready lease held by ANOTHER daemon does not satisfy a wait for the daemon we launched
+ * (#837); release frees it so a fresh acquire succeeds.
  *
  * Run: pnpm smoke:delivery-lease:auth   (needs `nats-server` on PATH; auth/JetStream, local-only)
  */
@@ -11,7 +12,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, setupSpaceStreams } from "../src/index.js";
+import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, setupSpaceStreams, waitForDeliveryLease } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -61,6 +62,19 @@ try {
   await d1.markDeliveryLeaseReady(0, rev1);
   const after = await d1.readDeliveryLease(0);
   check("lease reads ready + held by the first daemon after markReady", after?.ready === true && after?.holder === d1.card.id);
+
+  // #837: WHOSE readiness. `waitForDeliveryLease` used to accept ANY ready lease, so a launcher
+  // waiting on the daemon it had just started was answered by a DIFFERENT daemon's record — and a
+  // SIGKILLed holder leaves exactly such a record behind for the rest of the bucket TTL. The
+  // replacement that lost the CAS and exited was then reported ready, and `up` printed green with no
+  // daemon running at all. The lease here is ready and held by d1; d2 is the daemon nobody started.
+  const probeId = newIdentity();
+  const probeCreds = await mintCreds(auth, probeId, "delivery");
+  const waitFor = (holder: string | undefined) =>
+    waitForDeliveryLease({ servers: SERVERS, space, creds: probeCreds, id: probeId.id, holder, timeoutMs: 1500 });
+  check("CONTROL: waiting for the lease's ACTUAL holder sees it ready", await waitFor(d1.card.id));
+  check("a ready lease held by another daemon does NOT answer for the one we launched", (await waitFor(d2.card.id)) === false);
+  check("CONTROL: an unnamed holder (adopting a running daemon) still accepts any ready lease", await waitFor(undefined));
 
   await d1.releaseDeliveryLease(0);
   let reacquired = false;

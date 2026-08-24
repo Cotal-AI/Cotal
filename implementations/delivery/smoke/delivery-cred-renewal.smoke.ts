@@ -195,7 +195,7 @@ try {
   await wait(2000);
   check("the run never hit an authentication expiry (every swap was explicit + ahead of exp)", !output.includes("User Authentication Expired"), output.slice(-500));
   const probe = newIdentity();
-  const ready = await waitForDeliveryLease({ servers: SERVERS, space, creds: await mintCreds(auth, probe, "delivery"), id: probe.id });
+  const ready = await waitForDeliveryLease({ servers: SERVERS, space, creds: await mintCreds(auth, probe, "delivery"), id: probe.id, holder: undefined });
   check("delivery lease is READY at the end (daemon healthy on the renewed cred)", ready);
   check("daemon never exited", !daemonExited);
   void bornAt;
