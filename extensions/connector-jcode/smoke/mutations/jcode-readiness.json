@@ -1,12 +1,12 @@
 {
   "suite": "extensions/connector-jcode/smoke/jcode-host.smoke.ts",
-  "guard": "Jcode retries a first readiness turn that used its pre-MCP tool snapshot exactly once, still refuses a never-callable bridge without presence, opens the foreground TUI before readiness completes, and records that bootstrap orientation predates mesh join",
+  "guard": "Jcode retries a first readiness turn that used its pre-MCP tool snapshot exactly once, still refuses a never-callable bridge without presence, opens the foreground TUI before readiness completes, and records that bootstrap orientation predates an actual completed mesh join",
   "command": "pnpm smoke:jcode-host",
   "minTicks": 8,
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/jcode-readiness.json",
   "why": [
     "Jcode locks its first turn's tool list before asynchronous MCP registration can complete. The connector cannot treat that first absent call as a permanent bridge failure, but must not advertise without a real later tool call either (#777).",
-    "The remaining cells pin the same boot ordering: the foreground observer must start while readiness is in flight (#779), and the transcript must explicitly supersede the truthful but stale pre-join orientation result (#778)."
+    "The remaining cells pin the same boot ordering: the foreground observer must start while readiness is in flight (#779), and the transcript must explicitly supersede the truthful but stale pre-join orientation result only after a completed mesh join (#778, #845)."
   ],
   "mutations": [
     {
@@ -36,6 +36,13 @@
       "find": "      `You are now connected to the Cotal mesh as \"${config.name}\". The earlier cotal_orientation result was captured before this join; use cotal_orientation again for live context.`,",
       "replace": "      `You are connected.`,",
       "expectRed": "post-join context supersedes the pre-join orientation card"
+    },
+    {
+      "name": "M5 do not await the completed mesh join before notifying Jcode",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    await agent.start();",
+      "replace": "    agent.start();",
+      "expectRed": "post-join notice stays absent while the mesh is unreachable"
     }
   ]
 }

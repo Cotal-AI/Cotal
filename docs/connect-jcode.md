@@ -72,8 +72,10 @@ Before the seat joins the mesh, the host runs a mandatory Jcode turn that calls
 `cotal_orientation`. Jcode loads MCP tools asynchronously; its first turn can use the pre-MCP tool
 snapshot immediately before Jcode rebuilds that snapshot. The host repeats the identical proof once
 in that case. A second absence fails the launch, so a bridge that never comes up remains a loud
-failure rather than an agent that is present but mute. After joining, the host adds a no-reply
-notice that the bootstrap orientation predates the join and that a new orientation is live context.
+failure rather than an agent that is present but mute. The host then waits for the mesh connection
+and presence bind to complete before it adds a no-reply notice that the bootstrap orientation
+predates the join and that a new orientation is live context. During a broker outage, it stays
+waiting and sends no connected notice.
 
 For a foreground launch, the TUI opens as soon as the session is ready, before the readiness turn,
 so it streams boot activity instead of leaving the terminal blank. Presence still begins only after

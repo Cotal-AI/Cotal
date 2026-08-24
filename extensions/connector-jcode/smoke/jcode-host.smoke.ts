@@ -38,7 +38,10 @@ const shim = join(shimDir, "jcode");
 const log = join(root, "fake.jsonl");
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
 let child: ChildProcess | undefined;
+let outage: ChildProcess | undefined;
+let outageNats: ChildProcess | undefined;
 let operator: CotalEndpoint | undefined;
+let outageOperator: CotalEndpoint | undefined;
 let pass = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
   assert.ok(condition, `${name}${actual === undefined ? "" : ` — ${JSON.stringify(actual)}`}`);
@@ -189,6 +192,65 @@ try {
   check("a permanently absent cotal tool ends the launch", absentCode !== null && absentCode !== 0, { code: absentCode, stderr: absentErr });
   check("a permanently absent cotal tool never reaches the roster", !announced.has("absentpeer"), [...announced]);
 
+  // #845 reproduction: `MeshAgent.start()` retries in the background. A post-join notice sent
+  // immediately after it is not evidence of a completed join: the broker below is deliberately
+  // unbound, so neither presence nor a roster can exist.
+  const outagePort = await freePort();
+  const outageServers = `nats://127.0.0.1:${outagePort}`;
+  const outageLog = join(root, "join-outage.jsonl");
+  outage = spawn(tsx, [host], {
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: outageLog,
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodeoutage",
+      COTAL_NAME: "outagepeer",
+      COTAL_ID: "outagepeer",
+      COTAL_SERVERS: outageServers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_CONTROL_SOCKET: join(root, "outage-control.sock"),
+      COTAL_CONTROL_TOKEN: "outage-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let outageErr = "";
+  outage.stderr?.on("data", (chunk: Buffer) => (outageErr += chunk.toString()));
+  const outageEntries = (): Array<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }> =>
+    existsSync(outageLog) ? readFileSync(outageLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
+  await waitFor("outage readiness proof", () => outageEntries().find((entry) => entry.ev === "orientation_done") ? true : undefined);
+  await waitFor("outage broker refusal", () => /mesh unreachable/.test(outageErr) ? true : undefined);
+  const findOutageNotice = () =>
+    outageEntries().find(
+      (entry) =>
+        entry.ev === "request" &&
+        entry.frame?.req === "send_message" &&
+        entry.frame?.no_reply &&
+        String(entry.frame.content).includes("earlier cotal_orientation result was captured before this join"),
+    );
+  check("post-join notice stays absent while the mesh is unreachable", !findOutageNotice(), { outageNotice: findOutageNotice(), outageErr });
+  outageNats = spawn("nats-server", ["-js", "-p", String(outagePort), "-sd", join(root, "outage-js")], { stdio: "ignore" });
+  for (let i = 0; i < 100 && !(await isReachable(outageServers)); i++) await sleep(50);
+  await seedChannelRegistry({ servers: outageServers, space: "jcodeoutage", file: { defaults: { replay: false }, channels: { team: { replay: false } } } });
+  outageOperator = new CotalEndpoint({ space: "jcodeoutage", servers: outageServers, card: { name: "outageoperator", kind: "agent", id: "outageoperator" }, channels: ["team"] });
+  outageOperator.on("error", () => {});
+  let outagePeerId: string | undefined;
+  outageOperator.on("presence", (event: { type: string; presence: { card: { id: string; name: string } } }) => {
+    if (event.type !== "offline" && event.presence.card.name === "outagepeer") outagePeerId = event.presence.card.id;
+  });
+  await outageOperator.start();
+  const joinedNotice = await waitFor("post-join notice after the recovered mesh join", () => findOutageNotice());
+  await waitFor("recovered mesh presence", () => outagePeerId);
+  check("post-join notice fires only after the later real mesh join", Boolean(joinedNotice) && Boolean(outagePeerId), { joinedNotice, outagePeerId });
+  outage.kill("SIGTERM");
+  await Promise.race([once(outage, "exit"), sleep(10_000)]);
+  check("the outage launch exits cleanly", outage.exitCode === 0, { code: outage.exitCode, stderr: outageErr });
+
   // #779 reproduction: the foreground observer belongs beside the session, before the slow
   // readiness request. The old host only spawns it after that request has completed.
   const tuiLog = join(root, "tui-order.jsonl");
@@ -254,8 +316,11 @@ try {
   console.log(`\nJCODE HOST SMOKE PASSED (${pass} checks)`);
 } finally {
   if (child && child.exitCode === null) child.kill("SIGKILL");
+  if (outage && outage.exitCode === null) outage.kill("SIGKILL");
   await operator?.stop().catch(() => {});
+  await outageOperator?.stop().catch(() => {});
   nats.kill("SIGKILL");
+  outageNats?.kill("SIGKILL");
   await sleep(100);
   rmSync(root, { recursive: true, force: true });
 }
