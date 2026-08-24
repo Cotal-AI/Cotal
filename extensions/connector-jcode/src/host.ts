@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { JcodeClient, launchInstance, type ApiEvent, type LaunchedInstance } from "@1jehuang/jcode-sdk";
 import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
 import { mirrorJcodeCredentials, shortSocketHome } from "./private-state.js";
-import { stopPrivateTree } from "./private-lifecycle.js";
+import { captureProcessIdentity, launchIdentityEnv, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
 import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
 import { bareModelId, describeRoute } from "./route-identity.js";
 import {
@@ -242,6 +242,8 @@ export async function runJcodeHost(): Promise<void> {
   writeMcpConfig(home, relay, config);
 
   let instance: LaunchedInstance | undefined;
+  let launchIdentity: ProcessIdentity | undefined;
+  let launchIdentityValue: string | undefined;
   let client: JcodeClient | undefined;
   let tui: ChildProcess | undefined;
   let stopping = false;
@@ -252,14 +254,14 @@ export async function runJcodeHost(): Promise<void> {
   let initialized = false;
   let wakeQueued = false;
 
-  // The SDK's managed stop keys the daemon off a servers.json entry matching the alias socket
-  // path verbatim; a miss is a silent no-op that orphans the setsid daemon (#839). Run its stop,
-  // then prove from the seat's own records that the whole private tree is gone — a throw here
-  // means processes survived exact-PID escalation, and the caller must not report a clean stop.
+  // The SDK trusts mutable servers.json PIDs and can signal a stale foreign process. Remove its
+  // exit hook once the launch handle exists and own teardown here instead: every record is checked
+  // against the immutable bridge identity captured at spawn, then the scan stays quiescent after
+  // bridge exit so a late daemon record cannot land behind a single empty pass.
   const stopPrivateJcode = async (): Promise<void> => {
     await client?.close().catch(() => {});
-    await instance?.shutdown().catch(() => {});
-    await stopPrivateTree({ jcodeHome: socketHome.jcodeHome, knownPids: [instance?.process.pid] });
+    if (launchIdentity && launchIdentityValue)
+      await stopPrivateTree({ jcodeHome: socketHome.jcodeHome, launch: launchIdentity, identityValue: launchIdentityValue });
   };
 
   const shutdown = async (code = 0): Promise<void> => {
@@ -339,6 +341,9 @@ export async function runJcodeHost(): Promise<void> {
   try {
     // Launched in two steps rather than JcodeClient.launch() so the connector holds the instance
     // handle itself: the bridge PID for teardown, and a shutdown it can follow with verification.
+    const exitListenersBefore = new Set(process.listeners("exit"));
+    const launchBound = launchIdentityEnv();
+    launchIdentityValue = launchBound.value;
     instance = await launchInstance({
       binary,
       jcodeHome: socketHome.jcodeHome,
@@ -346,8 +351,13 @@ export async function runJcodeHost(): Promise<void> {
       // Re-copied above on every launch. Do not call the SDK default: it links rotating provider
       // auth files, while current jcode correctly refuses external auth paths that are symlinks.
       inheritLogins: false,
-      env: { JCODE_DISABLE_CLAUDE_MCP: "1" },
+      env: { JCODE_DISABLE_CLAUDE_MCP: "1", [launchBound.key]: launchBound.value },
     });
+    const sdkExitListeners = process.listeners("exit").filter((listener) => !exitListenersBefore.has(listener));
+    for (const listener of sdkExitListeners) process.removeListener("exit", listener);
+    if (sdkExitListeners.length !== 1)
+      throw new Error(`jcode connector: expected one SDK instance exit hook, found ${sdkExitListeners.length} — refusing unsafe lifecycle ownership`);
+    launchIdentity = captureProcessIdentity(instance.process.pid!);
     client = await JcodeClient.connect({ socketPath: instance.socketPath });
     // A restart must come back to the session it left. Calling createSession unconditionally forked
     // a blank session and orphaned the real transcript, so a restarted seat reported for duty looking

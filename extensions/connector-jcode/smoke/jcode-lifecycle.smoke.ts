@@ -33,6 +33,15 @@ async function waitFor<T>(name: string, read: () => T | undefined, timeoutMs = 2
   }
 }
 const alive = (pid: number): boolean => {
+  if (process.platform === "linux") {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const after = stat.lastIndexOf(") ");
+      if (after >= 0 && stat.slice(after + 2).startsWith("Z ")) return false;
+    } catch {
+      return false;
+    }
+  }
   try {
     process.kill(pid, 0);
     return true;
@@ -51,6 +60,7 @@ const shimDir = join(root, "bin");
 const shim = join(shimDir, "jcode");
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
 let child: ChildProcess | undefined;
+const foreignProcesses: ChildProcess[] = [];
 let pass = 0;
 const leaked: number[] = [];
 const check = (name: string, condition: boolean, actual?: unknown): void => {
@@ -140,6 +150,92 @@ try {
     { mcp: daemonRecord.mcp, stillAlive: alive(daemonRecord.mcp) },
   );
 
+  // --- HIGH 1 red-first: the detached daemon writes BOTH PID sources after the first empty scan.
+  // On this head stopPrivateTree returns on that empty pass before the delayed records arrive, so
+  // the connector returns while the daemon and its MCP child are still alive.
+  const late = startHost("lifelate", {
+    FAKE_JCODE_FAIL_READINESS: "1",
+    FAKE_JCODE_TURN_DELAY_MS: "2000",
+    FAKE_JCODE_RECORD_AFTER_BRIDGE_EXIT: "1",
+  });
+  child = late.child;
+  const lateDaemon = (await waitFor("late-record private daemon", () =>
+    entriesOf(late.log).find((entry) => entry.ev === "daemon"),
+  )) as { pid: number; mcp: number };
+  leaked.push(lateDaemon.pid, lateDaemon.mcp);
+  await Promise.race([once(late.child, "exit"), sleep(30_000)]);
+  check("late-record startup failure returns non-zero", late.child.exitCode !== null && late.child.exitCode !== 0, {
+    code: late.child.exitCode,
+    stderr: late.stderr(),
+  });
+  await waitFor("late daemon records after connector exit", () =>
+    entriesOf(late.log).find((entry) => entry.ev === "daemon_records_written" && entry.pid === lateDaemon.pid),
+  );
+  const lateEntries = entriesOf(late.log);
+  const bridgeExit = lateEntries.findIndex((entry) => entry.ev === "bridge_exit_observed");
+  const recordWrite = lateEntries.findIndex((entry) => entry.ev === "daemon_records_written" && entry.pid === lateDaemon.pid);
+  check("late record is gated after bridge teardown and reaches both PID sources (instrument control)",
+    bridgeExit >= 0 && recordWrite > bridgeExit,
+    { daemon: lateDaemon.pid, mcp: lateDaemon.mcp, bridgeExit, recordWrite },
+  );
+  check(
+    "late records are not orphaned after the connector returns (#HIGH-1)",
+    !alive(lateDaemon.pid) && !alive(lateDaemon.mcp),
+    { daemon: lateDaemon.pid, mcp: lateDaemon.mcp, daemonAlive: alive(lateDaemon.pid), mcpAlive: alive(lateDaemon.mcp) },
+  );
+
+  // --- HIGH 2 red-first: stale records must never kill an unrelated detached process tree. ---
+  const failureForeign = spawn(process.execPath, [fake, "foreign"], { detached: true, stdio: "ignore", env: { ...baseEnv, FAKE_JCODE_LOG: join(root, "foreign-failure.jsonl") } });
+  foreignProcesses.push(failureForeign);
+  failureForeign.unref();
+  const foreignRecord = (await waitFor("startup-failure foreign process", () =>
+    entriesOf(join(root, "foreign-failure.jsonl")).find((entry) => entry.ev === "foreign"),
+  )) as { pid: number; child: number };
+  leaked.push(foreignRecord.pid, foreignRecord.child);
+  check("foreign detached process and child live before poisoned teardown (instrument control)", alive(foreignRecord.pid) && alive(foreignRecord.child), foreignRecord);
+
+  const staleFailure = startHost("lifestalefail", {
+    FAKE_JCODE_FAIL_READINESS: "1",
+    FAKE_JCODE_TURN_DELAY_MS: "2000",
+    FAKE_JCODE_STALE_PID: String(foreignRecord.pid),
+  });
+  child = staleFailure.child;
+  await Promise.race([once(staleFailure.child, "exit"), sleep(30_000)]);
+  check("stale-record startup failure returns non-zero", staleFailure.child.exitCode !== null && staleFailure.child.exitCode !== 0, {
+    code: staleFailure.child.exitCode,
+    stderr: staleFailure.stderr(),
+  });
+  check(
+    "stale foreign record never kills the unrelated process or child on startup failure (#HIGH-2)",
+    alive(foreignRecord.pid) && alive(foreignRecord.child),
+    { foreign: foreignRecord, parentAlive: alive(foreignRecord.pid), childAlive: alive(foreignRecord.child) },
+  );
+
+  const gracefulForeign = spawn(process.execPath, [fake, "foreign"], { detached: true, stdio: "ignore", env: { ...baseEnv, FAKE_JCODE_LOG: join(root, "foreign-graceful.jsonl") } });
+  foreignProcesses.push(gracefulForeign);
+  gracefulForeign.unref();
+  const gracefulForeignRecord = (await waitFor("graceful foreign process", () =>
+    entriesOf(join(root, "foreign-graceful.jsonl")).find((entry) => entry.ev === "foreign"),
+  )) as { pid: number; child: number };
+  leaked.push(gracefulForeignRecord.pid, gracefulForeignRecord.child);
+  check("graceful foreign detached process and child live before poisoned teardown (instrument control)", alive(gracefulForeignRecord.pid) && alive(gracefulForeignRecord.child), gracefulForeignRecord);
+
+  const staleGraceful = startHost("lifestalestop", { FAKE_JCODE_STALE_PID: String(gracefulForeignRecord.pid) });
+  child = staleGraceful.child;
+  await waitFor("stale graceful readiness", () =>
+    entriesOf(staleGraceful.log).find(
+      (entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string }).req === "send_message" && String((entry.frame as { content?: string }).content).includes("cotal_orientation"),
+    ),
+  );
+  staleGraceful.child.kill("SIGTERM");
+  await Promise.race([once(staleGraceful.child, "exit"), sleep(30_000)]);
+  check("stale-record graceful host stop exits", staleGraceful.child.exitCode !== null, { code: staleGraceful.child.exitCode, stderr: staleGraceful.stderr() });
+  check(
+    "stale foreign record never kills the unrelated process or child on graceful shutdown (#HIGH-2)",
+    alive(gracefulForeignRecord.pid) && alive(gracefulForeignRecord.child),
+    { foreign: gracefulForeignRecord, parentAlive: alive(gracefulForeignRecord.pid), childAlive: alive(gracefulForeignRecord.child) },
+  );
+
   // --- Control: a successful launch keeps the tree alive, and a graceful stop ends all of it ---
   const healthy = startHost("lifeok", {});
   child = healthy.child;
@@ -170,6 +266,14 @@ try {
   console.log(`\nJCODE LIFECYCLE SMOKE PASSED (${pass} checks)`);
 } finally {
   if (child && child.exitCode === null) child.kill("SIGKILL");
+  for (const foreign of foreignProcesses) {
+    if (foreign.exitCode !== null) continue;
+    try {
+      process.kill(-foreign.pid!, "SIGKILL");
+    } catch {
+      foreign.kill("SIGKILL");
+    }
+  }
   // The cell must not itself orphan its fakes: exact recorded PIDs only, never a name sweep.
   for (const pid of leaked) {
     try {
