@@ -40,8 +40,8 @@
     {
       "name": "M3 degrade the group signal to exact-PID only: the unrecorded MCP child is orphaned",
       "file": "extensions/connector-jcode/src/private-lifecycle.ts",
-      "find": "    try {\n      process.kill(-pid, signal);\n    } catch {\n      try {\n        process.kill(pid, signal);\n      } catch {\n        /* already gone */\n      }\n    }",
-      "replace": "    try {\n      process.kill(pid, signal);\n    } catch {\n      /* already gone */\n    }",
+      "find": "      process.kill(-pid, signal);",
+      "replace": "      process.kill(pid, signal);",
       "expectRed": "startup failure stops the daemon's MCP child before the connector returns (#839)"
     }
   ]
