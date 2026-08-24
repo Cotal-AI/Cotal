@@ -505,3 +505,9 @@ smoke:discovery-bundle-consumable:live
 # stalled turn re-paid the full injection 62 times. The codex host has had scheduleErrorRetry the
 # whole time; this grades the same rule for jcode: growing delay, ceiling, one timer, give up.
 smoke:jcode-retry-policy
+# When a seat leaves, the manager must say WHY. A live supervisor lost several seats while it kept
+# running and its log carried no per-seat exit line at all, so "the supervisor reaped them" and
+# "they died on their own" were indistinguishable after the fact. Two different facts are required:
+# which path gave up the slot, and what the runtime saw when the child ended — and a runtime that
+# cannot see the exit must say so rather than print a fabricated code 0.
+smoke:seat-exit-cause
