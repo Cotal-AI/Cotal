@@ -476,3 +476,13 @@ smoke:anchor-renewal
 # seat reports healthy. Same shape as #790 one layer down. Count evictions per id, give up after
 # five, and say so on stderr (never emit("error") - with no listener that kills the seat).
 smoke:overflow-churn-bound
+
+# The auth-service serves the mesh discovery document `cotal meshes add --from` registers from, and
+# nothing had ever fed the server's ACTUAL bytes to that consumer: the producer's smoke asserted the
+# fields it had just written, and the consumer's smoke fed itself a hand-written fixture. The shape
+# defect that hid there (a flat document with no `userAuth` and no `provider`, refused with "a
+# provider name is required") is fixed, but the untested seam is the reason it shipped. This suite
+# is the crossing: live daemon, fetch over the wire, raw bytes into the shipped consumer — and it
+# grades the served provider name against the REGISTERED provider's own name, so the two cannot
+# drift back apart behind a re-hardcoded literal.
+smoke:discovery-bundle-consumable:live
