@@ -4,9 +4,10 @@ import { existsSync, lstatSync, mkdirSync, openSync, closeSync, rmSync, writeFil
 import { createServer, type Server } from "node:net";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { JcodeClient, type ApiEvent } from "@1jehuang/jcode-sdk";
+import { JcodeClient, launchInstance, type ApiEvent, type LaunchedInstance } from "@1jehuang/jcode-sdk";
 import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
 import { mirrorJcodeCredentials, shortSocketHome } from "./private-state.js";
+import { captureProcessIdentity, launchIdentityEnv, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
 import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
 import { bareModelId, describeRoute } from "./route-identity.js";
 import { classifyReadinessProviderRefusal } from "./startup-diagnostics.js";
@@ -242,6 +243,9 @@ export async function runJcodeHost(): Promise<void> {
   const relayServer = await startRelay(agent, config, relay);
   writeMcpConfig(home, relay, config);
 
+  let instance: LaunchedInstance | undefined;
+  let launchIdentity: ProcessIdentity | undefined;
+  let launchIdentityValue: string | undefined;
   let client: JcodeClient | undefined;
   let tui: ChildProcess | undefined;
   let stopping = false;
@@ -254,16 +258,40 @@ export async function runJcodeHost(): Promise<void> {
   let initialized = false;
   let wakeQueued = false;
 
-  const launchClient = (): Promise<JcodeClient> =>
-    JcodeClient.launch({
+  // The SDK trusts mutable servers.json PIDs and can signal a stale foreign process. Remove its
+  // exit hook once the launch handle exists and own teardown here instead: every record is checked
+  // against the immutable bridge identity captured at spawn, then the scan stays quiescent after
+  // bridge exit so a late daemon record cannot land behind a single empty pass.
+  const stopPrivateJcode = async (): Promise<void> => {
+    await client?.close().catch(() => {});
+    if (launchIdentity && launchIdentityValue)
+      await stopPrivateTree({ jcodeHome: socketHome.jcodeHome, launch: launchIdentity, identityValue: launchIdentityValue });
+  };
+
+  // Launched in two steps rather than JcodeClient.launch() so the connector holds the instance
+  // handle itself: the bridge PID for teardown, and a shutdown it can follow with verification.
+  // Bridge recovery relaunches through here too, so the identity slots always name the live tree
+  // that stopPrivateJcode must target.
+  const launchPrivateJcode = async (): Promise<JcodeClient> => {
+    const exitListenersBefore = new Set(process.listeners("exit"));
+    const launchBound = launchIdentityEnv();
+    launchIdentityValue = launchBound.value;
+    instance = await launchInstance({
       binary,
       jcodeHome: socketHome.jcodeHome,
       workingDir: cwd,
       // Re-copied above on every launch. Do not call the SDK default: it links rotating provider
       // auth files, while current jcode correctly refuses external auth paths that are symlinks.
       inheritLogins: false,
-      env: { JCODE_DISABLE_CLAUDE_MCP: "1" },
+      env: { JCODE_DISABLE_CLAUDE_MCP: "1", [launchBound.key]: launchBound.value },
     });
+    const sdkExitListeners = process.listeners("exit").filter((listener) => !exitListenersBefore.has(listener));
+    for (const listener of sdkExitListeners) process.removeListener("exit", listener);
+    if (sdkExitListeners.length !== 1)
+      throw new Error(`jcode connector: expected one SDK instance exit hook, found ${sdkExitListeners.length} — refusing unsafe lifecycle ownership`);
+    launchIdentity = captureProcessIdentity(instance.process.pid!);
+    return JcodeClient.connect({ socketPath: instance.socketPath });
+  };
 
   const launchTui = (): void => {
     const runtime = join(socketHome.jcodeHome, "run");
@@ -284,13 +312,16 @@ export async function runJcodeHost(): Promise<void> {
       /* already gone */
     }
     await closeServer(relayServer);
+    let exit = code;
     try {
-      await client?.close();
-    } finally {
-      socketHome.dispose();
-      await agent.stop().catch(() => {});
-      process.exit(code);
+      await stopPrivateJcode();
+    } catch (error) {
+      process.stderr.write(`[cotal-jcode] ${(error as Error).message}\n`);
+      exit = 1;
     }
+    socketHome.dispose();
+    await agent.stop().catch(() => {});
+    process.exit(exit);
   };
 
   const drive = async (override?: string): Promise<void> => {
@@ -357,11 +388,13 @@ export async function runJcodeHost(): Promise<void> {
     driving = false;
     void agent.setStatus("waiting").catch(() => {});
     try {
-      // `launch()` owns the private instance. Close the broken owner before replacing it so the
-      // SDK has one private home to clean up; its close listener is ignored because reconnecting is
-      // already true. The replacement is still private and inherits only the copied credentials.
-      await lost.close().catch(() => {});
-      const replacement = await launchClient();
+      // The connector owns the private instance. Stop the whole broken tree before replacing it:
+      // a surviving daemon still holds the private home's registry and socket, so a replacement
+      // cannot own the same home until it is gone. The lost client's close listener is ignored
+      // because reconnecting is already true, and the relaunch goes through the same
+      // identity-capturing path as startup so teardown targets the replacement tree, not the corpse.
+      await stopPrivateJcode();
+      const replacement = await launchPrivateJcode();
       if (!sessionId) throw new Error("jcode connector: Harness connection closed before a session was established");
       await replacement.attachSession(sessionId);
       client = replacement;
@@ -413,7 +446,7 @@ export async function runJcodeHost(): Promise<void> {
   process.on("SIGTERM", () => void shutdown());
 
   try {
-    client = await launchClient();
+    client = await launchPrivateJcode();
     // A restart must come back to the session it left. Calling createSession unconditionally forked
     // a blank session and orphaned the real transcript, so a restarted seat reported for duty looking
     // healthy while remembering nothing - and the TUI, spawned with --resume below, showed a human the
@@ -507,9 +540,19 @@ export async function runJcodeHost(): Promise<void> {
     );
     if (bootPrompt) await drive(bootPrompt);
   } catch (error) {
+    // A shutdown requested mid-startup closes the client and rejects whatever startup step was in
+    // flight. That is the shutdown completing, not a startup failure: let its teardown own the
+    // process exit code instead of racing it to process.exit with a failure report.
+    if (stopping) return;
     startControl?.close();
     await closeServer(relayServer);
-    await client?.close().catch(() => {});
+    // The refusal is only safe once the launch it abandons is provably dead: returning non-zero
+    // hands the manager a retired seat while an unverified daemon would keep running (#839).
+    try {
+      await stopPrivateJcode();
+    } catch (teardown) {
+      process.stderr.write(`[cotal-jcode] ${(teardown as Error).message}\n`);
+    }
     socketHome.dispose();
     await agent.stop().catch(() => {});
     throw error;

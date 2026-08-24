@@ -1,0 +1,33 @@
+{
+  "suite": "extensions/connector-jcode/smoke/jcode-lifecycle.smoke.ts",
+  "guard": "the connector waits through late Jcode registry writes and signals only PIDs carrying the immutable launch-bound identity captured from the bridge this host spawned; stale foreign records are skipped on startup failure and graceful stop",
+  "command": "pnpm smoke:jcode-lifecycle",
+  "progressPattern": "✓",
+  "minTicks": 7,
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/jcode-lifecycle.json",
+  "_note": "assert-and-die suite: HIGH-1 is mark 8 and HIGH-2 startup is mark 11; each mutation names the exact assertion it must redden.",
+  "why": [
+    "The SDK reads mutable servers.json and group-signals the PID without proving ownership. A stale",
+    "record therefore kills an unrelated process tree before connector verification can run. The host",
+    "now removes the SDK exit hook, captures a random launch-bound environment identity plus immutable",
+    "process start tokens, and owns teardown itself. Registry PIDs must match that captured identity or",
+    "they are skipped. The bridge is stopped first; a settle scan catches a record written only after",
+    "bridge death, and unrecorded processes already captured from this launch are still reaped exactly."
+  ],
+  "mutations": [
+    {
+      "name": "M1 remove the late-record settle window",
+      "file": "extensions/connector-jcode/src/private-lifecycle.ts",
+      "find": "    if (Date.now() - quietSince < settleMs) {\n      await new Promise((resolve) => setTimeout(resolve, 25));\n      continue;\n    }",
+      "replace": "    return; /* mutant: a single empty post-bridge pass concludes teardown */",
+      "expectRed": "late records are not orphaned after the connector returns (#HIGH-1)"
+    },
+    {
+      "name": "M2 trust every recorded PID instead of the launch identity",
+      "file": "extensions/connector-jcode/src/private-lifecycle.ts",
+      "find": "      .map((pid) => owned.get(pid))\n      .filter((identity): identity is ProcessIdentity => identity !== undefined && processMatches(identity) && alive(identity.pid))\n      .map((identity) => identity.pid);",
+      "replace": "      .filter(alive);",
+      "expectRed": "stale foreign record never kills the unrelated process or child on startup failure (#HIGH-2)"
+    }
+  ]
+}

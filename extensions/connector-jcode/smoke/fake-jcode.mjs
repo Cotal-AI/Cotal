@@ -1,11 +1,63 @@
 #!/usr/bin/env node
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
+import { join } from "node:path";
 
 const logPath = process.env.FAKE_JCODE_LOG;
 const log = (entry) => {
   if (logPath) appendFileSync(logPath, JSON.stringify(entry) + "\n");
 };
+const alive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function writeDaemonRecords(home, pid) {
+  mkdirSync(join(home, "active_pids"), { recursive: true });
+  writeFileSync(
+    join(home, "servers.json"),
+    JSON.stringify({ camp: { name: "camp", socket: join(home, "run", "jcode.sock"), pid, sessions: [] } }),
+  );
+  writeFileSync(join(home, "active_pids", "session_fake"), String(pid));
+}
+
+if (process.argv[2] === "serve") {
+  // Stand-in for the real `jcode serve` daemon: detached into its own session/group by the bridge,
+  // owner of the connector's MCP child, and it keeps executing after the bridge dies. The late
+  // record gate is tied to that observable teardown event, not to readiness timing: the daemon
+  // cannot publish either PID source until its spawning bridge is proven gone.
+  const home = realpathSync(process.env.JCODE_HOME);
+  const mcp = spawn(process.execPath, [process.argv[1], "mcp"], { stdio: "ignore" });
+  log({ ev: "daemon", pid: process.pid, mcp: mcp.pid });
+  if (process.env.FAKE_JCODE_RECORD_AFTER_BRIDGE_EXIT === "1") {
+    const bridgePid = Number(process.env.FAKE_JCODE_BRIDGE_PID);
+    if (!Number.isInteger(bridgePid) || bridgePid <= 1) throw new Error("fake daemon has no bridge PID gate");
+    while (alive(bridgePid)) await sleep(10);
+    log({ ev: "bridge_exit_observed", pid: bridgePid });
+    // Give the host's immediate post-bridge scan a deterministic empty pass. The schedule is now
+    // anchored after teardown, so a long readiness turn cannot accidentally make the record early.
+    await sleep(100);
+  }
+  writeDaemonRecords(home, process.pid);
+  log({ ev: "daemon_records_written", pid: process.pid });
+  setInterval(() => {}, 1000);
+  await new Promise(() => {});
+}
+if (process.argv[2] === "foreign") {
+  const child = spawn(process.execPath, [process.argv[1], "mcp"], { stdio: "ignore" });
+  log({ ev: "foreign", pid: process.pid, child: child.pid });
+  setInterval(() => {}, 1000);
+  await new Promise(() => {});
+}
+if (process.argv[2] === "mcp") {
+  setInterval(() => {}, 1000);
+  await new Promise(() => {});
+}
 if (process.argv.includes("--resume")) {
   // The foreground client is an observer of the Harness API socket. It must be created while the
   // mandatory readiness request is running, rather than leaving an operator at a blank terminal.
@@ -23,6 +75,23 @@ if (!socketPath) {
   process.exit(2);
 }
 log({ ev: "argv", argv: process.argv.slice(2), env: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("COTAL_") || key.startsWith("JCODE_"))) });
+
+if (process.env.FAKE_JCODE_STALE_PID) {
+  // Deliberately poison both Jcode PID sources with an unrelated, detached process. Write the
+  // socket with the SDK's alias spelling, so this reaches the SDK's own unsafe registry lookup;
+  // the foreign process has neither this private home's Jcode environment nor the launch nonce.
+  writeDaemonRecords(process.env.JCODE_HOME, Number(process.env.FAKE_JCODE_STALE_PID));
+} else if (process.env.FAKE_JCODE_DAEMON === "1") {
+  // Mirror the real topology: the bridge spawns the daemon into its own session, so no signal
+  // aimed at the bridge (or its group) can reach it, and the bridge's own exit leaves it running.
+  const daemon = spawn(process.execPath, [process.argv[1], "serve"], {
+    detached: true,
+    stdio: "ignore",
+    env: { ...process.env, FAKE_JCODE_BRIDGE_PID: String(process.pid) },
+  });
+  daemon.unref();
+  log({ ev: "daemon_spawned", pid: daemon.pid });
+}
 
 let attachedExisting;
 let createdFresh = false;
@@ -116,8 +185,10 @@ const server = createServer((socket) => {
               setImmediate(() => server.close());
               return;
             }
+            // The delay knob keeps a failure-path test observable: a host that tears down on the
+            // refusal is faster than a 100ms poll, so the turn must outlast the observer's window.
             setTimeout(() => {
-              if (String(frame.content).includes("cotal_orientation")) {
+              if (String(frame.content).includes("cotal_orientation") && process.env.FAKE_JCODE_FAIL_READINESS !== "1") {
                 const readyAfter = Number(process.env.FAKE_JCODE_ORIENTATION_DELAY_TURNS ?? "0");
                 orientationTurns++;
                 if (process.env.FAKE_JCODE_NEVER_ORIENTATION !== "1" && orientationTurns > readyAfter) {

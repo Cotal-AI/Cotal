@@ -44,15 +44,24 @@ environment.
 ## How it binds
 
 Jcode's stable integration surface is the **Harness API**: protocol-v1 NDJSON over a Unix socket.
-The connector uses `@1jehuang/jcode-sdk`'s `launch()` API, not `connect()`:
+The connector launches a **private instance** with `@1jehuang/jcode-sdk`'s `launchInstance()` and
+attaches only to that instance's own socket:
 
-- `launch()` starts a private `JCODE_HOME`, runtime directory, daemon, and `api-bridge`; closing
-  the Cotal seat closes that instance. This gives each managed Cotal peer one owned session and
-  prevents it from seeing or changing the operator's live Jcode sessions.
-- `connect()` attaches to an operator-run `jcode api-bridge` and shares the operator's live session
+- `launchInstance()` starts a private `JCODE_HOME`, runtime directory, daemon, and `api-bridge`;
+  the connector holds the process handle first-hand and closes that instance with the Cotal seat.
+  This gives each managed Cotal peer one owned session and prevents it from seeing or changing
+  the operator's live Jcode sessions.
+- Attaching to an **operator-run** `jcode api-bridge` shares the operator's live session
   inventory. That is appropriate for a dashboard or editor integration, but not a managed Cotal
   seat: stop, prompt injection, and session selection could act on the operator's work. The
-  connector therefore does **not** use it.
+  connector never attaches to an operator bridge.
+
+On a graceful stop **and** on a startup failure, the connector proves the private daemon tree is
+actually gone rather than trusting the SDK's registry-keyed stop (which is a silent no-op when the
+`servers.json` socket path does not match verbatim): it reads the PIDs the private home itself
+records, sends a bounded SIGTERM, escalates survivors to an exact-PID SIGKILL, and reports a
+failed stop instead of a clean one if any recorded process survives. It never signals by name, so
+teardown can only ever reach the seat's own tree.
 
 The private Jcode home lives under `<manager-workspace>/.cotal/jcode/`. It is unique per
 space/name and is owner-only. Jcode's own credential inheritance is used for the private instance,
