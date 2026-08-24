@@ -110,6 +110,8 @@ async function driveDetach(snapshot: string, marker: string): Promise<string> {
   let captured = "";
   const realWrite = process.stdout.write;
   const realTTY = process.stdout.isTTY;
+  const realDetach = process.env.COTAL_DETACH_KEY;
+  delete process.env.COTAL_DETACH_KEY;
   Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
   process.stdout.write = ((chunk: string | Buffer): boolean => {
     captured += Buffer.isBuffer(chunk) ? chunk.toString("latin1") : String(chunk);
@@ -126,6 +128,8 @@ async function driveDetach(snapshot: string, marker: string): Promise<string> {
   } finally {
     process.stdout.write = realWrite;
     Object.defineProperty(process.stdout, "isTTY", { value: realTTY, configurable: true });
+    if (realDetach === undefined) delete process.env.COTAL_DETACH_KEY;
+    else process.env.COTAL_DETACH_KEY = realDetach;
   }
   return captured;
 }
@@ -142,10 +146,91 @@ async function testDetachLeavesAltScreen(): Promise<void> {
   console.log("  ✓ attach client leaves the alt-screen on detach only when the child entered it");
 }
 
+async function testWheelCoalescing(): Promise<void> {
+  let onEndCb: ((err?: Error, reason?: string) => void) | undefined;
+  const sent: string[] = [];
+  const transport: TerminalTransport = {
+    onReady: (cb) => { queueMicrotask(cb); },
+    onData: (cb) => { queueMicrotask(() => { void cb(Buffer.from("\x1b[?1049h\x1b[HSCROLL-VIEW", "latin1")); }); },
+    onEnd: (cb) => { onEndCb = cb; },
+    send: (bytes) => { sent.push(bytes.toString("latin1")); },
+    resize: () => {},
+    close: () => { onEndCb?.(undefined, "detached"); },
+  };
+
+  let captured = "";
+  const realWrite = process.stdout.write;
+  const realTTY = process.stdout.isTTY;
+  const realDetach = process.env.COTAL_DETACH_KEY;
+  delete process.env.COTAL_DETACH_KEY;
+  Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+  process.stdout.write = ((chunk: string | Buffer): boolean => {
+    captured += Buffer.isBuffer(chunk) ? chunk.toString("latin1") : String(chunk);
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    const done = attachClient(transport);
+    for (let i = 0; i < 200 && !captured.includes("SCROLL-VIEW"); i++) await sleep(5);
+    assert.ok(captured.includes("SCROLL-VIEW"), "C: alternate-screen snapshot painted before wheel input");
+    const up = Buffer.from("\x1b[<64;40;12M", "latin1");
+    for (let i = 0; i < 100; i++) process.stdin.emit("data", up);
+    await sleep(5);
+    assert.strictEqual(sent.filter((x) => x === "\x1b[5~").length, 0, "C: burst is held for coalescing, not emitted per report");
+    await sleep(30);
+    assert.strictEqual(sent.filter((x) => x === "\x1b[5~").length, 1, "C: 100 wheel reports become one PageUp command");
+
+    process.stdin.emit("data", Buffer.from("\x1b[<65;40;12M", "latin1"));
+    process.stdin.emit("data", Buffer.from("a"));
+    assert.deepStrictEqual(sent.slice(-2), ["\x1b[6~", "a"], "C: raw input flushes the pending wheel first and preserves order");
+    process.stdin.emit("data", Buffer.from([0x1d]));
+    await done;
+  } finally {
+    process.stdout.write = realWrite;
+    Object.defineProperty(process.stdout, "isTTY", { value: realTTY, configurable: true });
+    if (realDetach === undefined) delete process.env.COTAL_DETACH_KEY;
+    else process.env.COTAL_DETACH_KEY = realDetach;
+  }
+  console.log("  ✓ rapid wheel reports coalesce across stdin reads without reordering keyboard input");
+}
+
+async function testStdoutDrainBackpressure(): Promise<void> {
+  let onDataCb: ((bytes: Buffer) => void | Promise<void>) | undefined;
+  let onEndCb: ((err?: Error, reason?: string) => void) | undefined;
+  const transport: TerminalTransport = {
+    onReady: (cb) => { queueMicrotask(cb); },
+    onData: (cb) => { onDataCb = cb; },
+    onEnd: (cb) => { onEndCb = cb; },
+    send: () => {},
+    resize: () => {},
+    close: () => { onEndCb?.(undefined, "detached"); },
+  };
+  const realWrite = process.stdout.write;
+  process.stdout.write = (() => false) as typeof process.stdout.write;
+  try {
+    const done = attachClient(transport);
+    for (let i = 0; i < 100 && !onDataCb; i++) await sleep(1);
+    assert.ok(onDataCb, "D: attach registered its output consumer");
+    let accepted = false;
+    const pending = Promise.resolve(onDataCb!(Buffer.from("SLOW-STDOUT"))).then(() => { accepted = true; });
+    await sleep(10);
+    assert.strictEqual(accepted, false, "D: a false stdout.write holds transport acceptance and therefore rail credit");
+    process.stdout.emit("drain");
+    await pending;
+    assert.strictEqual(accepted, true, "D: stdout drain releases transport acceptance");
+    transport.close();
+    await done;
+  } finally {
+    process.stdout.write = realWrite;
+  }
+  console.log("  ✓ receiver credit waits for local stdout drain instead of acknowledging unread bytes");
+}
+
 async function main(): Promise<void> {
   await testPtyReconstruction();
   await testDetachLeavesAltScreen();
-  console.log("\nATTACH REPAINT SMOKE OK ✅  (2 tests)");
+  await testWheelCoalescing();
+  await testStdoutDrainBackpressure();
+  console.log("\nATTACH REPAINT SMOKE OK ✅  (4 tests)");
 }
 
 main()

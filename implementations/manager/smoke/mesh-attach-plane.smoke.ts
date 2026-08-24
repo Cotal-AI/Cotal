@@ -211,10 +211,14 @@ const s3 = h3.attach();
 const r3 = await plane.establishAttach({ ...CALLER, uid: "e".repeat(26) }, { name: "worker-3", lifecycleUid: "y".repeat(26) }, s3);
 const ncCaller3: NatsConnection = await connect({ servers: `nats://127.0.0.1:${PORT}` });
 let end3: string | undefined;
+let close3 = false;
+let fault3: string | undefined;
 const rx3: Buffer[] = [];
 const rail3 = openSessionRail({
   nc: ncCaller3, grant: r3.grant, role: "caller",
   onData: (data) => { const p = decodeTerminalFrame(data); if (p.k === "data") rx3.push(Buffer.from(p.b, "base64")); else if (p.k === "end") end3 = p.reason; },
+  onClose: () => { close3 = true; },
+  onProtocolError: (reason) => { fault3 = reason; },
 });
 await ncCaller3.flush();
 rail3.send({ k: "ready" } satisfies TerminalFrame);
@@ -223,7 +227,7 @@ c("the caller is live (echo confirms the pty is alive before the kill)", await u
 // Kill the child DIRECTLY (bypass endForTarget + handle.stop) — the agent process exits on its own.
 if (h3.pid === undefined) throw new Error("the pty handle reported no pid; there is nothing to kill");
 process.kill(h3.pid, "SIGKILL");
-c("a natural pty exit surfaces `process-exit` to the live caller (NO zombie session)", await until(() => end3 === "process-exit"), { end3, handleStatus: h3.status() });
+c("a natural pty exit surfaces `process-exit` to the live caller (NO zombie session)", await until(() => end3 === "process-exit"), { end3, close3, fault3, rail: rail3.stats(), handleStatus: h3.status() });
 c("the plane drops the naturally-exited session", await until(() => plane.liveSessions === 0));
 await ncCaller3.close();
 
