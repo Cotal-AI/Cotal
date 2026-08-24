@@ -22,10 +22,10 @@
       "expectRed": "recovered Harness client reattaches the existing private session (#781)"
     },
     {
-      "name": "M3 make reconnect success terminal instead of resuming inbox delivery",
+      "name": "M3 attach the replacement but leave the broken client active",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "      if (!stopping && (agent.pendingWake() > 0 || wakeQueued)) void drive();",
-      "replace": "      /* mutant: leave pending mesh work stranded after recovery */",
+      "find": "      client = replacement;",
+      "replace": "      /* mutant: replacement is never made active */",
       "expectRed": "recovered seat redrives the unacknowledged stalled turn (#781)"
     }
   ]
