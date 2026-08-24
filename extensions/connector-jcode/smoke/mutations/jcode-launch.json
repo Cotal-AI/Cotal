@@ -23,6 +23,6 @@
       "find": "      env.COTAL_VARIANT = variant;",
       "replace": "      env.COTAL_VARIANT = \"low\";",
       "expectRed": "variant rides env as the reasoning effort"
-    },
+    }
   ]
 }
