@@ -17,7 +17,7 @@ import { stopOldHostingManagerIfPresent } from "../src/lib/delivery-proc.js";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
-const fakeManager = () => spawn(process.execPath, ["-e", "setInterval(()=>{}, 1000)"], { stdio: "ignore" });
+const fakeManager = () => spawn(process.execPath, ["-e", "setInterval(()=>{}, 1000)", "supervise"], { stdio: "ignore" });
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`); } };
 
