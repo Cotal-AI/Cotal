@@ -212,7 +212,12 @@ export async function stopPrivateTree(options: StopPrivateTreeOptions): Promise<
     for (const identity of captureLaunchProcesses(identityValue)) owned.set(identity.pid, identity);
   };
   refreshOwned();
-  if (!owned.has(launch.pid) || !processMatches(launch))
+  // A bridge that already died (provider stall, crash) or whose PID was reused is a legal teardown
+  // state: there is nothing safe to signal, and the record scan below still owns any survivors. The
+  // refusal is reserved for a live bridge matching its captured start token that does not carry the
+  // launch identity — broken launch wiring, where ownership cannot be proved for a process that
+  // must be stopped.
+  if (alive(launch.pid) && processMatches(launch) && !owned.has(launch.pid))
     throw new Error(`jcode connector: spawned Jcode bridge ${launch.pid} does not carry its launch-bound identity — refusing unsafe teardown`);
 
   if (processMatches(launch)) {

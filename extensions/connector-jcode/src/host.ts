@@ -540,6 +540,10 @@ export async function runJcodeHost(): Promise<void> {
     );
     if (bootPrompt) await drive(bootPrompt);
   } catch (error) {
+    // A shutdown requested mid-startup closes the client and rejects whatever startup step was in
+    // flight. That is the shutdown completing, not a startup failure: let its teardown own the
+    // process exit code instead of racing it to process.exit with a failure report.
+    if (stopping) return;
     startControl?.close();
     await closeServer(relayServer);
     // The refusal is only safe once the launch it abandons is provably dead: returning non-zero
