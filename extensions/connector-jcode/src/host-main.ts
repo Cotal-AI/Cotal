@@ -1,5 +1,5 @@
 import { runJcodeHost } from "./host.js";
-import { JcodeReadinessProviderRefusal } from "./startup-diagnostics.js";
+import { JcodeEffortRefusal, JcodeReadinessProviderRefusal } from "./startup-diagnostics.js";
 
 const STARTUP_FAILURE_CODES = new Set([
   "project_mcp_config",
@@ -20,7 +20,18 @@ function startupFailureCode(error: unknown): string {
   return typeof code === "string" && STARTUP_FAILURE_CODES.has(code) ? code : "unknown";
 }
 
+function renderEffortRefusal(error: unknown): string | undefined {
+  if (!(error instanceof JcodeEffortRefusal)) return undefined;
+  const ladder = error.acceptedLadder.length ? `; accepted tiers: ${error.acceptedLadder.join(", ")}` : "";
+  return `Jcode reasoning effort refused: requested tier ${JSON.stringify(error.requestedTier)}; effective model ${JSON.stringify(error.effectiveModel)}; provider code ${error.providerCode}${ladder}`;
+}
+
 runJcodeHost().catch((error) => {
+  const effortRefusal = renderEffortRefusal(error);
+  if (effortRefusal) {
+    process.stderr.write(`[cotal-jcode] fatal: ${effortRefusal}\n`);
+    process.exit(1);
+  }
   // The SDK appends captured child stderr to startup errors. A Jcode auth failure can therefore
   // carry sensitive provider material. Keep the SDK's fixed error code for diagnosis, but never
   // render the caught message, stack, or child bytes. The one narrow exception is a classified

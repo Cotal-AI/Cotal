@@ -1,0 +1,31 @@
+{
+  "command": "pnpm --filter @cotal-ai/connector-jcode build && pnpm smoke:jcode-host",
+  "progressPattern": "\u2713",
+  "minTicks": 12,
+  "mutations": [
+    {
+      "name": "Jcode host applies the requested reasoning effort to its session",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "        await client.setReasoningEffort(sessionId, config.variant);",
+      "replace": "        void sessionId;",
+      "expectRed": "requested variant reaches the session as its reasoning effort",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build"
+    },
+    {
+      "name": "Jcode host refuses the launch when the provider rejects the tier",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "        throw jcodeEffortRefusal(error, config.variant, model ?? \"(the provider default)\");",
+      "replace": "        void error;",
+      "expectRed": "a tier the provider refuses ends the launch",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build"
+    },
+    {
+      "name": "Jcode host redacts downstream effort rejection text",
+      "file": "extensions/connector-jcode/src/startup-diagnostics.ts",
+      "find": "      .filter((tier) => SAFE_EFFORT_TIERS.has(tier)),",
+      "replace": "      .map((tier) => tier === \"jcode-refusal-canary-3c5e9d77-do-not-print\" ? tier : tier),",
+      "expectRed": "downstream effort-refusal text never reaches stderr",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build"
+    }
+  ]
+}

@@ -112,17 +112,34 @@ quiet ambient from that host-owned queue; its shared optional `peek` argument is
 against the active provider, then the connector reads runtime identity back and refuses startup if
 it is not the requested model; a seat is never allowed to join under a model label it did not
 receive. The connector does not currently offer a Cotal model catalog because the Harness API's
-`listModels()` is session-scoped and provider-specific. If the mandatory readiness turn receives a
-provider `invalid_request` refusal for a model id or reasoning-effort value, the launch diagnostic
-names the provider error code (or `invalid_request` when none is supplied) and rejected value. Other provider response text remains scrubbed, so
-an external observer/UI can correct connector-visible input without exposing private harness output.
+`listModels()` is session-scoped and provider-specific.
+
+`--variant` is the session's **reasoning effort**, applied after the model and before the seat's
+first turn — so a seat never serves a turn at an effort nobody chose. A persona's `variant:` is the
+default and `--variant` overrides it, the same way `model:` and `--model` work:
+
+```bash
+cotal spawn --agent jcode --model gpt-5.6-sol --variant high
+```
+
+Which tiers exist depends on the provider **and** model. The connector does not carry a copy of
+those ladders: it passes the requested tier to Jcode, which validates it against the active model's
+ladder. A rejected tier, or a model with no reasoning-effort surface, ends the launch rather than
+quietly starting the seat at another effort. The external observer/UI receives only the requested
+tier, effective model, fixed `invalid_request` provider code, and an accepted-tier ladder when it
+can be safely parsed; arbitrary provider rejection text stays private. Omit `--variant` to keep
+Jcode's configured default.
+
+If the mandatory readiness turn receives a provider `invalid_request` refusal for a model id or
+reasoning-effort value, the launch diagnostic names only the provider error code and rejected
+value. Other provider response text remains scrubbed, so an external observer/UI can correct
+connector-visible input without exposing private harness output.
 
 The following fail loud before a new session is provisioned where the manager can preflight them,
 or at connector launch as a backstop:
 
-- **Resume / continuation:** a Cotal seat owns a new private Jcode instance. Reusing a session from
+- **Resume /continuation:** a Cotal seat owns a new private Jcode instance. Reusing a session from
   an operator or another seat would violate that ownership boundary.
-- **Variants:** Jcode reasoning effort is an API operation but has no Cotal variant mapping yet.
 - **Tool sharing:** Jcode resolves its MCP configuration from several global and project sources.
   The connector owns a private configuration containing only `cotal`, rather than claim a chosen
   subset can be safely merged.
