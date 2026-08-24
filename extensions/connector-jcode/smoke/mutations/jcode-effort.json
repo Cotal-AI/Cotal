@@ -19,10 +19,10 @@
     },
     {
       "name": "Jcode host redacts downstream effort rejection text",
-      "file": "extensions/connector-jcode/src/host-main.ts",
-      "find": "  return `Jcode reasoning effort refused: requested tier ${JSON.stringify(error.requestedTier)}; effective model ${JSON.stringify(error.effectiveModel)}; provider code ${error.providerCode}${ladder}`;",
-      "replace": "  return error.downstreamMessage;",
-      "expectRed": "invalid_request: provider rejected"
+      "file": "extensions/connector-jcode/src/startup-diagnostics.ts",
+      "find": "      .filter((tier) => SAFE_EFFORT_TIERS.has(tier)),",
+      "replace": "      .filter(() => true),",
+      "expectRed": "downstream effort-refusal text never reaches stderr"
     },
     {
       "name": "Jcode host retries the mandatory readiness proof after the first-turn MCP snapshot race",
