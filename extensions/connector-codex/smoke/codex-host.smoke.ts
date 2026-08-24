@@ -853,6 +853,43 @@ try {
     shutLaunchErr.slice(-300),
   );
 
+  // (10b-4) MESH READINESS. A live app-server and MCP tool surface do not make a Cotal peer ready:
+  // its endpoint must have completed every NATS bind and published initial presence too. The old
+  // fire-and-forget `agent.start()` printed ready and opened the interactive TUI immediately, so
+  // the person landed in a healthy-looking Codex whose first cotal_orientation said it was offline.
+  const meshFailLog = join(dir, "meshfail.log.jsonl");
+  const meshFail = spawn(TSX, [HOST_ENTRY], {
+    env: {
+      ...cleanEnv,
+      COTAL_SPACE: space,
+      COTAL_NAME: "meshfailpeer",
+      COTAL_SERVERS: deadServers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_CODEX_BIN: BIN,
+      COTAL_CODEX_HOME: dir,
+      COTAL_CODEX_TUI: "1",
+      FAKE_CODEX_LOG: meshFailLog,
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let meshFailErr = "";
+  meshFail.stderr!.setEncoding("utf8");
+  meshFail.stderr!.on("data", (d: string) => (meshFailErr += d));
+  const meshFailExit = await Promise.race([
+    new Promise<number | null>((r) => meshFail.on("exit", (code) => r(code))),
+    sleep(30_000).then(() => "timeout" as const),
+  ]);
+  const meshFailEntries = !existsSync(meshFailLog)
+    ? []
+    : readFileSync(meshFailLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as LogEntry);
+  check("the startup failure names mesh readiness and the unreachable broker", /mesh did not become ready/.test(meshFailErr) && meshFailErr.includes(deadServers), meshFailErr.slice(-500));
+  check("a Codex host with no mesh fails within the bounded readiness window", typeof meshFailExit === "number" && meshFailExit !== 0, {
+    meshFailExit,
+    err: meshFailErr.slice(-300),
+  });
+  check("an offline Codex host never announces ready", !/^\[cotal-codex\] ready —/m.test(meshFailErr), meshFailErr.slice(-500));
+  check("an offline Codex host never hands the terminal to a TUI", !meshFailEntries.some((entry) => entry.ev === "tui"));
+
   // (10c) the app-server capability token is written FAIL-CLOSED. The agent's home sits under
   // agent-writable workspace, so a sibling (or this agent's own command) can pre-plant
   // `remote-token` as a symlink; a plain write follows it, clobbering the target AND depositing

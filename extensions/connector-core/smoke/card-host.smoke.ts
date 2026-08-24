@@ -70,7 +70,7 @@ try {
 
   await peer.start();
   agent.start();
-  for (let i = 0; i < 50; i++) { if (agent.connected) break; await sleep(200); }
+  await agent.waitUntilConnected(10_000);
   check("agent connected", agent.connected === true);
 
   let seen: Record<string, unknown> | undefined;
