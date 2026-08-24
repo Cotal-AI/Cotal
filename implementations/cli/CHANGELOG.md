@@ -1,5 +1,88 @@
 # @cotal-ai/cli
 
+## 0.28.0
+
+### Minor Changes
+
+- 1f44ca6: Add an optional reverse-proxy-facing auth exchange listener with generated mesh discovery, credential-based public proof, isolated throttling, and `cotal up --user-auth` configuration.
+- 86f6b10: Remove the implicit `general` channel floor: undeclared access now grants nothing
+
+  An agent that declared no channel access used to fall back to `["general"]` for its
+  active read set and read ACL. That floor was applied in seven places — the provisioner,
+  the agent-file loader, the manager's spawn path, the CLI's `spawn`, the connector's
+  config resolver, and the endpoint's own channel list — so an agent with no frontmatter
+  silently joined a channel nobody had granted it.
+
+  The fallback also could not see the credentials it was guessing against. On a manifest
+  spawn the materialized persona carries no access frontmatter, so the connector fell back
+  to `general` while the minted creds allowed only the manifest's channels; the broker then
+  refused the subscription and the agent joined nothing, with no error naming the cause.
+  `COTAL_SUBSCRIBE` forwarding was added to paper over exactly this.
+
+  Undeclared read is now empty, matching the repo's no-fallbacks rule and the existing
+  default-deny on `allowPublish`. `Endpoint.send()` throws instead of defaulting to
+  `general` when the endpoint is on no concrete channel — a caller that never declared a
+  channel now gets a loud error rather than a message delivered somewhere it never asked
+  for.
+
+  The seeded personas change with it: `default_agent` no longer auto-subscribes to
+  `general` and no longer carries a wildcard post ACL (`allowPublish: [">"]` → `[]`,
+  default-deny), and the demo personas move to their own `welcome` channel. Channels are
+  implicit — created on first use — so no channel provisioning is required.
+
+  Breaking for anyone relying on the implicit floor: an agent that read `general` without
+  declaring it must now declare it.
+
+- a84cb62: Saving a persona now requires it to name the channels it reads. `saveAgentFile` refuses a
+  definition with no `subscribe`, `cotal personas new` takes a required `--subscribe` (pass
+  an empty value for an agent reachable only by direct message and anycast), and a persona
+  defined over the wire is created with an empty read set, since that path deliberately
+  accepts no policy from its caller, and records that the caller was never offered the
+  choice so a reader can tell it apart from a persona whose author chose no channels. Previously a saved persona with no read set inherited
+  whatever default was current, so a file could grant a channel its author never chose and a
+  later reader could not tell a deliberate silence from a forgotten field. An empty list is
+  written rather than filled in, so the two stay distinguishable.
+- 45db9f8: `cotal meshes add` can register a REMOTE mesh. `classifyJoinTarget` gains the `public-tls` reach: with recorded TLS strictness (`tlsRequired: true`) a hostname or public IP literal is registrable, because the TLS chain + hostname check — not the resolver — picks the peer; without it every verdict is unchanged, and RFC1918 stays refused in both modes. **The overlay consent gate no longer applies under required TLS.** `--allow-unencrypted-overlay` exists because an overlay address is only protected while its tunnel is up; with `--tls` (or a `tls://` scheme) the handshake proves the transport instead, so registering an overlay address now needs no flag, prompts for no acceptance, and records none — where previously every overlay registration demanded one. Without required TLS the gate is unchanged. TLS intent is now sourced (a `--tls` flag or a `tls://` scheme) and ENFORCED: the record carries it, the candidate probe honours it, and `meshes add tls://…` against a plaintext broker is a refusal rather than a silent plaintext dial. Remote user-auth registration is built but **fail-closed**: `cotal meshes add --mode user` refuses by default, naming the sequencing, because no connect path can consume a remote entry yet (the auth provider still refuses remote user-mode connects). It is enabled by the remote-exchange client work, which deletes both refusals together. Behind that fence the form is complete: `--mode user` takes its pinned trust supplied — `--user-auth-file <bundle.json>` or `--from <https://…/.well-known/cotal-mesh>` (fetched over HTTPS, pins displayed and confirmed) — verified against the pinned exchange's `/health` + `/jwks` and the broker's own auth-required refusal. Address classification canonicalizes EVERY legacy IPv4 spelling before any verdict. `inet_aton` — which the OS dialer and Node's resolver both accept — takes octal, hex and short forms, so `3232235786`, `0300.0250.01.012`, `0xC0A8010A`, `192.168.257` and `[::ffff:192.168.1.10]` are all the same private addresses that their dotted forms name, and each previously classified as a public hostname and registered while the dotted spelling was refused. They are now refused identically. **This changes verdicts for EVERY alternate spelling, not only private ranges:** a mapped loopback literal now classifies as `loopback`, a mapped overlay literal as `overlay` (so it answers to `--allow-unencrypted-overlay` and can carry a residual), and a mapped public literal as `public-tls` — each one previously fell through to whatever the unnormalized string happened to match. Anything that classified an address in a non-canonical spelling may therefore get a different, dotted-equivalent verdict now. Genuine hostnames are unaffected: a name that is not a valid IPv4 literal in any base (`09.0.0.1`, `999.1.1.1`, `1.2.3.4.5`) stays a hostname. The `--from` discovery fetch and the pinned-exchange probes refuse redirects instead of following them (a 302 can walk an HTTPS fetch onto plaintext or another host), require an `https://` endpoint, and perform no network I/O until the operator has consented to the address. Remote user entries record `userAuth.remote` and a 0600 `sentinelCredsPath` (the path, never the blob), and promote `endpoints.url` to pinned trust; `assertUserAuthInfo` fails loud on both.
+- 200a93f: Enable remote user-auth mesh registration now that managed agents can consume the recorded pinned exchange and sentinel through the remote bearer client. Remove the temporary development-only registration hatch and its fail-closed sequencing refusal.
+- 44738b2: A remotely-registered user mesh now connects with stock cotal end to end, including over a websocket broker address.
+
+  `cotal meshes add <space> --from <url>` already landed a complete remote trust
+  position (IdP pins, public exchange URL, sentinel creds); the auth provider now
+  CONSUMES it at connect when no local user-auth material exists: login session →
+  fresh IdP JWT → the pinned exchange's capless public face → bearer + the
+  registration-landed sentinel. Nothing is discovered at connect time, the
+  transport rule (HTTPS, loopback-literal http only, names get no exception) is
+  checked before the IdP round trip, and every refusal names its exact remedy.
+
+  Brokers published through an HTTPS edge are dialable as `wss://host/path`:
+  core picks the websocket transport by scheme at every dial site (endpoint,
+  reachability, probe), `hostPort` defaults ws/wss to the web's ports, and
+  `join-target` classifies `wss://` as TLS-bearing (the handshake is the
+  transport's own) while `ws://` gets exactly the plaintext fences `nats://`
+  gets. The canonical server string keeps the URL path — behind an edge the
+  path is part of the broker's address.
+
+### Patch Changes
+
+- b8ee849: Announce the operator-global seed-store payload write, and its deletions, on the provenance channel. `cotal up` and the built-in-connector reconcile re-seed `~/.config/cotal/seed/store/<version>`, which is a machine-wide action (shared by every space, project directory, and checkout on the machine, moved only by `$XDG_CONFIG_HOME`), yet the store write was previously silent. It now emits a `wrote operator-global seed store payload` provenance line naming the path on each materialization, so re-seeding from a non-released checkout reads as the machine-wide write it is. The idempotent reuse path stays silent.
+
+  The same reconcile also garbage-collects unreferenced store generations, and that was silent too. A new `removed` verb on the provenance channel names every directory the collector deletes, because a silent delete is worse than a silent write: the write at least leaves the thing it made, while the delete leaves nothing to notice. The announce rides stderr with no failure policy, so a closed stderr keeps the write and loses the line; that bound is stated at the call site and in the config reference, which also documents the isolation mechanism.
+
+  The config reference that documents all of this ships inside the connector as well as in the docs tree, so the regenerated documentation bundle carries the same text: an agent asking `cotal_docs` for the configuration page now gets the announce, the removal announce, and the stderr bound along with everything else that page already said.
+
+- 5db8641: Registration's exchange probe now pins the exchange's own issuer (`urn:cotal:auth:<space>`, derived from the bundle's `space`) instead of the IdP issuer. The auth daemon's `/health` reports its own token issuer, so pinning `userAuth.idp.issuer` made `cotal meshes add --from` refuse every bundle the daemon's public face generates. The user-bundle smoke pins the cli-side derivation against auth's `spaceIssuer` so the two cannot drift.
+- 653c6cd: Accept a path on ws:// and wss:// --server URLs in `meshes add`. The public face legitimately advertises a path-carrying websocket broker address (`wss://host/mesh-ws` behind a reverse proxy) and the dial layer already honours it, but checkServer refused it as non-bare — so the face's own generated bundle could not be registered. nats:// and tls:// URLs stay bare.
+- Updated dependencies [09b6a3b]
+- Updated dependencies [b8ee849]
+- Updated dependencies [9216d21]
+- Updated dependencies [86f6b10]
+- Updated dependencies [a84cb62]
+- Updated dependencies [45db9f8]
+- Updated dependencies [e377c7b]
+- Updated dependencies [44738b2]
+  - @cotal-ai/core@0.28.0
+  - @cotal-ai/workspace@0.28.0
+
 ## 0.27.0
 
 ### Patch Changes

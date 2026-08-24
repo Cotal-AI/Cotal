@@ -1,5 +1,49 @@
 # @cotal-ai/auth
 
+## 0.28.0
+
+### Minor Changes
+
+- 1f44ca6: Add an optional reverse-proxy-facing auth exchange listener with generated mesh discovery, credential-based public proof, isolated throttling, and `cotal up --user-auth` configuration.
+- 716f97c: The public exchange face's /.well-known/cotal-mesh bundle is now actually consumable by
+  `cotal meshes add --from`: the trust pins ride a `userAuth` arm (provider "cotal", idp pins,
+  pinned exchange endpoint) exactly as `checkUserBundle` records them, instead of the flat
+  idp/endpoints shape the consumer refused. New `--advertised-server <url>` on `cotal up` /
+  `auth-service` (with `--exchange-public-port`) sets the broker address the bundle advertises —
+  what participants dial through the reverse proxy (e.g. wss://…/mesh-ws) — instead of the
+  loopback/LAN address the callout itself dials.
+- e26f4d1: Allow an already-granted managed agent to refresh its bearer through a pinned HTTPS public exchange URL without local auth-service state or capability material.
+- 44738b2: A remotely-registered user mesh now connects with stock cotal end to end, including over a websocket broker address.
+
+  `cotal meshes add <space> --from <url>` already landed a complete remote trust
+  position (IdP pins, public exchange URL, sentinel creds); the auth provider now
+  CONSUMES it at connect when no local user-auth material exists: login session →
+  fresh IdP JWT → the pinned exchange's capless public face → bearer + the
+  registration-landed sentinel. Nothing is discovered at connect time, the
+  transport rule (HTTPS, loopback-literal http only, names get no exception) is
+  checked before the IdP round trip, and every refusal names its exact remedy.
+
+  Brokers published through an HTTPS edge are dialable as `wss://host/path`:
+  core picks the websocket transport by scheme at every dial site (endpoint,
+  reachability, probe), `hostPort` defaults ws/wss to the web's ports, and
+  `join-target` classifies `wss://` as TLS-bearing (the handshake is the
+  transport's own) while `ws://` gets exactly the plaintext fences `nats://`
+  gets. The canonical server string keeps the URL path — behind an edge the
+  path is part of the broker's address.
+
+### Patch Changes
+
+- Updated dependencies [09b6a3b]
+- Updated dependencies [b8ee849]
+- Updated dependencies [9216d21]
+- Updated dependencies [86f6b10]
+- Updated dependencies [a84cb62]
+- Updated dependencies [45db9f8]
+- Updated dependencies [e377c7b]
+- Updated dependencies [44738b2]
+  - @cotal-ai/core@0.28.0
+  - @cotal-ai/workspace@0.28.0
+
 ## 0.27.0
 
 ### Patch Changes
