@@ -22,21 +22,21 @@
       "file": "extensions/connector-jcode/src/host-main.ts",
       "find": "  return `Jcode reasoning effort refused: requested tier ${JSON.stringify(error.requestedTier)}; effective model ${JSON.stringify(error.effectiveModel)}; provider code ${error.providerCode}${ladder}`;",
       "replace": "  return error.downstreamMessage;",
-      "expectRed": "downstream effort-refusal text never reaches stderr"
+      "expectRed": "invalid_request: provider rejected"
     },
     {
       "name": "Jcode host retries the mandatory readiness proof after the first-turn MCP snapshot race",
       "file": "extensions/connector-jcode/src/host.ts",
       "find": "      if (!hasOrientation(readiness)) {\n        readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });\n      }",
       "replace": "      if (false) {\n        readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });\n      }",
-      "expectRed": "a first-turn MCP snapshot race is retried once"
+      "expectRed": "a first-turn MCP snapshot race recovers on one bounded retry"
     },
     {
       "name": "Jcode host still refuses a permanently absent cotal tool after the bounded retry",
       "file": "extensions/connector-jcode/src/host.ts",
       "find": "    if (!hasOrientation(readiness))\n      throw new Error(\n        \"jcode connector: the cotal MCP bridge did not become callable during its two mandatory readiness turns — refusing to join a mesh seat without its tool surface\",\n      );",
       "replace": "    if (false) throw new Error(\"mutant\");",
-      "expectRed": "a permanently absent cotal tool ends the launch"
+      "expectRed": "a permanently absent cotal tool gets exactly two readiness turns"
     }
   ]
 }

@@ -386,7 +386,13 @@ try {
       refusedErr.includes(`accepted tiers: ${acceptedLadder}`),
     refusedErr,
   );
-  check("downstream effort-refusal text never reaches stderr", !refusedErr.includes(effortCanary) && !refusedErr.includes("provider rejected xhigh"), refusedErr);
+  check(
+    "downstream effort-refusal text never reaches stderr",
+    !refusedErr.includes(effortCanary) &&
+      !refusedErr.includes("provider rejected xhigh") &&
+      !refusedErr.includes("invalid_request: provider rejected"),
+    refusedErr,
+  );
   check("a seat whose effort was refused never reaches the roster", !announced.has("refusedpeer"), [...announced]);
   const refusedEntries = existsSync(refusedLog) ? readFileSync(refusedLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev: string; frame?: { req?: string; no_reply?: boolean } }> : [];
   check(
