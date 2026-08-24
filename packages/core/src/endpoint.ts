@@ -4733,8 +4733,24 @@ export async function isReachable(
   opts: AuthOpts & { timeoutMs?: number } = {},
 ): Promise<boolean> {
   const timeoutMs = opts.timeoutMs ?? 1000;
-  if (!opts.creds && !opts.token && !opts.user && !opts.pass && !opts.tls)
+  if (!opts.creds && !opts.token && !opts.user && !opts.pass && !opts.tls) {
+    // A websocket broker rides an HTTPS edge: the plaintext INFO probe reads TLS bytes and
+    // declares a perfectly live broker down (which then blocks spawn/connect with a wrong
+    // remedy). Dial the ws transport credless instead — an auth broker REJECTING the bare
+    // connect still proves it is there, the same reading the authed branch below gives its
+    // catch. Costs one broker-side auth-error log line per probe, which the INFO probe was
+    // designed to avoid; on a ws broker there is no silent alternative.
+    if (wsServers(servers)) {
+      try {
+        const nc = await dialerFor(servers)({ servers, timeout: timeoutMs, reconnect: false, maxReconnectAttempts: 0 });
+        await nc.close();
+        return true;
+      } catch (e) {
+        return e instanceof AuthorizationError || e instanceof UserAuthenticationExpiredError;
+      }
+    }
     return tcpInfoProbe(servers, timeoutMs);
+  }
   // The credless branch above already owns its socket. This one reaches `connect()`, so it carries
   // the same orphaned-socket defect probeConnect did (#389) and takes the same gate: reach the
   // address on a socket we own first, and give `connect()` the remainder of the budget its own
