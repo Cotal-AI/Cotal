@@ -30,6 +30,7 @@
       "find": "  readinessTimeoutMs: 180_000,",
       "replace": "  readinessTimeoutMs: 1_000,",
       "command": "pnpm smoke:jcode-args",
+      "completionMarker": "self-registers as connector jcode",
       "expectRed": "declares a bounded three-minute bootstrap window"
     }
   ]
