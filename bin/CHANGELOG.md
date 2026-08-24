@@ -1,5 +1,47 @@
 # cotal-ai
 
+## 0.28.0
+
+### Minor Changes
+
+- 716f97c: The public exchange face's /.well-known/cotal-mesh bundle is now actually consumable by
+  `cotal meshes add --from`: the trust pins ride a `userAuth` arm (provider "cotal", idp pins,
+  pinned exchange endpoint) exactly as `checkUserBundle` records them, instead of the flat
+  idp/endpoints shape the consumer refused. New `--advertised-server <url>` on `cotal up` /
+  `auth-service` (with `--exchange-public-port`) sets the broker address the bundle advertises —
+  what participants dial through the reverse proxy (e.g. wss://…/mesh-ws) — instead of the
+  loopback/LAN address the callout itself dials.
+
+### Patch Changes
+
+- Updated dependencies [a71fbd3]
+- Updated dependencies [29c5268]
+- Updated dependencies [09b6a3b]
+- Updated dependencies [b8ee849]
+- Updated dependencies [1f44ca6]
+- Updated dependencies [4f7747f]
+- Updated dependencies [9216d21]
+- Updated dependencies [86f6b10]
+- Updated dependencies [7bc71ab]
+- Updated dependencies [a84cb62]
+- Updated dependencies [716f97c]
+- Updated dependencies [e26f4d1]
+- Updated dependencies [45db9f8]
+- Updated dependencies [200a93f]
+- Updated dependencies [e377c7b]
+- Updated dependencies [44738b2]
+- Updated dependencies [a999a98]
+- Updated dependencies [5db8641]
+- Updated dependencies [316f84d]
+- Updated dependencies [653c6cd]
+  - @cotal-ai/connector-core@0.28.0
+  - @cotal-ai/core@0.28.0
+  - @cotal-ai/cli@0.28.0
+  - @cotal-ai/workspace@0.28.0
+  - @cotal-ai/auth@0.28.0
+  - @cotal-ai/manager@0.28.0
+  - @cotal-ai/delivery@0.28.0
+
 ## 0.27.0
 
 ### Patch Changes

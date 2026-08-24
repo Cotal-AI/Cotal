@@ -1,5 +1,69 @@
 # @cotal-ai/manager
 
+## 0.28.0
+
+### Minor Changes
+
+- 86f6b10: Remove the implicit `general` channel floor: undeclared access now grants nothing
+
+  An agent that declared no channel access used to fall back to `["general"]` for its
+  active read set and read ACL. That floor was applied in seven places — the provisioner,
+  the agent-file loader, the manager's spawn path, the CLI's `spawn`, the connector's
+  config resolver, and the endpoint's own channel list — so an agent with no frontmatter
+  silently joined a channel nobody had granted it.
+
+  The fallback also could not see the credentials it was guessing against. On a manifest
+  spawn the materialized persona carries no access frontmatter, so the connector fell back
+  to `general` while the minted creds allowed only the manifest's channels; the broker then
+  refused the subscription and the agent joined nothing, with no error naming the cause.
+  `COTAL_SUBSCRIBE` forwarding was added to paper over exactly this.
+
+  Undeclared read is now empty, matching the repo's no-fallbacks rule and the existing
+  default-deny on `allowPublish`. `Endpoint.send()` throws instead of defaulting to
+  `general` when the endpoint is on no concrete channel — a caller that never declared a
+  channel now gets a loud error rather than a message delivered somewhere it never asked
+  for.
+
+  The seeded personas change with it: `default_agent` no longer auto-subscribes to
+  `general` and no longer carries a wildcard post ACL (`allowPublish: [">"]` → `[]`,
+  default-deny), and the demo personas move to their own `welcome` channel. Channels are
+  implicit — created on first use — so no channel provisioning is required.
+
+  Breaking for anyone relying on the implicit floor: an agent that read `general` without
+  declaring it must now declare it.
+
+- a84cb62: Saving a persona now requires it to name the channels it reads. `saveAgentFile` refuses a
+  definition with no `subscribe`, `cotal personas new` takes a required `--subscribe` (pass
+  an empty value for an agent reachable only by direct message and anycast), and a persona
+  defined over the wire is created with an empty read set, since that path deliberately
+  accepts no policy from its caller, and records that the caller was never offered the
+  choice so a reader can tell it apart from a persona whose author chose no channels. Previously a saved persona with no read set inherited
+  whatever default was current, so a file could grant a channel its author never chose and a
+  later reader could not tell a deliberate silence from a forgotten field. An empty list is
+  written rather than filled in, so the two stay distinguishable.
+
+### Patch Changes
+
+- e377c7b: The manager's session signing key now renews itself instead of expiring after a day. It was minted
+  once at startup with a flat 24-hour window and the same frozen anchor was returned for the life of
+  the process, so any manager with more than a day of uptime lost its session plane permanently: every
+  attach failed closed with "outside its validity window", and the only recovery was restarting the
+  manager, which kills every live session. Failing closed on an expired key is correct and is
+  unchanged; never renewing the key was the defect. The key now rotates once a third of its window has
+  elapsed, the previous key stays verifiable for a ten-minute overlap so an artifact signed just
+  before a swap is not orphaned, renewal is driven both by a timer and opportunistically before
+  signing so a stalled timer alone cannot reintroduce the outage, and the newest key is never dropped.
+- Updated dependencies [09b6a3b]
+- Updated dependencies [b8ee849]
+- Updated dependencies [9216d21]
+- Updated dependencies [86f6b10]
+- Updated dependencies [a84cb62]
+- Updated dependencies [45db9f8]
+- Updated dependencies [e377c7b]
+- Updated dependencies [44738b2]
+  - @cotal-ai/core@0.28.0
+  - @cotal-ai/workspace@0.28.0
+
 ## 0.27.0
 
 ### Patch Changes

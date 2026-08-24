@@ -1,5 +1,85 @@
 # @cotal-ai/core
 
+## 0.28.0
+
+### Minor Changes
+
+- 09b6a3b: Saving an agent file no longer drops a declared-empty channel policy. `subscribe`,
+  `allowSubscribe` and `allowPublish` are written whenever they are set, so a file that
+  declares an empty read set still says so after a save. They were previously emitted only
+  when non-empty, which meant loading and saving a persona rewrote an explicit empty list
+  into an absent field and lost the difference between "reads no channels" and "never said".
+  Defining a persona over an existing one loads and saves its file, so that path quietly
+  rewrote the stored policy of an agent whose content was being edited. An unset field is
+  still written as unset.
+- 86f6b10: Remove the implicit `general` channel floor: undeclared access now grants nothing
+
+  An agent that declared no channel access used to fall back to `["general"]` for its
+  active read set and read ACL. That floor was applied in seven places — the provisioner,
+  the agent-file loader, the manager's spawn path, the CLI's `spawn`, the connector's
+  config resolver, and the endpoint's own channel list — so an agent with no frontmatter
+  silently joined a channel nobody had granted it.
+
+  The fallback also could not see the credentials it was guessing against. On a manifest
+  spawn the materialized persona carries no access frontmatter, so the connector fell back
+  to `general` while the minted creds allowed only the manifest's channels; the broker then
+  refused the subscription and the agent joined nothing, with no error naming the cause.
+  `COTAL_SUBSCRIBE` forwarding was added to paper over exactly this.
+
+  Undeclared read is now empty, matching the repo's no-fallbacks rule and the existing
+  default-deny on `allowPublish`. `Endpoint.send()` throws instead of defaulting to
+  `general` when the endpoint is on no concrete channel — a caller that never declared a
+  channel now gets a loud error rather than a message delivered somewhere it never asked
+  for.
+
+  The seeded personas change with it: `default_agent` no longer auto-subscribes to
+  `general` and no longer carries a wildcard post ACL (`allowPublish: [">"]` → `[]`,
+  default-deny), and the demo personas move to their own `welcome` channel. Channels are
+  implicit — created on first use — so no channel provisioning is required.
+
+  Breaking for anyone relying on the implicit floor: an agent that read `general` without
+  declaring it must now declare it.
+
+- a84cb62: Saving a persona now requires it to name the channels it reads. `saveAgentFile` refuses a
+  definition with no `subscribe`, `cotal personas new` takes a required `--subscribe` (pass
+  an empty value for an agent reachable only by direct message and anycast), and a persona
+  defined over the wire is created with an empty read set, since that path deliberately
+  accepts no policy from its caller, and records that the caller was never offered the
+  choice so a reader can tell it apart from a persona whose author chose no channels. Previously a saved persona with no read set inherited
+  whatever default was current, so a file could grant a channel its author never chose and a
+  later reader could not tell a deliberate silence from a forgotten field. An empty list is
+  written rather than filled in, so the two stay distinguishable.
+- 44738b2: A remotely-registered user mesh now connects with stock cotal end to end, including over a websocket broker address.
+
+  `cotal meshes add <space> --from <url>` already landed a complete remote trust
+  position (IdP pins, public exchange URL, sentinel creds); the auth provider now
+  CONSUMES it at connect when no local user-auth material exists: login session →
+  fresh IdP JWT → the pinned exchange's capless public face → bearer + the
+  registration-landed sentinel. Nothing is discovered at connect time, the
+  transport rule (HTTPS, loopback-literal http only, names get no exception) is
+  checked before the IdP round trip, and every refusal names its exact remedy.
+
+  Brokers published through an HTTPS edge are dialable as `wss://host/path`:
+  core picks the websocket transport by scheme at every dial site (endpoint,
+  reachability, probe), `hostPort` defaults ws/wss to the web's ports, and
+  `join-target` classifies `wss://` as TLS-bearing (the handshake is the
+  transport's own) while `ws://` gets exactly the plaintext fences `nats://`
+  gets. The canonical server string keeps the URL path — behind an edge the
+  path is part of the broker's address.
+
+### Patch Changes
+
+- 9216d21: Reopen the derived membership-feed KV and rearm existing membership watches after an endpoint reconnect. The feed handle and watch iterator are connection-scoped: retaining either old epoch made membership reads fail with `closed connection` or left an existing dashboard watch silently stale while the endpoint's other planes had recovered. Replaced or stopped watches delete their ordered broker consumer rather than leaving it until the inactivity threshold; terminal self-heal records the predecessor identity and deletes it through the fresh connection; caller stop is awaitable, the dashboard waits before draining, and a stop concurrent with terminal close remains endpoint-owned until fresh-epoch deletion completes, while permanent endpoint shutdown still settles if no broker recovery is possible.
+- e377c7b: The manager's session signing key now renews itself instead of expiring after a day. It was minted
+  once at startup with a flat 24-hour window and the same frozen anchor was returned for the life of
+  the process, so any manager with more than a day of uptime lost its session plane permanently: every
+  attach failed closed with "outside its validity window", and the only recovery was restarting the
+  manager, which kills every live session. Failing closed on an expired key is correct and is
+  unchanged; never renewing the key was the defect. The key now rotates once a third of its window has
+  elapsed, the previous key stays verifiable for a ten-minute overlap so an artifact signed just
+  before a swap is not orphaned, renewal is driven both by a timer and opportunistically before
+  signing so a stalled timer alone cannot reintroduce the outage, and the newest key is never dropped.
+
 ## 0.27.0
 
 ## 0.26.0
