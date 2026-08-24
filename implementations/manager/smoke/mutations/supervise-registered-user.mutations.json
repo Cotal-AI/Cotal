@@ -1,0 +1,33 @@
+{
+  "suite": "implementations/manager/smoke/supervise-registered-user.smoke.ts",
+  "guard": "a registered remote user mesh derives its recorded broker but refuses supervision with the host-authority workaround, and a mismatched explicit broker never overrides the registry",
+  "command": "pnpm smoke:supervise-registered-user",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/supervise-registered-user.mutations.json",
+  "_note": "The smoke imports `../src/commands.js` directly for the derivation assertion and launches the source CLI through tsx for public-command wording. No build is required for mutations in manager/src/commands.ts.",
+  "mutations": [
+    {
+      "name": "registered user entries no longer take the remote-host authority refusal branch",
+      "file": "implementations/manager/src/commands.ts",
+      "find": "return { space: target.space, server: target.server, remoteUser: true };",
+      "replace": "return { space: target.space, server: target.server, remoteUser: false };",
+      "expectRed": "registered participant gets the honest host-required workaround, never the false down/up advice",
+      "cell": "registered participant gets the honest host-required workaround, never the false down/up advice"
+    },
+    {
+      "name": "an explicit server mismatch is accepted instead of refusing a split target",
+      "file": "implementations/manager/src/commands.ts",
+      "find": "if (v.server !== undefined && v.server !== target.server)\n        throw new Error(`--server ${v.server} does not match registered space \"${target.space}\" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);",
+      "replace": "if (false)\n        throw new Error(`--server ${v.server} does not match registered space \"${target.space}\" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);",
+      "expectRed": "explicit --server mismatch is named before remote-host refusal or dial",
+      "cell": "explicit --server mismatch is named before remote-host refusal or dial"
+    },
+    {
+      "name": "an absent registration falls through instead of emitting the host-or-join recovery",
+      "file": "implementations/manager/src/commands.ts",
+      "find": "if (isWorkspaceTargetError(error) && error.code === \"unknown-space\")\n      throw new Error(`neither hosting '${localSpace}' (no cotal up root here) nor registered to it (no meshes entry) — \\`cotal up\\` to host, or \\`cotal meshes add\\` to join`);",
+      "replace": "if (false)\n      throw new Error(`neither hosting '${localSpace}' (no cotal up root here) nor registered to it (no meshes entry) — \\`cotal up\\` to host, or \\`cotal meshes add\\` to join`);",
+      "expectRed": "neither hosting nor registered gets the exact host-or-join recovery",
+      "cell": "neither hosting nor registered gets the exact host-or-join recovery"
+    }
+  ]
+}

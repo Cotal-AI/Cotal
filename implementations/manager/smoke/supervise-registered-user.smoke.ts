@@ -5,7 +5,8 @@
  * marker from a participant.
  *
  * Stock 0.29.2 is intentionally RED: startup exits with the false reconciliation advice to run
- * `cotal down` then `cotal up`. PR-A flips this to a live registered-user manager startup.
+ * `cotal down` then `cotal up`. PR-A flips this to the honest host-required refusal: a registered
+ * participant may foreground-spawn, while detached/managed agents require the host.
  *
  * The fixture has a scratch COTAL_HOME and workspace root. It never reads or writes a real mesh.
  * Requires nats-server on PATH.
@@ -19,6 +20,7 @@ import { join, resolve } from "node:path";
 import { createSpaceAuth } from "@cotal-ai/core";
 import { hasUserAuthState, userAuthStateDir } from "@cotal-ai/workspace";
 import { persistRemoteUserEntry } from "../../cli/src/commands/meshes-add.js";
+import { superviseTarget } from "../src/commands.js";
 import { bootBroker } from "./_boot-broker.js";
 
 const repo = resolve(import.meta.dirname, "..", "..", "..");
@@ -83,6 +85,8 @@ try {
   const stateDir = userAuthStateDir(workspaceRoot, space);
   check("remote registration wrote participant state only", existsSync(stateDir));
   check("registered participant has no local cotal-up user-auth marker", hasUserAuthState(workspaceRoot, space) === false);
+  const resolved = superviseTarget({ space }, workspaceRoot);
+  check("registry fallback derives the registered server before the host-authority refusal", resolved.remoteUser && resolved.server === broker.servers, resolved);
 
   // This is the real public entry point. The short cap converts a regression that accidentally
   // starts a forever-running manager into a bounded red; the stock defect exits immediately.
@@ -100,10 +104,48 @@ try {
     output: output.slice(-1200),
   });
   check(
-    "stock refusal is the host-only marker reconciliation advice (the regression assertion PR-A flips)",
-    /mesh registry says space .*user-mode but the on-disk user-auth marker is missing/i.test(output) &&
-      /`cotal down` and re-`cotal up`/.test(output),
+    "registered participant gets the honest host-required workaround, never the false down/up advice",
+    /hosting space .* is required to supervise it today/i.test(output) &&
+      /foreground with `cotal spawn` \(without `--detach`\)/i.test(output) &&
+      /detached\/managed agents need the space host/i.test(output) &&
+      !/`cotal down` and re-`cotal up`/.test(output),
     output.slice(-1200),
+  );
+
+  // Explicit server may only repeat the registry broker; a supervisor must not borrow remote
+  // metadata from one mesh then dial another. This is a pre-network refusal, so the fake endpoint
+  // need not answer.
+  const mismatched = spawnSync(tsx, [cli, "supervise", "--space", space, "--server", "nats://127.0.0.1:1"], {
+    cwd: workspaceRoot,
+    env: childEnv(),
+    encoding: "utf8",
+    timeout: 15_000,
+  });
+  const mismatchOutput = `${mismatched.stdout ?? ""}${mismatched.stderr ?? ""}`;
+  console.log(`  raw mismatch rc: ${mismatched.status === null ? "null" : mismatched.status}`);
+  check(
+    "explicit --server mismatch is named before remote-host refusal or dial",
+    mismatched.status !== 0 && /does not match registered space/.test(mismatchOutput) && /refuses to use a different broker/.test(mismatchOutput),
+    mismatchOutput.slice(-1200),
+  );
+
+  // No marker and no entry is neither a hosting failure nor a remote authority failure. It gets
+  // the agreed two-path copy and does not mention a destructive down/up lifecycle.
+  const absent = `${space}-absent`;
+  const neither = spawnSync(tsx, [cli, "supervise", "--space", absent, "--server", broker.servers], {
+    cwd: workspaceRoot,
+    env: childEnv(),
+    encoding: "utf8",
+    timeout: 15_000,
+  });
+  const neitherOutput = `${neither.stdout ?? ""}${neither.stderr ?? ""}`;
+  console.log(`  raw neither-path rc: ${neither.status === null ? "null" : neither.status}`);
+  check(
+    "neither hosting nor registered gets the exact host-or-join recovery",
+    neither.status !== 0 &&
+      neitherOutput.includes(`neither hosting '${absent}' (no cotal up root here) nor registered to it (no meshes entry)`) &&
+      neitherOutput.includes("`cotal up` to host, or `cotal meshes add` to join"),
+    neitherOutput.slice(-1200),
   );
 } finally {
   await broker?.stop().catch(() => {});
