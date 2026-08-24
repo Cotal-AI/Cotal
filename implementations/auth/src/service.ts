@@ -85,6 +85,7 @@ import {
   ledgerAuthorizeGrant,
 } from "./ledger.js";
 import {
+  AUTH_PROVIDER_NAME,
   clearAuthServiceInfo,
   loadCalloutAuth,
   loadIssuer,
@@ -896,9 +897,10 @@ export function composeUserBundle(args: {
     server: args.server,
     tlsRequired: true,
     userAuth: {
-      // The same provider name the LOCAL arm records (provider.ts registers publicAuth with
-      // provider "cotal") — a remote entry must dispatch to the same provider a local one does.
-      provider: "cotal",
+      // The same provider name the LOCAL arm records — one exported constant rather than a
+      // literal repeated here and in provider.ts, so a remote entry cannot come to name a
+      // different provider than the one that serves it.
+      provider: AUTH_PROVIDER_NAME,
       idp: args.idp,
       endpoints: {
         url: "",

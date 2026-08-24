@@ -119,10 +119,13 @@ the pinned JWKS, issuer, and audience. An agent presents its spawn-time actor to
 match a fresh managed-ledger row. Elevated `view` exchanges stay loopback-only.
 
 The well-known response contains the IdP pins and the actual deny-all sentinel credential remote
-agents need before the bearer-driven auth callout. Treat it as bootstrap material: the sentinel
-cannot publish or subscribe, but consumers must still take the bundle only from the intended HTTPS
-origin and must verify TLS. `--exchange-trusted-proxy` opts into peer attribution by the **last**
-`X-Forwarded-For` hop; use it only when the listener is reachable solely through a proxy you control.
+agents need before the bearer-driven auth callout. The pins ride a `userAuth` arm that names the
+auth provider, and that name is the same one the local arm registers under — a document naming a
+different provider than the one serving it would register an entry nothing can resolve, so both read
+one constant. Treat it as bootstrap material: the sentinel cannot publish or subscribe, but
+consumers must still take the bundle only from the intended HTTPS origin and must verify TLS.
+`--exchange-trusted-proxy` opts into peer attribution by the **last** `X-Forwarded-For` hop; use it
+only when the listener is reachable solely through a proxy you control.
 Without it, forwarded headers are ignored and the socket address is the peer key. Public failure
 buckets are per-source and separate from loopback exchange budgets. The in-process LRU retains at
 most 1024 peer buckets: that bounds memory and isolates ordinary sources, but an attacker cycling
