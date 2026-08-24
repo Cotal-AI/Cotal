@@ -20,7 +20,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  authDir, findCotalRoot, getSpaceAuth, loadManagerInstanceIdentity, soleSpaceOf, workspaceSecretStore,
+  authDir, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, loadManagerInstanceIdentity, resolveMeshTarget, soleSpaceOf, workspaceSecretStore,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE,
 } from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
@@ -80,8 +80,61 @@ function recordManagerPid(root: string): () => void {
 
 /** The space to operate on: explicit `--space`, else this folder's `.cotal/auth` space, else the
  *  default — so a manually-run manager matches the folder's mesh instead of assuming the default. */
-function spaceFor(v: Values): string {
-  return v.space ?? soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE;
+function spaceFor(v: Values, root = findCotalRoot()): string {
+  return v.space ?? soleSpaceOf(authDir(root)) ?? DEFAULT_SPACE;
+}
+
+/**
+ * Resolve the public supervisor's target without ever recasting a registered participant as the
+ * hosting root. A local user-auth marker is the host proof; only when it is absent can a matching
+ * registry record contribute the remote broker address. An explicit `--server` may repeat that
+ * address, but never override it silently — a supervisor that accepted a mismatched dial would
+ * describe one mesh while attempting to control another.
+ *
+ * This intentionally stops BEFORE manager construction for registered remote user meshes. The
+ * current Manager is a host signer: it mints endpoint-service and provisioning credentials from
+ * `getSpaceAuth`. A participant's registry material has only a user bearer/sentinel, not that
+ * signer. Do not turn this into a partial startup that later fails on a broker permission error;
+ * the public command owns the honest, actionable refusal below.
+ */
+export function superviseTarget(v: Values, root = findCotalRoot()): { space: string; server: string; remoteUser: boolean } {
+  const localSpace = spaceFor(v, root);
+  if (hasUserAuthState(root, localSpace)) {
+    // Preserve the historical host path's missing/stale-registry diagnostics in Manager.start():
+    // a local marker proves this machine HOSTS the state, but not that its registry is healthy.
+    // When the record resolves, however, it is the broker authority and an explicit mismatch is
+    // rejected here before a process can describe one mesh while dialing another.
+    try {
+      const target = resolveMeshTarget(root, { space: localSpace });
+      if (v.server !== undefined && v.server !== target.server)
+        throw new Error(`--server ${v.server} does not match hosting space "${localSpace}" at ${target.server} - supervise refuses to split its local auth state from its broker`);
+      return { space: localSpace, server: target.server, remoteUser: false };
+    } catch (error) {
+      if (!isWorkspaceTargetError(error)) throw error;
+      return { space: localSpace, server: v.server ?? DEFAULT_SERVER, remoteUser: false };
+    }
+  }
+
+  try {
+    const target = resolveMeshTarget(root, { space: localSpace });
+    if (target.mode === "user" && target.userAuth?.remote === true) {
+      if (v.server !== undefined && v.server !== target.server)
+        throw new Error(`--server ${v.server} does not match registered space "${target.space}" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);
+      return { space: target.space, server: target.server, remoteUser: true };
+    }
+    // The marker is absent, but this is a local/static/open record or a malformed user entry. Let
+    // the normal manager validation retain its mode-specific diagnostics rather than rewording a
+    // state this helper has not proved is the registered-participant case.
+    if (v.server !== undefined && v.server !== target.server)
+      throw new Error(`--server ${v.server} does not match registered space "${target.space}" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);
+    return { space: target.space, server: target.server, remoteUser: false };
+  } catch (error) {
+    // `resolveMeshTarget(...,{space})` distinguishes every known registry fault. Only an absent
+    // record gets the host-or-join wording; a corrupt/ambiguous record remains its own loud error.
+    if (isWorkspaceTargetError(error) && error.code === "unknown-space")
+      throw new Error(`neither hosting '${localSpace}' (no cotal up root here) nor registered to it (no meshes entry) — \`cotal up\` to host, or \`cotal meshes add\` to join`);
+    throw error;
+  }
 }
 
 /** Run a manager daemon in this process (the long-lived supervisor), then block.
@@ -100,8 +153,21 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
   if (defaultRuntime === "auto" && v.runtime) {
     runtime = v.runtime as RuntimeMode;
   }
-  const space = spaceFor(v);
-  const server = v.server ?? DEFAULT_SERVER;
+  let target: { space: string; server: string; remoteUser: boolean };
+  try {
+    target = superviseTarget(v);
+  } catch (e) {
+    console.error(c.red(`✗ ${(e as Error).message}`));
+    process.exit(1);
+  }
+  const { space, server } = target;
+  if (target.remoteUser) {
+    console.error(c.red(
+      `✗ hosting space "${space}" is required to supervise it today - this machine is registered to the mesh at ${server} but does not hold the host's manager authority. ` +
+      `You can run agents in the foreground with \`cotal spawn\` (without \`--detach\`); detached/managed agents need the space host.`,
+    ));
+    process.exit(1);
+  }
   // Parse the roster + launch spec before touching the network — a malformed file should fail fast,
   // before the manager comes up or any agent is spawned.
   const roster = v.roster ? loadRoster(v.roster) : [];
