@@ -24,6 +24,14 @@
       "replace": "spec.name === \"cotal_inbox\" ? { scope: \"pull-only\" } : args,",
       "command": "pnpm smoke:jcode-host",
       "expectRed": "Jcode cotal_inbox peek:true leaves the returned message for the following normal read"
+    },
+    {
+      "name": "Jcode bridge rejects JSON-own proto key",
+      "file": "extensions/connector-jcode/src/mcp.ts",
+      "find": "if (frame.method === \"tools/call\" && Object.hasOwn(frame.params?.arguments ?? {}, \"__proto__\")) {",
+      "replace": "if (false) {",
+      "command": "pnpm smoke:jcode-host",
+      "expectRed": "Jcode cotal_inbox refuses JSON-own __proto__ without consuming the buffered message"
     }
   ]
 }
