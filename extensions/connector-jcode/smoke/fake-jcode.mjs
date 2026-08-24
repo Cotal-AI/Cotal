@@ -6,10 +6,16 @@ const logPath = process.env.FAKE_JCODE_LOG;
 const log = (entry) => {
   if (logPath) appendFileSync(logPath, JSON.stringify(entry) + "\n");
 };
-if (process.argv[2] !== "api-bridge") {
+if (process.argv.includes("--resume")) {
+  // The foreground client is an observer of the Harness API socket. It must be created while the
+  // mandatory readiness request is running, rather than leaving an operator at a blank terminal.
+  log({ ev: "tui", argv: process.argv.slice(2) });
+  process.on("SIGTERM", () => process.exit(0));
+  setInterval(() => {}, 1_000);
+} else if (process.argv[2] !== "api-bridge") {
   process.stderr.write(`fake-jcode: expected api-bridge, got ${process.argv.slice(2).join(" ")}\n`);
   process.exit(2);
-}
+} else {
 const at = process.argv.indexOf("--api-socket");
 const socketPath = at >= 0 ? process.argv[at + 1] : undefined;
 if (!socketPath) {
@@ -21,6 +27,7 @@ log({ ev: "argv", argv: process.argv.slice(2), env: Object.fromEntries(Object.en
 let attachedExisting;
 let createdFresh = false;
 let sessionWorkingDir;
+let orientationTurns = 0;
 const sessionStatePath = process.env.FAKE_JCODE_SESSION_STATE;
 const storedSession = () => {
   if (sessionStatePath && existsSync(sessionStatePath)) return JSON.parse(readFileSync(sessionStatePath, "utf8"));
@@ -83,7 +90,15 @@ const server = createServer((socket) => {
           reply({ ev: "runtime_info", session_id: frame.session_id, model: "fake-model", routes: [] });
           break;
         case "send_message":
-          if (frame.no_reply) {
+          if (process.env.FAKE_JCODE_READINESS_REFUSAL === "1" && !frame.no_reply && String(frame.content).includes("Call the cotal_orientation tool exactly once now")) {
+            event({
+              ev: "error",
+              session_id: frame.session_id,
+              v: 1,
+              code: "invalid_request",
+              message: JSON.stringify({ error: { code: "model_not_found", message: "model parameter rejected-model-id was refused by provider" } }),
+            });
+          } else if (frame.no_reply) {
             reply({ ev: "ok" });
           } else {
             event({ ev: "message_accepted", session_id: frame.session_id });
@@ -102,11 +117,17 @@ const server = createServer((socket) => {
               return;
             }
             setTimeout(() => {
-              if (String(frame.content).includes("cotal_orientation"))
-                event({ ev: "tool_done", session_id: frame.session_id, call_id: "orientation", name: "mcp__cotal__cotal_orientation", output: "ok" });
+              if (String(frame.content).includes("cotal_orientation")) {
+                const readyAfter = Number(process.env.FAKE_JCODE_ORIENTATION_DELAY_TURNS ?? "0");
+                orientationTurns++;
+                if (process.env.FAKE_JCODE_NEVER_ORIENTATION !== "1" && orientationTurns > readyAfter) {
+                  log({ ev: "orientation_done", turn: orientationTurns });
+                  event({ ev: "tool_done", session_id: frame.session_id, call_id: "orientation", name: "mcp__cotal__cotal_orientation", output: "ok" });
+                }
+              }
               event({ ev: "text_delta", session_id: frame.session_id, text: "fake reply" });
               event({ ev: "turn_done", session_id: frame.session_id });
-            }, 10);
+            }, Number(process.env.FAKE_JCODE_TURN_DELAY_MS ?? "10"));
           }
           break;
         default:
@@ -117,3 +138,4 @@ const server = createServer((socket) => {
 });
 server.listen(socketPath, () => log({ ev: "listening", socketPath }));
 process.on("SIGTERM", () => server.close(() => process.exit(0)));
+}

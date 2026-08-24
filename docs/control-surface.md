@@ -71,11 +71,12 @@ The name is the one actually allocated: a persona-derived collision is auto-numb
 (`reviewer`, then `reviewer-2`), while a hard-pinned `--name` that collides with a live
 agent is refused at accept, before anything is minted. The triple plus `goalId` let the
 caller follow progress (connector handoff, process launched, presence join) and reconcile
-later against the exact instance that accepted. Presence within the 30-second readiness
-window settles the goal `succeeded`; an early process exit is `failed`; the window passing
-with neither is `uncertain`, a bounded, durable outcome that a later `ps` or status read
-settles against the live roster. `uncertain` is a real terminal outcome, not an absence and
-not a silent hang. It carries the diagnosis of whoever owned the deadline: for a launch that
+later against the exact instance that accepted. Presence within the manager's default
+30-second readiness window, or a connector's declared bounded window, settles the goal
+`succeeded`; an early process exit is `failed`; the window passing with neither is `uncertain`,
+a bounded, durable outcome that a later `ps` or status read settles against the live roster.
+`uncertain` is a real terminal outcome, not an absence and not a silent hang. It carries the
+diagnosis of whoever owned the deadline: for a launch that
 names the agent and says to inspect it rather than re-issue, since re-issuing after a launch
 that in fact succeeded mints a duplicate. A committer that supplies no diagnosis falls back to
 "the success signal did not arrive within the readiness deadline". The agent's own eventual

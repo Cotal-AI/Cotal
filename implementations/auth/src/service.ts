@@ -85,6 +85,7 @@ import {
   ledgerAuthorizeGrant,
 } from "./ledger.js";
 import {
+  AUTH_PROVIDER_NAME,
   clearAuthServiceInfo,
   loadCalloutAuth,
   loadIssuer,
@@ -766,9 +767,20 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
     }
   }
   // Refused-exchange rate limit (probing protection): count only FAILURES, on THIS face's budget.
+  //
+  // The gate is evaluated here but NOT enforced here. Enforcing before the body was read meant a
+  // full bucket refused every request from that peer key, including ones carrying a valid IdP JWT
+  // or actor token - and on the public face the default peer key is the socket address, so in the
+  // reverse-proxy topology `run-a-mesh.md` recommends, every client shares one bucket. Thirty
+  // unauthenticated garbage POSTs then denied the public mint path for a rolling minute (#802).
+  //
+  // Throttling exists to slow PROBING, and a valid credential is not probing. So a throttled peer
+  // still gets its credential evaluated: if it is good, it mints; if it is bad, the refusal arms
+  // below answer 429 instead of the specific reason, because the reason is what makes probing
+  // cheap and withholding it is the whole point of the budget. Nothing that would have succeeded
+  // is refused.
   const peer = policy.peerKey(req);
-  if (policy.throttled(ctx, peer))
-    return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
+  const peerThrottled = policy.throttled(ctx, peer);
   const body = await readJsonBody(req);
   const { idpToken, actor, actorToken, owner, ttlSec, view } = body as {
     idpToken?: unknown;
@@ -824,6 +836,8 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
       policy.recordFailure(ctx, peer);
       const reason = e instanceof Error ? e.message : String(e);
       console.error(`auth-service: refused an agent exchange: ${reason}`);
+      if (peerThrottled)
+        return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
       return send(res, 401, { error: reason });
     }
   }
@@ -840,6 +854,8 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
     policy.recordFailure(ctx, peer);
     const reason = e instanceof Error ? e.message : String(e);
     console.error(`auth-service: refused an exchange: ${reason}`);
+    if (peerThrottled)
+      return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
     return send(res, 401, { error: reason });
   }
 }
@@ -881,9 +897,10 @@ export function composeUserBundle(args: {
     server: args.server,
     tlsRequired: true,
     userAuth: {
-      // The same provider name the LOCAL arm records (provider.ts registers publicAuth with
-      // provider "cotal") — a remote entry must dispatch to the same provider a local one does.
-      provider: "cotal",
+      // The same provider name the LOCAL arm records — one exported constant rather than a
+      // literal repeated here and in provider.ts, so a remote entry cannot come to name a
+      // different provider than the one that serves it.
+      provider: AUTH_PROVIDER_NAME,
       idp: args.idp,
       endpoints: {
         url: "",

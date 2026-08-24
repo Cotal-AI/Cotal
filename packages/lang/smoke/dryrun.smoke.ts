@@ -43,6 +43,16 @@ const SCRIPT = {
   checkpoints: { "approve-plan": { status: "resolved", value: true, by: "sim" } },
 } as const;
 
+/**
+ * What PROGRAM does under SCRIPT: spawn, spawn, turn, checkpoint, turn, sleep. Four kinds.
+ *
+ * Stated here rather than inline because two sections below compare one derived list against
+ * another, and a comparison between two lists that shrink together is true when both are empty. The
+ * number is what stops those comparisons from passing over a run that did nothing.
+ */
+const EFFECTS = 6;
+const KINDS = 4;
+
 // ---- 1) the report answers the questions a dry run exists to answer -----------------------------
 
 const realStart = Date.now();
@@ -108,6 +118,20 @@ const realMs = Date.now() - realStart;
     .map((e) => `${e.scope}/${e.kind}${e.name === "" ? "" : `:${e.name}`}#${e.occurrence}`);
   const planKeys = report.effects.map((e) => e.step);
 
+  // The floor and the two comparisons below catch DIFFERENT failures, and neither replaces the
+  // other. Empty `report.effects` alone and the comparisons go red at `{plan: 0, real: 6}` while the
+  // floor passes: that is reporter drift, the failure named at the top of this section, and the
+  // comparisons are the right instrument for it. Stop the run journalling and BOTH sides fall to
+  // zero together — `0 === 0` and `"[]" === "[]"` are true, and the comparisons see nothing at all.
+  // That second one is the floor's, and `report.agents` / `report.checkpoints` do not cover it: they
+  // are pinned above but built from the recorder's own arrays rather than from the journal.
+  const realKinds = new Set(real.journal.entries().map((e) => e.kind));
+  ok(
+    "the real run journalled every effect the program has, across all of its kinds",
+    realKeys.length === EFFECTS && realKinds.size === KINDS,
+    { keys: realKeys, kinds: [...realKinds] },
+  );
+
   ok("the plan has an entry for every effect the real run performed", planKeys.length === realKeys.length, {
     plan: planKeys.length,
     real: realKeys.length,
@@ -152,7 +176,10 @@ const realMs = Date.now() - realStart;
   const rec = new RecordingHandler(inner);
   ok("the recorder delegates the clock rather than owning one", rec.now() === inner.now());
   const r = await run(PROGRAM, { runId: "dry-run", handler: rec });
-  ok("a run through the recorder behaves identically", r.journal.entries().length === report.effects.length, {
+  // Same identity, same reason, and floored here rather than left to section 4: a floor one section
+  // away is an ordering someone can change, and a comment saying so is a claim rather than a term.
+  ok("a run through the recorder behaves identically",
+    r.journal.entries().length === report.effects.length && report.effects.length === EFFECTS, {
     through: r.journal.entries().length,
     plan: report.effects.length,
   });

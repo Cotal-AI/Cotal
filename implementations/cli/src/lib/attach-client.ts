@@ -65,6 +65,10 @@ const ALT_LEAVE_SEQ = "\x1b[?1049l"; // leave alt-screen — alt-scroll is inert
 const MOUSE_ON = "\x1b[?1002h\x1b[?1006h"; // button+drag tracking, SGR encoding
 const PAGE_UP = "\x1b[5~";
 const PAGE_DOWN = "\x1b[6~";
+/** Collapse a wheel burst to at most one page command per display frame. Each raw wheel report used
+ *  to become a separate session frame and TUI redraw; rapid scrolling could fill the 64-frame rail
+ *  before the caller returned credit, even though the operator only intended one continuous scroll. */
+const WHEEL_COALESCE_MS = 16;
 // Enter/leave the alternate screen: xterm `?1049`, plus the older `?1047`/`?47`.
 const ALT_ENTER = /\x1b\[\?(?:1049|1047|47)h/g;
 const ALT_LEAVE = /\x1b\[\?(?:1049|1047|47)l/g;
@@ -87,8 +91,9 @@ const lastIndexOfRe = (re: RegExp, s: string): number => {
 export interface TerminalTransport {
   /** Fires once the transport is connected and ready to carry the terminal. */
   onReady(cb: () => void): void;
-  /** Remote → local: terminal output bytes. */
-  onData(cb: (bytes: Buffer) => void): void;
+  /** Remote → local: terminal output bytes. The transport awaits an async consumer before returning
+   *  credit, so a slow local stdout applies real backpressure instead of acknowledging unread bytes. */
+  onData(cb: (bytes: Buffer) => void | Promise<void>): void;
   /** The session ended: `err` on a transport error (rejects), else a clean detach/close (resolves),
    *  with the peer's distinct end `reason` when it sent one. */
   onEnd(cb: (err?: Error, reason?: string) => void): void;
@@ -152,6 +157,23 @@ function swallowStdoutPipeErrors(): void {
   if (stdoutErrorSwallowed) return;
   stdoutErrorSwallowed = true;
   process.stdout.on("error", () => {});
+}
+
+/** Resolve when stdout accepted a write. A destroyed pipe is a terminal that no longer consumes, not
+ *  a reason to wedge the mesh rail forever; `error`/`close` therefore release the wait like `drain`. */
+function writeStdout(bytes: Buffer): void | Promise<void> {
+  if (process.stdout.write(bytes) || process.stdout.destroyed) return;
+  return new Promise<void>((resolve) => {
+    const done = (): void => {
+      process.stdout.off("drain", done);
+      process.stdout.off("error", done);
+      process.stdout.off("close", done);
+      resolve();
+    };
+    process.stdout.once("drain", done);
+    process.stdout.once("error", done);
+    process.stdout.once("close", done);
+  });
 }
 
 /**
@@ -239,6 +261,27 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold, 
     // into the agent by the NEXT session's resume. Cell O of `smoke:attach-stdin` is that window.
     let tookStdin = false;
     let mouseBuf = "";
+    let wheelDelta = 0;
+    let wheelTimer: ReturnType<typeof setTimeout> | undefined;
+    const flushWheel = (): void => {
+      if (wheelTimer) clearTimeout(wheelTimer);
+      wheelTimer = undefined;
+      const delta = wheelDelta;
+      wheelDelta = 0;
+      if (delta === 0) return;
+      transport.send(Buffer.from(delta > 0 ? PAGE_DOWN : PAGE_UP, "latin1"));
+    };
+    const clearWheel = (): void => {
+      if (wheelTimer) clearTimeout(wheelTimer);
+      wheelTimer = undefined;
+      wheelDelta = 0;
+    };
+    const queueWheel = (delta: number): void => {
+      wheelDelta = Math.max(-8, Math.min(8, wheelDelta + delta));
+      if (wheelTimer) return;
+      wheelTimer = setTimeout(flushWheel, WHEEL_COALESCE_MS);
+      wheelTimer.unref?.();
+    };
     // Carry the tail of the previous output frame so an alt-screen escape split across ws frames
     // (e.g. `ESC[?10` then `49h`) is still detected; 16 bytes covers these private-mode sequences.
     // Acting only on state *change* below makes re-scanning the carried bytes idempotent.
@@ -260,6 +303,7 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold, 
         // Leaving alt-screen mid-session: undo the mouse modes WE enabled so the terminal stops
         // reporting the wheel/clicks and native scrollback works again — don't wait for detach.
         mouseBuf = "";
+        clearWheel();
         if (process.stdout.isTTY) process.stdout.write(MOUSE_OFF);
       }
     };
@@ -268,6 +312,7 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold, 
       transport.resize(process.stdout.columns ?? 80, process.stdout.rows ?? 24);
     const onInput = (d: Buffer) => {
       if (d.length === 1 && d[0] === detach.byte) {
+        clearWheel();
         transport.close();
         return;
       }
@@ -277,8 +322,20 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold, 
         return;
       }
       // Full-screen child: rewrite wheel reports to PageUp/PageDown, pass everything else through.
+      // Wheel reports are coalesced ACROSS stdin reads; raw input flushes the pending wheel first so
+      // keyboard/mouse ordering remains exact.
       mouseBuf += d.toString("latin1");
       let out = "";
+      const flushOut = (): void => {
+        if (!out) return;
+        transport.send(Buffer.from(out, "latin1"));
+        out = "";
+      };
+      const appendRaw = (raw: string): void => {
+        if (!raw) return;
+        flushWheel();
+        out += raw;
+      };
       for (;;) {
         const i = mouseBuf.indexOf("\x1b[<");
         if (i === -1) {
@@ -287,11 +344,11 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold, 
           // Escape key and must forward at once (e.g. OpenCode's interrupt); the rarer `ESC`|`[<…`
           // split stays raw by design.
           const keep = mouseBuf.endsWith("\x1b[") ? 2 : 0;
-          out += mouseBuf.slice(0, mouseBuf.length - keep);
+          appendRaw(mouseBuf.slice(0, mouseBuf.length - keep));
           mouseBuf = mouseBuf.slice(mouseBuf.length - keep);
           break;
         }
-        out += mouseBuf.slice(0, i);
+        appendRaw(mouseBuf.slice(0, i));
         const rest = mouseBuf.slice(i);
         const m = SGR_MOUSE.exec(rest);
         if (!m) {
@@ -299,19 +356,22 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold, 
           // anything else can't become an SGR mouse report, so pass it straight through.
           if (/^\x1b\[<[\d;]*$/.test(rest)) mouseBuf = rest;
           else {
-            out += rest;
+            appendRaw(rest);
             mouseBuf = "";
           }
           break;
         }
         const btn = Number(m[1]);
-        if (btn & 0x40) out += btn & 1 ? PAGE_DOWN : PAGE_UP; // wheel: 64=up, 65=down
-        else out += m[0]; // other mouse (click/drag): forward raw so the TUI still gets it
+        if (btn & 0x40) {
+          flushOut();
+          queueWheel(btn & 1 ? 1 : -1); // wheel: 64=up, 65=down
+        } else appendRaw(m[0]); // other mouse (click/drag): forward raw so the TUI still gets it
         mouseBuf = rest.slice(m[0].length);
       }
-      if (out) transport.send(Buffer.from(out, "latin1"));
+      flushOut();
     };
     const cleanup = () => {
+      clearWheel();
       stdin.off("data", onInput);
       process.stdout.off("resize", sendResize);
       // Undo terminal modes the (still-running) agent's TUI enabled — it won't restore us on detach.
@@ -351,10 +411,10 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold, 
       process.stdout.on("resize", sendResize);
       stdin.on("data", onInput);
     });
-    transport.onData((data) => {
+    transport.onData(async (data) => {
       carried = true;
       trackAltScreen(data);
-      process.stdout.write(data);
+      await writeStdout(data);
     });
     transport.onEnd((err, reason) => {
       cleanup();
@@ -377,26 +437,45 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold, 
  * reason. No `127.0.0.1`, no bearer URL — the grant is holder-bound.
  */
 export function meshSessionTransport(nc: NatsConnection, grant: SessionGrant): TerminalTransport {
-  let onDataCb: ((bytes: Buffer) => void) | undefined;
+  let onDataCb: ((bytes: Buffer) => void | Promise<void>) | undefined;
   let onEndCb: ((err?: Error, reason?: string) => void) | undefined;
   let onReadyCb: (() => void) | undefined;
   let ended = false;
+  let repaintTimer: ReturnType<typeof setTimeout> | undefined;
+  let rail!: ReturnType<typeof openSessionRail>;
   const fireEnd = (err?: Error, reason?: string): void => {
     if (ended) return;
     ended = true;
+    if (repaintTimer) clearTimeout(repaintTimer);
+    repaintTimer = undefined;
     onEndCb?.(err, reason);
   };
+  // Schedule after the rail's async handler returns so the reverse data frame piggybacks the NEW
+  // receive watermark, including the drop notice itself. That ack reopens the serving window before
+  // the repeat `ready` asks for a fresh canonical screen snapshot.
+  const requestRepaint = (): void => {
+    if (ended || repaintTimer) return;
+    repaintTimer = setTimeout(() => {
+      repaintTimer = undefined;
+      if (ended) return;
+      try { rail.send({ k: "ready" }); } catch { /* broken/full: the rail fault path ends the session */ }
+    }, 0);
+    repaintTimer.unref?.();
+  };
 
-  const rail = openSessionRail({
+  rail = openSessionRail({
     nc,
     grant,
     role: "caller",
-    onData: (data) => {
+    onData: async (data) => {
       let frame;
       try { frame = decodeTerminalFrame(data); } catch { return; } // garbled: the rail already surfaced it
-      if (frame.k === "data") onDataCb?.(Buffer.from(terminalFrameBytes(frame)));
+      if (frame.k === "data") await onDataCb?.(Buffer.from(terminalFrameBytes(frame)));
       else if (frame.k === "end") fireEnd(undefined, frame.reason);
-      else if (frame.k === "drop") onDataCb?.(Buffer.from(`\r\n[cotal: ${frame.bytes} bytes dropped - backpressure]\r\n`));
+      else if (frame.k === "drop") {
+        await onDataCb?.(Buffer.from(`\r\n[cotal: ${frame.bytes} bytes dropped - backpressure]\r\n`));
+        requestRepaint();
+      }
     },
     onClose: () => fireEnd(undefined, "peer-closed"),
     // The fault NAME rides alongside the error. It used to live only inside the message, where the

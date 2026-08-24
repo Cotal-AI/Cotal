@@ -58,6 +58,15 @@ try {
   const evictor = await mintConnectionEvictorCreds(auth, newIdentity());
 
   const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+  // The CONNECTOR SEED STORE lives under `globalConfigDir()`, so it is the operator's real
+  // `~/.config/cotal` unless XDG_CONFIG_HOME says otherwise. Every `cotal` command here — the
+  // delivery daemon and each `doctor auth` — runs the seed reconcile, which REFUSES outright when
+  // the store's generation is newer than the binary being run. On a box whose store was stamped by
+  // a later release than the tip under test, three cells red with "this cotal X is older than the
+  // seed store's generation Y", which looks exactly like a behaviour red and is not one. Isolated,
+  // the suite grades the code and nothing else.
+  process.env.XDG_CONFIG_HOME = join(dir, "xdg");
+  mkdirSync(process.env.XDG_CONFIG_HOME, { recursive: true });
   writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
   const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
   // Owned, so a SIGNALLED run takes the broker and its store dir with it. `cleanups` drains in a

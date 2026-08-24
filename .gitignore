@@ -2,6 +2,8 @@ node_modules/
 .pnpm-store/
 dist/
 .cotal/
+# pi-CLI task transcripts: per-developer working state, never committed
+.pi/
 *.log
 .DS_Store
 remotion/out/

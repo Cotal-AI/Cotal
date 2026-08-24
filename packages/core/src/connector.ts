@@ -214,6 +214,15 @@ export interface Connector extends Extension {
   /** Whether this connector can honor {@link LaunchOpts.variant}. Default-deny so a variant request
    *  fails before provisioning side effects in the manager. */
   readonly supportsModelVariant?: boolean;
+  /**
+   * Connector-specific upper bound for reaching mesh presence after its process is launched.
+   *
+   * The manager's generic readiness window applies when absent. A connector whose documented
+   * bootstrap legitimately exceeds that generic window must declare a positive safe integer here,
+   * so a live slow boot is not terminalized `uncertain` before it can join. This is a bounded wait,
+   * not an application-health promise: presence still means only that the seat joined the mesh.
+   */
+  readonly readinessTimeoutMs?: number;
   /** One short clause telling the operator what to expect on a FOREGROUND spawn, appended to the
    *  "spawning <name> on the mesh" line. What happens next differs per harness — one opens on an
    *  interactive gate, another paints a full-screen UI after a pause — and a hint naming the wrong

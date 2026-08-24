@@ -19,7 +19,12 @@ export const jcodeConnector: Connector = {
   kind: "connector",
   name: "jcode",
   requires: ["jcode"],
-  launchHint: "starting Jcode and joining the mesh",
+  // Jcode may download model material, bring up its MCP bridge, then run a provider-backed
+  // cotal_orientation turn before it joins. A generic 30s presence window is therefore not a
+  // verdict for this connector; keep the manager's wait bounded but long enough for that required
+  // bootstrap sequence (#827).
+  readinessTimeoutMs: 180_000,
+  launchHint: "starting Jcode and joining the mesh (first boot can take several minutes)",
 
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (process.platform === "win32")
