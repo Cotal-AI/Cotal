@@ -68,7 +68,15 @@ const server = createServer((socket) => {
           reply({ ev: "runtime_info", session_id: frame.session_id, model: "fake-model", routes: [] });
           break;
         case "send_message":
-          if (frame.no_reply) {
+          if (process.env.FAKE_JCODE_READINESS_REFUSAL === "1" && !frame.no_reply && String(frame.content).includes("Call the cotal_orientation tool exactly once now")) {
+            event({
+              ev: "error",
+              session_id: frame.session_id,
+              v: 1,
+              code: "invalid_request",
+              message: JSON.stringify({ error: { code: "model_not_found", message: "model parameter rejected-model-id was refused by provider" } }),
+            });
+          } else if (frame.no_reply) {
             reply({ ev: "ok" });
           } else {
             event({ ev: "message_accepted", session_id: frame.session_id });

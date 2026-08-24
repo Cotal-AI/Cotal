@@ -518,6 +518,9 @@ export interface SpawnHooks {
   onAccepted?: (allocated: { name: string; identity: Identity; lifecycleUid: string; agentTriple: { owner: string; actor: string; uid: string } }) => Promise<void> | void;
   /** Fires once the child process has been launched (the "launched" progress edge). */
   onLaunched?: () => void;
+  /** Fires once the connector has supplied the exact bounded readiness window for this launch,
+   * before the process starts. The action goal records that same value at acceptance. */
+  onReadinessWindow?: (readinessTimeoutMs: number) => Promise<void> | void;
   /** Fires at the readiness verdict (presence join → succeeded / process exit → failed / window
    *  elapsed → uncertain), carrying the succeeded reply data — the async serve body commits the goal
    *  terminal + emits the final progress event here. Awaited, but the caller swallows its own errors
@@ -3277,6 +3280,10 @@ export class Manager {
       return { ok: false, error: (e as Error).message };
     }
 
+    const readinessTimeoutMs = connector.readinessTimeoutMs ?? this.readinessTimeoutMs;
+    if (!Number.isSafeInteger(readinessTimeoutMs) || readinessTimeoutMs <= 0)
+      return { ok: false, error: `connector ${connector.name} declares invalid readinessTimeoutMs ${JSON.stringify(connector.readinessTimeoutMs)}; expected a positive safe integer` };
+
     // Capacity check first (cheap, fail-fast). Everything from here to the reserve below is
     // SYNCHRONOUS (existsSync / registry / accessSync / readFileSync — no await), so the gate stays
     // atomic: the capacity snapshot and the reserve land in one tick (P4a/P4c), and two concurrent
@@ -3526,6 +3533,7 @@ export class Manager {
         );
       }
       if (events) allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })];
+      await hooks?.onReadinessWindow?.(readinessTimeoutMs);
       await hooks?.onAccepted?.({ name, identity, lifecycleUid, agentTriple });
       // In auth mode, mint the agent's creds from the space signing key and write them where the
       // spawned session reads them (COTAL_CREDS path). Open mesh → no creds. Scope = the resolved
@@ -3728,7 +3736,7 @@ export class Manager {
       // (presence) → started, the child to exit → failed (with its last output; already reaped), or
       // neither in time → uncertain. `✓ started` therefore means "it joined", never just "a process
       // launched".
-      const readiness = await this.awaitReadiness(managed);
+      const readiness = await this.awaitReadiness(managed, readinessTimeoutMs);
       // Deliberately stopped mid-launch: reaped by onExit, and the despawn/stop path owns the
       // goal terminal. Return BEFORE the failed/uncertain arms so this emits no competing
       // outcome and does not re-arm an exit watcher on an agent already gone.
@@ -4178,6 +4186,10 @@ export class Manager {
         if (adoptedSeed === undefined)
           console.error(`! resume ${entry.name}: the adopted credential carries no readable nkey seed - the manager cannot renew it (it dies loud at its exp)`);
       }
+      const connector = await this.resolveConnector(entry.launch.connector);
+      const readinessTimeoutMs = connector.readinessTimeoutMs ?? this.readinessTimeoutMs;
+      if (!Number.isSafeInteger(readinessTimeoutMs) || readinessTimeoutMs <= 0)
+        return { ok: false, error: `connector ${connector.name} declares invalid readinessTimeoutMs ${JSON.stringify(connector.readinessTimeoutMs)}; expected a positive safe integer` };
       const handle = this.runtime.spawn(entry.name, prepared.spec, entry.launch.cwd);
       const managed: ManagedAgent = {
         name: entry.name,
@@ -4222,7 +4234,7 @@ export class Manager {
       };
       this.agents.set(entry.name, managed);
       if (this.resumeAttemptId) this.resumedAgentNames.add(entry.name);
-      const readiness = await this.awaitReadiness(managed);
+      const readiness = await this.awaitReadiness(managed, readinessTimeoutMs);
       if (!readiness.ok && !readiness.uncertain) return { ok: false, error: readiness.detail };
       if (!readiness.ok) {
         this.watchExit(managed);
@@ -4289,7 +4301,7 @@ export class Manager {
    *  `"presence"` event is only a wake; the roster is re-read as the source of truth (subscribe-then-check
    *  catches a join/exit that landed before we subscribed). Runtimes that stream no exit signal (external surfaces,
    *  whose `attach()` throws) race presence-vs-backstop only — better than the old "assume up". */
-  private async awaitReadiness(a: ManagedAgent): Promise<{ ok: true } | { ok: false; uncertain?: boolean; deliberate?: boolean; detail: string }> {
+  private async awaitReadiness(a: ManagedAgent, readinessTimeoutMs: number): Promise<{ ok: true } | { ok: false; uncertain?: boolean; deliberate?: boolean; detail: string }> {
     let session: AttachSession | undefined;
     try {
       session = a.handle.attach();
@@ -4382,9 +4394,9 @@ export class Manager {
           finish({
             ok: false,
             uncertain: true,
-            detail: `${a.name} (${a.id}): launch status uncertain - no process exit and no mesh presence within ${Math.round(this.readinessTimeoutMs / 1000)}s; it may still be booting or stuck before connector startup. Inspect with \`cotal attach ${a.name}\` / \`cotal ps\`, or stop it to clean up.`,
+            detail: `${a.name} (${a.id}): launch status uncertain - no process exit and no mesh presence within ${Math.round(readinessTimeoutMs / 1000)}s; it may still be booting or stuck before connector startup. Inspect with \`cotal attach ${a.name}\` / \`cotal ps\`; do not stop it solely because this bounded wait elapsed.`,
           }),
-        this.readinessTimeoutMs,
+        readinessTimeoutMs,
       );
       unsubExit = s ? s.onExit(onExit) : (): void => {};
       this.ep.on("presence", onPresence);
@@ -5247,6 +5259,7 @@ export class Manager {
     let rejectAccept!: (e: unknown) => void;
     const acceptP = new Promise<SpawnAcceptance>((res, rej) => { resolveAccept = res; rejectAccept = rej; });
     let acceptance: SpawnAcceptance | undefined;
+    let readinessTimeoutMs = this.readinessTimeoutMs;
     // H1: set the instant the terminal path is ENTERED, not when it succeeds — the post-accept
     // fallback below must fire only when `onOutcome` never ran at all, never as a second attempt
     // behind a commit that threw.
@@ -5366,7 +5379,7 @@ export class Manager {
           requestId: goalId,
           sourceSeq: 0,
           acceptedAt,
-          readinessDeadlineMs: this.readinessTimeoutMs,
+          readinessDeadlineMs: readinessTimeoutMs,
         });
         acceptance = { name, owner: agentTriple.owner, actor: agentTriple.actor, uid: agentTriple.uid, goalId, fingerprint, executor };
         this.goalAcceptances.set(goalId, acceptance);
@@ -5375,6 +5388,7 @@ export class Manager {
         this.emitGoalProgress(ref, epoch, { phase: "handoff" });
       },
       onLaunched: () => this.emitGoalProgress(ref, epoch, { phase: "launched" }),
+      onReadinessWindow: (value) => { readinessTimeoutMs = value; },
       onOutcome,
       // Claim the terminal WITHOUT committing one: the despawn/stop that ended this launch owns
       // it and commits `cancel`. This only stops the non-ok reply below from manufacturing a

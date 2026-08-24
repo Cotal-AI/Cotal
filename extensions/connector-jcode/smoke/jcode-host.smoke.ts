@@ -139,6 +139,58 @@ try {
   blocked.stderr?.on("data", (chunk: Buffer) => (blockedErr += chunk.toString()));
   await Promise.race([once(blocked, "exit"), sleep(10_000)]);
   check("project MCP config is refused rather than overlaid", blocked.exitCode !== 0 && /Jcode host startup failed \(project_mcp_config\)/.test(blockedErr), blockedErr);
+
+  // The readiness turn is a provider call. A refusal there used to be collapsed to `(unknown)`,
+  // forcing an external observer/UI to inspect private Jcode logs for the connector-originated
+  // provider code and rejected model parameter (#828). Drive the exact event the SDK's `run()`
+  // turns into HarnessError and assert the bounded public diagnostic, not private child text.
+  rmSync(join(root, ".mcp.json"), { force: true });
+  const refusalLog = join(root, "readiness-refusal.jsonl");
+  const refusal = spawn(tsx, [host], {
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: refusalLog,
+      FAKE_JCODE_READINESS_REFUSAL: "1",
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "readinessrefusal",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_CONTROL_SOCKET: join(root, "refused-control.sock"),
+      COTAL_CONTROL_TOKEN: "refused-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let refusalErr = "";
+  refusal.stderr?.on("data", (chunk: Buffer) => (refusalErr += chunk.toString()));
+  await waitFor("provider refusal readiness request", () => {
+    if (!existsSync(refusalLog)) return undefined;
+    return readFileSync(refusalLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).find(
+      (entry: { ev?: string; frame?: { req?: string; content?: string } }) =>
+        entry.ev === "request" && entry.frame?.req === "send_message" && entry.frame.content?.includes("cotal_orientation"),
+    );
+  });
+  await waitFor("provider refusal host exit", () => refusal.exitCode === null ? undefined : refusal.exitCode, 20_000);
+  check(
+    "provider readiness refusal names its code and rejected model parameter",
+    refusal.exitCode === 1 && /model_not_found/.test(refusalErr) && /rejected-model-id/.test(refusalErr),
+    {
+      exitCode: refusal.exitCode,
+      signalCode: refusal.signalCode,
+      stderr: refusalErr,
+      fakeEvents: existsSync(refusalLog) ? readFileSync(refusalLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [],
+    },
+  );
+  check(
+    "provider readiness refusal stays scrubbed beyond the classified fields",
+    !refusalErr.includes("was refused by provider"),
+    refusalErr,
+  );
   console.log(`\nJCODE HOST SMOKE PASSED (${pass} checks)`);
 } finally {
   if (child && child.exitCode === null) child.kill("SIGKILL");
