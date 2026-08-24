@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { createServer } from "node:net";
 
@@ -6,6 +7,20 @@ const logPath = process.env.FAKE_JCODE_LOG;
 const log = (entry) => {
   if (logPath) appendFileSync(logPath, JSON.stringify(entry) + "\n");
 };
+if (process.argv[2] === "serve") {
+  // Stand-in for the real `jcode serve` daemon: setsid-detached from its api-bridge parent, owner
+  // of the connector's MCP child, and it keeps executing after the bridge dies. It never registers
+  // in servers.json — the measured miss (#839) that leaves the SDK's registry-keyed daemon stop
+  // with nothing to signal.
+  const mcp = spawn(process.execPath, [process.argv[1], "mcp"], { stdio: "ignore" });
+  log({ ev: "daemon", pid: process.pid, mcp: mcp.pid });
+  setInterval(() => {}, 1000);
+  await new Promise(() => {});
+}
+if (process.argv[2] === "mcp") {
+  setInterval(() => {}, 1000);
+  await new Promise(() => {});
+}
 if (process.argv[2] !== "api-bridge") {
   process.stderr.write(`fake-jcode: expected api-bridge, got ${process.argv.slice(2).join(" ")}\n`);
   process.exit(2);
@@ -17,6 +32,14 @@ if (!socketPath) {
   process.exit(2);
 }
 log({ ev: "argv", argv: process.argv.slice(2), env: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("COTAL_") || key.startsWith("JCODE_"))) });
+
+if (process.env.FAKE_JCODE_DAEMON === "1") {
+  // Mirror the real topology: the bridge spawns the daemon into its own session, so no signal
+  // aimed at the bridge (or its group) can reach it, and the bridge's own exit leaves it running.
+  const daemon = spawn(process.execPath, [process.argv[1], "serve"], { detached: true, stdio: "ignore" });
+  daemon.unref();
+  log({ ev: "daemon_spawned", pid: daemon.pid });
+}
 
 let attachedExisting;
 let createdFresh = false;
@@ -73,7 +96,7 @@ const server = createServer((socket) => {
           } else {
             event({ ev: "message_accepted", session_id: frame.session_id });
             setTimeout(() => {
-              if (String(frame.content).includes("cotal_orientation"))
+              if (String(frame.content).includes("cotal_orientation") && process.env.FAKE_JCODE_FAIL_READINESS !== "1")
                 event({ ev: "tool_done", session_id: frame.session_id, call_id: "orientation", name: "mcp__cotal__cotal_orientation", output: "ok" });
               event({ ev: "text_delta", session_id: frame.session_id, text: "fake reply" });
               event({ ev: "turn_done", session_id: frame.session_id });
