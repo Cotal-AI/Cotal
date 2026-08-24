@@ -38,6 +38,7 @@ import {
   agentSecretFilePaths,
   agentSentinelCredsKey,
   authDir,
+  homeCotalDir,
   credsFlag,
   defaultAgentOverride,
   defaultAgentType,
@@ -58,6 +59,7 @@ import {
   workspaceSecretStore,
   type MeshTarget,
 } from "@cotal-ai/workspace";
+import { requireIdpSession } from "@cotal-ai/auth";
 import { c } from "../ui.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
@@ -431,8 +433,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // connector (COTAL_SUBSCRIBE / COTAL_ALLOW_*) so the session's runtime read/post set matches its
   // credentials. One source, so a `--subscribe` override can't land in the creds yet be lost at
   // runtime (the connector would otherwise read only the persona file / fall back to `general`).
-  const subscribe = splitFlag(values.subscribe) ?? def.subscribe;
-  const allowSubscribe = splitFlag(values["allow-subscribe"]) ?? def.allowSubscribe ?? subscribe;
+  let subscribe = splitFlag(values.subscribe) ?? def.subscribe;
+  let allowSubscribe = splitFlag(values["allow-subscribe"]) ?? def.allowSubscribe ?? subscribe;
   let allowPublish = splitFlag(values["allow-publish"]) ?? def.allowPublish;
   // The AG-UI event plane, refused HERE for the same reason the manager refuses it before
   // provisioning: a connector that cannot emit must stop the launch while there is still nothing to
@@ -442,7 +444,30 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error(c.red(`\u2717 connector "${connector.name}" does not publish an AG-UI event plane, but --events was requested`));
     process.exit(1);
   }
-  if (target.mode === "user") {
+  // A REMOTE user mesh (registered with `meshes add --from`) that advertises a provisioning
+  // endpoint: the mesh grants the row and pre-creates the durables inside the owner's envelope,
+  // because the material to do that locally — the space's owner secret and account signer — only
+  // exists where the mesh runs. Checked BEFORE the local user branch, whose first act would be to
+  // ask for exactly that absent material and refuse.
+  const remoteProvisioningUrl = target.mode === "user" && target.userAuth?.remote
+    ? target.userAuth.endpoints?.agentProvisioningUrl
+    : undefined;
+  if (target.mode === "user" && target.userAuth?.remote && !remoteProvisioningUrl) {
+    console.error(c.red(`✗ mesh "${target.space}" runs elsewhere and advertises no agent-provisioning endpoint, so agents cannot be provisioned from this machine`));
+    console.error(c.dim(`  a user-mode agent's credentials are granted where the mesh's signer lives; ask the mesh operator to advertise one (\`cotal up --agent-provisioning-url …\`), or run the agent there`));
+    process.exit(1);
+  }
+  if (remoteProvisioningUrl) {
+    const remote = await provisionRemoteUserForeground(target, name, remoteProvisioningUrl);
+    userAuth = remote.userAuth;
+    userCleanup = remote.cleanup;
+    // The mesh's grant is the authority on what this agent may read and post; the launch forwards
+    // it verbatim so the session's runtime set matches the credentials it was actually issued.
+    // A local --subscribe that the mesh did not grant would be a lie told to the connector.
+    if (remote.material.subscribe) subscribe = remote.material.subscribe;
+    if (remote.material.allowSubscribe) allowSubscribe = remote.material.allowSubscribe;
+    if (remote.material.allowPublish) allowPublish = remote.material.allowPublish;
+  } else if (target.mode === "user") {
     // USER mesh: the agent runs as a ledger-granted (owner, actor) principal under the LOGGED-IN
     // operator's owner — never a static identity (U10). Provisioning + grant + a one-shot bearer
     // preflight all happen BEFORE launch, so the spawned agent is never the first to discover a
@@ -630,6 +655,165 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // (a SIGKILLed CLI can't run this; the next same-name spawn's rotation is the backstop), loud
   // on failure, never blocking the exit code already set above.
   if (userCleanup) await userCleanup().catch((e) => console.error(c.red(`✗ revoking ${name}'s actor grant: ${(e as Error).message}`)));
+}
+
+/** What a remote mesh's agent-provisioning endpoint returns (U6 §2). The client validates every
+ *  field it uses: this arrives over the network from a deployment, so a missing or wrong-typed
+ *  piece must be a named refusal here, never an `undefined` written into a 0600 file. */
+interface RemoteAgentMaterial {
+  actor: string;
+  owner: string;
+  lifecycleUid: string;
+  actorToken: string;
+  sentinelCreds: string;
+  subscribe?: string[];
+  allowSubscribe?: string[];
+  allowPublish?: string[];
+}
+
+/** Validate the provisioning response. Returns the material, or the refusal sentence. */
+function checkRemoteAgentMaterial(v: unknown, actor: string): { ok: true; material: RemoteAgentMaterial } | { ok: false; message: string } {
+  const o = v as Partial<RemoteAgentMaterial> & { exists?: boolean };
+  const bad = (m: string): { ok: false; message: string } => ({ ok: false, message: m });
+  if (o === null || typeof o !== "object") return bad("the mesh's agent-provisioning endpoint did not answer with a JSON object");
+  // An idempotent "already exists" answer carries no material by design; it is not an error the
+  // client can repair by retrying, so it gets its own sentence naming the flag that rotates.
+  if (o.exists === true) return bad(`agent "${actor}" already exists on this mesh and its credentials were not reissued - spawn it under a different name, or ask the mesh operator to reissue it`);
+  const str = (k: keyof RemoteAgentMaterial): string | undefined => (typeof o[k] === "string" && o[k] ? (o[k] as string) : undefined);
+  for (const k of ["actor", "owner", "lifecycleUid", "actorToken", "sentinelCreds"] as const)
+    if (!str(k)) return bad(`the mesh's agent-provisioning endpoint returned no ${k} - it cannot provision agents for this mesh`);
+  const list = (k: "subscribe" | "allowSubscribe" | "allowPublish"): string[] | undefined =>
+    Array.isArray(o[k]) && (o[k] as unknown[]).every((s) => typeof s === "string") ? (o[k] as string[]) : undefined;
+  if (o.actor !== actor)
+    return bad(`the mesh provisioned actor "${String(o.actor)}" for a request naming "${actor}" - refusing material that does not match what was asked for`);
+  return {
+    ok: true,
+    material: {
+      actor: o.actor!, owner: o.owner!, lifecycleUid: o.lifecycleUid!, actorToken: o.actorToken!, sentinelCreds: o.sentinelCreds!,
+      ...(list("subscribe") ? { subscribe: list("subscribe") } : {}),
+      ...(list("allowSubscribe") ? { allowSubscribe: list("allowSubscribe") } : {}),
+      ...(list("allowPublish") ? { allowPublish: list("allowPublish") } : {}),
+    },
+  };
+}
+
+/** Foreground REMOTE-USER onboarding — the participant path for a mesh registered with
+ *  `meshes add --from` that advertises an agent-provisioning endpoint (U6 §2).
+ *
+ *  The local twin below ({@link provisionUserForeground}) cannot run here and must not try: it
+ *  needs the space's owner secret and account signer to grant a row and pre-create durables, and
+ *  those never leave the machine the mesh runs on. Instead the mesh's own endpoint does that work
+ *  inside the owner's delegation envelope and hands back ready material; this function's job is to
+ *  present the login bearer, validate what comes back, land it 0600, and prove the bearer chain
+ *  before launch — the same preflight discipline, with the grant performed remotely.
+ *
+ *  Deliberately NOT reusing the local path's cleanup: nothing here created broker state locally, so
+ *  teardown is the mesh's business (its lifecycle owns the row and the durables). The spawned
+ *  agent's material is shredded on exit; the row is not revoked from here, because this machine
+ *  holds no authority to revoke it. */
+async function provisionRemoteUserForeground(
+  target: MeshTarget,
+  name: string,
+  provisioningUrl: string,
+): Promise<{ userAuth: NonNullable<LaunchOpts["userAuth"]>; cleanup: () => Promise<void>; material: RemoteAgentMaterial }> {
+  const { space } = target;
+  const dir = userAuthStateDir(target.root, space);
+  const store = workspaceSecretStore(target.root);
+  const fail = (msg: string): never => {
+    console.error(c.red(`✗ ${msg}`));
+    process.exit(1);
+  };
+  const idpUrl = target.userAuth?.idp.url;
+  if (!idpUrl) return fail(`mesh "${space}" records no IdP to sign in against - re-register it with \`cotal meshes add ${space} --from <url> --mode user\``);
+  let provider: ReturnType<typeof resolveAuthProvider>;
+  let session: { token: string };
+  try {
+    provider = resolveAuthProvider();
+    session = requireIdpSession(homeCotalDir(), idpUrl);
+  } catch {
+    return fail(`not signed in to ${idpUrl} - run \`cotal login --idp ${idpUrl}\` first, then spawn again`);
+  }
+  const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = agentSecretFilePaths(target.root, name);
+  let material: RemoteAgentMaterial;
+  try {
+    let res: Response;
+    try {
+      res = await fetch(provisioningUrl, {
+        method: "POST",
+        // `redirect: "manual"` for the same reason registration refuses redirects: this request
+        // carries the login bearer, and a 302 must never walk it onto another host or plaintext.
+        redirect: "manual",
+        headers: { "content-type": "application/json", authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({ actor: name }),
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (e) {
+      return fail(`the mesh's agent-provisioning endpoint did not answer at ${provisioningUrl} (${e instanceof Error ? e.message : String(e)})`);
+    }
+    if (res.status >= 300 && res.status < 400)
+      return fail(`the mesh's agent-provisioning endpoint answered ${res.status} with redirect Location ${JSON.stringify(res.headers.get("location") ?? "")} - redirects are refused so the login bearer cannot be walked onto another host`);
+    const body: unknown = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const reason = (body as { error?: string }).error ?? `HTTP ${res.status}`;
+      // 401 is the one refusal with a local remedy; everything else is the mesh's own word.
+      return fail(res.status === 401
+        ? `the mesh refused this login for agent provisioning: ${reason} - your session may have expired; re-run \`cotal login --idp ${idpUrl}\``
+        : `the mesh refused to provision agent "${name}": ${reason}`);
+    }
+    const checked = checkRemoteAgentMaterial(body, name);
+    if (!checked.ok) return fail(checked.message);
+    material = checked.material;
+    // Land both secrets 0600 through the store, exactly as the local path does — the bearer
+    // re-exec and the launch handoff read FILES.
+    await store.put(agentActorTokenKey(name), material.actorToken);
+    await store.put(agentSentinelCredsKey(name), material.sentinelCreds);
+    await materializeSecretToFile(store, agentActorTokenKey(name), tokenPath);
+    await materializeSecretToFile(store, agentSentinelCredsKey(name), sentinelPath);
+    rmSync(healthPath, { force: true });
+    provenance.wrote(`remote actor material ${material.owner}.${name} (user mode)`, tokenPath);
+    // The bearer preflight — the same one-shot proof the local path runs, pointed at the pinned
+    // exchange instead of a local service. A dead auth chain stops the spawn here.
+    const exchangeUrl = target.userAuth?.endpoints?.url;
+    if (!exchangeUrl) return fail(`mesh "${space}" records no exchange endpoint - re-register it with \`cotal meshes add ${space} --from <url> --mode user\``);
+    const bearerCmd = [
+      process.execPath,
+      ...process.execArgv,
+      process.argv[1],
+      provider.agentBearerCommand,
+      "--exchange-url", exchangeUrl,
+      "--space", space,
+      "--owner", material.owner,
+      "--actor", name,
+      "--token-file", tokenPath,
+      "--health-file", healthPath,
+    ];
+    await new Promise<void>((res2, rej) => {
+      execFile(bearerCmd[0], bearerCmd.slice(1), { timeout: 30_000, maxBuffer: 64 * 1024 }, (err, _stdout, stderr) => {
+        if (err) return rej(new Error(stderr.trim() || err.message));
+        res2();
+      });
+    });
+    return {
+      userAuth: { owner: material.owner, actor: name, sentinelCredsPath: sentinelPath, bearerCmd },
+      material,
+      // Local shred only. The remote row and its durables belong to the mesh's lifecycle; this
+      // machine has no authority to retire them and must not pretend otherwise.
+      cleanup: async () => {
+        await store.delete(agentActorTokenKey(name)).catch(() => {});
+        await store.delete(agentSentinelCredsKey(name)).catch(() => {});
+        rmSync(tokenPath, { force: true });
+        rmSync(sentinelPath, { force: true });
+        rmSync(healthPath, { force: true });
+      },
+    };
+  } catch (e) {
+    await store.delete(agentActorTokenKey(name)).catch(() => {});
+    await store.delete(agentSentinelCredsKey(name)).catch(() => {});
+    rmSync(tokenPath, { force: true });
+    rmSync(sentinelPath, { force: true });
+    rmSync(healthPath, { force: true });
+    return fail(`agent auth preflight failed for "${name}": ${(e as Error).message}`);
+  }
 }
 
 /** Foreground USER-MODE onboarding — the CLI-side twin of the manager's user spawn provisioning:

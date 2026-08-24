@@ -7,7 +7,7 @@
  * own suite notices when they disagree — this smoke pins the round trip: what the daemon serves is
  * what registration accepts, field for field, including the pins registration goes on to record.
  */
-import { checkAdvertisedServer, composeUserBundle, finalizeUserBundleEndpoint, spaceIssuer } from "@cotal-ai/auth";
+import { checkAdvertisedServer, checkAgentProvisioningUrl, composeUserBundle, finalizeUserBundleEndpoint, spaceIssuer } from "@cotal-ai/auth";
 import { checkServer, checkUserBundle, userExchangeIssuer } from "../src/commands/meshes-add.js";
 
 let ran = 0;
@@ -72,6 +72,53 @@ cell(
 );
 cell("advertised-server refuses a non-URL", (checkAdvertisedServer("not a url") ?? "").includes("is not a URL"));
 
+// The U6 agent-provisioning endpoint: it receives the operator's login bearer, so plaintext is
+// refused at the daemon's startup rather than discovered by a participant.
+cell("agent-provisioning-url accepts https", checkAgentProvisioningUrl("https://hosted.example/api/agents") === undefined);
+cell(
+  "agent-provisioning-url refuses http - the login bearer rides this request",
+  (checkAgentProvisioningUrl("http://hosted.example/api/agents") ?? "").includes("must be https"),
+);
+cell("agent-provisioning-url refuses a non-URL", (checkAgentProvisioningUrl("nope") ?? "").includes("is not a URL"));
+
+// THE FINALIZE HAZARD, pinned: finalizeUserBundleEndpoint once REPLACED the endpoints object, which
+// silently dropped every sibling field the composer had set. A bundle composed with a provisioning
+// URL must still carry it after finalize, and the consumer must record it.
+const provBundle = composeUserBundle({
+  space: "hosted",
+  server: "wss://broker.example.com:443/mesh-ws",
+  idp: IDP,
+  sentinelCreds: SENTINEL,
+  agentProvisioningUrl: "https://hosted.example/api/agents",
+});
+finalizeUserBundleEndpoint(provBundle, "https://hosted.example");
+const provParsed = checkUserBundle(JSON.stringify(provBundle));
+cell(
+  "a bundle carrying agentProvisioningUrl survives finalize and is accepted",
+  provParsed.ok,
+  provParsed.ok ? undefined : `checkUserBundle said: ${(provParsed as { message: string }).message}`,
+);
+cell(
+  "the provisioning endpoint reaches the consumer intact - finalize did not clobber its sibling",
+  provParsed.ok && provParsed.value.userAuth.endpoints?.agentProvisioningUrl === "https://hosted.example/api/agents",
+  provParsed.ok ? `got ${JSON.stringify(provParsed.value.userAuth.endpoints)}` : "bundle refused",
+);
+cell(
+  "the exchange url is finalized alongside it, not replaced by it",
+  provParsed.ok && provParsed.value.userAuth.endpoints?.url === "https://hosted.example",
+  provParsed.ok ? `got ${JSON.stringify(provParsed.value.userAuth.endpoints?.url)}` : "bundle refused",
+);
+// The consumer's own scheme gate: a plaintext provisioning URL in a served bundle is refused at
+// registration even if some other producer emitted it.
+const plainProv = JSON.parse(JSON.stringify(provBundle)) as typeof provBundle;
+(plainProv.userAuth as { endpoints: { agentProvisioningUrl: string } }).endpoints.agentProvisioningUrl = "http://evil.example/api/agents";
+const plainParsed = checkUserBundle(JSON.stringify(plainProv));
+cell(
+  "registration refuses a plaintext agent-provisioning endpoint",
+  !plainParsed.ok && (plainParsed as { message: string }).message.includes("agent-provisioning endpoint"),
+  plainParsed.ok ? "ACCEPTED a plaintext provisioning endpoint" : (plainParsed as { message: string }).message,
+);
+
 // Registration runs the bundle's server through checkServer AFTER checkUserBundle accepts it, so a
 // bundle can pass the round trip above and still be refused at the gate that actually records it.
 // A websocket broker legitimately lives under a path (`wss://host/mesh-ws` behind a reverse
@@ -88,7 +135,7 @@ cell(
   `cli derives ${JSON.stringify(userExchangeIssuer("hosted"))}, auth derives ${JSON.stringify(spaceIssuer("hosted"))}`,
 );
 
-const EXPECTED_CELLS = 14;
+const EXPECTED_CELLS = 21;
 if (ran !== EXPECTED_CELLS) {
   console.error(`ACCOUNTING BROKEN: ran ${ran} cells, expected ${EXPECTED_CELLS}`);
   process.exit(1);

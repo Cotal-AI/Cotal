@@ -444,6 +444,13 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
     const badAdvertised = checkAdvertisedServer(advertisedServer);
     if (badAdvertised) throw new Error(badAdvertised);
   }
+  const agentProvisioningUrl = v["agent-provisioning-url"];
+  if (agentProvisioningUrl !== undefined && publicPort === undefined)
+    throw new Error("auth-service: --agent-provisioning-url rides the public bundle - it requires --exchange-public-port");
+  if (agentProvisioningUrl !== undefined) {
+    const badProvisioning = checkAgentProvisioningUrl(agentProvisioningUrl);
+    if (badProvisioning) throw new Error(badProvisioning);
+  }
 
   // The provider's space-scoped state dir for NON-SEAM material (ledger, IdP pin, discovery). The
   // layout fact is workspace-owned (userAuthStateDir); this daemon never touches `.cotal/auth/auth.json`.
@@ -545,6 +552,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
       server: advertisedServer ?? server,
       idp: { url: idp.url, issuer: idp.issuer, audience: idp.audience },
       sentinelCreds: callout.sentinelCreds,
+      ...(agentProvisioningUrl ? { agentProvisioningUrl } : {}),
     });
     publicHttp = createServer(makePublicHandler(ctx, makePublicPolicy(trustedProxy), bundle));
     await new Promise<void>((resolvePort, reject) => {
@@ -863,6 +871,10 @@ export function composeUserBundle(args: {
   server: string;
   idp: { url: string; issuer: string; audience: string };
   sentinelCreds: string;
+  /** The deployment's remote agent-provisioning endpoint (U6): where `cotal spawn` POSTs the
+   *  login bearer to mint a managed agent in the owner's envelope. Optional — a mesh without one
+   *  simply has no self-service remote spawn, and the client refuses with a named message. */
+  agentProvisioningUrl?: string;
 }): Record<string, unknown> {
   return {
     space: args.space,
@@ -873,16 +885,37 @@ export function composeUserBundle(args: {
       // provider "cotal") — a remote entry must dispatch to the same provider a local one does.
       provider: "cotal",
       idp: args.idp,
-      endpoints: { url: "" },
+      endpoints: {
+        url: "",
+        ...(args.agentProvisioningUrl ? { agentProvisioningUrl: args.agentProvisioningUrl } : {}),
+      },
     },
     sentinelCreds: args.sentinelCreds,
   };
 }
 
 /** Pin the bundle's exchange endpoint once the public listener is bound (with `--port 0` the
- *  pre-bind port would advertise an address nothing listens on). */
+ *  pre-bind port would advertise an address nothing listens on). Mutates `url` IN PLACE rather
+ *  than replacing the endpoints object — replacement once silently dropped every sibling field
+ *  the composer had set (agentProvisioningUrl). */
 export function finalizeUserBundleEndpoint(bundle: Record<string, unknown>, publicUrl: string): void {
-  (bundle.userAuth as { endpoints: { url: string } }).endpoints = { url: publicUrl };
+  (bundle.userAuth as { endpoints: { url: string } }).endpoints.url = publicUrl;
+}
+
+/** The advertised agent-provisioning endpoint: HTTPS only — spawn sends the login bearer to it,
+ *  and a plaintext or non-URL value must be refused at startup, not discovered by a participant.
+ *  Exported for the producer/consumer contract smoke; returns the refusal, or undefined when
+ *  usable. */
+export function checkAgentProvisioningUrl(raw: string): string | undefined {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return `auth-service: --agent-provisioning-url is not a URL, got "${raw}"`;
+  }
+  if (u.protocol !== "https:")
+    return `auth-service: --agent-provisioning-url must be https:// (the login bearer rides the request), got ${u.protocol}//`;
+  return undefined;
 }
 
 /** Build the PUBLIC listener's request handler: its own closed route table (/health, /jwks,

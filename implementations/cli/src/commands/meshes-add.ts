@@ -254,6 +254,18 @@ export function checkUserBundle(raw: string): Check<UserBundle> {
   }
   if (!userAuth.endpoints?.url)
     return bad("✗ the user-auth bundle pins no exchange endpoint (userAuth.endpoints.url) - for a remote registration that URL is trust, and it must come from the export, never be guessed");
+  if (userAuth.endpoints.agentProvisioningUrl !== undefined) {
+    // The provisioning endpoint receives the login bearer, so it rides the same pinned-fetch
+    // scheme rule as every other trust URL in this bundle: https, or a loopback http LITERAL.
+    let pu: URL;
+    try {
+      pu = new URL(userAuth.endpoints.agentProvisioningUrl);
+    } catch {
+      return bad("✗ the user-auth bundle's agent-provisioning endpoint (userAuth.endpoints.agentProvisioningUrl) is not a URL");
+    }
+    const refusal = assertPinnedFetchUrl(pu, "the bundle's agent-provisioning endpoint (userAuth.endpoints.agentProvisioningUrl)");
+    if (refusal) return bad(refusal);
+  }
   if (typeof doc.sentinelCreds !== "string" || !doc.sentinelCreds)
     return bad("✗ the user-auth bundle carries no sentinelCreds - the sentinel identity is part of the export");
   return good({ space: doc.space, server: doc.server, tlsRequired: doc.tlsRequired, userAuth, sentinelCreds: doc.sentinelCreds });

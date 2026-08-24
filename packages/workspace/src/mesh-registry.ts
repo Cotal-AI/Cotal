@@ -100,8 +100,11 @@ export interface UserAuthInfo {
    *  (the service re-records it on every `up`). For a REMOTE entry ({@link UserAuthInfo.remote})
    *  it is a STATED TRUST POSITION: the operator pinned it at registration — there is no local
    *  `up` to re-derive it from — and registration verified it answers `/health` + `/jwks` with the
-   *  pinned issuer. Required when `remote` is set; {@link assertUserAuthInfo} enforces that. */
-  endpoints?: { url?: string };
+   *  pinned issuer. Required when `remote` is set; {@link assertUserAuthInfo} enforces that.
+   *  `agentProvisioningUrl` is the deployment's remote agent-provisioning endpoint (U6) when it
+   *  advertises one — where `cotal spawn` POSTs the login bearer to mint a managed agent in the
+   *  owner's envelope. Optional: a mesh without one has no self-service remote spawn. */
+  endpoints?: { url?: string; agentProvisioningUrl?: string };
   /** Present and `true` when this entry was registered for a mesh running elsewhere
    *  (`cotal meshes add --mode user`): its pins were SUPPLIED (bundle or discovery document), not
    *  established by a local `cotal up --user-auth`, so nothing on this machine can re-derive them
@@ -125,8 +128,9 @@ export function assertUserAuthInfo(v: unknown): UserAuthInfo {
       typeof o.idp.issuer !== "string" || !o.idp.issuer || typeof o.idp.audience !== "string" || !o.idp.audience)
     throw new Error("auth provider publicAuth: idp { url, issuer, audience } trust pins are required");
   if (o.endpoints !== undefined && (o.endpoints === null || typeof o.endpoints !== "object" ||
-      (o.endpoints.url !== undefined && typeof o.endpoints.url !== "string")))
-    throw new Error("auth provider publicAuth: endpoints, when present, must be { url?: string }");
+      (o.endpoints.url !== undefined && typeof o.endpoints.url !== "string") ||
+      (o.endpoints.agentProvisioningUrl !== undefined && typeof o.endpoints.agentProvisioningUrl !== "string")))
+    throw new Error("auth provider publicAuth: endpoints, when present, must be { url?: string, agentProvisioningUrl?: string }");
   if (o.remote !== undefined && o.remote !== true)
     throw new Error("auth provider publicAuth: remote, when present, must be exactly true");
   if (o.sentinelCredsPath !== undefined && (typeof o.sentinelCredsPath !== "string" || !o.sentinelCredsPath))
@@ -137,7 +141,10 @@ export function assertUserAuthInfo(v: unknown): UserAuthInfo {
   if (o.remote === true && !o.endpoints?.url)
     throw new Error("auth provider publicAuth: a remote entry requires a pinned endpoints.url (the exchange base verified at registration)");
   return { provider: o.provider, idp: { url: o.idp.url, issuer: o.idp.issuer, audience: o.idp.audience },
-    ...(o.endpoints ? { endpoints: { ...(o.endpoints.url ? { url: o.endpoints.url } : {}) } } : {}),
+    ...(o.endpoints ? { endpoints: {
+      ...(o.endpoints.url ? { url: o.endpoints.url } : {}),
+      ...(o.endpoints.agentProvisioningUrl ? { agentProvisioningUrl: o.endpoints.agentProvisioningUrl } : {}),
+    } } : {}),
     ...(o.remote === true ? { remote: true } : {}),
     ...(o.sentinelCredsPath ? { sentinelCredsPath: o.sentinelCredsPath } : {}) };
 }

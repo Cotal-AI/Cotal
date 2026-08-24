@@ -164,6 +164,7 @@ export const upFlags: FlagSpec[] = [
   { name: "exchange-public-url", type: "string", value: "<https://…>", description: "with --exchange-public-port: the advertised public base URL (the reverse proxy's address)" },
   { name: "exchange-trusted-proxy", type: "boolean", description: "with --exchange-public-port: attribute peers by the last X-Forwarded-For hop (opt-in; default: socket address)" },
   { name: "advertised-server", type: "string", value: "<url>", description: "with --exchange-public-port: the broker address the public bundle advertises - what participants dial (default: --server)" },
+  { name: "agent-provisioning-url", type: "string", value: "<https://…>", description: "with --exchange-public-port: the deployment's remote agent-provisioning endpoint the public bundle advertises" },
   { name: "rotate-sys", type: "boolean", description: "renew the expired/expiring $SYS creds by rotating the system account (agents, data and creds survive; needs a stopped mesh)" },
   { name: "detach", type: "boolean", description: "run in the background (stop with `cotal down`)" },
   { name: "runtime", type: "string", value: "<name>", description: "agent runtime for the mesh manager (default pty; extension runtimes are explicit-only, see `cotal runtimes`); with -f overrides the manifest's runtime" },
@@ -189,7 +190,7 @@ export function upComplete(argv: string[]): CompletionResult {
 export async function up(args: ParsedArgs): Promise<void> {
   const values = args.values as {
     server?: string; "store-dir"?: string; space?: string; open?: boolean; "user-auth"?: boolean; idp?: string;
-    "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean; "advertised-server"?: string;
+    "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean; "advertised-server"?: string; "agent-provisioning-url"?: string;
     channels?: string; detach?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean;
     restore?: string; "restore-only"?: string; "accept-missing-source"?: boolean; "rotate-sys"?: boolean;
     "tls-cert"?: string; "tls-key"?: string;
@@ -1645,22 +1646,24 @@ async function completeResumeActivation(
  *  and --exchange-trusted-proxy modify the public listener, so they require its port. Returned as
  *  an argv ARRAY — the daemon re-exec never shell-interpolates. */
 function publicExchangeArgs(
-  v: { "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean; "advertised-server"?: string },
+  v: { "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean; "advertised-server"?: string; "agent-provisioning-url"?: string },
   wantUser: boolean,
 ): string[] {
   const port = v["exchange-public-port"];
   const url = v["exchange-public-url"];
   const proxy = Boolean(v["exchange-trusted-proxy"]);
   const advertised = v["advertised-server"];
-  if (port === undefined && url === undefined && !proxy && advertised === undefined) return [];
+  const provisioning = v["agent-provisioning-url"];
+  if (port === undefined && url === undefined && !proxy && advertised === undefined && provisioning === undefined) return [];
   if (!wantUser)
-    throw new Error("--exchange-public-port/--exchange-public-url/--exchange-trusted-proxy/--advertised-server are for user-auth spaces - pair them with --user-auth");
-  if (port === undefined) throw new Error("--exchange-public-url/--exchange-trusted-proxy/--advertised-server require --exchange-public-port");
+    throw new Error("--exchange-public-port/--exchange-public-url/--exchange-trusted-proxy/--advertised-server/--agent-provisioning-url are for user-auth spaces - pair them with --user-auth");
+  if (port === undefined) throw new Error("--exchange-public-url/--exchange-trusted-proxy/--advertised-server/--agent-provisioning-url require --exchange-public-port");
   return [
     "--exchange-public-port", port,
     ...(url !== undefined ? ["--exchange-public-url", url] : []),
     ...(proxy ? ["--exchange-trusted-proxy"] : []),
     ...(advertised !== undefined ? ["--advertised-server", advertised] : []),
+    ...(provisioning !== undefined ? ["--agent-provisioning-url", provisioning] : []),
   ];
 }
 
