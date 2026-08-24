@@ -2,7 +2,7 @@
   "suite": "extensions/connector-jcode/smoke/jcode-host.smoke.ts",
   "guard": "Jcode retries a first readiness turn that used its pre-MCP tool snapshot exactly once, still refuses a never-callable bridge without presence, opens the foreground TUI before readiness completes, and records that bootstrap orientation predates mesh join",
   "command": "pnpm smoke:jcode-host",
-  "completionMarker": "JCODE HOST SMOKE PASSED",
+  "minTicks": 8,
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/jcode-readiness.json",
   "why": [
     "Jcode locks its first turn's tool list before asynchronous MCP registration can complete. The connector cannot treat that first absent call as a permanent bridge failure, but must not advertise without a real later tool call either (#777).",
