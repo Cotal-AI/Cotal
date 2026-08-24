@@ -470,3 +470,11 @@ smoke:orientation
 # Failing closed is correct (SPEC 13.10); never renewing is the defect. Rotate early, keep the old
 # key verifiable across an overlap, and never drop the newest.
 smoke:anchor-renewal
+
+# A connector must never return — success or failure — while the private Jcode tree it launched is
+# still executing. The SDK's managed stop keys the daemon off a servers.json entry matching the
+# alias socket path verbatim, so a canonicalized entry or wiped registry is a silent no-op, and the
+# setsid daemon (plus its MCP child) outlives the seat: an unmanaged orphan holding the seat's
+# private home. The connector now proves the teardown from the seat's own records — bounded SIGTERM,
+# exact-PID/group SIGKILL escalation, throw rather than report clean when a PID survives.
+smoke:jcode-lifecycle

@@ -1,0 +1,46 @@
+{
+  "suite": "extensions/connector-jcode/smoke/jcode-lifecycle.smoke.ts",
+  "guard": "the connector never returns - on startup failure or graceful stop - while the private Jcode daemon tree it launched is still executing; teardown is proven from the seat's own records with bounded SIGTERM then exact-PID/group SIGKILL escalation, and a survivor is a thrown error, never a clean report",
+  "command": "pnpm smoke:jcode-lifecycle",
+  "completionMarker": "JCODE LIFECYCLE SMOKE PASSED",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/jcode-lifecycle.json",
+  "why": [
+    "A live seat hit a readiness refusal at startup; the host exited non-zero, the manager retired",
+    "the seat's mesh credential, and the private `jcode serve` daemon it had launched kept running",
+    "unmanaged - own session, own MCP child, holding the seat's private home (#839). The SDK's only",
+    "daemon stop is a servers.json lookup that must match the alias socket path VERBATIM; a",
+    "canonicalized entry (macOS /tmp -> /private/tmp) or a wiped registry is a silent no-op, and",
+    "killing the bridge never reaches the setsid daemon. The fake daemon here registers with the",
+    "canonicalized home path - the measured miss shape - so only the connector's own record-driven",
+    "teardown can turn the suite green.",
+    "",
+    "The mutations attack the three legs that make the teardown honest: the call itself (the shipped",
+    "defect was exactly its absence), the record reader that names the daemon (servers.json +",
+    "active_pids are the only place the setsid daemon's PID exists), and the group signal (the MCP",
+    "child is NOT recorded anywhere - it dies only because the daemon's setsid group is signalled,",
+    "so degrading group-kill to exact-PID leaves it orphaned and only the MCP-child assertion sees it)."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the shipped defect: trust the SDK's registry-keyed stop, never verify",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    await stopPrivateTree({ jcodeHome: socketHome.jcodeHome, knownPids: [instance?.process.pid] });",
+      "replace": "    /* mutant: SDK close/shutdown alone, no verification */",
+      "expectRed": "startup failure stops the private daemon before the connector returns (#839)"
+    },
+    {
+      "name": "M2 blind the record reader: no PID the home records is ever a target",
+      "file": "extensions/connector-jcode/src/private-lifecycle.ts",
+      "find": "  pids.delete(process.pid);\n  return [...pids];",
+      "replace": "  pids.delete(process.pid);\n  return [];",
+      "expectRed": "startup failure stops the private daemon before the connector returns (#839)"
+    },
+    {
+      "name": "M3 degrade the group signal to exact-PID only: the unrecorded MCP child is orphaned",
+      "file": "extensions/connector-jcode/src/private-lifecycle.ts",
+      "find": "    try {\n      process.kill(-pid, signal);\n    } catch {\n      try {\n        process.kill(pid, signal);\n      } catch {\n        /* already gone */\n      }\n    }",
+      "replace": "    try {\n      process.kill(pid, signal);\n    } catch {\n      /* already gone */\n    }",
+      "expectRed": "startup failure stops the daemon's MCP child before the connector returns (#839)"
+    }
+  ]
+}

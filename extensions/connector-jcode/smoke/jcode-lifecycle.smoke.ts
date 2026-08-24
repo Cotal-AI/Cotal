@@ -110,7 +110,9 @@ try {
   await seedChannelRegistry({ servers, space: "jcodelife", file: { defaults: { replay: false }, channels: { team: { replay: false } } } });
 
   // --- Regression (#839): readiness failure with the daemon already running -------------------
-  const failing = startHost("lifefail", { FAKE_JCODE_FAIL_READINESS: "1" });
+  // The readiness turn is held open 2s so the instrument control can observe the tree ALIVE before
+  // the refusal fires: a fixed connector refuses and tears down faster than the 100ms poll.
+  const failing = startHost("lifefail", { FAKE_JCODE_FAIL_READINESS: "1", FAKE_JCODE_TURN_DELAY_MS: "2000" });
   child = failing.child;
   const daemonRecord = (await waitFor("private daemon", () =>
     entriesOf(failing.log).find((entry) => entry.ev === "daemon"),

@@ -1,17 +1,26 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
+import { join } from "node:path";
 
 const logPath = process.env.FAKE_JCODE_LOG;
 const log = (entry) => {
   if (logPath) appendFileSync(logPath, JSON.stringify(entry) + "\n");
 };
 if (process.argv[2] === "serve") {
-  // Stand-in for the real `jcode serve` daemon: setsid-detached from its api-bridge parent, owner
-  // of the connector's MCP child, and it keeps executing after the bridge dies. It never registers
-  // in servers.json — the measured miss (#839) that leaves the SDK's registry-keyed daemon stop
-  // with nothing to signal.
+  // Stand-in for the real `jcode serve` daemon: detached into its own session/group by the bridge,
+  // owner of the connector's MCP child, and it keeps executing after the bridge dies. It registers
+  // in its home's servers.json and active_pids like the real daemon — but with the CANONICALIZED
+  // home path, while the SDK's registry-keyed stop matches the alias socket path verbatim. That
+  // mismatch is the measured miss (#839) that leaves the SDK with nothing to signal.
+  const home = realpathSync(process.env.JCODE_HOME);
+  mkdirSync(join(home, "active_pids"), { recursive: true });
+  writeFileSync(
+    join(home, "servers.json"),
+    JSON.stringify({ camp: { name: "camp", socket: join(home, "run", "jcode.sock"), pid: process.pid, sessions: [] } }),
+  );
+  writeFileSync(join(home, "active_pids", "session_fake"), String(process.pid));
   const mcp = spawn(process.execPath, [process.argv[1], "mcp"], { stdio: "ignore" });
   log({ ev: "daemon", pid: process.pid, mcp: mcp.pid });
   setInterval(() => {}, 1000);
@@ -95,12 +104,14 @@ const server = createServer((socket) => {
             reply({ ev: "ok" });
           } else {
             event({ ev: "message_accepted", session_id: frame.session_id });
+            // The delay knob keeps a failure-path test observable: a host that tears down on the
+            // refusal is faster than a 100ms poll, so the turn must outlast the observer's window.
             setTimeout(() => {
               if (String(frame.content).includes("cotal_orientation") && process.env.FAKE_JCODE_FAIL_READINESS !== "1")
                 event({ ev: "tool_done", session_id: frame.session_id, call_id: "orientation", name: "mcp__cotal__cotal_orientation", output: "ok" });
               event({ ev: "text_delta", session_id: frame.session_id, text: "fake reply" });
               event({ ev: "turn_done", session_id: frame.session_id });
-            }, 10);
+            }, Number(process.env.FAKE_JCODE_TURN_DELAY_MS ?? 10));
           }
           break;
         default:
