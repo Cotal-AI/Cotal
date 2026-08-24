@@ -13,7 +13,7 @@
  *  - the service handle: the `auth-service` command name + the readiness contract (poll the
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
-import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type SecretStore } from "@cotal-ai/core";
+import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type SecretStore } from "@cotal-ai/core";
 import { assertUserAuthInfo, findMesh, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { isIPv4, isIPv6 } from "node:net";
@@ -173,6 +173,47 @@ export const cotalAuthProvider: AuthProvider = {
     if (typeof out.token !== "string" || !out.token)
       throw new Error(`the auth service's exchange returned no token - its build may be stale; restart it with \`cotal up\``);
     return { bearer: out.token, sentinelCreds: callout.sentinelCreds };
+  },
+
+  async managerServiceAuthority({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagerAuthorityRequest }): Promise<RemoteManagerAuthorityMaterial> {
+    const idp = loadPinnedIdp(dir);
+    const callout = await loadCalloutAuth(store, request.space);
+    let idpUrl: string;
+    let endpoint: string;
+    let authorization: string | undefined;
+    if (idp && callout) {
+      const info = loadAuthServiceInfo(dir);
+      if (!info || !pidAlive(info.pid))
+        throw new Error(`the user-auth service for space "${request.space}" is not running - restart it with \`cotal up\` before requesting manager-service authority`);
+      idpUrl = idp.url;
+      endpoint = `${info.url}/manager-service-authority`;
+      authorization = `Bearer ${info.cap}`;
+    } else {
+      const entry = findMesh(request.space);
+      const ua = entry?.mode === "user" ? entry.userAuth : undefined;
+      if (ua?.remote !== true || typeof ua.endpoints?.url !== "string")
+        throw new Error(`space "${request.space}" has no pinned remote manager-authority endpoint - re-register it with \`cotal meshes add ${request.space} --from <url>\``);
+      idpUrl = ua.idp.url;
+      const base = pinnedExchangeUrl(ua.endpoints.url, request.space).replace(/\/exchange$/, "");
+      endpoint = ua.endpoints.managerAuthorityUrl ?? `${base}/manager-service-authority`;
+    }
+    const session = requireIdpSession(homeCotalDir(), idpUrl);
+    const idpJwt = await fetchIdpJwt(idpUrl, session.token);
+    let res: Response;
+    try {
+      res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...(authorization ? { authorization } : {}) },
+        body: JSON.stringify({ idpToken: idpJwt, request }),
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (e) {
+      throw new Error(`the manager-service authority endpoint for space "${request.space}" did not answer at ${endpoint} (${e instanceof Error ? e.message : String(e)})`);
+    }
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok)
+      throw new Error(`signed in, but manager-service authority was refused: ${(body as { error?: string }).error ?? `HTTP ${res.status}`}`);
+    return body as RemoteManagerAuthorityMaterial;
   },
 
   /** WHO the local login is, as this space's derived owner — offline (cached session sub + the

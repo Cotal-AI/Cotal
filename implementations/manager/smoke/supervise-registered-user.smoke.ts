@@ -50,6 +50,8 @@ function childEnv(): NodeJS.ProcessEnv {
     if (!key.startsWith("COTAL_")) env[key] = value;
   }
   env.COTAL_HOME = home;
+  env.COTAL_SKIP_CONNECTOR_SEED = "1";
+  env.XDG_CONFIG_HOME = join(home, "xdg");
   return env;
 }
 
@@ -106,10 +108,11 @@ try {
     output: output.slice(-1200),
   });
   check(
-    "registered participant gets the honest host-required workaround, never the false down/up advice",
-    /hosting space .* is required to supervise it today/i.test(output) &&
-      /foreground with `cotal spawn` \(without `--detach`\)/i.test(output) &&
-      /detached\/managed agents need the space host/i.test(output) &&
+    "registered participant without login/authority refuses before manager start, never false down/up advice",
+    /remote supervision .* was refused/i.test(output) &&
+      /not logged in/i.test(output) &&
+      /Foreground `cotal spawn` remains available/i.test(output) &&
+      /detached\/managed agents require a live host-approved manager-service authority/i.test(output) &&
       !/`cotal down` and re-`cotal up`/.test(output),
     output.slice(-1200),
   );

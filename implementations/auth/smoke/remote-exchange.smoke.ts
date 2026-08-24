@@ -247,7 +247,7 @@ try {
   const publicJwks = await get(`${PUBLIC}/jwks`);
   const verifyPublicBearer = createLocalJWKSet(publicJwks.body as { keys: import("jose").JWK[] });
   const idpPin = wk.body.userAuth.idp as { url?: string; issuer?: string; audience?: string } | undefined;
-  const eps = wk.body.userAuth.endpoints as { url?: string } | undefined;
+  const eps = wk.body.userAuth.endpoints as { url?: string; managerAuthorityUrl?: string } | undefined;
   check("bundle serves 200 on the public face", wk.status === 200, wk.body);
   check("bundle carries the space + server it actually serves", wk.body.space === SPACE && wk.body.server === SERVER, wk.body);
   check("bundle states tlsRequired", wk.body.tlsRequired === true, wk.body);
@@ -255,6 +255,7 @@ try {
     idpPin?.url === base && idpPin.issuer === origin && idpPin.audience === origin,
     { advertised: idpPin, enforced: { url: base, issuer: origin, audience: origin } });
   check("bundle's endpoints.url is the post-bind advertised public URL", eps?.url === PUBLIC_URL, eps);
+  check("bundle advertises the typed manager-authority endpoint", eps?.managerAuthorityUrl === `${PUBLIC_URL}/manager-service-authority`, eps);
   check("bundle ships the ACTUAL deny-all sentinel credential prepared for this space",
     wk.body.sentinelCreds === expectedCallout.sentinelCreds,
     { advertisedLength: typeof wk.body.sentinelCreds === "string" ? wk.body.sentinelCreds.length : -1, expectedLength: expectedCallout.sentinelCreds.length });
@@ -272,7 +273,7 @@ try {
     check("device login established", typeof sub === "string" && sub.length > 0);
     return cotalAuthProvider.ownerForLogin({ store, dir, space: SPACE });
   })();
-  grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "role:worker"], allowSubscribe: [">"], allowPublish: [">"], label: "smoke operator" });
+  grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "supervise", "role:worker"], allowSubscribe: [">"], allowPublish: [">"], label: "smoke operator" });
   const secret = newActorToken();
   const agentLifecycleUid = mintLifecycleUid();
   grantManagedActor(dir, {
@@ -347,6 +348,15 @@ try {
     viewLoopback.status !== 403, viewLoopback);
 
   // ---------- F. inherited hardening holds verbatim ----------
+  const ids = Object.fromEntries(["supervisor", "executor", "serve", "goalWriter", "sessionLedger"].map((name) => [name, { id: newIdentity().id }]));
+  const mgrPrepare = await post(`${PUBLIC}/manager-service-authority`, { idpToken: idpJwt, request: {
+    v: 1, kind: "manager-service-authority", operation: "prepare", space: SPACE, actor: "cli",
+    instanceId: mintLifecycleUid(), managerLifecycleUid: mintLifecycleUid(), requestId: `req${mintLifecycleUid()}`, identities: ids,
+  } });
+  check("the public typed manager-authority route accepts supervise scope", mgrPrepare.status === 200 && (mgrPrepare.body.credentials as Record<string, unknown>)?.supervisor !== undefined, mgrPrepare.body);
+  const rawProfile = await post(`${PUBLIC}/exchange`, { idpToken: idpJwt, actor: "cli", view: "manager-service" });
+  check("the public exchange still refuses raw manager-service view/profile strings", rawProfile.status === 403, rawProfile.body);
+
   console.log("F) Origin / content-type / body bound on the public face");
   const browser = await post(`${PUBLIC}/exchange`, agentBody2, { origin: "https://evil.example" });
   check("browser-origin requests are refused on the public face (403)", browser.status === 403, browser.body);
@@ -372,10 +382,10 @@ try {
   check("GET /jwks is served on the public face", publicJwks.status === 200);
   check("…with the exact cache contract max-age=300", publicJwks.headers.get("cache-control") === "max-age=300");
   let notFound = 0;
-  for (const p of ["/", "/exchange/", "/admin", "/views", "/actor", "/ledger", "/health/", "/.well-known/", "/..%2f", "/toString", "/constructor"]) {
+  for (const p of ["/", "/exchange/", "/manager-service-authority/", "/admin", "/views", "/actor", "/ledger", "/health/", "/.well-known/", "/..%2f", "/toString", "/constructor"]) {
     if ((await get(`${PUBLIC}${p}`)).status === 404) notFound++;
   }
-  check("every non-route path 404s on the public face (11/11, incl. prototype-chain probes)", notFound === 11, { notFound });
+  check("every non-route path 404s on the public face (12/12, incl. prototype-chain probes)", notFound === 12, { notFound });
   check("GET at /exchange is refused (POST only)", (await get(`${PUBLIC}/exchange`)).status === 405);
   check("POST at /jwks is refused (GET only)", (await post(`${PUBLIC}/jwks`, {})).status === 405);
 

@@ -146,7 +146,10 @@ export type Profile =
   // consumer, KV, or executing right; the daemon does the $SYS scan/KICK, the manager passes only
   // the predecessor's principal. Ephemeral (one re-registration's window), narrower than the
   // `supervisor` profile the auth barrier-evict reuses (its #30 residual, done here for the manager).
-  | "endpoint-evictor";
+  | "endpoint-evictor"
+  // Closed human-issued remote manager authority. Never exposed as a generic profile string: the
+  // auth provider's typed manager-service protocol is the only mint door.
+  | "remote-manager";
 
 export type CredentialLifetimeClass =
   | "standing-renewable" // bounded exp + an ONLINE renewal owner (a seed-holder re-mints before expiry)
@@ -215,6 +218,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "session-serving": { class: "one-shot", defaultTtlSeconds: 24 * 60 * 60, note: "per-session SERVING cred (P2 item 6): rails-only for ONE §13.6 session, the mirror of session-caller with the directions swapped; minted at redemption and TTL-BOUND to the session (the 24h default is the SESSION_GRANT_MAX_TTL ceiling, never a standing lifetime); NEVER renewed - a new session mints a new cred, and the session's terminal revokes this one by name" },
   "session-ledger": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "manager's session LEDGER (P2 item 6): the dedicated sessions-bucket `session.<id>` rows and NOTHING else - no session rail of any shape. Standing because SPEC 13.6 makes it the durable revocation authority that must survive the serving endpoint; the manager re-mints for the SAME nkey on the half-TTL loop (the goal-writer precedent)" },
   "endpoint-evictor": { class: "one-shot", defaultTtlSeconds: 60, note: "one re-registration's verify-evict window (P2 item 3): a scoped delivery-admin caller that kicks+verifies the SUPERSEDED serve family before the epoch advances; 60s bounds a copied cred to a minute" },
+  "remote-manager": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "auth-service", note: "the scoped remote manager lifecycle: own lease/presence plus same-owner agent provisioning; issued only by the typed supervise protocol, never by cotal mint or a raw view/profile string" },
   "membership-observer": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account CONNZ observer; NOT online-renewable ($SYS seed dies at `up`) - bounded exp, renewed only by rotateSystemAccount + broker restart; doctor warns near expiry" },
   "connection-evictor": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account KICK-only live-eviction cred (D5 slice 4); same rotation-renewed posture as the observer" },
 };
@@ -592,6 +596,11 @@ export interface MintOpts {
    *  REQUIRED for that profile; ignored by every other. The `session-ledger` profile takes no pin
    *  at all: it holds no rail, so it has nothing to pin. */
   sessionServing?: { endpoint: string; sessionId: string; epoch: number };
+  /** `remote-manager` profile only: the server-derived owner, fixed server-selected actor, and the
+   * ONE locally-selected manager instance id this credential may supervise. REQUIRED for that profile. The builder pins its
+   * manager lease/presence and same-owner provisioning resources; no caller-supplied subject rows
+   * or profile fallback are accepted. */
+  remoteManager?: { instanceId: string; owner: string; actor: string };
   /** `deployer` profile only: which v0.4 ep instrument set its `launch`/`ps` rows carry. Defaults
    *  to `"admin"` (the static operator's ephemeral deploy cred). The user-mode `deployer` VIEW
    *  mints `"privileged"` instead, so a spawn-scoped deploy reaches the manager where its
@@ -840,6 +849,46 @@ export async function mintCreds(
   return creds;
 }
 
+/** Issue a host-signed NATS user JWT for a caller-generated nkey. The private seed stays with
+ * the remote manager. This is deliberately narrower than {@link mintCreds}: only the typed remote
+ * manager protocol may request it, and every profile still goes through the same permission and
+ * lifetime builders. */
+export async function mintPublicUserJwt(
+  auth: SpaceAuth,
+  publicId: string,
+  profile: Profile,
+  opts: MintOpts,
+): Promise<{ jwt: string; exp: number }> {
+  if (!/^U[A-Z2-7]{55}$/.test(publicId)) throw new Error("mintPublicUserJwt: publicId must be a user nkey");
+  if (!["remote-manager", "endpoint-serve", "goal-writer", "session-ledger", "session-serving"].includes(profile))
+    throw new Error(`mintPublicUserJwt: profile "${profile}" is not part of the closed remote manager protocol`);
+  const pr: MintPrincipal = {
+    owner: opts.principal?.owner ?? DEV_OWNER,
+    actor: opts.principal?.actor ?? publicId,
+    connId: publicId,
+    ...(opts.lifecycleUid ? { lifecycleUid: opts.lifecycleUid } : {}),
+  };
+  const perms = profile === "endpoint-serve"
+    ? endpointServePermissions(auth.space, pr, opts)
+    : permissionsFor(profile, auth.space, pr, opts);
+  const validDates = userValidDates(profile, opts);
+  if (validDates.exp === undefined) throw new Error(`mintPublicUserJwt: profile "${profile}" must be bounded`);
+  const jwt = await encodeUser(profile, fromPublic(publicId), fromPublic(auth.account.pub),
+    { ...perms, tags: principalTags(pr.owner, pr.actor) },
+    { signer: fromSeed(new TextEncoder().encode(auth.account.signingSeed)), ...validDates });
+  if (profile === "endpoint-serve") {
+    if (!opts.serveIssuance) throw new Error("mintPublicUserJwt: endpoint-serve requires serveIssuance");
+    await finalizeServeIssuance(opts.serveIssuance, opts.endpointServe!, {
+      credentialId: rawDigest(jwt).replace("sha256:", "sha256-"),
+      credentialKey: publicId,
+      holderActor: pr.actor,
+      sourceChain: ["root"],
+      exp: validDates.exp,
+    });
+  }
+  return { jwt, exp: validDates.exp };
+}
+
 /** Build the NATS user permission object for a profile: a default-deny allow-list scoped to
  *  exactly what each profile does. Every profile is now enumerated least-privilege — the former
  *  allow-all `manager` is gone (its roles split across supervisor/provisioner/operator/purger and the
@@ -929,6 +978,13 @@ export function permissionsFor(
       target: { mode: "handle", tOwner: target.owner, tActor: target.actor, tUid: target.lifecycleUid },
     }, caller);
     return { pub: { allow: rows }, sub: { allow: [epCallerReplyFilter(space, caller), `_INBOX_${pr.connId}.>`] } };
+  }
+  if (profile === "manager-service" as Profile)
+    throw new Error('permissionsFor: "manager-service" is not a generic profile; use the typed remote manager authority protocol');
+  if (profile === "remote-manager") {
+    if (!opts.remoteManager)
+      throw new Error('permissionsFor: "remote-manager" requires opts.remoteManager ({instanceId, owner} of the authorized manager lifecycle)');
+    return remoteManagerPermissions(space, pr, opts.remoteManager);
   }
   if (profile === "endpoint-evictor") {
     // P2 item 3 (slice 3a): a SCOPED delivery-admin caller for ONE re-registration's verify-evict.
@@ -1300,6 +1356,71 @@ function supervisorPermissions(space: string, pr: MintPrincipal): Record<string,
       // the endpoint-serve credential), NO broad `$JS.>`/`$KV.>` (the residual-2 read/admin path is gone).
       allow: [`_INBOX_${pr.connId}.>`, `${controlServiceSubject(space, CONTROL_DELIVERY_ADMIN, pr.owner, pr.actor)}.>`],
     },
+  };
+}
+
+/** The long-lived REMOTE MANAGER base credential. This is intentionally smaller than the local
+ * supervisor+provisioner union: it registers only its own manager presence, holds only its own
+ * manager-instance lease key, and may provision only lifecycle-keyed resources under its derived
+ * owner. Endpoint registration, contract publication and serving use separate instance-pinned
+ * credentials returned by the same typed host protocol. Per-agent provisioning deliberately does
+ * NOT ride this credential: NATS consumer names are single tokens, so a broker grant cannot safely
+ * express a prefix wildcard inside `dm_<owner>-<actor>-<uid>`. That operation stays on the host's
+ * authenticated provisioning protocol, where the requested descendant is fresh-validated before
+ * an exact one-shot grant is used. */
+function remoteManagerPermissions(
+  space: string,
+  pr: MintPrincipal,
+  pin: { instanceId: string; owner: string; actor: string },
+): Record<string, unknown> {
+  if (pin.owner !== pr.owner)
+    throw new Error(`permissionsFor: remote-manager owner ${JSON.stringify(pin.owner)} does not match the authenticated principal owner ${JSON.stringify(pr.owner)}`);
+  const iid = assertLifecycleToken(pin.instanceId, "remote manager instanceId");
+  const allowedActors = new Set([`manager_${iid}`, `manager_exec_${iid}`]);
+  if (!allowedActors.has(pin.actor) || pr.actor !== pin.actor)
+    throw new Error(`permissionsFor: remote-manager actor must be the server-selected manager_${iid} or manager_exec_${iid} for instance ${iid}`);
+  const PKV = `KV_${presenceBucket(space)}`;
+  const MKV = `KV_${managerBucket(space)}`;
+  const AUTH = epAuthBucket(space);
+  const REC = recordsBucket(space);
+  const gateKey = epgateKey("manager", iid);
+  const credPrefix = epcredFamilyPrefix("manager", iid);
+  const recordKeys = [
+    recordSpecKey(RECORD_KINDS.svc, ["manager", iid]),
+    recordStatusKey(RECORD_KINDS.svc, ["manager", iid]),
+    recordAtomicKey(GOVERN_HEAD, ["manager"]),
+  ];
+  return {
+    pub: {
+      allow: [
+        "$JS.API.INFO",
+        // Own manager-instance lease only. The local supervisor profile spans lease.* because one
+        // host manages every local instance; a remote user grant must not.
+        `$JS.API.STREAM.INFO.${MKV}`,
+        `$JS.API.STREAM.MSG.GET.${MKV}`,
+        `$KV.${managerBucket(space)}.${MANAGER_LEASE_KEY}.${iid}`,
+        // Own presence key + roster watch.
+        `$KV.${presenceBucket(space)}.${principalKey(pr.owner, pr.actor).key}`,
+        `$JS.API.STREAM.INFO.${PKV}`,
+        `$JS.API.CONSUMER.CREATE.${PKV}.>`,
+        `$JS.API.CONSUMER.INFO.${PKV}.>`,
+        "$JS.FC.>",
+        // This instance's manager service registration + credential family only.
+        `$KV.${AUTH}.${gateKey}`,
+        `$KV.${AUTH}.${credPrefix}.>`,
+        ...recordKeys.map((key) => `$KV.${REC}.${key}`),
+        `${spacePrefix(space)}.epc.*`,
+        `$JS.API.DIRECT.GET.${epcStreamName(space)}.${spacePrefix(space)}.epc.>`,
+        `$JS.API.DIRECT.GET.${epcStreamName(space)}`,
+        `$JS.API.STREAM.MSG.GET.KV_${AUTH}`,
+        `$JS.API.CONSUMER.CREATE.KV_${AUTH}.>`,
+        `$JS.API.CONSUMER.INFO.KV_${AUTH}.>`,
+        `$JS.API.CONSUMER.DELETE.KV_${AUTH}.>`,
+        ...recordKeys.map((key) => `$JS.API.DIRECT.GET.KV_${REC}.$KV.${REC}.${key}`),
+        `$JS.API.STREAM.MSG.GET.KV_${REC}`,
+      ],
+    },
+    sub: { allow: [`_INBOX_${pr.connId}.>`] },
   };
 }
 

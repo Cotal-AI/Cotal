@@ -36,7 +36,7 @@ export const MAX_TOKEN_TTL_SEC = 900;
  *  instead of `agent`. A closed enum on BOTH the mint and validate side — an unknown view fails
  *  closed, never falls back to a profile. Deliberately NOT a generic `view=<profile>` passthrough:
  *  most profiles are daemon/provisioning surfaces that must never become human-requestable. */
-export const USER_TOKEN_VIEWS = ["admin", "purger", "channel-purger", "channel-writer", "deployer"] as const;
+export const USER_TOKEN_VIEWS = ["admin", "purger", "channel-purger", "channel-writer", "deployer", "manager-service"] as const;
 export type UserTokenView = (typeof USER_TOKEN_VIEWS)[number];
 
 /** The ONE central view policy table: which ledger capability each view's exchange requires (and
@@ -44,12 +44,13 @@ export type UserTokenView = (typeof USER_TOKEN_VIEWS)[number];
  *  destructive space writes); `deployer` is spawn-grade — deploying YOUR OWN team's manifest rides
  *  the same owner-domain model as own-agent stop/attach (the manager still enforces owner equality
  *  at launch, and the view's control grant is the PRIVILEGED tier, never the admin bypass). */
-export const VIEW_REQUIRED_SCOPE: Record<UserTokenView, "admin" | "spawn"> = {
+export const VIEW_REQUIRED_SCOPE: Record<UserTokenView, "admin" | "spawn" | "supervise"> = {
   admin: "admin",
   purger: "admin",
   "channel-purger": "admin",
   "channel-writer": "admin",
   deployer: "spawn",
+  "manager-service": "supervise",
 };
 
 /** The server-authored actor claim. `owner` restates `sub` (cross-checked); `actor` is the

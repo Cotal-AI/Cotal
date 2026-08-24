@@ -441,6 +441,12 @@ export function managerClusterDocument(): {
  *  artifacts are published to the `epc` store at their own digest; `clusterDigests` in the service
  *  spec carries the closure digest. Returned together so the manager publishes both then registers
  *  under the closure digest. */
+/** Public, immutable source artifacts used by both local registration and the remote
+ * host-registration protocol. Exporting the same values avoids a second manager contract dialect. */
+export function managerAuthorityContractSource(): { document: ReturnType<typeof managerClusterDocument>; artifacts: unknown[] } {
+  return { document: managerClusterDocument(), artifacts: managerContractArtifactValues() };
+}
+
 export function managerClusterArtifacts(): {
   document: ReturnType<typeof managerClusterDocument>;
   rootDigest: string;

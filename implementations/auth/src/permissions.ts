@@ -77,6 +77,8 @@ export function calloutPermissions(
       const need = VIEW_REQUIRED_SCOPE[t.act.view];
       if (!caps.includes(need))
         throw new Error(`callout permissions: view "${t.act.view}" without capability "${need}" in act.scope - refusing to mint`);
+      if (t.act.view === "manager-service")
+        throw new Error('callout permissions: "manager-service" is a typed material exchange, not a connect profile; raw view bearers are refused');
       return permissionsFor(
         t.act.view,
         t.space,
