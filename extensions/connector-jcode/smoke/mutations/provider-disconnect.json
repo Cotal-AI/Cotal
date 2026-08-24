@@ -1,0 +1,32 @@
+{
+  "suite": "extensions/connector-jcode/smoke/jcode-provider-disconnect.smoke.ts",
+  "guard": "a provider-induced Harness API close during a delivered mesh turn leaves the seat alive, reconnects one private client to the exact existing session, and resumes mesh work; failure to replace that client is terminal rather than a loop",
+  "command": "pnpm smoke:jcode-provider-disconnect",
+  "progressPattern": "✓",
+  "minTicks": 2,
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/provider-disconnect.json",
+  "_note": "The first failure is deliberately after a real mesh delivery and real Unix-socket close. It passes only after the host replaces and reattaches the private Harness client.",
+  "mutations": [
+    {
+      "name": "M1 restore the shipped defect: close exits the seat without recovery",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    connected.on(\"close\", () => void recoverBridge(connected));",
+      "replace": "    connected.on(\"close\", () => void shutdown(1));",
+      "expectRed": "provider disconnect does not exit the mesh seat (#781)"
+    },
+    {
+      "name": "M2 replace a disconnected client but forget the owned session",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "      await replacement.attachSession(sessionId);",
+      "replace": "      /* mutant: replacement never attaches the owned session */",
+      "expectRed": "recovered Harness client reattaches the existing private session (#781)"
+    },
+    {
+      "name": "M3 make reconnect success terminal instead of resuming inbox delivery",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "      if (!stopping && (agent.pendingWake() > 0 || wakeQueued)) void drive();",
+      "replace": "      /* mutant: leave pending mesh work stranded after recovery */",
+      "expectRed": "recovered seat redrives the unacknowledged stalled turn (#781)"
+    }
+  ]
+}

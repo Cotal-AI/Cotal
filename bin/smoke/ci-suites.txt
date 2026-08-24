@@ -461,6 +461,11 @@ smoke:jcode-session-resume
 # carried provider and routes in the response the model check reads; they were discarded.
 smoke:jcode-route-identity
 
+# A provider stream stall can close the Jcode Harness API during an inbox-driven turn. The connector
+# must preserve the mesh seat and unacknowledged batch, make exactly one private replacement, attach
+# the same session, and accept subsequent mesh work; a failed recovery exits rather than looping.
+smoke:jcode-provider-disconnect
+
 smoke:orientation
 
 # A signing key must not expire unattended. The manager minted its session key once at boot with a

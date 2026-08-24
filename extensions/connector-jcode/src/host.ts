@@ -243,12 +243,25 @@ export async function runJcodeHost(): Promise<void> {
   let client: JcodeClient | undefined;
   let tui: ChildProcess | undefined;
   let stopping = false;
+  let reconnecting = false;
+  let bridgeRecoveryUsed = false;
   let sessionId: string | undefined;
   let driving = false;
   let turnActive = false;
   let briefed = false;
   let initialized = false;
   let wakeQueued = false;
+
+  const launchClient = (): Promise<JcodeClient> =>
+    JcodeClient.launch({
+      binary,
+      jcodeHome: socketHome.jcodeHome,
+      workingDir: cwd,
+      // Re-copied above on every launch. Do not call the SDK default: it links rotating provider
+      // auth files, while current jcode correctly refuses external auth paths that are symlinks.
+      inheritLogins: false,
+      env: { JCODE_DISABLE_CLAUDE_MCP: "1" },
+    });
 
   const shutdown = async (code = 0): Promise<void> => {
     if (stopping) return;
@@ -269,7 +282,7 @@ export async function runJcodeHost(): Promise<void> {
   };
 
   const drive = async (override?: string): Promise<void> => {
-    if (stopping || !initialized || driving || turnActive || !client || !sessionId) return;
+    if (stopping || reconnecting || !initialized || driving || turnActive || !client || !sessionId) return;
     wakeQueued = false;
     const parts: string[] = [];
     let ids: string[] = [];
@@ -290,7 +303,13 @@ export async function runJcodeHost(): Promise<void> {
     turnActive = true;
     void agent.setStatus("working").catch(() => {});
     try {
-      await client.run(sessionId, parts.join("\n\n"), { autoApprove: true });
+      const turnClient = client;
+      await turnClient.run(sessionId, parts.join("\n\n"), { autoApprove: true });
+      // The SDK's event iterator returns normally when its socket closes. That is not a successful
+      // turn: the model may never have received the injection, so preserving the inbox batch is the
+      // only safe outcome. The reconnect path redrives it after it reattaches the owned session.
+      if (reconnecting || client !== turnClient)
+        throw new Error("Jcode Harness connection closed during the turn; leaving the inbox batch unacknowledged");
       if (ids.length) agent.drainInboxIds(ids);
     } catch (error) {
       process.stderr.write(`[cotal-jcode] turn failed: ${(error as Error).message}\n`);
@@ -298,8 +317,64 @@ export async function runJcodeHost(): Promise<void> {
       turnActive = false;
       driving = false;
       void agent.setStatus("idle").catch(() => {});
-      if (agent.pendingWake() > 0 || wakeQueued) void drive();
+      if (!reconnecting && (agent.pendingWake() > 0 || wakeQueued)) void drive();
     }
+  };
+
+  /**
+   * A provider stall can take down Jcode's bridge while leaving the private session and its inbox
+   * batch intact. Give that owned instance one clean replacement: the failed turn remains unacked,
+   * we attach the exact session rather than creating a blank one, and only then let the normal
+   * inbox driver see the pending work again. A second close is terminal — retry pacing belongs to
+   * the turn policy, not an unbounded connector relaunch loop.
+   */
+  const recoverBridge = async (lost: JcodeClient): Promise<void> => {
+    if (stopping || lost !== client || reconnecting) return;
+    if (bridgeRecoveryUsed) {
+      process.stderr.write("[cotal-jcode] private Harness connection closed after its one recovery attempt\n");
+      await shutdown(1);
+      return;
+    }
+    bridgeRecoveryUsed = true;
+    reconnecting = true;
+    turnActive = false;
+    driving = false;
+    void agent.setStatus("waiting").catch(() => {});
+    try {
+      // `launch()` owns the private instance. Close the broken owner before replacing it so the
+      // SDK has one private home to clean up; its close listener is ignored because reconnecting is
+      // already true. The replacement is still private and inherits only the copied credentials.
+      await lost.close().catch(() => {});
+      const replacement = await launchClient();
+      if (!sessionId) throw new Error("jcode connector: Harness connection closed before a session was established");
+      await replacement.attachSession(sessionId);
+      client = replacement;
+      watchClient(replacement);
+      process.stderr.write(`[cotal-jcode] recovered private Harness connection for session ${sessionId}\n`);
+      void agent.setStatus("idle").catch(() => {});
+    } catch {
+      process.stderr.write("[cotal-jcode] private Harness connection closed and its one recovery attempt failed\n");
+      await shutdown(1);
+    } finally {
+      reconnecting = false;
+      if (!stopping && (agent.pendingWake() > 0 || wakeQueued)) void drive();
+    }
+  };
+
+  const watchClient = (connected: JcodeClient): void => {
+    connected.on("close", () => void recoverBridge(connected));
+    connected.on("session_status", (event: ApiEvent) => {
+      if (!("session_id" in event) || event.session_id !== sessionId || event.ev !== "session_status") return;
+      turnActive = event.status !== "idle";
+      void agent.setStatus(turnActive ? "working" : "idle").catch(() => {});
+      if (!turnActive && !reconnecting && (agent.pendingWake() > 0 || wakeQueued)) void drive();
+    });
+    connected.on("turn_done", (event: ApiEvent) => {
+      if ("session_id" in event && event.session_id === sessionId) {
+        turnActive = false;
+        if (!reconnecting && (agent.pendingWake() > 0 || wakeQueued)) void drive();
+      }
+    });
   };
 
   agent.on("incoming", (item: InboxItem) => {
@@ -322,15 +397,7 @@ export async function runJcodeHost(): Promise<void> {
   process.on("SIGTERM", () => void shutdown());
 
   try {
-    client = await JcodeClient.launch({
-      binary,
-      jcodeHome: socketHome.jcodeHome,
-      workingDir: cwd,
-      // Re-copied above on every launch. Do not call the SDK default: it links rotating provider
-      // auth files, while current jcode correctly refuses external auth paths that are symlinks.
-      inheritLogins: false,
-      env: { JCODE_DISABLE_CLAUDE_MCP: "1" },
-    });
+    client = await launchClient();
     // A restart must come back to the session it left. Calling createSession unconditionally forked
     // a blank session and orphaned the real transcript, so a restarted seat reported for duty looking
     // healthy while remembering nothing - and the TUI, spawned with --resume below, showed a human the
@@ -386,19 +453,7 @@ export async function runJcodeHost(): Promise<void> {
       throw new Error(
         "jcode connector: the cotal MCP bridge did not become callable during its mandatory readiness turn — refusing to join a mesh seat without its tool surface",
       );
-    client.on("close", () => void shutdown(1));
-    client.on("session_status", (event: ApiEvent) => {
-      if (!("session_id" in event) || event.session_id !== sessionId || event.ev !== "session_status") return;
-      turnActive = event.status !== "idle";
-      void agent.setStatus(turnActive ? "working" : "idle").catch(() => {});
-      if (!turnActive && (agent.pendingWake() > 0 || wakeQueued)) void drive();
-    });
-    client.on("turn_done", (event: ApiEvent) => {
-      if ("session_id" in event && event.session_id === sessionId) {
-        turnActive = false;
-        if (agent.pendingWake() > 0 || wakeQueued) void drive();
-      }
-    });
+    watchClient(client);
     if (config.model) {
       const runtime = await client.getRuntimeInfo(sessionId);
       if (runtime.model !== config.model)

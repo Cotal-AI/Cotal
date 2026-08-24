@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 
 const logPath = process.env.FAKE_JCODE_LOG;
@@ -20,6 +20,16 @@ log({ ev: "argv", argv: process.argv.slice(2), env: Object.fromEntries(Object.en
 
 let attachedExisting;
 let createdFresh = false;
+let sessionWorkingDir;
+const sessionStatePath = process.env.FAKE_JCODE_SESSION_STATE;
+const storedSession = () => {
+  if (sessionStatePath && existsSync(sessionStatePath)) return JSON.parse(readFileSync(sessionStatePath, "utf8"));
+  if (!createdFresh && !attachedExisting) return undefined;
+  return { session_id: attachedExisting ?? "fake-session", working_dir: sessionWorkingDir, transcript_bytes: 1 };
+};
+const saveSession = (session) => {
+  if (sessionStatePath) writeFileSync(sessionStatePath, JSON.stringify(session));
+};
 
 const server = createServer((socket) => {
   let buffered = "";
@@ -48,16 +58,21 @@ const server = createServer((socket) => {
         // covers both a first launch (nothing to resume) and a restart (exactly one candidate).
         case "list_sessions": {
           const preset = process.env.FAKE_JCODE_SESSIONS;
-          reply({ ev: "sessions", sessions: preset ? JSON.parse(preset) : [] });
+          const remembered = storedSession();
+          reply({ ev: "sessions", sessions: preset ? JSON.parse(preset) : remembered ? [remembered] : [] });
           break;
         }
         case "attach_session":
           attachedExisting = frame.session_id;
-          reply({ ev: "attached", session: { session_id: frame.session_id, working_dir: frame.working_dir, status: "idle" } });
+          sessionWorkingDir = frame.working_dir ?? storedSession()?.working_dir;
+          saveSession({ session_id: frame.session_id, working_dir: sessionWorkingDir, transcript_bytes: 1 });
+          reply({ ev: "attached", session: { session_id: frame.session_id, working_dir: sessionWorkingDir, status: "idle" } });
           break;
         case "create_session":
           createdFresh = true;
-          reply({ ev: "attached", session: { session_id: "fake-session", working_dir: frame.working_dir, status: "idle" } });
+          sessionWorkingDir = frame.working_dir;
+          saveSession({ session_id: "fake-session", working_dir: sessionWorkingDir, transcript_bytes: 1 });
+          reply({ ev: "attached", session: { session_id: "fake-session", working_dir: sessionWorkingDir, status: "idle" } });
           break;
         case "set_model":
         case "detach_session":
@@ -72,6 +87,20 @@ const server = createServer((socket) => {
             reply({ ev: "ok" });
           } else {
             event({ ev: "message_accepted", session_id: frame.session_id });
+            const closeOnContent = process.env.FAKE_JCODE_CLOSE_ON_CONTENT;
+            const closeOnceFile = process.env.FAKE_JCODE_CLOSE_ONCE_FILE;
+            const shouldClose =
+              closeOnContent &&
+              String(frame.content).includes(closeOnContent) &&
+              (!closeOnceFile || !existsSync(closeOnceFile));
+            if (shouldClose) {
+              if (closeOnceFile) writeFileSync(closeOnceFile, "closed");
+              socket.destroy();
+              // Model the bridge process going away rather than only one TCP/Unix connection. The
+              // recovery path must be able to launch a replacement bridge at the same private path.
+              setImmediate(() => server.close());
+              return;
+            }
             setTimeout(() => {
               if (String(frame.content).includes("cotal_orientation"))
                 event({ ev: "tool_done", session_id: frame.session_id, call_id: "orientation", name: "mcp__cotal__cotal_orientation", output: "ok" });

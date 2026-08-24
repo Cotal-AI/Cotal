@@ -59,6 +59,12 @@ space/name and is owner-only. Jcode's own credential inheritance is used for the
 so provider logins work without copying its transcript/config tree into the seat. The spawned
 Jcode process does not inherit `COTAL_*` values or the Cotal launch-material pointer.
 
+If a provider failure closes the private Harness API connection during a mesh-driven turn, the
+connector leaves that turn's inbox batch unacknowledged and makes one private replacement
+connection to the same session. The seat reports `waiting` while it reconnects, then redrives that
+unacknowledged batch only after the session attaches. A failed replacement, or a second disconnect,
+ends the seat rather than silently retrying bridges without bound.
+
 Jcode currently supports **stdio** MCP servers. The connector writes only its own `cotal` entry to
 the private `JCODE_HOME/mcp.json`; it starts a stdio MCP bridge for that entry and relays its calls
 to the host's one `MeshAgent`. The Jcode/MCP child receives a per-launch relay capability, but not
