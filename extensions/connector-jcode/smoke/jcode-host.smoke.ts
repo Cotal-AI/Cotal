@@ -355,7 +355,7 @@ try {
       PATH: `${shimDir}:${env.PATH ?? ""}`,
       FAKE_JCODE_LOG: refusedLog,
       FAKE_JCODE_REFUSE_EFFORT: "xhigh",
-      FAKE_JCODE_EFFORT_ERROR: `provider rejected xhigh; accepted tiers: ${acceptedLadder}; ${effortCanary}`,
+      FAKE_JCODE_EFFORT_ERROR: `provider rejected xhigh; accepted tiers: ${acceptedLadder}, ${effortCanary}`,
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodehost",
       COTAL_NAME: "refusedpeer",

@@ -22,7 +22,7 @@
       "file": "extensions/connector-jcode/src/startup-diagnostics.ts",
       "find": "      .filter((tier) => SAFE_EFFORT_TIERS.has(tier)),",
       "replace": "      .filter(() => true),",
-      "expectRed": "downstream effort-refusal text never reaches stderr"
+      "expectRed": "JCODE-REFUSAL-CANARY-3c5e9d77-DO-NOT-PRINT"
     },
     {
       "name": "Jcode host retries the mandatory readiness proof after the first-turn MCP snapshot race",
