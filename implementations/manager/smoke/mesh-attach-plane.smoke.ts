@@ -211,10 +211,14 @@ const s3 = h3.attach();
 const r3 = await plane.establishAttach({ ...CALLER, uid: "e".repeat(26) }, { name: "worker-3", lifecycleUid: "y".repeat(26) }, s3);
 const ncCaller3: NatsConnection = await connect({ servers: `nats://127.0.0.1:${PORT}` });
 let end3: string | undefined;
+let close3 = false;
+let fault3: string | undefined;
 const rx3: Buffer[] = [];
 const rail3 = openSessionRail({
   nc: ncCaller3, grant: r3.grant, role: "caller",
   onData: (data) => { const p = decodeTerminalFrame(data); if (p.k === "data") rx3.push(Buffer.from(p.b, "base64")); else if (p.k === "end") end3 = p.reason; },
+  onClose: () => { close3 = true; },
+  onProtocolError: (reason) => { fault3 = reason; },
 });
 await ncCaller3.flush();
 rail3.send({ k: "ready" } satisfies TerminalFrame);
@@ -223,7 +227,7 @@ c("the caller is live (echo confirms the pty is alive before the kill)", await u
 // Kill the child DIRECTLY (bypass endForTarget + handle.stop) — the agent process exits on its own.
 if (h3.pid === undefined) throw new Error("the pty handle reported no pid; there is nothing to kill");
 process.kill(h3.pid, "SIGKILL");
-c("a natural pty exit surfaces `process-exit` to the live caller (NO zombie session)", await until(() => end3 === "process-exit"), { end3, handleStatus: h3.status() });
+c("a natural pty exit surfaces `process-exit` to the live caller (NO zombie session)", await until(() => end3 === "process-exit"), { end3, close3, fault3, rail: rail3.stats(), handleStatus: h3.status() });
 c("the plane drops the naturally-exited session", await until(() => plane.liveSessions === 0));
 await ncCaller3.close();
 
@@ -275,14 +279,46 @@ rail5.send({ k: "ready" } satisfies TerminalFrame);
 c("a session over an already-dead pty surfaces `process-exit` (never a zombie)", await until(() => end5 === "process-exit"), { end5, status: h5.status() });
 await ncCaller5.close();
 
+// --------------------------------------------------------------------------------------------
+// `close` is an unsequenced rail control frame. If the serving bridge closes immediately after
+// sending `end`, it can overtake data still inside the caller's async consumer: the rail closes,
+// the queued end frame is discarded, and the CLI reports `peer-closed` instead of the real reason.
+console.log("I. an async caller accepts queued output before the distinct serving end");
+const h6 = createRuntime("pty", "mesh-plane-smoke6").spawn("worker-6", ECHO_CHILD, process.cwd());
+const s6 = h6.attach();
+const target6 = { name: "worker-6", lifecycleUid: "6".repeat(26) };
+const r6 = await plane.establishAttach({ ...CALLER, uid: "h".repeat(26) }, target6, s6);
+const ncCaller6: NatsConnection = await connect({ servers: `nats://127.0.0.1:${PORT}` });
+const transport6 = meshSessionTransport(ncCaller6, r6.grant);
+let end6: string | undefined;
+let slowEntered6 = false;
+let releaseSlow6!: () => void;
+const slowGate6 = new Promise<void>((resolve) => { releaseSlow6 = resolve; });
+transport6.onData(async (bytes) => {
+  if (!bytes.toString("utf8").includes("ENDORDER6")) return;
+  slowEntered6 = true;
+  await slowGate6;
+});
+transport6.onEnd((_error, reason) => { end6 = reason; });
+await ncCaller6.flush();
+transport6.send(Buffer.from("ENDORDER6\n", "utf8"));
+c("the async caller handler is holding output before the serving end", await until(() => slowEntered6));
+plane.endForTarget(target6.name, target6.lifecycleUid, "target-despawn");
+await wait(500);
+c("an unsequenced close does not overtake output still inside the async caller handler", end6 === undefined, { end6 });
+releaseSlow6();
+c("the queued distinct end reason arrives after async output acceptance", await until(() => end6 === "target-despawn"), { end6 });
+await ncCaller6.close();
+h6.stop({ graceful: false });
+
 // ---------------------------------------------------------------------------------------------
 // A per-session connection that LEAKS is a worse bug than the standing wildcard it replaces, so
 // prove the connections actually close rather than trusting that teardown was called. `drain`
 // awaits every in-flight teardown; after it, every connection this run opened must be closed and
 // every ledger row terminal.
-console.log("I. teardown really closes every per-session connection and terminalizes every row");
+console.log("J. teardown really closes every per-session connection and terminalizes every row");
 const openedCount = opened.length;
-c("the run opened one connection PER SESSION (not one shared connection)", openedCount >= 5, openedCount);
+c("the run opened one connection PER SESSION (not one shared connection)", openedCount >= 6, openedCount);
 await plane.drain("closed");
 c("the plane reports no live sessions after drain", plane.liveSessions === 0, plane.liveSessions);
 c("EVERY per-session connection is closed (no leak)", opened.every((x) => x.isClosed()), opened.map((x) => x.isClosed()));
