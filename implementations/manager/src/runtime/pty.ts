@@ -65,6 +65,11 @@ export class PtyRuntime implements Runtime {
     let alive = true;
     let cols = DEFAULT_COLS;
     let rows = DEFAULT_ROWS;
+    // node-pty hands us the child's exit code and killing signal exactly once, and this runtime
+    // used to drop them on the floor — leaving the manager unable to say why any seat had died.
+    // Retained here so `exitInfo` can answer after the fact; stays undefined while the child lives,
+    // because "not exited yet" and "exited cleanly" must never read the same.
+    let exit: { code?: number; signal?: number } | undefined;
 
     // Clear Claude's startup gates (workspace-trust, dev-channels warning) by pressing Enter on a
     // timer during the startup window — see CONFIRM_INTERVAL_MS for why this is blind, not output-
@@ -87,8 +92,11 @@ export class PtyRuntime implements Runtime {
       const b = Buffer.from(d, "utf8");
       for (const fn of dataSubs) fn(b);
     });
-    proc.onExit(() => {
+    proc.onExit(({ exitCode, signal }) => {
       alive = false;
+      // `signal` is absent on an ordinary exit and 0 is a real exit code, so both are recorded as
+      // present-or-absent rather than coalesced into one number.
+      exit = { code: exitCode, ...(signal === undefined ? {} : { signal }) };
       if (confirmTimer) clearInterval(confirmTimer);
       for (const fn of exitSubs) fn();
     });
@@ -98,6 +106,7 @@ export class PtyRuntime implements Runtime {
       kind: "pty",
       pid: proc.pid,
       status: () => (alive ? "running" : "exited"),
+      exitInfo: () => exit,
       stop: (opts) => {
         if (!alive) return;
         // node-pty's ConPTY backend has no signals: kill(<signal>) throws on Windows, and a

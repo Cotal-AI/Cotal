@@ -274,6 +274,29 @@ export interface ManagerOptions {
 
 export type ManagerMaintenanceState = "active" | "preserving" | "preserved";
 
+/** Which path gave up a seat's slot. Required at every `freeSlot` call, with no default: a default
+ *  is how the one caller that matters ends up unlabelled, and the whole point of recording a cause
+ *  is that an unexplained death cannot masquerade as a routine one. A new free path must name
+ *  itself here or it will not compile. */
+export type FreeSlotCause =
+  | "stopped"
+  | "process-exit"
+  | "pi-crash-loop"
+  | "pi-recovery-failed"
+  | "session-bind-failed"
+  | "resume-session-rebind-failed";
+
+/** Operator-facing phrasing per cause. Kept beside the union so adding a member without a sentence
+ *  is a type error rather than a blank in the log. */
+const FREE_SLOT_CAUSE_TEXT: Record<FreeSlotCause, string> = {
+  "stopped": "this manager stopped it (despawn or shutdown)",
+  "process-exit": "its own process exited and this manager did not stop it",
+  "pi-crash-loop": "this manager retired it after a Pi crash loop",
+  "pi-recovery-failed": "this manager retired it after Pi session recovery failed",
+  "session-bind-failed": "this manager stopped it: its host session could not be bound at launch",
+  "resume-session-rebind-failed": "this manager stopped it: its host session could not be rebound on resume",
+};
+
 export type ManagerResumeIdentity =
   // lifecycleUid is the agent's ORIGINAL incarnation uid (its durables are keyed by it): the resume
   // must recover it, not mint a fresh one, or a later teardown would orphan the real durables. It is
@@ -2325,13 +2348,13 @@ export class Manager {
           : undefined,
       });
       if (requireAuthoritativeExit) return;
-      this.freeSlot(a, floor, true);
+      this.freeSlot(a, floor, "stopped", true);
       return;
     }
-    if (!requireAuthoritativeExit) this.freeSlot(a, floor, true);
+    if (!requireAuthoritativeExit) this.freeSlot(a, floor, "stopped", true);
     this.lifecycleInFlight++;
     void this.awaitHandleExit(a.handle)
-      .then(() => this.freeSlot(a, floor, true)) // no-op once an accepted stop already freed it
+      .then(() => this.freeSlot(a, floor, "stopped", true)) // no-op once an accepted stop already freed it
       .catch((e) => {
         this.unverifiedStops.push({
           name: a.name,
@@ -2471,8 +2494,41 @@ export class Manager {
    *  expires — flooring the RECYCLE, not the call, so both free paths (despawn + exit/reap) are
    *  covered (P4c). Floor self + own-child despawn and natural exit; NEVER admin despawn (operator
    *  emergency-kill stays unthrottled) and NEVER the reserved-rollback path (no cold-start paid). */
-  private freeSlot(a: ManagedAgent, floor: boolean, acceptedBeforeFence = false): void {
+  /**
+   * WHY A SEAT LEFT — one line, at the one place every free path passes through.
+   *
+   * A manager that had held twelve seats could not say why any of them had died: the log carried no
+   * per-seat exit line at all, so "the supervisor reaped them" and "they died on their own" were
+   * indistinguishable after the fact and the incident was unattributable. `freeSlot` is the single
+   * chokepoint for despawn, self-stop, reap and exit, which is why the line lives here rather than
+   * being remembered at each of the six callers.
+   *
+   * THE RUNTIME'S EXIT DETAIL IS OPTIONAL AND ITS ABSENCE IS SAID OUT LOUD. `AgentHandle.exitInfo`
+   * is only implemented by backends that own the child process; the rest genuinely cannot see how
+   * it ended. Printing `code 0` for those would be a fabricated clean exit on exactly the seats
+   * whose death nobody can explain, so an absent answer prints as unavailable and names the runtime
+   * that could not provide it.
+   */
+  private logSeatReaped(a: ManagedAgent, cause: FreeSlotCause): void {
+    let detail: string;
+    try {
+      const info = a.handle.exitInfo?.();
+      detail = info === undefined
+        ? `exit detail unavailable from runtime "${a.handle.kind}"`
+        : `exit code ${info.code ?? "unknown"}${info.signal === undefined ? "" : `, signal ${info.signal}`}`;
+    } catch (e) {
+      // A runtime that throws while being asked has told us something real; it must not take the
+      // log line (or the free path it sits on) down with it.
+      detail = `exit detail unreadable from runtime "${a.handle.kind}": ${(e as Error).message}`;
+    }
+    console.error(
+      `seat reaped: ${a.name} (${a.id}, uid ${a.lifecycleUid}${a.handle.pid !== undefined ? `, pid ${a.handle.pid}` : ""}) - ${FREE_SLOT_CAUSE_TEXT[cause]}; ${detail}`,
+    );
+  }
+
+  private freeSlot(a: ManagedAgent, floor: boolean, cause: FreeSlotCause, acceptedBeforeFence = false): void {
     if (this.agents.get(a.name) !== a) return; // already freed (exit raced despawn, etc.)
+    this.logSeatReaped(a, cause);
     a.terminalizing = true; // F5 latch (Unit B): also covers exit/reap paths that never rode stopHandle
     this.agents.delete(a.name);
     if (a.restart?.sessionStatePath) rmSync(a.restart.sessionStatePath, { force: true });
@@ -2887,7 +2943,7 @@ export class Manager {
     if (restart.crashes.length > SESSION_RESTART_LIMIT) {
       console.error(`! ${a.name}: Pi crash loop (${restart.crashes.length} crashes in ${SESSION_RESTART_WINDOW_MS / 1000}s) - retiring the managed seat`);
       restart.armed = false;
-      this.freeSlot(a, true);
+      this.freeSlot(a, true, "pi-crash-loop");
       this.reapChildrenOf(this.managedPrincipal(a));
       release();
       return;
@@ -2931,7 +2987,7 @@ export class Manager {
         // The replacement may be alive but unable to prove the expected session. Stop it BEFORE
         // retiring credentials/durables; otherwise an untracked process survives under torn auth.
         try { replacement?.stop({ graceful: false }); } catch { /* terminal cleanup continues */ }
-        this.freeSlot(a, true);
+        this.freeSlot(a, true, "pi-recovery-failed");
         this.reapChildrenOf(this.managedPrincipal(a));
       } finally {
         release();
@@ -2955,7 +3011,7 @@ export class Manager {
         console.error(`! ${a.name}: cannot classify Pi process exit for recovery: ${(error as Error).message} - retiring the seat`);
       }
     }
-    this.freeSlot(a, true);
+    this.freeSlot(a, true, "process-exit");
     this.reapChildrenOf(this.managedPrincipal(a));
   }
 
@@ -3748,7 +3804,7 @@ export class Manager {
         } catch (error) {
           const detail = `${managed.name} joined, but its exact host session could not be bound for supervised recovery: ${(error as Error).message}`;
           this.stopHandle(managed, false);
-          this.freeSlot(managed, true);
+          this.freeSlot(managed, true, "session-bind-failed");
           await hooks?.onOutcome?.({ kind: "failed", data: { error: detail } });
           return { ok: false, error: detail };
         }
@@ -4235,7 +4291,7 @@ export class Manager {
           managed.launch.sessionId = this.readManagedSession(managed);
         } catch (error) {
           this.stopHandle(managed, false);
-          this.freeSlot(managed, true, true);
+          this.freeSlot(managed, true, "resume-session-rebind-failed", true);
           return { ok: false, error: `${managed.name} resumed, but its exact host session could not be rebound: ${(error as Error).message}` };
         }
       }

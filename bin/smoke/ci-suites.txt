@@ -470,3 +470,10 @@ smoke:orientation
 # Failing closed is correct (SPEC 13.10); never renewing is the defect. Rotate early, keep the old
 # key verifiable across an overlap, and never drop the newest.
 smoke:anchor-renewal
+
+# When a seat leaves, the manager must say WHY. A live supervisor lost several seats while it kept
+# running and its log carried no per-seat exit line at all, so "the supervisor reaped them" and
+# "they died on their own" were indistinguishable after the fact. Two different facts are required:
+# which path gave up the slot, and what the runtime saw when the child ended — and a runtime that
+# cannot see the exit must say so rather than print a fabricated code 0.
+smoke:seat-exit-cause

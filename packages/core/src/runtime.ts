@@ -53,6 +53,16 @@ export interface AgentHandle {
    *  the manager answers `input is not supported by runtime <kind>`. A silent no-op here would be
    *  a dropped keystroke, which is worse than an error. */
   write?(data: string): void;
+  /** What the runtime OBSERVED when the child ended: the OS exit code, and/or the signal number
+   *  that killed it. Meaningful only once {@link status} reports `exited`; before that a backend
+   *  returns undefined.
+   *
+   *  OPTIONAL, and absent means UNKNOWN — never "clean": a backend that does not own the child
+   *  process (tmux/cmux/orca/herdr attach to an externally-owned one) cannot see how it ended, and
+   *  a caller must say so rather than print a zero it never measured. Defaulting to `code: 0` here
+   *  would fabricate a clean exit on exactly the seats whose death nobody can account for, which is
+   *  the failure this exists to end. */
+  exitInfo?(): { code?: number; signal?: number } | undefined;
   /** Open a live attach. Throws on backends that can't stream (e.g. tmux/cmux, which
    *  you attach to natively). */
   attach(): AttachSession;
