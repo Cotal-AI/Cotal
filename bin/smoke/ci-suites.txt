@@ -470,3 +470,9 @@ smoke:orientation
 # Failing closed is correct (SPEC 13.10); never renewing is the defect. Rotate early, keep the old
 # key verifiable across an overlap, and never drop the newest.
 smoke:anchor-renewal
+# The un-ack reprieve has to end (#807). #793 stopped the overflow valve acking a directed message
+# it evicts so the broker can redeliver it once there is room - but an un-acked id can be handed
+# straight back into a still-full inbox and evicted again, forever, spending throughput while every
+# seat reports healthy. Same shape as #790 one layer down. Count evictions per id, give up after
+# five, and say so on stderr (never emit("error") - with no listener that kills the seat).
+smoke:overflow-churn-bound

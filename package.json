@@ -128,6 +128,7 @@
     "smoke:channel-attention:auth": "tsx extensions/connector-core/smoke/per-channel-attention-auth.smoke.ts",
     "smoke:presence-scrub": "tsx packages/core/smoke/presence-offline-scrub.smoke.ts",
     "smoke:cross-path-dedup": "tsx extensions/connector-core/smoke/cross-path-dedup.smoke.ts",
+    "smoke:overflow-churn-bound": "tsx extensions/connector-core/smoke/overflow-churn-bound.smoke.ts",
     "smoke:inbox-overflow-directed": "tsx extensions/connector-core/smoke/inbox-overflow-directed.smoke.ts",
     "smoke:history-flood": "tsx extensions/connector-core/smoke/history-flood.smoke.ts",
     "smoke:inbox-window": "tsx extensions/connector-core/smoke/inbox-window.smoke.ts",
