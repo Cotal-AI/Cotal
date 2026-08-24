@@ -388,7 +388,7 @@ try {
   );
   check(
     "downstream effort-refusal text never reaches stderr",
-    !refusedErr.includes(effortCanary) &&
+    !refusedErr.toLowerCase().includes(effortCanary.toLowerCase()) &&
       !refusedErr.includes("provider rejected xhigh") &&
       !refusedErr.includes("invalid_request: provider rejected"),
     refusedErr,
