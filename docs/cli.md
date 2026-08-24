@@ -818,7 +818,7 @@ cotal supervise [--runtime <name>] [--space <s>] [--server <url>] [--spawn <name
 | Flag | Default | Meaning |
 |---|---|---|
 | `--space <s>` | this folder's auth space | Space to supervise |
-| `--server <url>` | the local mesh | Broker URL |
+| `--server <url>` | hosting mesh, or matching registered mesh | Broker URL. A registered mesh supplies it when omitted; a different explicit value is refused. |
 | `--runtime <name>` | `pty` | Agent runtime (`pty` built in; extension runtimes are explicit-only) |
 | `--console-port <n>` | — | Protocol-console port |
 | `--console-host <host>` | loopback | Bind host for the console + attach endpoint. Loopback keeps it machine-local; `cotal up` passes the address it bound the broker to, which is what lets `cotal attach` reach this manager from another machine |
@@ -831,6 +831,12 @@ The manager is the agent supervisor and control plane: it answers `spawn --detac
 directly to recover a dead manager or drive a custom runtime. Default runtime is `pty`; install an
 optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, `@cotal-ai/cmux`, or `@cotal-ai/herdr`) and
 select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.md).
+
+A `meshes add --mode user` entry is a **participant** registration, not hosting authority. Its
+broker address is usable by `supervise` for an exact diagnostic, but a participant cannot supervise
+that user-auth space yet: the manager needs host-side service authority. Run `cotal spawn` without
+`--detach` to launch a foreground agent, or ask the space host to run the manager for detached
+agents. Do not run `cotal down` or `cotal up` on a participant machine to repair this condition.
 
 ## reconcile-gate
 

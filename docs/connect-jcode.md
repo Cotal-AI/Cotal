@@ -72,10 +72,14 @@ Before the seat joins the mesh, the host runs a mandatory Jcode turn that calls
 `cotal_orientation`. Jcode loads MCP tools asynchronously; its first turn can use the pre-MCP tool
 snapshot immediately before Jcode rebuilds that snapshot. The host repeats the identical proof once
 in that case. A second absence fails the launch, so a bridge that never comes up remains a loud
-failure rather than an agent that is present but mute. The host then waits for the mesh connection
-and presence bind to complete before it adds a no-reply notice that the bootstrap orientation
-predates the join and that a new orientation is live context. During a broker outage, it stays
-waiting and sends no connected notice.
+failure rather than an agent that is present but mute. A managed Jcode seat has a **three-minute
+bounded readiness window**: first boot can download model material, start the MCP bridge, and wait
+through the provider-backed readiness turns. If that window expires, the launch is `uncertain`, not
+a failed or cleanup verdict; use `cotal attach <name>` or `cotal ps` to inspect it and do not stop
+it solely because the window elapsed. The host then waits for the mesh connection and presence bind
+to complete before it adds a no-reply notice that the bootstrap orientation predates the join and
+that a new orientation is live context. During a broker outage, it stays waiting and sends no
+connected notice.
 
 For a foreground launch, the TUI opens as soon as the session is ready, before the readiness turn,
 so it streams boot activity instead of leaving the terminal blank. Presence still begins only after
@@ -91,7 +95,10 @@ the next turn rather than being silently treated as an interrupt.
 against the active provider, then the connector reads runtime identity back and refuses startup if
 it is not the requested model; a seat is never allowed to join under a model label it did not
 receive. The connector does not currently offer a Cotal model catalog because the Harness API's
-`listModels()` is session-scoped and provider-specific.
+`listModels()` is session-scoped and provider-specific. If the mandatory readiness turn receives a
+provider `invalid_request` refusal for a model id or reasoning-effort value, the launch diagnostic
+names the provider error code (or `invalid_request` when none is supplied) and rejected value. Other provider response text remains scrubbed, so
+an external observer/UI can correct connector-visible input without exposing private harness output.
 
 The following fail loud before a new session is provisioned where the manager can preflight them,
 or at connector launch as a backstop:

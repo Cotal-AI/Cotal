@@ -9,6 +9,7 @@ import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
 import { mirrorJcodeCredentials, shortSocketHome } from "./private-state.js";
 import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
 import { bareModelId, describeRoute } from "./route-identity.js";
+import { classifyReadinessProviderRefusal } from "./startup-diagnostics.js";
 import {
   MeshAgent,
   ORIENTATION_BOOTSTRAP,
@@ -393,8 +394,16 @@ export async function runJcodeHost(): Promise<void> {
     const readinessPrompt = "Call the cotal_orientation tool exactly once now. Do not perform any other work and do not write a response.";
     const hasOrientation = (run: Awaited<ReturnType<JcodeClient["run"]>>) =>
       run.toolCalls.some((call) => /(?:^|__)cotal_orientation$/.test(call.name));
-    let readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });
-    if (!hasOrientation(readiness)) readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });
+    let readiness;
+    try {
+      readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });
+      if (!hasOrientation(readiness)) readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });
+    } catch (error) {
+      // A readiness-turn provider refusal is different from arbitrary Harness API failure: Jcode
+      // supplied an invalid-request code and a rejected model/effort value the connector can safely
+      // classify. Preserve only those bounded fields; all other message bytes stay scrubbed (#828).
+      throw classifyReadinessProviderRefusal(error) ?? error;
+    }
     if (!hasOrientation(readiness))
       throw new Error(
         "jcode connector: the cotal MCP bridge did not become callable during its two mandatory readiness turns — refusing to join a mesh seat without its tool surface",
