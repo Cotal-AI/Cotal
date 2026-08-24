@@ -53,7 +53,7 @@
     {
       "name": "M2 the served document loses its userAuth wrapper entirely (the original shape defect)",
       "file": "implementations/auth/src/service.ts",
-      "find": "  (bundle.userAuth as { endpoints: { url: string } }).endpoints = { url: publicUrl };",
+      "find": "  (bundle.userAuth as { endpoints: { url: string } }).endpoints.url = publicUrl;",
       "replace": "  void publicUrl;\n  delete bundle.userAuth;",
       "afterRestore": "pnpm --filter @cotal-ai/auth... build",
       "expectRed": "the LIVE served document is accepted by checkUserBundle (the `meshes add --from` consumer)",
@@ -63,7 +63,7 @@
     {
       "name": "M3 the post-bind pin is skipped, leaving the wrapper present but pinning the empty string",
       "file": "implementations/auth/src/service.ts",
-      "find": "  (bundle.userAuth as { endpoints: { url: string } }).endpoints = { url: publicUrl };",
+      "find": "  (bundle.userAuth as { endpoints: { url: string } }).endpoints.url = publicUrl;",
       "replace": "  void publicUrl;",
       "afterRestore": "pnpm --filter @cotal-ai/auth... build",
       "expectRed": "the LIVE served document is accepted by checkUserBundle (the `meshes add --from` consumer)",
