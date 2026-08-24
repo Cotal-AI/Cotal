@@ -1,0 +1,39 @@
+{
+  "command": "pnpm smoke:component-health",
+  "progressPattern": "✓",
+  "minTicks": 13,
+  "mutations": [
+    {
+      "name": "the manager's service answer is treated as healthy even when its control rail never answered",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "if (!noService) return { name: \"manager\", verdict: \"refused\", facts };\n    const liveRecord = record.kind === \"live\";\n    const hasLease = facts.some((fact) => fact.startsWith(\"lease holder \"));\n    return { name: \"manager\", verdict: liveRecord || hasLease ? \"not-serving\" : \"absent\", facts };",
+      "replace": "if (!noService) return { name: \"manager\", verdict: \"refused\", facts };\n    return { name: \"manager\", verdict: \"serving\", facts };",
+      "expectRed": "live lease-holder that never serves exits present-not-serving (2)",
+      "cell": "live lease-holder that never serves exits present-not-serving (2)"
+    },
+    {
+      "name": "a confirmed stale-or-missing manager process is reported as present-but-not-serving instead of component-absent",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "if (record.kind === \"absent\" || record.kind === \"dead\") return \"absent\";",
+      "replace": "if (record.kind === \"absent\" || record.kind === \"dead\") return \"not-serving\";",
+      "expectRed": "no manager process exits component-absent (1)",
+      "cell": "no manager process exits component-absent (1)"
+    },
+    {
+      "name": "a delivery lease that has not reached ready is reported as healthy",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "return { name: \"delivery\", verdict: lease.ready ? \"serving\" : \"not-serving\", facts };",
+      "replace": "return { name: \"delivery\", verdict: \"serving\", facts };",
+      "expectRed": "delivery ready lease and renewal adoption report independently from its own surfaces",
+      "cell": "delivery ready lease and renewal adoption report independently from its own surfaces"
+    },
+    {
+      "name": "a live pid whose command is not the web dashboard is guessed onto the default port instead of refused",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "if (!portMatch && !isWebCommand)\n    return { name: \"web\", verdict: \"refused\", facts: [...facts, \"port probe refused (recorded PID is not a web command)\"] };",
+      "replace": "",
+      "expectRed": "a live non-web pidfile is a probe refusal (3), never a healthy default-port guess",
+      "cell": "a live non-web pidfile is a probe refusal (3), never a healthy default-port guess"
+    }
+  ]
+}

@@ -40,6 +40,7 @@ try {
   const base = jcodeConnector.buildLaunch({ space: "space", name: "seat" });
   check("starts the host entry", base.args.length === 1 && /host/.test(base.args[0]), base.args);
   check("requires the jcode binary", jcodeConnector.requires?.join(",") === "jcode");
+  check("declares a bounded three-minute bootstrap window", jcodeConnector.readinessTimeoutMs === 180_000, jcodeConnector.readinessTimeoutMs);
   check("forwards mesh identity", base.env?.COTAL_SPACE === "space" && base.env?.COTAL_NAME === "seat");
   check("pins private state to the launch directory", base.env?.COTAL_JCODE_HOME === process.cwd());
   check("inherits ordinary operator env", base.env?.UNRELATED_JCODE_ENV_CANARY === "inherited");

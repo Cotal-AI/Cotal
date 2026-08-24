@@ -7,14 +7,13 @@
  *    then sends `ready`; the bridge replays the pty's byte-exact backlog snapshot (which can rebuild
  *    a full-screen TUI's alternate-screen buffer) and only then streams live output — so a late or
  *    third attach paints correctly without the child having to repaint. Live output that arrives
- *    while the snapshot is being built is buffered and flushed after it, in order (no chunk slips
- *    ahead of, or is lost before, the image);
- *  - duplex byte flow: pty output → `b` frames (serving → caller); caller `b` frames → pty
- *    keystrokes; `resize` frames → pty geometry;
+ *    after the snapshot boundary is buffered within a hard cap and flushed after it, in order;
+ *  - duplex byte flow: pty output → bounded, coalesced `b` frames (serving → caller); caller `b`
+ *    frames → pty keystrokes; `resize` frames → pty geometry;
  *  - BACKPRESSURE (item-6 pin: never silent loss): the core rail's window is bounded and refuses
  *    (`resource-exhausted`) rather than buffer; on refusal the bridge DROPS the chunk, accumulates
- *    the dropped-byte count, and prepends an explicit `drop` notice to the next frame the reopened
- *    window accepts — the caller always learns output was lost;
+ *    the dropped-byte count, retries an explicit `drop` notice when credit reopens, and the caller
+ *    automatically requests a fresh canonical snapshot so a full-screen TUI cannot stay corrupt;
  *  - TERMINATION (item-6 pin 4): every teardown surfaces a DISTINCT end reason (`process-exit` /
  *    `closed` / `expired` / `target-despawn` / `manager-restart`) as an `end` frame before the rail
  *    closes, so the client can tell "the agent exited" from "you were detached" from "the manager
@@ -33,6 +32,12 @@ import {
  *  incarnation advanced its epoch (the successor refuses old-epoch sessions, §13.6). */
 export type AttachEndReason = "process-exit" | "closed" | "expired" | "target-despawn" | "manager-restart";
 
+const OUTPUT_BATCH_MS = 8;
+const OUTPUT_BATCH_BYTES = 64 * 1024;
+const REPAINT_BUFFER_BYTES = 256 * 1024;
+const DROP_RETRY_MS = 25;
+const END_ACK_GRACE_MS = 1_500;
+
 export interface ServeSessionBridgeOpts {
   /** A connection scoped to this session's two eps rails (the serving side's per-session credential,
    *  or — static mode — the manager's instrument connection whose rows cover the subtree). */
@@ -46,6 +51,10 @@ export interface ServeSessionBridgeOpts {
   /** Passthrough rail timer knobs (testability). */
   idleCreditMs?: number;
   stallTimeoutMs?: number;
+  /** Output coalescing knobs. Production defaults batch one display frame up to 64 KiB; smokes use
+   *  the byte ceiling to force deterministic frame-window overflow. */
+  outputBatchMs?: number;
+  outputBatchBytes?: number;
 }
 
 export interface SessionBridge {
@@ -55,16 +64,25 @@ export interface SessionBridge {
   /** In-memory observability (smoke assertions): the rail's window stats, the dropped-byte count
    *  (backpressure), the dropped-FRAME count (caller frames the codec rejected), and whether the
    *  reconstruction handshake has gone live. */
-  stats(): { sent: number; ackedThrough: number; delivered: number; inFlight: number; droppedBytes: number; droppedFrames: number; live: boolean };
+  stats(): { sent: number; ackedThrough: number; delivered: number; inFlight: number; droppedBytes: number; droppedFrames: number; queuedBytes: number; live: boolean; repainting: boolean };
 }
 
 export function serveSessionBridge(opts: ServeSessionBridgeOpts): SessionBridge {
   const { session } = opts;
+  const outputBatchMs = Math.max(0, opts.outputBatchMs ?? OUTPUT_BATCH_MS);
+  const outputBatchBytes = Math.max(1, opts.outputBatchBytes ?? OUTPUT_BATCH_BYTES);
   let live = false; // has `ready` been received (backlog replayed, streaming live)?
+  let repainting = false;
+  let repaintQueued = false;
   let ended = false;
   let droppedBytes = 0;
   let droppedFrames = 0; // caller frames the codec rejected (observability; NOT a silent black hole)
-  const preReadyBuffer: Buffer[] = [];
+  let pendingOutput: Buffer[] = [];
+  let pendingOutputBytes = 0;
+  let outputTimer: ReturnType<typeof setTimeout> | undefined;
+  let repaintBuffer: Buffer[] = [];
+  let repaintBufferBytes = 0;
+  let dropRetryTimer: ReturnType<typeof setTimeout> | undefined;
   let rail!: SessionRail;
 
   // Send an application payload down the serving rail. Returns true on success; false when the
@@ -81,37 +99,127 @@ export function serveSessionBridge(opts: ServeSessionBridgeOpts): SessionBridge 
     }
   };
 
-  // Forward one pty output chunk, honoring backpressure with an explicit drop-notice. A pending
-  // drop count is flushed FIRST (the caller must learn output was lost before the resumed stream),
-  // and only if that notice lands does the actual chunk go — otherwise the chunk's bytes join the
-  // drop count. Nothing is ever buffered unboundedly: a chunk the window can't take is DROPPED,
-  // counted, and surfaced, never queued.
-  const forwardOutput = (chunk: Buffer): void => {
-    if (ended) return;
+  // A drop notice must not depend on the child producing one more byte. Retry the CONTROL frame
+  // until caller credit reopens the bounded window; the caller responds with a repeat `ready`, whose
+  // piggybacked ack gives this side room for the canonical repaint snapshot.
+  const scheduleDropNotice = (): void => {
+    if (ended || droppedBytes === 0 || dropRetryTimer) return;
+    dropRetryTimer = setTimeout(() => {
+      dropRetryTimer = undefined;
+      if (ended || droppedBytes === 0) return;
+      const bytes = droppedBytes;
+      if (railSend({ k: "drop", bytes })) droppedBytes -= bytes;
+      else scheduleDropNotice();
+    }, DROP_RETRY_MS);
+    dropRetryTimer.unref?.();
+  };
+
+  // Forward one bounded output frame. A pending drop count is flushed FIRST, so the caller learns
+  // that its screen is stale before any resumed stream; a refused chunk is counted and discarded.
+  const forwardOutput = (chunk: Buffer): boolean => {
+    if (ended || chunk.length === 0) return false;
     if (droppedBytes > 0) {
-      if (railSend({ k: "drop", bytes: droppedBytes })) droppedBytes = 0;
-      else { droppedBytes += chunk.length; return; }
+      const bytes = droppedBytes;
+      if (railSend({ k: "drop", bytes })) droppedBytes -= bytes;
+      else {
+        droppedBytes += chunk.length;
+        scheduleDropNotice();
+        return false;
+      }
     }
-    if (!railSend(encodeTerminalData(chunk))) droppedBytes += chunk.length;
+    if (railSend(encodeTerminalData(chunk))) return true;
+    droppedBytes += chunk.length;
+    scheduleDropNotice();
+    return false;
+  };
+
+  const forwardBytes = (bytes: Buffer): void => {
+    for (let offset = 0; offset < bytes.length; offset += outputBatchBytes) {
+      const part = bytes.subarray(offset, Math.min(bytes.length, offset + outputBatchBytes));
+      if (forwardOutput(part)) continue;
+      const remaining = bytes.length - offset - part.length;
+      if (remaining > 0) droppedBytes += remaining;
+      scheduleDropNotice();
+      return;
+    }
+  };
+  const flushOutput = (): void => {
+    if (outputTimer) clearTimeout(outputTimer);
+    outputTimer = undefined;
+    if (pendingOutputBytes === 0) return;
+    const bytes = Buffer.concat(pendingOutput, pendingOutputBytes);
+    pendingOutput = [];
+    pendingOutputBytes = 0;
+    forwardBytes(bytes);
+  };
+  const discardPendingOutput = (): void => {
+    if (outputTimer) clearTimeout(outputTimer);
+    outputTimer = undefined;
+    pendingOutput = [];
+    pendingOutputBytes = 0;
+  };
+  const queueOutput = (chunk: Buffer): void => {
+    if (ended || chunk.length === 0) return;
+    if (chunk.length >= outputBatchBytes) {
+      flushOutput();
+      forwardBytes(chunk);
+      return;
+    }
+    if (pendingOutputBytes + chunk.length > outputBatchBytes) flushOutput();
+    pendingOutput.push(chunk);
+    pendingOutputBytes += chunk.length;
+    if (pendingOutputBytes >= outputBatchBytes || outputBatchMs === 0) {
+      flushOutput();
+      return;
+    }
+    if (!outputTimer) {
+      outputTimer = setTimeout(flushOutput, outputBatchMs);
+      outputTimer.unref?.();
+    }
+  };
+  const bufferDuringRepaint = (chunk: Buffer): void => {
+    const room = REPAINT_BUFFER_BYTES - repaintBufferBytes;
+    if (room > 0) {
+      const kept = chunk.length <= room ? chunk : chunk.subarray(0, room);
+      repaintBuffer.push(kept);
+      repaintBufferBytes += kept.length;
+    }
+    if (chunk.length > room) {
+      droppedBytes += chunk.length - Math.max(0, room);
+      scheduleDropNotice();
+    }
   };
 
   const offData = session.onData((chunk) => {
     if (ended) return;
-    if (live) forwardOutput(chunk);
-    else preReadyBuffer.push(chunk); // hold until the snapshot is replayed, then flush in order
+    if (repainting) bufferDuringRepaint(chunk);
+    else if (live) queueOutput(chunk);
+    // Before the first `ready`, the session's canonical backlog is the bounded source of truth. No
+    // raw pre-ready byte queue is needed: goLive snapshots it, then buffers only post-boundary bytes.
   });
-  // The pty exit surfaces `process-exit` — but DEFERRED until the caller is live if it exits before
-  // the `ready` handshake (a session established over an already-dead, or a just-dying, pty): EPS is
-  // at-most-once, so an `end` frame sent before the caller subscribed to `.out` is lost. goLive sends
-  // the deferred exit AFTER the backlog, so the caller always learns the agent exited.
+  // The pty exit surfaces `process-exit`, deferred through an opening/repaint snapshot so the caller
+  // receives the final canonical screen before the distinct terminal reason.
   let pendingExit = false;
-  const offExit = session.onExit(() => { if (live) end("process-exit"); else pendingExit = true; });
+  const offExit = session.onExit(() => {
+    if (live && !repainting) {
+      flushOutput();
+      end("process-exit");
+    } else pendingExit = true;
+  });
 
-  // The reconstruction handshake: replay the byte-exact backlog snapshot, then flush anything the
-  // pty emitted while we built it, then stream live. Subscribing to output BEFORE this (above)
-  // means no chunk is lost between the snapshot and going live. A repeat `ready` (an explicit
-  // repaint) re-sends a fresh snapshot without re-flushing the already-drained pre-ready buffer.
+  // Initial `ready` and repeat repaint use the same ordered cut: discard only UNSENT coalesced bytes
+  // (the terminal mirror already contains them), snapshot the canonical screen, then flush bytes that
+  // arrived after the snapshot boundary. Concurrent repeat-ready requests collapse to one more pass.
   const goLive = async (): Promise<void> => {
+    if (repainting) {
+      repaintQueued = true;
+      return;
+    }
+    repainting = true;
+    repaintQueued = false;
+    discardPendingOutput();
+    repaintBuffer = [];
+    repaintBufferBytes = 0;
     let snapshot: Buffer;
     try {
       snapshot = await session.backlog();
@@ -121,14 +229,22 @@ export function serveSessionBridge(opts: ServeSessionBridgeOpts): SessionBridge 
       return;
     }
     if (ended) return;
+    // A canonical snapshot is one atomic repaint frame, as before. Splitting it across the live-output
+    // batch ceiling can fill a small window halfway through the image and create a repaint loop.
     if (snapshot.length) forwardOutput(snapshot);
-    if (!live) {
-      for (const chunk of preReadyBuffer.splice(0)) forwardOutput(chunk);
-      live = true;
+    const afterSnapshot = Buffer.concat(repaintBuffer, repaintBufferBytes);
+    repaintBuffer = [];
+    repaintBufferBytes = 0;
+    if (afterSnapshot.length) forwardBytes(afterSnapshot);
+    live = true;
+    repainting = false;
+    if (droppedBytes > 0) scheduleDropNotice();
+    // The pty exited before/during reconstruction: surface the reason only after the final image.
+    if (pendingExit) {
+      end("process-exit");
+      return;
     }
-    // The pty exited before we went live (established over a dead/dying pty): surface `process-exit`
-    // NOW, after the backlog reconstruction, so the caller sees the final screen AND the honest end.
-    if (pendingExit) end("process-exit");
+    if (repaintQueued) void goLive();
   };
 
   const onCallerFrame = (data: unknown): void => {
@@ -166,15 +282,36 @@ export function serveSessionBridge(opts: ServeSessionBridgeOpts): SessionBridge 
   function end(reason: AttachEndReason): void {
     if (ended) return;
     ended = true;
+    if (outputTimer) clearTimeout(outputTimer);
+    if (dropRetryTimer) clearTimeout(dropRetryTimer);
+    outputTimer = undefined;
+    dropRetryTimer = undefined;
+    pendingOutput = [];
+    pendingOutputBytes = 0;
+    repaintBuffer = [];
+    repaintBufferBytes = 0;
     offData();
     offExit();
+    let endSeq: number | undefined;
     try {
-      rail.send({ k: "end", reason }); // best-effort distinct end-state notice (advisory; may window out)
+      endSeq = rail.send({ k: "end", reason });
     } catch {
       /* the ledger close/expiry is the authority; the notice is advisory (§13.6) */
     }
-    rail.close();
-    opts.onEnd?.(reason);
+    // `close` is an unsequenced control frame. Sending it immediately can overtake data already
+    // queued in the caller's async handler and make that handler discard the preceding `end` frame.
+    // Hold the serving connection until the end frame is acknowledged (stdout accepted it) or a
+    // bounded grace expires; then close/release regardless, because the ledger remains authoritative.
+    void (async () => {
+      try { await opts.nc.flush(); } catch { /* connection already gone */ }
+      if (endSeq !== undefined) {
+        const deadline = Date.now() + Math.max(END_ACK_GRACE_MS, (opts.idleCreditMs ?? 1_000) + 500);
+        while (rail.stats().ackedThrough < endSeq && Date.now() < deadline)
+          await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      }
+      rail.close();
+      opts.onEnd?.(reason);
+    })();
   }
 
   rail = openSessionRail({
@@ -190,6 +327,13 @@ export function serveSessionBridge(opts: ServeSessionBridgeOpts): SessionBridge 
 
   return {
     end,
-    stats: () => ({ ...rail.stats(), droppedBytes, droppedFrames, live }),
+    stats: () => ({
+      ...rail.stats(),
+      droppedBytes,
+      droppedFrames,
+      queuedBytes: pendingOutputBytes + repaintBufferBytes,
+      live,
+      repainting,
+    }),
   };
 }

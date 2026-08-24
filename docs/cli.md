@@ -418,7 +418,7 @@ cotal meshes add <space> --server <url> [--root <dir>] [--mode auth|open|user] [
 cotal meshes add <space> --mode user (--user-auth-file <bundle.json> | --from <https url>)
 cotal meshes rm <space> [<space> …] [--force]
 cotal use <space>
-cotal status [--space <s>] [--server <url>]
+cotal status [--space <s>] [--server <url>] [--components]
 ```
 
 `meshes` lists the meshes this machine knows; a `*` marks the `current` default a bare
@@ -475,8 +475,30 @@ machine could write it back.
 including inside another mesh's project. `status` is a read-only report: machine prerequisites
 (starting with the installed `cotal-ai` version), the installed extensions and their versions, this
 folder's `.cotal/`, the recorded meshes, and a live snapshot of the selected mesh (roster, channels,
-membership feed). `status` takes only `--space` / `--server` to pick the mesh to inspect; it starts
+membership feed). `status` takes `--space` / `--server` to pick the mesh to inspect; it starts
 nothing.
+
+`cotal status --components` adds a fail-loud per-component health pass. It reads **each
+component's own control surface**, rather than treating a PID, a lease, or a successful probe of a
+sibling as proof that the component serves. It prints one of `serving`, `absent`, `not-serving`, or
+`refused` for each component and exits `0`, `1`, `2`, or `3` respectively (the highest observed
+state wins):
+
+- **manager** — local PID record, its liveness-lease holder and PID, then the manager's own typed
+  `status` service reachability from this host. Builds without a startup-phase report say
+  `phase not reported by this manager build`; that is never a blank green state.
+- **delivery** — local PID record, its ready lease (`ready` is the daemon's own bound-control
+  signal), and the latest `renewal.json` adoption verdict. A re-signed credential and a
+  broker-accepted adoption stay distinct facts.
+- **web** — local PID record and the dashboard's own loopback `/api/meta` response, which must name
+  the same PID and its requested port. A different process on the port, an unreadable PID command,
+  or an unrecognizable process record is `refused`, not a green default-port guess.
+- **broker** — the registered mesh URL dialed from this host with its recorded TLS requirement.
+
+`absent` means Cotal has no live local component record (or has a stale record); `not-serving`
+means the component record is live but its service/readiness surface did not answer or is not ready.
+Those are intentionally separate exit cases. A failed or unreadable probe is `refused`, never an
+absent component or a clean zero.
 
 ## spawn
 
@@ -818,7 +840,7 @@ cotal supervise [--runtime <name>] [--space <s>] [--server <url>] [--spawn <name
 | Flag | Default | Meaning |
 |---|---|---|
 | `--space <s>` | this folder's auth space | Space to supervise |
-| `--server <url>` | the local mesh | Broker URL |
+| `--server <url>` | hosting mesh, or matching registered mesh | Broker URL. A registered mesh supplies it when omitted; a different explicit value is refused. |
 | `--runtime <name>` | `pty` | Agent runtime (`pty` built in; extension runtimes are explicit-only) |
 | `--console-port <n>` | — | Protocol-console port |
 | `--console-host <host>` | loopback | Bind host for the console + attach endpoint. Loopback keeps it machine-local; `cotal up` passes the address it bound the broker to, which is what lets `cotal attach` reach this manager from another machine |
@@ -831,6 +853,12 @@ The manager is the agent supervisor and control plane: it answers `spawn --detac
 directly to recover a dead manager or drive a custom runtime. Default runtime is `pty`; install an
 optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, `@cotal-ai/cmux`, or `@cotal-ai/herdr`) and
 select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.md).
+
+A `meshes add --mode user` entry is a **participant** registration, not hosting authority. Its
+broker address is usable by `supervise` for an exact diagnostic, but a participant cannot supervise
+that user-auth space yet: the manager needs host-side service authority. Run `cotal spawn` without
+`--detach` to launch a foreground agent, or ask the space host to run the manager for detached
+agents. Do not run `cotal down` or `cotal up` on a participant machine to repair this condition.
 
 ## reconcile-gate
 

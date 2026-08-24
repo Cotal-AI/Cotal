@@ -61,7 +61,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // Remote registration (2026-08): `--tls` records enforced TLS intent (a tls:// --server implies
   // it), and `--mode user` registers from supplied pinned trust via `--user-auth-file` or `--from`.
   meshes: { flags: ["allow-unencrypted-overlay:boolean", "force:boolean", "from:string", "mode:string", "root:string", "server:string", "tls:boolean", "user-auth-file:string"], positionals: true },
-  status: { flags: ["server:string", "space:string"], positionals: false },
+  // `--components` (2026-08): explicit fail-loud health across manager, delivery, web, and broker; bare status remains the recovery-oriented inventory.
+  status: { flags: ["components:boolean", "server:string", "space:string"], positionals: false },
   doctor: { flags: ["fix:boolean", "space:string"], positionals: true },
   use: { flags: [], positionals: true },
   join: {

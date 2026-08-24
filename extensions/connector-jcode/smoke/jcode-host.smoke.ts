@@ -40,7 +40,10 @@ const shim = join(shimDir, "jcode");
 const log = join(root, "fake.jsonl");
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
 let child: ChildProcess | undefined;
+let outage: ChildProcess | undefined;
+let outageNats: ChildProcess | undefined;
 let operator: CotalEndpoint | undefined;
+let outageOperator: CotalEndpoint | undefined;
 let pass = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
   assert.ok(condition, `${name}${actual === undefined ? "" : ` — ${JSON.stringify(actual)}`}`);
@@ -146,8 +149,11 @@ try {
   operator = new CotalEndpoint({ space: "jcodehost", servers, card: { name: "operator", kind: "agent", id: "operator" }, channels: ["team"] });
   operator.on("error", () => {});
   let peerId: string | undefined;
+  const announced = new Set<string>();
   operator.on("presence", (event: { type: string; presence: { card: { id: string; name: string } } }) => {
-    if (event.type !== "offline" && event.presence.card.name === "jcodepeer") peerId = event.presence.card.id;
+    if (event.type === "offline") return;
+    announced.add(event.presence.card.name);
+    if (event.presence.card.name === "jcodepeer") peerId = event.presence.card.id;
   });
   await operator.start();
 
@@ -250,10 +256,178 @@ try {
   check("mesh DM becomes a Harness API turn", JSON.stringify(turn).includes("mesh-wake"), turn);
   const bootTurns = entries().filter((entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" && !(entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("cotal_orientation"));
   check("host runs the mandatory cotal MCP readiness turn before joining", bootTurns.length === 1, bootTurns);
+  const joinNotice = entries().find((entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" && (entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("earlier cotal_orientation result was captured before this join"));
+  check("post-join context supersedes the pre-join orientation card", Boolean(joinNotice), joinNotice);
 
   child.kill("SIGTERM");
   await Promise.race([once(child, "exit"), sleep(10_000)]);
   check("host exits cleanly on SIGTERM", child.exitCode === 0, { code: child.exitCode, stderr });
+
+  // #777 reproduction: Jcode can lock the first turn's tool snapshot before cotal connects. The
+  // old host makes one proof turn and rejects this otherwise healthy launch before it can join.
+  const raceLog = join(root, "readiness-race.jsonl");
+  const race = spawn(tsx, [host], {
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: raceLog,
+      FAKE_JCODE_ORIENTATION_DELAY_TURNS: "1",
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "racepeer",
+      COTAL_ID: "racepeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_CONTROL_SOCKET: join(root, "race-control.sock"),
+      COTAL_CONTROL_TOKEN: "race-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let raceErr = "";
+  race.stderr?.on("data", (chunk: Buffer) => (raceErr += chunk.toString()));
+  await Promise.race([once(race, "exit"), sleep(20_000)]);
+  const raceEntries = readFileSync(raceLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>;
+  const raceTurns = raceEntries.filter((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply && String(entry.frame?.content).includes("cotal_orientation"));
+  check("a first-turn MCP snapshot race recovers on one bounded retry", announced.has("racepeer") && raceTurns.length === 2, { code: race.exitCode, turns: raceTurns, stderr: raceErr });
+  if (race.exitCode === null) race.kill("SIGTERM");
+  await Promise.race([once(race, "exit"), sleep(10_000)]);
+  check("the recovered readiness launch exits cleanly", race.exitCode === 0, { code: race.exitCode, stderr: raceErr });
+
+  // A bridge that never publishes the tool must still fail loud after the bounded retry and must
+  // never advertise presence. This distinguishes the recovery from a false-online fallback.
+  const absentLog = join(root, "readiness-absent.jsonl");
+  const absent = spawn(tsx, [host], {
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: absentLog,
+      FAKE_JCODE_NEVER_ORIENTATION: "1",
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "absentpeer",
+      COTAL_ID: "absentpeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_CONTROL_SOCKET: join(root, "absent-control.sock"),
+      COTAL_CONTROL_TOKEN: "absent-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let absentErr = "";
+  absent.stderr?.on("data", (chunk: Buffer) => (absentErr += chunk.toString()));
+  await Promise.race([once(absent, "exit"), sleep(20_000)]);
+  const absentCode = absent.exitCode;
+  if (absentCode === null) absent.kill("SIGKILL");
+  const absentEntries = readFileSync(absentLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>;
+  const absentTurns = absentEntries.filter((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply && String(entry.frame?.content).includes("cotal_orientation"));
+  check("a permanently absent cotal tool gets exactly two readiness turns", absentTurns.length === 2, absentTurns);
+  check("a permanently absent cotal tool ends the launch", absentCode !== null && absentCode !== 0, { code: absentCode, stderr: absentErr });
+  check("a permanently absent cotal tool never reaches the roster", !announced.has("absentpeer"), [...announced]);
+
+  // #845 reproduction: `MeshAgent.start()` retries in the background. A post-join notice sent
+  // immediately after it is not evidence of a completed join: the broker below is deliberately
+  // unbound, so neither presence nor a roster can exist.
+  const outagePort = await freePort();
+  const outageServers = `nats://127.0.0.1:${outagePort}`;
+  const outageLog = join(root, "join-outage.jsonl");
+  outage = spawn(tsx, [host], {
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: outageLog,
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodeoutage",
+      COTAL_NAME: "outagepeer",
+      COTAL_ID: "outagepeer",
+      COTAL_SERVERS: outageServers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_CONTROL_SOCKET: join(root, "outage-control.sock"),
+      COTAL_CONTROL_TOKEN: "outage-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let outageErr = "";
+  outage.stderr?.on("data", (chunk: Buffer) => (outageErr += chunk.toString()));
+  const outageEntries = (): Array<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }> =>
+    existsSync(outageLog) ? readFileSync(outageLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
+  await waitFor("outage readiness proof", () => outageEntries().find((entry) => entry.ev === "orientation_done") ? true : undefined);
+  await waitFor("outage broker refusal", () => /mesh unreachable/.test(outageErr) ? true : undefined);
+  const findOutageNotice = () =>
+    outageEntries().find(
+      (entry) =>
+        entry.ev === "request" &&
+        entry.frame?.req === "send_message" &&
+        entry.frame?.no_reply &&
+        String(entry.frame.content).includes("earlier cotal_orientation result was captured before this join"),
+    );
+  check("post-join notice stays absent while the mesh is unreachable", !findOutageNotice(), { outageNotice: findOutageNotice(), outageErr });
+  outageNats = spawn("nats-server", ["-js", "-p", String(outagePort), "-sd", join(root, "outage-js")], { stdio: "ignore" });
+  for (let i = 0; i < 100 && !(await isReachable(outageServers)); i++) await sleep(50);
+  await seedChannelRegistry({ servers: outageServers, space: "jcodeoutage", file: { defaults: { replay: false }, channels: { team: { replay: false } } } });
+  outageOperator = new CotalEndpoint({ space: "jcodeoutage", servers: outageServers, card: { name: "outageoperator", kind: "agent", id: "outageoperator" }, channels: ["team"] });
+  outageOperator.on("error", () => {});
+  let outagePeerId: string | undefined;
+  outageOperator.on("presence", (event: { type: string; presence: { card: { id: string; name: string } } }) => {
+    if (event.type !== "offline" && event.presence.card.name === "outagepeer") outagePeerId = event.presence.card.id;
+  });
+  await outageOperator.start();
+  const joinedNotice = await waitFor("post-join notice after the recovered mesh join", () => findOutageNotice());
+  await waitFor("recovered mesh presence", () => outagePeerId);
+  check("post-join notice fires only after the later real mesh join", Boolean(joinedNotice) && Boolean(outagePeerId), { joinedNotice, outagePeerId });
+  outage.kill("SIGTERM");
+  await Promise.race([once(outage, "exit"), sleep(10_000)]);
+  check("the outage launch exits cleanly", outage.exitCode === 0, { code: outage.exitCode, stderr: outageErr });
+
+  // #779 reproduction: the foreground observer belongs beside the session, before the slow
+  // readiness request. The old host only spawns it after that request has completed.
+  const tuiLog = join(root, "tui-order.jsonl");
+  const foreground = spawn(tsx, [host], {
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: tuiLog,
+      FAKE_JCODE_TURN_DELAY_MS: "1000",
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "tuipeer",
+      COTAL_ID: "tuipeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "1",
+      COTAL_CONTROL_SOCKET: join(root, "tui-control.sock"),
+      COTAL_CONTROL_TOKEN: "tui-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let foregroundErr = "";
+  foreground.stderr?.on("data", (chunk: Buffer) => (foregroundErr += chunk.toString()));
+  await waitFor("foreground readiness proof", () => existsSync(tuiLog) && readFileSync(tuiLog, "utf8").includes('"ev":"orientation_done"') ? true : undefined);
+  const tuiEntries = readFileSync(tuiLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>;
+  const tuiAt = tuiEntries.findIndex((entry) => entry.ev === "tui");
+  const readinessDoneAt = tuiEntries.findIndex((entry) => entry.ev === "orientation_done");
+  check("foreground TUI starts before its readiness turn finishes", tuiAt >= 0 && tuiAt < readinessDoneAt, { tuiAt, readinessDoneAt, entries: tuiEntries });
+  foreground.kill("SIGTERM");
+  await Promise.race([once(foreground, "exit"), sleep(10_000)]);
+  check("the early foreground TUI launch exits cleanly", foreground.exitCode === 0, { code: foreground.exitCode, stderr: foregroundErr });
 
   // Deliberate failing case: project MCP files would override Jcode's private cotal config, so the
   // host must refuse before it starts an API bridge rather than silently loading another server.
@@ -281,11 +455,66 @@ try {
   blocked.stderr?.on("data", (chunk: Buffer) => (blockedErr += chunk.toString()));
   await Promise.race([once(blocked, "exit"), sleep(10_000)]);
   check("project MCP config is refused rather than overlaid", blocked.exitCode !== 0 && /Jcode host startup failed \(project_mcp_config\)/.test(blockedErr), blockedErr);
+
+  // The readiness turn is a provider call. A refusal there used to be collapsed to `(unknown)`,
+  // forcing an external observer/UI to inspect private Jcode logs for the connector-originated
+  // provider code and rejected model parameter (#828). Drive the exact event the SDK's `run()`
+  // turns into HarnessError and assert the bounded public diagnostic, not private child text.
+  rmSync(join(root, ".mcp.json"), { force: true });
+  const refusalLog = join(root, "readiness-refusal.jsonl");
+  const refusal = spawn(tsx, [host], {
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: refusalLog,
+      FAKE_JCODE_READINESS_REFUSAL: "1",
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "readinessrefusal",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_CONTROL_SOCKET: join(root, "refused-control.sock"),
+      COTAL_CONTROL_TOKEN: "refused-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let refusalErr = "";
+  refusal.stderr?.on("data", (chunk: Buffer) => (refusalErr += chunk.toString()));
+  await waitFor("provider refusal readiness request", () => {
+    if (!existsSync(refusalLog)) return undefined;
+    return readFileSync(refusalLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).find(
+      (entry: { ev?: string; frame?: { req?: string; content?: string } }) =>
+        entry.ev === "request" && entry.frame?.req === "send_message" && entry.frame.content?.includes("cotal_orientation"),
+    );
+  });
+  await waitFor("provider refusal host exit", () => refusal.exitCode === null ? undefined : refusal.exitCode, 20_000);
+  check(
+    "provider readiness refusal names its code and rejected model parameter",
+    refusal.exitCode === 1 && /model_not_found/.test(refusalErr) && /rejected-model-id/.test(refusalErr),
+    {
+      exitCode: refusal.exitCode,
+      signalCode: refusal.signalCode,
+      stderr: refusalErr,
+      fakeEvents: existsSync(refusalLog) ? readFileSync(refusalLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [],
+    },
+  );
+  check(
+    "provider readiness refusal stays scrubbed beyond the classified fields",
+    !refusalErr.includes("was refused by provider"),
+    refusalErr,
+  );
   console.log(`\nJCODE HOST SMOKE PASSED (${pass} checks)`);
 } finally {
   if (child && child.exitCode === null) child.kill("SIGKILL");
+  if (outage && outage.exitCode === null) outage.kill("SIGKILL");
   await operator?.stop().catch(() => {});
+  await outageOperator?.stop().catch(() => {});
   nats.kill("SIGKILL");
+  outageNats?.kill("SIGKILL");
   await sleep(100);
   rmSync(root, { recursive: true, force: true });
 }
