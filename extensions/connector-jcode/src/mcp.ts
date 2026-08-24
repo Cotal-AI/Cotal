@@ -2,11 +2,74 @@ import { createConnection } from "node:net";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { PassThrough } from "node:stream";
-import { StringDecoder } from "node:string_decoder";
 import { cotalToolSpecs, parseToolArgs, type AgentConfig, type ToolResult } from "@cotal-ai/connector-core";
 
 const MAX_REPLY_BYTES = 4 * 1024 * 1024;
+
+/**
+ * The MCP SDK's stock transport parses raw JSON through Zod before dispatch. Zod drops a
+ * JSON-own `__proto__` key while coercing the JSON-RPC envelope, turning hostile input into an
+ * empty argument object. Reject that key while it is still raw JSON; all other framing and
+ * validation stays in the SDK transport.
+ */
+class ClosedStdioServerTransport extends StdioServerTransport {
+  private buffer = "";
+
+  override async start(): Promise<void> {
+    if ((this as unknown as { _started: boolean })._started)
+      throw new Error("StdioServerTransport already started!");
+    (this as unknown as { _started: boolean })._started = true;
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", this.read);
+    process.stdin.on("error", this.onError);
+  }
+
+  override async close(): Promise<void> {
+    process.stdin.off("data", this.read);
+    process.stdin.off("error", this.onError);
+    if (process.stdin.listenerCount("data") === 0) process.stdin.pause();
+    (this as unknown as { _readBuffer: { clear(): void } })._readBuffer.clear();
+    this.onclose?.();
+  }
+
+  private onError = (error: Error): void => this.onerror?.(error);
+
+  private read = (chunk: string): void => {
+    this.buffer += chunk;
+    for (;;) {
+      const newline = this.buffer.indexOf("\n");
+      if (newline < 0) return;
+      const line = this.buffer.slice(0, newline);
+      this.buffer = this.buffer.slice(newline + 1);
+      if (!line) continue;
+      try {
+        const frame = JSON.parse(line) as { id?: unknown; method?: unknown; params?: { arguments?: unknown } };
+        if (frame.method === "tools/call" && Object.hasOwn(frame.params?.arguments ?? {}, "__proto__")) {
+          if (frame.id !== undefined)
+            void this.send({
+              jsonrpc: "2.0",
+              id: frame.id as never,
+              result: { content: [{ type: "text", text: "cotal tool: unknown argument(s): __proto__ — the argument is not accepted" }], isError: true },
+            } as never);
+          continue;
+        }
+      } catch {
+        // The SDK receives malformed frames and reports the protocol error.
+      }
+      const readBuffer = (this as unknown as { _readBuffer: { append(chunk: Buffer): void; readMessage(): unknown } })._readBuffer;
+      readBuffer.append(Buffer.from(line + "\n"));
+      for (;;) {
+        try {
+          const message = readBuffer.readMessage();
+          if (message === null) break;
+          this.onmessage?.(message as never);
+        } catch (error) {
+          this.onerror?.(error as Error);
+        }
+      }
+    }
+  };
+}
 
 function content(result: ToolResult) {
   const text = [{ type: "text" as const, text: result.text }];
@@ -96,42 +159,5 @@ export async function runMcpBridge(): Promise<void> {
       },
     );
   }
-  // Reject JSON-own prototype keys before the SDK's Zod validation. Zod reads `__proto__`
-  // through Object.prototype and otherwise converts it into `{}`, which could invoke a
-  // destructive default. Keep this parser deliberately narrow: all other frames flow unchanged
-  // to the MCP SDK, which remains the JSON-RPC authority.
-  const input = new PassThrough();
-  const decoder = new StringDecoder("utf8");
-  let buffered = "";
-  process.stdin.on("data", (chunk: Buffer) => {
-    buffered += decoder.write(chunk);
-    for (;;) {
-      const newline = buffered.indexOf("\n");
-      if (newline < 0) return;
-      const line = buffered.slice(0, newline);
-      buffered = buffered.slice(newline + 1);
-      if (!line) continue;
-      try {
-        const frame = JSON.parse(line) as { id?: unknown; method?: unknown; params?: { arguments?: unknown } };
-        if (frame.method === "tools/call" && Object.hasOwn(frame.params?.arguments ?? {}, "__proto__")) {
-          if (frame.id === undefined) continue;
-          process.stdout.write(JSON.stringify({
-            jsonrpc: "2.0",
-            id: frame.id,
-            result: { content: [{ type: "text", text: "cotal tool: unknown argument(s): __proto__ — the argument is not accepted" }], isError: true },
-          }) + "\n");
-          continue;
-        }
-      } catch {
-        // Forward malformed frames untouched so the MCP SDK reports its protocol error.
-      }
-      input.write(line + "\n");
-    }
-  });
-  process.stdin.on("end", () => {
-    const final = decoder.end();
-    if (final) input.write(final);
-    input.end();
-  });
-  await server.connect(new StdioServerTransport(input, process.stdout));
+  await server.connect(new ClosedStdioServerTransport());
 }
