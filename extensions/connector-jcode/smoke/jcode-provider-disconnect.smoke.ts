@@ -28,7 +28,10 @@ async function waitFor<T>(name: string, read: () => T | undefined, timeoutMs = 2
   for (;;) {
     const value = read();
     if (value !== undefined) return value;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${name}`);
+    if (Date.now() > deadline) {
+      console.error(`  ✗ ${name}`);
+      throw new Error(`timed out waiting for ${name}`);
+    }
     await sleep(100);
   }
 }

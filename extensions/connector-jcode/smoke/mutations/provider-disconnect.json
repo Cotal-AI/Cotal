@@ -26,7 +26,7 @@
       "file": "extensions/connector-jcode/src/host.ts",
       "find": "      client = replacement;",
       "replace": "      /* mutant: replacement is never made active */",
-      "expectRed": "recovered seat redrives the unacknowledged stalled turn (#781)"
+      "expectRed": "unacknowledged stalled turn redelivery"
     }
   ]
 }
