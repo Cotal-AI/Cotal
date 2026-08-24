@@ -216,7 +216,6 @@ try {
   });
   let foregroundErr = "";
   foreground.stderr?.on("data", (chunk: Buffer) => (foregroundErr += chunk.toString()));
-  await waitFor("foreground TUI", () => existsSync(tuiLog) && readFileSync(tuiLog, "utf8").includes('"ev":"tui"') ? true : undefined);
   await waitFor("foreground readiness proof", () => existsSync(tuiLog) && readFileSync(tuiLog, "utf8").includes('"ev":"orientation_done"') ? true : undefined);
   const tuiEntries = readFileSync(tuiLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>;
   const tuiAt = tuiEntries.findIndex((entry) => entry.ev === "tui");
