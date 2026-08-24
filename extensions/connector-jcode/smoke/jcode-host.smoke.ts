@@ -217,8 +217,11 @@ try {
   const forgedCode = forged.exitCode;
   if (forgedCode === null) forged.kill("SIGKILL");
   check("a child that dies during startup still ends the launch", forgedCode !== null && forgedCode !== 0, { code: forgedCode, stderr: forgedErr });
-  check("captured child stderr stays redacted to a fixed code", /Jcode host startup failed \((?:startup_failed|startup_timeout)\)/.test(forgedErr), forgedErr);
+  // The leak is asserted BEFORE the shape of what replaces it: both cells fail when the exception
+  // widens, and whichever runs first is the one that names the defect. "A token reached the
+  // terminal" is the defect; "the fatal line lost its fixed-code form" is a symptom of it.
   check("child stderr forging the refusal's wording does not reach the operator", !forgedErr.includes(canary), forgedErr);
+  check("captured child stderr stays redacted to a fixed code", /Jcode host startup failed \((?:startup_failed|startup_timeout)\)/.test(forgedErr), forgedErr);
   check("a seat whose harness died never reaches the roster", !announced.has("forgedpeer"), [...announced]);
 
   // Deliberate failing case: project MCP files would override Jcode's private cotal config, so the
