@@ -14,8 +14,8 @@ import {
   renderOrientation,
   ORIENTATION_BOOTSTRAP,
   DOCS_VERSION,
+  MeshAgent,
   type AgentConfig,
-  type MeshAgent,
 } from "../src/index.js";
 // RELATIVE, not the package specifier. `@cotal-ai/connector-core` resolves to `dist/`, so this
 // suite used to assert against the last build rather than the tree: it passes on a stale `dist`,
@@ -191,6 +191,43 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
 
   const tokenMode = configFromEnv({ COTAL_NAME: "alice", COTAL_SPACE: "demo", COTAL_TOKEN: "shared" });
   assert.ok(names(tokenMode).includes("cotal_spawn"), "740:token mode is not an identity plane and must still be advertised cotal_spawn");
+}
+
+// 7 — a broken ordered watcher used to print one terminal line for every generated `oc_*`
+// consumer name. Those names change on every rebuild, so a plain string dedupe still floods. Pin
+// both the normalization and the useful first diagnostic, and make orientation explain the last
+// concrete fault rather than looking like the connector simply has not finished booting.
+{
+  const realAgent = new MeshAgent(cfg({ id: "alice", connector: "codex" }));
+  const endpoint = (realAgent as unknown as { ep: { emit(name: string, error: Error): void } }).ep;
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  let stderr = "";
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    stderr += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    for (let i = 1; i <= 100; i++) {
+      endpoint.emit("error", new Error(`timeout while deleting oc_rotatingToken_${i}`));
+      endpoint.emit(
+        "error",
+        new Error(
+          `NATS permission denied: cannot publish \"$JS.API.CONSUMER.DELETE.KV_cotal_presence_demo.oc_anotherToken_${i}\"`,
+        ),
+      );
+    }
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+
+  const lines = stderr.split("\n").filter((line) => line.includes("[cotal-connector] endpoint error:"));
+  assert.equal(lines.length, 2, "rotating ordered-consumer errors are logged once per fault family");
+  assert.ok(lines.some((line) => line.includes("timeout")), "the first timeout diagnostic remains visible");
+  assert.ok(lines.some((line) => line.includes("permission denied")), "the first permission diagnostic remains visible");
+
+  const orientation = cotalToolSpecs(cfg()).find((spec) => spec.name === "cotal_orientation")!;
+  const result = await orientation.run(realAgent, cfg(), {});
+  assert.match(result.text, /last error: NATS permission denied/, "orientation names the live connection fault");
 }
 
 console.log("✓ orientation smoke passed");

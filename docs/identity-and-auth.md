@@ -59,7 +59,7 @@ normative shapes are [SPEC Appendix B](../SPEC.md#appendix-b-profile-acls); in b
 
 | Profile | Is |
 |---|---|
-| **agent** | The ordinary peer: publishes as itself to its declared channels, reads within its read ACL + its own DM/task inboxes. |
+| **agent** | The ordinary peer: publishes as itself to its declared channels, reads within its read ACL + its own DM/task inboxes. Its read-only presence and channel-registry watches may create, inspect, and delete only their own client-managed ordered consumers; those cleanup grants cannot delete KV records or streams. |
 | **observer** | Read-only chat + presence; DMs invisible. What `cotal console` runs. |
 | **admin** | Elevated *read-only* god-view: sees DMs and anycast live, still writes nothing. A deliberate opt-in (`cotal web`). |
 | operator-side | Narrow single-purpose creds for the machinery (supervising, provisioning, teardown, delivery); the reference implementation splits these so no one connection can read every DM *and* delete every stream ([security model](security.md)). |
