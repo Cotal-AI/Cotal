@@ -90,6 +90,7 @@ smoke:ep-serve-gate
 smoke:bind-fence
 smoke:unfenced-responder
 smoke:manager-service
+smoke:manager-service-authority
 smoke:manager-service-ops
 smoke:manager-service-invoke
 smoke:manager-spawn-action
@@ -125,6 +126,8 @@ smoke:sub-acl:auth
 smoke:self-serve-join:auth
 smoke:control-auth
 smoke:manager-split
+smoke:supervise-registered-user
+smoke:supervise-registered-user-authority
 smoke:cred-lifetime
 smoke:standing-renewal
 smoke:delivery-renewal
