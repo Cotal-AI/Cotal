@@ -1,0 +1,33 @@
+{
+  "suite": "bin/smoke/control-transport-dial.smoke.ts",
+  "guard": "CLI control dials select websocket transport from ws:// and preserve raw TCP behavior",
+  "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:control-transport-dial",
+  "completionMarker": "control transport dial:",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/control-transport-dial.json",
+  "why": [
+    "The websocket listener and CLI subprocess are real. With the shipped dialer, models reaches the endpoint rails and ps reaches the scatter's explicit empty-registry response. Replacing either dial with the raw node transport fails earlier with the refusal that names wsconnect, so the named cell turns red while the suite still reaches its completion banner.",
+    "The nats:// cells are negative controls. They prove selecting a dialer from the URL does not regress the node transport used for ordinary TCP brokers.",
+    "The attach session dial at agents.ts:577 requires a live manager and a redeemed session grant. That live workflow was independently validated for this PR, but this compact regression rig intentionally has no manager so it can use the endpoint-rails deadline as the discriminator. It is therefore not claimed by a mutation here.",
+    "releaseAbandonedSession at agents.ts:641 is reachable only after a live attached session loses its link mid-session. A deterministic discriminating cell would require fault injection that severs that one websocket after redemption while leaving the replacement route alive. No such rig exists here, so this fixture records the boundary honestly instead of registering a mutation that would SURVIVE."
+  ],
+  "mutations": [
+    {
+      "cell": "A",
+      "name": "askManagerEp uses raw TCP connect for a websocket URL",
+      "file": "implementations/cli/src/lib/control.ts",
+      "find": "async function askManagerEp(\n  space: string,\n  server: string,\n  op: string,\n  args: Record<string, unknown> | undefined,\n  auth: ControlAuth,\n  reach: ControlReach,\n  timeoutMs?: number,\n  pin?: ManagerPin,\n): Promise<ManagerReply> {\n  const instanceId = pin?.instanceId;\n  const mapped = EP_COMMANDS[op];\n  if (!mapped) return { ok: false, error: `unknown manager op \"${op}\" (no v0.4 command mapping)` };\n  const caller = auth.epCaller!;\n  // standaloneConnectOpts handles all three auth shapes: static creds, the user bearer + sentinel\n  // (client-chosen inbox nonce; the callout scopes the reply inbox on it), or BARE on an open\n  // mesh (no credential system; the broker enforces nothing).\n  // dialerFor, not the raw TCP connect: a user mesh reached through an HTTPS edge is a\n  // wss:// URL, and the node transport refuses those outright (\"use the 'wsconnect'\n  // function instead\") - which took `ps`/`stop`/`attach` down against every websocket\n  // broker while send and spawn (already routed through the dialer) worked.\n  const nc = await dialerFor(server)({\n    servers: server,",
+      "replace": "async function askManagerEp(\n  space: string,\n  server: string,\n  op: string,\n  args: Record<string, unknown> | undefined,\n  auth: ControlAuth,\n  reach: ControlReach,\n  timeoutMs?: number,\n  pin?: ManagerPin,\n): Promise<ManagerReply> {\n  const instanceId = pin?.instanceId;\n  const mapped = EP_COMMANDS[op];\n  if (!mapped) return { ok: false, error: `unknown manager op \"${op}\" (no v0.4 command mapping)` };\n  const caller = auth.epCaller!;\n  // standaloneConnectOpts handles all three auth shapes: static creds, the user bearer + sentinel\n  // (client-chosen inbox nonce; the callout scopes the reply inbox on it), or BARE on an open\n  // mesh (no credential system; the broker enforces nothing).\n  // dialerFor, not the raw TCP connect: a user mesh reached through an HTTPS edge is a\n  // wss:// URL, and the node transport refuses those outright (\"use the 'wsconnect'\n  // function instead\") - which took `ps`/`stop`/`attach` down against every websocket\n  // broker while send and spawn (already routed through the dialer) worked.\n  const nc = await (await import(\"@nats-io/transport-node\")).connect({\n    servers: server,",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "expectRed": "FAIL: A: models reaches the manager over ws:// through askManagerEp"
+    },
+    {
+      "cell": "B",
+      "name": "withControlConnection uses raw TCP connect for a websocket URL",
+      "file": "implementations/cli/src/lib/control.ts",
+      "find": "async function withControlConnection<T>(server: string, auth: ControlAuth, fn: (nc: NatsConnection) => Promise<T>): Promise<T> {\n  // dialerFor, not the raw TCP connect: a user mesh reached through an HTTPS edge is a\n  // wss:// URL, and the node transport refuses those outright (\"use the 'wsconnect'\n  // function instead\") - which took `ps`/`stop`/`attach` down against every websocket\n  // broker while send and spawn (already routed through the dialer) worked.\n  const nc = await dialerFor(server)({\n    servers: server,",
+      "replace": "async function withControlConnection<T>(server: string, auth: ControlAuth, fn: (nc: NatsConnection) => Promise<T>): Promise<T> {\n  // dialerFor, not the raw TCP connect: a user mesh reached through an HTTPS edge is a\n  // wss:// URL, and the node transport refuses those outright (\"use the 'wsconnect'\n  // function instead\") - which took `ps`/`stop`/`attach` down against every websocket\n  // broker while send and spawn (already routed through the dialer) worked.\n  const nc = await (await import(\"@nats-io/transport-node\")).connect({\n    servers: server,",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "expectRed": "FAIL: B: ps reaches the manager over ws:// through the scatter connection"
+    }
+  ]
+}

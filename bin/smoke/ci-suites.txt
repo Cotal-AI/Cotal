@@ -519,3 +519,6 @@ smoke:hermes-empty-id
 # a connectivity fact does not license. Four occurrences on the live space "main" reached the
 # neighbouring branch and survived only because the lease re-read answered.
 smoke:detach-not-teardown
+# Control commands resolve ws:// / wss:// meshes too. Exercise the real CLI against one broker's
+# websocket and TCP listeners so raw node-transport regressions name their `wsconnect` refusal.
+smoke:control-transport-dial
