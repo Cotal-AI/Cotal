@@ -1,6 +1,6 @@
-import { mintCreds, newIdentity, openSessionRail, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant } from "@cotal-ai/core";
+import { dialerFor, mintCreds, newIdentity, openSessionRail, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant } from "@cotal-ai/core";
 import { divergentCwdAnchor, loadMeshes, targetFlags } from "@cotal-ai/workspace";
-import { connect, type NatsConnection } from "@nats-io/transport-node";
+import { type NatsConnection } from "@nats-io/transport-node";
 import { c } from "../ui.js";
 import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit, type ScatterInstanceLiveness } from "../lib/control.js";
 import { attachClient, detachKey, holdTerminal, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
@@ -574,7 +574,7 @@ async function establishAttachSession(
   // with `gap`, or it stalled out and closed while this side was away, so nothing ever arrives
   // again). Owning re-establishment here means the link coming back produces a real session with a
   // real repaint, instead of a restored socket over a session that ended without us.
-  const nc = await connect({
+  const nc = await dialerFor(t.server)({
     servers: t.server,
     ...standaloneConnectOpts({ creds, tls: false }),
     inboxPrefix: `_INBOX_${id.id}`,
@@ -638,7 +638,7 @@ type Abandoned = { grant: SessionGrant; creds: string; inbox: string; server: st
  * minted from the credential the abandoned session already had.
  */
 async function releaseAbandonedSession(s: Abandoned): Promise<void> {
-  const nc = await connect({
+  const nc = await dialerFor(s.server)({
     servers: s.server,
     ...standaloneConnectOpts({ creds: s.creds, tls: false }),
     inboxPrefix: `_INBOX_${s.inbox}`,
