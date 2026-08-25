@@ -1,5 +1,36 @@
 # cotal-ai
 
+## 0.30.0
+
+### Minor Changes
+
+- ef01887: Add closed, host-issued remote manager-service authority for registered user-auth participants. It requires the dedicated `supervise` scope, restricts manager registration and credentials to one owner and opaque instance, and uses a lifecycle-bound prepare, activate, and renew flow with fail-closed renewal and same-owner descendant provisioning.
+
+### Patch Changes
+
+- 0def128: Report the host-authority requirement when a registered user-auth participant tries to supervise a remote mesh, and derive the registered broker address without accepting a mismatched override.
+- Updated dependencies [6d03de0]
+- Updated dependencies [68a8041]
+- Updated dependencies [cc1f2e2]
+- Updated dependencies [656921b]
+- Updated dependencies [0e673ff]
+- Updated dependencies [c6db901]
+- Updated dependencies [569f4d3]
+- Updated dependencies [b282f70]
+- Updated dependencies [3443c57]
+- Updated dependencies [97dea94]
+- Updated dependencies [0323f5b]
+- Updated dependencies [ef01887]
+- Updated dependencies [196dddb]
+- Updated dependencies [0def128]
+  - @cotal-ai/auth@0.30.0
+  - @cotal-ai/connector-core@0.30.0
+  - @cotal-ai/cli@0.30.0
+  - @cotal-ai/manager@0.30.0
+  - @cotal-ai/core@0.30.0
+  - @cotal-ai/delivery@0.30.0
+  - @cotal-ai/workspace@0.30.0
+
 ## 0.29.2
 
 ### Patch Changes

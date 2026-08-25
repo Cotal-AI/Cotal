@@ -1,5 +1,32 @@
 # @cotal-ai/connector-jcode
 
+## 0.30.0
+
+### Patch Changes
+
+- 36d23ed: A failed jcode turn is now retried with a growing delay and a give-up budget, instead of instantly
+  and forever. A turn's batch is acked only on success, so a failure left the wake count positive and
+  the `finally` re-drove the same batch with no pause and no limit, re-paying the full injection to
+  the provider on every pass. Retries now start at one second, double to a one-minute ceiling, keep at
+  most one timer in flight, and stop after eight consecutive failures with the batch left un-acked so
+  it redelivers. A failing seat also reports `waiting` rather than `idle`, because a seat holding an
+  un-acked batch and pacing a retry is not idle.
+- b282f70: Honor a connector's declared startup readiness window and make Jcode provider launch refusals diagnosable without exposing private harness output.
+- b69d2bb: Jcode now relays the advertised `cotal_inbox` `peek` argument while preserving its host-owned
+  pull-only inbox scope. `peek: true` shows buffered quiet ambient without clearing it; explicit
+  `peek: false` and omitted arguments retain the normal destructive pull.
+- 9626206: The jcode connector now owns the full private-instance shutdown path instead of trusting mutable
+  SDK registry PIDs. Each launch carries a random launch-bound identity and captures immutable process
+  start tokens before teardown; a PID from `servers.json` or `active_pids` is signalled only when it
+  matches that launch, so stale records can never kill an unrelated process tree. Shutdown stops the
+  bridge first, waits through a bounded quiescence window for late daemon records, and then tears down
+  the exact recorded or already-captured launch processes before the host returns.
+- a7386cb: Keep a managed Jcode seat alive when a provider failure closes its private Harness API connection
+  mid-turn. The connector now leaves the failed turn unacknowledged, makes one private replacement,
+  reattaches the same owned session, and then resumes mesh delivery. A failed replacement or a second
+  connection loss fails loud instead of retrying bridge launches without bound.
+- 3443c57: Stabilize Jcode startup around asynchronous MCP registration: retry the mandatory orientation proof once, preserve loud refusal when it remains unavailable, open the foreground TUI during readiness, and issue the stale-orientation notice only after a completed mesh join.
+
 ## 0.29.2
 
 ## 0.29.1
