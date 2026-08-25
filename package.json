@@ -139,6 +139,7 @@
     "smoke:inbox-window": "tsx extensions/connector-core/smoke/inbox-window.smoke.ts",
     "smoke:feedback": "tsx extensions/connector-core/smoke/feedback.smoke.ts",
     "smoke:claude-wake": "tsx extensions/connector-claude-code/smoke/wake-path.smoke.ts",
+    "smoke:claude-boot-wake": "tsx extensions/connector-claude-code/smoke/boot-wake-race.smoke.ts",
     "smoke:claude-launch-model": "tsx extensions/connector-claude-code/smoke/launch-model.smoke.ts",
     "smoke:claude-events-arm": "tsx extensions/connector-claude-code/smoke/events-arm.smoke.ts",
     "smoke:claude-run-error": "tsx extensions/connector-claude-code/smoke/agui-run-error.smoke.ts",
