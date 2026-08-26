@@ -75,6 +75,9 @@ const PRODUCERS: Record<Profile, () => string[]> = {
   observer: via("observer"),
   admin: via("admin"),
   supervisor: via("supervisor"),
+  "remote-manager": () => [`manager_${IID}`, `manager_exec_${IID}`].flatMap((actor) =>
+    rowsOf(permissionsFor("remote-manager", SPACE,
+      { ...pr, actor }, { remoteManager: { instanceId: IID, owner: DEV_OWNER, actor } }))),
   provisioner: via("provisioner"),
   deprovisioner: via("deprovisioner", { deprovisionTarget: { principal: `${DEV_OWNER}.worker`, lifecycleUid: UID } }),
   "retirement-requester": via("retirement-requester", { retirementRequester: { owner: DEV_OWNER, actor: "manager", uid: UID, target: { owner: DEV_OWNER, actor: "worker", lifecycleUid: UID } } }),
