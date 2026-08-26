@@ -530,3 +530,7 @@ smoke:claude-boot-wake
 # Control commands resolve ws:// / wss:// meshes too. Exercise the real CLI against one broker's
 # websocket and TCP listeners so raw node-transport regressions name their `wsconnect` refusal.
 smoke:control-transport-dial
+# A Claude seat must receive CLAUDE_CODE_OAUTH_TOKEN (the credential docs/deploy.md promises) and
+# must not receive CLAUDE_CODE_CHILD_SESSION. The allowlist that closed #866 dropped the token
+# because this connector declared no providerKeys; a container has no Keychain to fall back to.
+smoke:claude-launch-env

@@ -86,7 +86,9 @@ just ordinary users. The account boundary contains cross-tenant escalation, not 
 tenant. See [Identity and auth](identity-and-auth.md).
 
 **Model auth (the LLM provider).** Set each connector's credential as an env var; the supervisor
-forwards the named vars and each CLI reads only the ones it understands:
+forwards the named vars the connector declares (not the manager's whole environment) and each CLI
+reads only the ones it understands. A Claude seat therefore receives `CLAUDE_CODE_OAUTH_TOKEN`
+because the Claude connector lists it, not because every `CLAUDE_CODE_*` name is inherited:
 
 | connector | env | notes |
 |---|---|---|

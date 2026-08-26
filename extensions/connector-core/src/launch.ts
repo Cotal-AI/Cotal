@@ -100,9 +100,11 @@ export const MODEL_PROVIDER_KEYS = [
  *  - it redirects the mesh registry, and a child that shells out to `cotal` must resolve the one
  *  its parent did. `COTAL_CODEX_BIN` and its siblings are operator binary overrides, and sit here
  *  precisely BECAUSE the neighbouring per-launch `COTAL_CODEX_HOME`/`_CONFIG`/`_TUI`/`_PROMPT` do
- *  not. Host-session markers (`CLAUDE_CODE_*`, `CLAUDECODE`, and the analogous names other hosts
- *  use to mark a nested session) are never on this list: a seat's transcript/resume behaviour is a
- *  property of the seat, never of how many layers up someone once ran `cotal up` inside an agent. */
+ *  not. Host-session markers (`CLAUDE_CODE_CHILD_SESSION`, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`,
+ *  and the analogous names other hosts use to mark a nested session) are never on this list: a
+ *  seat's transcript/resume behaviour is a property of the seat, never of how many layers up
+ *  someone once ran `cotal up` inside an agent. Connector-declared auth vars such as
+ *  `CLAUDE_CODE_OAUTH_TOKEN` are not operator knobs and live on the connector's providerKeys. */
 export const OPERATOR_ENV_KEEP = [
   "COTAL_HOME",
   "COTAL_FEEDBACK_KEY",

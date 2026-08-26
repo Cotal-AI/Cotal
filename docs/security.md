@@ -106,10 +106,14 @@ The guarantees, at a glance, each enforced by the broker per
   execution allow-list (PATH included, so connector binaries under `~/.local/bin` still resolve),
   the machine-wide `COTAL_*` operator knobs, connector-declared provider inputs, shared-MCP
   references, and only names explicitly added through `spawn.env` in the [config file](config.md).
-  It does not receive ambient host-session markers (`CLAUDE_CODE_*`, `CLAUDECODE`, and the analogous
-  names other hosts use), temporary credentials, source-control tokens, or unrelated service secrets
-  unless a persona or operator names them. This boundary does not confine files accessible through
-  HOME or other supplied filesystem roots. Use a sandbox or VM when filesystem containment is required.
+  It does not receive ambient host-session markers (`CLAUDE_CODE_CHILD_SESSION`, `CLAUDECODE`,
+  `CLAUDE_CODE_ENTRYPOINT`, and the analogous names other hosts use to mark a nested session),
+  temporary credentials, source-control tokens, or unrelated service secrets unless a persona or
+  operator names them. Connector-declared auth vars still cross: a Claude seat receives
+  `CLAUDE_CODE_OAUTH_TOKEN` (and the rest of that connector's documented credential set) so a
+  container with no Keychain can authenticate, which is the forwarding `docs/deploy.md` promises.
+  This boundary does not confine files accessible through HOME or other supplied filesystem roots.
+  Use a sandbox or VM when filesystem containment is required.
 - **Manager compromise:** the operator side is split into narrow, single-purpose profiles (there
   is **no allow-all cred**); the long-lived **supervisor** serves control and touches
   presence/its lease but cannot read a DM, create a consumer, or delete a stream; the destructive

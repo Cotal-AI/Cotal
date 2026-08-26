@@ -11,4 +11,4 @@
 "@cotal-ai/pi": minor
 ---
 
-A spawned seat now receives a constructed environment (PATH/HOME/locale, the machine-wide COTAL_* knobs, connector-declared provider keys) instead of the manager's ambient environment. Host-session markers such as CLAUDE_CODE_CHILD_SESSION no longer leak into seats and silently disable transcript saving. spawn.env remains the explicit opt-in for extra names, including a host marker a persona has chosen to receive.
+A spawned seat now receives a constructed environment (PATH/HOME/locale, the machine-wide COTAL_* knobs, connector-declared provider keys) instead of the manager's ambient environment. Host-session markers such as CLAUDE_CODE_CHILD_SESSION no longer leak into seats and silently disable transcript saving. The Claude connector declares CLAUDE_CODE_OAUTH_TOKEN (and the rest of claude's documented credential set) so a container seat still authenticates; spawn.env remains the explicit opt-in for extra names, including a host marker a persona has chosen to receive.
