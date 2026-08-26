@@ -1164,8 +1164,8 @@ async function rethrowUnboundListenerFailure(
   removePid: (pid: number) => void = removeMatchingNatsPid,
 ): Promise<never> {
   return rethrowAfterDetachedCleanup(primary, async () => {
-    try { await stop(child); }
-    finally { removePid(child.pid ?? 0); }
+    await stop(child);
+    removePid(child.pid ?? 0);
   });
 }
 
@@ -1175,8 +1175,8 @@ async function rethrowNotReadyListenerFailure(
   removePid?: () => void,
 ): Promise<never> {
   return rethrowAfterDetachedCleanup(primary, () => {
-    try { child.kill("SIGTERM"); }
-    finally { removePid?.(); }
+    child.kill("SIGTERM");
+    removePid?.();
   });
 }
 
@@ -1197,9 +1197,9 @@ export const rethrowPostStartListenerFailureForTest = rethrowPostStartListenerFa
 
 async function stopUnboundRestoreListener(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
-  child.kill("SIGTERM");
+  if (!child.kill("SIGTERM")) return;
   if (await waitForChildExit(child, 5_000)) return;
-  child.kill("SIGKILL");
+  if (!child.kill("SIGKILL")) return;
   if (!await waitForChildExit(child, 5_000))
     throw new Error(`unbound restore listener process ${child.pid ?? "unknown"} did not exit`);
 }

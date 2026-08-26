@@ -72,34 +72,52 @@ try {
   );
 }
 
+const signalFailure = Object.assign(new Error("not permitted"), { code: "EPERM" });
+const failingChild = windowsDetachedChild(4444, () => { throw signalFailure; });
 const bindFailure = new Error("bind failed");
-const observeFailure = new Error("detached child process 4242 cannot have its exit observed");
 let removedPid: number | undefined;
 let bindCaught: unknown;
 try {
   await rethrowUnboundListenerFailureForTest(
-    child,
+    failingChild,
     bindFailure,
-    async () => { throw observeFailure; },
+    undefined,
     (pid) => { removedPid = pid; },
   );
 } catch (error) {
   bindCaught = error;
 }
 check(
-  "an unbound-listener teardown failure still removes the matching pid",
-  removedPid === 4242,
+  "an unbound-listener non-ESRCH teardown failure keeps the pidfile",
+  removedPid === undefined,
   removedPid,
 );
 check(
   "an unbound-listener teardown failure preserves the primary error and attaches the cleanup failure",
-  bindCaught === bindFailure && bindFailure.cause === observeFailure,
+  bindCaught === bindFailure && bindFailure.cause === signalFailure,
   bindCaught,
 );
 
+const unboundGoneFailure = new Error("bind failed after exit");
+let unboundGonePidRemoved: number | undefined;
+let unboundGoneCaught: unknown;
+try {
+  await rethrowUnboundListenerFailureForTest(
+    goneChild,
+    unboundGoneFailure,
+    undefined,
+    (pid) => { unboundGonePidRemoved = pid; },
+  );
+} catch (error) {
+  unboundGoneCaught = error;
+}
+check(
+  "an unbound-listener ESRCH result removes the stale pidfile and preserves the bind error",
+  unboundGonePidRemoved === 4343 && unboundGoneCaught === unboundGoneFailure && unboundGoneFailure.cause === undefined,
+  { unboundGonePidRemoved, unboundGoneCaught },
+);
+
 const readinessFailure = new Error("nats-server did not become reachable - see log");
-const signalFailure = Object.assign(new Error("not permitted"), { code: "EPERM" });
-const failingChild = windowsDetachedChild(4444, () => { throw signalFailure; });
 let notReadyPidRemoved = false;
 let readinessCaught: unknown;
 try {
@@ -108,13 +126,28 @@ try {
   readinessCaught = error;
 }
 check(
-  "a not-ready kill failure still removes the bound-listener pid",
+  "a not-ready non-ESRCH kill failure keeps the bound-listener pidfile",
+  !notReadyPidRemoved,
   notReadyPidRemoved,
 );
 check(
   "a not-ready kill failure preserves the readiness error and attaches the signal failure",
   readinessCaught === readinessFailure && readinessFailure.cause === signalFailure,
   readinessCaught,
+);
+
+const readinessGoneFailure = new Error("nats-server exited before readiness");
+let notReadyGonePidRemoved = false;
+let readinessGoneCaught: unknown;
+try {
+  await rethrowNotReadyListenerFailureForTest(goneChild, readinessGoneFailure, () => { notReadyGonePidRemoved = true; });
+} catch (error) {
+  readinessGoneCaught = error;
+}
+check(
+  "a not-ready ESRCH result removes the stale pidfile and preserves the readiness error",
+  notReadyGonePidRemoved && readinessGoneCaught === readinessGoneFailure && readinessGoneFailure.cause === undefined,
+  { notReadyGonePidRemoved, readinessGoneCaught },
 );
 
 const postStartFailure = new Error("postStart failed");
