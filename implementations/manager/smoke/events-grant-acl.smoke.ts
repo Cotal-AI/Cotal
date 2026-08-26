@@ -95,6 +95,15 @@ writeFileSync(
   join(agentsDir, "event-bot.md"),
   "---\nname: eventbot\nrole: worker\nsubscribe: [work]\nallowSubscribe: [work]\nallowPublish: [work]\n---\nbody\n",
 );
+// A persona that names NO channels at all — the manager's own default site (`?? subscribe ?? []`)
+// is the only thing that decides what this file's credential admits, which is what section 4b
+// grades. Every other suite that grades the no-implicit-general contract drives core or the
+// connector env directly; only a spawn through THIS door exercises the manager's copy of the
+// default.
+writeFileSync(
+  join(agentsDir, "quiet-bot.md"),
+  "---\nname: quietbot\nrole: worker\n---\nbody\n",
+);
 
 /** A manager wired for this smoke. Called twice: a restart is a NEW manager adopting an inventory
  *  the old one wrote, and section 7 has to be that rather than a same-instance call. */
@@ -328,6 +337,27 @@ try {
       const pub = pubAcl(join(credsDir, `${String(d.name)}.${String(d.lifecycleUid)}.creds`));
       return pub.map(channelOf).includes(eventChannel({ owner: DEV_OWNER, actor }));
     })(), r5);
+  }
+
+  // 4b — THE MANAGER'S OWN READ-SET DEFAULT. A persona that names no channels spawns through this
+  // door with NO channel read row in its minted credential. The default lives at ONE line in this
+  // file (`allowSubscribe = opts.allowSubscribe ?? def.allowSubscribe ?? subscribe ?? []`), it is
+  // the manager's OWN copy of the contract the loader/mint/endpoint each carry for themselves, and
+  // no other suite grades it: no-implicit-general drives core directly and session-channels drives
+  // the connector env, so a revert of this line to `?? ["general"]` reddened NOTHING before this
+  // cell existed. The credential is read from the minted creds file (the same artifact the broker
+  // enforces) rather than from the launch record, because the row is what the old default minted.
+  {
+    const reply = await mgr.startAgent({ name: "quiet-bot", agent: "smoke-emitter" });
+    check("a channel-less persona spawns through the manager", reply.ok === true, reply);
+    const data = (reply.ok ? reply.data : {}) as { lifecycleUid?: string; name?: string };
+    const sub = subAcl(join(credsDir, `${String(data.name)}.${String(data.lifecycleUid)}.creds`));
+    const channels = sub.map(channelOf).filter((c) => c !== "");
+    check(
+      "an omitted read set mints NO channel read row at the manager door — general included",
+      channels.length === 0,
+      { channels, sub },
+    );
   }
 
   // 5 — RESTART. The record has to carry BOTH halves: the channel and the arming.
@@ -565,7 +595,7 @@ try {
 
 // A count, because several cells above only run when the spawn before them succeeded: a regression
 // that refuses every spawn DELETES them rather than failing them, and the run still prints a verdict.
-const EXPECTED = 39;
+const EXPECTED = 41;
 check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
 console.log(`\nEVENTS-GRANT/ACL SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);

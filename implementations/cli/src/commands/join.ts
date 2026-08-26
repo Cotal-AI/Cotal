@@ -52,6 +52,9 @@ export async function join(args: ParsedArgs): Promise<void> {
   // A join link carries server + auth + space; explicit flags still override it.
   const link = values.link ? parseJoinLink(values.link) : undefined;
   const name = values.name ?? userInfo().username;
+  // A HUMAN joining from a terminal, not a persona-driven agent: they typed `cotal join` to land
+  // somewhere and talk, so a landing channel is the point of the command. `general` stays the
+  // default HERE only - an agent's read set comes from its persona and defaults to no channel.
   const channel = values.channel ?? link?.channels?.[0] ?? "general";
   const auth = {
     token: values.token ?? link?.token,

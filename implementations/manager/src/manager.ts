@@ -3792,8 +3792,8 @@ export class Manager {
         prompt,
         // The SAME access set the creds were minted from (above) — forwarded so the session's
         // runtime read/post set matches its credentials. Without this a manifest-spawned agent
-        // (materialized persona has no access frontmatter) falls back to `["general"]`, which its
-        // scoped creds deny, and it joins nothing.
+        // (materialized persona has no access frontmatter) has no channel set to read and joins
+        // nothing, even though its creds authorize the manifest's channels.
         subscribe,
         allowSubscribe,
         allowPublish,
