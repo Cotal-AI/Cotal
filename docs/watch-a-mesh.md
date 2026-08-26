@@ -75,6 +75,22 @@ mesh, it can be launched from any directory. The branded URL `http://cotal.local
 to loopback with no DNS setup in Chrome, Firefox, and Edge; Safari may not resolve `*.localhost`,
 so use `http://127.0.0.1:7799`. A custom `--port` uses the plain loopback address.
 
+**The link is single-use, and the surface authenticates the caller.** Starting the dashboard prints a
+URL carrying a one-time token; opening it exchanges the token for a session cookie and the token is
+then spent. Binding loopback keeps other *hosts* out, but it never kept out other *processes* on your
+machine, nor a page in your own browser posting to `http://127.0.0.1:7799` — so the token is what
+makes the session yours. Requests without it are refused with the reason named (`unauthenticated`,
+`launch-token-already-used`, or `cross-origin`) rather than silently returning nothing.
+
+Practical consequences: open the printed link in the browser you want to use it in, because the
+token is spent on first use — re-opening it **in another browser or profile** is refused with
+`launch-token-already-used`. (In the browser that already holds the session, re-opening the link
+still works: the session is checked before the spent token, so the page loads on the session you
+already have.) If you lose the line, the link is also written to `<mesh-root>/.cotal/web.session`,
+mode `0600` on every write. The session is bound to the origin you opened, so one started on
+`http://cotal.localhost` does not carry over to `http://127.0.0.1`. Restarting `cotal web` mints a
+fresh link and invalidates every earlier session.
+
 **A god-view, minimal privilege.** The dashboard is always the full god-view; there is no
 read-only viewer mode. In auth mode it self-mints its own **admin** read cred (the scope that lets
 it tap DMs and anycast), then *drops the space signing seed* so a dashboard compromise can't mint

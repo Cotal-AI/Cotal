@@ -539,3 +539,4 @@ smoke:boot-self-heal-gate
 # must not receive CLAUDE_CODE_CHILD_SESSION. The allowlist that closed #866 dropped the token
 # because this connector declared no providerKeys; a container has no Keychain to fall back to.
 smoke:claude-launch-env
+smoke:web-console-auth
