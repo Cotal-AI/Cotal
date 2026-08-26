@@ -1,5 +1,7 @@
 # @cotal-ai/connector-jcode
 
+## 0.30.1
+
 ## 0.30.0
 
 ### Patch Changes
