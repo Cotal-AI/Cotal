@@ -43,7 +43,9 @@ try {
   check("declares a bounded three-minute bootstrap window", jcodeConnector.readinessTimeoutMs === 180_000, jcodeConnector.readinessTimeoutMs);
   check("forwards mesh identity", base.env?.COTAL_SPACE === "space" && base.env?.COTAL_NAME === "seat");
   check("pins private state to the launch directory", base.env?.COTAL_JCODE_HOME === process.cwd());
-  check("inherits ordinary operator env", base.env?.UNRELATED_JCODE_ENV_CANARY === "inherited");
+  check("drops ordinary operator env unless explicitly allowed", base.env?.UNRELATED_JCODE_ENV_CANARY === undefined);
+  const allowed = jcodeConnector.buildLaunch({ space: "space", name: "seat", envAllow: ["UNRELATED_JCODE_ENV_CANARY"] });
+  check("inherits explicitly allowed operator env", allowed.env?.UNRELATED_JCODE_ENV_CANARY === "inherited");
   check("resets inherited Cotal material", base.env?.COTAL_CREDS === undefined && base.env?.COTAL_LIFECYCLE_UID === undefined);
   check("mints a manager control endpoint", Boolean(base.control?.path && base.control?.token));
   check("keeps the control token out of the environment", base.env?.COTAL_CONTROL_TOKEN === undefined);
