@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { once } from "node:events";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,10 +44,15 @@ const alive = (pid: number): boolean => {
   }
   try {
     process.kill(pid, 0);
-    return true;
   } catch {
     return false;
   }
+  // A signalled orphan can linger briefly as a zombie on macOS/BSD while launchd reaps it.
+  // kill(pid, 0) still succeeds for that non-executing process, so use the same POSIX state
+  // probe as the other process-lifecycle smokes rather than calling successful teardown alive.
+  if (process.platform === "darwin" || process.platform.endsWith("bsd"))
+    return !spawnSync("ps", ["-o", "stat=", "-p", String(pid)]).stdout.toString().trim().startsWith("Z");
+  return true;
 };
 
 const root = mkdtempSync(join(tmpdir(), "cotal-jcode-lifecycle-"));

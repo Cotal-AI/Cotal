@@ -85,11 +85,20 @@ function processHasLaunchIdentity(pid: number, identityValue: string): boolean {
   if (process.platform === "linux")
     return readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(`${LAUNCH_IDENTITY_ENV}=${identityValue}`);
   if (process.platform === "darwin" || process.platform.endsWith("bsd")) {
-    const out = execFileSync("/bin/ps", ["eww", "-p", String(pid), "-o", "command="], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    return out.includes(`${LAUNCH_IDENTITY_ENV}=${identityValue}`);
+    try {
+      const out = execFileSync("/bin/ps", ["eww", "-p", String(pid), "-o", "command="], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      return out.includes(`${LAUNCH_IDENTITY_ENV}=${identityValue}`);
+    } catch (error) {
+      // processPids() and this probe are necessarily separate snapshots. On macOS/BSD, ps reports a
+      // PID that exited between them with status 1 rather than an ESRCH code on the thrown error.
+      // That is proof the enumerated process vanished, not a failure to prove another live process.
+      const status = (error as { status?: unknown }).status;
+      if (typeof status === "number" && status !== 0) return false;
+      throw error;
+    }
   }
   throw new Error(`jcode connector: launch-bound process identity is unavailable on ${process.platform}`);
 }

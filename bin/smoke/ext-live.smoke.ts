@@ -23,7 +23,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-const sandbox = mkdtempSync(join(tmpdir(), "cotal-ext-sb-"));
+// macOS commonly exposes tmpdir() through /var -> /private/var (and this harness may add another
+// alias). The CLI canonicalizes cwd, so register the same physical root or extension removal sees
+// two contexts and tries to reserve the same provider pidfile twice.
+const sandbox = realpathSync(mkdtempSync(join(tmpdir(), "cotal-ext-sb-")));
 const configDir = join(sandbox, "xdg");
 const home = join(sandbox, "home");
 mkdirSync(configDir, { recursive: true });
