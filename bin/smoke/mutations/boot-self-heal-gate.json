@@ -2,7 +2,7 @@
   "suite": "implementations/manager/smoke/boot-self-heal-gate.smoke.ts",
   "guard": "a successor manager completes a crashed predecessor's frozen registration gate on boot only when the freeze-holder is affirmatively gone under a complete CONNZ sweep; live and unestablishable stay loud refusals",
   "command": "pnpm smoke:boot-self-heal-gate",
-  "completionMarker": "BOOT SELF-HEAL GATE OK",
+  "completionMarker": "BOOT SELF-HEAL GATE",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/boot-self-heal-gate.json",
   "why": [
     "NO BUILD IN `command`. The suite imports Manager relatively (`../src/manager.js`), so tsx",

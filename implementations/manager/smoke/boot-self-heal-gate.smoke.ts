@@ -307,6 +307,7 @@ try {
 } catch (e) {
   fail++;
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
+  console.log(`\nBOOT SELF-HEAL GATE FAILED ❌  (${pass} passed, ${fail} failed)`);
   process.exitCode = 1;
 } finally {
   await mgr?.stop().catch(() => {});
