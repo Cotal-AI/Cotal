@@ -1,5 +1,11 @@
 # @cotal-ai/connector-codex
 
+## 0.30.1
+
+### Patch Changes
+
+- aea08f9: Allow agents to clean up their presence and channel-registry ordered consumers, wait for real mesh readiness before opening Codex, and collapse repeated endpoint errors.
+
 ## 0.30.0
 
 ### Minor Changes

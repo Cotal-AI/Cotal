@@ -139,6 +139,9 @@ const MAX_AHEAD = 256;
 const CLASSIFICATION_CAP = 4096;
 const FOCUS_EXCLUSION_CAP = 4096;
 const PROTECTED_DISPOSITION_CAP = 4096;
+/** Repeated async NATS status errors can arrive once per ordered-consumer retry. They describe one
+ * fault, not one hundred useful facts; keep the first visible and summarize at most twice a minute. */
+const ENDPOINT_ERROR_LOG_WINDOW_MS = 30_000;
 
 export type InboxScope = "all" | "automatic" | "pull-only";
 
@@ -210,6 +213,10 @@ export class MeshAgent extends EventEmitter {
   private protectedDropIds = new Set<string>();
   private dropUnsafe = false;
   private _connected = false;
+  /** Latest connection failure, retained until the endpoint binds so a bounded readiness gate can
+   * explain why an otherwise healthy host never joined the mesh. */
+  private lastConnectionError?: string;
+  private endpointErrorLog = new Map<string, { lastLoggedAt: number; suppressed: number }>();
   private _status: PresenceStatus = "idle";
   private _attention: AttentionMode = "open"; // F3: fail-open default; reset to open on SessionStart
   private _recallCursor: RecallMark = { ts: 0, id: "" };
@@ -279,11 +286,18 @@ export class MeshAgent extends EventEmitter {
       },
     });
     this.ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => this.ingest(m, d, meta));
-    this.ep.on("error", (e: Error) => this.log(`endpoint error: ${e.message}`));
+    this.ep.on("error", (e: Error) => this.handleEndpointError(e));
     // The endpoint's (re)binds are the single source of truth for connectedness: this fires on
     // initial start, manual reconnect, AND the background self-heal — so a recovery the endpoint
     // did on its own can't leave us thinking we're offline (which would skip stop() → leak).
-    this.ep.on("connection", (e: { connected: boolean }) => { this._connected = e.connected; });
+    this.ep.on("connection", (e: { connected: boolean }) => {
+      this._connected = e.connected;
+      if (e.connected) {
+        this.lastConnectionError = undefined;
+        this.endpointErrorLog.clear();
+      }
+      this.emit("connection", e);
+    });
   }
 
   get id(): string {
@@ -292,6 +306,40 @@ export class MeshAgent extends EventEmitter {
 
   get connected(): boolean {
     return this._connected;
+  }
+
+  /** The latest safe diagnostic for a connection that has not become live yet. */
+  get connectionIssue(): string | undefined {
+    return this.lastConnectionError;
+  }
+
+  /** Wait for the endpoint's real post-bind connection signal. `start()` deliberately stays
+   * background for connectors whose MCP surface must boot while the broker is absent; a host that
+   * advertises mesh readiness uses this bounded gate before making that claim. */
+  async waitUntilConnected(timeoutMs = 15_000): Promise<void> {
+    if (this._connected) return;
+    await new Promise<void>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let settled = false;
+      const finish = (error?: Error): void => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        this.off("connection", onConnection);
+        if (error) reject(error);
+        else resolve();
+      };
+      const onConnection = (event: { connected: boolean }): void => {
+        if (event.connected) finish();
+      };
+      this.on("connection", onConnection);
+      timer = setTimeout(() => {
+        const detail = this.connectionIssue ? ` Last error: ${this.connectionIssue}` : "";
+        finish(new Error(`mesh did not become ready at ${this.config.servers} within ${timeoutMs}ms.${detail}`));
+      }, Math.max(1, timeoutMs));
+      // Close the check→listen race if the endpoint connected between the first guard and handler bind.
+      if (this._connected) finish();
+    });
   }
 
   /** Correlates outgoing messages to the host agent's current context/window. */
@@ -314,7 +362,9 @@ export class MeshAgent extends EventEmitter {
           `connected to ${this.config.servers} as ${this.who()} in space "${this.config.space}" on #${this.config.subscribe.join(", #")}`,
         );
       } catch (e) {
-        this.log(`mesh unreachable (${(e as Error).message}); retrying in ${retryMs}ms`);
+        const error = e instanceof Error ? e : new Error(String(e));
+        this.lastConnectionError = error.message;
+        this.log(`mesh unreachable (${error.message}); retrying in ${retryMs}ms`);
         await sleep(retryMs);
       }
     }
@@ -1360,6 +1410,25 @@ export class MeshAgent extends EventEmitter {
         `not connected to the mesh at ${this.config.servers} — is it running? (pnpm cotal up)`,
       );
     }
+  }
+
+  /** Keep an ordered-consumer reset storm from painting hundreds of status lines through an
+   * attached Codex TUI. Consumer names are generated per reset, so normalize them before
+   * deduplicating; otherwise every `_71`, `_72`, ... would look like a new fault. */
+  private handleEndpointError(error: Error): void {
+    const now = Date.now();
+    this.lastConnectionError = error.message;
+    const fingerprint = error.message.replace(/oc_[A-Za-z0-9]+_\d+/g, "oc_*");
+    const prior = this.endpointErrorLog.get(fingerprint);
+    if (prior && now - prior.lastLoggedAt < ENDPOINT_ERROR_LOG_WINDOW_MS) {
+      prior.suppressed++;
+      return;
+    }
+    const suffix = prior?.suppressed ? ` (${prior.suppressed} repeats suppressed)` : "";
+    this.endpointErrorLog.set(fingerprint, { lastLoggedAt: now, suppressed: 0 });
+    // Bound the map even for a server producing novel error text on every request.
+    if (this.endpointErrorLog.size > 16) this.endpointErrorLog.delete(this.endpointErrorLog.keys().next().value!);
+    this.log(`endpoint error: ${error.message}${suffix}`);
   }
 
   private log(msg: string): void {

@@ -78,6 +78,10 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
   execute against the host's single mesh endpoint: no sidecar process, no second identity. The
   app-server is the MCP client, so the tools work the same on a turn a peer message started and
   on one **you** typed into the TUI.
+- **Ready means on the mesh.** The host announces `ready` and hands the terminal to Codex only
+  after the app-server, MCP surface, and mesh endpoint are all live (including the initial
+  presence publish). If the broker cannot be reached, startup fails within 15 seconds with the
+  broker address and latest connection error; it never opens an offline-looking TUI.
 - **At-least-once delivery.** A turn's surfaced messages are acked (by exact id) only when the
   turn completes. A failed turn retries with backoff, and an interrupted turn leaves the batch to
   redeliver. If the Codex app-server itself dies, the host restarts it in place (same mesh

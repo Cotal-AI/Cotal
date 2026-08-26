@@ -1,5 +1,19 @@
 # cotal-ai
 
+## 0.30.1
+
+### Patch Changes
+
+- Updated dependencies [1b4b386]
+- Updated dependencies [aea08f9]
+  - @cotal-ai/cli@0.30.1
+  - @cotal-ai/core@0.30.1
+  - @cotal-ai/connector-core@0.30.1
+  - @cotal-ai/auth@0.30.1
+  - @cotal-ai/delivery@0.30.1
+  - @cotal-ai/manager@0.30.1
+  - @cotal-ai/workspace@0.30.1
+
 ## 0.30.0
 
 ### Minor Changes

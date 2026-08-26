@@ -90,6 +90,7 @@ smoke:ep-serve-gate
 smoke:bind-fence
 smoke:unfenced-responder
 smoke:manager-service
+smoke:manager-service-authority
 smoke:manager-service-ops
 smoke:manager-service-invoke
 smoke:manager-spawn-action
@@ -125,6 +126,8 @@ smoke:sub-acl:auth
 smoke:self-serve-join:auth
 smoke:control-auth
 smoke:manager-split
+smoke:supervise-registered-user
+smoke:supervise-registered-user-authority
 smoke:cred-lifetime
 smoke:standing-renewal
 smoke:delivery-renewal
@@ -524,3 +527,6 @@ smoke:detach-not-teardown
 # whose ingest half runs earlier as `smoke:cross-path-dedup`: that one drives hand-built deliveries
 # into the dedup branch, this one proves the CONNECTOR's boot window recovers over a real broker.
 smoke:claude-boot-wake
+# Control commands resolve ws:// / wss:// meshes too. Exercise the real CLI against one broker's
+# websocket and TCP listeners so raw node-transport regressions name their `wsconnect` refusal.
+smoke:control-transport-dial

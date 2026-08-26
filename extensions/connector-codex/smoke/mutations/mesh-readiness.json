@@ -1,0 +1,16 @@
+{
+  "suite": "extensions/connector-codex/smoke/codex-host.smoke.ts",
+  "guard": "the Codex host awaits the real mesh connection before announcing ready or handing the terminal to the TUI",
+  "command": "pnpm --filter @cotal-ai/connector-codex... build && pnpm smoke:codex-host",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-codex/smoke/mutations/mesh-readiness.json",
+  "mutations": [
+    {
+      "name": "restore the fire-and-forget mesh launch that reports a disconnected Codex as ready",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "    await agentStart;",
+      "replace": "    void agentStart;",
+      "expectRed": "the startup failure names mesh readiness and the unreachable broker",
+      "cell": "the startup failure names mesh readiness and the unreachable broker"
+    }
+  ]
+}
