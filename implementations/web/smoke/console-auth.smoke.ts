@@ -33,7 +33,7 @@ import { isReachable, setupSpaceStreams } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { createContext, runInContext } from "node:vm";
 import ts from "typescript";
-import { CROSS_ORIGIN, LAUNCH_TOKEN_ALREADY_USED, UNAUTHENTICATED, makeAuthGate, webProcess } from "../src/web.js";
+import { CROSS_ORIGIN, LAUNCH_TOKEN_ALREADY_USED, UNAUTHENTICATED, makeAuthGate, openDetachedLog, webProcess } from "../src/web.js";
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -808,6 +808,60 @@ check("…and the LENGTH-MISMATCH branch still does the work before failing, so 
     check("a malformed real route keeps its diagnostic query but never logs the launch token, raw or URL-encoded",
       refused.status === 400 && output.includes("limit=bad") && !output.includes(token) && !output.toLowerCase().includes(encodedToken.toLowerCase()),
       { status: refused.status, log: output });
+  } finally {
+    child?.kill("SIGTERM");
+    broker.kill("SIGTERM");
+    await release();
+  }
+}
+
+// ── 9. DETACHED OUTPUT IS PRIVATE AND CREDENTIAL-FREE ────────────────────────────────────────────
+{
+  const dir = mkdtempSync(join(tmpdir(), "cotal-web-log-"));
+  const logPath = join(dir, "web.log");
+  const stale = openSync(logPath, "w");
+  try { fchmodSync(stale, 0o644); writeFileSync(stale, "older launch\n"); } finally { closeSync(stale); }
+  check("DETACHED LOG FIXTURE: web.log exists permissively before the shipped opener runs",
+    (statSync(logPath).mode & 0o777) === 0o644, (statSync(logPath).mode & 0o777).toString(8));
+  const fd = openDetachedLog(logPath);
+  try {
+    check("a stale permissive web.log is narrowed to 0600 before detached output can enter it",
+      process.platform === "win32" || (fstatSync(fd).mode & 0o777) === 0o600,
+      (fstatSync(fd).mode & 0o777).toString(8));
+  } finally { closeSync(fd); }
+  rmSync(dir, { recursive: true, force: true });
+
+  const brokerPort = await freePort();
+  const webPort = await freePort();
+  const server = `nats://127.0.0.1:${brokerPort}`;
+  const store = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+  const broker = spawn("nats-server", ["-p", String(brokerPort), "-js", "-sd", store, "-a", "127.0.0.1"], { stdio: "ignore" });
+  const release = teardownOnSignal(broker, store);
+  let child: ReturnType<typeof spawn> | undefined;
+  try {
+    let ready = false;
+    for (let i = 0; i < 80; i++) {
+      if (await isReachable(server)) { ready = true; break; }
+      await wait(150);
+    }
+    check("DETACHED OUTPUT FIXTURE: the broker serving the real child started", ready);
+    await setupSpaceStreams({ servers: server, space: "consoleauthdetached" });
+    let output = "";
+    child = spawn(process.execPath, [
+      "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
+      "--server", server, "--space", "consoleauthdetached", "--port", String(webPort), "--no-open",
+    ], { env: { ...process.env, COTAL_WEB_DETACHED_LOG: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+    child.stdout?.on("data", (data: Buffer) => { output += data.toString(); });
+    child.stderr?.on("data", (data: Buffer) => { output += data.toString(); });
+    let served = false;
+    for (let i = 0; i < 200; i++) {
+      const response = await fetch(`http://127.0.0.1:${webPort}/api/meta`).catch(() => undefined);
+      if (response?.status === 401) { served = true; break; }
+      await wait(50);
+    }
+    await wait(100);
+    check("the real detached child writes startup diagnostics but no live launch URL to its persisted stream",
+      served && output.includes("Cotal web") && !/\?k=[A-Za-z0-9_-]{32,}/.test(output), output);
   } finally {
     child?.kill("SIGTERM");
     broker.kill("SIGTERM");

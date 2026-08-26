@@ -14,6 +14,7 @@ import {
   newIdentity,
   clearChannel,
   assertValidChannel,
+  hardenPrivate,
   type CotalMessage,
   type ParsedArgs,
 } from "@cotal-ai/core";
@@ -186,6 +187,7 @@ export function makeAuthGate(port: number) {
 const DETACHED_READY_TIMEOUT_MS = 30_000;
 const DETACHED_STOP_TIMEOUT_MS = 3_000;
 const DETACHED_ROOT_ENV = "COTAL_WEB_DETACHED_ROOT";
+const DETACHED_LOG_ENV = "COTAL_WEB_DETACHED_LOG";
 export const webProcess: LocalProcess = {
   kind: "local-process",
   name: "web",
@@ -1118,8 +1120,13 @@ export async function web(args: ParsedArgs): Promise<void> {
   }
   console.log(`${c.bold("Cotal web")} - observing space ${c.bold(space)}`);
   console.log(c.dim("  god-view - DMs + anycast visible"));
-  console.log(`  ${c.cyan(launchUrl)}  ${c.dim("(Ctrl-C to stop)")}`);
-  console.log(c.dim("  the link is single-use; it opens one session in one browser"));
+  // A detached child's stdout and stderr are the persistent web.log. The parent reads the private
+  // session file and prints the link to the operator's terminal, so repeating the live credential in
+  // the log adds secret-at-rest exposure and no recovery value. An attached process still prints it.
+  if (!process.env[DETACHED_LOG_ENV]) {
+    console.log(`  ${c.cyan(launchUrl)}  ${c.dim("(Ctrl-C to stop)")}`);
+    console.log(c.dim("  the link is single-use; it opens one session in one browser"));
+  }
   if (!values["no-open"]) openBrowser(launchUrl);
 
   let shuttingDown = false;
@@ -1152,7 +1159,7 @@ async function launchDetachedWeb(
   const context = { root, space };
   const pidPath = localProcessPath(webProcess.pidFile, context);
   const logPath = localProcessPath("web.log", context);
-  const logFd = openSync(logPath, "a", 0o600);
+  const logFd = openDetachedLog(logPath);
   const logOffset = fstatSync(logFd).size;
   const childArgs = detachedArgs(raw, space, server);
   let child: ChildProcess;
@@ -1160,7 +1167,7 @@ async function launchDetachedWeb(
     child = spawn(process.execPath, [...process.execArgv, process.argv[1], "web", ...childArgs], {
       cwd: root,
       detached: true,
-      env: { ...process.env, [DETACHED_ROOT_ENV]: root },
+      env: { ...process.env, [DETACHED_ROOT_ENV]: root, [DETACHED_LOG_ENV]: "1" },
       stdio: ["ignore", logFd, logFd],
     });
   } finally {
@@ -1190,6 +1197,22 @@ async function launchDetachedWeb(
   console.log(c.dim(`  log: ${logPath}`));
   console.log(c.dim("  stop: cotal down web"));
   if (!noOpen && launchUrl) openBrowser(launchUrl);
+}
+
+/** Open the persistent detached log privately even when it pre-existed with permissive metadata. */
+export function openDetachedLog(logPath: string): number {
+  const logFd = openSync(logPath, "a", 0o600);
+  // Creation mode does not narrow a stale file. Harden the already-open descriptor before either
+  // child stream can write to it; then apply the core secret-file ACL convention for win32, where
+  // POSIX mode bits do not express privacy. Fail closed before spawning if either operation fails.
+  try {
+    fchmodSync(logFd, 0o600);
+    if (process.platform === "win32") hardenPrivate(logPath, "file");
+    return logFd;
+  } catch (e) {
+    closeSync(logFd);
+    throw e;
+  }
 }
 
 export function detachedArgs(raw: readonly string[], space: string, server: string): string[] {
