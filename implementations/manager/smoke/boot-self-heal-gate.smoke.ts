@@ -268,7 +268,7 @@ try {
 
     const r = await startSuccessor();
     check("LIVE HOLDER: successor start REFUSES", r.ok === false, r.ok ? "started" : undefined);
-    check("LIVE HOLDER: the refusal is named `holder-alive`, not a generic frozen-gate conflict",
+    check("LIVE HOLDER: the refusal is named `holder-alive`",
       r.ok === false && conditionOf(r.error) === "holder-alive",
       r.ok ? undefined : { condition: conditionOf(r.error), message: r.error.message });
     const after = await readGate(kv, iid);

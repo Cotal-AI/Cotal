@@ -564,7 +564,7 @@ const managerCommands: Command[] = [
     name: "reconcile-gate",
     group: "Manager",
     summary:
-      "reconcile an issuance gate left frozen by a crashed re-registration - verifies the freeze-holder is gone, then completes the dead op (refuses if it is alive or unprovable) [--space <s>] [--server <url>] [--endpoint <e>] [--instance <id>]",
+      "reconcile an issuance gate left frozen by a crashed re-registration when boot cannot self-heal it - verifies the freeze-holder is gone, then completes the dead op (refuses if it is alive or unprovable) [--space <s>] [--server <url>] [--endpoint <e>] [--instance <id>]",
     flags: [
       { name: "space", type: "string", value: "<s>", description: "space to reconcile in (default: this folder's auth space)" },
       { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh)" },

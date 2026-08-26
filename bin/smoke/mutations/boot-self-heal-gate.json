@@ -1,0 +1,43 @@
+{
+  "suite": "implementations/manager/smoke/boot-self-heal-gate.smoke.ts",
+  "guard": "a successor manager completes a crashed predecessor's frozen registration gate on boot only when the freeze-holder is affirmatively gone under a complete CONNZ sweep; live and unestablishable stay loud refusals",
+  "command": "pnpm smoke:boot-self-heal-gate",
+  "completionMarker": "BOOT SELF-HEAL GATE OK",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/boot-self-heal-gate.json",
+  "why": [
+    "NO BUILD IN `command`. The suite imports Manager relatively (`../src/manager.js`), so tsx",
+    "loads manager.ts itself and a mutation on it is live with no `dist` in the path. `@cotal-ai/core`",
+    "is already built for the broker/auth helpers; the boot heal lives in manager.ts, which is the",
+    "file these mutations edit. If that were wrong, mutation 1 would come back SURVIVED.",
+    "",
+    "MUTATION 1 IS THE DEFECT VERBATIM: skip the boot heal, so a frozen registration gate still",
+    "blocks the successor with SPEC 13.8. It must kill the dead-holder success cell.",
+    "",
+    "MUTATION 2 IS ASSUME-DEAD AT THE BOOT SEAM: the liveness probe always returns gone, so a live",
+    "holder is no longer refused as `holder-alive`. Eviction may still fail closed later; the named",
+    "cell is the admit condition, not the later barrier.",
+    "",
+    "NOT GRADED HERE: the CLI `cotal reconcile-gate` path, which `smoke:gate-reconcile:auth` already",
+    "mutation-proofs. This file grades that the successor BOOT reaches that composition."
+  ],
+  "mutations": [
+    {
+      "name": "the defect restored: boot does not complete a frozen registration gate",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (auth) await this.healFrozenRegistrationGate(authKv, iid, auth);\n",
+      "replace": "      if (false && auth) await this.healFrozenRegistrationGate(authKv, iid, auth);\n",
+      "expectRed": "DEAD HOLDER: successor start SUCCEEDS without `cotal reconcile-gate` (boot self-heal)",
+      "cell": "DEAD HOLDER: successor start SUCCEEDS without `cotal reconcile-gate` (boot self-heal)",
+      "note": "The shipped skip. A successor seeing a frozen registration gate still hits SPEC 13.8 and cannot register until an operator runs reconcile-gate."
+    },
+    {
+      "name": "assume-dead: boot treats every freeze-holder as gone, so a live holder is no longer refused by name",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      probeHolder: makeManagerHolderLivenessProbe({ space: this.space, servers, auth, log }),\n",
+      "replace": "      probeHolder: async () => ({ state: \"gone\", detail: \"assumed gone; sweepComplete not consulted\" }),\n",
+      "expectRed": "LIVE HOLDER: the refusal is named `holder-alive`",
+      "cell": "LIVE HOLDER: the refusal is named `holder-alive`",
+      "note": "The admit condition is gone AND sweepComplete=true. Forging a gone verdict at the boot seam is exactly the TTL-shaped failure two reviewers independently refused."
+    }
+  ]
+}

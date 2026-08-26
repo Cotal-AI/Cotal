@@ -530,3 +530,8 @@ smoke:claude-boot-wake
 # Control commands resolve ws:// / wss:// meshes too. Exercise the real CLI against one broker's
 # websocket and TCP listeners so raw node-transport regressions name their `wsconnect` refusal.
 smoke:control-transport-dial
+# A manager restart killed mid-barrier left the issuance gate frozen, and the successor refused
+# SPEC 13.8 until an operator ran reconcile-gate (#783 item 3 / #871). Boot now completes that
+# same dead registration when the freeze-holder is gone under a complete CONNZ sweep. Appended
+# at the end: no ordering dependency, and appending keeps two branches from conflicting.
+smoke:boot-self-heal-gate

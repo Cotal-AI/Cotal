@@ -49,7 +49,7 @@ runtimes ship this way.
 | Agents & personas | [`personas`](#personas) | List, show, edit, create, or remove local personas |
 | Agents & personas | [`supervise`](#supervise) | Run a manager daemon (the agent supervisor / control plane) |
 | Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
-| Agents & personas | [`reconcile-gate`](#reconcile-gate) | Unfreeze an issuance gate left frozen by a crashed manager restart, after verifying the holder is gone |
+| Agents & personas | [`reconcile-gate`](#reconcile-gate) | Unfreeze an issuance gate left frozen by a crashed restart when the successor cannot boot-heal it (holder gone, complete CONNZ sweep) |
 | Messaging & watching | [`endpoints`](#endpoints) | List every endpoint in the live presence roster, including infrastructure |
 | Messaging & watching | [`describe` / `invoke`](#describe-invoke) | Resolve a v0.4 service's command surface off the wire; invoke one command by name |
 | Messaging & watching | [`send`](#send) | Send one message, then exit: DM a peer, post a channel, or ask a role |
@@ -883,15 +883,18 @@ cotal reconcile-gate [--space <s>] [--server <url>] [--endpoint <e>] [--instance
 
 **When you need this.** A manager restart killed partway through — after it began deregistering,
 before the new incarnation finished — leaves the endpoint's issuance gate *frozen*, held by a
-process that no longer exists. The next manager start refuses to proceed, which is correct: the
-freeze is what stops two incarnations serving at once. But nothing can lift it, so every restart
-fails the same way. `cotal doctor` shows the gate as frozen; the manager's own start logs name the
-gate it could not advance.
+process that no longer exists. The freeze is what stops two incarnations serving at once, which is
+correct. The successor manager now completes that dead registration itself on boot, using the same
+guard this command uses: it acts only when the freeze-holder is affirmatively gone under a complete
+CONNZ sweep (`gone` and `sweepComplete=true`), then abort-reopens the gate at generation+1 with
+processEpoch unchanged and continues the normal takeover. Live, unknown, unestablishable, and
+wrong-op-kind still refuse; there is no TTL.
 
-This command is the way out. It checks that the holder really is gone, prints what it found, and
-then finishes the dead operation exactly as the interrupted restart would have: revoke the old
-credentials, evict their holders with verification, and reopen the gate. Start the manager
-afterwards and its normal takeover runs end to end.
+Use this command when that boot path cannot run — the delivery daemon is down, you are repairing a
+non-manager endpoint, or you want to lift the freeze without starting a manager. It checks that the
+holder really is gone, prints what it found, and then finishes the dead operation exactly as the
+interrupted restart would have: revoke the old credentials, evict their holders with verification,
+and reopen the gate.
 
 **It refuses far more often than it acts, on purpose**, and always says which check stopped it:
 
