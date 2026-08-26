@@ -689,11 +689,19 @@ try {
     selfHostedClaimError?.message);
   recordMesh({ space: "self-hosted-same", server: DEAD, root: localRoot, mode: "open", origin: "self-hosted", ts: new Date(0).toISOString() });
   await claimSpace("self-hosted-same", LIVE, localRoot);
-  check("a same-root self-hosted record is kept (restart, not reclaim)", findMesh("self-hosted-same") !== undefined, loadMeshes());
+  check("a same-root self-hosted record at a DEAD prior endpoint is kept (auto-port restart, not reclaim)", findMesh("self-hosted-same") !== undefined, loadMeshes());
+  recordMesh({ space: "self-hosted-same-live", server: LIVE, root: localRoot, mode: "open", origin: "self-hosted", ts: new Date(0).toISOString() });
+  let selfHostedLiveError: Error | undefined;
+  await claimSpace("self-hosted-same-live", DEAD, localRoot).catch((e: Error) => void (selfHostedLiveError = e));
+  check("a same-root self-hosted record at a LIVE different endpoint blocks a competing broker",
+    selfHostedLiveError?.message.includes(`already in use by a mesh at ${LIVE}`) === true,
+    selfHostedLiveError?.message);
+  check("…and the live self-hosted record survives the refusal", findMesh("self-hosted-same-live")?.server === LIVE, loadMeshes());
   removeMesh("claimed");
   removeMesh("claimed-live");
   removeMesh("self-hosted-other");
   removeMesh("self-hosted-same");
+  removeMesh("self-hosted-same-live");
 
   // PROVENANCE IS NOT DOWNGRADED BY A REFRESH. Several `up` paths re-record a mesh they did not
   // start (the "a broker is already on this port" branch concludes it is up from reachability

@@ -1,0 +1,23 @@
+{
+  "suite": "implementations/cli/smoke/meshes-registry.smoke.ts",
+  "guard": "a self-hosted mesh may move to a new server on the same canonical root only after its recorded endpoint is dead",
+  "command": "set +u; unset ${!COTAL_@}; TMPDIR=\"$(node -e 'process.stdout.write(require(\"node:fs\").realpathSync.native(require(\"node:os\").tmpdir()))')\" pnpm smoke:meshes-registry",
+  "progressPattern": "^  ✓",
+  "minTicks": 1,
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/claim-space-live-root.json",
+  "why": [
+    "The suite owns its open nats-server on a throwaway port and redirects the registry through COTAL_HOME before imports.",
+    "The mutation removes only the liveness refusal from the same-root self-hosted branch. The live competing-broker cell must red, while the dead prior-endpoint auto-port restart control remains green."
+  ],
+  "mutations": [
+    {
+      "name": "same-root self-hosted claim skips the recorded endpoint liveness probe",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "    if (canonicalRoot(existing.root) === canonicalRoot(root)) {\n      if (await isReachable(existing.server))\n        throw new Error(`space \"${space}\" is already in use by a mesh at ${existing.server} (${existing.root}) - pick a different \\`--space\\`, or \\`cotal down\\` it first`);\n      return;\n    }",
+      "replace": "    if (canonicalRoot(existing.root) === canonicalRoot(root)) return;",
+      "expectRed": "a same-root self-hosted record at a LIVE different endpoint blocks a competing broker",
+      "cell": "a same-root self-hosted record at a LIVE different endpoint blocks a competing broker",
+      "note": "Restores the unsafe early return while leaving the dead-endpoint restart path unchanged."
+    }
+  ]
+}

@@ -13,7 +13,6 @@ import {
   closeSync,
   lstatSync,
   rmSync,
-  realpathSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
 import {
@@ -59,6 +58,7 @@ import {
   getCurrent,
   loadMeshes,
   MEMBERSHIP_RW_CREDS_KEY,
+  canonicalRoot,
   recordMesh,
   meshesForRoot,
   removeMesh,
@@ -630,7 +630,7 @@ export async function up(args: ParsedArgs): Promise<void> {
     // auth, and logs are root-scoped). Different root / unrecorded broker on the implicit default port
     // gets a fresh free port instead of making the user hunt for one.
     const held = loadMeshes().find((m) => m.server === server);
-    if (held && held.root === root && (held.space === space || values.space === undefined)) {
+    if (held && canonicalRoot(held.root) === canonicalRoot(root) && (held.space === space || values.space === undefined)) {
       // A refresh of the SAME already-running mesh — its mode is fixed by how the live broker was
       // started. A flag asking for a DIFFERENT mode must fail loud (silently preserving the old
       // mode would hand the operator a mesh on the wrong identity plane); a bare refresh keeps the
@@ -819,7 +819,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       );
       process.exit(1);
     }
-    if (values.server === undefined && (!held || held.root !== root)) {
+    if (values.server === undefined && (!held || canonicalRoot(held.root) !== canonicalRoot(root))) {
       const next = await serverWithFreePort(server, host);
       console.log(c.dim(`${server} is already in use by ${who}; starting "${space}" at ${next} instead`));
       server = next;
@@ -2153,7 +2153,7 @@ function ensureRootForSpace(_useAuth: boolean, space: string): void {
   const existingAuth = loadSoleSpaceAuth(authDir(root));
   const existingSpace =
     existingAuth?.space ??
-    loadMeshes().find((m) => m.root === root || realpathSafe(m.root) === realpathSafe(root))?.space;
+    loadMeshes().find((m) => canonicalRoot(m.root) === canonicalRoot(root))?.space;
   if (!existingSpace || existingSpace === space) return;
   if (root !== cwd) {
     mkdirSync(join(cwd, ".cotal"), { recursive: true });
@@ -2163,29 +2163,27 @@ function ensureRootForSpace(_useAuth: boolean, space: string): void {
   throw new Error(`this folder is the root of space "${existingSpace}" (${root}/.cotal), so it can't also run "${space}" - drop \`--space\` to run "${existingSpace}", or start "${space}" from a different folder (it becomes that mesh's own root)`);
 }
 
-function realpathSafe(p: string): string {
-  try {
-    return realpathSync(p);
-  } catch {
-    return p;
-  }
-}
-
 /** A space name maps to one mesh in the registry (the key `--space`/`use`/`down` act on). Before
  *  starting a broker, refuse to reuse a space already claimed by a DIFFERENT live mesh — a stale/dead
- *  holder is reclaimed. Re-`up`ping the same mesh (same server + root) is a refresh (port-reachable
- *  path). NOTE: this is a best-effort sequential guard — two `cotal up --space X` racing from
+ *  legacy holder is reclaimed. For a self-hosted record, the same server + canonical root is a
+ *  refresh; a same-root auto-port restart may move to a different server only after the recorded
+ *  endpoint is dead.
+ *  NOTE: this is a best-effort sequential guard — two `cotal up --space X` racing from
  *  different roots within the same instant can both pass the check before either records; that
  *  concurrent case is out of scope (a single-operator CLI action), not synchronized with a lock. */
 export async function claimSpace(space: string, server: string, root: string): Promise<void> {
   const existing = findMesh(space);
-  if (!existing || (existing.server === server && existing.root === root)) return;
+  if (!existing || (existing.server === server && canonicalRoot(existing.root) === canonicalRoot(root))) return;
   // A durable self-hosted record identifies its recorded root as the restart authority. Same-root
   // is the identity check (the last server may change on an auto-port restart); a different root
   // may not steal the name, live or dead — downtime is not proof the mesh is gone, and erasing the
   // record would leave the original folder with nothing to restart from.
   if (existing.origin === "self-hosted") {
-    if (realpathSafe(existing.root) === realpathSafe(root)) return;
+    if (canonicalRoot(existing.root) === canonicalRoot(root)) {
+      if (await isReachable(existing.server))
+        throw new Error(`space "${space}" is already in use by a mesh at ${existing.server} (${existing.root}) - pick a different \`--space\`, or \`cotal down\` it first`);
+      return;
+    }
     throw new Error(`space "${space}" is recorded as self-hosted at ${existing.root} - run \`cotal up\` there to restart it, or \`cotal meshes rm ${space}\` to drop that record first`);
   }
   // An OPERATOR-REGISTERED holder is decided FIRST, before liveness, because liveness changes

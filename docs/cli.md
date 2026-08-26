@@ -158,7 +158,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--rotate-sys` | off | Rotate the space's system account and re-mint its two `$SYS` creds. Needs a stopped mesh; refused with `--open` |
 
 `cotal up` boots a detached local nats-server with JetStream and, in auth mode (the default), JWT auth and
-per-agent ACLs. It always records the mesh as self-hosted so `cotal spawn` from any directory can find it and a stopped stack remains restartable from its recorded root. With no
+per-agent ACLs. A launch that starts the broker records the mesh as self-hosted so `cotal spawn` from any directory can find it and a stopped stack remains restartable from its recorded root. A refresh that merely finds a broker already answering preserves an operator-owned manual record. With no
 `--server`, it auto-selects a free port if the default address is taken; an explicit `--server`
 stays fail-loud on collision. It also brings up the control plane (delivery daemon in auth
 mode, then the manager). The `-f` form is a [manifest deploy](#manifest-deploys); see

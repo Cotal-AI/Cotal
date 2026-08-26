@@ -1,6 +1,7 @@
 ---
 "cotal-ai": minor
 "@cotal-ai/cli": minor
+"@cotal-ai/connector-core": minor
 "@cotal-ai/workspace": minor
 ---
 
