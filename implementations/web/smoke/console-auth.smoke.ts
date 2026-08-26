@@ -23,10 +23,14 @@
  * and needs a browser. That boundary is stated rather than left for a reader to assume.
  */
 import { strict as assert } from "node:assert";
+import { spawn } from "node:child_process";
 import { closeSync, fchmodSync, fstatSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import net, { type AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
+import { isReachable, setupSpaceStreams } from "@cotal-ai/core";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { createContext, runInContext } from "node:vm";
 import ts from "typescript";
 import { CROSS_ORIGIN, LAUNCH_TOKEN_ALREADY_USED, UNAUTHENTICATED, makeAuthGate, webProcess } from "../src/web.js";
@@ -38,6 +42,14 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const freePort = (): Promise<number> => new Promise((resolve) => {
+  const server = net.createServer();
+  server.listen(0, "127.0.0.1", () => {
+    const port = (server.address() as AddressInfo).port;
+    server.close(() => resolve(port));
+  });
+});
 
 const PORT = 7799;
 const q = (s = "") => new URLSearchParams(s);
@@ -741,6 +753,66 @@ check("…and the LENGTH-MISMATCH branch still does the work before failing, so 
     (webProcess.artifacts ?? []).includes("web.session"), webProcess.artifacts);
   check("CONTROL: the artifact check is not vacuous — a file that is not declared is not found",
     !(webProcess.artifacts ?? []).includes("web.session.not-declared"), webProcess.artifacts);
+}
+
+// ── 8. A LAUNCH TOKEN NEVER ENTERS THE ERROR LOG ─────────────────────────────────────────────────
+// Drive the shipped process and route. A session is minted first, because the session-first gate is
+// what lets the same request carry `k` onward to a route that can throw. The second request spells
+// the parameter name and every token byte with percent escapes, so a literal-only redactor cannot
+// satisfy the cell.
+{
+  const brokerPort = await freePort();
+  const webPort = await freePort();
+  const server = `nats://127.0.0.1:${brokerPort}`;
+  const store = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+  const broker = spawn("nats-server", ["-p", String(brokerPort), "-js", "-sd", store, "-a", "127.0.0.1"], { stdio: "ignore" });
+  const release = teardownOnSignal(broker, store);
+  let child: ReturnType<typeof spawn> | undefined;
+  try {
+    let brokerReady = false;
+    for (let i = 0; i < 80; i++) {
+      if (await isReachable(server)) { brokerReady = true; break; }
+      await wait(150);
+    }
+    check("LOG-LEAK FIXTURE: the broker serving the real web process started", brokerReady);
+    await setupSpaceStreams({ servers: server, space: "consoleauthlog" });
+
+    let output = "";
+    child = spawn(process.execPath, [
+      "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
+      "--server", server, "--space", "consoleauthlog", "--port", String(webPort), "--no-open",
+    ], { stdio: ["ignore", "pipe", "pipe"] });
+    child.stdout?.on("data", (data: Buffer) => { output += data.toString(); });
+    child.stderr?.on("data", (data: Buffer) => { output += data.toString(); });
+
+    let token = "";
+    for (let i = 0; i < 200; i++) {
+      token = output.match(/\?k=([A-Za-z0-9_-]{32,})/)?.[1] ?? "";
+      if (token) break;
+      await wait(50);
+    }
+    check("LOG-LEAK FIXTURE: the real process printed a real launch token", token.length >= 32, output.slice(-300));
+
+    const exchanged = await fetch(`http://127.0.0.1:${webPort}/?k=${token}`, { redirect: "manual" });
+    const cookie = exchanged.headers.get("set-cookie")?.split(";")[0] ?? "";
+    check("LOG-LEAK FIXTURE: the real token minted a real session", exchanged.status === 302 && cookie.startsWith("cotal_web_session="),
+      { status: exchanged.status, cookie: cookie.slice(0, 24) });
+
+    output = "";
+    const encodedToken = [...token].map((ch) => `%${ch.charCodeAt(0).toString(16).padStart(2, "0")}`).join("");
+    const refused = await fetch(`http://127.0.0.1:${webPort}/api/activity?%6b=${encodedToken}&limit=bad`, {
+      headers: { cookie },
+    });
+    await refused.text();
+    await wait(150);
+    check("a malformed real route keeps its diagnostic query but never logs the launch token, raw or URL-encoded",
+      refused.status === 400 && output.includes("limit=bad") && !output.includes(token) && !output.toLowerCase().includes(encodedToken.toLowerCase()),
+      { status: refused.status, log: output });
+  } finally {
+    child?.kill("SIGTERM");
+    broker.kill("SIGTERM");
+    await release();
+  }
 }
 
 console.log(`\nCONSOLE AUTH SMOKE OK ✅  (${pass} passed, 0 failed)`);

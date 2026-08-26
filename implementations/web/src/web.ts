@@ -60,6 +60,18 @@ const READINESS_PATH = "/api/meta";
 function pathOf(req: IncomingMessage): string {
   return (req.url ?? "/").split("?")[0];
 }
+/** Keep request diagnostics useful without copying the launch credential into the operator log.
+ *  Parse the query so encoded spellings of `k` are redacted too, rather than searching only for the
+ *  literal bytes `k=` and leaving `%6b=` behind. */
+function requestTargetForLog(req: IncomingMessage): string {
+  const target = req.url ?? "/";
+  const q = target.indexOf("?");
+  if (q === -1) return target;
+  const query = new URLSearchParams(target.slice(q + 1));
+  if (!query.has("k")) return target;
+  query.set("k", "[redacted]");
+  return `${target.slice(0, q)}?${query.toString()}`;
+}
 /** Where a detached parent (and an operator who lost the printed link) finds the launch URL. Written
  *  0600 beside the pidfile — the same place and the same trust boundary as the rest of this mesh's
  *  local process state. */
@@ -1029,7 +1041,7 @@ export async function web(args: ParsedArgs): Promise<void> {
       // this split, a malformed query read in the log exactly like the dashboard breaking.
       const status = e instanceof PayloadTooLarge ? 413 : e instanceof BadRequest ? 400 : 500;
       const caller = status < 500;
-      console.error(c[caller ? "yellow" : "red"](`${caller ? "~" : "!"} ${req.method ?? "GET"} ${req.url ?? "/"} ${caller ? "refused" : "failed"}: ${why}`));
+      console.error(c[caller ? "yellow" : "red"](`${caller ? "~" : "!"} ${req.method ?? "GET"} ${requestTargetForLog(req)} ${caller ? "refused" : "failed"}: ${why}`));
       if (res.headersSent) return void res.end();
       // END THE CONNECTION A REFUSED BODY WAS RIDING ON, or the cap bounds only what the caller
       // volunteers. On a keep-alive connection Node wants the socket back, so rather than closing
