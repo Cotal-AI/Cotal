@@ -39,7 +39,7 @@
       "name": "restore inherit-mode launchEnv: copy the manager env minus COTAL_* (the 0.30.1 leak)",
       "file": "extensions/connector-core/src/launch.ts",
       "find": "  for (const k of OS_ENV_ALLOW) copy(k);\n  for (const k of OPERATOR_ENV_KEEP) copy(k);\n  for (const k of [...(opts.providerKeys ?? []), ...(opts.mcpKeys ?? []), ...(opts.envAllow ?? [])]) copy(k);\n  return env;",
-      "replace": "  const keep = new Set(OPERATOR_ENV_KEEP);\n  for (const [k, v] of Object.entries(process.env)) {\n    if (v === undefined) continue;\n    const canon = k.toUpperCase();\n    if (canon.startsWith(\"COTAL_\") && !keep.has(canon)) continue;\n    env[k] = v;\n  }\n  return env;",
+      "replace": "  const keep = new Set<string>(OPERATOR_ENV_KEEP);\n  for (const [k, v] of Object.entries(process.env)) {\n    if (v === undefined) continue;\n    const canon = k.toUpperCase();\n    if (canon.startsWith(\"COTAL_\") && !keep.has(canon)) continue;\n    env[k] = v;\n  }\n  return env;",
       "expectRed": "Claude host-session markers were withheld",
       "cell": "Claude host-session markers were withheld",
       "afterRestore": "pnpm --filter @cotal-ai/connector-core build",
