@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { closeSync, fstatSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, fchmodSync, fstatSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
@@ -13,6 +14,7 @@ import {
   newIdentity,
   clearChannel,
   assertValidChannel,
+  hardenPrivate,
   type CotalMessage,
   type ParsedArgs,
 } from "@cotal-ai/core";
@@ -34,15 +36,178 @@ const here = dirname(fileURLToPath(import.meta.url));
  *  `*.localhost`; plain http://127.0.0.1:7799 always does.) */
 export const WEB_PORT = 7799;
 export const WEB_URL = `http://cotal.localhost:${WEB_PORT}/`;
+/** The three reasons this surface refuses a request, named as constants because the browser and the
+ *  cells must both match the SAME token — a restated literal drifts silently, and a refusal that
+ *  cannot be told apart from another refusal is the defect this lane exists to remove. Four
+ *  different failures reported as one is the same defect as a failure reported as success. */
+export const UNAUTHENTICATED = "unauthenticated";
+export const LAUNCH_TOKEN_ALREADY_USED = "launch-token-already-used";
+export const CROSS_ORIGIN = "cross-origin";
+/** The cookie the session rides in. NOT `Secure`: this surface is `http://127.0.0.1`, where a Secure
+ *  cookie would simply never be sent. `HttpOnly` keeps it out of page script and `SameSite=Strict`
+ *  keeps it off cross-site requests; the origin check carries what is left. Stated here rather than
+ *  discovered in review. */
+const SESSION_COOKIE = "cotal_web_session";
+/** Lower-case because Node lower-cases incoming header names; matching on a capitalised literal
+ *  would never fire and would look like a working check. */
+const READINESS_HEADER = "x-cotal-readiness";
+/** The ONLY path the readiness nonce opens. Shared with the route below so the gate and the route
+ *  cannot drift into disagreeing about which path that is. */
+const READINESS_PATH = "/api/meta";
+/** The request path, without the query. This DUPLICATES the handler's own parse, deliberately: the
+ *  statements ahead of the gate are pinned to an exact literal parse, because an initializer there is
+ *  code that runs before the gate is consulted. So the gate derives the path itself rather than being
+ *  handed one, and the two must be edited together. */
+function pathOf(req: IncomingMessage): string {
+  return (req.url ?? "/").split("?")[0];
+}
+/** Keep request diagnostics useful without copying a contiguous live launch credential into the
+ *  operator log, wherever it appears in the target. Match each ASCII token byte in raw or percent-
+ *  encoded form so paths, unrelated query fields, mixed encodings, and hex case are covered. */
+function requestTargetForLog(req: IncomingMessage, launchToken: string): string {
+  const target = req.url ?? "/";
+  // A substring search cannot be constant-time; unlike authentication, this does not expose a
+  // boolean oracle to the caller. `secretEquals` remains the comparison at the credential boundary.
+  const tokenPattern = [...launchToken]
+    .map((ch) => `(?:${ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}|%${ch.charCodeAt(0).toString(16).padStart(2, "0")})`)
+    .join("");
+  let safeTarget = target.replace(new RegExp(tokenPattern, "gi"), "[redacted]");
+  const q = safeTarget.indexOf("?");
+  if (q === -1) return safeTarget;
+  const query = new URLSearchParams(safeTarget.slice(q + 1));
+  const safe = new URLSearchParams();
+  for (const [name, value] of query) {
+    // `k` remains a belt for invalid, replayed, or otherwise non-live credential-shaped values.
+    safe.append(name, name === "k" ? "[redacted]" : value);
+  }
+  safeTarget = `${safeTarget.slice(0, q)}?${safe.toString()}`;
+  return safeTarget;
+}
+/** Where a detached parent (and an operator who lost the printed link) finds the launch URL. Written
+ *  0600 beside the pidfile — the same place and the same trust boundary as the rest of this mesh's
+ *  local process state. */
+const SESSION_FILE = "web.session";
+
+/** Constant-time compare of two secrets that may differ in length. `timingSafeEqual` throws on a
+ *  length mismatch, and returning early on that throw would leak the length through timing, so the
+ *  length check is folded into the result instead of short-circuiting it. */
+function secretEquals(a: string, b: string): boolean {
+  const ab = Buffer.from(a, "utf8");
+  const bb = Buffer.from(b, "utf8");
+  if (ab.length !== bb.length) {
+    // Compare against itself so the work is done either way, then fail.
+    timingSafeEqual(ab, ab);
+    return false;
+  }
+  return timingSafeEqual(ab, bb);
+}
+
+/** Parse one cookie out of a `Cookie:` header. Deliberately not a general cookie parser — this
+ *  surface reads exactly one name, and a permissive parser is a place for a smuggled second value
+ *  to hide. */
+function cookieValue(header: string | undefined, name: string): string | undefined {
+  for (const part of (header ?? "").split(";")) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
+  }
+  return undefined;
+}
+
+/** The gate. Every request passes through it before any route runs.
+ *
+ *  WHY THIS EXISTS AT ALL: the surface binds loopback and authenticated NOBODY. Loopback defends
+ *  against other HOSTS; it does not defend against other PROCESSES on this machine, and it does not
+ *  defend against a page in the operator's own browser issuing requests to http://127.0.0.1:7799.
+ *  Today that reaches the whole mesh read path and a channel-delete POST.
+ *
+ *  ORDER IS DELIBERATE: origin is checked BEFORE the session. A cross-site request arrives without
+ *  the cookie anyway (SameSite=Strict), so checking the session first would report every such
+ *  request as `unauthenticated` and the operator would never learn that something cross-origin was
+ *  talking to their console. The more specific condition wins.
+ */
+export function makeAuthGate(port: number) {
+  // Single-use, minted per process. 32 bytes: this is the only secret standing between a local
+  // process and the mesh view until the cookie exists.
+  let launchToken: string | undefined = randomBytes(32).toString("base64url");
+  // A SECOND secret, for one caller: `--detach`'s parent, which must poll `/api/meta` to learn the
+  // child is up and is OURS rather than a squatter on the same port. It is presented as a header and
+  // is NOT exchanged for a session and NOT consumed, because the parent may poll many times.
+  //
+  // Two secrets rather than exempting `/api/meta`, and the difference matters: an exempt route is
+  // permanently unauthenticated for everyone, and the next person to add a field to it will not know
+  // that. A second credential is scoped to the caller that needs it, opens only that one path, and
+  // dies with the process.
+  const readinessNonce = randomBytes(32).toString("base64url");
+  const sessions = new Set<string>();
+  // The full ORIGIN, not the host: `https://localhost:7799` and `http://localhost:7799` are
+  // different origins to a browser, and comparing only the host would treat them as one.
+  // Built through `new URL(...).origin` so the allow-list is in the SAME serialization the incoming
+  // header is normalized into. A hand-written `http://localhost:80` never matches, because WHATWG
+  // origin serialization drops the default port — so on `--port 80` the console would refuse its own
+  // browser. Normalizing both sides is the only way the comparison means what it reads as.
+  const allowedOrigins = new Set(
+    [`http://cotal.localhost:${port}`, `http://127.0.0.1:${port}`, `http://localhost:${port}`]
+      .map((o) => new URL(o).origin),
+  );
+
+  return {
+    launchToken: launchToken!,
+    readinessNonce,
+    /** `undefined` = let the request through. Otherwise the named condition that refused it. */
+    check(req: IncomingMessage, query: URLSearchParams): { refuse: string } | { exchange: string } | undefined {
+      const origin = req.headers.origin;
+      if (origin !== undefined) {
+        // A same-origin fetch from our own page sends no Origin at all for GETs, and sends our own
+        // origin for POSTs. Anything else is another site's page talking to this console.
+        let normalized: string | undefined;
+        try { normalized = new URL(origin).origin; } catch { normalized = undefined; }
+        if (normalized === undefined || !allowedOrigins.has(normalized)) return { refuse: CROSS_ORIGIN };
+      }
+
+      // Scoped to the one path its only caller polls. The nonce is never consumed and lives as long
+      // as the process, so accepting it on every path would leave `web.session` holding a standing
+      // full-surface credential beside a link this command calls single-use.
+      const readiness = req.headers[READINESS_HEADER];
+      if (pathOf(req) === READINESS_PATH && typeof readiness === "string" && secretEquals(readiness, readinessNonce))
+        return undefined;
+
+      const session = cookieValue(req.headers.cookie, SESSION_COOKIE);
+      if (session !== undefined && sessions.has(session)) return undefined;
+
+      const presented = query.get("k");
+      if (presented !== null) {
+        if (launchToken !== undefined && secretEquals(presented, launchToken)) {
+          // Single use: burn it before minting the session, so two racing requests cannot both win.
+          launchToken = undefined;
+          const id = randomBytes(32).toString("base64url");
+          sessions.add(id);
+          return { exchange: id };
+        }
+        // The token was spent. Named separately from `unauthenticated` because it tells the operator
+        // something specific and actionable: the launch URL was replayed, by them or by something
+        // else. A generic refusal here would hide a reused link inside ordinary noise.
+        if (launchToken === undefined) return { refuse: LAUNCH_TOKEN_ALREADY_USED };
+      }
+      return { refuse: UNAUTHENTICATED };
+    },
+  };
+}
+
 const DETACHED_READY_TIMEOUT_MS = 30_000;
 const DETACHED_STOP_TIMEOUT_MS = 3_000;
 const DETACHED_ROOT_ENV = "COTAL_WEB_DETACHED_ROOT";
+const DETACHED_LOG_ENV = "COTAL_WEB_DETACHED_LOG";
 export const webProcess: LocalProcess = {
   kind: "local-process",
   name: "web",
   label: "web dashboard",
   order: 40,
   pidFile: "web.pid",
+  // `web.session` holds the readiness nonce, which is accepted for this process's whole lifetime.
+  // The exit handler removes it, but an exit handler does not run on SIGKILL — so without this the
+  // credential outlives the process it authenticates.
+  artifacts: [SESSION_FILE],
   // The dashboard starts target-resolved from any directory and claims its pidfile under the
   // TARGET mesh's root (`conn.root` below); `cotal down web` must resolve the same mesh.
   rootedAt: "target",
@@ -579,6 +744,7 @@ export async function web(args: ParsedArgs): Promise<void> {
   const user = conn.bearer ? await userViewAuthOrExit(conn, "admin") : undefined;
   const { server, space } = conn;
   const pidPath = conn.root ? localProcessPath(webProcess.pidFile, { root: conn.root, space }) : undefined;
+  const sessionPath = conn.root ? localProcessPath(SESSION_FILE, { root: conn.root, space }) : undefined;
   if (pidPath) {
     claimPid(pidPath);
     process.once("exit", () => releasePid(pidPath));
@@ -685,9 +851,31 @@ export async function web(args: ParsedArgs): Promise<void> {
   for (const plane of ["chat", "inst", "svc"])
     ep.tap(onTap, { subject: `${spacePrefix(space)}.${plane}.>` });
 
+  const gate = makeAuthGate(port);
+
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const path = (req.url ?? "/").split("?")[0];
     const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+
+    // THE GATE RUNS BEFORE EVERY ROUTE, including `/feed` and the static files. Placing it inside a
+    // route, or after the first `if`, is how a surface acquires an unauthenticated corner: the next
+    // person to add a route above it inherits no protection and nothing says so.
+    const verdict = gate.check(req, query);
+    if (verdict !== undefined && "refuse" in verdict) {
+      // A NAMED refusal, never a redirect and never an empty 200. The condition is the body, so a
+      // caller that reads only the body still learns which of the three failed.
+      res.writeHead(verdict.refuse === CROSS_ORIGIN ? 403 : 401, { "content-type": "application/json" });
+      return void res.end(JSON.stringify({ error: verdict.refuse }));
+    }
+    if (verdict !== undefined && "exchange" in verdict) {
+      // Redirect so the spent token leaves the address bar and the browser history. This is the one
+      // redirect on this surface and it is a SUCCESS, not a refusal.
+      res.writeHead(302, {
+        "set-cookie": `${SESSION_COOKIE}=${verdict.exchange}; Path=/; HttpOnly; SameSite=Strict`,
+        location: path,
+      });
+      return void res.end();
+    }
 
     if (path === "/feed") {
       res.writeHead(200, {
@@ -705,7 +893,7 @@ export async function web(args: ParsedArgs): Promise<void> {
       req.on("close", () => clients.delete(res));
       return;
     }
-    if (path === "/api/meta") return json(res, { space, pid: process.pid });
+    if (path === READINESS_PATH) return json(res, { space, pid: process.pid });
     if (path === "/api/roster") return json(res, ep.getRoster());
     if (path === "/api/membership") {
       // Authoritative who-is-subscribed (broker-sourced); {asOf, members:[{id,live,durable,observedAt}]}.
@@ -773,10 +961,17 @@ export async function web(args: ParsedArgs): Promise<void> {
       const limit = historyLimit(query, 500);
       const clock = deadline(AGGREGATION_DEADLINE_MS);
       try {
-        const dms = await within(ep.dmHistory({ limit }), clock.until);
+        const dms = await within(
+          ep.dmHistory({ limit }).catch((e: unknown) => {
+            throw new Error(`direct messages: the read failed: ${e instanceof Error ? e.message : String(e)}`);
+          }),
+          clock.until,
+        );
         if (dms === LATE)
           return json(res, { error: `direct messages: the read did not finish within ${AGGREGATION_DEADLINE_MS}ms` }, 503);
         return json(res, dms);
+      } catch (e) {
+        return json(res, { error: e instanceof Error ? e.message : String(e) }, 503);
       } finally {
         clock.done();
       }
@@ -793,10 +988,17 @@ export async function web(args: ParsedArgs): Promise<void> {
       // channel holding the view open indefinitely.
       const clock = deadline(AGGREGATION_DEADLINE_MS);
       try {
-        const page = await within(ep.channelHistory(name, { limit }), clock.until);
+        const page = await within(
+          ep.channelHistory(name, { limit }).catch((e: unknown) => {
+            throw new Error(`#${name}: the read failed: ${e instanceof Error ? e.message : String(e)}`);
+          }),
+          clock.until,
+        );
         if (page === LATE)
           return json(res, { error: `#${name}: the read did not finish within ${AGGREGATION_DEADLINE_MS}ms` }, 503);
         return json(res, page);
+      } catch (e) {
+        return json(res, { error: e instanceof Error ? e.message : String(e) }, 503);
       } finally {
         clock.done();
       }
@@ -865,7 +1067,7 @@ export async function web(args: ParsedArgs): Promise<void> {
       // this split, a malformed query read in the log exactly like the dashboard breaking.
       const status = e instanceof PayloadTooLarge ? 413 : e instanceof BadRequest ? 400 : 500;
       const caller = status < 500;
-      console.error(c[caller ? "yellow" : "red"](`${caller ? "~" : "!"} ${req.method ?? "GET"} ${req.url ?? "/"} ${caller ? "refused" : "failed"}: ${why}`));
+      console.error(c[caller ? "yellow" : "red"](`${caller ? "~" : "!"} ${req.method ?? "GET"} ${requestTargetForLog(req, gate.launchToken)} ${caller ? "refused" : "failed"}: ${why}`));
       if (res.headersSent) return void res.end();
       // END THE CONNECTION A REFUSED BODY WAS RIDING ON, or the cap bounds only what the caller
       // volunteers. On a keep-alive connection Node wants the socket back, so rather than closing
@@ -921,10 +1123,35 @@ export async function web(args: ParsedArgs): Promise<void> {
   await new Promise<void>((ready) => httpServer.listen(port, "127.0.0.1", ready));
   // Branded URL only when on the default port; a custom --port keeps the plain loopback address.
   const url = webUrl(port);
+  // The launch URL carries the one-time token. It is printed as well as opened, because a browser
+  // that cannot be launched (headless box, wrong default) must still have a way in — and because a
+  // token the operator cannot see is a token they cannot revoke by restarting.
+  const launchUrl = `${url}?k=${gate.launchToken}`;
+  // Written AFTER listen() succeeded, so its existence means the port is ours. A detached parent
+  // reads it for the readiness nonce and the link; an operator who lost the printed line reads it
+  // for the link. 0600 — same trust boundary as the rest of `~/.cotal`, no wider.
+  if (sessionPath) {
+    // `mode:` on writeFileSync applies at CREATION ONLY — a stale `web.session` left behind with a
+    // broader mode would keep it and quietly hold the launch URL and readiness nonce world-readable.
+    // Open, then fchmod the DESCRIPTOR (not the path, which could be re-pointed between the calls),
+    // so the mode is enforced on every write rather than only the first.
+    const sfd = openSync(sessionPath, "w", 0o600);
+    try {
+      fchmodSync(sfd, 0o600);
+      writeFileSync(sfd, JSON.stringify({ launchUrl, readiness: gate.readinessNonce }));
+    } finally { closeSync(sfd); }
+    process.once("exit", () => rmSync(sessionPath, { force: true }));
+  }
   console.log(`${c.bold("Cotal web")} - observing space ${c.bold(space)}`);
   console.log(c.dim("  god-view - DMs + anycast visible"));
-  console.log(`  ${c.cyan(url)}  ${c.dim("(Ctrl-C to stop)")}`);
-  if (!values["no-open"]) openBrowser(url);
+  // A detached child's stdout and stderr are the persistent web.log. The parent reads the private
+  // session file and prints the link to the operator's terminal, so repeating the live credential in
+  // the log adds secret-at-rest exposure and no recovery value. An attached process still prints it.
+  if (!process.env[DETACHED_LOG_ENV]) {
+    console.log(`  ${c.cyan(launchUrl)}  ${c.dim("(Ctrl-C to stop)")}`);
+    console.log(c.dim("  the link is single-use; it opens one session in one browser"));
+  }
+  if (!values["no-open"]) openBrowser(launchUrl);
 
   let shuttingDown = false;
   const shutdown = async () => {
@@ -956,7 +1183,7 @@ async function launchDetachedWeb(
   const context = { root, space };
   const pidPath = localProcessPath(webProcess.pidFile, context);
   const logPath = localProcessPath("web.log", context);
-  const logFd = openSync(logPath, "a", 0o600);
+  const logFd = openDetachedLog(logPath);
   const logOffset = fstatSync(logFd).size;
   const childArgs = detachedArgs(raw, space, server);
   let child: ChildProcess;
@@ -964,7 +1191,7 @@ async function launchDetachedWeb(
     child = spawn(process.execPath, [...process.execArgv, process.argv[1], "web", ...childArgs], {
       cwd: root,
       detached: true,
-      env: { ...process.env, [DETACHED_ROOT_ENV]: root },
+      env: { ...process.env, [DETACHED_ROOT_ENV]: root, [DETACHED_LOG_ENV]: "1" },
       stdio: ["ignore", logFd, logFd],
     });
   } finally {
@@ -973,8 +1200,9 @@ async function launchDetachedWeb(
   child.unref();
 
   const url = webUrl(port);
+  const sessionPath = localProcessPath(SESSION_FILE, context);
   try {
-    await waitForDetachedWeb(child, { pidPath, url: `http://127.0.0.1:${port}/`, space, timeoutMs: DETACHED_READY_TIMEOUT_MS });
+    await waitForDetachedWeb(child, { pidPath, sessionPath, url: `http://127.0.0.1:${port}/`, space, timeoutMs: DETACHED_READY_TIMEOUT_MS });
   } catch (e) {
     let cleanupError: Error | undefined;
     try { await terminateDetachedWeb(child, pidPath); }
@@ -983,10 +1211,32 @@ async function launchDetachedWeb(
     throw new Error(`${(e as Error).message}${cleanupError ? `; ${cleanupError.message}` : ""} - see ${logPath}${tail ? `\n${tail}` : ""}`);
   }
 
+  // The child minted the token, so the parent reads the link rather than reconstructing it. If the
+  // file is unreadable the dashboard is still up and the operator is told where the link lives,
+  // instead of being handed a URL that will refuse them.
+  const launchUrl = readSessionLaunchUrl(sessionPath);
   console.log(c.green(`✓ web dashboard ready at ${url} (pid ${child.pid})`));
+  if (launchUrl) console.log(`  ${c.cyan(launchUrl)}  ${c.dim("(single-use link)")}`);
+  else console.log(c.dim(`  launch link: see ${sessionPath}`));
   console.log(c.dim(`  log: ${logPath}`));
   console.log(c.dim("  stop: cotal down web"));
-  if (!noOpen) openBrowser(url);
+  if (!noOpen && launchUrl) openBrowser(launchUrl);
+}
+
+/** Open the persistent detached log privately even when it pre-existed with permissive metadata. */
+export function openDetachedLog(logPath: string): number {
+  const logFd = openSync(logPath, "a", 0o600);
+  // Creation mode does not narrow a stale file. Harden the already-open descriptor before either
+  // child stream can write to it; then apply the core secret-file ACL convention for win32, where
+  // POSIX mode bits do not express privacy. Fail closed before spawning if either operation fails.
+  try {
+    fchmodSync(logFd, 0o600);
+    if (process.platform === "win32") hardenPrivate(logPath, "file");
+    return logFd;
+  } catch (e) {
+    closeSync(logFd);
+    throw e;
+  }
 }
 
 export function detachedArgs(raw: readonly string[], space: string, server: string): string[] {
@@ -1006,7 +1256,7 @@ export function detachedArgs(raw: readonly string[], space: string, server: stri
 
 export async function waitForDetachedWeb(
   child: ChildProcess,
-  opts: { pidPath: string; url: string; space: string; timeoutMs: number },
+  opts: { pidPath: string; sessionPath?: string; url: string; space: string; timeoutMs: number },
 ): Promise<void> {
   let spawnError: Error | undefined;
   const spawnErrorPromise = new Promise<Error>((resolve) => child.once("error", (e) => {
@@ -1024,7 +1274,15 @@ export async function waitForDetachedWeb(
     if (child.exitCode !== null || child.signalCode !== null || !pidAlive(pid))
       throw new Error(`web dashboard exited before becoming ready (pid ${pid})`);
     if (pidFileOwned(opts.pidPath, pid)) {
-      const meta = await fetch(`${opts.url}api/meta`, { signal: AbortSignal.timeout(500) })
+      // The child writes its readiness nonce only after `listen()` succeeded, so an absent or
+      // unreadable file simply means "not up yet" and the loop keeps waiting — exactly as it did
+      // before this surface required authentication. The probe is otherwise unchanged: a squatter on
+      // the port still answers with its own space/pid and still fails the match below.
+      const readiness = readSessionSecret(opts.sessionPath);
+      const meta = await fetch(`${opts.url}api/meta`, {
+        signal: AbortSignal.timeout(500),
+        headers: readiness ? { [READINESS_HEADER]: readiness } : {},
+      })
         .then(async (res) => res.ok ? await res.json() as { space?: unknown; pid?: unknown } : undefined)
         .catch(() => undefined);
       if (meta?.space === opts.space && meta.pid === pid) {
@@ -1050,6 +1308,26 @@ export async function terminateDetachedWeb(child: ChildProcess, pidPath: string)
     }
   }
   if (pidFileOwned(pidPath, pid)) rmSync(pidPath, { force: true });
+}
+
+/** The readiness nonce, or `undefined` if the child has not written it yet. Never throws: a missing
+ *  file is the ordinary state during startup, not an error. */
+function readSessionSecret(path: string | undefined): string | undefined {
+  if (path === undefined) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { readiness?: unknown };
+    return typeof parsed.readiness === "string" ? parsed.readiness : undefined;
+  } catch { return undefined; }
+}
+
+/** The launch URL the child recorded, for a detached parent to open. Separate from the nonce reader
+ *  so a caller asks for exactly the one it needs. */
+function readSessionLaunchUrl(path: string | undefined): string | undefined {
+  if (path === undefined) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { launchUrl?: unknown };
+    return typeof parsed.launchUrl === "string" ? parsed.launchUrl : undefined;
+  } catch { return undefined; }
 }
 
 function pidFileOwned(path: string, pid: number): boolean {

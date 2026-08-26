@@ -28,9 +28,9 @@ export interface LaunchOpts {
    *  creds from. The connector forwards it (`COTAL_SUBSCRIBE` / `COTAL_ALLOW_SUBSCRIBE` /
    *  `COTAL_ALLOW_PUBLISH`) so the session's runtime read set matches its credentials. Essential
    *  for manifest spawns, whose materialized persona carries NO access frontmatter: without it the
-   *  connector falls back to `["general"]`, which the scoped creds deny — so the agent joins
-   *  nothing. Empty/absent lists are omitted (the connector then defers to the persona file or the
-   *  `general` baseline — the no-channel case). */
+   *  connector has nothing to read its channel set from, so the agent joins nothing even though its
+   *  creds authorize channels. Empty/absent lists are omitted (the connector then defers to the
+   *  persona file or the join link, and joins nothing if neither names a channel). */
   subscribe?: string[];
   allowSubscribe?: string[];
   allowPublish?: string[];

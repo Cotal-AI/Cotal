@@ -168,6 +168,7 @@ const releaseBroker = teardownOnSignal(broker, store);
 let link: { close(): void } | undefined;
 let link2: { close(): void } | undefined;
 let webChild: ReturnType<typeof spawn> | undefined;
+let rejectingWebChild: ReturnType<typeof spawn> | undefined;
 try {
   let up = false;
   for (let i = 0; i < 80; i++) { if (await isReachable(SERVER)) { up = true; break; } await wait(150); }
@@ -336,7 +337,61 @@ try {
     ok("4.10 and it carries the underlying reason rather than replacing it", /timeout/.test(threw?.message ?? ""), threw?.message);
   }
 
-  // ── 5. THE ROUTE, NOT JUST THE FUNCTION ───────────────────────────────────────────────────────
+  // ── 5. BOTH ENDINGS OF EACH SINGLE-READ ROUTE ──────────────────────────────────────────────────
+  // A read can end before the outer deadline by REJECTING on its own timeout. Drive that ending
+  // without timing or load: the shipped entry point still owns the HTTP response, while its endpoint
+  // methods reject immediately with the exact bare reason that previously escaped as a 500.
+  {
+    const WEB_PORT = await freePort();
+    let log = "";
+    // STRIP `COTAL_` BEFORE THE SPREAD. Whatever runs this suite may be a managed agent session, so
+    // an unfiltered `...process.env` hands the child a live credential and a live broker URL — the
+    // child would then talk to the operator's mesh instead of this suite's throwaway one.
+    // `smoke:suite-ambient-env` is the census that enforces this; it named this file when the
+    // rejection arm was added.
+    const childEnv: NodeJS.ProcessEnv = { ...process.env };
+    for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
+    childEnv.COTAL_WEB_SMOKE_REJECT_HISTORY = "1";
+    rejectingWebChild = spawn(process.execPath, [
+      "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
+      "--server", SERVER, "--space", SPACE, "--port", String(WEB_PORT), "--no-open",
+    ], { stdio: ["ignore", "pipe", "pipe"], env: childEnv });
+    rejectingWebChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
+    rejectingWebChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
+
+    let launchUrl: string | undefined;
+    for (let i = 0; i < 200 && launchUrl === undefined; i++) {
+      launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
+      await wait(50);
+    }
+    const exchange = launchUrl === undefined
+      ? undefined
+      : await fetch(launchUrl, { redirect: "manual" }).catch(() => undefined);
+    const session = /(?:^|,\s*)cotal_web_session=([^;]+)/.exec(exchange?.headers.get("set-cookie") ?? "")?.[1];
+    const authed = { cookie: `cotal_web_session=${session}` };
+    const ready = session === undefined
+      ? undefined
+      : await fetch(`http://127.0.0.1:${WEB_PORT}/api/roster`, { headers: authed }).catch(() => undefined);
+    ok("5.0 CONTROL: the rejection probe reaches the shipped web entry point",
+      exchange?.status === 302 && session !== undefined && ready?.status === 200, log.slice(-400));
+
+    const dRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/dms?limit=1`, { headers: authed });
+    const dBody = await dRes.json().catch(() => undefined);
+    ok("5.1 `/api/dms` names a read that REJECTS instead of returning the bare 500",
+      dRes.status === 503 && /direct messages: the read failed: timeout/.test(String(dBody?.error)),
+      { status: dRes.status, body: dBody });
+
+    const hRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/channels/team00/history?limit=1`, { headers: authed });
+    const hBody = await hRes.json().catch(() => undefined);
+    ok("5.2 `/api/channels/<name>/history` names a read that REJECTS instead of returning the bare 500",
+      hRes.status === 503 && /#team00: the read failed: timeout/.test(String(hBody?.error)),
+      { status: hRes.status, body: hBody });
+
+    rejectingWebChild.kill("SIGKILL");
+    rejectingWebChild = undefined;
+  }
+
+  // ── 6. THE DEADLINE ENDING, NOT JUST THE FUNCTION ──────────────────────────────────────────────
   // Everything above calls `activityBackfill` directly. That proves the aggregation behaves. It does
   // NOT prove the dashboard's ROUTE reaches it, and what the issue reports is a route answering 500.
   // So this section boots the SHIPPED `web()` entry point in its own process and reads its HTTP
@@ -362,48 +417,59 @@ try {
     webChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
     webChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
 
-    // Readiness is a real 200 from a CHEAP route, so "the server is up" is never inferred from a
-    // process that started and then failed to connect. No skip if it never comes up: the cells below
-    // fail, loudly, which is the correct reading of a dashboard that cannot serve.
-    let up = false;
-    for (let i = 0; i < 200; i++) {
-      const r = await fetch(`http://127.0.0.1:${WEB_PORT}/api/roster`).catch(() => undefined);
-      if (r?.status === 200) { up = true; break; }
+    // Wait for the launch link, spend it ONCE, then carry the session it mints through every route
+    // assertion. Re-presenting the single-use link would test its refusal instead of aggregation.
+    let launchUrl: string | undefined;
+    for (let i = 0; i < 200 && launchUrl === undefined; i++) {
+      launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
       await wait(250);
     }
-    ok("5.0 the shipped `web` entry point serves across the link at all", up, log.slice(-400));
+    const exchange = launchUrl === undefined
+      ? undefined
+      : await fetch(launchUrl, { redirect: "manual" }).catch(() => undefined);
+    const session = /(?:^|,\s*)cotal_web_session=([^;]+)/.exec(exchange?.headers.get("set-cookie") ?? "")?.[1];
+    const authed = { cookie: `cotal_web_session=${session}` };
+    const ready = session === undefined
+      ? undefined
+      : await fetch(`http://127.0.0.1:${WEB_PORT}/api/roster`, { headers: authed }).catch(() => undefined);
+    ok("6.0 the shipped `web` entry point serves across the link at all",
+      exchange?.status === 302 && session !== undefined && ready?.status === 200, log.slice(-400));
 
     // CONTROL FIRST, on an idle link: a small route answers. Everything below is about what happens
     // to a LARGE read on this link, and none of it means anything if the link cannot serve the
     // dashboard at all. It runs before the big reads because their abandoned work outlives them.
-    const cRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/channels`).catch((e) => e as Error);
+    const cRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/channels`, { headers: authed }).catch((e) => e as Error);
     const cBody = cRes instanceof Error ? undefined : await cRes.json().catch(() => undefined);
-    ok("5.1 CONTROL: a small route answers 200 across this link", !(cRes instanceof Error) && cRes.status === 200 && Array.isArray(cBody),
+    ok("6.1 CONTROL: a small route answers 200 across this link", !(cRes instanceof Error) && cRes.status === 200 && Array.isArray(cBody),
       cRes instanceof Error ? cRes.message : cRes.status);
 
     const t0 = Date.now();
-    const aRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/activity?limit=100`, { signal: AbortSignal.timeout(CEILING_MS) }).catch((e) => e as Error);
+    const aRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/activity?limit=100`, {
+      headers: authed, signal: AbortSignal.timeout(CEILING_MS),
+    }).catch((e) => e as Error);
     const aMs = Date.now() - t0;
     const aBody = aRes instanceof Error ? undefined : await aRes.json().catch(() => undefined);
     const status = aRes instanceof Error ? 0 : aRes.status;
-    ok("5.2 `/api/activity` ANSWERS 200 where the shipped route answered 500", status === 200, { status, aMs });
-    ok("5.3 the body the browser receives is the aggregation's page, MARKED PARTIAL", aBody?.partial === true && aBody?.of === CHANNELS + 1,
+    ok("6.2 `/api/activity` ANSWERS 200 where the shipped route answered 500", status === 200, { status, aMs });
+    ok("6.3 the body the browser receives is the aggregation's page, MARKED PARTIAL", aBody?.partial === true && aBody?.of === CHANNELS + 1,
       { partial: aBody?.partial, read: aBody?.read, of: aBody?.of });
-    ok("5.4 and it NAMES the sources it left out, in the response itself", Array.isArray(aBody?.missing) && aBody.missing.length > 0
+    ok("6.4 and it NAMES the sources it left out, in the response itself", Array.isArray(aBody?.missing) && aBody.missing.length > 0
       && aBody.missing.every((m: string) => m === "direct messages" || names.some((n) => m === `#${n}`)), aBody?.missing?.slice(0, 3));
-    ok("5.5 the route answers inside the deadline it reports", aMs < AGGREGATION_DEADLINE_MS + 5000 && aBody?.deadlineMs === AGGREGATION_DEADLINE_MS,
+    ok("6.5 the route answers inside the deadline it reports", aMs < AGGREGATION_DEADLINE_MS + 5000 && aBody?.deadlineMs === AGGREGATION_DEADLINE_MS,
       { aMs, deadlineMs: aBody?.deadlineMs });
 
     // The single read. It cannot be partial, so its bound is a named refusal the browser can hold its
     // last good list against - the whole reason `readJson` refuses a non-200 instead of storing it.
     const t1 = Date.now();
-    const dRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/dms?limit=${DMS}`, { signal: AbortSignal.timeout(CEILING_MS) }).catch((e) => e as Error);
+    const dRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/dms?limit=${DMS}`, {
+      headers: authed, signal: AbortSignal.timeout(CEILING_MS),
+    }).catch((e) => e as Error);
     const dMs = Date.now() - t1;
     const dBody = dRes instanceof Error ? undefined : await dRes.json().catch(() => undefined);
     const dStatus = dRes instanceof Error ? 0 : dRes.status;
-    ok("5.6 `/api/dms` REFUSES at its deadline rather than answering long after the reader left", dStatus === 503, { dStatus, dMs });
-    ok("5.7 and the refusal names the deadline it exceeded", /did not finish within 8000ms/.test(String(dBody?.error)), dBody);
-    ok("5.8 bounded in wall time, not just in words", dMs < AGGREGATION_DEADLINE_MS + 5000, dMs);
+    ok("6.6 `/api/dms` REFUSES at its deadline rather than answering long after the reader left", dStatus === 503, { dStatus, dMs });
+    ok("6.7 and the refusal names the deadline it exceeded", /did not finish within 8000ms/.test(String(dBody?.error)), dBody);
+    ok("6.8 bounded in wall time, not just in words", dMs < AGGREGATION_DEADLINE_MS + 5000, dMs);
 
     // A NAMED LIMIT, DRIVEN RATHER THAN DESCRIBED. The deadline bounds the RESPONSE, not the broker
     // work: a JetStream read in flight has no cancel, so the read abandoned above keeps moving bytes
@@ -412,10 +478,12 @@ try {
     // that would pin a defect in place; it asserts the part that must hold either way - whatever the
     // route answers, a reader can act on it. A bare `{"error":"timeout"}`, which is what the shipped
     // build sent, is the thing being forbidden.
-    const nRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/activity?limit=100`, { signal: AbortSignal.timeout(CEILING_MS) }).catch((e) => e as Error);
+    const nRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/activity?limit=100`, {
+      headers: authed, signal: AbortSignal.timeout(CEILING_MS),
+    }).catch((e) => e as Error);
     const nBody = nRes instanceof Error ? undefined : await nRes.json().catch(() => undefined);
     const nStatus = nRes instanceof Error ? 0 : nRes.status;
-    ok("5.9 the request following a refused read either answers or REFUSES LEGIBLY, never with a bare broker word",
+    ok("6.9 the request following a refused read either answers or REFUSES LEGIBLY, never with a bare broker word",
       nStatus === 200
         ? nBody?.partial !== undefined
         : typeof nBody?.error === "string" && /channel list|did not finish|deadline/.test(nBody.error),
@@ -423,11 +491,12 @@ try {
 
     // The operator watching the server log is the one who can tell a slow link from a broken channel,
     // and the browser's marker never reaches them.
-    ok("5.10 the server SAYS in its own log that the page was short, and what it left out",
+    ok("6.10 the server SAYS in its own log that the page was short, and what it left out",
       /partial: \d+\/\d+ sources within \d+ms, missing /.test(log), log.split("\n").filter((l) => l.includes("partial")).slice(0, 2));
   }
 } finally {
   webChild?.kill("SIGKILL");
+  rejectingWebChild?.kill("SIGKILL");
   link?.close();
   link2?.close();
   releaseBroker();

@@ -13,7 +13,7 @@ wildcard subtrees), declared in agent-file frontmatter and/or per-channel in a m
 
 | Verb | What it grants | Default | Declared in |
 |---|---|---|---|
-| `subscribe` | The **active read set**: channels the agent auto-listens to at boot. Must be within `allowSubscribe`. | `[general]` | agent frontmatter, manifest channel list |
+| `subscribe` | The **active read set**: channels the agent auto-listens to at boot. Must be within `allowSubscribe`. | none (list a channel to get it) | agent frontmatter, manifest channel list |
 | `allowSubscribe` | The **read ACL**: channels the agent *may* read (live and history). | falls back to `subscribe` | agent frontmatter, manifest channel list |
 | `allowPublish` | The **post ACL**: channels the agent may post to. **Default-deny.** | deny (nobody posts unless listed) | agent frontmatter, manifest channel list |
 
@@ -22,6 +22,14 @@ post is `allowPublish`. Publishing is the dangerous verb, so it is default-deny:
 don't list under `allowPublish` cannot post even to a channel it reads. Field names and defaults:
 [agent-files.md](agent-files.md). Channel-centric manifest form (the same verbs, listed under
 each channel): [manifest.md](manifest.md).
+
+**An agent reads only the channels it lists.** All three verbs are default-deny, channels
+included: a persona that omits `subscribe` joins nothing and its credential carries no channel
+read row at all. That agent is still a full mesh participant, on the roster and reachable by DM
+and anycast, it just has no channel traffic. `general` is an ordinary channel with no special
+status, so an agent that wants it lists it (the personas `cotal setup` seeds do). An agent on no
+channel also has no default send channel: `cotal_send` without an explicit `channel` is refused
+until it joins one.
 
 ## Delivery classes
 
@@ -41,6 +49,10 @@ channel is within its `allowSubscribe`. The broker enforces every subscribe agai
 leave is the unsubscribe ([SPEC §7](../SPEC.md#7-channels)). On a `durable` channel, join
 additionally establishes **durable membership** through the privileged provisioner (a separate
 step from the live subscribe); a leave is a hard read boundary on that member's backstop.
+
+Leaving your **last** channel is allowed, and lands you in the same state as an agent that listed
+none: on the mesh, DM-reachable, reading no channel, with no default send channel until you join
+one.
 
 ## Replay
 

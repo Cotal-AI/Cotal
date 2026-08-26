@@ -99,21 +99,26 @@ try {
   webChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
   webChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
 
-  let served = false;
-  for (let i = 0; i < 200; i++) {
-    const r = await fetch(`http://127.0.0.1:${WEB_PORT}/api/roster`).catch(() => undefined);
-    if (r?.status === 200) { served = true; break; }
+  let launchUrl: string | undefined;
+  for (let i = 0; i < 200 && launchUrl === undefined; i++) {
+    launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
     await wait(250);
   }
+  const exchange = launchUrl === undefined ? undefined : await fetch(launchUrl, { redirect: "manual" }).catch(() => undefined);
+  const session = /(?:^|,\s*)cotal_web_session=([^;]+)/.exec(exchange?.headers.get("set-cookie") ?? "")?.[1];
+  const authed = { cookie: `cotal_web_session=${session}` };
+  const ready = session === undefined ? undefined
+    : await fetch(`http://127.0.0.1:${WEB_PORT}/api/roster`, { headers: authed }).catch(() => undefined);
+  const served = exchange?.status === 302 && session !== undefined && ready?.status === 200;
 
   const post = async (payload: string): Promise<{ status: number; text: string }> => {
     const r = await fetch(`http://127.0.0.1:${WEB_PORT}/api/channel/delete`, {
-      method: "POST", headers: { "content-type": "application/json" }, body: payload,
+      method: "POST", headers: { ...authed, "content-type": "application/json" }, body: payload,
     });
     return { status: r.status, text: await r.text() };
   };
   const stillThere = async (ch: string): Promise<boolean> =>
-    (await (await fetch(`http://127.0.0.1:${WEB_PORT}/api/channels/${ch}/history?limit=20`)).text()).includes(MSG);
+    (await (await fetch(`http://127.0.0.1:${WEB_PORT}/api/channels/${ch}/history?limit=20`, { headers: authed })).text()).includes(MSG);
 
   /** A raw socket, because the two facts that matter most here are how many bytes the CALLER got
    *  out before it was cut off, and whether a body with no `content-length` at all is still
@@ -149,7 +154,8 @@ try {
       setTimeout(() => { sock.destroy(); done(); }, 25_000);
     });
 
-  const CHUNKED_HEAD = "POST /api/channel/delete HTTP/1.1\r\nHost: h\r\nContent-Type: application/json\r\n" +
+  const COOKIE = `Cookie: ${authed.cookie}\r\n`;
+  const CHUNKED_HEAD = "POST /api/channel/delete HTTP/1.1\r\nHost: h\r\nContent-Type: application/json\r\n" + COOKIE +
     "Connection: close\r\nTransfer-Encoding: chunked\r\n\r\n";
   const asChunks = (b: Buffer): Buffer =>
     Buffer.concat([Buffer.from(b.length.toString(16) + "\r\n"), b, Buffer.from("\r\n")]);
@@ -228,7 +234,7 @@ try {
     // sends a few bytes and stops. The streaming count never reaches the cap, so a server that
     // only counts what arrives waits for bytes that are not coming, and the caller learns nothing
     // until something else times out. Refusing on the announcement is the difference.
-    const head = "POST /api/channel/delete HTTP/1.1\r\nHost: h\r\nContent-Type: application/json\r\n" +
+    const head = "POST /api/channel/delete HTTP/1.1\r\nHost: h\r\nContent-Type: application/json\r\n" + COOKIE +
       `Connection: close\r\nContent-Length: ${20_000_000}\r\n\r\n`;
     const r = await raw(head, Buffer.from('{"channel":"a', "utf8"));
     ok("5.0 a body ANNOUNCED as oversized is refused on the announcement, without waiting for bytes the caller never sends",
@@ -237,7 +243,7 @@ try {
   {
     // Declared: refused before the body is read at all.
     const body = Buffer.alloc(20_000_000, 0x61);
-    const head = "POST /api/channel/delete HTTP/1.1\r\nHost: h\r\nContent-Type: application/json\r\n" +
+    const head = "POST /api/channel/delete HTTP/1.1\r\nHost: h\r\nContent-Type: application/json\r\n" + COOKIE +
       `Connection: close\r\nContent-Length: ${body.length}\r\n\r\n`;
     const r = await raw(head, body);
     ok("5.1 a DECLARED oversize is refused and the caller never finishes the body it announced, so the read did not run to the end",
@@ -344,7 +350,7 @@ try {
       KEEPALIVE.includes("keep-alive") && !KEEPALIVE.includes("close"));
 
     const oversizedOverKeepAlive = async (declared: boolean): Promise<{ resp: string; closedAfterMs: number | null; afterClose: string; sent: number }> => {
-      const head = "POST /api/channel/delete HTTP/1.1\r\nHost: h\r\nContent-Type: application/json\r\n" + KEEPALIVE +
+      const head = "POST /api/channel/delete HTTP/1.1\r\nHost: h\r\nContent-Type: application/json\r\n" + COOKIE + KEEPALIVE +
         (declared ? "Content-Length: 20000000\r\n\r\n" : "Transfer-Encoding: chunked\r\n\r\n");
       let resp = "", sent = 0;
       const piece = Buffer.alloc(65536, 0x61);
@@ -403,7 +409,7 @@ try {
     // on the SAME socket.
     const req = (ch: string): string => {
       const b = JSON.stringify({ channel: ch });
-      return "POST /api/channel/delete HTTP/1.1\r\nHost: h\r\nContent-Type: application/json\r\n" +
+      return "POST /api/channel/delete HTTP/1.1\r\nHost: h\r\nContent-Type: application/json\r\n" + COOKIE +
         `Connection: keep-alive\r\nContent-Length: ${Buffer.byteLength(b)}\r\n\r\n${b}`;
     };
     let resp = "";

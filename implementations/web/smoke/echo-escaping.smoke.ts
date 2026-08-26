@@ -354,12 +354,17 @@ try {
   webChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
   webChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
 
-  let served = false;
-  for (let i = 0; i < 200; i++) {
-    const r = await fetch(`http://127.0.0.1:${WEB_PORT}/api/roster`).catch(() => undefined);
-    if (r?.status === 200) { served = true; break; }
+  let launchUrl: string | undefined;
+  for (let i = 0; i < 200 && launchUrl === undefined; i++) {
+    launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
     await wait(250);
   }
+  const exchange = launchUrl === undefined ? undefined : await fetch(launchUrl, { redirect: "manual" }).catch(() => undefined);
+  const session = /(?:^|,\s*)cotal_web_session=([^;]+)/.exec(exchange?.headers.get("set-cookie") ?? "")?.[1];
+  const authed = { cookie: `cotal_web_session=${session}` };
+  const ready = session === undefined ? undefined
+    : await fetch(`http://127.0.0.1:${WEB_PORT}/api/roster`, { headers: authed }).catch(() => undefined);
+  const served = exchange?.status === 302 && session !== undefined && ready?.status === 200;
 
   console.log("1. the shipped routes echo the value, and what they echo is readable");
   ok("1.0 the shipped `web` entry point serves at all", served, log.slice(-300));
@@ -377,7 +382,7 @@ try {
   /** One refusal: the 400 body as BYTES and the operator line it wrote. */
   const refuse = async (queryValue: string): Promise<{ status: number; body: Buffer; line: string }> => {
     log = "";
-    const res = await fetch(`http://127.0.0.1:${WEB_PORT}/api/activity?limit=${queryValue}`);
+    const res = await fetch(`http://127.0.0.1:${WEB_PORT}/api/activity?limit=${queryValue}`, { headers: authed });
     const body = Buffer.from(await res.arrayBuffer());
     await wait(150);
     return { status: res.status, body, line: log };
@@ -455,7 +460,7 @@ try {
   // percent-encodes for you and would answer a question this cell is not asking.
   const rawTarget = (target: Buffer): Promise<string> => new Promise((resolve) => {
     const sock = net.connect(WEB_PORT, "127.0.0.1", () => {
-      sock.write(Buffer.concat([Buffer.from("GET "), target, Buffer.from(" HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")]));
+      sock.write(Buffer.concat([Buffer.from("GET "), target, Buffer.from(` HTTP/1.1\r\nHost: 127.0.0.1\r\nCookie: ${authed.cookie}\r\nConnection: close\r\n\r\n`)]));
     });
     let out = "";
     sock.on("data", (d) => { out += d.toString("latin1"); });
@@ -498,14 +503,14 @@ try {
   // refused by name, so the third site has a real input and 3.3 is that input.
   {
     log = "";
-    const res = await fetch(`http://127.0.0.1:${WEB_PORT}/api/channels/%zz/history`);
+    const res = await fetch(`http://127.0.0.1:${WEB_PORT}/api/channels/%zz/history`, { headers: authed });
     const body = await res.text();
     await wait(150);
     ok("3.1 the channel-name refusal is a 400 that NAMES the segment it could not decode",
       res.status === 400 && body.includes("%zz") && body.includes("percent-encoded"),
       { status: res.status, body: body.slice(0, 120) });
     ok("3.2 CONTROL: a well-formed name that simply does not exist is NOT a 400, so 3.1 is about the decode",
-      (await fetch(`http://127.0.0.1:${WEB_PORT}/api/channels/nosuchchannel/history`)).status === 200);
+      (await fetch(`http://127.0.0.1:${WEB_PORT}/api/channels/nosuchchannel/history`, { headers: authed })).status === 200);
   }
 
   {
@@ -513,7 +518,7 @@ try {
     const unnamed: string[] = [];
     for (const [name, n] of [["RLO U+202E", 0x202e], ["ALM U+061C", 0x61c], ["TAG U+E0001", 0xe0001]] as [string, number][]) {
       log = "";
-      const res = await fetch(`http://127.0.0.1:${WEB_PORT}/api/channels/abc${pct(n)}/history`);
+      const res = await fetch(`http://127.0.0.1:${WEB_PORT}/api/channels/abc${pct(n)}/history`, { headers: authed });
       const body = Buffer.from(await res.arrayBuffer());
       await wait(150);
       if (res.status !== 400 || body.includes(Buffer.from(cp(n), "utf8"))) raw.push(name + " (status " + res.status + ")");

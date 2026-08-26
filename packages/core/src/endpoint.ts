@@ -201,7 +201,9 @@ export interface EndpointOptions {
   sentinelCreds?: string;
   /** Require a TLS connection to the server. */
   tls?: boolean;
-  /** Channels to subscribe to; the first is the default broadcast target. */
+  /** Channels to subscribe to; the first concrete one is the default broadcast target. Omitted or
+   *  empty ⇒ NO channels: the endpoint joins nothing, and {@link CotalEndpoint.multicast} refuses
+   *  a call with no explicit channel rather than picking one. */
   channels?: string[];
   /** Presence heartbeat interval (ms). */
   heartbeatMs?: number;
@@ -608,6 +610,7 @@ export class CotalEndpoint extends EventEmitter {
     this.user = opts.user;
     this.pass = opts.pass;
     this.tls = opts.tls ?? false;
+    // No implicit channel: an endpoint reads exactly what its caller lists. Omitted means none.
     this.channels = opts.channels ?? [];
     this.heartbeatMs = opts.heartbeatMs ?? 2000;
     this.ttlMs = opts.ttlMs ?? 6000;
@@ -1243,11 +1246,13 @@ export class CotalEndpoint extends EventEmitter {
   ): Promise<CotalMessage> {
     // Publish must target a concrete sub-channel — you can't broadcast to a
     // wildcard. Default to the first concrete channel we're on (channels[0] may
-    // itself be a wildcard subscription like `team.>`).
+    // itself be a wildcard subscription like `team.>`). On no channels there is NO default: refuse
+    // rather than pick `general`, which is a destination the caller never chose and, for an agent
+    // whose cred carries no channel row, one the broker would deny anyway.
     const channel = opts?.channel ?? this.channels.find(isConcreteChannel);
-    if (!channel)
+    if (channel === undefined)
       throw new Error(
-        "send() needs a channel: this endpoint is on no concrete channel, so there is no default to fall back to - pass opts.channel",
+        "no default channel: this endpoint is not on any concrete channel, so there is nothing to broadcast to - name a channel explicitly, or join one first",
       );
     if (!isConcreteChannel(channel))
       throw new Error(`cannot publish to wildcard channel "${channel}" - pick a concrete sub-channel`);

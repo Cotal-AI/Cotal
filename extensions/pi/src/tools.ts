@@ -61,10 +61,12 @@ function sendCallLine(name: string, config: AgentConfig, args: Record<string, un
   if (name === "cotal_dm") return `cotal_dm → ${args.to ? `"${String(args.to)}"` : "…"}: ${text}`;
   if (name === "cotal_anycast") return `cotal_anycast → @${String(args.role ?? "…")}: ${text}`;
   // Same default the tool itself applies (first CONCRETE channel) — subscribe[0] may be a
-  // wildcard like `team.>`, which the message can never actually go to. Strip a display `#`
-  // the model may have echoed back, as the tool's own channel normalization does.
-  const channel = String(args.channel ?? config.subscribe.find(isConcreteChannel) ?? "general").replace(/^#+/, "");
-  return `cotal_send → #${channel}: ${text}`;
+  // wildcard like `team.>`, which the message can never actually go to. On no channels there is no
+  // default and the send is refused, so render the absence rather than a channel nobody named.
+  // Strip a display `#` the model may have echoed back, as the tool's own normalization does.
+  const target = args.channel ?? config.subscribe.find(isConcreteChannel);
+  if (target === undefined) return `cotal_send → (no channel): ${text}`;
+  return `cotal_send → #${String(target).replace(/^#+/, "")}: ${text}`;
 }
 
 const SEND_TOOLS = new Set(["cotal_send", "cotal_dm", "cotal_anycast"]);

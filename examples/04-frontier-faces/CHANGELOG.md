@@ -1,5 +1,35 @@
 # @cotal-ai/example-04-frontier-faces
 
+## 0.0.49
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.1
+- @cotal-ai/workspace@0.33.1
+
+## 0.0.48
+
+### Patch Changes
+
+- Updated dependencies [ba74c84]
+  - @cotal-ai/core@0.33.0
+  - @cotal-ai/workspace@0.33.0
+
+## 0.0.47
+
+### Patch Changes
+
+- @cotal-ai/core@0.32.0
+- @cotal-ai/workspace@0.32.0
+
+## 0.0.46
+
+### Patch Changes
+
+- Updated dependencies [4ef59c3]
+  - @cotal-ai/core@0.31.0
+  - @cotal-ai/workspace@0.31.0
+
 ## 0.0.45
 
 ### Patch Changes

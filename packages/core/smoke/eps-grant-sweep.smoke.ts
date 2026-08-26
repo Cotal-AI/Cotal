@@ -58,6 +58,15 @@ function subjectMatches(pattern: string, subject: string): boolean {
   return p.length === s.length;
 }
 
+/** BOTH PLANES, DELIBERATELY, and only sound for the question §B asks. §B asserts the ABSENCE of any
+ *  grant reaching a foreign session rail, and a leak is a leak whichever plane carries it, so merging
+ *  is required there rather than a shortcut.
+ *
+ *  It is NOT sound for a question about a specific plane. A JetStream API subject is a request the
+ *  client PUBLISHES, so a check that merges the planes and then claims "X may call Y" can pass on an
+ *  unrelated subscribe grant. §C's first four cells read against this merged list and are named for a
+ *  plane; what actually pins them is the exclusion in the cell below them — see the note there before
+ *  reusing this helper for a positive capability claim. */
 const rowsOf = (perm: unknown): string[] => {
   const p = perm as { pub?: { allow?: string[] }; sub?: { allow?: string[] } };
   return [...(p.pub?.allow ?? []), ...(p.sub?.allow ?? [])];
@@ -75,6 +84,9 @@ const PRODUCERS: Record<Profile, () => string[]> = {
   observer: via("observer"),
   admin: via("admin"),
   supervisor: via("supervisor"),
+  "remote-manager": () => [`manager_${IID}`, `manager_exec_${IID}`].flatMap((actor) =>
+    rowsOf(permissionsFor("remote-manager", SPACE,
+      { ...pr, actor }, { remoteManager: { instanceId: IID, owner: DEV_OWNER, actor } }))),
   provisioner: via("provisioner"),
   deprovisioner: via("deprovisioner", { deprovisionTarget: { principal: `${DEV_OWNER}.worker`, lifecycleUid: UID } }),
   "retirement-requester": via("retirement-requester", { retirementRequester: { owner: DEV_OWNER, actor: "manager", uid: UID, target: { owner: DEV_OWNER, actor: "worker", lifecycleUid: UID } } }),
@@ -159,12 +171,28 @@ console.log("C. the two per-session profiles DO reach their own rail (the sweep 
   const caller = PRODUCERS["session-caller"]();
   const serving = PRODUCERS["session-serving"]();
   const [inMine, outMine] = myRails;
+  // THESE FOUR ARE NAMED FOR A PLANE AND DO NOT TEST ONE. `rowsOf` merges pub+sub, so read alone
+  // each of them would accept the opposite plane: "PUBLISHES its own `in`" is satisfied by a
+  // subscribe grant on `in`. What makes them mean what they say is the ASYMMETRY cell below, whose
+  // exclusions leave only one plane able to supply each match. Do not weaken or delete that cell
+  // without giving these four their own plane-specific assertions first — it takes the meaning out
+  // of all four without touching them and without reddening anything.
   c("session-caller PUBLISHES its own `in` rail", caller.some((r) => subjectMatches(r, inMine)), caller);
   c("session-caller SUBSCRIBES its own `out` rail", caller.some((r) => subjectMatches(r, outMine)), caller);
   c("session-serving SUBSCRIBES its own `in` rail", serving.some((r) => subjectMatches(r, inMine)), serving);
   c("session-serving PUBLISHES its own `out` rail", serving.some((r) => subjectMatches(r, outMine)), serving);
   // Asymmetry: the caller writes `in` and reads `out`; the serving side is the exact reverse
   // (§13.6 "the caller publishes in and subscribes out; the serving instance the reverse").
+  //
+  // LOAD-BEARING FOR THE FOUR CELLS ABOVE, not just for itself. Its four exclusions are what force
+  // each merged-list match up there onto the plane its name claims: caller does not publish `out`,
+  // so the caller's `out` match must be a subscribe; serving does not publish `in`, likewise.
+  //
+  // The exact `.includes()` here is deliberate where the cells above use `subjectMatches`. It is
+  // STRICTER, not weaker: a wildcard pub grant would fail the positive halves (`callerPub.includes(
+  // inMine)`) rather than sneak past the negative ones. That matters because a wildcard is the
+  // specific regression to fear — `sessionServingPermissions` in provision.ts records that this
+  // design REPLACED a standing writer holding `eps.<endpoint>.*.<epoch>.{in,out}`. Keep it exact.
   const pubOf = (p: Profile, opts: Record<string, unknown>) => ((permissionsFor(p, SPACE, pr, opts as never) as { pub?: { allow?: string[] } }).pub?.allow ?? []);
   const callerPub = pubOf("session-caller", { sessionCaller: { endpoint: EP, sessionId: MINE, epoch: EPOCH } });
   const servingPub = pubOf("session-serving", { sessionServing: { endpoint: EP, sessionId: MINE, epoch: EPOCH } });
