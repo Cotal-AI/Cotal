@@ -95,7 +95,7 @@ import {
   readBrokerPolicy,
   writeBrokerPolicy,
 } from "@cotal-ai/workspace";
-import { spawnDetached } from "../lib/detached-spawn.js";
+import { assertDetachedChildExitObservable, spawnDetached } from "../lib/detached-spawn.js";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { resolveSpace } from "../lib/status.js";
 import { c } from "../ui.js";
@@ -1144,6 +1144,11 @@ function removeMatchingNatsPid(pid: number): void {
 
 function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
   if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  // The native Windows detached launcher closes the process handle after CreateProcess, so its
+  // ChildProcess-shaped handle can signal by pid but cannot emit an observed exit. Never turn that
+  // limitation into a fake successful wait: teardown must fail loud rather than erase ownership
+  // state while the listener's death is unknown.
+  assertDetachedChildExitObservable(child);
   return new Promise((resolveExit) => {
     const onExit = () => finish(true);
     const timer = setTimeout(() => finish(false), timeoutMs);

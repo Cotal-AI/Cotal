@@ -1,4 +1,9 @@
-import { assertWindowsDetachAllowed, WINDOWS_JOB_REFUSAL } from "../../implementations/cli/src/lib/detached-spawn.js";
+import {
+  assertWindowsDetachAllowed,
+  assertDetachedChildExitObservable,
+  windowsDetachedChild,
+  WINDOWS_JOB_REFUSAL,
+} from "../../implementations/cli/src/lib/detached-spawn.js";
 
 let failures = 0;
 function check(label: string, condition: boolean, extra?: unknown): void {
@@ -17,6 +22,32 @@ try {
     "Windows job without breakaway permission refuses detached up and names --foreground",
     message === WINDOWS_JOB_REFUSAL && message.includes("--foreground") && message.includes("cannot host a detached stack"),
     message,
+  );
+}
+
+const signals: Array<{ pid: number; signal?: NodeJS.Signals | number }> = [];
+const child = windowsDetachedChild(4242, (pid, signal) => {
+  signals.push({ pid, signal });
+  return true;
+});
+check(
+  "Windows detached child kill forwards the exact pid and signal",
+  child.kill("SIGTERM") === true && signals.length === 1 && signals[0]?.pid === 4242 && signals[0]?.signal === "SIGTERM",
+  JSON.stringify(signals),
+);
+check(
+  "Windows detached child is active under the same null-state guard as a real child",
+  child.exitCode === null && child.signalCode === null && !(child.exitCode !== null || child.signalCode !== null),
+  JSON.stringify({ exitCode: child.exitCode, signalCode: child.signalCode }),
+);
+try {
+  assertDetachedChildExitObservable(child);
+  check("Windows detached child exit observation fails loud instead of pretending it exited", false, "did not throw");
+} catch (error) {
+  check(
+    "Windows detached child exit observation fails loud instead of pretending it exited",
+    error instanceof Error && error.message === "detached child process 4242 cannot have its exit observed",
+    error,
   );
 }
 

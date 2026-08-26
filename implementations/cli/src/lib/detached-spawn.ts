@@ -22,6 +22,28 @@ export interface DetachedSpawnOptions extends SpawnOptions {
   windowsLogPath?: string;
 }
 
+export type SignalProcess = (pid: number, signal?: NodeJS.Signals | number) => boolean;
+
+/** The ChildProcess-shaped handle returned after the native Windows launcher closes its process
+ * handle. Kept as a seam because the contract must be testable without spawning or signalling a
+ * real process on a Windows host. */
+export function windowsDetachedChild(pid: number, signalProcess: SignalProcess = process.kill): ChildProcess {
+  return {
+    pid,
+    exitCode: null,
+    signalCode: null,
+    unref() {},
+    kill(signal: NodeJS.Signals | number = "SIGTERM") { return signalProcess(pid, signal); },
+  } as unknown as ChildProcess;
+}
+
+/** A detached child may be signalable without being observable. Waiting code must reject that
+ * shape instead of treating absent event methods as evidence the process exited. */
+export function assertDetachedChildExitObservable(child: ChildProcess): void {
+  if (typeof child.once !== "function" || typeof child.off !== "function")
+    throw new Error(`detached child process ${child.pid ?? "unknown"} cannot have its exit observed`);
+}
+
 const windowsScript = String.raw`
 using System;
 using System.ComponentModel;
@@ -73,7 +95,7 @@ const nativeWindowsLauncher: WindowsDetachedLauncher = {
     const payload = Buffer.from(JSON.stringify({ command, line, cwd: opts.cwd ?? process.cwd(), breakaway, log: opts.windowsLogPath, environment }), "utf8").toString("base64");
     const source = `$x=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}'))|ConvertFrom-Json; Add-Type -TypeDefinition @'\n${windowsScript}\n'@; [CotalDetachedProcess]::Spawn($x.command,$x.line,$x.cwd,$x.log,[string[]]$x.environment,$x.breakaway)`;
     const pid = Number(ps(source));
-    return { pid, unref() {}, kill() { return false; } } as unknown as ChildProcess;
+    return windowsDetachedChild(pid);
   },
 };
 

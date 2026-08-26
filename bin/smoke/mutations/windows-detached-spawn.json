@@ -1,11 +1,13 @@
 {
   "suite": "bin/smoke/windows-detached-spawn.smoke.ts",
-  "guard": "Windows detached up requests job breakaway when allowed and refuses job-bound launch otherwise",
+  "guard": "Windows detached up requests job breakaway safely, returns a signalable active child contract, and fails loud when exit cannot be observed",
   "command": "pnpm smoke:windows-detached-spawn",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/windows-detached-spawn.json",
   "why": [
     "The pure decision seam deterministically covers Windows job states on every CI platform; the native branch still runs in the Windows workflow.",
-    "The named refusal cell requires both the loud failure and the --foreground remediation."
+    "The named refusal cell requires both the loud failure and the --foreground remediation.",
+    "The child contract is exercised with an injected signalling function, so no real process is spawned or killed on a non-Windows host.",
+    "The exit-observation cell requires an explicit limitation error rather than a silent value that could be read as successful teardown."
   ],
   "mutations": [
     {
@@ -25,6 +27,33 @@
       "expectRed": "Windows job with breakaway permission requests CREATE_BREAKAWAY_FROM_JOB",
       "cell": "Windows job with breakaway permission requests CREATE_BREAKAWAY_FROM_JOB",
       "note": "Reverts the allowed-job branch to a normal detached process that remains in the hostile parent job."
+    },
+    {
+      "name": "Windows detached child kill is inert",
+      "file": "implementations/cli/src/lib/detached-spawn.ts",
+      "find": "    kill(signal: NodeJS.Signals | number = \"SIGTERM\") { return signalProcess(pid, signal); },",
+      "replace": "    kill() { return false; },",
+      "expectRed": "Windows detached child kill forwards the exact pid and signal",
+      "cell": "Windows detached child kill forwards the exact pid and signal",
+      "note": "Restores the stub whose kill method never signals the native detached pid."
+    },
+    {
+      "name": "Windows detached child omits active exit state",
+      "file": "implementations/cli/src/lib/detached-spawn.ts",
+      "find": "    exitCode: null,\n    signalCode: null,",
+      "replace": "",
+      "expectRed": "Windows detached child is active under the same null-state guard as a real child",
+      "cell": "Windows detached child is active under the same null-state guard as a real child",
+      "note": "Restores the absent fields that make undefined !== null skip teardown before signalling."
+    },
+    {
+      "name": "unobservable Windows detached child is treated as observable",
+      "file": "implementations/cli/src/lib/detached-spawn.ts",
+      "find": "  if (typeof child.once !== \"function\" || typeof child.off !== \"function\")\n    throw new Error(`detached child process ${child.pid ?? \"unknown\"} cannot have its exit observed`);",
+      "replace": "  return;",
+      "expectRed": "Windows detached child exit observation fails loud instead of pretending it exited",
+      "cell": "Windows detached child exit observation fails loud instead of pretending it exited",
+      "note": "Deletes the explicit limitation so waiting code can silently proceed without any exit observation."
     }
   ]
 }
