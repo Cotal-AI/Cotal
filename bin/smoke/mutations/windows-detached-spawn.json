@@ -32,7 +32,7 @@
     {
       "name": "Windows detached child kill is inert",
       "file": "implementations/cli/src/lib/detached-spawn.ts",
-      "find": "    kill(signal: NodeJS.Signals | number = \"SIGTERM\") { return signalProcess(pid, signal); },",
+      "find": "    kill(signal: NodeJS.Signals | number = \"SIGTERM\") {\n      try { return signalProcess(pid, signal); }\n      catch (error) {\n        // ChildProcess.kill reports an already-gone child as `false`; keep that caller contract even\n        // though the pid-only Windows implementation reaches process.kill, which throws ESRCH.\n        if (isNoSuchProcess(error)) return false;\n        throw error;\n      }\n    },",
       "replace": "    kill() { return false; },",
       "expectRed": "Windows detached child kill forwards the exact pid and signal",
       "cell": "Windows detached child kill forwards the exact pid and signal",

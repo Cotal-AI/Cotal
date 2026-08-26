@@ -45,10 +45,14 @@ const goneChild = windowsDetachedChild(4343, (pid, signal) => {
   goneSignals.push({ pid, signal });
   throw gone;
 });
+let goneResult: boolean | undefined;
+let goneError: unknown;
+try { goneResult = goneChild.kill("SIGTERM"); }
+catch (error) { goneError = error; }
 check(
   "Windows detached child reports an already-gone pid as false after attempting the exact signal",
-  goneChild.kill("SIGTERM") === false && goneSignals.length === 1 && goneSignals[0]?.pid === 4343 && goneSignals[0]?.signal === "SIGTERM",
-  JSON.stringify(goneSignals),
+  goneError === undefined && goneResult === false && goneSignals.length === 1 && goneSignals[0]?.pid === 4343 && goneSignals[0]?.signal === "SIGTERM",
+  JSON.stringify({ goneResult, goneError: String(goneError), goneSignals }),
 );
 check(
   "Windows detached child is active under the same null-state guard as a real child",
