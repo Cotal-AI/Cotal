@@ -961,10 +961,17 @@ export async function web(args: ParsedArgs): Promise<void> {
       const limit = historyLimit(query, 500);
       const clock = deadline(AGGREGATION_DEADLINE_MS);
       try {
-        const dms = await within(ep.dmHistory({ limit }), clock.until);
+        const dms = await within(
+          ep.dmHistory({ limit }).catch((e: unknown) => {
+            throw new Error(`direct messages: the read failed: ${e instanceof Error ? e.message : String(e)}`);
+          }),
+          clock.until,
+        );
         if (dms === LATE)
           return json(res, { error: `direct messages: the read did not finish within ${AGGREGATION_DEADLINE_MS}ms` }, 503);
         return json(res, dms);
+      } catch (e) {
+        return json(res, { error: e instanceof Error ? e.message : String(e) }, 503);
       } finally {
         clock.done();
       }
@@ -981,10 +988,17 @@ export async function web(args: ParsedArgs): Promise<void> {
       // channel holding the view open indefinitely.
       const clock = deadline(AGGREGATION_DEADLINE_MS);
       try {
-        const page = await within(ep.channelHistory(name, { limit }), clock.until);
+        const page = await within(
+          ep.channelHistory(name, { limit }).catch((e: unknown) => {
+            throw new Error(`#${name}: the read failed: ${e instanceof Error ? e.message : String(e)}`);
+          }),
+          clock.until,
+        );
         if (page === LATE)
           return json(res, { error: `#${name}: the read did not finish within ${AGGREGATION_DEADLINE_MS}ms` }, 503);
         return json(res, page);
+      } catch (e) {
+        return json(res, { error: e instanceof Error ? e.message : String(e) }, 503);
       } finally {
         clock.done();
       }

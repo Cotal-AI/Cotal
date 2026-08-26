@@ -7,7 +7,13 @@
  *  ignored rather than guessed at.
  *
  *  Not shipped and not imported by shipped code: this file lives under `smoke/`. */
+import { CotalEndpoint } from "@cotal-ai/core";
 import { web } from "../src/web.js";
+
+if (process.env.COTAL_WEB_SMOKE_REJECT_HISTORY === "1") {
+  CotalEndpoint.prototype.dmHistory = async () => { throw new Error("timeout"); };
+  CotalEndpoint.prototype.channelHistory = async () => { throw new Error("timeout"); };
+}
 
 const raw = process.argv.slice(2);
 const values: Record<string, string | boolean> = {};

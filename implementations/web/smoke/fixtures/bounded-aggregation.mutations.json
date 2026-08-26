@@ -63,6 +63,20 @@
       "find": "const CEILING_MS = AGGREGATION_DEADLINE_MS * 3;",
       "replace": "const CEILING_MS = AGGREGATION_DEADLINE_MS / 2;",
       "expectRed": "2.0 the suite's own ceiling sits well above the deadline"
+    },
+    {
+      "name": "B10 the dms route stops naming an inner rejection and lets the broker's bare reason escape through the generic 500 again",
+      "file": "implementations/web/src/web.ts",
+      "find": "          ep.dmHistory({ limit }).catch((e: unknown) => {\n            throw new Error(`direct messages: the read failed: ${e instanceof Error ? e.message : String(e)}`);\n          }),",
+      "replace": "          ep.dmHistory({ limit }),",
+      "expectRed": "5.1 `/api/dms` names a read that REJECTS instead of returning the bare 500"
+    },
+    {
+      "name": "B11 the channel history route stops naming an inner rejection and lets the broker's bare reason escape through the generic 500 again",
+      "file": "implementations/web/src/web.ts",
+      "find": "          ep.channelHistory(name, { limit }).catch((e: unknown) => {\n            throw new Error(`#${name}: the read failed: ${e instanceof Error ? e.message : String(e)}`);\n          }),",
+      "replace": "          ep.channelHistory(name, { limit }),",
+      "expectRed": "5.2 `/api/channels/<name>/history` names a read that REJECTS instead of returning the bare 500"
     }
   ]
 }
