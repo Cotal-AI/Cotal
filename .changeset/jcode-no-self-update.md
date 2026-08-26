@@ -1,5 +1,5 @@
 ---
-"@cotal-ai/connector-jcode": minor
+"@cotal-ai/connector-jcode": patch
 ---
 
 connector-jcode: a managed seat no longer updates its own binary
