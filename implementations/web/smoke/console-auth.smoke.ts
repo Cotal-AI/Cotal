@@ -808,6 +808,19 @@ check("…and the LENGTH-MISMATCH branch still does the work before failing, so 
     check("a malformed real route keeps its diagnostic query but never logs the launch token, raw or URL-encoded",
       refused.status === 400 && output.includes("limit=bad") && !output.includes(token) && !output.toLowerCase().includes(encodedToken.toLowerCase()),
       { status: refused.status, log: output });
+
+    for (const name of ["note", "K"]) {
+      output = "";
+      const adversarial = await fetch(`http://127.0.0.1:${webPort}/api/activity?${name}=${encodedToken}&limit=bad`, {
+        headers: { cookie },
+      });
+      await adversarial.text();
+      await wait(150);
+      check(`the live launch-token VALUE is redacted when carried by ${name}, not only by lowercase k`,
+        adversarial.status === 400 && output.includes("limit=bad")
+          && !output.includes(token) && !output.toLowerCase().includes(encodedToken.toLowerCase()),
+        { name, status: adversarial.status, log: output });
+    }
   } finally {
     child?.kill("SIGTERM");
     broker.kill("SIGTERM");

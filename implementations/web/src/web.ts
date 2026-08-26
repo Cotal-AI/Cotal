@@ -64,14 +64,22 @@ function pathOf(req: IncomingMessage): string {
 /** Keep request diagnostics useful without copying the launch credential into the operator log.
  *  Parse the query so encoded spellings of `k` are redacted too, rather than searching only for the
  *  literal bytes `k=` and leaving `%6b=` behind. */
-function requestTargetForLog(req: IncomingMessage): string {
+function requestTargetForLog(req: IncomingMessage, launchToken: string): string {
   const target = req.url ?? "/";
   const q = target.indexOf("?");
   if (q === -1) return target;
   const query = new URLSearchParams(target.slice(q + 1));
-  if (!query.has("k")) return target;
-  query.set("k", "[redacted]");
-  return `${target.slice(0, q)}?${query.toString()}`;
+  let redacted = false;
+  const safe = new URLSearchParams();
+  for (const [name, value] of query) {
+    // `k` is the expected credential field and remains a belt even for an invalid/replayed value.
+    // The confidentiality invariant is value-based too: the live token is secret wherever a caller
+    // places it, including an unrelated or differently-cased parameter name.
+    const secret = name === "k" || secretEquals(value, launchToken);
+    safe.append(name, secret ? "[redacted]" : value);
+    redacted ||= secret;
+  }
+  return redacted ? `${target.slice(0, q)}?${safe.toString()}` : target;
 }
 /** Where a detached parent (and an operator who lost the printed link) finds the launch URL. Written
  *  0600 beside the pidfile — the same place and the same trust boundary as the rest of this mesh's
@@ -1043,7 +1051,7 @@ export async function web(args: ParsedArgs): Promise<void> {
       // this split, a malformed query read in the log exactly like the dashboard breaking.
       const status = e instanceof PayloadTooLarge ? 413 : e instanceof BadRequest ? 400 : 500;
       const caller = status < 500;
-      console.error(c[caller ? "yellow" : "red"](`${caller ? "~" : "!"} ${req.method ?? "GET"} ${requestTargetForLog(req)} ${caller ? "refused" : "failed"}: ${why}`));
+      console.error(c[caller ? "yellow" : "red"](`${caller ? "~" : "!"} ${req.method ?? "GET"} ${requestTargetForLog(req, gate.launchToken)} ${caller ? "refused" : "failed"}: ${why}`));
       if (res.headersSent) return void res.end();
       // END THE CONNECTION A REFUSED BODY WAS RIDING ON, or the cap bounds only what the caller
       // volunteers. On a keep-alive connection Node wants the socket back, so rather than closing
