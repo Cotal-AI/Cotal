@@ -99,8 +99,8 @@
     {
       "name": "not-ready cleanup replaces the readiness failure",
       "file": "implementations/cli/src/commands/up.ts",
-      "find": "  return rethrowAfterDetachedCleanup(primary, () => {\n    child.kill(\"SIGTERM\");",
-      "replace": "  return rethrowAfterDetachedCleanup(new Error(\"cleanup replaced primary\"), () => {\n    child.kill(\"SIGTERM\");",
+      "find": "async function rethrowNotReadyListenerFailure(\n  child: ChildProcess,\n  primary: unknown,\n  removePid?: () => void,\n): Promise<never> {\n  return rethrowAfterDetachedCleanup(primary, () => {",
+      "replace": "async function rethrowNotReadyListenerFailure(\n  child: ChildProcess,\n  primary: unknown,\n  removePid?: () => void,\n): Promise<never> {\n  return rethrowAfterDetachedCleanup(new Error(\"cleanup replaced primary\"), () => {",
       "expectRed": "a not-ready kill failure preserves the readiness error and attaches the signal failure",
       "cell": "a not-ready kill failure preserves the readiness error and attaches the signal failure",
       "note": "IN C12: EPERM is attached to a replacement error instead of the original readiness error. IN C13: the successful ESRCH path throws the replacement error instead of the original readiness error. OUT C11: pid retention on EPERM is unchanged. OUT C01-C10 and C14-C16: they do not read the not-ready wrapper's primary error."
@@ -117,8 +117,8 @@
     {
       "name": "postStart cleanup replaces the postStart failure",
       "file": "implementations/cli/src/commands/up.ts",
-      "find": "  return rethrowAfterDetachedCleanup(primary, () => {\n    child.kill(\"SIGTERM\");",
-      "replace": "  return rethrowAfterDetachedCleanup(new Error(\"cleanup replaced primary\"), () => {\n    child.kill(\"SIGTERM\");",
+      "find": "async function rethrowPostStartListenerFailure(\n  child: ChildProcess,\n  primary: unknown,\n  removePid: () => void,\n): Promise<never> {\n  return rethrowAfterDetachedCleanup(primary, () => {",
+      "replace": "async function rethrowPostStartListenerFailure(\n  child: ChildProcess,\n  primary: unknown,\n  removePid: () => void,\n): Promise<never> {\n  return rethrowAfterDetachedCleanup(new Error(\"cleanup replaced primary\"), () => {",
       "expectRed": "a postStart signal failure preserves the postStart error and attaches the signal failure",
       "cell": "a postStart signal failure preserves the postStart error and attaches the signal failure",
       "note": "IN C15: EPERM is attached to a replacement error instead of the original postStart error. IN C16: the successful false path throws the replacement error instead of the original postStart error. OUT C14: pid retention on EPERM is unchanged. OUT C01-C13: they do not read the postStart wrapper's primary error."
