@@ -55,6 +55,12 @@ attaches only to that instance's own socket:
   inventory. That is appropriate for a dashboard or editor integration, but not a managed Cotal
   seat: stop, prompt injection, and session selection could act on the operator's work. The
   connector never attaches to an operator bridge.
+- A managed seat **never updates its own binary**. Jcode's background updater restarts the
+  process tree when it lands a release; that restart drops the seat's TUI, which is the only
+  connection the Jcode server counts as a client, and nothing re-attaches, so the server's idle
+  reaper takes the seat down five minutes later in the middle of a turn. The seat's version is
+  whatever is on `PATH` when you spawn it, and it stays that version for the seat's life. Update
+  deliberately, between seats, not under a running agent.
 
 On a graceful stop **and** on a startup failure, the connector proves the private daemon tree is
 actually gone rather than trusting the SDK's registry-keyed stop (which is a silent no-op when the
