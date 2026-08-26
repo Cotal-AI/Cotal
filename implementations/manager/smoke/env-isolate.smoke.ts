@@ -1,17 +1,17 @@
 /**
- * Env-boundary smoke (P3) - what a spawned child inherits, and what it must never inherit.
+ * Env-boundary smoke (P3) - what a spawned child receives, and what it must never inherit.
  *
  * Reproduces #866 through the real manager PTY runtime: a manager process carrying Claude Code's
- * child-session marker used to hand it to every seat, silently disabling transcript persistence.
- * The child must receive the fixed launch allow-list only. `spawn.env` remains the explicit way to
- * add a named value.
+ * child-session marker used to hand it to every seat (envAllow absent, inherit-mode launchEnv),
+ * silently disabling transcript persistence. The child must receive the fixed launch allow-list
+ * only. Two named cells carry the load:
  *
- * WHAT THE OLD ASSERTION WAS PROTECTING, and what survives. It stood for "the operator's unrelated
- * secrets do not reach the agent". That protection is GONE BY DECISION, not by accident, and only
- * ever held for secrets that live in the environment and nowhere else: HOME was always forwarded, so
- * a child with a shell has always been able to read ~/.aws and ~/.ssh off disk. An operator who
- * needs the old behaviour declares `spawn.env` in the cotal config. What survives unconditionally is
- * the part that was never about preference: one agent's identity cannot become another's.
+ *   - "Claude host-session markers were withheld" — the marker is gone
+ *   - "seat still launches: PATH keeps ~/.local/bin" — connector binaries remain resolvable
+ *
+ * `spawn.env` remains the explicit way to add a named value, including a host marker a persona has
+ * opted into. Machine-wide operator knobs (`COTAL_HOME`, `COTAL_*_BIN`) still cross because no
+ * connector assigns them per spawn.
  *
  * Run: pnpm smoke:env-isolate
  */
@@ -31,21 +31,39 @@ function skip(label: string, why: string): void {
   console.log(`• ${label} skipped (${why})`);
 }
 
+function pathEntries(out: string): string[] {
+  const m = out.match(/(?:^|\n)PATH=([^\n]*)/i);
+  if (!m) return [];
+  return m[1].split(PATH_SEP);
+}
+
 /** A `COTAL_*` name no connector assigns and no keep-list entry names. It has to be INJECTED here
  *  to mean anything: asserting the absence of a string the parent never set cannot fail, and an
- *  earlier version of this file did exactly that. Injected, it proves the reset is driven by the
- *  PREFIX rather than by the enumerated `PER_SESSION` list, so a family added tomorrow is already
- *  covered. */
+ *  earlier version of this file did exactly that. Injected, it proves an unenumerated `COTAL_*`
+ *  name is withheld by the allow-list rather than by the enumerated `PER_SESSION` list. */
 const SENTINEL = "COTAL_P3_SENTINEL_UNRELATED";
 const OPERATOR_SECRET = "P3_OPERATOR_SECRET";
 const OPERATOR_VALUE = "withhold-marker-xyz";
 const EXPLICIT = "P3_EXPLICIT_CAPABILITY";
+const PATH_SEP = process.platform === "win32" ? ";" : ":";
+const HOME = process.env.HOME ?? process.env.USERPROFILE ?? "";
+if (!HOME) throw new Error("env-isolate: HOME/USERPROFILE is unset, so ~/.local/bin cannot be formed and the PATH cell cannot run");
+const LOCAL_BIN = `${HOME}/.local/bin`;
+// The measured constraint: connector binaries live in ~/.local/bin. Inject it so the cell is
+// live on a CI machine whose PATH does not already include that directory, then assert the child
+// still received it. launchEnv copies PATH as a whole string, so a missing parent entry would make
+// the cell fail for the wrong reason.
+if (!(process.env.PATH ?? "").split(PATH_SEP).includes(LOCAL_BIN))
+  process.env.PATH = `${LOCAL_BIN}${PATH_SEP}${process.env.PATH ?? ""}`;
 process.env[SENTINEL] = "parent-sentinel-value";
 process.env[OPERATOR_SECRET] = OPERATOR_VALUE;
 process.env[EXPLICIT] = "explicit-value";
 process.env.CLAUDE_CODE_CHILD_SESSION = "parent-session-marker-866";
 process.env.CLAUDE_CODE_ENTRYPOINT = "parent-entrypoint-866";
 process.env.CLAUDECODE = "parent-claudecode-866";
+process.env.OPENCODE_SERVER_URL = "http://parent-opencode.invalid";
+process.env.CODEX_HOME = "/tmp/parent-codex-home-must-not-cross";
+process.env.PI_SESSION_ID = "parent-pi-session-must-not-cross";
 
 /** One name from every per-session family a connector assigns CONDITIONALLY. Each is set here, in
  *  the parent, and none may appear in the child. `COTAL_LAUNCH_MATERIAL` is the sharpest: it names a
@@ -56,17 +74,18 @@ const PER_SESSION = [
   "COTAL_ROLE", "COTAL_SUBSCRIBE", "COTAL_ALLOW_PUBLISH", "COTAL_CAPABILITIES", "COTAL_EVENTS",
 ] as const;
 for (const k of PER_SESSION) process.env[k] = `parent-${k}`;
-/** A machine-wide operator knob: no connector assigns it per spawn, so it crosses. */
+/** Machine-wide operator knobs: no connector assigns them per spawn, so they cross. */
 process.env.COTAL_HOME = "/tmp/operator-cotal-home";
+process.env.COTAL_CODEX_BIN = "/tmp/operator-codex-bin";
 
 const cwd = process.cwd();
 
 /** Spawn `printenv` under a runtime with a connector-style spec, collect its env output, stop. */
-async function childEnvOf(spawnFn: (spec: LaunchSpec) => { attach: () => unknown; stop: (o?: { graceful?: boolean }) => void }): Promise<string> {
+async function childEnvOf(spawnFn: (spec: LaunchSpec) => { attach: () => unknown; stop: (o?: { graceful?: boolean }) => void }, env: Record<string, string>): Promise<string> {
   // Dump the child's env cross-platform — `printenv` is Unix-only; node (always present, and able to
   // start from the inherited env) prints each KEY=value the same way on Windows and POSIX.
   const dumpEnv = "for (const [k, v] of Object.entries(process.env)) console.log(`${k}=${v}`);";
-  const spec: LaunchSpec = { command: process.execPath, args: ["-e", dumpEnv], env: launchEnv({ envAllow: [EXPLICIT] }) };
+  const spec: LaunchSpec = { command: process.execPath, args: ["-e", dumpEnv], env };
   const h = spawnFn(spec);
   const sess = h.attach() as { onData: (fn: (b: Buffer) => void) => () => void; onExit: (fn: () => void) => () => void };
   let buf = "";
@@ -77,35 +96,49 @@ async function childEnvOf(spawnFn: (spec: LaunchSpec) => { attach: () => unknown
   return buf;
 }
 
+function stripPty(raw: string): string {
+  return raw.replace(/\x1b\][^\x07]*\x07/g, "").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+}
+
 /** The assertions every runtime must satisfy, so a backend cannot pass by testing less. */
-function assertBoundary(label: string, out: string): void {
+function assertBoundary(label: string, out: string, opts: { explicit: boolean }): void {
   console.log(`${label}:`);
   check("ordinary operator variable was withheld", !out.includes(`${OPERATOR_SECRET}=${OPERATOR_VALUE}`));
-  check("explicit spawn.env value reached child", out.includes(`${EXPLICIT}=explicit-value`));
+  if (opts.explicit) check("explicit spawn.env value reached child", out.includes(`${EXPLICIT}=explicit-value`));
+  else check("explicit spawn.env value did NOT leak onto the default path", !out.includes(`${EXPLICIT}=explicit-value`));
   const hostMarkers = ["CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_ENTRYPOINT", "CLAUDECODE"]
     .filter((k) => new RegExp(`(^|\\n)${k}=`).test(out));
   check("Claude host-session markers were withheld", hostMarkers.length === 0, hostMarkers);
-  // THE HALF THAT DID NOT FLIP, enumerated rather than sampled.
+  const analog = ["OPENCODE_SERVER_URL", "CODEX_HOME", "PI_SESSION_ID"]
+    .filter((k) => new RegExp(`(^|\\n)${k}=`).test(out));
+  check("analogous host markers for other connectors were withheld", analog.length === 0, analog);
   const leaked = PER_SESSION.filter((k) => new RegExp(`(^|\\n)${k}=`).test(out));
   check("every per-session COTAL_* was RESET, not inherited", leaked.length === 0, leaked);
-  // ...and not merely blanked: a name absent from the keys must also not appear as a parent value.
   check("no per-session VALUE survived under another name", !out.includes("parent-COTAL_"));
-  check("ambient COTAL_HOME was withheld", !/(^|\n)COTAL_HOME=\/tmp\/operator-cotal-home/.test(out));
-  // Live because the parent sets it above: an unenumerated COTAL_* name is reset by the prefix.
+  check("machine-wide COTAL_HOME crossed", /(^|\n)COTAL_HOME=\/tmp\/operator-cotal-home/.test(out));
+  check("machine-wide COTAL_CODEX_BIN crossed", /(^|\n)COTAL_CODEX_BIN=\/tmp\/operator-codex-bin/.test(out));
   check("an unenumerated COTAL_* name was RESET too (prefix, not a hardcoded list)", !out.includes(SENTINEL));
-  // Case-insensitive: Windows spells this `Path`, not `PATH`.
   check("PATH present (the child can still run)", /(^|\n)PATH=/i.test(out));
+  check(
+    "seat still launches: PATH keeps ~/.local/bin",
+    pathEntries(out).includes(LOCAL_BIN),
+    { LOCAL_BIN, path: pathEntries(out) },
+  );
   const homeVar = process.platform === "win32" ? "USERPROFILE" : "HOME";
   check(`${homeVar} present`, new RegExp(`(^|\\n)${homeVar}=`).test(out));
 }
 
-// pty — the default, always-available backend.
+// pty — the default, always-available backend. Default launchEnv (no spawn.env) is the 0.30.1 leak.
 {
   const runtime = createRuntime("pty", "cotal-p3");
-  const raw = await childEnvOf((spec) => runtime.spawn("p3-pty", spec, cwd));
-  // ConPTY interleaves terminal-init escapes + a window-title OSC with the output, so strip control
-  // sequences before asserting.
-  assertBoundary("pty runtime", raw.replace(/\x1b\][^\x07]*\x07/g, "").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ""));
+  const raw = await childEnvOf((spec) => runtime.spawn("p3-pty", spec, cwd), launchEnv());
+  assertBoundary("pty runtime (default launchEnv, no spawn.env)", stripPty(raw), { explicit: false });
+}
+
+{
+  const runtime = createRuntime("pty", "cotal-p3-explicit");
+  const raw = await childEnvOf((spec) => runtime.spawn("p3-pty-explicit", spec, cwd), launchEnv({ envAllow: [EXPLICIT] }));
+  assertBoundary("pty runtime (spawn.env extra)", stripPty(raw), { explicit: true });
 }
 
 // tmux — the `env -i` path: it CLEARS inheritance and sets exactly what the spec carried, so it is
@@ -123,7 +156,7 @@ if (tmuxOk) {
   // `-S -` captures the FULL scrollback: the inherited env is long and an early line would otherwise
   // scroll off a short pane.
   try { out = execFileSync("tmux", ["capture-pane", "-p", "-S", "-", "-t", "cotal-p3-smoke:p3-tmux"], { encoding: "utf8" }); } catch { /* window gone */ }
-  assertBoundary("tmux runtime", out);
+  assertBoundary("tmux runtime", out, { explicit: true });
   h.stop({ graceful: false });
   try { execFileSync("tmux", ["kill-session", "-t", "cotal-p3-smoke"], { stdio: "ignore" }); } catch { /* already gone */ }
 } else {
@@ -137,5 +170,9 @@ delete process.env[EXPLICIT];
 delete process.env.CLAUDE_CODE_CHILD_SESSION;
 delete process.env.CLAUDE_CODE_ENTRYPOINT;
 delete process.env.CLAUDECODE;
+delete process.env.OPENCODE_SERVER_URL;
+delete process.env.CODEX_HOME;
+delete process.env.PI_SESSION_ID;
+delete process.env.COTAL_CODEX_BIN;
 console.log(`\nENV-BOUNDARY SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);
 process.exit(failures === 0 ? 0 : 1);

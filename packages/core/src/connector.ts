@@ -94,7 +94,9 @@ export interface LaunchOpts {
   mcpServers?: Record<string, McpServerSpec>;
   /** Extra environment names an operator deliberately declared in `spawn.env`, resolved by the
    *  caller exactly as {@link mcpServers} is. The default supplies no extras: the child receives the
-   *  fixed OS allow-list and connector-declared inputs only. Connectors never read config themselves. */
+   *  fixed OS allow-list, the machine-wide `COTAL_*` operator knobs, and connector-declared inputs
+   *  only. Connectors never read config themselves. Host-session markers are not forwarded unless
+   *  named here. */}
   envAllow?: readonly string[];
   /** The manager's workspace root. Connectors that keep per-agent local state (e.g. the OpenCode
    *  connector's SQLite DB + serve pidfile) pin it here so a per-agent working directory — which can

@@ -123,11 +123,19 @@ the session. They are not operator knobs; listed so you recognize them in a proc
 | `OPENCODE_DB` / `OPENCODE_HOME` / `OPENCODE_PORT` / `OPENCODE_SERVER_URL` / `COTAL_OPENCODE_*` | OpenCode server plumbing (home, port, DB, server URL) |
 
 A spawned agent receives a fixed OS execution allow-list (PATH, HOME, TERM, locale, and
-XDG/Windows config directories), the provider inputs its connector declares, and `${VAR}` names an
-explicitly shared MCP server requires. It does not inherit the manager's ambient environment. This
-keeps host-session markers such as `CLAUDE_CODE_CHILD_SESSION`, unrelated service secrets, and
-environment-only capabilities out of seats unless deliberately supplied. Connection material is
-not in the environment at all (see [identity & auth](identity-and-auth.md)).
+XDG/Windows config directories), the machine-wide `COTAL_*` operator knobs (`COTAL_HOME`, the
+feedback set, the default-agent pair, the `*_BIN` overrides, the timing knobs), the provider inputs
+its connector declares, and `${VAR}` names an explicitly shared MCP server requires. It does not
+inherit the manager's ambient environment. This keeps host-session markers such as
+`CLAUDE_CODE_CHILD_SESSION` / `CLAUDECODE` (and the analogous names other hosts use to mark a nested
+session), unrelated service secrets, and environment-only capabilities out of seats unless
+deliberately supplied. A seat's transcript/resume behaviour is a property of the seat, never of how
+many layers up someone once ran `cotal up` inside an agent. Connection material is not in the
+environment at all (see [identity & auth](identity-and-auth.md)).
+
+PATH is forwarded whole, including entries such as `~/.local/bin` where connector binaries live, so
+a seat can still launch after the strip. There is no inherit mode and no opt-in-to-containment flag:
+the allow-list is the only path.
 
 To deliberately add an environment name for a spawned agent, declare `spawn.env` in the config file:
 
@@ -135,9 +143,11 @@ To deliberately add an environment name for a spawned agent, declare `spawn.env`
 { "spawn": { "env": ["MY_PROVIDER_API_KEY"] } }
 ```
 
-The listed names are added to the fixed boundary. An empty array adds nothing. A space-local
-`spawn` block replaces the operator-level one outright rather than merging, so a local list stays
-exactly local. No `spawn` block, `"spawn": { "env": [] }`, and `"spawn": {}` all add no names.
+The listed names are added to the fixed boundary. That is also the opt-in for a host-session marker
+a persona has chosen to receive (`CLAUDE_CODE_CHILD_SESSION` and friends). An empty array adds
+nothing. A space-local `spawn` block replaces the operator-level one outright rather than merging,
+so a local list stays exactly local. No `spawn` block, `"spawn": { "env": [] }`, and `"spawn": {}`
+all add no names.
 
 Be honest with yourself about what this buys: `HOME` is forwarded, so an agent with a shell reads
 `~/.aws`, `~/.ssh` and `~/.config` regardless. The boundary protects what a file on disk cannot hand

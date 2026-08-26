@@ -15,8 +15,9 @@
  * THE EXPECTATION COMES FROM THE CONFIG THIS SUITE WROTE, NEVER FROM `envAllow`. That is not a
  * stylistic choice. The first version branched on `envAllow` to decide what to assert, so breaking
  * the resolution made the confined arm quietly take the inherit branch and pass: it derived its
- * expectation from the value under test. Both controls below survived it. The rule is that a cell
- * may read the input the operator supplied and the output the OS produced, and nothing in between.
+ * expectation from the value under test. There is no inherit branch anymore — the default path
+ * withholds undeclared names — but the rule still holds: a cell may read the input the operator
+ * supplied and the output the OS produced, and nothing in between.
  *
  * THIS GRADES `dist/`, NOT `src/`. `bin/` resolves the workspace packages to their builds, so a
  * source edit is invisible here until it is built. That is the right target for a composition test,
@@ -49,6 +50,7 @@ writeFileSync(creds, "-----BEGIN NATS USER JWT-----\nx\n------END NATS USER JWT-
 process.env[ALLOWED] = "allowed-value-7f21";
 process.env[DENIED] = "denied-value-7f21";
 process.env.COTAL_ROLE = "PARENT-ROLE-MUST-NOT-CROSS";   // a per-session name held by the parent
+process.env.CLAUDE_CODE_CHILD_SESSION = "parent-session-marker-866";
 
 function realConfigRoot(spawnBlock: unknown | undefined): string {
   const c = mkdtempSync(join(box, "cfg-"));
@@ -97,8 +99,8 @@ for (const connectorName of ["claude", "opencode", "codex", "jcode"]) {
     // confined arm would silently take the inherit branch and pass. Measured, not hypothetical - the
     // first version of this file did exactly that and survived its own control.
     if (block === undefined) {
-      ck("operator's allowed var reached the real child", got[ALLOWED] === "allowed-value-7f21", String(got[ALLOWED]));
-      ck("operator's other var reached it too (inherit means inherit)", got[DENIED] === "denied-value-7f21", String(got[DENIED]));
+      ck("undeclared operator var was withheld on the default path", got[ALLOWED] === undefined, String(got[ALLOWED]));
+      ck("undeclared operator var was withheld too (no inherit mode)", got[DENIED] === undefined, String(got[DENIED]));
     } else {
       ck("config declared an allow-list, so it must have RESOLVED", envAllow !== undefined, "spawnEnvAllow returned undefined for a config that declares spawn.env");
       ck("allow-listed var reached the real child", got[ALLOWED] === "allowed-value-7f21", String(got[ALLOWED]));
@@ -107,6 +109,8 @@ for (const connectorName of ["claude", "opencode", "codex", "jcode"]) {
     ck("parent's COTAL_ROLE did NOT cross", got.COTAL_ROLE !== "PARENT-ROLE-MUST-NOT-CROSS", String(got.COTAL_ROLE));
     ck("child got its OWN role", got.COTAL_ROLE === "worker", String(got.COTAL_ROLE));
     ck("HOME forwarded in both modes (the documented cost)", typeof got.HOME === "string" && got.HOME.length > 0);
+    ck("CLAUDE_CODE_CHILD_SESSION did not leak", got.CLAUDE_CODE_CHILD_SESSION === undefined, String(got.CLAUDE_CODE_CHILD_SESSION));
+    ck("PATH present so the seat still launches", typeof got.PATH === "string" && got.PATH.length > 0);
   }
 }
 console.log(fail === 0 ? "\nE2E OK" : `\nE2E FAILED: ${fail}`);

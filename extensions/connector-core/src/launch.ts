@@ -2,21 +2,20 @@
  * The spawned-agent env (P3) - the single chokepoint for what a child process sees.
  *
  * Connectors build the child's env as `{ ...launchEnv(...), <COTAL_* identity>, <connector vars> }`
- * and runtimes pass only that env. The default is a fixed OS allow-list plus connector-declared
- * values, never the manager's ambient environment. This is both a capability and a session-identity
- * boundary: sockets, temporary credentials, and host markers such as `CLAUDE_CODE_CHILD_SESSION`
- * must not become properties of every seat merely because an ancestor ran `cotal up` inside a host.
+ * and runtimes pass only that env. The default is a fixed OS allow-list, the machine-wide
+ * {@link OPERATOR_ENV_KEEP} knobs, connector-declared provider keys, and `mcpKeys` — never the
+ * manager's ambient environment. This is both a capability and a session-identity boundary:
+ * sockets, temporary credentials, and host markers such as `CLAUDE_CODE_CHILD_SESSION` must not
+ * become properties of every seat merely because an ancestor ran `cotal up` inside a host.
  * An operator deliberately expands the boundary only through `spawn.env`.
  *
  * Scope this is HONEST about (P6). This does not close filesystem secret access: HOME / XDG /
- * platform config dirs are forwarded either way, so a child with a shell reads ~/.aws, ~/.ssh,
- * ~/.config and ~/.cotal straight off disk. An allow-list stops env-ONLY secrets - an
- * `aws-vault exec` or `op run` shell, CI-injected values - and nothing that has a file behind it.
- * Nor does either mode close model-key exfil: a key-based agent holds its provider key in its own
- * process in order to do inference. What DOES narrow under inherit is that Cotal's own connection
- * material is no longer in the environment at all: {@link materialEnv} moved the credential, the
- * broker address and the control token behind a 0600 file, so what a child now inherits from the
- * `COTAL_*` namespace is a path this function removes, not a secret.
+ * platform config dirs are forwarded, so a child with a shell reads ~/.aws, ~/.ssh, ~/.config and
+ * ~/.cotal straight off disk. An allow-list stops env-ONLY secrets - an `aws-vault exec` or
+ * `op run` shell, CI-injected values - and nothing that has a file behind it. Nor does it close
+ * model-key exfil: a key-based agent holds its provider key in its own process in order to do
+ * inference. Cotal's own connection material is not in the environment at all: {@link materialEnv}
+ * moved the credential, the broker address and the control token behind a 0600 file.
  */
 import {
   eventChannel,
@@ -94,10 +93,45 @@ export const MODEL_PROVIDER_KEYS = [
   "NOUS_API_KEY",
 ] as const;
 
+/** The `COTAL_*` an operator sets MACHINE-WIDE, which a child legitimately needs. The qualifying
+ *  property is not "harmless" but "no connector assigns it per spawn": a name no launch path writes
+ *  cannot carry one agent's grant into another, which is why this list stays correct as connectors
+ *  are added and a deny-list of per-session names would not. `COTAL_HOME` is the load-bearing entry
+ *  - it redirects the mesh registry, and a child that shells out to `cotal` must resolve the one
+ *  its parent did. `COTAL_CODEX_BIN` and its siblings are operator binary overrides, and sit here
+ *  precisely BECAUSE the neighbouring per-launch `COTAL_CODEX_HOME`/`_CONFIG`/`_TUI`/`_PROMPT` do
+ *  not. Host-session markers (`CLAUDE_CODE_*`, `CLAUDECODE`, and the analogous names other hosts
+ *  use to mark a nested session) are never on this list: a seat's transcript/resume behaviour is a
+ *  property of the seat, never of how many layers up someone once ran `cotal up` inside an agent. */
+export const OPERATOR_ENV_KEEP = [
+  "COTAL_HOME",
+  "COTAL_FEEDBACK_KEY",
+  "COTAL_FEEDBACK_EMAIL",
+  "COTAL_FEEDBACK_URL",
+  "COTAL_DEFAULT_AGENT",
+  "COTAL_DEFAULT_PERSONA",
+  "COTAL_SKIP_CONNECTOR_SEED",
+  "COTAL_SKIP_ASSIST",
+  "COTAL_DETACH_KEY",
+  "COTAL_COMPLETE_DEBUG",
+  "COTAL_DEBUG",
+  "COTAL_SERVE_HEADLESS",
+  "COTAL_EVENTS_DEFAULT",
+  "COTAL_MEMBERSHIP_INTERVAL_MS",
+  "COTAL_DELIVERY_BROKER_GONE_MS",
+  "COTAL_IDP_TIMEOUT_MS",
+  "COTAL_CODEX_BIN",
+  "COTAL_OPENCODE_BIN",
+  "COTAL_ORCA_BIN",
+] as const;
+
 /** Build the base env a spawned agent runs with.
  *
- *  The child receives the OS allow-list plus connector-declared provider keys, `mcpKeys` (the
- *  `${VAR}` secrets a shared MCP server references), and names deliberately added by `spawn.env`.
+ *  The child receives the OS allow-list, {@link OPERATOR_ENV_KEEP}, connector-declared provider
+ *  keys, `mcpKeys` (the `${VAR}` secrets a shared MCP server references), and names deliberately
+ *  added by `spawn.env`. There is no inherit mode: omitting `envAllow` adds no extras, never the
+ *  manager's ambient environment. Host-session markers therefore cannot leak unless a persona or
+ *  operator names them on `spawn.env`.
  *
  *  Allow-list matching is CASE-INSENSITIVE and each value is copied under the OS's OWN key casing:
  *  Windows spells these `Path`/`ComSpec`/`windir`, so a canonical-only copy would either miss them
@@ -117,6 +151,7 @@ export function launchEnv(
     if (v !== undefined) env[src] = v;
   };
   for (const k of OS_ENV_ALLOW) copy(k);
+  for (const k of OPERATOR_ENV_KEEP) copy(k);
   for (const k of [...(opts.providerKeys ?? []), ...(opts.mcpKeys ?? []), ...(opts.envAllow ?? [])]) copy(k);
   return env;
 }

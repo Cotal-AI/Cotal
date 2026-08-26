@@ -176,11 +176,13 @@ laterally; the manager only births and configures them.
   floor bounds spawn/despawn churn, so a capability-holding but compromised peer cannot
   fork-bomb the host. The gate runs at goal acceptance, before any identity is minted or
   process launched, so a refused spawn leaves nothing behind.
-- **Declared environment boundary.** A spawned agent receives a fixed OS allow-list,
-  connector-declared provider inputs, explicitly shared MCP references, and names deliberately
-  added through `spawn.env`. It never inherits the manager's ambient environment, so host-session
-  markers and unrelated capabilities cannot become properties of every seat. Connection material
-  rides a private file instead of the environment.
+- **Declared environment boundary.** A spawned agent receives a fixed OS allow-list (PATH/HOME/
+  locale, including PATH entries connector binaries live in), the machine-wide `COTAL_*` operator
+  knobs, connector-declared provider inputs, explicitly shared MCP references, and names
+  deliberately added through `spawn.env`. It never inherits the manager's ambient environment, so
+  host-session markers (`CLAUDE_CODE_CHILD_SESSION` and the analogous names other hosts use) and
+  unrelated capabilities cannot become properties of every seat. Connection material rides a private
+  file instead of the environment.
 - **Instance addressing.** One space can hold more than one manager. Each keeps a stable
   logical instance id across restarts and advances its process epoch when it comes back, so
   peers address a specific manager without caring which process currently serves it. `cotal

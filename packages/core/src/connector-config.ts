@@ -50,7 +50,9 @@ export interface ConnectorConfig {
 }
 
 /** Deliberate extra environment names for a spawned agent. The default boundary is a fixed OS
- *  allow-list plus connector-declared inputs. `env` adds named capability; an empty array adds none. */
+ *  allow-list, the machine-wide `COTAL_*` operator knobs, and connector-declared inputs. `env` adds
+ *  named capability (including a host-session marker a persona has opted into); an empty array adds
+ *  none. There is no inherit mode. */}
 export interface SpawnConfig {
   env?: string[];
 }
