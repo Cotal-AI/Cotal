@@ -1,18 +1,10 @@
 /**
  * Env-boundary smoke (P3) - what a spawned child inherits, and what it must never inherit.
  *
- * THIS CELL WAS DELIBERATELY FLIPPED. It used to assert that an operator's sentinel variable was
- * ABSENT from the child, because the launcher forwarded a fixed OS allow-list and nothing else. That
- * is no longer the behaviour: a harness the operator installed should run under `cotal spawn` the
- * way it runs in their own shell, so the child now inherits their environment. The name is kept
- * because the cell still tests isolation; what it isolates changed.
- *
- * A FLIP MUST NOT ASSERT LESS THAN WHAT IT REPLACES, so this is deliberately the stronger cell. The
- * old one turned on a SINGLE marker being absent. This one asserts the inversion of that marker AND
- * enumerates the per-session `COTAL_*` set that must still be reset - the half that did not flip and
- * the half that actually carries risk. A connector assigns those conditionally (`aclEnv` omits an
- * empty ACL, `materialEnv` returns `{}` with nothing to hand over, `if (opts.role)`), so an inherited
- * value is never overwritten and would reach a child that was never granted it.
+ * Reproduces #866 through the real manager PTY runtime: a manager process carrying Claude Code's
+ * child-session marker used to hand it to every seat, silently disabling transcript persistence.
+ * The child must receive the fixed launch allow-list only. `spawn.env` remains the explicit way to
+ * add a named value.
  *
  * WHAT THE OLD ASSERTION WAS PROTECTING, and what survives. It stood for "the operator's unrelated
  * secrets do not reach the agent". That protection is GONE BY DECISION, not by accident, and only
@@ -46,9 +38,14 @@ function skip(label: string, why: string): void {
  *  covered. */
 const SENTINEL = "COTAL_P3_SENTINEL_UNRELATED";
 const OPERATOR_SECRET = "P3_OPERATOR_SECRET";
-const OPERATOR_VALUE = "inherited-marker-xyz";
+const OPERATOR_VALUE = "withhold-marker-xyz";
+const EXPLICIT = "P3_EXPLICIT_CAPABILITY";
 process.env[SENTINEL] = "parent-sentinel-value";
-process.env[OPERATOR_SECRET] = OPERATOR_VALUE; // an ordinary operator variable, now inherited
+process.env[OPERATOR_SECRET] = OPERATOR_VALUE;
+process.env[EXPLICIT] = "explicit-value";
+process.env.CLAUDE_CODE_CHILD_SESSION = "parent-session-marker-866";
+process.env.CLAUDE_CODE_ENTRYPOINT = "parent-entrypoint-866";
+process.env.CLAUDECODE = "parent-claudecode-866";
 
 /** One name from every per-session family a connector assigns CONDITIONALLY. Each is set here, in
  *  the parent, and none may appear in the child. `COTAL_LAUNCH_MATERIAL` is the sharpest: it names a
@@ -69,7 +66,7 @@ async function childEnvOf(spawnFn: (spec: LaunchSpec) => { attach: () => unknown
   // Dump the child's env cross-platform — `printenv` is Unix-only; node (always present, and able to
   // start from the inherited env) prints each KEY=value the same way on Windows and POSIX.
   const dumpEnv = "for (const [k, v] of Object.entries(process.env)) console.log(`${k}=${v}`);";
-  const spec: LaunchSpec = { command: process.execPath, args: ["-e", dumpEnv], env: launchEnv() };
+  const spec: LaunchSpec = { command: process.execPath, args: ["-e", dumpEnv], env: launchEnv({ envAllow: [EXPLICIT] }) };
   const h = spawnFn(spec);
   const sess = h.attach() as { onData: (fn: (b: Buffer) => void) => () => void; onExit: (fn: () => void) => () => void };
   let buf = "";
@@ -83,16 +80,17 @@ async function childEnvOf(spawnFn: (spec: LaunchSpec) => { attach: () => unknown
 /** The assertions every runtime must satisfy, so a backend cannot pass by testing less. */
 function assertBoundary(label: string, out: string): void {
   console.log(`${label}:`);
-  // THE FLIP: an ordinary operator variable now reaches the child. This is the inversion of the
-  // assertion this file used to make, stated on a real value rather than on mere presence.
-  check("operator variable INHERITED (value intact)", out.includes(`${OPERATOR_SECRET}=${OPERATOR_VALUE}`));
+  check("ordinary operator variable was withheld", !out.includes(`${OPERATOR_SECRET}=${OPERATOR_VALUE}`));
+  check("explicit spawn.env value reached child", out.includes(`${EXPLICIT}=explicit-value`));
+  const hostMarkers = ["CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_ENTRYPOINT", "CLAUDECODE"]
+    .filter((k) => new RegExp(`(^|\\n)${k}=`).test(out));
+  check("Claude host-session markers were withheld", hostMarkers.length === 0, hostMarkers);
   // THE HALF THAT DID NOT FLIP, enumerated rather than sampled.
   const leaked = PER_SESSION.filter((k) => new RegExp(`(^|\\n)${k}=`).test(out));
   check("every per-session COTAL_* was RESET, not inherited", leaked.length === 0, leaked);
   // ...and not merely blanked: a name absent from the keys must also not appear as a parent value.
   check("no per-session VALUE survived under another name", !out.includes("parent-COTAL_"));
-  // The operator knob crosses, so the reset is a scalpel and not a blanket that breaks `cotal`.
-  check("machine-wide COTAL_HOME crossed", /(^|\n)COTAL_HOME=\/tmp\/operator-cotal-home/.test(out));
+  check("ambient COTAL_HOME was withheld", !/(^|\n)COTAL_HOME=\/tmp\/operator-cotal-home/.test(out));
   // Live because the parent sets it above: an unenumerated COTAL_* name is reset by the prefix.
   check("an unenumerated COTAL_* name was RESET too (prefix, not a hardcoded list)", !out.includes(SENTINEL));
   // Case-insensitive: Windows spells this `Path`, not `PATH`.
@@ -118,7 +116,7 @@ if (tmuxOk) {
   const runtime = createRuntime("tmux", "cotal-p3-smoke");
   // `sh -c 'printenv; sleep 5'` keeps the window alive long enough to capture-pane (printenv alone
   // exits instantly and the window closes). sh resolves via PATH.
-  const spec: LaunchSpec = { command: "sh", args: ["-c", "printenv; sleep 5"], env: launchEnv() };
+  const spec: LaunchSpec = { command: "sh", args: ["-c", "printenv; sleep 5"], env: launchEnv({ envAllow: [EXPLICIT] }) };
   const h = runtime.spawn("p3-tmux", spec, cwd);
   await new Promise((r) => setTimeout(r, 900)); // let printenv run + render
   let out = "";
@@ -135,5 +133,9 @@ if (tmuxOk) {
 for (const k of PER_SESSION) delete process.env[k];
 delete process.env[SENTINEL];
 delete process.env[OPERATOR_SECRET];
+delete process.env[EXPLICIT];
+delete process.env.CLAUDE_CODE_CHILD_SESSION;
+delete process.env.CLAUDE_CODE_ENTRYPOINT;
+delete process.env.CLAUDECODE;
 console.log(`\nENV-BOUNDARY SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);
 process.exit(failures === 0 ? 0 : 1);
