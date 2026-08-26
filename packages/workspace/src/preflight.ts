@@ -190,8 +190,9 @@ async function readNatsInfoGreeting(
  * registry mutation stays opt-in: callers that act on the registry (`spawn`/`use`/`meshes`, the
  * manager control commands) invoke it; `<TAB>` completion must not.
  *
- * Only `up`-written records are candidates at all: {@link pruneMesh} keeps an operator-registered
- * (`cotal meshes add`) one whatever the probe says, and this reports it as `offline` instead.
+ * Only legacy `up`-written records are candidates at all: {@link pruneMesh} keeps an
+ * operator-registered (`cotal meshes add`) or self-hosted (`cotal up`) one whatever the probe says,
+ * and this reports it as `offline` instead.
  *
  * **Deletion needs CONFIRMATION, not one timeout.** Pruning is destructive: a wrongly pruned mesh
  * costs the operator a re-`up` (or, for a remote one, the exact registration line again) and every
@@ -209,7 +210,7 @@ const PRUNE_CONFIRM_TIMEOUT_MS = 5_000;
 const PREFLIGHT_CONFIRM_TIMEOUT_MS = 8_000;
 
 /** What one sweep did. `offline` is the entries whose broker is gone but whose record STAYS —
- *  operator-registered (`cotal meshes add`) meshes, which {@link pruneMesh} never deletes. A surface
+ *  operator-registered (`cotal meshes add`) or self-hosted (`cotal up`) meshes, which {@link pruneMesh} never deletes. A surface
  *  that lists meshes renders that as a state instead of probing every broker a second time. */
 export interface MeshSweep {
   /** Spaces whose dead record was dropped. */

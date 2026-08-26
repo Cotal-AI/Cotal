@@ -166,7 +166,8 @@ export const upFlags: FlagSpec[] = [
   { name: "advertised-server", type: "string", value: "<url>", description: "with --exchange-public-port: the broker address the public bundle advertises - what participants dial (default: --server)" },
   { name: "agent-provisioning-url", type: "string", value: "<https://…>", description: "with --exchange-public-port: the deployment's remote agent-provisioning endpoint the public bundle advertises" },
   { name: "rotate-sys", type: "boolean", description: "renew the expired/expiring $SYS creds by rotating the system account (agents, data and creds survive; needs a stopped mesh)" },
-  { name: "detach", type: "boolean", description: "run in the background (stop with `cotal down`)" },
+  { name: "detach", type: "boolean", description: "deprecated no-op; `up` is already detached by default" },
+  { name: "foreground", type: "boolean", description: "debug in the invoking terminal; the default stack is detached" },
   { name: "runtime", type: "string", value: "<name>", description: "agent runtime for the mesh manager (default pty; extension runtimes are explicit-only, see `cotal runtimes`); with -f overrides the manifest's runtime" },
   { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "launch a whole mesh from a manifest" },
   { name: "dry-run", type: "boolean", description: "with -f: print the plan, mutate nothing" },
@@ -191,12 +192,14 @@ export async function up(args: ParsedArgs): Promise<void> {
   const values = args.values as {
     server?: string; "store-dir"?: string; space?: string; open?: boolean; "user-auth"?: boolean; idp?: string;
     "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean; "advertised-server"?: string; "agent-provisioning-url"?: string;
-    channels?: string; detach?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean;
+    channels?: string; detach?: boolean; foreground?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean;
     restore?: string; "restore-only"?: string; "accept-missing-source"?: boolean; "rotate-sys"?: boolean;
     "tls-cert"?: string; "tls-key"?: string;
     __restoreAttempt?: string;
     __ordinaryResumeAttempt?: string;
   };
+  if (values.detach && values.foreground)
+    throw new Error("--detach and --foreground contradict - `cotal up` is detached by default; use --foreground only for debugging");
   if (values.restore) {
     if (values.file || values.channels)
       throw new Error("--restore cannot be combined with --file/-f or --channels");
@@ -310,7 +313,7 @@ export async function up(args: ParsedArgs): Promise<void> {
             server: resumeServer,
             storeDir: resumeStore,
             runtime: resumeRuntime,
-            detached: Boolean(values.detach),
+            detached: !values.foreground,
             serverName,
             serverNonce,
           },
@@ -323,7 +326,7 @@ export async function up(args: ParsedArgs): Promise<void> {
           server: resumeServer,
           storeDir: resumeStore,
           runtime: resumeRuntime,
-          detached: Boolean(values.detach),
+          detached: !values.foreground,
           inventory: resume.inventory,
           journalState: "resume-intent",
           serverName,
@@ -829,7 +832,7 @@ export async function up(args: ParsedArgs): Promise<void> {
     }
   }
 
-  if (values.detach) {
+  if (!values.foreground) {
     const restored = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
     const { pid, source, authService, controlPlane, delivery, manager } = await startMeshDetached({
       transport,
@@ -985,7 +988,7 @@ export async function up(args: ParsedArgs): Promise<void> {
     // this broker by design (it is the operator's, and only they remove it), so unrecording it on
     // our exit would delete a registration this process never owned.
     const mine = findMesh(space);
-    if (mine && mine.origin !== "manual" && mine.server === server && mine.root === cotalRoot()) {
+    if (mine && mine.origin !== "manual" && mine.origin !== "self-hosted" && mine.server === server && mine.root === cotalRoot()) {
       removeMesh(space);
       if (getCurrent() === space) clearCurrent();
     }
@@ -1980,7 +1983,7 @@ export interface DetachOpts {
 /**
  * Start a background nats-server (JetStream), wait until it's reachable, pre-create the
  * space's streams, and leave it running detached (pid in `.cotal/nats.pid`). Used by
- * `up --detach`. When `onLine` is given, boot output is tailed from the
+ * the default `up` path. When `onLine` is given, boot output is tailed from the
  * log file and forwarded — the child writes to the file (not a pipe), so it survives the
  * parent exiting.
  */
@@ -2023,7 +2026,7 @@ export async function startMeshDetached(
   const startOffset = existsSync(logPath) ? statSync(logPath).size : 0;
   const fd = openSync(logPath, "a");
   const listenerStartedAt = new Date().toISOString();
-  const child = spawn(bin, args, { detached: true, stdio: ["ignore", fd, fd] });
+  const child = spawn(bin, args, { detached: true, windowsHide: true, stdio: ["ignore", fd, fd] });
   closeSync(fd);
   if (opts.boundListener) {
     writeFileSync(cotalPath("nats.pid"), String(child.pid));
@@ -2077,9 +2080,10 @@ export async function startMeshDetached(
   // USER MODE: the auth service comes up FIRST among the daemons (see the foreground path).
   const svc = await startUserAuthService(space, server, setup, opts.publicExchange);
   // Record BEFORE the control plane: the manager's fail-closed mode detection needs the
-  // authoritative registry entry at boot (marker-without-registry refuses). Detached: the entry
-  // outlives this process — `cotal down` removes it.
-  // Same capture-before-record as the foreground path: this also runs for a bare `up --detach` that
+  // authoritative registry entry at boot (marker-without-registry refuses). The entry outlives
+  // both this process and `cotal down`, so a stopped stack remains a known self-hosted mesh with
+  // this root as its restart authority.
+  // Same capture-before-record as the foreground path: this also runs for a bare `up` that
   // RESUMES an already-recorded mesh, whose exposure decision exists only in the registry entry the
   // call below rewrites.
   const effectiveAttachHost = attachHostFor(space, opts.host);
@@ -2176,6 +2180,14 @@ function realpathSafe(p: string): string {
 export async function claimSpace(space: string, server: string, root: string): Promise<void> {
   const existing = findMesh(space);
   if (!existing || (existing.server === server && existing.root === root)) return;
+  // A durable self-hosted record identifies its recorded root as the restart authority. Same-root
+  // is the identity check (the last server may change on an auto-port restart); a different root
+  // may not steal the name, live or dead — downtime is not proof the mesh is gone, and erasing the
+  // record would leave the original folder with nothing to restart from.
+  if (existing.origin === "self-hosted") {
+    if (realpathSafe(existing.root) === realpathSafe(root)) return;
+    throw new Error(`space "${space}" is recorded as self-hosted at ${existing.root} - run \`cotal up\` there to restart it, or \`cotal meshes rm ${space}\` to drop that record first`);
+  }
   // An OPERATOR-REGISTERED holder is decided FIRST, before liveness, because liveness changes
   // nothing about it and the two outcomes would otherwise print the wrong remedy. It is never
   // reclaimed: unreachable is not proof the mesh is gone (the record describes a broker on another
@@ -2214,11 +2226,11 @@ export function attachHostFor(space: string, explicit?: string): string | undefi
  *
  * The distinction is provenance, and it has to come from the call site because it cannot be
  * observed here: `started` covers the paths that spawned the broker or proved a listener this
- * attempt owns, and stamps `origin: "up"` — a record this machine can always write back, so the
- * liveness sweep and `cotal down` may drop it. `refresh` is the "a broker is already on this port"
- * branch, which concludes the mesh is up from reachability alone and starts nothing; stamping `up`
- * there would silently convert a hand-registered record into one the next sweep may delete, so it
- * keeps whatever origin the record already had.
+ * attempt owns, and stamps `origin: "self-hosted"` — this root is the restart authority, so the
+ * liveness sweep and `cotal down` must not drop it. `refresh` is the "a broker is already on this
+ * port" branch, which concludes the mesh is up from reachability alone and starts nothing;
+ * stamping `self-hosted` there would silently convert a hand-registered record into one this
+ * machine now claims, so it keeps whatever origin the record already had.
  */
 type Provenance = "started" | "refresh";
 
@@ -2231,7 +2243,7 @@ function recordOurMesh(m: MeshEntry, provenance: Provenance): void {
   const cur = getCurrent();
   const usableCurrent = cur && findMesh(cur) ? cur : undefined; // compute before recording m
   const prior = findMesh(m.space);
-  const origin = provenance === "refresh" && prior?.origin === "manual" ? "manual" : "up";
+  const origin = provenance === "refresh" && prior?.origin === "manual" ? "manual" : "self-hosted";
   // A REFRESH starts nothing: it concluded the mesh is up from reachability alone, and rebuilds `m`
   // from what THIS launch knows, which is never the operator's past decisions. `origin` was already
   // carried across for that reason; the overlay acceptance is the same class and was not, so a

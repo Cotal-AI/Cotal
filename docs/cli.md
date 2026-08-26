@@ -37,7 +37,7 @@ runtimes ship this way.
 | Set up & lifecycle | [`down`](#down) | Stop the whole stack, selected registered components, or a manifest deploy |
 | Set up & lifecycle | [`backup`](#backup-and-restore) | Create an offline full-space or registry-only artifact from a preserved cut |
 | Set up & lifecycle | [`clean`](#clean) | Configurable cleanup: purge history (live), or wipe the local store / identity (stopped) |
-| Set up & lifecycle | [`meshes`](#meshes-use-status) | List the running meshes on this machine |
+| Set up & lifecycle | [`meshes`](#meshes-use-status) | List the recorded meshes on this machine |
 | Set up & lifecycle | [`use`](#meshes-use-status) | Set the default mesh a bare `cotal spawn` joins |
 | Set up & lifecycle | [`status`](#meshes-use-status) | Read-only diagnostics for setup, processes, and the selected mesh |
 | Agents & personas | [`spawn`](#spawn) | Launch an agent from a persona (foreground, or `--detach` via the manager) |
@@ -125,7 +125,7 @@ current.
 ## up
 
 ```bash
-cotal up [--detach] [--open] [--space <s>] [--server <url>] [--channels <path>] [--runtime <name>]
+cotal up [--foreground] [--open] [--space <s>] [--server <url>] [--channels <path>] [--runtime <name>]
 cotal up --user-auth --idp <url> [--exchange-public-port <n> --exchange-public-url <https://…> [--exchange-trusted-proxy]]
 cotal up --tls-cert <cert.pem> --tls-key <key.pem>   # serve broker TLS (both, or neither)
 cotal up --restore <dir> [--restore-only registry] [--accept-missing-source]
@@ -148,7 +148,8 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--exchange-public-port <n>` | none | With `--user-auth`: add the public exchange face on this loopback port, for an HTTPS reverse proxy to forward to |
 | `--exchange-public-url <https://…>` | none | With `--exchange-public-port`: advertise the reverse proxy's HTTPS URL in discovery |
 | `--exchange-trusted-proxy` | off | With `--exchange-public-port`: attribute public failure buckets to the last `X-Forwarded-For` hop. Enable only when the listener is reachable solely through a trusted proxy; otherwise the socket address is used |
-| `--detach` | off | Run in the background (stop with `cotal down`) |
+| `--detach` | on | Deprecated compatibility spelling. It is a no-op because normal `up` is already detached |
+| `--foreground` | off | Debug in the invoking terminal. Normal `up` always detaches the stack so it survives shells, SSH sessions, agents, and CI runners ending |
 | `--tls-cert <path>` | — | PEM certificate to serve TLS with. Must be given together with `--tls-key`. The pair is validated **before** the broker starts — readability, private-key mode, that the two match, the validity window, and that the certificate covers the host clients will dial — because `nats-server` starts happily on an expired certificate and only the client then fails. The decision is recorded, so a later bare `cotal up` after a `cotal down` keeps serving TLS rather than silently reverting to cleartext |
 | `--tls-key <path>` | — | PEM private key for `--tls-cert`. Refused if group- or other-readable (tighten to `600`) |
 | `--file <cotal.yaml>`, `-f` | — | Launch a whole mesh from a manifest |
@@ -156,10 +157,10 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--runtime <name>` | `pty` (or the manifest's, with `-f`) | Agent runtime for the mesh manager (`pty` built in; others are installed extensions, explicit-only). Resolved + probed before the broker starts; an uninstalled/unreachable runtime fails loud. With `-f`, overrides the manifest's runtime |
 | `--rotate-sys` | off | Rotate the space's system account and re-mint its two `$SYS` creds. Needs a stopped mesh; refused with `--open` |
 
-`cotal up` boots a local nats-server with JetStream and, in auth mode (the default), JWT auth and
-per-agent ACLs; `--detach` records the mesh so `cotal spawn` from any directory can find it. With no
+`cotal up` boots a detached local nats-server with JetStream and, in auth mode (the default), JWT auth and
+per-agent ACLs. It always records the mesh as self-hosted so `cotal spawn` from any directory can find it and a stopped stack remains restartable from its recorded root. With no
 `--server`, it auto-selects a free port if the default address is taken; an explicit `--server`
-stays fail-loud on collision. `--detach` also brings up the control plane (delivery daemon in auth
+stays fail-loud on collision. It also brings up the control plane (delivery daemon in auth
 mode, then the manager). The `-f` form is a [manifest deploy](#manifest-deploys); see
 [Run a mesh](run-a-mesh.md).
 
@@ -185,7 +186,7 @@ config, so it runs as part of a boot:
 
 ```bash
 cotal down
-cotal up --rotate-sys --detach     # agents reconnect; nothing is re-provisioned
+cotal up --rotate-sys              # agents reconnect; nothing is re-provisioned
 cotal doctor auth                  # both $SYS creds healthy again, 30 days out
 ```
 
@@ -421,8 +422,7 @@ cotal use <space>
 cotal status [--space <s>] [--server <url>] [--components]
 ```
 
-`meshes` lists the meshes this machine knows; a `*` marks the `current` default a bare
-`cotal spawn` joins.
+`meshes` lists the meshes this machine knows, including stopped self-hosted ones tagged `offline`; a `*` marks the `current` default a bare `cotal spawn` joins.
 
 Run on a terminal with the space or `--server` missing, **`meshes add` is guided**: it asks for the
 one thing that cannot be derived (the broker URL), probes it, and tells you what answered - open or
@@ -433,8 +433,9 @@ than an error. Anything you pass on the command line is taken as given and not a
 a terminal - a script, an agent, CI - nothing prompts and the flag form's errors stand
 (`COTAL_NO_PROMPT=1` forces that too).
 
-`cotal up` and `cotal down` maintain their own records. `meshes add` registers a mesh they cannot
-speak for: one running on another machine, a shared broker, a hosted space. `--root` is the folder
+`cotal up` writes a durable self-hosted record; `cotal down` stops the stack but leaves that record
+so a stopped mesh remains listed and restartable. `meshes add` registers a mesh they cannot speak
+for: one running on another machine, a shared broker, a hosted space. `--root` is the folder
 whose `.cotal/auth` holds that mesh's credentials and whose `.cotal/agents` holds its personas
 (default: the project you run it in) — the registry stores that path, never a secret. `--mode`
 defaults to `auth` when the root holds the space's account record and to `open` otherwise. The
@@ -849,7 +850,7 @@ cotal supervise [--runtime <name>] [--space <s>] [--server <url>] [--spawn <name
 | `--spawn <names>` | — | Comma-separated personas to pre-spawn at startup |
 
 The manager is the agent supervisor and control plane: it answers `spawn --detach`, `stop`, `ps`,
-`attach`, and the `cotal_*` manager tools. `cotal up --detach` starts one for you; run `supervise`
+`attach`, and the `cotal_*` manager tools. `cotal up` starts one for you; run `supervise`
 directly to recover a dead manager or drive a custom runtime. Default runtime is `pty`; install an
 optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, `@cotal-ai/cmux`, or `@cotal-ai/herdr`) and
 select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.md).
@@ -1296,7 +1297,7 @@ keyed beta intake; without one it goes to the public `cotal.ai` intake and requi
 ## Server daemons
 
 Two long-lived infra roles ship with the CLI. They are not part of everyday operation; the delivery
-daemon comes up automatically with `cotal up --detach` in auth mode.
+daemon comes up automatically with `cotal up` in auth mode.
 
 ```bash
 cotal deliver --space <s> [--server <url>] [--creds <file>]

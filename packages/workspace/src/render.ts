@@ -65,6 +65,8 @@ function renderPreflightFailure(kind: PreflightFailure, t: MeshTarget, pruned: b
       // remedy here — this machine can only wait for it or stop pointing at it.
       if (t.origin === "manual")
         return `✗ no broker answered at ${t.server} - "${t.space}" is registered here but its mesh is not up; start it where it runs, or \`cotal meshes rm ${t.space}\` to unregister it`;
+      if (t.origin === "self-hosted")
+        return `✗ mesh "${t.space}" is recorded at ${t.root} but not running - run \`cotal up\` there to restart`;
       return `✗ no mesh running at ${t.server}${pruned ? " (stale registry entry - removed)" : ""} - run \`cotal up\``;
     // The registry-mismatch pair, like `unreachable`, must not prescribe `cotal up` for a mesh this
     // machine only registered: the repair there is the credentials under `--root`, or re-registering

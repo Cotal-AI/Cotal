@@ -14,7 +14,7 @@ them. Requires Node 20+.
 
 ```sh
 npx cotal-ai setup --yes     # configure only: seeds one agent, installs detected connectors, launches nothing
-npx cotal-ai up --detach     # start the mesh + delivery daemon + manager
+npx cotal-ai up              # start the detached mesh + delivery daemon + manager
 ```
 
 `setup --yes` accepts every default with no prompts and exits non-zero with the log path

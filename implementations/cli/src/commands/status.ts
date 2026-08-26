@@ -197,7 +197,7 @@ async function printRegistry(): Promise<void> {
   const current = getCurrent();
   section("Recorded Meshes");
   if (!meshes.length) {
-    console.log(c.dim("  none - start one with `cotal up --detach`, or register one running elsewhere with `cotal meshes add`"));
+    console.log(c.dim("  none - start one with `cotal up`, or register one running elsewhere with `cotal meshes add`"));
     return;
   }
   const pad = Math.max(...meshes.map((m) => m.space.length));
@@ -211,7 +211,7 @@ async function printRegistry(): Promise<void> {
       // A `down` record means two different things, and the repair differs: a mesh this machine
       // started can be re-`up`ed here, one registered by hand runs somewhere this machine doesn't
       // control (and, unlike the others, its record is never swept away for it).
-      const origin = m.origin === "manual" ? c.dim("  registered") : "";
+      const origin = m.origin === "manual" ? c.dim("  registered") : m.origin === "self-hosted" ? c.dim("  self-hosted") : "";
       const transport = m.tlsRequired ? "  tls-required" : "";
       console.log(
         `  ${mark} ${m.space.padEnd(pad)}  ${live ? c.green("reachable") : c.red("down")}  ${c.dim(`${m.mode}${transport}  ${m.server}  ${m.root}`)}${origin}`,

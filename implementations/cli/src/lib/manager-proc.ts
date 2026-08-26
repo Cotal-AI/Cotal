@@ -150,7 +150,7 @@ export function startManagerDetached(
   ];
   // This is an INTERNAL child re-exec: the `up`/`spawn` that reached here already ran the first-run
   // connector seed, so the manager skips it on boot (a direct `cotal supervise` still seeds).
-  const child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" } });
+  const child = spawn(node, args, { detached: true, windowsHide: true, stdio: ["ignore", fd, fd], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" } });
   closeSync(fd);
   child.unref();
   writeFileSync(PID_PATH(), String(child.pid));

@@ -17,6 +17,10 @@ operator-only maintenance verbs. Every command's full flag set is in the
 - **Manager**: a detached supervisor answering the control plane, so
   `cotal spawn --detach` and the `cotal_spawn` tool work right after `up`.
 
+The stack is detached by default and does not depend on the invoking shell, SSH connection, agent
+session, or CI runner staying alive. `--foreground` exists only for debugging in the invoking
+terminal.
+
 Three modes:
 
 - **Default (static auth).** JWT-authed, on by default: sender authenticity and per-agent
@@ -130,16 +134,19 @@ the registry; a missing provider or app throws, never silently falls back
 
 ## From any directory: the mesh registry
 
-`cotal up` records each running mesh in a machine-local registry
+`cotal up` records each provisioned mesh as **self-hosted** in a machine-local registry
 (`~/.cotal/meshes/space.<key>.json`, named by a case-safe hex encoding of the space: broker URL, the project root holding its creds and
-personas, and its mode). So a bare `cotal spawn <persona>` from *any* directory joins the
-running mesh with the right credentials instead of mistaking the cwd for a space:
+personas, and its mode). The record survives downtime. A command targeting a stopped mesh says
+where it is recorded and tells you to run `cotal up` there to restart, instead of denying the mesh
+exists. A bare `cotal spawn <persona>` from *any* directory joins a running mesh with the right
+credentials instead of mistaking the cwd for a space:
 
 - `cotal use <name>` sets the default from every directory, including inside another mesh's
   project. `--space <name>` overrides it for one command.
 - With no live selected default, a project with its own `.cotal/` resolves to that project's
   mesh; otherwise one running mesh is used automatically and several are an error.
-- `cotal meshes` lists them (a `*` marks the default); `cotal down` removes the entry.
+- `cotal meshes` lists them (a `*` marks the default); stopped self-hosted meshes stay listed as
+  `self-hosted · offline`. `cotal meshes rm <name>` deliberately removes a record.
 
 The registry stores a *path*, never a secret; trust material stays in each project's
 `.cotal/auth`. If the mesh is down or won't take your creds, spawn fails with one
@@ -273,9 +280,9 @@ down:
 cotal down --preserve-state
 cotal backup create ./space-backup        # full by default
 # later: deliberately resume the unchanged source
-cotal up --detach
+cotal up
 # or, from another preserved cut, restore before the normal listener opens
-cotal up --restore ./space-backup --detach
+cotal up --restore ./space-backup
 ```
 
 Use `--store-dir` on both preservation and backup for a custom JetStream store. `registry` is the

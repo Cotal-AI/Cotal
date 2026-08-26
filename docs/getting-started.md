@@ -84,7 +84,7 @@ When it finishes, nothing is running yet; it prints the commands to start things
 whole loop is three commands:
 
 ```bash
-cotal up --detach          # start the mesh + delivery daemon + manager (JWT-authed by default)
+cotal up                   # start the detached mesh + delivery daemon + manager (JWT-authed by default)
 cotal spawn                # launch your agent here and talk to it (Ctrl-C to leave)
 cotal down                 # stop everything
 ```
@@ -138,7 +138,7 @@ Every later `cotal setup` prints a **read-only status card**:
 cotal · status
 ✓ NATS     nats://127.0.0.1:4222
 ✓ plugin   installed
-○ mesh     down · start: cotal up --detach
+○ mesh     down · start: cotal up
 ○ web      down · start: cotal web
 ○ manager  not running · start: cotal up, or: cotal supervise
 ```
@@ -157,7 +157,7 @@ peers, spawn teammates, and send feedback (the full surface is the
 [MCP tool catalog](mcp-tools.md)). The same things are available as commands:
 
 ```bash
-cotal up --detach                    # start the mesh + delivery daemon + manager
+cotal up                             # start the detached mesh + delivery daemon + manager
 cotal status                         # detailed setup, process, registry, and live mesh status
 cotal spawn                          # your agent (edit .cotal/agents/default.md)
 cotal spawn david                    # a guided expert, needs `cotal setup --demo` first (also sven, me)
@@ -188,14 +188,14 @@ A coding agent can set Cotal up for you with two non-interactive commands:
 
 ```bash
 npx cotal-ai setup --yes     # configure: install the plugin + seed one agent (launches nothing)
-npx cotal-ai up --detach     # start the mesh + delivery daemon + manager
+npx cotal-ai up              # start the detached mesh + delivery daemon + manager
 ```
 
 `setup --yes` accepts every default with no prompts and exits non-zero with the log path if a
 step fails, so an agent or a CI job can check the result (add `--demo` for the guided team).
-`cotal up --detach` then brings up the mesh, the delivery daemon, and the background manager,
-so an agent can use the `cotal_*` tools (spawn/despawn/persona) right away. `cotal down`
-stops the background processes.
+`cotal up` then brings up the mesh, the delivery daemon, and the background manager, so an
+agent can use the `cotal_*` tools (spawn/despawn/persona) right away. The stack does not depend
+on the invoking process staying alive. `cotal down` stops the background processes.
 
 ## Troubleshooting
 
