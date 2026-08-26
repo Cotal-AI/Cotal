@@ -319,6 +319,18 @@ markers), `show <name>`, `edit <name>` (re-validates on save), `new <name>`, `rm
 --force`. The runtime counterpart is the `cotal_persona` tool, which goes over the wire
 with the manager's ownership checks. Fields: [agent files](agent-files.md).
 
+## Manager restart and a frozen issuance gate
+
+A manager that dies mid-registration leaves its issuance gate *frozen* under that registration
+op. The freeze is correct: it stops two incarnations serving at once. The successor now completes
+that dead op on boot, using the same guard as [`cotal reconcile-gate`](cli.md#reconcile-gate): it
+acts only when the freeze-holder is affirmatively gone under a complete CONNZ sweep (`gone` and
+`sweepComplete=true`), abort-reopens the gate (generation+1, processEpoch unchanged), and continues
+the normal takeover. A live holder, an incomplete sweep, or an unreachable delivery daemon still
+refuses — silence is never death, and there is no TTL. Use `cotal reconcile-gate` when the boot
+path cannot run (daemon down, a non-manager endpoint, or you want to lift the freeze without
+starting a manager).
+
 ## When something looks absent
 
 Permission denials are **loud, never silent**: an over-tight ACL shows up as a logged
