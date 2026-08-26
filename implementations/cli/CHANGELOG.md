@@ -1,5 +1,17 @@
 # @cotal-ai/cli
 
+## 0.30.1
+
+### Patch Changes
+
+- 1b4b386: The control command family (`ps`, `stop`, `attach`, and the detached-session release) dials
+  through `dialerFor`, so it works against a websocket broker (`wss://…`) instead of refusing
+  with "'servers' node client doesn't support websockets, use the 'wsconnect' function
+  instead" while `send` and foreground `spawn` — already routed through the dialer — worked.
+- Updated dependencies [aea08f9]
+  - @cotal-ai/core@0.30.1
+  - @cotal-ai/workspace@0.30.1
+
 ## 0.30.0
 
 ### Minor Changes
