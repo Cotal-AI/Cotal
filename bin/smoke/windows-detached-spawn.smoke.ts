@@ -17,15 +17,15 @@ function check(label: string, condition: boolean, extra?: unknown): void {
   if (!condition) failures++;
 }
 
-check("Windows process outside a job detaches without breakaway", assertWindowsDetachAllowed({ inJob: false, breakawayAllowed: false }) === false);
-check("Windows job with breakaway permission requests CREATE_BREAKAWAY_FROM_JOB", assertWindowsDetachAllowed({ inJob: true, breakawayAllowed: true }) === true);
+check("C01 Windows process outside a job detaches without breakaway", assertWindowsDetachAllowed({ inJob: false, breakawayAllowed: false }) === false);
+check("C02 Windows job with breakaway permission requests CREATE_BREAKAWAY_FROM_JOB", assertWindowsDetachAllowed({ inJob: true, breakawayAllowed: true }) === true);
 try {
   assertWindowsDetachAllowed({ inJob: true, breakawayAllowed: false });
-  check("Windows job without breakaway permission refuses detached up and names --foreground", false, "did not throw");
+  check("C03 Windows job without breakaway permission refuses detached up and names --foreground", false, "did not throw");
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
   check(
-    "Windows job without breakaway permission refuses detached up and names --foreground",
+    "C03 Windows job without breakaway permission refuses detached up and names --foreground",
     message === WINDOWS_JOB_REFUSAL && message.includes("--foreground") && message.includes("cannot host a detached stack"),
     message,
   );
@@ -37,7 +37,7 @@ const child = windowsDetachedChild(4242, (pid, signal) => {
   return true;
 });
 check(
-  "Windows detached child kill forwards the exact pid and signal",
+  "C04 Windows detached child kill forwards the exact pid and signal",
   child.kill("SIGTERM") === true && signals.length === 1 && signals[0]?.pid === 4242 && signals[0]?.signal === "SIGTERM",
   JSON.stringify(signals),
 );
@@ -52,21 +52,21 @@ let goneError: unknown;
 try { goneResult = goneChild.kill("SIGTERM"); }
 catch (error) { goneError = error; }
 check(
-  "Windows detached child reports an already-gone pid as false after attempting the exact signal",
+  "C05 Windows detached child reports an already-gone pid as false after attempting the exact signal",
   goneError === undefined && goneResult === false && goneSignals.length === 1 && goneSignals[0]?.pid === 4343 && goneSignals[0]?.signal === "SIGTERM",
   JSON.stringify({ goneResult, goneError: String(goneError), goneSignals }),
 );
 check(
-  "Windows detached child is active under the same null-state guard as a real child",
+  "C06 Windows detached child is active under the same null-state guard as a real child",
   child.exitCode === null && child.signalCode === null && !(child.exitCode !== null || child.signalCode !== null),
   JSON.stringify({ exitCode: child.exitCode, signalCode: child.signalCode }),
 );
 try {
   assertDetachedChildExitObservable(child);
-  check("Windows detached child exit observation fails loud instead of pretending it exited", false, "did not throw");
+  check("C07 Windows detached child exit observation fails loud instead of pretending it exited", false, "did not throw");
 } catch (error) {
   check(
-    "Windows detached child exit observation fails loud instead of pretending it exited",
+    "C07 Windows detached child exit observation fails loud instead of pretending it exited",
     error instanceof Error && error.message === "detached child process 4242 cannot have its exit observed",
     error,
   );
@@ -88,12 +88,12 @@ try {
   bindCaught = error;
 }
 check(
-  "an unbound-listener non-ESRCH teardown failure keeps the pidfile",
+  "C08 an unbound-listener non-ESRCH teardown failure keeps the pidfile",
   removedPid === undefined,
   removedPid,
 );
 check(
-  "an unbound-listener teardown failure preserves the primary error and attaches the cleanup failure",
+  "C09 an unbound-listener teardown failure preserves the primary error and attaches the cleanup failure",
   bindCaught === bindFailure && bindFailure.cause === signalFailure,
   bindCaught,
 );
@@ -112,7 +112,7 @@ try {
   unboundGoneCaught = error;
 }
 check(
-  "an unbound-listener ESRCH result removes the stale pidfile and preserves the bind error",
+  "C10 an unbound-listener ESRCH result removes the stale pidfile and preserves the bind error",
   unboundGonePidRemoved === 4343 && unboundGoneCaught === unboundGoneFailure && unboundGoneFailure.cause === undefined,
   { unboundGonePidRemoved, unboundGoneCaught },
 );
@@ -126,12 +126,12 @@ try {
   readinessCaught = error;
 }
 check(
-  "a not-ready non-ESRCH kill failure keeps the bound-listener pidfile",
+  "C11 a not-ready non-ESRCH kill failure keeps the bound-listener pidfile",
   !notReadyPidRemoved,
   notReadyPidRemoved,
 );
 check(
-  "a not-ready kill failure preserves the readiness error and attaches the signal failure",
+  "C12 a not-ready kill failure preserves the readiness error and attaches the signal failure",
   readinessCaught === readinessFailure && readinessFailure.cause === signalFailure,
   readinessCaught,
 );
@@ -145,7 +145,7 @@ try {
   readinessGoneCaught = error;
 }
 check(
-  "a not-ready ESRCH result removes the stale pidfile and preserves the readiness error",
+  "C13 a not-ready ESRCH result removes the stale pidfile and preserves the readiness error",
   notReadyGonePidRemoved && readinessGoneCaught === readinessGoneFailure && readinessGoneFailure.cause === undefined,
   { notReadyGonePidRemoved, readinessGoneCaught },
 );
@@ -161,12 +161,12 @@ try {
   postStartCaught = error;
 }
 check(
-  "a postStart non-ESRCH signal failure keeps the pidfile",
+  "C14 a postStart non-ESRCH signal failure keeps the pidfile",
   !postStartPidRemoved,
   postStartPidRemoved,
 );
 check(
-  "a postStart signal failure preserves the postStart error and attaches the signal failure",
+  "C15 a postStart signal failure preserves the postStart error and attaches the signal failure",
   postStartCaught === postStartFailure && postStartFailure.cause === postStartSignalFailure,
   postStartCaught,
 );
@@ -181,7 +181,7 @@ try {
   postStartGoneCaught = error;
 }
 check(
-  "a postStart ESRCH result removes the stale pidfile and preserves the postStart error",
+  "C16 a postStart ESRCH result removes the stale pidfile and preserves the postStart error",
   gonePidRemoved && postStartGoneCaught === postStartGoneFailure && postStartGoneFailure.cause === undefined,
   { gonePidRemoved, postStartGoneCaught },
 );
