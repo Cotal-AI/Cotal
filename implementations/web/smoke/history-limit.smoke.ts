@@ -85,12 +85,12 @@ function slowLink(o: { listen: number; target: number; oneWayMs: number; bytesPe
  *  and a run that dies on the harness timeout reports an unknown instead of reddening the assertion
  *  that names the rule. `null` here means "did not answer", which is the finding, not an error. */
 type Answer = { status: number; body: string; ms: number } | null;
-const get = async (url: string, ms: number): Promise<Answer> => {
+const get = async (url: string, ms: number, cookie: string): Promise<Answer> => {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), ms);
   const t0 = Date.now();
   try {
-    const r = await fetch(url, { signal: ac.signal });
+    const r = await fetch(url, { headers: { cookie }, signal: ac.signal });
     return { status: r.status, body: await r.text(), ms: Date.now() - t0 };
   } catch { return null; } finally { clearTimeout(t); }
 };
@@ -127,14 +127,24 @@ try {
   await seed.stop();
 
   const runWeb = fileURLToPath(new URL("./run-web.mts", import.meta.url));
-  const bootWeb = async (port: number, broker: string): Promise<ReturnType<typeof spawn>> => {
+  const bootWeb = async (port: number, broker: string): Promise<{ child: ReturnType<typeof spawn>; cookie: string }> => {
     const ch = spawn(process.execPath, ["--import", "tsx", runWeb, "--space", SPACE, "--server", broker,
       "--port", String(port), "--no-open"], { stdio: ["ignore", "pipe", "pipe"] });
-    ch.stdout?.on("data", () => {}); ch.stderr?.on("data", () => {});
-    for (let i = 0; i < 200; i++) { const r = await fetch(`http://127.0.0.1:${port}/api/meta`).catch(() => undefined); if (r?.ok) break; await wait(250); }
-    return ch;
+    let log = "";
+    ch.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
+    ch.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
+    let launchUrl: string | undefined;
+    for (let i = 0; i < 200 && launchUrl === undefined; i++) {
+      launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
+      await wait(250);
+    }
+    const exchange = launchUrl === undefined ? undefined : await fetch(launchUrl, { redirect: "manual" }).catch(() => undefined);
+    const session = /(?:^|,\s*)cotal_web_session=([^;]+)/.exec(exchange?.headers.get("set-cookie") ?? "")?.[1];
+    if (exchange?.status !== 302 || session === undefined) throw new Error(`web launch failed: ${log.slice(-300)}`);
+    return { child: ch, cookie: `cotal_web_session=${session}` };
   };
-  fastWeb = await bootWeb(FAST, SERVER);
+  const fast = await bootWeb(FAST, SERVER);
+  fastWeb = fast.child;
   const F = `http://127.0.0.1:${FAST}`;
 
   // ── 1. ONE PARSE, AND ALL THREE ROUTES OBEY IT ───────────────────────────────────────────────
@@ -145,38 +155,38 @@ try {
   // Without it that branch has no cell and a mutation of it cannot be graded.
   const BAD = ["abc", "Infinity", "1e999", "2.5", "-3", " 5", "5abc", "1e3", "99999999999999999999"];
   for (const bad of BAD) {
-    const answers = await Promise.all(ROUTES.map((r) => get(`${F}${r}?limit=${encodeURIComponent(bad)}`, CEILING_MS)));
+    const answers = await Promise.all(ROUTES.map((r) => get(`${F}${r}?limit=${encodeURIComponent(bad)}`, CEILING_MS, fast.cookie)));
     ok(`1.1 ?limit=${JSON.stringify(bad)} is refused by ALL THREE routes, and every one of them ANSWERS`,
       answers.every((a) => a !== null && a.status === 400), { bad, got: answers.map((a) => a?.status ?? "no answer") });
     ok(`1.2 the refusal of ${JSON.stringify(bad)} NAMES the parameter and the value it received`,
       answers.every((a) => !!a && a.body.includes("limit") && a.body.includes(bad)), answers[0]?.body);
     ok(`1.3 the refusal of ${JSON.stringify(bad)} carries no data`, answers.every((a) => len(a) <= 0), answers.map(len));
   }
-  const five = await get(`${F}/api/channels/ch0/history?limit=5`, CEILING_MS);
+  const five = await get(`${F}/api/channels/ch0/history?limit=5`, CEILING_MS, fast.cookie);
   ok("1.4 a whole number is honoured exactly", five?.status === 200 && len(five) === 5, { status: five?.status, n: len(five) });
-  const zero = await get(`${F}/api/channels/ch0/history?limit=0`, CEILING_MS);
+  const zero = await get(`${F}/api/channels/ch0/history?limit=0`, CEILING_MS, fast.cookie);
   ok("1.5 ZERO STILL MEANS ZERO: the value #699 claimed returns everything returns an empty page",
     zero?.status === 200 && len(zero) === 0, { status: zero?.status, n: len(zero) });
-  const absent = await get(`${F}/api/channels/ch0/history`, CEILING_MS);
-  const empty = await get(`${F}/api/channels/ch0/history?limit=`, CEILING_MS);
+  const absent = await get(`${F}/api/channels/ch0/history`, CEILING_MS, fast.cookie);
+  const empty = await get(`${F}/api/channels/ch0/history?limit=`, CEILING_MS, fast.cookie);
   ok("1.6 an absent limit is the route's own default, and an EMPTY limit is the same as absent",
     absent?.status === 200 && empty?.status === 200 && len(absent) === PER && len(empty) === PER,
     { absent: len(absent), empty: len(empty), expected: PER });
   // A caller error and a server fault are different facts; before the split they shared a status.
   ok("1.7 a malformed request is a 400, NEVER the 500 that means the dashboard broke",
-    (await get(`${F}/api/dms?limit=abc`, CEILING_MS))?.status === 400);
+    (await get(`${F}/api/dms?limit=abc`, CEILING_MS, fast.cookie))?.status === 400);
   // The same law one level up. The channel name is percent-decoded out of the path, and a decode
   // that cannot succeed is the caller having typed a bad escape, not the server having broken. It
   // reached the frame as a bare URIError, which is not a BadRequest, so it was reported 500 by the
   // very split 1.7 asserts. A rule that holds for the query and not for the path is not the rule.
-  const badEscape = await get(`${F}/api/channels/%zz/history`, CEILING_MS);
+  const badEscape = await get(`${F}/api/channels/%zz/history`, CEILING_MS, fast.cookie);
   ok("1.8 a channel name that cannot be percent-decoded is the CALLER's error, so 400 and not 500",
     badEscape?.status === 400, { status: badEscape?.status, body: badEscape?.body?.slice(0, 120) });
   ok("1.9 and that refusal says what was wrong with the name, not just that something failed",
     !!badEscape && /channel name/i.test(badEscape.body), badEscape?.body?.slice(0, 160));
   // A well formed name that simply is not there stays a 200 empty read, so 1.8 cannot pass by
   // turning every unknown channel into a refusal.
-  const absentChan = await get(`${F}/api/channels/no-such-channel/history?limit=5`, CEILING_MS);
+  const absentChan = await get(`${F}/api/channels/no-such-channel/history?limit=5`, CEILING_MS, fast.cookie);
   ok("1.10 a well formed name for a channel with nothing in it still READS, it is not refused",
     absentChan?.status === 200, { status: absentChan?.status });
 
@@ -193,9 +203,10 @@ try {
   // the refusal to be the correct ending. Slowing it further costs no wall clock: once the deadline
   // fires the arm returns at the deadline whatever the link does, so the margin is free.
   link = slowLink({ listen: PROXY, target: PORT, oneWayMs: 80, bytesPerSec: 6 * 1024 });
-  slowWeb = await bootWeb(SLOW, `nats://127.0.0.1:${PROXY}`);
+  const slow = await bootWeb(SLOW, `nats://127.0.0.1:${PROXY}`);
+  slowWeb = slow.child;
   const S = `http://127.0.0.1:${SLOW}`;
-  const slowRead = await get(`${S}/api/channels/ch0/history?limit=${PER}`, CEILING_MS);
+  const slowRead = await get(`${S}/api/channels/ch0/history?limit=${PER}`, CEILING_MS, slow.cookie);
   console.log(`   the slow arm answered ${slowRead?.status ?? "not at all"} in ${slowRead?.ms ?? CEILING_MS}ms`);
   ok("3.1 it ANSWERS on a link where it used to run past the deadline unbounded", slowRead !== null,
     "no answer within three deadlines");
@@ -214,7 +225,7 @@ try {
     { ms: slowRead?.ms, deadline: AGGREGATION_DEADLINE_MS });
   // The arm is only meaningful if the link is genuinely the cost, so prove the same read is fine
   // without it. Without this, a 503 could be a broken route and the cell would call it a success.
-  const fastRead = await get(`${F}/api/channels/ch0/history?limit=${PER}`, CEILING_MS);
+  const fastRead = await get(`${F}/api/channels/ch0/history?limit=${PER}`, CEILING_MS, fast.cookie);
   ok("3.4 control: the identical read with no link cost returns the full page, so 3.3 is the link",
     fastRead?.status === 200 && len(fastRead) === PER, { status: fastRead?.status, n: len(fastRead) });
 } finally {

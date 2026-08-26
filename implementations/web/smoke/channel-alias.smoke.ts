@@ -92,20 +92,25 @@ try {
   webChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
   webChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
 
-  let served = false;
-  for (let i = 0; i < 200; i++) {
-    const r = await fetch(`http://127.0.0.1:${WEB_PORT}/api/roster`).catch(() => undefined);
-    if (r?.status === 200) { served = true; break; }
+  let launchUrl: string | undefined;
+  for (let i = 0; i < 200 && launchUrl === undefined; i++) {
+    launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
     await wait(250);
   }
+  const exchange = launchUrl === undefined ? undefined : await fetch(launchUrl, { redirect: "manual" }).catch(() => undefined);
+  const session = /(?:^|,\s*)cotal_web_session=([^;]+)/.exec(exchange?.headers.get("set-cookie") ?? "")?.[1];
+  const authed = { cookie: `cotal_web_session=${session}` };
+  const ready = session === undefined ? undefined
+    : await fetch(`http://127.0.0.1:${WEB_PORT}/api/roster`, { headers: authed }).catch(() => undefined);
+  const served = exchange?.status === 302 && session !== undefined && ready?.status === 200;
 
   const get = async (p: string): Promise<{ status: number; body: Buffer }> => {
-    const r = await fetch(`http://127.0.0.1:${WEB_PORT}${p}`);
+    const r = await fetch(`http://127.0.0.1:${WEB_PORT}${p}`, { headers: authed });
     return { status: r.status, body: Buffer.from(await r.arrayBuffer()) };
   };
   const del = async (channel: string): Promise<{ status: number; body: Buffer }> => {
     const r = await fetch(`http://127.0.0.1:${WEB_PORT}/api/channel/delete`, {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ channel }),
+      method: "POST", headers: { ...authed, "content-type": "application/json" }, body: JSON.stringify({ channel }),
     });
     return { status: r.status, body: Buffer.from(await r.arrayBuffer()) };
   };
