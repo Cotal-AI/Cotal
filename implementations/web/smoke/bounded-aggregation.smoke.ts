@@ -362,27 +362,36 @@ try {
     webChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
     webChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
 
-    // Readiness is a real 200 from a CHEAP route, so "the server is up" is never inferred from a
-    // process that started and then failed to connect. No skip if it never comes up: the cells below
-    // fail, loudly, which is the correct reading of a dashboard that cannot serve.
-    let up = false;
-    for (let i = 0; i < 200; i++) {
-      const r = await fetch(`http://127.0.0.1:${WEB_PORT}/api/roster`).catch(() => undefined);
-      if (r?.status === 200) { up = true; break; }
+    // Wait for the launch link, spend it ONCE, then carry the session it mints through every route
+    // assertion. Re-presenting the single-use link would test its refusal instead of aggregation.
+    let launchUrl: string | undefined;
+    for (let i = 0; i < 200 && launchUrl === undefined; i++) {
+      launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
       await wait(250);
     }
-    ok("5.0 the shipped `web` entry point serves across the link at all", up, log.slice(-400));
+    const exchange = launchUrl === undefined
+      ? undefined
+      : await fetch(launchUrl, { redirect: "manual" }).catch(() => undefined);
+    const session = /(?:^|,\s*)cotal_web_session=([^;]+)/.exec(exchange?.headers.get("set-cookie") ?? "")?.[1];
+    const authed = { cookie: `cotal_web_session=${session}` };
+    const ready = session === undefined
+      ? undefined
+      : await fetch(`http://127.0.0.1:${WEB_PORT}/api/roster`, { headers: authed }).catch(() => undefined);
+    ok("5.0 the shipped `web` entry point serves across the link at all",
+      exchange?.status === 302 && session !== undefined && ready?.status === 200, log.slice(-400));
 
     // CONTROL FIRST, on an idle link: a small route answers. Everything below is about what happens
     // to a LARGE read on this link, and none of it means anything if the link cannot serve the
     // dashboard at all. It runs before the big reads because their abandoned work outlives them.
-    const cRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/channels`).catch((e) => e as Error);
+    const cRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/channels`, { headers: authed }).catch((e) => e as Error);
     const cBody = cRes instanceof Error ? undefined : await cRes.json().catch(() => undefined);
     ok("5.1 CONTROL: a small route answers 200 across this link", !(cRes instanceof Error) && cRes.status === 200 && Array.isArray(cBody),
       cRes instanceof Error ? cRes.message : cRes.status);
 
     const t0 = Date.now();
-    const aRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/activity?limit=100`, { signal: AbortSignal.timeout(CEILING_MS) }).catch((e) => e as Error);
+    const aRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/activity?limit=100`, {
+      headers: authed, signal: AbortSignal.timeout(CEILING_MS),
+    }).catch((e) => e as Error);
     const aMs = Date.now() - t0;
     const aBody = aRes instanceof Error ? undefined : await aRes.json().catch(() => undefined);
     const status = aRes instanceof Error ? 0 : aRes.status;
@@ -397,7 +406,9 @@ try {
     // The single read. It cannot be partial, so its bound is a named refusal the browser can hold its
     // last good list against - the whole reason `readJson` refuses a non-200 instead of storing it.
     const t1 = Date.now();
-    const dRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/dms?limit=${DMS}`, { signal: AbortSignal.timeout(CEILING_MS) }).catch((e) => e as Error);
+    const dRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/dms?limit=${DMS}`, {
+      headers: authed, signal: AbortSignal.timeout(CEILING_MS),
+    }).catch((e) => e as Error);
     const dMs = Date.now() - t1;
     const dBody = dRes instanceof Error ? undefined : await dRes.json().catch(() => undefined);
     const dStatus = dRes instanceof Error ? 0 : dRes.status;
@@ -412,7 +423,9 @@ try {
     // that would pin a defect in place; it asserts the part that must hold either way - whatever the
     // route answers, a reader can act on it. A bare `{"error":"timeout"}`, which is what the shipped
     // build sent, is the thing being forbidden.
-    const nRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/activity?limit=100`, { signal: AbortSignal.timeout(CEILING_MS) }).catch((e) => e as Error);
+    const nRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/activity?limit=100`, {
+      headers: authed, signal: AbortSignal.timeout(CEILING_MS),
+    }).catch((e) => e as Error);
     const nBody = nRes instanceof Error ? undefined : await nRes.json().catch(() => undefined);
     const nStatus = nRes instanceof Error ? 0 : nRes.status;
     ok("5.9 the request following a refused read either answers or REFUSES LEGIBLY, never with a bare broker word",
