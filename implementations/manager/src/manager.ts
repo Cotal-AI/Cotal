@@ -54,6 +54,8 @@ import {
 } from "./runtime/index.js";
 import { AttachEndpoint, type SessionEstablishment } from "./attach-endpoint.js";
 import { makeManagerEndpointEvictor } from "./endpoint-evict.js";
+import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
+import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec } from "./launch.js";
 import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
@@ -100,6 +102,7 @@ import {
   markLedgerRowRevoked,
   epcredRowKey,
   epgateKey,
+  parseEndpointGate,
   registerServiceInstance,
   deregisterServiceInstance,
   type ServiceDeregistration,
@@ -4701,6 +4704,51 @@ export class Manager {
     };
   }
 
+  /** Complete a crashed predecessor's FROZEN registration gate before this incarnation starts a
+   *  new one (#783 item 3 / #871). The CLI `cotal reconcile-gate` already does this; a successor
+   *  that cannot register is exactly the state that command exists to repair, so boot must run
+   *  the SAME composition rather than waiting for an operator.
+   *
+   *  Admit only `gone` AND `sweepComplete=true` (the probe mapping already folds an incomplete
+   *  `gone` into `unestablishable`). Live / unknown / unestablishable / wrong-op-kind stay loud
+   *  refusals. No TTL: request-ingress has no process-epoch fence, so a clock would either let a
+   *  superseded serve credential keep consuming ingress or just rename the freeze. An open gate
+   *  is a no-op (the successor's own freeze comes next). */
+  private async healFrozenRegistrationGate(authKv: KV, instanceId: string, auth: SpaceAuth): Promise<void> {
+    const key = epgateKey(MANAGER_ENDPOINT, instanceId);
+    const entry = await authKv.get(key);
+    if (!entry || entry.operation !== "PUT") return;
+    const row = parseEndpointGate(entry.value, key);
+    if (row.state !== "frozen") return;
+    const servers = this.servers ?? DEFAULT_SERVER;
+    const log = (line: string) => console.error(`  ${line}`);
+    let report;
+    try {
+      report = await reconcileEndpointGate({
+        kv: authKv, space: this.space, endpoint: MANAGER_ENDPOINT, instanceId,
+        probeHolder: makeManagerHolderLivenessProbe({ space: this.space, servers, auth, log }),
+        evict: makeManagerEndpointEvictor({ space: this.space, servers, auth, log }),
+        log,
+      });
+    } catch (e) {
+      // We observed frozen, then a concurrent reconciler finished first. If the gate is now open,
+      // this incarnation continues the takeover. Every other refusal — including raced-but-still-
+      // frozen — stays loud.
+      if (e instanceof GateReconcileRefused && (e.condition === "not-frozen" || e.condition === "raced")) {
+        const latest = await authKv.get(key);
+        if (latest && latest.operation === "PUT" && parseEndpointGate(latest.value, key).state === "open") {
+          console.error(`boot self-heal: ${MANAGER_ENDPOINT}/${instanceId} is open after ${e.condition}; continuing the normal takeover`);
+          return;
+        }
+      }
+      throw e;
+    }
+    console.error(
+      `✓ boot self-heal: ${MANAGER_ENDPOINT}/${instanceId} registration gate reopened at generation ${
+        report.reopenedAtGeneration} (processEpoch unchanged at ${report.before.processEpoch}; freeze-holder gone, sweepComplete=true). Continuing the normal takeover.`,
+    );
+  }
+
   /** P2 item 1: register the manager as an ordinary v0.4 `service` endpoint and serve its typed
    *  command surface on the ep rails - since 1d the manager's ONLY control door. On an AUTH mesh
    *  the whole credential path is the SAME one an ordinary endpoint traverses (the enforcement
@@ -4822,6 +4870,12 @@ export class Manager {
       // so the gate's principal binding is unchanged either way.
       if ((await serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid }).observe()) === null)
         await provisionEndpointGateOpen(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: iid, principal: servePrincipal });
+      // #783/#871: a predecessor that died mid-barrier leaves this gate frozen under a
+      // registration op. registerServiceInstance will then refuse SPEC 13.8 forever, even
+      // when the freeze-holder is gone. Complete that SAME op (abort-reopen) on independent
+      // holder-gone evidence BEFORE this incarnation freezes a new one. Auth only: the
+      // CONNZ oracle rides delivery-admin, which an open mesh does not have.
+      if (auth) await this.healFrozenRegistrationGate(authKv, iid, auth);
       // P2 item 3 (slice 3a): on an AUTH mesh a RE-registration (restart of the persisted instanceId)
       // must VERIFY-EVICT the superseded serve family BEFORE the epoch advances (§13.1 "old authority
       // dies before new authority is visible"). Inject the SCOPED delivery-admin evictor; the OPEN
