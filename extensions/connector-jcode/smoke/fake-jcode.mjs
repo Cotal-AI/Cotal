@@ -91,10 +91,12 @@ if (process.env.FAKE_JCODE_STALE_PID) {
 } else if (process.env.FAKE_JCODE_DAEMON === "1") {
   // Mirror the real topology: the bridge spawns the daemon into its own session, so no signal
   // aimed at the bridge (or its group) can reach it, and the bridge's own exit leaves it running.
+  const daemonEnv = { ...process.env };
+  for (const key of Object.keys(daemonEnv)) if (key.startsWith("COTAL_")) delete daemonEnv[key];
   const daemon = spawn(process.execPath, [process.argv[1], "serve"], {
     detached: true,
     stdio: "ignore",
-    env: { ...process.env, FAKE_JCODE_BRIDGE_PID: String(process.pid) },
+    env: { ...daemonEnv, FAKE_JCODE_BRIDGE_PID: String(process.pid) },
   });
   daemon.unref();
   log({ ev: "daemon_spawned", pid: daemon.pid });

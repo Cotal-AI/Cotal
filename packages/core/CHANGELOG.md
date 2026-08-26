@@ -1,5 +1,119 @@
 # @cotal-ai/core
 
+## 0.30.1
+
+### Patch Changes
+
+- aea08f9: Allow agents to clean up their presence and channel-registry ordered consumers, wait for real mesh readiness before opening Codex, and collapse repeated endpoint errors.
+
+## 0.30.0
+
+### Minor Changes
+
+- 0e673ff: Delivery daemon: the launcher stops dropping the transport, and stops reporting a daemon it did not start.
+
+  Two independent defects let `cotal up` print a healthy control plane over one that was not there.
+
+  **A same-root refresh relaunched the delivery daemon without TLS (#836).** `startDeliveryWithBroker`
+  re-derived the transport from `<root>/.cotal/broker-policy.json` whenever its caller passed no
+  `transport` — and the refresh path never passed one, even though it had already decided the same
+  fact from the mesh-registry entry and reconciled it against the live listener's `INFO`. The two
+  durable records are written by different paths, so on any root that records `tlsRequired` without
+  holding a policy file (registered with `cotal meshes add --tls`, or a mesh predating the policy
+  file) the daemon went out flagless against a TLS-required broker. Nothing looked wrong: the client
+  still upgrades on the server's unauthenticated greeting. The daemon holds a standing credential and
+  reconnects unattended, so that was a repeating exposure, not a one-shot. The transport requirement
+  is now a required argument to `startDeliveryWithBroker`; the policy re-derivation is gone and every
+  call site names its source.
+
+  **A stale lease answered for a daemon that had already exited (#837).** `waitForDeliveryLease`
+  accepted any `ready:true` lease. A daemon killed with `SIGKILL` never releases its lease, and the
+  record survives for the rest of the bucket TTL — so a replacement that lost the single-flight CAS
+  and exited was reported ready off the corpse's lease, and `up` exited 0 with no daemon running and a
+  pidfile fronting a dead pid. `waitForDeliveryLease` now takes `holder` and waits for that daemon
+  specifically (`undefined` only when adopting one that was already running, whose id is not knowable
+  from the launcher). `ensureDelivery` passes the id of the daemon it launched, and a launch whose
+  process is provably gone while holding no lease now fails loud, naming `.cotal/delivery.log`,
+  instead of returning success.
+
+  `waitForDeliveryLease` now requires `holder` — pass `undefined` for the previous behaviour.
+
+- 569f4d3: An empty message id is never a dedup key, and an id-less delivery is individually addressable at the drain seam.
+
+  Two distinct messages that each carry an empty id collapsed to one: the receiver-side id
+  dedup read empty-equals-empty as a duplicate, silently dropped the second, and once the
+  first was handled it dropped every later empty-id message on arrival. Measured live, two
+  such messages arrived on the wire and only the first was ever delivered.
+
+  An empty id is now treated as no id: the ingest coalescing (pending, handled, protected)
+  is skipped for it in both directions, so distinct messages that carry an empty id are all
+  delivered. At the drain seam a per-delivery receive key (the wire id when there is one, a
+  per-session secret-namespaced minted key when the id is empty, never on any wire) is what
+  hosts, adapters, and the exact-key drain select by: cotal_inbox, the Claude Code hooks,
+  the OpenCode plugin, the Codex host, the Hermes bridge and its Python sidecar, and the pi
+  driver. The drain API is renamed for what it takes (drainInboxDeliveries, missingKeys).
+  Eviction classification, in-flight holds, scope routing, the focus-recall tie-break, and
+  the scoped drain's selection no longer key on the empty id either. The Hermes bridge no
+  longer wedges on an empty-id message. Delivery pumps in core now treat an absent or
+  non-string id as a malformed envelope per SPEC section 5 (durable terminate, live drop,
+  history and recall skip).
+
+  What this restores: before the receive key, an id-less delivery was unaddressable: the
+  raw id swept every pending empty-id item in one drain call, and once filtering closed
+  that, the item could never be drained or acked, was re-shown on every windowed inbox
+  read, and on a durable channel accumulated as an unretirable entry until the 200-entry
+  overflow valve evicted it, roughly a model turn of churn per entry, while one hostile
+  empty-id ambient publish self-drove back-to-back host turns on the pi adapter. This was
+  a violation of the SPEC section 8 ack-only-after-surfaced obligation at the receiver,
+  not only an adapter defect.
+
+  The cost is stated rather than hidden: with no id there is no coalescing either, so a
+  redelivered copy of an empty-id message can surface twice on a path that is already
+  at-least-once (live remains at-most-once). Dedup for real ids is unchanged: their
+  receive key is their wire id and their coalescing is untouched. SPEC section 4, section
+  7 item 5, section 8, and section 12 item 12 now state the receiver-scoped rule, and the
+  client-builder guidance mirrors it.
+
+  One named follow-up stays open: Plane-3 durable fan-out derives its publish msgID from
+  the message id, so distinct empty-id messages can still be collapsed inside the broker's
+  duplicate window on a durable channel before this receiver sees them. That path is its
+  own issue; this change's guarantee is the receiver.
+
+- ef01887: Add closed, host-issued remote manager-service authority for registered user-auth participants. It requires the dedicated `supervise` scope, restricts manager registration and credentials to one owner and opaque instance, and uses a lifecycle-bound prepare, activate, and renew flow with fail-closed renewal and same-owner descendant provisioning.
+
+### Patch Changes
+
+- b282f70: Honor a connector's declared startup readiness window and make Jcode provider launch refusals diagnosable without exposing private harness output.
+- 0323f5b: The manager logged nothing when a seat left its ownership, on any path. A live
+  supervisor lost several seats while it kept running, and because its log carried
+  no per-seat exit line, "the supervisor reaped them" and "they died on their own"
+  were indistinguishable afterwards — the incident could not be attributed from
+  supervisor state at all.
+
+  Every free path now emits one line at `freeSlot`, the single chokepoint they all
+  pass through, naming the seat, its lifecycle uid, which path gave up the slot,
+  and what the runtime saw when the child ended. The cause is a required argument
+  with no default, so a new free path cannot compile without naming itself.
+
+  `AgentHandle` gains an optional `exitInfo()`; the pty runtime stops discarding
+  the exit code and signal node-pty already hands it. Absent means UNKNOWN and
+  prints as unavailable naming the runtime — a backend that attaches to an
+  externally-owned process (tmux/cmux/orca/herdr) cannot see how the child ended,
+  and a default of `code 0` there would fabricate a clean exit on precisely the
+  seats whose death nobody can explain.
+
+- 196dddb: Spec text plus one corrected source comment, carried into the embedded docs bundle: the `goaleff` and `epname` value
+  machines are now stated in the wire spec (phases, states, legal edges, per-phase field sets,
+  actor roles, and the rule that a settle requires the goal's terminal fact to exist first),
+  and three key-authority claims are corrected. `epmig` records cutover runs and supplies key
+  material nowhere else, so the `goaleff` generation token is the accepted submission's EPJ
+  `sourceSeq` and only that. `goalidx` gets its writer named as the goal-writer principal
+  rather than the bare commit principal. `effect` is marked as reachable only under
+  `protocol.v: 2`. The spec also now says explicitly that it does not decide which principal
+  may act as a sweeper, rather than leaving that to be inferred from a role name. The `epmig` record
+  kind's own source comment carried the same wrong claim the spec sentence corrects, and is fixed in
+  the same change so the two cannot drift apart again.
+
 ## 0.29.2
 
 ### Patch Changes

@@ -535,10 +535,11 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           title: s.title,
         }));
         const card = renderOrientation(buildOrientation(agent, config, visible, Date.now()));
+        const issue = agent.connectionIssue;
         return ok(
           agent.connected
             ? card
-            : `(not connected to the mesh yet — the live context below is empty)\n\n${card}`,
+            : `(not connected to the mesh yet — the live context below is empty${issue ? `; last error: ${issue.slice(0, 300)}` : "; connection is still starting"})\n\n${card}`,
         );
       },
     },

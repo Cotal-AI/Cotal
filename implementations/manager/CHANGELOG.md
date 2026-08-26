@@ -1,5 +1,71 @@
 # @cotal-ai/manager
 
+## 0.30.1
+
+### Patch Changes
+
+- Updated dependencies [aea08f9]
+  - @cotal-ai/core@0.30.1
+  - @cotal-ai/workspace@0.30.1
+
+## 0.30.0
+
+### Minor Changes
+
+- 97dea94: A manager that lost its liveness lease hard-stopped every agent it managed and
+  deprovisioned each one's credential, durables and broker footprint. Stopping
+  serving is the right conclusion on that path; destroying the seats is a separate
+  act, and a broker timeout is not a finding about whether an agent should die.
+  From the active state the path now detaches: children are left alone, each is
+  marked retained so no deprovision call site can select it, and the seats are
+  named on the operator channel.
+
+  Two boundaries are unchanged and pinned by cells. Ordinary shutdown (`cotal
+down`, Ctrl-C) stays destructive — an operator who asked for a shutdown gets
+  one. A maintenance cut that has committed and not finalized still stops its
+  children, because that inventory is owed a replay and a successor replaying it
+  over live children would spawn a second copy of every seat.
+
+  This does not make a child outlive the manager — a pty child dies with the
+  process that spawned it — it removes the manager's deliberate kill and revoke.
+
+- ef01887: Add closed, host-issued remote manager-service authority for registered user-auth participants. It requires the dedicated `supervise` scope, restricts manager registration and credentials to one owner and opaque instance, and uses a lifecycle-bound prepare, activate, and renew flow with fail-closed renewal and same-owner descendant provisioning.
+
+### Patch Changes
+
+- cc1f2e2: `cotal attach` now coalesces rapid wheel input and PTY redraw bursts, waits for local stdout drain
+  before returning session credit, and automatically repaints the canonical terminal snapshot after an
+  explicit backpressure drop. Session teardown also lets the distinct terminal reason drain before the
+  unsequenced close control can overtake it. The bounded 64-frame rail window is unchanged.
+- b282f70: Honor a connector's declared startup readiness window and make Jcode provider launch refusals diagnosable without exposing private harness output.
+- 0323f5b: The manager logged nothing when a seat left its ownership, on any path. A live
+  supervisor lost several seats while it kept running, and because its log carried
+  no per-seat exit line, "the supervisor reaped them" and "they died on their own"
+  were indistinguishable afterwards — the incident could not be attributed from
+  supervisor state at all.
+
+  Every free path now emits one line at `freeSlot`, the single chokepoint they all
+  pass through, naming the seat, its lifecycle uid, which path gave up the slot,
+  and what the runtime saw when the child ended. The cause is a required argument
+  with no default, so a new free path cannot compile without naming itself.
+
+  `AgentHandle` gains an optional `exitInfo()`; the pty runtime stops discarding
+  the exit code and signal node-pty already hands it. Absent means UNKNOWN and
+  prints as unavailable naming the runtime — a backend that attaches to an
+  externally-owned process (tmux/cmux/orca/herdr) cannot see how the child ended,
+  and a default of `code 0` there would fabricate a clean exit on precisely the
+  seats whose death nobody can explain.
+
+- 0def128: Report the host-authority requirement when a registered user-auth participant tries to supervise a remote mesh, and derive the registered broker address without accepting a mismatched override.
+- Updated dependencies [0e673ff]
+- Updated dependencies [569f4d3]
+- Updated dependencies [b282f70]
+- Updated dependencies [0323f5b]
+- Updated dependencies [ef01887]
+- Updated dependencies [196dddb]
+  - @cotal-ai/core@0.30.0
+  - @cotal-ai/workspace@0.30.0
+
 ## 0.29.2
 
 ### Patch Changes

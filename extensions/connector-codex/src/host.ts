@@ -86,6 +86,10 @@ const MAX_RESTARTS = 3;
 const STATUS_FLUSH_MS = 500;
 /** How long a cooperative shutdown waits for the clean mesh leave before exiting regardless. */
 const SHUTDOWN_GRACE_MS = 5_000;
+/** A Codex peer is not ready until its mesh endpoint has completed every bind and published its
+ * initial presence. Keep startup bounded so a dead broker fails at the terminal instead of opening
+ * a fully interactive TUI whose Cotal tools can only say "not connected". */
+const MESH_READY_TIMEOUT_MS = 15_000;
 /** Looks the launch spends waiting for a thread's rollout file to appear, at 250ms each. Bounded
  *  because a caller that waits forever cannot report that it is stuck; giving up is not final,
  *  because every later turn boundary looks again (see `bindEvents`). */
@@ -478,7 +482,9 @@ export async function runCodexHost(): Promise<void> {
 
   // ---- the turn loop -------------------------------------------------------
   let ready = false; // thread up — never drive before then
-  let agentStarted = false; // the mesh endpoint has been connected (once per process, ever)
+  /** Shared across app-server incarnations: a crash during launch must make the replacement await
+   * the SAME mesh-readiness gate, not see a boolean and race ahead to a false `ready`. */
+  let agentStart: Promise<void> | undefined;
   let shuttingDown = false; // a retirement owns the rest of this process (see shutdown() below);
   // declared here, with the rest of the loop's state, because the launch/restart tails read it to
   // decide whether they are still allowed to act — long before shutdown() itself is defined
@@ -841,9 +847,11 @@ export async function runCodexHost(): Promise<void> {
       eventsThread = threadId;
       void bindEvents(threadId, ROLLOUT_ATTEMPTS);
     }
-    if (agentStarted) return;
-    agentStarted = true;
-    agent.start(); // background connect with retry
+    if (!agentStart) {
+      agent.start();
+      agentStart = agent.waitUntilConnected(MESH_READY_TIMEOUT_MS);
+    }
+    await agentStart;
     if (driver.model) await agent.setModel(driver.model, variant).catch(() => {});
   }
 
@@ -1219,6 +1227,7 @@ export async function runCodexHost(): Promise<void> {
     stopTui();
     await driver.stop().catch(() => {});
     await mcp.close().catch(() => {});
+    await agent.stop().catch(() => {});
     throw e;
   }
 }

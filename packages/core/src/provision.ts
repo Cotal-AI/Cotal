@@ -1192,6 +1192,12 @@ export function permissionsFor(
     // Presence: watch (read, public roster) + flow control + PUT OWN KEY ONLY.
     `$JS.API.CONSUMER.CREATE.${KV}.>`,
     `$JS.API.CONSUMER.INFO.${KV}.>`,
+    // `kv.watch()` is a client-managed ordered consumer. Reset and stop delete the current
+    // generated `oc_*` consumer before replacing/leaving it; CREATE+INFO without DELETE turns a
+    // stalled link into a refused-cleanup rebuild loop. The name is generated at runtime, so the
+    // public presence bucket is the narrowest broker-expressible delete scope. This cannot delete
+    // a presence RECORD or STREAM — those are different subjects and remain denied.
+    `$JS.API.CONSUMER.DELETE.${KV}.>`,
     "$JS.FC.>",
     `$KV.${presenceBucket(space)}.${pk.key}`, // own presence key (owner+actor) only — can't spoof peers
     // Channel registry: read-only (watch + direct kv.get for the join-time replay decision).
@@ -1199,6 +1205,10 @@ export function permissionsFor(
     `$JS.API.STREAM.MSG.GET.${CHKV}`,
     `$JS.API.CONSUMER.CREATE.${CHKV}.>`,
     `$JS.API.CONSUMER.INFO.${CHKV}.>`,
+    // Same ordered-consumer lifecycle as presence. Without this row the registry watcher is the
+    // second independent reset loop, which is why a broken connector alternates two `oc_*` denial
+    // families and floods its TUI even after one watch happens to settle.
+    `$JS.API.CONSUMER.DELETE.${CHKV}.>`,
     // Delivery lease/readiness: READ-ONLY (kv.get) for the non-gating `cotal_channels` delivery-health
     // surface (Component 6). The lease key is daemon-availability info, like the world-readable roster;
     // NO write grant — only the `delivery` cred writes it.
