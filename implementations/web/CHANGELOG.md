@@ -1,5 +1,11 @@
 # @cotal-ai/web
 
+## 0.33.1
+
+### Patch Changes
+
+- ed041bf: Name failed direct-message and channel-history reads in dashboard 503 responses.
+
 ## 0.33.0
 
 ## 0.32.0
