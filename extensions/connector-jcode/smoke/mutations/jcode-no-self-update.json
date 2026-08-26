@@ -1,0 +1,32 @@
+{
+  "suite": "extensions/connector-jcode/smoke/jcode-host.smoke.ts",
+  "guard": "a managed seat's launch environment pins the Jcode binary against the background self-updater, so the seat cannot restart its own process tree and lose the client that holds the server's idle reaper off",
+  "command": "pnpm smoke:jcode-host",
+  "progressPattern": "✓",
+  "minTicks": 5,
+  "completionMarker": "host pins the seat binary against background self-update",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/jcode-no-self-update.json",
+  "why": [
+    "Measured 2026-08-26 across three independent seats: Jcode's background updater landed v0.81.1,",
+    "restarted the process tree, and the restart SIGTERMed the seat's TUI — the only connection the",
+    "Jcode server counts as a client, proven by its own `Client connected. Idle timer cancelled.`",
+    "line. Nothing re-attached, so the server printed `No clients connected` and shut itself down",
+    "exactly 300s later, killing the seat with `exit code 1, signal 0`. One seat died two seconds",
+    "after starting a tool call.",
+    "The env knob is the whole fix, so the only thing worth proving is that it is actually in the",
+    "launch environment the harness receives: the mutation removes it and the named cell must go red.",
+    "Note what this does NOT prove. End-to-end suppression of a real self-update is not exercised",
+    "here — that needs an outdated binary and a published release, which no hermetic suite can stage.",
+    "The cell proves the flag reaches the child; the field evidence on #872 is what ties the flag to",
+    "the crash."
+  ],
+  "mutations": [
+    {
+      "name": "the seat's launch env no longer pins the binary against self-update",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "        JCODE_NO_AUTO_UPDATE: \"1\",\n",
+      "replace": "",
+      "expectRed": "host pins the seat binary against background self-update"
+    }
+  ]
+}
