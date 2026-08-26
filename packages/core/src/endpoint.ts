@@ -15,6 +15,7 @@ import {
   type NatsConnection,
   type Subscription,
 } from "@nats-io/transport-node";
+import { wsconnect } from "@nats-io/nats-core";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import { inspectCredHealth } from "./provision.js";
 import { resolveService, invokeCommand, submitAndFollowGoal, type ResolvedService } from "./endpoint-invoke.js";
@@ -38,7 +39,9 @@ import {
   type ConsumerInfo,
   type JsMsg,
 } from "@nats-io/jetstream";
-import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
+import { type PushConsumer } from "@nats-io/jetstream";
+import { Kvm, type KV, type KvEntry, type KvWatchEntry } from "@nats-io/kv";
+import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 
 import type {
   AgentCard,
@@ -295,6 +298,19 @@ export function fitHistoryPage(items: CotalMessage[], budget: number): CotalMess
   return first === items.length ? [] : items.slice(first);
 }
 
+type MembershipFeedWatch = {
+  onChange: () => void;
+  iter?: { stop(): void };
+  consumer?: PushConsumer;
+  consumerStream?: string;
+  consumerName?: string;
+  stopped: boolean;
+  arm: Promise<void>;
+  stopPromise?: Promise<void>;
+  resolveStop?: () => void;
+  rejectStop?: (err: unknown) => void;
+};
+
 export class CotalEndpoint extends EventEmitter {
   readonly card: AgentCard;
   readonly space: string;
@@ -340,6 +356,9 @@ export class CotalEndpoint extends EventEmitter {
   private deliveryKv?: KV;
   private managerLeaseKv?: KV;
   private membershipFeedKv?: KV;
+  /** Caller-owned membership watches survive a connection rebuild as INTENT. Their iterators are
+   *  connection-scoped and are stopped/re-created around the epoch swap. */
+  private readonly membershipFeedWatches = new Set<MembershipFeedWatch>();
   /** The live `ctl.delivery` serve subscription (delivery daemon) — re-created on every (re)connect by
    *  {@link armDeliveryControl}; tracked so the stale one is dropped on reconnect. */
   private deliveryServeSub?: import("@nats-io/transport-node").Subscription;
@@ -871,7 +890,7 @@ export class CotalEndpoint extends EventEmitter {
       const stale = !this.currentCreds || credsRenewalDelayMs(this.currentCreds) <= 0;
       if (stale) await this.refreshCreds(!this.currentCreds);
     }
-    this.nc = await connect({
+    this.nc = await dialerFor(this.servers)({
       servers: this.servers,
       // In USER MODE the connection `name` carries the client-chosen inbox nonce (= connId) the callout
       // scopes `_INBOX_<connId>.>` on (see EndpointOptions.bearer); otherwise it's the display handle.
@@ -970,6 +989,10 @@ export class CotalEndpoint extends EventEmitter {
       }, this.heartbeatMs);
     }
 
+    // Caller-owned membership watches are INTENT rather than one-connection iterators. Re-open them
+    // before reporting the endpoint connected, so a successful reconnect does not leave the graph stale.
+    await this.rearmMembershipWatches();
+
     // Re-arm Plane-3 (delivery-daemon-hosted fan-out + trusted reader + ctl.delivery) on every (re)connect — no-op unless this
     // endpoint hosts it. The first arm comes from startPlane3 (after start()); this re-binds the loops
     // a reconnect's clearConnectionScoped() tore down, so a broker blip doesn't silently kill the backstop.
@@ -1014,6 +1037,8 @@ export class CotalEndpoint extends EventEmitter {
     this.joinSeq.clear();
     this.channelConfigs.clear();
     this.channelDefaults = {};
+    for (const watch of this.membershipFeedWatches)
+      watch.arm = watch.arm.catch(() => {}).then(() => this.disarmMembershipWatch(watch));
   }
 
   /** If stop() ran during a rebuild's `await connectAndBind`, the just-bound connection +
@@ -1077,6 +1102,10 @@ export class CotalEndpoint extends EventEmitter {
     this.reconnecting = true;
     try {
       this.clearConnectionScoped();
+      // Manual reconnect still has a live old epoch: complete broker-consumer cleanup before drain.
+      // Terminal self-heal has an already-closed epoch: disarm retains stream/name for fresh cleanup.
+      if (oldNc && !oldNc.isClosed())
+        await Promise.all([...this.membershipFeedWatches].map((watch) => watch.arm));
       this.nc = undefined;
       this.js = undefined;
       this.jsm = undefined;
@@ -1087,6 +1116,7 @@ export class CotalEndpoint extends EventEmitter {
       // handle after a reconnect).
       this.membersKv = undefined;
       this.aclKv = undefined;
+      this.membershipFeedKv = undefined;
       this.deliveryKv = undefined;
       this.emit("connection", { connected: false }); // null window opened — not live until the rebind below
       try {
@@ -1167,6 +1197,24 @@ export class CotalEndpoint extends EventEmitter {
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     if (this.bearerTimer) clearTimeout(this.bearerTimer);
     if (this.credsTimer) clearTimeout(this.credsTimer);
+    for (const watch of this.membershipFeedWatches) {
+      watch.stopped = true;
+      watch.arm = watch.arm.catch(() => {}).then(async () => {
+        await this.disarmMembershipWatch(watch);
+        await this.deleteRetainedMembershipConsumer(watch);
+      });
+    }
+    // Permanent endpoint shutdown has no future epoch. Try strict cleanup on the current live epoch;
+    // if the broker is already gone, terminate local ownership rather than hanging shutdown forever.
+    await Promise.all([...this.membershipFeedWatches].map((watch) => watch.arm.catch((err) => {
+      if (this.nc && !this.nc.isClosed()) throw err;
+    })));
+    for (const watch of this.membershipFeedWatches) {
+      watch.resolveStop?.();
+      watch.resolveStop = undefined;
+      watch.rejectStop = undefined;
+    }
+    this.membershipFeedWatches.clear();
     for (const msgs of this.streamMsgs) {
       try {
         msgs.stop();
@@ -2095,16 +2143,152 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Watch the membership feed for changes (admin/observer): `onChange` fires on every KV entry,
-   *  including the initial replay — the caller debounces + re-reads {@link readMembership}. Returns a
-   *  stop handle. Best-effort: a feed the cred can't read (or absent) surfaces as an `error` event and
-   *  the dashboard keeps its last snapshot. */
-  async watchMembership(onChange: () => void): Promise<{ stop(): void }> {
+   *  including the initial replay — the caller debounces + re-reads {@link readMembership}. The async
+   *  stop handle resolves only after its ordered broker consumer is deleted. Best-effort: a feed the
+   *  cred can't read (or absent) surfaces as an `error` event and the dashboard keeps its last snapshot. */
+  async watchMembership(onChange: () => void): Promise<{ stop(): Promise<void> }> {
+    if (this.stopped) throw new Error("endpoint stopped - cannot watch membership");
+    const watch: MembershipFeedWatch = { onChange, stopped: false, arm: Promise.resolve() };
+    this.membershipFeedWatches.add(watch);
+    watch.arm = watch.arm.catch(() => {}).then(() => this.armMembershipWatch(watch));
+    try { await watch.arm; }
+    catch (err) {
+      watch.stopped = true;
+      this.membershipFeedWatches.delete(watch);
+      await this.disarmMembershipWatch(watch);
+      throw err;
+    }
+    return { stop: async () => {
+      if (watch.stopPromise) return watch.stopPromise;
+      watch.stopped = true;
+      watch.stopPromise = new Promise<void>((resolve, reject) => {
+        watch.resolveStop = resolve;
+        watch.rejectStop = reject;
+      });
+      watch.arm = watch.arm.catch(() => {}).then(async () => {
+        await this.disarmMembershipWatch(watch);
+        await this.deleteRetainedMembershipConsumer(watch);
+        if (watch.consumerStream || watch.consumerName) return;
+        this.finishMembershipWatchStop(watch);
+      }).catch((err) => {
+        // A real authorization/server failure remains loud. A terminal close is retained rather than
+        // rejected by the cleanup helpers, so its promise stays pending for fresh-epoch cleanup.
+        watch.rejectStop?.(err);
+      });
+      return watch.stopPromise;
+    } };
+  }
+
+  /** Bind one caller-owned membership-watch intent to the CURRENT connection. Arming is serialized
+   *  per intent, so a public watch call cannot race a reconnect rearm into two consumers. */
+  private async armMembershipWatch(watch: MembershipFeedWatch): Promise<void> {
+    if (watch.stopped) return;
     const kv = await this.membershipFeedRegistry();
-    const iter = await kv.watch();
-    void (async () => {
-      for await (const _ of iter) onChange();
-    })().catch((err) => this.emit("error", err as Error));
-    return { stop: () => iter.stop() };
+    await this.deleteRetainedMembershipConsumer(watch);
+    if (!(kv instanceof Bucket)) throw new Error("membership watch needs the @nats-io/kv Bucket implementation");
+    const cc = kv._buildCC(">", KvWatchInclude.LastValue, { headers_only: false });
+    const consumer = await kv.js.consumers.getPushConsumer(kv.stream, cc);
+    const info = await consumer.info(true);
+    // The broker resource exists now. Record its identity BEFORE consume() so a concurrent stop or
+    // connection close always leaves enough state for strict cleanup or fresh-epoch retry.
+    watch.consumer = consumer;
+    watch.consumerStream = info.stream_name;
+    watch.consumerName = info.name;
+    let pending = info.num_pending;
+    let iter: Awaited<ReturnType<PushConsumer["consume"]>>;
+    try { iter = await consumer.consume({ callback: (msg) => {
+      const isUpdate = pending === 0 || --pending === 0;
+      const entry: KvWatchEntry = kv.jmToWatchEntry(msg, isUpdate);
+      if (!watch.stopped && watch.consumer === consumer) watch.onChange();
+      void entry;
+    } }); }
+    catch (err) {
+      await this.disarmMembershipWatch(watch);
+      throw err;
+    }
+    watch.iter = iter;
+    if (watch.stopped) {
+      await this.disarmMembershipWatch(watch);
+      return;
+    }
+    iter.closed().then(() => {
+      if (!watch.stopped && watch.consumer === consumer) this.emit("error", new Error("membership watch closed"));
+    }).catch(() => {});
+  }
+
+  /** Delete identity retained across a failed/closed-epoch consumer object using the CURRENT connection. */
+  private async deleteRetainedMembershipConsumer(watch: MembershipFeedWatch): Promise<void> {
+    if (!watch.consumerStream || !watch.consumerName) return;
+    // A terminal close is not deletion success and not a public-stop failure. Keep the identity
+    // endpoint-owned; rearmMembershipWatches retries it through the next live JetStream manager.
+    if (!this.nc || this.nc.isClosed()) return;
+    const jsm = await jetstreamManager(this.nc);
+    if (await this.deleteMembershipConsumer(jsm, watch.consumerStream, watch.consumerName)) {
+      watch.consumerStream = undefined;
+      watch.consumerName = undefined;
+    }
+  }
+
+  private finishMembershipWatchStop(watch: MembershipFeedWatch): void {
+    if (!watch.stopped || watch.consumer || watch.iter || watch.consumerStream || watch.consumerName) return;
+    this.membershipFeedWatches.delete(watch);
+    watch.resolveStop?.();
+    watch.resolveStop = undefined;
+    watch.rejectStop = undefined;
+  }
+
+  /** Delete one membership-watch consumer, swallowing ONLY already-gone. */
+  private async deleteMembershipConsumer(jsm: JetStreamManager, stream: string, name: string): Promise<boolean> {
+    try { return await jsm.consumers.delete(stream, name); }
+    catch (err) {
+      if ((err as { code?: number }).code === 404 || /(consumer|stream) not found/i.test((err as Error).message)) return true;
+      throw err;
+    }
+  }
+
+  /** Stop the local iterator AND delete its ordered consumer. The admin/observer grant already holds
+   *  the bucket-scoped consumer-delete row, so a reconnect leaves no five-minute predecessor. */
+  private async disarmMembershipWatch(watch: MembershipFeedWatch): Promise<void> {
+    const iter = watch.iter;
+    const consumer = watch.consumer;
+    watch.iter = undefined;
+    watch.consumer = undefined;
+    try { iter?.stop(); } catch { /* already closed */ }
+    if (consumer) {
+      try {
+        const deleted = await consumer.delete();
+        if (deleted) { watch.consumerStream = undefined; watch.consumerName = undefined; }
+      } catch (err) {
+        if ((err as { code?: number }).code === 404 || /(consumer|stream) not found/i.test((err as Error).message)) {
+          watch.consumerStream = undefined;
+          watch.consumerName = undefined;
+        } else {
+          // A timeout is deferred only for an epoch that is actually closing/rebuilding; live timeouts stay loud.
+          const closedEpoch = (err as Error).name === "ClosedConnectionError" || /^closed connection$/i.test((err as Error).message);
+          const dyingEpochTimeout = /timeout/i.test((err as Error).message) && (this.reconnecting || !this.nc || this.nc.isClosed());
+          if (!closedEpoch && !dyingEpochTimeout) throw err;
+        }
+        // A terminal close leaves stream/name intact. The endpoint-owned stopped intent is retried
+        // through the fresh JetStream manager before its public stop promise may resolve.
+      }
+    }
+  }
+
+  /** Rebind every live membership-watch intent after a connection rebuild. */
+  private async rearmMembershipWatches(): Promise<void> {
+    await Promise.all([...this.membershipFeedWatches].map(async (watch) => {
+      // clearConnectionScoped already resets a rejected prior arm before scheduling disarm. At this
+      // point the queue is the completing cleanup promise; append fresh-epoch cleanup first.
+      watch.arm = watch.arm.catch(() => {}).then(async () => {
+        await this.disarmMembershipWatch(watch);
+        await this.deleteRetainedMembershipConsumer(watch);
+        if (!watch.stopped) await this.armMembershipWatch(watch);
+      });
+      try {
+        await watch.arm;
+        this.finishMembershipWatchStop(watch);
+      } catch (err) { this.emit("error", err as Error); }
+    }));
   }
 
   /** Fetch recent messages from a channel's JetStream backlog. */
@@ -3648,6 +3832,11 @@ export class CotalEndpoint extends EventEmitter {
         // server policed who could publish. The payload `from` is advisory — it must match,
         // and a missing `from` or an unparseable subject on a delivery is itself an anomaly.
         // Reject (term — a spoof is permanently invalid, never redeliver) BEFORE any handler.
+        if (!isUsableMessageId(msg.id)) {
+          m.term(); // malformed envelope (SPEC sec 5): absent/non-string id — permanently invalid
+          this.emit("error", new Error(`dropped message on ${m.subject}: absent or non-string id`));
+          continue;
+        }
         const parsed = parseSubject(m.subject);
         if (!parsed || !msg.from || msg.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) {
           m.term();
@@ -3742,6 +3931,7 @@ export class CotalEndpoint extends EventEmitter {
           this.emit("error", e as Error);
           return;
         }
+        if (!isUsableMessageId(msg.id)) return; // malformed envelope (SPEC sec 5) — live is at-most-once: drop
         if (!msg.from || msg.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) return; // spoof/malformed/old-shape-alias — drop (at-most-once)
         if (msg.from.id === this.card.id) return; // our own echo
         const delivery: Delivery = { ack: () => {}, nak: () => {}, durable: false }; // live = at-most-once, not acked
@@ -3945,6 +4135,7 @@ export class CotalEndpoint extends EventEmitter {
         continue; // skip undecodable
       }
       // Same authenticity guard as the tail; skip our own echoes in history.
+      if (!isUsableMessageId(msg.id)) continue; // malformed envelope (SPEC sec 5) — history skips
       const parsed = parseSubject(sm.subject);
       if (!parsed || msg.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner) || msg.from.id === this.card.id) continue;
       // Backfill only ever reads the chat stream, so the authenticated class is always "channel".
@@ -3991,6 +4182,7 @@ export class CotalEndpoint extends EventEmitter {
         continue; // skip undecodable
       }
       // Same authenticity guard as the tail/backfill; skip our own echoes.
+      if (!isUsableMessageId(msg.id)) continue; // malformed envelope (SPEC sec 5) — recall skips
       const parsed = parseSubject(sm.subject);
       if (!parsed || msg.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner) || msg.from.id === this.card.id) continue;
       collected.push(authenticatedMessage(msg, parsed));
@@ -4212,6 +4404,14 @@ export class CotalEndpoint extends EventEmitter {
 /** Map an authenticated parsed-subject kind to the message class surfaced to "message" listeners.
  *  Throws on `ctl` (control-plane is request/reply, never a "message") — per repo convention, no
  *  silent default: an unexpected delivering kind is a bug, not something to swallow. */
+/** A usable delivery-message id (#624): a string, possibly empty (the never-a-key case), but
+ *  never absent and never a non-string. An absent or non-string id is a malformed envelope under
+ *  SPEC sec 5; each delivery pump handles it per its own class (durable term, live drop, history
+ *  skip) so it never reaches the receiver's id-keyed machinery as `undefined`. */
+function isUsableMessageId(id: unknown): id is string {
+  return typeof id === "string";
+}
+
 function kindFromParsed(kind: ParsedSubject["kind"]): MessageMeta["kind"] {
   switch (kind) {
     case "chat":
@@ -4430,12 +4630,45 @@ export function isPublishPermissionDenied(e: unknown): boolean {
   return typed?.operation === "publish";
 }
 
+/** Whether a server list dials over websocket: the FIRST entry's scheme decides (one list, one
+ *  transport — a mixed tcp+ws list would race two transports over one identity). */
+export function wsServers(servers: string): boolean {
+  return /^wss?:\/\//i.test((servers.split(",")[0] ?? "").trim());
+}
+
+/** Default probe budget by TRANSPORT. 1s was tuned for the loopback/LAN TCP brokers every local
+ *  probe dials; a ws(s) broker is by definition published through an HTTPS edge (CDN tunnel,
+ *  reverse proxy), where TLS + upgrade + INFO + the auth round-trip routinely exceeds 1s cold —
+ *  measured ~60% spurious "not reachable" against a Cloudflare-fronted broker. Callers passing an
+ *  explicit `timeoutMs` are untouched. */
+function defaultProbeTimeoutMs(servers: string): number {
+  return wsServers(servers) ? 5000 : 1000;
+}
+
+/** Pick the dial function by SCHEME: `ws://`/`wss://` servers go through nats-core's
+ *  `wsconnect` (the websocket transport - e.g. a broker published through an HTTPS edge at
+ *  `wss://host/path`), everything else through the TCP transport. The websocket dial OWNS its
+ *  transport options: the URL scheme already decides TLS there, and the w3c transport refuses a
+ *  `tls` block outright ("'tls' is not configurable"), so it is stripped here — at the one point
+ *  that knows which transport is dialing — rather than at every caller composing auth options. */
+export function dialerFor(servers: string): typeof connect {
+  if (!wsServers(servers)) return connect;
+  return ((opts: Parameters<typeof connect>[0]) => {
+    const { tls: _tls, ...rest } = (opts ?? {}) as Record<string, unknown>;
+    return (wsconnect as unknown as typeof connect)(rest as Parameters<typeof connect>[0]);
+  }) as typeof connect;
+}
+
 /** Parse a NATS server URL (`nats://host:port`, `host:port`, a bare host, or a comma list — the
  *  first entry wins) into a host+port for {@link tcpInfoProbe}. Defaults the port to 4222. */
 function hostPort(server: string): { host: string; port: number } {
-  const first = (server.split(",")[0] ?? "").trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, ""); // strip scheme
+  const raw = (server.split(",")[0] ?? "").trim();
+  const scheme = raw.match(/^([a-z][a-z0-9+.-]*):\/\//i)?.[1]?.toLowerCase();
+  const first = raw.replace(/^[a-z][a-z0-9+.-]*:\/\//i, ""); // strip scheme
   const u = new URL(`http://${first}`); // http:// so .hostname/.port resolve (incl. bracketed IPv6)
-  return { host: u.hostname, port: u.port ? Number(u.port) : 4222 };
+  // A websocket broker rides the web's ports, not NATS's: `wss://host/path` reaches TCP 443.
+  const fallback = scheme === "wss" ? 443 : scheme === "ws" ? 80 : 4222;
+  return { host: u.hostname, port: u.port ? Number(u.port) : fallback };
 }
 
 /** Silent credless liveness probe. Opens a plain TCP connection and confirms a NATS server is there
@@ -4529,9 +4762,25 @@ export async function isReachable(
   servers: string = DEFAULT_SERVER,
   opts: AuthOpts & { timeoutMs?: number } = {},
 ): Promise<boolean> {
-  const timeoutMs = opts.timeoutMs ?? 1000;
-  if (!opts.creds && !opts.token && !opts.user && !opts.pass && !opts.tls)
+  const timeoutMs = opts.timeoutMs ?? defaultProbeTimeoutMs(servers);
+  if (!opts.creds && !opts.token && !opts.user && !opts.pass && !opts.tls) {
+    // A websocket broker rides an HTTPS edge: the plaintext INFO probe reads TLS bytes and
+    // declares a perfectly live broker down (which then blocks spawn/connect with a wrong
+    // remedy). Dial the ws transport credless instead — an auth broker REJECTING the bare
+    // connect still proves it is there, the same reading the authed branch below gives its
+    // catch. Costs one broker-side auth-error log line per probe, which the INFO probe was
+    // designed to avoid; on a ws broker there is no silent alternative.
+    if (wsServers(servers)) {
+      try {
+        const nc = await dialerFor(servers)({ servers, timeout: timeoutMs, reconnect: false, maxReconnectAttempts: 0 });
+        await nc.close();
+        return true;
+      } catch (e) {
+        return e instanceof AuthorizationError || e instanceof UserAuthenticationExpiredError;
+      }
+    }
     return tcpInfoProbe(servers, timeoutMs);
+  }
   // The credless branch above already owns its socket. This one reaches `connect()`, so it carries
   // the same orphaned-socket defect probeConnect did (#389) and takes the same gate: reach the
   // address on a socket we own first, and give `connect()` the remainder of the budget its own
@@ -4541,7 +4790,7 @@ export async function isReachable(
   const started = Date.now();
   if (!(await tcpDialable(servers, timeoutMs))) return false;
   try {
-    const nc = await connect({
+    const nc = await dialerFor(servers)({
       servers,
       timeout: Math.max(1, timeoutMs - (Date.now() - started)),
       reconnect: false,
@@ -4578,7 +4827,7 @@ export async function probeConnect(
   server: string = DEFAULT_SERVER,
   opts: AuthOpts & { timeoutMs?: number } = {},
 ): Promise<ProbeResult> {
-  const timeoutMs = opts.timeoutMs ?? 1000;
+  const timeoutMs = opts.timeoutMs ?? defaultProbeTimeoutMs(server);
   const started = Date.now();
   // Reach the address on a socket we own BEFORE handing it to `connect()`, which orphans the
   // connection it never established (see {@link tcpDialable} for the upstream mechanism, #389).
@@ -4590,7 +4839,7 @@ export async function probeConnect(
   // `connect()`'s own `timeout` always covered its handshake too.
   if (!(await tcpDialable(server, timeoutMs))) return classifyProbeFailure(undefined, opts);
   try {
-    const nc = await connect({
+    const nc = await dialerFor(server)({
       servers: server,
       timeout: Math.max(1, timeoutMs - (Date.now() - started)),
       reconnect: false,

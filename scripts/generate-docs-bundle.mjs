@@ -9,6 +9,12 @@
 // it into dist and esbuild inlines it into the OpenCode plugin bundle, where loose files
 // would be dropped). FAILS LOUD on an empty or missing source so a release can never ship
 // hollow docs.
+//
+// `pnpm check:docsbundle` RED ON A DIRTY TREE IS NOT BUNDLE DRIFT. That target ends in
+// `git diff --exit-code -- <the generated paths>`, and git diffs against the INDEX — so if you
+// have edited a doc and not staged it, the check reports YOUR OWN unstaged work as drift even
+// though the bundle regenerated correctly. Stage the changes (or commit) and re-run before
+// concluding anything is wrong with the bundle.
 import { readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";

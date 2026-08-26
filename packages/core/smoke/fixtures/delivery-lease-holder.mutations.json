@@ -1,0 +1,34 @@
+{
+  "suite": "packages/core/smoke/delivery-lease.smoke.ts",
+  "guard": "a wait for the delivery daemon we launched is not answered by some OTHER daemon's ready lease (#837)",
+  "command": "pnpm smoke:delivery-lease:auth",
+  "completionMarker": "DELIVERY-LEASE SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/fixtures/delivery-lease-holder.mutations.json",
+  "why": [
+    "THE READY FLAG ANSWERS A QUESTION NOBODY ASKED. `ready:true` on the shard-0 lease means SOME",
+    "daemon bound `ctl.delivery`; the caller is asking whether THE DAEMON IT JUST STARTED did. Those",
+    "differ exactly when it matters: a SIGKILLed holder leaves its ready record for the rest of the",
+    "bucket TTL, so a replacement that lost the CAS and exited was reported ready off the corpse's",
+    "lease. The mutation restores that read, and the assertion it must redden is the one that names",
+    "a DIFFERENT holder - not the control that waits for the real one, which stays green under it.",
+    "",
+    "THE TWO CONTROLS ARE PART OF THE PROOF, not decoration. Scoping the wait to a holder can fail in",
+    "the other direction - answering false for a daemon that IS ready, or refusing the ADOPTION case",
+    "where the caller genuinely cannot know the id of a daemon that was already running. Both are",
+    "asserted beside the negative, so a fix that simply never returns true does not pass this suite.",
+    "",
+    "NO BUILD STEP BELONGS HERE. The suite imports `../src/index.js` relatively, so the mutated file",
+    "IS the module under test. A `completionMarker` IS declared: this suite is not fail-fast (it",
+    "counts pass/fail and prints its banner either way), so a run that dies before the banner died of",
+    "something other than the assertion named."
+  ],
+  "mutations": [
+    {
+      "name": "the wait accepts ANY ready lease again, as it did before #837",
+      "file": "packages/core/src/lease.ts",
+      "find": "          if (info.ready === true && (opts.holder === undefined || info.holder === opts.holder)) return true;",
+      "replace": "          if (info.ready === true) return true;",
+      "expectRed": "a ready lease held by another daemon does NOT answer for the one we launched"
+    }
+  ]
+}

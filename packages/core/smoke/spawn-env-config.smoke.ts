@@ -86,7 +86,7 @@ try {
 
   // --- the three distinct empty states ---------------------------------------------------------
   // `absent`, `{}` and `[]` are three different statements and the loader must not conflate them.
-  cell("no spawn block anywhere means no allow-list, so the child inherits", () => {
+  cell("no spawn block anywhere means no extras (the default allow-list, never inherit)", () => {
     assert.equal(spawnEnvAllow(load(undefined, undefined)), undefined);
     assert.equal(spawnEnvAllow(load({ connectors: {} }, { connectors: {} })), undefined);
   });

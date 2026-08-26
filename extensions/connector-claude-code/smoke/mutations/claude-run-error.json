@@ -1,0 +1,56 @@
+{
+  "suite": "extensions/connector-claude-code/smoke/agui-run-error.smoke.ts",
+  "guard": "a turn Claude Code ended on StopFailure is published as a run error carrying the harness's own error kind, and a turn that ended on Stop is not",
+  "command": "pnpm smoke:claude-run-error",
+  "completionMarker": "claude-run-error smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/claude-run-error.json",
+  "why": [
+    "CELLS NAMED BEFORE THE RUN, not chosen from the wreckage afterwards.",
+    "",
+    "C1 is the state this connector shipped in: `Stop` and `StopFailure` shared one arm and one",
+    "close, so a turn killed by a rate limit or a billing error was published as a turn that",
+    "finished. It is the mutation that reproduces the defect, and the cell it reddens is the one that",
+    "reproduced it.",
+    "",
+    "C2 is the OPPOSITE failure, and it is the one worth guarding hardest, because the two hooks",
+    "already shared an arm: widening the predicate by one character turns every normal turn end into",
+    "a published failure. Without C2 the suite could not tell a mapping from a blanket, and a blanket",
+    "would pass every failure cell in the file.",
+    "",
+    "C3 is the reason. The harness names one of eleven error kinds and that name is the whole of what",
+    "a consumer can act on; a RUN_ERROR with no code says the turn failed and refuses to say how.",
+    "",
+    "NOT REGISTERED, and named rather than left as a hole: nothing mutates the flush that runs before",
+    "the close. Its property — that the turn's records are on the wire before the terminal that ends",
+    "them — belongs to the arm both hooks already shared and is not what this change touches."
+  ],
+  "mutations": [
+    {
+      "name": "C1 a StopFailure closes exactly as a Stop does, which is the state this connector shipped in",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "          events()?.closeRun(Date.now(), stopFailure(ev));",
+      "replace": "          events()?.closeRun(Date.now());",
+      "expectRed": "fail:and that close is RUN_ERROR, not RUN_FINISHED",
+      "cell": "fail:and that close is RUN_ERROR, not RUN_FINISHED — THE DEFECT",
+      "note": "The pre-fix line, restored verbatim. A rate_limit turn is published as a run that ended, carrying no outcome, and a reader cannot tell it from a turn that succeeded."
+    },
+    {
+      "name": "C2 every turn end becomes a failure, so a normal Stop is published as one",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "  if (ev.hook_event_name !== \"StopFailure\") return undefined;",
+      "replace": "  if (false) return undefined;",
+      "expectRed": "stop:and THAT close is RUN_FINISHED",
+      "cell": "stop:and THAT close is RUN_FINISHED — `Stop` is not a failure, and a blanket mapping would fail here",
+      "note": "Both hooks land in one arm, so the predicate is the only thing separating them. This is the regression that arm invites."
+    },
+    {
+      "name": "C3 the failure loses the harness's own error kind, so the wire says a turn failed and not how",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "  const code = typeof ev.error === \"string\" && ev.error ? ev.error : undefined;",
+      "replace": "  const code = undefined;",
+      "expectRed": "fail:the RUN_ERROR carries the harness's detail as the message and its error kind as the code",
+      "cell": "fail:the RUN_ERROR carries the harness's detail as the message and its error kind as the code",
+      "note": "`rate_limit` and `authentication_failed` are different problems with different remedies. Without the code a consumer sees one undifferentiated failure."
+    }
+  ]
+}

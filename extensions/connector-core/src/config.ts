@@ -38,9 +38,10 @@ export interface AgentConfig {
   meta?: Record<string, string>;
   /** Control-plane capabilities this session declares (from the agent file's `capabilities:`); today
    *  only `spawn`. Used to gate the manager-op tools (cotal_spawn / cotal_persona) so the advertised
-   *  surface matches what the agent can actually invoke. The cred layer is the real boundary (auth
-   *  mode); open mode mints no creds, so the gate is permissive there. Same file the manager minted
-   *  creds from, so the tool gate mirrors the wire grant exactly. */
+   *  surface matches what the agent can actually invoke. The auth layer is the real boundary on any
+   *  AUTHED mesh ({@link isAuthed} — static creds or user-mode); open mode carries no identity plane,
+   *  so the gate is permissive there. Same file the manager minted creds from, so the tool gate
+   *  mirrors the wire grant exactly. */
   capabilities?: string[];
   servers: string;
   /** The *active* read set — channels this agent actually subscribes to (read). May include
@@ -85,6 +86,30 @@ export interface AgentConfig {
    *  deliberately NOT parsed from env by `configFromEnv` — a test shortens it to observe redelivery /
    *  ack-commit in seconds; normal launches should not tune durability from connector config. */
   ackWaitMs?: number;
+}
+
+/**
+ * Does this session's broker ENFORCE its grants?
+ *
+ * Named for what it means, not for the cases it happens to cover today, because the cases have
+ * grown once already and the rename is the part that gets skipped. It mirrors `CotalEndpoint`'s own
+ * private `authed` — "the gate every open-vs-auth branch keys on" — so connector-core and core
+ * cannot drift on the question of what an authenticated session is; when a third identity plane
+ * lands, this expression is the one place it has to be added.
+ *
+ * TWO PLANES TODAY, and they are mutually exclusive by construction: a launch carries static creds
+ * OR a user-mode bearer, refused as a pair at parse (above), at launch (`materialEnv`) and at
+ * connect (the endpoint). So `!config.creds` is NOT "open mode" — on a user-auth agent it is always
+ * true, which is what made the advertised tool surface claim manager-op tools to every agent on a
+ * user-auth mesh.
+ *
+ * `token` / `user` / `pass` are deliberately NOT here. Soft-shared NATS auth off a join link carries
+ * no owner+actor grant and no per-agent publish ACL, so the broker gates nothing per agent for it;
+ * core groups it with open mode for exactly that reason. Counting it as authenticated would hide
+ * tools an agent can genuinely call, which is the same untruth in the other direction.
+ */
+export function isAuthed(config: Pick<AgentConfig, "creds" | "userAuth">): boolean {
+  return Boolean(config.creds) || Boolean(config.userAuth);
 }
 
 function splitList(v: string | undefined): string[] {

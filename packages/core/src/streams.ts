@@ -42,7 +42,7 @@ import {
   deprovisionTargetPrincipal,
 } from "./subjects.js";
 import { idFromCreds } from "./identity.js";
-import { ensureAuthorityStores } from "./endpoint-binding.js";
+import { createEndpointStreams } from "./endpoint-binding.js";
 import { openAclRegistry, deleteAcl } from "./acls.js";
 import {
   BACKUP_MAX_MSGS_PER_SUBJECT,
@@ -634,7 +634,7 @@ export async function setupSpaceStreams(opts: {
     // start reconcile re-ensures for pre-existing spaces (Unit B) — and the up-time seed creates
     // them so neither daemon needs first-write stream creation. Create-or-verify, idempotent,
     // drift fails loud.
-    await ensureAuthorityStores(jsm, kvm, opts.space);
+    await createEndpointStreams(jsm, kvm, opts.space);
     // #286: `kvm.create` above is a no-op on an ALREADY-EXISTING bucket, so a bucket from a cotal that
     // predated these TTLs keeps its old (often unlimited) `max_age` and never expires dead presence /
     // stale leases. Reconcile the three TTL'd buckets' `max_age` here (STREAM.UPDATE), idempotently.

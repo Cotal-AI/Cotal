@@ -379,7 +379,7 @@ const baseCommands: Command[] = [
     group: "Agents",
     summary: "list/manage local personas (.cotal/agents)",
     usage:
-      "personas <list [-v] [--running] | show <name> | edit <name> | new <name> (--prompt <t>|--from <f>) [--role <r>] [--model <m>] | rm <name> --force>",
+      'personas <list [-v] [--running] | show <name> | edit <name> | new <name> (--prompt <t>|--from <f>) --subscribe <a,b|""> [--role <r>] [--model <m>] | rm <name> --force>',
     positionals: "<list | show <name> | edit <name> | new <name> | rm <name>>",
     flags: [
       ...targetFlags,
@@ -387,6 +387,7 @@ const baseCommands: Command[] = [
       { name: "model", type: "string", value: "<m>", description: "new: the persona's model" },
       { name: "prompt", type: "string", value: "<t>", description: "new: the persona's prompt text" },
       { name: "from", type: "string", value: "<f>", description: "new: seed the prompt from a file" },
+      { name: "subscribe", type: "string", value: '<a,b|"">', description: 'new: channels the persona reads ("" = none) - required' },
       { name: "verbose", type: "boolean", short: "v", description: "list: include role/model/description" },
       { name: "running", type: "boolean", description: "list: mark personas live on the mesh" },
       { name: "force", type: "boolean", description: "rm: required - delete without prompting" },

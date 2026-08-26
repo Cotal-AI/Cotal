@@ -22,9 +22,8 @@ same-named server in the operator-level file; connectors or servers present in o
 kept. A missing file is empty (valid); malformed JSON or a non-object top level is a loud error.
 
 It carries two things: which of your personal MCP servers a connector should **share** with the
-agents it spawns, and an optional `spawn.env` allow-list that confines what a spawned agent's
-process environment contains (see [Environment variables](#environment-variables) below; the default
-is that the agent inherits yours).
+agents it spawns, and optional `spawn.env` names that deliberately add environment capability to a
+spawned agent (see [Environment variables](#environment-variables) below).
 
 The sharing half: By default a spawned agent gets none: the Claude connector launches with
 `--strict-mcp-config`, dropping every ambient MCP server (they are heavy and useless to a meshed
@@ -116,48 +115,49 @@ the session. They are not operator knobs; listed so you recognize them in a proc
 |---|---|
 | `COTAL_ID` | Stable agent id chosen by the launcher (static meshes) |
 | `COTAL_LIFECYCLE_UID` | The incarnation's lifecycle UID, minted once per spawn; the session binds its lifecycle-keyed DM/delivery/history consumers by it (its credential pins the same names). Required for an authed launch (`COTAL_CREDS` or user-mode); config parsing fails loud without it. Open mode omits it (the endpoint self-mints per session) |
-| `COTAL_OWNER` / `COTAL_ACTOR` / `COTAL_SENTINEL_CREDS` / `COTAL_BEARER_CMD` | User-auth launch identity: the agent's principal, its sentinel creds path, and the exec-able bearer command; all four together, mutually exclusive with `COTAL_CREDS`. A launcher-spawned seat carries them in its launch material instead of its environment |
+| `COTAL_OWNER` / `COTAL_ACTOR` / `COTAL_SENTINEL_CREDS` / `COTAL_BEARER_CMD` | User-auth launch identity: the agent's principal, its sentinel creds path, and the exec-able bearer command; all four together, mutually exclusive with `COTAL_CREDS`. A launcher-spawned seat carries them in its launch material instead of its environment. A remote enrollment's bearer argv uses `agent-bearer --exchange-url <https://base>`; the token never falls back to a local service file |
 | `COTAL_LAUNCH_MATERIAL` | Path to this launch's private 0600 material file (see [Launch material](#launch-material) below). Carries the broker URL, the creds path, the auth token, the user-auth identity, and the control token. A PATH, never a secret |
 | `COTAL_CONTROL_SOCKET` | The session's local control endpoint path. The MCP server listens on it and the lifecycle hooks connect to it; the token that authenticates the first frame rides the launch material, not the environment |
 | `COTAL_BRIDGE_SOCKET` / `COTAL_TOOLS_FILE` / `COTAL_PARENT_PID` | Hermes sidecar plumbing (bridge socket, generated tool descriptors, launcher pid to watch) |
 | `OPENCODE_CONFIG_CONTENT` | Inline OpenCode config (the injected cotal plugin, highest merge layer) |
 | `OPENCODE_DB` / `OPENCODE_HOME` / `OPENCODE_PORT` / `OPENCODE_SERVER_URL` / `COTAL_OPENCODE_*` | OpenCode server plumbing (home, port, DB, server URL) |
 
-A spawned agent inherits **your environment**, so a harness you already configured resolves its
-model and provider the same way it does when you run it yourself. Cotal resets its own `COTAL_*`
-names before the child starts, keeping the machine-wide ones (`COTAL_HOME`, the `COTAL_FEEDBACK_*`
-set, `COTAL_DEFAULT_AGENT` / `COTAL_DEFAULT_PERSONA`, the `*_BIN` overrides and the timing knobs).
-That reset is not a preference setting: a connector supplies the per-session names for each child
-and does so conditionally, so an inherited one would never be overwritten and would hand an agent
-another agent's credential path, ACL, or lifecycle uid. Connection material is not in the
+A spawned agent receives a fixed OS execution allow-list (PATH, HOME, TERM, locale, and
+XDG/Windows config directories), the machine-wide `COTAL_*` operator knobs (`COTAL_HOME`, the
+feedback set, the default-agent pair, the `*_BIN` overrides, the timing knobs), the provider inputs
+its connector declares, and `${VAR}` names an explicitly shared MCP server requires. It does not
+inherit the manager's ambient environment. This keeps host-session markers such as
+`CLAUDE_CODE_CHILD_SESSION` / `CLAUDECODE` (and the analogous names other hosts use to mark a nested
+session), unrelated service secrets, and environment-only capabilities out of seats unless
+deliberately supplied. A seat's transcript/resume behaviour is a property of the seat, never of how
+many layers up someone once ran `cotal up` inside an agent. Connection material is not in the
 environment at all (see [identity & auth](identity-and-auth.md)).
 
-To confine a spawned agent instead, declare `spawn.env` in the config file:
+PATH is forwarded whole, including entries such as `~/.local/bin` where connector binaries live, so
+a seat can still launch after the strip. There is no inherit mode and no opt-in-to-containment flag:
+the allow-list is the only path.
+
+To deliberately add an environment name for a spawned agent, declare `spawn.env` in the config file:
 
 ```json
 { "spawn": { "env": ["MY_PROVIDER_API_KEY"] } }
 ```
 
-The child then gets a fixed OS allow-list (PATH, HOME, TERM, locale, XDG/Windows config dirs) plus
-exactly the names you list, plus any `${VAR}` a shared MCP server references. An empty array is a
-real policy, meaning the OS allow-list alone. A space-local `spawn` block replaces the
-operator-level one outright rather than merging, so the narrower file stays narrow.
+The listed names are added to the fixed boundary. That is also the opt-in for a host-session marker
+a persona has chosen to receive (`CLAUDE_CODE_CHILD_SESSION` and friends). An empty array adds
+nothing. A space-local `spawn` block replaces the operator-level one outright rather than merging,
+so a local list stays exactly local. No `spawn` block, `"spawn": { "env": [] }`, and `"spawn": {}`
+all add no names.
 
-Three states that look alike are not: no `spawn` block means no allow-list and the agent inherits
-your environment; `"spawn": { "env": [] }` means the OS allow-list alone; and `"spawn": {}` in a
-space-local file replaces the operator-level block with nothing, so that space inherits even when
-your machine-wide file confines. The last one is how a space opts out of machine-wide containment,
-which is worth knowing before you write it by accident.
-
-Be honest with yourself about what this buys: `HOME` is forwarded either way, so an agent with a
-shell reads `~/.aws`, `~/.ssh` and `~/.config` regardless. `spawn.env` protects what a file on disk
-cannot hand over anyway, and that is more than a list of secret values. Some variables are **capability
+Be honest with yourself about what this buys: `HOME` is forwarded, so an agent with a shell reads
+`~/.aws`, `~/.ssh` and `~/.config` regardless. The boundary protects what a file on disk cannot hand
+over anyway, and that is more than a list of secret values. Some variables are **capability
 handles**: they do not contain a secret, they name a live process that will act on your behalf.
 `SSH_AUTH_SOCK` is the sharp one. Inherit it and the agent can ask your `ssh-agent` to sign, which
 means it can reach any host or sign any commit that key authorises, and it keeps that power even
 if the private key file is not on disk at all. Nothing under `~/.ssh` has to exist for it to work,
 so "a shell reads `~/.ssh` regardless" does not cover this case. The same shape covers a
-`gpg-agent` socket and the desktop and cloud credential brokers. So `spawn.env` protects two things:
+`gpg-agent` socket and the desktop and cloud credential brokers. So the default boundary protects:
 secrets that live **only** in the environment, such as an `aws-vault exec` or `op run` shell or
 CI-injected values, and the capability handles above, which it removes along with everything else
 it does not name. Real containment is still a sandbox or a VM.
@@ -271,6 +271,17 @@ Distinct from `~/.cotal`. Location: `$XDG_CONFIG_HOME/cotal`, else `~/.config/co
 | `config.json` | Operator-level connector config (the base layer above) |
 | `extensions/` | `cotal ext` install prefix: its own npm root (`node_modules`) plus an `extensions.json` provider/command-display cache. Built-in connectors install here too, seeded on first run |
 | `seed/` | Built-in-connector seeding state: the `ever-seeded` authority (+ durable backup), the init witness, the version stamp, the crash cursor, and `store/<version>/<name>` (the stable payloads `ext add --install-links` reifies each seeded connector from) |
+
+Both `extensions/` and `seed/store/` are operator-global: shared by every space, project directory, and
+checkout on the machine, and moved only by `$XDG_CONFIG_HOME` (a fresh project dir isolates `.cotal/`,
+not these). Running `cotal up`, or any command that seeds, from a tree that is not a released install
+re-seeds `seed/store/<version>` with that tree's packages under the same version key, so every later
+mesh on the machine materializes those bytes while `cotal ext ls` still reports the published version.
+To keep the machine-wide store untouched when running from a non-released checkout, point
+`$XDG_CONFIG_HOME` at an isolated dir (on Windows, `%APPDATA%` relocates them). The reconcile names on
+stderr both the store payloads it writes and any old generation it removes, so a machine-wide re-seed
+or cleanup is visible when it happens. Those lines are provenance output: a run whose stderr is closed
+or redirected away keeps the write and loses the line.
 
 For how `cotal setup` populates the machine state and the plugin, and how the built-in connectors are
 seeded as removable extensions, see [setup internals](setup-internals.md).

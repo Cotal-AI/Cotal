@@ -1,0 +1,37 @@
+{
+  "suite": "extensions/connector-jcode/smoke/jcode-host.smoke.ts",
+  "guard": "a provider invalid_request during Jcode's mandatory readiness turn exposes only the safely classified provider code and rejected model/effort value; slow Jcode bootstrap receives its declared bounded manager readiness window rather than an early generic uncertainty verdict",
+  "command": "pnpm smoke:jcode-host && pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/connector-core build && pnpm --filter @cotal-ai/manager build && pnpm --filter @cotal-ai/cli build && pnpm smoke:readiness:live",
+  "progressPattern": "✓",
+  "minTicks": 5,
+  "completionMarker": "provider readiness refusal names its code and rejected model parameter",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/jcode-diagnostics.json",
+  "why": [
+    "#828 was measured at the readiness-turn boundary: a provider gateway rejected a model id, but",
+    "the operator saw only `startup failed (unknown)` and had to inspect private harness logs.",
+    "The host smoke drives the SDK event that JcodeClient.run turns into HarnessError and proves",
+    "the public line contains only the classified provider code and rejected model id.",
+    "#827 was measured as a Jcode seat joining minutes after the manager's generic 30s window.",
+    "The live readiness smoke runs an actual manager and child process: the child joins after a",
+    "shortened generic window but inside the connector-declared Jcode-shaped bound.",
+    "Each mutation removes one load-bearing behavior and names the assertion that must go red."
+  ],
+  "mutations": [
+    {
+      "name": "Jcode readiness refusal is collapsed back to unknown",
+      "file": "extensions/connector-jcode/src/host-main.ts",
+      "find": "  if (error instanceof JcodeReadinessProviderRefusal) {\n    process.stderr.write(\n      `[cotal-jcode] fatal: Jcode readiness turn refused ${error.parameter} ${JSON.stringify(error.value)} (${error.providerCode}); inspect the private Jcode logs for other details.\\n`,\n    );\n  } else {\n    process.stderr.write(`[cotal-jcode] fatal: Jcode host startup failed (${startupFailureCode(error)}); inspect the private Jcode logs.\\n`);\n  }",
+      "replace": "  process.stderr.write(`[cotal-jcode] fatal: Jcode host startup failed (${startupFailureCode(error)}); inspect the private Jcode logs.\\n`);",
+      "expectRed": "provider readiness refusal names its code and rejected model parameter"
+    },
+    {
+      "name": "Jcode no longer declares its long bounded bootstrap window",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "  readinessTimeoutMs: 180_000,",
+      "replace": "  readinessTimeoutMs: 1_000,",
+      "command": "pnpm smoke:jcode-args",
+      "completionMarker": "self-registers as connector jcode",
+      "expectRed": "declares a bounded three-minute bootstrap window"
+    }
+  ]
+}

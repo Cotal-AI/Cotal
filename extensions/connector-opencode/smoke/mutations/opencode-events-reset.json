@@ -1,6 +1,6 @@
 {
   "suite": "extensions/connector-opencode/smoke/agui-session-reset.smoke.ts",
-  "guard": "a second top-level session gets its own emitter, and the session it replaces is drained and closed on the wire first",
+  "guard": "a second top-level session gets its own emitter, and a session it replaces that drains inside the bound is flushed and closed on the wire first",
   "command": "pnpm smoke:opencode-events-reset",
   "completionMarker": "opencode-events-reset smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-opencode/smoke/mutations/opencode-events-reset.json",
@@ -14,18 +14,48 @@
     "R1 is the shipped defect: no swap, so the second session is adopted into the bound holder.",
     "R2 and R3 are the two halves of the drain, which are what an external observer sees: without the",
     "flush the tail the old session had settled never reaches the subject, and without the close the",
-    "observer is left holding a run that never ends.",
+    "observer is left holding a run that never ends. That is the HEALTHY drain, the one that settles",
+    "inside the swap bound. R8 is the degraded arm and it is deliberately the exception: a step that",
+    "outlives the bound is released undrained, the replacement is installed anyway, and a run the old",
+    "session opened can stay open. The fixed arm narrows when an observer is left holding an endless",
+    "run; it does not preclude it.",
     "",
     "The ordering barrier between the two chains is NOT registered as a mutation. Removing it is a",
     "race rather than a defect that reproduces on demand, and a mutation whose kill depends on",
-    "scheduling would report SURVIVED on a slow machine and read as a hole in the suite."
+    "scheduling would report SURVIVED on a slow machine and read as a hole in the suite.",
+    "",
+    "R4 REGISTERS THE SWAP RACE, and the reason it is safe to register is that its kill does NOT depend",
+    "on scheduling, which is what the note above was right to worry about in general.",
+    "",
+    "It is structural. Both creates are fired from ONE synchronous block, and the first invocation",
+    "suspends on `settled()`, which awaits a chain carrying a broker publish and so cannot resolve",
+    "without an I/O turn. The second invocation is therefore already inside the window before the first",
+    "can leave it. A faster or slower machine moves when the I/O completes; it cannot make the I/O",
+    "complete before the next line of the same synchronous block runs.",
+    "",
+    "THE BOUNDARY ON THAT CLAIM, because it is a claim about THIS HARNESS and not about the runtime.",
+    "Two real session creates arrive as two separate listen callbacks, not as one synchronous block, so",
+    "nothing above says production delivers them the way the harness does. What it says is that the",
+    "harness reaches the window on purpose rather than by luck. Production interleaving being less",
+    "predictable is the reason the guard is worth having, not a reason the kill is unreliable.",
+    "",
+    "Measured rather than argued, because a structural claim about ordering is still a claim: 22 of 22",
+    "kills on the named assertion. Twelve at a box load around 2, and ten more under deliberate CPU",
+    "pressure with the load between 16 and 26 on a 20-core box, since a slow machine is the exact",
+    "variable the worry names. If this ever does report SURVIVED, the honest reading is that the harness",
+    "stopped reaching the window, not that the guard became optional.",
+    "",
+    "R5 GRADES THE PAIRING, not the serialization. The two are different invariants and the suite lost",
+    "nothing by learning that the hard way: the swap was serialized and the session identity still",
+    "changed outside it, so an ordinary event arriving in the gap was routed by the new id to the old",
+    "holder. Identity and holder have to change together, and R5 is what keeps them together."
   ],
   "mutations": [
     {
       "name": "R1 the second top-level session is adopted into the bound holder, which is the state this connector shipped in",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "            await previous.settled();\n            events = newEventHolder();\n",
-      "replace": "            await previous.settled();\n",
+      "find": "            events = newEventHolder();\n",
+      "replace": "",
       "expectRed": "reset:the session created by /new PUBLISHES"
     },
     {
@@ -41,6 +71,43 @@
       "find": "            previous.closeRun(Date.now());\n",
       "replace": "",
       "expectRed": "order:every run the first session OPENED was closed"
+    },
+    {
+      "name": "R4 the swap is no longer serialized, so two creates inside one drain window both retire the same holder",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "          swapChain = swap.catch(() => undefined);",
+      "replace": "          swapChain = Promise.resolve();",
+      "expectRed": "race:the holder the FIRST of two racing creates installed is retired, exactly once",
+      "note": "Chaining every swap off an ALREADY-RESOLVED promise removes the serialization while leaving the code compiling, which is the smallest expression of the defect. Under it both invocations capture the same holder to retire, the first replacement is adopted (its write-ahead log opens) and is then overwritten, and the session it held leaves a run open on the subject forever.",
+      "cell": "race:the holder the FIRST of two racing creates installed is retired, exactly once (and the session they both replace is retired ONCE, not drained twice)"
+    },
+    {
+      "name": "R5 the route stops consulting the holder's own binding, so an event carrying the new id is handed to a holder still bound to the old thread and its re-adopt refusal takes the plane down",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    return holder.path === undefined || holder.path === id ? holder : undefined;\n",
+      "replace": "    return holder;\n",
+      "expectRed": "race:neither of two creates inside one drain window killed the emitter"
+    },
+    {
+      "name": "R6 the not-yet-bound arm is dropped, so a fresh holder is never the route for the very first event it should serve",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    return holder.path === undefined || holder.path === id ? holder : undefined;\n",
+      "replace": "    return holder.path === id ? holder : undefined;\n",
+      "expectRed": "boot:the first event of the process reaches a holder nothing has bound yet"
+    },
+    {
+      "name": "R7 the ownership filter stops filtering, so a FOREIGN session's event pumps the owned session and puts its staged turn on the wire early - every flush site is fed the ambient id, so a foreign event does not address its own session, it speaks for this one",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    return id === sessionID;\n",
+      "replace": "    return true;\n",
+      "expectRed": "boot:a foreign session's event does not pump the owned session's staged turn"
+    },
+    {
+      "name": "R8 a swap step never settles, which is the wedge the bound exists for: the backstop must fire, say what it cost, and let every later swap keep running",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "              const drained = await settleWithin(previous.settled(), SWAP_SETTLE_MS, `drain of ${previous.path}`);\n",
+      "replace": "              const drained = await settleWithin(new Promise<void>(() => {}), SWAP_SETTLE_MS, `drain of ${previous.path}`);\n",
+      "expectRed": "bound:a healthy drain abandons no step, so the backstop is not firing on completions"
     }
   ]
 }

@@ -1,0 +1,44 @@
+{
+  "command": "pnpm smoke:jcode-args",
+  "progressPattern": "✓",
+  "minTicks": 20,
+  "mutations": [
+    {
+      "name": "Jcode connector self-registers",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "registry.register(jcodeConnector);",
+      "replace": "// registry intentionally removed",
+      "expectRed": "self-registers as connector jcode"
+    },
+    {
+      "name": "Jcode connector rejects unsupported resume",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "if (opts.resume)\n      throw new Error(\"jcode connector: resuming an existing session is not supported — the private Harness API instance never shares a session with another seat\");",
+      "replace": "if (false) throw new Error(\"mutant\");",
+      "expectRed": "refuses resume"
+    },
+    {
+      "name": "Jcode connector carries the requested reasoning-effort tier",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "      env.COTAL_VARIANT = variant;",
+      "replace": "      env.COTAL_VARIANT = \"low\";",
+      "expectRed": "variant rides env as the reasoning effort"
+    },
+    {
+      "name": "Jcode inbox relay preserves peek",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "spec.name === \"cotal_inbox\" ? { ...args, scope: \"pull-only\" } : args,",
+      "replace": "spec.name === \"cotal_inbox\" ? { scope: \"pull-only\" } : args,",
+      "command": "pnpm smoke:jcode-host",
+      "expectRed": "Jcode cotal_inbox peek:true leaves the returned message for the following normal read"
+    },
+    {
+      "name": "Jcode bridge rejects JSON-own proto key",
+      "file": "extensions/connector-jcode/src/mcp.ts",
+      "find": "if (frame.method === \"tools/call\" && Object.hasOwn(frame.params?.arguments ?? {}, \"__proto__\")) {",
+      "replace": "if (false) {",
+      "command": "pnpm smoke:jcode-host",
+      "expectRed": "Jcode cotal_inbox refuses JSON-own __proto__ without consuming the buffered message"
+    }
+  ]
+}

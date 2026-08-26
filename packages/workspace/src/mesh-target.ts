@@ -190,7 +190,7 @@ function assertRootIsSingleTenant(root: string): void {
     );
 }
 
-function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget["source"]): MeshTarget {
+export function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget["source"]): MeshTarget {
   // Honor the recorded mode: an OPEN mesh connects credlessly even if its root still has auth
   // material on disk (e.g. a root that once ran auth mode). Loading it would make `spawn` mint
   // creds against a broker that takes none. A USER mesh loads NO static auth either — its connect

@@ -1,5 +1,74 @@
 # @cotal-ai/web
 
+## 0.32.0
+
+### Minor Changes
+
+- db4b21e: feat(web)!: authenticate the console's HTTP surface with a single-use launch link
+
+  The dashboard's loopback surface authenticated nobody — `req.headers` was read zero times. Loopback
+  keeps other hosts out; it never kept out another process on the same machine, nor a page in the
+  operator's own browser issuing requests to `http://127.0.0.1:7799`, and what that reached was the
+  whole mesh read path plus a channel-delete.
+
+  `cotal web` now mints a one-time launch token per process and prints it in the URL it opens. The
+  token is exchanged exactly once for an `HttpOnly; SameSite=Strict` session cookie, and the exchange
+  redirects so the spent secret leaves the address bar. Every route runs behind the gate. Refusals name
+  which condition failed — `unauthenticated`, `launch-token-already-used`, `cross-origin` — instead of
+  returning an empty success, and the origin is checked before the session so a cross-site request is
+  never reported as merely unauthenticated.
+
+  Breaking for anyone driving the dashboard's HTTP endpoints directly: requests now need the session
+  cookie, and the printed URL is single-use. `--detach` is unaffected in use — the child writes a
+  `0600` session file after binding and the parent authenticates its readiness poll with a separate
+  nonce.
+
+## 0.31.0
+
+## 0.30.2
+
+## 0.30.1
+
+## 0.30.0
+
+## 0.29.2
+
+## 0.29.1
+
+## 0.29.0
+
+## 0.28.2
+
+## 0.28.1
+
+## 0.28.0
+
+### Minor Changes
+
+- 316f84d: Cap the dashboard delete route's request body at 8 KiB.
+
+  `POST /api/channel/delete` read its body with no size limit and no look at `content-length`, so the
+  ceiling on a request was the process heap: a 30 MB post was read in full, answered with a 70 MB
+  refusal, and cost 1.39 GB of peak RSS before the route formed any opinion.
+
+  The read now refuses at the threshold with a `413` naming the limit and the size that met it, on
+  both the declared length and the bytes as they arrive, so a body with no declared length is capped
+  too. It is never truncated to fit: a shortened channel name is a name the caller did not send, which
+  is the aliasing shape this route's validator already exists to refuse. Bodies under the cap, extra
+  fields included, are untouched.
+
+  The refusal also closes the connection the oversized body arrived on. Without that, a caller asking
+  to keep the connection alive still got to send every byte, because the server reads the rest of a
+  body to get the socket back for reuse: the refusal was early but the work was not bounded. Ordinary
+  within-cap requests keep their connection and their socket stays reusable.
+
+  `@cotal-ai/connector-core` is listed because it ships the docs bundle, which embeds the page this
+  change updates and is regenerated here. Its only diff is that regenerated file.
+
+## 0.27.0
+
+## 0.26.0
+
 ## 0.25.0
 
 ### Minor Changes

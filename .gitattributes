@@ -1,0 +1,10 @@
+# The CI gate registry is append-only: every PR that adds a smoke suite writes a comment block
+# and its suite name at the tail, so any two such PRs collide there. Both sides are always
+# additive and the resolution is always "keep both", which makes the conflict pure overhead -
+# and worse, a conflict resolved identically every time stops being read. A resolver in a hurry
+# drops the other side's entry and the result is a silently ungated suite: the file still parses,
+# CI still passes, and only a hand grep notices. Union merge keeps both sides automatically.
+#
+# Verified: union preserves block adjacency, so a multi-line comment stays attached to the suite
+# line beneath it rather than being interleaved away from it.
+bin/smoke/ci-suites.txt merge=union

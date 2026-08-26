@@ -1,0 +1,87 @@
+{
+  "suite": "packages/core/smoke/agent-file.smoke.ts",
+  "guard": "Saving an agent file preserves the three channel-policy fields exactly as set, an EMPTY list included, and a second save changes nothing.",
+  "command": "pnpm smoke:agent-file",
+  "completionMarker": "agent-file yaml smoke:",
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/agent-file-policy-roundtrip.json   # --config resolves against the repo root, never the cwd",
+  "why": [
+    "The writer emitted each policy field only when it was non-empty, so an explicit `subscribe: []`",
+    "did not survive a save: load-then-save returned a file with no `subscribe` key at all. Two",
+    "different declarations, 'this agent reads no channels' and 'this file never said', collapsed",
+    "into the second one, and the collapse happened silently on a path nobody thinks of as an edit.",
+    "",
+    "That path is the persona redefine, which loads the stored file and saves it back. So redefining",
+    "the content of an agent that had declined every channel also rewrote its stored channel policy,",
+    "and the next reader could no longer tell a deliberate empty read set from a field the author",
+    "forgot. The distinction is the whole input to any future default, so losing it is not cosmetic.",
+    "",
+    "The old suite could not catch this: every round-trip it exercised used NON-EMPTY lists, which the",
+    "length gate emits, so the writer looked faithful precisely because nothing ever handed it the",
+    "value it dropped. The first two mutations restore the old condition on the fields whose empty",
+    "state carries meaning; the empty cell names them.",
+    "",
+    "The third mutation guards the other direction. Emitting on 'is set' must not become emitting",
+    "always, or an unset field is written as an empty one and every persona silently grows three keys",
+    "that read as a deliberate empty declaration. That would destroy the same distinction from the",
+    "opposite side, so the unset cells refuse it.",
+    "",
+    "The last mutation is about the SUITE rather than the product. A mutation table proves the suite",
+    "depends on the mutated code; it cannot show that a real entry point reaches it. The redefine cells",
+    "replay what the manager does when a persona is defined over an existing name, so that plant breaks",
+    "the replay itself and leaves the writer correct, which is the only way to see the cells grade the",
+    "path rather than the function underneath it.",
+    "",
+    "The read set is the one policy field a saver must state. The other two have defaults that answer",
+    "the question rather than guess at it: an omitted read ACL means exactly what the agent subscribes",
+    "to, and an omitted post ACL means deny. Neither can widen access by being absent. An omitted read",
+    "set had no such answer, so it was filled in by whatever default was current, and the file recorded",
+    "a channel nobody chose."
+  ],
+  "mutations": [
+    {
+      "name": "the writer turns a declared-empty read set back into inherited general",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "  if (def.subscribe) fm.subscribe = def.subscribe;",
+      "replace": "  if (def.subscribe) fm.subscribe = def.subscribe.length ? def.subscribe : [\"general\"];",
+      "expectRed": "a empty subscribe survives a save",
+      "cell": "a empty subscribe survives a save",
+      "note": "The writer must state the declared empty set now that omission is refused. Reintroducing the old inherited channel keeps the file well-formed and the run complete, but widens a deliberate no-channel policy to general; the empty round-trip cell names it."
+    },
+    {
+      "name": "the post ACL reverts to emit-only-when-non-empty",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "  if (def.allowPublish) fm.allowPublish = def.allowPublish;",
+      "replace": "  if (def.allowPublish?.length) fm.allowPublish = def.allowPublish;",
+      "expectRed": "a empty allowPublish survives a save",
+      "cell": "a empty allowPublish survives a save",
+      "note": "allowPublish is default-deny, so an explicit empty post ACL and an omitted one resolve alike today; the file must still record which one the author wrote."
+    },
+    {
+      "name": "the post ACL is emitted unconditionally, inventing a field the author never wrote",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "  if (def.allowPublish) fm.allowPublish = def.allowPublish;",
+      "replace": "  fm.allowPublish = def.allowPublish ?? [];",
+      "expectRed": "an unset allowPublish stays unset",
+      "cell": "an unset allowPublish stays unset",
+      "note": "The overcorrection: every saved persona gains an empty post ACL that reads as a deliberate declaration. Same distinction lost, opposite direction. Aimed at allowPublish because subscribe is now required and cannot be unset."
+    },
+    {
+      "name": "the redefine path is graded only through the writer, not through a real caller",
+      "file": "packages/core/smoke/agent-file.smoke.ts",
+      "find": "  saveAgentFile(file, d0);\n};\nredefine(live, \"Rewritten persona text.\");",
+      "replace": "  saveAgentFile(file, { ...d0, subscribe: d0.subscribe?.length ? d0.subscribe : [\"general\"] });\n};\nredefine(live, \"Rewritten persona text.\");",
+      "expectRed": "a redefine keeps the declared-empty read set",
+      "cell": "a redefine keeps the declared-empty read set",
+      "note": "Plants the pre-fix inherit INSIDE the replayed redefine rather than in the writer, so the cell is shown to grade the caller's path. It restores the old default rather than dropping the field, because dropping it now hits the writer's refusal and would crash the run instead of reddening this cell."
+    },
+    {
+      "name": "the writer accepts a persona with no declared read set",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "  if (!def.subscribe)\n    throw new Error(",
+      "replace": "  if (false)\n    throw new Error(",
+      "expectRed": "saving a persona with no read set is refused",
+      "cell": "saving a persona with no read set is refused",
+      "note": "Removes the guard while leaving its message in place, so the suite cannot pass on the error text existing. A scopeless persona becomes writable again and the refusal cell names it."
+    }
+  ]
+}

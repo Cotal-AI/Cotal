@@ -27,7 +27,7 @@
 import { connect, jwtAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
-import { EpEnvelopeError, assertInboxConnId, endpointToken, epAuthBucket, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, type PlaneConnTuple } from "@cotal-ai/core";
+import { EpEnvelopeError, assertInboxConnId, endpointToken, epAuthBucket, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, rawDigest, type PlaneConnTuple, type RemoteManagerAuthorityRequest } from "@cotal-ai/core";
 import { authConnectReaderGrants, openConnectReader, type ConnectReader } from "./connect-reader.js";
 
 /** Self-minted infra-credential TTL (fact-3 pin: SHORT expiry + in-process renewal, a bounded
@@ -80,6 +80,36 @@ export function authorityWriterGrants(space: string, connId: string): { publish:
     ],
     subscribe: [`_INBOX_${inbox}.>`],
   };
+}
+
+/** The host-side REMOTE MANAGER ISSUER adds only the endpoint-instance gate/credential family
+ * needed by the typed manager-service protocol. It carries no generic profile/mint endpoint; the
+ * HTTP handler chooses fixed profiles and caller-generated nkeys. */
+export function remoteManagerIssuerGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
+  const base = authorityWriterGrants(space, connId);
+  return {
+    publish: [
+      ...base.publish,
+    ],
+    subscribe: base.subscribe,
+  };
+}
+
+/** Deterministic registration proof shared by prepare, the participant, and activate. It binds
+ * owner, instance, lifecycle, every caller-generated nkey, and the canonical manager artifact
+ * digests; replay against another lifecycle or artifact set cannot pass. */
+export function remoteManagerRegistrationProof(owner: string, request: RemoteManagerAuthorityRequest): string {
+  const artifactDigests = request.operation === "session" ? [] : (request.contractArtifacts ?? []).map((value) => rawDigest(JSON.stringify(value)));
+  return rawDigest(JSON.stringify({
+    v: 1,
+    space: request.space,
+    owner,
+    instanceId: request.instanceId,
+    lifecycleUid: request.managerLifecycleUid,
+    actors: remoteManagerActors(request.instanceId),
+    identities: request.identities,
+    artifactDigests,
+  }));
 }
 
 /**

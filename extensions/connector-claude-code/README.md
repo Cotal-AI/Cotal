@@ -15,7 +15,8 @@ See [docs/connect-claude.md](../../docs/connect-claude.md) for the integration g
 The full set of Claude Code hook events, grouped by lifecycle — this is Claude *product*
 surface, kept here with the adapter rather than in the protocol docs. Source:
 [code.claude.com/docs/en/hooks](https://code.claude.com/docs/en/hooks) (Claude Code
-2.1.16x, 31 events). The connector consumes the subset mapped in
+2.1.16x, 31 events; the `StopFailure` matchers re-read off 2.1.237's own hook schema, which
+carries two the earlier list was missing). The connector consumes the subset mapped in
 [docs/connect-claude.md](../../docs/connect-claude.md) (presence mapping + message
 delivery); the rest are listed for completeness.
 
@@ -32,7 +33,7 @@ delivery); the rest are listed for completeness.
 | `UserPromptSubmit` | user submits a prompt, before Claude processes it | (none) |
 | `UserPromptExpansion` | a typed command expands into a prompt | command name |
 | `Stop` | Claude finishes responding | (none) |
-| `StopFailure` | turn ends due to an API error | `rate_limit`, `authentication_failed`, `oauth_org_not_allowed`, `billing_error`, `invalid_request`, `model_not_found`, `server_error`, `max_output_tokens`, `unknown` |
+| `StopFailure` | turn ends due to an API error | `rate_limit`, `overloaded`, `authentication_failed`, `oauth_org_not_allowed`, `account_on_hold`, `billing_error`, `invalid_request`, `model_not_found`, `server_error`, `max_output_tokens`, `unknown` |
 
 ### Per tool call (agentic loop)
 | Event | Fires when | Matchers |

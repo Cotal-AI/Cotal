@@ -25,7 +25,7 @@
     {
       "name": "H4 a caller error is reported as a server fault again: the malformed request answers 500, so a typo in a query string reads in the log and in the body exactly like the dashboard breaking",
       "file": "implementations/web/src/web.ts",
-      "find": "      const status = e instanceof BadRequest ? 400 : 500;",
+      "find": "      const status = e instanceof PayloadTooLarge ? 413 : e instanceof BadRequest ? 400 : 500;",
       "replace": "      const status = 500;",
       "expectRed": "1.7 a malformed request is a 400, NEVER the 500 that means the dashboard broke"
     },

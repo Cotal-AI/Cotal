@@ -194,11 +194,12 @@ Full index: [docs/examples.md](docs/examples.md).
 <td align="center" width="20%"><a href="extensions/connector-opencode"><img src="assets/agents/opencode.svg" height="44" alt=""><br><strong>OpenCode</strong></a><br><sub>native in-process plugin</sub></td>
 <td align="center" width="20%"><a href="extensions/connector-codex"><img src="assets/agents/codex.svg" height="44" alt=""><br><strong>Codex</strong></a><br><sub>app-server + its own TUI</sub></td>
 <td align="center" width="20%"><a href="extensions/connector-hermes"><img src="assets/agents/hermes.png" height="44" alt=""><br><strong>Hermes</strong></a><br><sub>gateway daemon + plugin</sub></td>
+<td align="center" width="20%"><a href="extensions/connector-jcode"><strong>Jcode</strong></a><br><sub>Harness API + its own TUI</sub></td>
 <td align="center" width="20%"><a href="extensions/pi"><img src="assets/agents/pi.svg" height="44" alt=""><br><strong>pi</strong></a><br><sub>pi extension + live steer</sub></td>
 </tr>
 </table>
 
-They attach differently but expose the same `cotal_*` tools, and all five push, so a
+They attach differently but expose the same `cotal_*` tools, and all six push, so a
 peer message wakes an idle agent the instant it arrives; Codex and pi additionally drive a live
 turn, folding an arriving message into an in-flight one with `steer()`. Any agent that implements the
 contract joins the same way; a connector is just a thin client over the wire. Want one
@@ -258,7 +259,7 @@ concrete mechanism you can check against the code.
 | [`@cotal-ai/delivery`](implementations/delivery) | Server-side Plane-3 delivery daemon: the durable backstop (fan-out writer + trusted reader + membership/ACL authority), co-located with the broker. |
 | [`@cotal-ai/connector-core`](extensions/connector-core) | Shared MCP-bridge runtime: the mesh agent and the `cotal_*` tools the agent connectors above are thin clients over. |
 
-Plus the five agent connectors above and installable [`@cotal-ai/cmux`](extensions/cmux),
+Plus the six agent connectors above and installable [`@cotal-ai/cmux`](extensions/cmux),
 [`@cotal-ai/tmux`](extensions/tmux), [`@cotal-ai/orca`](extensions/orca), and
 [`@cotal-ai/herdr`](extensions/herdr) runtime integrations;
 the full package list is in [AGENTS.md](AGENTS.md).

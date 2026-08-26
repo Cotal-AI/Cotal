@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 import { z } from "zod";
 import { isConcreteChannel, channelInAllow, AmbiguousPeerError, isPermissionDenied, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
-import { FEEDBACK_URL, PUBLIC_FEEDBACK_URL, type AgentConfig } from "./config.js";
+import { FEEDBACK_URL, PUBLIC_FEEDBACK_URL, isAuthed, type AgentConfig } from "./config.js";
 import { buildOrientation, renderOrientation, type OrientationTool } from "./orientation.js";
 import { runDocs } from "./docs.js";
 
@@ -84,16 +84,24 @@ interface CotalToolSpecDecl extends Omit<CotalToolSpec, "schema"> {
  * caller can see and repair beats a right-looking call that quietly did something else.
  */
 export function parseToolArgs(spec: CotalToolSpec, args: unknown): Record<string, unknown> {
-  const parsed = spec.schema.safeParse(args ?? {});
-  if (parsed.success) return parsed.data as Record<string, unknown>;
-  const unknownKeys = parsed.error.issues.flatMap((i) => (i.code === "unrecognized_keys" ? i.keys : []));
   const accepted = Object.keys(spec.schema.shape);
+  const input = args === undefined ? {} : args;
+  // Zod's strict object rejects ordinary unknown keys, but it treats a JSON-own `__proto__` as
+  // inherited and silently drops it. Check the raw own keys before schema parsing so every caller
+  // gets a genuine closed set and no unrecognised input can fall through to a destructive default.
+  const rawKeys = input && typeof input === "object" && !Array.isArray(input) ? Object.keys(input) : [];
+  const unknownKeys = rawKeys.filter((key) => !Object.hasOwn(spec.schema.shape, key));
+  if (unknownKeys.length)
+    throw new Error(
+      `${spec.name}: unknown argument(s): ${unknownKeys.join(", ")} — ${accepted.length ? `this tool accepts only: ${accepted.join(", ")}` : "this tool takes no arguments"}`,
+    );
+
+  const parsed = spec.schema.safeParse(input);
+  if (parsed.success) return parsed.data as Record<string, unknown>;
   throw new Error(
-    unknownKeys.length
-      ? `${spec.name}: unknown argument(s): ${unknownKeys.join(", ")} — ${accepted.length ? `this tool accepts only: ${accepted.join(", ")}` : "this tool takes no arguments"}`
-      : `${spec.name}: invalid arguments: ${parsed.error.issues
-          .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
-          .join("; ")}`,
+    `${spec.name}: invalid arguments: ${parsed.error.issues
+      .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+      .join("; ")}`,
   );
 }
 
@@ -499,12 +507,17 @@ export function channelMeta(i: InboxItem): Record<string, string> {
  *  hosting connector and is stamped onto outgoing feedback. */
 export function cotalToolSpecs(config: AgentConfig, source = "connector"): CotalToolSpec[] {
   // Manager-op tools (cotal_spawn / cotal_persona) ride the `spawn` capability — publish to the
-  // privileged control subject. The cred layer is the real boundary: in auth mode an agent without
-  // it is denied at the wire (nats-server); open mode mints no creds, so anyone may spawn. Mirror
-  // that here so the advertised surface is truthful — an agent only sees these when it can actually
-  // use them, instead of discovering the denial by trying. cotal_despawn stays (its no-name
-  // self-despawn is granted to all). controlFailure remains the backstop if a wire denial slips by.
-  const canSpawn = !config.creds || (config.capabilities?.includes("spawn") ?? false);
+  // privileged control subject. The AUTH layer is the real boundary: on an authed mesh an agent
+  // without the capability is denied at the wire (nats-server); open mode mints no identity, so
+  // anyone may spawn. Mirror that here so the advertised surface is truthful — an agent only sees
+  // these when it can actually use them, instead of discovering the denial by trying. cotal_despawn
+  // stays (its no-name self-despawn is granted to all). controlFailure remains the backstop if a
+  // wire denial slips by.
+  //
+  // Gate on AUTHENTICATED, not on "has static creds". A user-auth agent carries no static creds by
+  // construction, so `!config.creds` read every one of them as open mode and advertised both tools
+  // to every agent on a user-auth mesh — inverting the guarantee the paragraph above states.
+  const canSpawn = !isAuthed(config) || (config.capabilities?.includes("spawn") ?? false);
   // The default broadcast target, the same one the endpoint resolves: the first CONCRETE channel of
   // the read set (a wildcard subscription like `team.>` is not a destination). Undefined when the
   // agent is on no channel, in which case there IS no default and a send without one is refused.
@@ -526,10 +539,11 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           title: s.title,
         }));
         const card = renderOrientation(buildOrientation(agent, config, visible, Date.now()));
+        const issue = agent.connectionIssue;
         return ok(
           agent.connected
             ? card
-            : `(not connected to the mesh yet — the live context below is empty)\n\n${card}`,
+            : `(not connected to the mesh yet — the live context below is empty${issue ? `; last error: ${issue.slice(0, 300)}` : "; connection is still starting"})\n\n${card}`,
         );
       },
     },
@@ -641,7 +655,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           // The response exists before anything is acked: an ack is a claim that these messages were
           // handed over, so nothing may be cleared while the handing-over is still hypothetical. And
           // it is the ASSEMBLED response that decides, so what is acked is what a caller was handed.
-          if (!peek) agent.drainInboxIds(shown.map((i) => i.id));
+          if (!peek) agent.drainInboxDeliveries(shown.map((i) => i.recvKey));
           void held;
           return ok(text);
         }
@@ -661,8 +675,10 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         // or behind the clock are ordered by timestamp and move the mark, and items ahead of it are
         // handed over once, tracked by id, and never move it. The ahead lane needs no gap rule for the
         // same reason it needs no mark, since each of its items is accounted for on its own.
+        // Ties break by receive key (#624): an empty wire id cannot order two distinct id-less
+        // recall items, while a minted key can, and a minted key never equals a real wire id.
         const byTsThenId = (a: InboxItem, b: InboxItem): number =>
-          a.ts !== b.ts ? a.ts - b.ts : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+          a.ts !== b.ts ? a.ts - b.ts : a.recvKey < b.recvKey ? -1 : a.recvKey > b.recvKey ? 1 : 0;
         const clocked: InboxItem[] = [];
         const aheadFresh: InboxItem[] = [];
         const aheadWithheld: InboxItem[] = [];
@@ -673,11 +689,11 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
             // that was ahead of it. It was handed over by id while it was ahead, and the mark never
             // moved for it, so the mark alone would offer it a second time the moment it decays into
             // this lane. The record it was handed over under is what closes that.
-            if (agent.recallAheadSeen(i.id)) continue;
-            if (afterRecallMark({ ts: i.ts, id: i.id }, agent.recallCursor)) clocked.push(i);
+            if (agent.recallAheadSeen(i.recvKey)) continue;
+            if (afterRecallMark({ ts: i.ts, id: i.recvKey }, agent.recallCursor)) clocked.push(i);
             continue;
           }
-          if (agent.recallAheadSeen(i.id)) continue;
+          if (agent.recallAheadSeen(i.recvKey)) continue;
           // Never show what cannot be recorded: an unrecorded item comes back on every call forever.
           if (aheadRoom <= 0) aheadWithheld.push(i);
           else {
@@ -688,11 +704,11 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         clocked.sort(byTsThenId);
         aheadFresh.sort(byTsThenId);
         const fresh = [...clocked, ...aheadFresh];
-        const aheadIds = new Set(aheadFresh.map((i) => i.id));
+        const aheadIds = new Set(aheadFresh.map((i) => i.recvKey));
         const warning = [droppedNote(recall.droppedChannels), aheadNote(aheadWithheld)]
           .filter(Boolean)
           .join(" ");
-        const bufferedIds = new Set(buffered.map((i) => i.id));
+        const bufferedIds = new Set(buffered.map((i) => i.recvKey));
         const { text, shown: all, stuck } = renderInbox({
           items: [...buffered, ...fresh],
           peek,
@@ -712,7 +728,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         // Render first, ack second, and only ever ids from the buffered lane: acking a recall id
         // would mark it handled, so a later live copy of that channel message would be dropped.
         if (!peek) {
-          agent.drainInboxIds(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));
+          agent.drainInboxDeliveries(all.filter((i) => bufferedIds.has(i.recvKey)).map((i) => i.recvKey));
           // THE MARK MOVES OVER AN UNBROKEN PREFIX, and stops at the first thing this reply did not
           // carry. Two recall items can share a millisecond, so the mark is a (timestamp, id) pair:
           // a timestamp alone either strands the twin, if it moves past both, or re-serves the one
@@ -724,11 +740,11 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           // of it IS an unbroken prefix: the last recall item shown is the end of that prefix, and
           // the mark is exactly it. A walk over the prefix would compute the same value, which is why
           // the mutation for it survived and the code went rather than the test being weakened.
-          const shownRecall = all.filter((i) => !bufferedIds.has(i.id));
-          for (const i of shownRecall) if (aheadIds.has(i.id)) agent.noteRecalledAhead(i.id);
+          const shownRecall = all.filter((i) => !bufferedIds.has(i.recvKey));
+          for (const i of shownRecall) if (aheadIds.has(i.recvKey)) agent.noteRecalledAhead(i.recvKey);
           const shownClocked = shownRecall.filter((i) => !aheadIds.has(i.id));
           const last = shownClocked[shownClocked.length - 1];
-          if (last) agent.noteRecalled({ ts: last.ts, id: last.id });
+          if (last) agent.noteRecalled({ ts: last.ts, id: last.recvKey });
           void stuck;
         }
         return ok(text);

@@ -92,12 +92,11 @@ export interface LaunchOpts {
    *  (Claude launches isolated with `--strict-mcp-config`). Connectors that don't support sharing
    *  throw on a non-empty map rather than silently dropping it. */
   mcpServers?: Record<string, McpServerSpec>;
-  /** The spawned-agent env allow-list an operator declared in the cotal config (`spawn.env`),
-   *  resolved from it by the CALLER exactly the way {@link mcpServers} is (see `spawnEnvAllow`).
-   *  `undefined` - the default - means the child inherits the operator's environment; an array,
-   *  including an EMPTY one, opts into containment and names everything the child gets beyond a
-   *  fixed OS allow-list. A connector passes it straight through to `launchEnv`; it never
-   *  interprets it, and it never reads the config itself. */
+  /** Extra environment names an operator deliberately declared in `spawn.env`, resolved by the
+   *  caller exactly as {@link mcpServers} is. The default supplies no extras: the child receives the
+   *  fixed OS allow-list, the machine-wide `COTAL_*` operator knobs, and connector-declared inputs
+   *  only. Connectors never read config themselves. Host-session markers are not forwarded unless
+   *  named here. */
   envAllow?: readonly string[];
   /** The manager's workspace root. Connectors that keep per-agent local state (e.g. the OpenCode
    *  connector's SQLite DB + serve pidfile) pin it here so a per-agent working directory — which can
@@ -214,6 +213,15 @@ export interface Connector extends Extension {
   /** Whether this connector can honor {@link LaunchOpts.variant}. Default-deny so a variant request
    *  fails before provisioning side effects in the manager. */
   readonly supportsModelVariant?: boolean;
+  /**
+   * Connector-specific upper bound for reaching mesh presence after its process is launched.
+   *
+   * The manager's generic readiness window applies when absent. A connector whose documented
+   * bootstrap legitimately exceeds that generic window must declare a positive safe integer here,
+   * so a live slow boot is not terminalized `uncertain` before it can join. This is a bounded wait,
+   * not an application-health promise: presence still means only that the seat joined the mesh.
+   */
+  readonly readinessTimeoutMs?: number;
   /** One short clause telling the operator what to expect on a FOREGROUND spawn, appended to the
    *  "spawning <name> on the mesh" line. What happens next differs per harness — one opens on an
    *  interactive gate, another paints a full-screen UI after a pause — and a hint naming the wrong

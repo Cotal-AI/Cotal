@@ -7,6 +7,8 @@
  *     pid files written, processes alive, the delivery-aware marker bound to the manager pid.
  *  2. a real `cotal ps` is ANSWERED by the detached manager (control plane reachable, creds minted
  *     from this folder's auth — the exact "spawn --detach works right after up" promise).
+ *  2b. a refresh whose delivery launch LOSES the single-flight lease exits non-zero and says so,
+ *     instead of reporting a healthy control plane over a child that is already dead (#837).
  *  3. `cotal down` stops all three: pid files gone, processes dead, port closed.
  *
  * Sandboxes COTAL_HOME + a temp project root; tears down via `cotal down` + own-pid SIGTERM only —
@@ -15,7 +17,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createConnection, createServer, type AddressInfo } from "node:net";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { renderDetachedSummary } from "../../implementations/cli/src/lib/up-report.js";
@@ -128,6 +130,25 @@ try {
     if (!answered) await sleep(2000);
   }
   ok("cotal ps is answered by the detached manager", answered, last);
+
+  // 2b) #837: a delivery launch that LOSES the single-flight lease is not a healthy control plane.
+  //     Drop the pidfile - the operator-visible shape of a lost record - while the real daemon keeps
+  //     running and keeps renewing its READY lease. The refresh sees no daemon, starts a second one,
+  //     and that one loses the CAS and exits. `up` used to wait for ANY ready lease, find the FIRST
+  //     daemon's, and report a healthy control plane over a child that was already dead.
+  //     A LIVE holder rather than a SIGKILLed one's expiring record: the same code path, with no
+  //     dependence on how much of the bucket TTL is left by the time the refresh reaches its CAS.
+  const deliveryPidFile = join(root, ".cotal", "delivery.pid");
+  const liveDelivery = readFileSync(deliveryPidFile, "utf8");
+  rmSync(deliveryPidFile);
+  const lost = cli("up", "--server", SERVER);
+  const lostOut = plain(lost.stdout + lost.stderr);
+  ok("a refresh whose delivery launch loses the single-flight lease exits non-zero", lost.status !== 0, lostOut);
+  ok("the refresh says the daemon it started exited without becoming ready", /exited without becoming ready/.test(lostOut), lostOut);
+  ok("the daemon that HOLDS the lease is left running", alive(Number(liveDelivery.trim())), liveDelivery);
+  // The losing launch overwrote the record with its own (dead) pid; put back the one `down` needs to
+  // stop the daemon that is actually serving.
+  writeFileSync(deliveryPidFile, liveDelivery);
 
   // 3) down stops the whole stack, symmetric with up. Poll: the SIGTERM'd manager/daemon shut
   //    down gracefully, which can take a few seconds on slow CI.

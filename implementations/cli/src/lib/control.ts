@@ -17,6 +17,7 @@ import {
   scatterCommand,
   mintLifecycleUid,
   newIdentity,
+  dialerFor,
   resolveService,
   standaloneConnectOpts,
   type ControlReply,
@@ -26,7 +27,7 @@ import {
   type Profile,
   type SpaceAuth,
 } from "@cotal-ai/core";
-import { PermissionViolationError, connect, type NatsConnection } from "@nats-io/transport-node";
+import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import {
   authDir, endpointAuth, findCotalRoot, isWorkspaceTargetError, loadSpaceAuth, resolveMeshTarget,
@@ -83,7 +84,7 @@ export async function resolveControlTarget(
    *  attach reconnect) cannot use a path that ends the process, and "no mesh running at X - run
    *  `cotal up`" is the wrong answer to a link that is coming back. */
   opts: { onRefusal?: "exit" | "throw" } = {},
-): Promise<{ space: string; server: string; auth: ControlAuth; spaceAuth?: SpaceAuth }> {
+): Promise<{ space: string; server: string; auth: ControlAuth; spaceAuth?: SpaceAuth; root?: string }> {
   const connect_ = opts.onRefusal === "throw" ? connectOrThrow : connectOrExit;
   const withSpace = flags.creds
     ? { ...flags, space: flags.space ?? soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE }
@@ -137,6 +138,7 @@ export async function resolveControlTarget(
         space: conn.space,
         server: conn.server,
         auth: { ...endpointAuth(conn), ...(conn.epCaller ? { epCaller: conn.epCaller } : {}) },
+        ...(conn.root !== undefined ? { root: conn.root } : {}),
       };
     }
   }
@@ -152,6 +154,14 @@ export async function resolveControlTarget(
     // seed" for one command. Absent for an open mesh (no credential system) and for raw
     // off-registry creds (no seed to mint from) — both of which simply do not re-mint.
     ...(conn.auth ? { spaceAuth: conn.auth } : {}),
+    // The ROOT the mesh actually resolved to, and HOW. Carried for the same reason `spaceAuth` is:
+    // a caller that wants to name the root in an error must not re-derive it, or the sentence
+    // describes a different directory than the one the command used. `cotal attach` did exactly
+    // that (issue #722) and printed a refusal about a root it had not connected with.
+    // Both are absent for a RAW off-registry connection (`--creds`, or `--server` with an
+    // unregistered `--space`), which is a real state and not a gap to paper over: there IS no
+    // resolved root then, and a caller rendering one would be inventing it.
+    ...(conn.root !== undefined ? { root: conn.root } : {}),
   };
 }
 
@@ -208,7 +218,11 @@ async function askManagerEp(
   // standaloneConnectOpts handles all three auth shapes: static creds, the user bearer + sentinel
   // (client-chosen inbox nonce; the callout scopes the reply inbox on it), or BARE on an open
   // mesh (no credential system; the broker enforces nothing).
-  const nc = await connect({
+  // dialerFor, not the raw TCP connect: a user mesh reached through an HTTPS edge is a
+  // wss:// URL, and the node transport refuses those outright ("use the 'wsconnect'
+  // function instead") - which took `ps`/`stop`/`attach` down against every websocket
+  // broker while send and spawn (already routed through the dialer) worked.
+  const nc = await dialerFor(server)({
     servers: server,
     ...standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true }),
     maxReconnectAttempts: 0,
@@ -427,7 +441,11 @@ export type ScatterReply = { ok: true; instances: ScatterInstanceReply[] } | { o
  *  the scatter's TWO connections cannot drift in their connect options: they differ in credential
  *  and in nothing else. */
 async function withControlConnection<T>(server: string, auth: ControlAuth, fn: (nc: NatsConnection) => Promise<T>): Promise<T> {
-  const nc = await connect({
+  // dialerFor, not the raw TCP connect: a user mesh reached through an HTTPS edge is a
+  // wss:// URL, and the node transport refuses those outright ("use the 'wsconnect'
+  // function instead") - which took `ps`/`stop`/`attach` down against every websocket
+  // broker while send and spawn (already routed through the dialer) worked.
+  const nc = await dialerFor(server)({
     servers: server,
     ...standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true }),
     maxReconnectAttempts: 0,

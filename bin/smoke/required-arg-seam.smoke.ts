@@ -268,10 +268,13 @@ const check = (name: string, cond: boolean, extra?: unknown): void => {
  *  floor; see the population cells for why. */
 type Seam = { fn: string; key: string; sites: number; untypecheckedSites: number };
 const SEAMS: Seam[] = [
-  // 94/67 -> 95/68: one call site added under `smoke/`, in
-  // `packages/core/smoke/presence-watch-rebuild.smoke.ts`, which opens its own client to read the
-  // consumers a presence watch leaves behind. It states `tls`, so only the population moved.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 95, untypecheckedSites: 68 },
+  // 98/71 -> 101/74: three call sites added under `smoke/`, in
+  // `packages/core/smoke/delivery-reconnect.smoke.ts`, which opens membership-rw probes and a
+  // cleanup admin connection for the reconnect and terminal-shutdown lifecycle cells.
+  // Every site states `tls`, so only the deliberate population census moved.
+  // 101/74 -> 102/75: the remote-agent-bearer live smoke opens the already-enrolled managed
+  // actor with bearer+sentinel and an explicit plaintext-broker `tls: false` decision.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 102, untypecheckedSites: 75 },
 ];
 
 /**

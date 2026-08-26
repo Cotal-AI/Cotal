@@ -36,6 +36,7 @@ const ok = (condition: unknown, message: string): void => {
 function item(id: string, overrides: Partial<InboxItem> = {}): InboxItem {
   return {
     id,
+    recvKey: id,
     ts: new Date().toISOString(),
     fromId: `sender-${id}`,
     fromName: "sender",
@@ -67,14 +68,14 @@ class FakeMesh {
     return drained;
   }
 
-  drainInboxIds(ids: readonly string[]): ExactDrainResult {
-    const wanted = new Set(ids);
-    const drained = this.items.filter((value) => wanted.has(value.id));
-    this.items = this.items.filter((value) => !wanted.has(value.id));
+  drainInboxDeliveries(keys: readonly string[]): ExactDrainResult {
+    const wanted = new Set(keys);
+    const drained = this.items.filter((value) => wanted.has(value.recvKey));
+    this.items = this.items.filter((value) => !wanted.has(value.recvKey));
     this.drained.push(...drained.map((value) => value.id));
     for (const value of drained) this.pullOnly.delete(value.id);
-    const present = new Set(drained.map((value) => value.id));
-    return { items: drained, missingIds: [...wanted].filter((id) => !present.has(id)) };
+    const present = new Set(drained.map((value) => value.recvKey));
+    return { items: drained, missingKeys: [...wanted].filter((key) => !present.has(key)) };
   }
 
   channelMode(channel?: string): "quiet" | "muted" | undefined {
@@ -629,13 +630,9 @@ for (const assistant of [
       readLaunchMaterial(env[LAUNCH_MATERIAL_ENV]).userAuth?.owner === "owner",
       "user-mode identity is forwarded through the launch material",
     );
-    // Flipped with the env default: the child inherits the operator's environment, so the provider
-    // key and the unrelated variable arrive alike. Pi's own key list is gone; which providers the
-    // operator has credentials for is Pi's business and theirs, never a list this connector keeps.
-    // The per-session assertions above are what still contains this launch, and they got stronger.
-    ok(env.GROQ_API_KEY === "groq-test", "the provider key reaches Pi because the environment is inherited");
-    ok(env.UNRELATED_SECRET === "must-not-forward", "an unrelated operator variable is inherited like any other");
-    ok(!("COTAL_CREDS" in env) && !("COTAL_LIFECYCLE_UID" in env), "no per-session COTAL_* is inherited from this process");
+    ok(env.GROQ_API_KEY === "groq-test", "the declared provider key reaches Pi");
+    ok(env.UNRELATED_SECRET === undefined, "an unrelated operator variable is withheld");
+    ok(!("COTAL_CREDS" in env) && !("COTAL_LIFECYCLE_UID" in env), "ambient per-session COTAL_* is withheld");
     ok(Boolean(launch.control?.path && launch.control.token), "managed Pi launches expose cooperative control");
     const freshSessionAt = launch.args.indexOf("--session-id");
     ok(

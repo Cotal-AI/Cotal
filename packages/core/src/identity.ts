@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { fmtCreds } from "@nats-io/jwt";
 import { createUser, fromSeed } from "@nats-io/nkeys";
 
 /**
@@ -141,6 +142,18 @@ export function credsRenewalDelayMs(creds: string): number {
   const iatMs = (typeof claims.iat === "number" ? claims.iat : Date.now() / 1000) * 1000;
   const expMs = claims.exp * 1000;
   return iatMs + 0.75 * (expMs - iatMs) - Date.now();
+}
+
+/** Combine a host-signed user JWT with a locally held matching user nkey seed. The seed never
+ * crosses the authority protocol; this is the participant-side materialization step. */
+export function credsFromJwt(jwt: string, identity: Identity): string {
+  const claims = JSON.parse(Buffer.from(jwt.split(".")[1] ?? "", "base64url").toString("utf8")) as { sub?: unknown };
+  if (claims.sub !== identity.id)
+    throw new Error(`JWT subject ${String(claims.sub)} != local identity ${identity.id}`);
+  const kp = fromSeed(new TextEncoder().encode(identity.seed));
+  if (kp.getPublicKey() !== identity.id)
+    throw new Error(`local identity seed does not match ${identity.id}`);
+  return new TextDecoder().decode(fmtCreds(jwt, kp));
 }
 
 /** The full identity (id + seed) carried by a creds file — what a standing-renewal REMINTER needs:

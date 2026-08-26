@@ -118,7 +118,7 @@ export interface IdpBridge {
  *  posture as `validateUserToken`, minus the Cotal claim shape (an IdP token has no `ver`/`act`; its
  *  lifetime is the IdP's session policy — but it must expire and must not be post-dated). The `exp` is
  *  returned so `exchange` can CAP the minted Cotal bearer to the upstream proof's remaining life. */
-async function verifyIdpToken(token: string, idp: IdpConfig): Promise<{ sub: string; exp: number }> {
+export async function verifyIdpToken(token: string, idp: IdpConfig): Promise<{ sub: string; exp: number }> {
   const header = decodeProtectedHeader(token);
   if (header.jku !== undefined || header.jwk !== undefined || header.x5u !== undefined || header.x5c !== undefined)
     throw new Error("idp token: embedded key material (jku/jwk/x5u/x5c) is rejected - keys resolve only via the pinned JWKS");
@@ -208,6 +208,8 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
       const grant = await opts.authorizeActor(owner, req.actor);
       if (grant === null || typeof grant !== "object" || Array.isArray(grant))
         throw new Error("idp bridge: authorizeActor must return a grant object - anything else is a deny");
+      if (req.view === "manager-service")
+        throw new Error('view "manager-service" is not a bearer profile; use the typed manager-service authority exchange');
       if (req.view !== undefined) {
         // An elevated view is authorized against the FRESH grant just read, per the central
         // policy table (admin-gated operator views; spawn-gated deployer). The refusal names the

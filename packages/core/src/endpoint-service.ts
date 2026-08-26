@@ -1027,6 +1027,69 @@ interface AuthorizedServe {
 const AUTHORIZED_SERVE = new WeakMap<EpServeGrant, AuthorizedServe>();
 
 /**
+ * Reconstitute a serve artifact inside a TRUSTED host issuer after an explicitly typed remote
+ * registration protocol has independently proved the registered records/gate coordinates and
+ * digest-verified contract closure. This is not a caller shortcut: every field is validated here,
+ * the caller still needs the data-account signer to mint, and the issuance gate is the release
+ * fence. It exists because the normal brand is process-local and cannot cross the participant →
+ * host protocol boundary as JSON.
+ */
+export function authorizeTrustedServeSnapshot(args: {
+  space: string;
+  endpoint: string;
+  instanceId: string;
+  epoch: number;
+  owner: string;
+  registrationRevision: number;
+  nameAuthorityRevision: number;
+  commands: string[];
+  surface: Record<string, EpCommandAuthority>;
+  descriptor: DescribeDescriptor;
+  journalClass?: boolean;
+  pools?: string[];
+}): EpServeGrant {
+  spacePrefix(args.space);
+  endpointToken(args.endpoint);
+  const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
+  assertBoundedOwner(args.owner, "serve owner");
+  for (const [name, authority] of Object.entries(args.surface)) {
+    assertCommandToken(name);
+    if (!args.commands.includes(name))
+      throw new EpEnvelopeError("internal", `trusted serve snapshot surface carries undeclared command "${name}"`);
+    if (authority === null || typeof authority !== "object")
+      throw new EpEnvelopeError("internal", `trusted serve snapshot command "${name}" has no authority`);
+  }
+  const commands = [...args.commands].sort();
+  if (new Set(commands).size !== commands.length || commands.some((name) => args.surface[name] === undefined))
+    throw new EpEnvelopeError("internal", "trusted serve snapshot commands must be unique and each must have a surface entry");
+  for (const n of [args.epoch, args.registrationRevision, args.nameAuthorityRevision])
+    if (!Number.isSafeInteger(n) || n < 0) throw new EpEnvelopeError("internal", "trusted serve snapshot coordinates must be unsigned integers");
+  const pools = [...(args.pools ?? [])].map(assertPoolToken).sort();
+  const surface = Object.freeze(Object.fromEntries(Object.entries(args.surface).map(([name, value]) => [name, Object.freeze({ ...value, modes: Object.freeze([...value.modes]), traits: Object.freeze([...value.traits]) })]))) as Readonly<Record<string, EpCommandAuthority>>;
+  const journalClass = args.journalClass ?? commands.some((name) => surface[name].class === "journal");
+  const grant: EpServeGrant = Object.freeze({
+    space: args.space,
+    endpoint: args.endpoint,
+    instanceId,
+    epoch: args.epoch,
+    owner: args.owner,
+    registrationRevision: args.registrationRevision,
+    nameAuthorityRevision: args.nameAuthorityRevision,
+    commands: Object.freeze(commands),
+    surface,
+    journalClass,
+    pools: Object.freeze(pools),
+    descriptor: args.descriptor,
+  });
+  AUTHORIZED_SERVE.set(grant, {
+    space: args.space, endpoint: args.endpoint, instanceId, epoch: args.epoch, owner: args.owner,
+    registrationRevision: args.registrationRevision, nameAuthorityRevision: args.nameAuthorityRevision,
+    commands, journalClass, pools,
+  });
+  return grant;
+}
+
+/**
  * Authorize a serve credential against the REGISTERED service (§13.9: serving is granted
  * authority, dual to calling — the registry is discovery, the serve grant is the authority).
  * Runs inside the provisioner. The fence, in order:

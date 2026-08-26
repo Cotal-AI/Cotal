@@ -1,0 +1,24 @@
+{
+  "suite": "packages/core/smoke/manager-split-auth.smoke.ts",
+  "guard": "a minted agent credential can delete only its client-managed ordered consumers on the public presence and channel-registry KV streams",
+  "command": "pnpm smoke:manager-split",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/agent-watch-cleanup.json",
+  "mutations": [
+    {
+      "name": "drop the agent presence-watch consumer cleanup grant",
+      "file": "packages/core/src/provision.ts",
+      "find": "    `$JS.API.CONSUMER.DELETE.${KV}.>`,\n    \"$JS.FC.>\",",
+      "replace": "    \"$JS.FC.>\",",
+      "expectRed": "delete an ordered presence-watch consumer ALLOWED (watch reset/stop cleanup)",
+      "cell": "delete an ordered presence-watch consumer ALLOWED (watch reset/stop cleanup)"
+    },
+    {
+      "name": "drop the agent channel-registry-watch consumer cleanup grant",
+      "file": "packages/core/src/provision.ts",
+      "find": "    `$JS.API.CONSUMER.DELETE.${CHKV}.>`,\n",
+      "replace": "",
+      "expectRed": "delete an ordered channel-registry-watch consumer ALLOWED (watch reset/stop cleanup)",
+      "cell": "delete an ordered channel-registry-watch consumer ALLOWED (watch reset/stop cleanup)"
+    }
+  ]
+}

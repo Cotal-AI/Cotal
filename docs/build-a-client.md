@@ -102,7 +102,10 @@ map to.
    [§7](../SPEC.md#7-channels). Resolve a channel's effective `live`/`durable` class from channel
    config and use one resolution everywhere. On a `durable` channel, tolerate the at-most-once
    `live` gap, catch up from the durable backstop, and deduplicate by `id` across the live,
-   backfill, and durable copies. If durable membership can't be established, report *joined live
+   backfill, and durable copies. Receiver deduplication MUST NOT coalesce copies
+   solely because `id` is the empty string (SPEC §4). Duplicate surfacing is disclosed only on
+   at-least-once paths, and the publisher obligation to supply a unique string id (SPEC §5) is
+   unchanged. If durable membership can't be established, report *joined live
    with the backstop unestablished*, never *joined durable*. See
    [delivery-daemon.md](delivery-daemon.md) and [presence-and-delivery.md](presence-and-delivery.md).
 

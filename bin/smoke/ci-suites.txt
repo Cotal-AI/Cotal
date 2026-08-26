@@ -90,6 +90,7 @@ smoke:ep-serve-gate
 smoke:bind-fence
 smoke:unfenced-responder
 smoke:manager-service
+smoke:manager-service-authority
 smoke:manager-service-ops
 smoke:manager-service-invoke
 smoke:manager-spawn-action
@@ -125,6 +126,8 @@ smoke:sub-acl:auth
 smoke:self-serve-join:auth
 smoke:control-auth
 smoke:manager-split
+smoke:supervise-registered-user
+smoke:supervise-registered-user-authority
 smoke:cred-lifetime
 smoke:standing-renewal
 smoke:delivery-renewal
@@ -151,6 +154,10 @@ smoke:codex-args
 smoke:codex-host
 smoke:codex-dist
 smoke:codex-installed
+smoke:jcode-args
+smoke:jcode-host
+smoke:jcode-private-state
+smoke:jcode-security
 smoke:web-harness
 smoke:web-parts
 smoke:web-channel-authority
@@ -166,6 +173,13 @@ smoke:spawn-args
 smoke:own-agent-control
 smoke:views
 smoke:agent-file
+
+# Every persona this repo SHIPS declares the channels it reads, and the set of code paths that write
+# into the persona catalog is enumerated by output path rather than by function name. The writer
+# refuses a definition with no read set, but setup writes its personas as literal template strings
+# and never reaches it, so a template that forgot the field would ship an agent whose read set is
+# whatever the current default happens to be.
+smoke:persona-templates
 smoke:card-host
 smoke:attach-auth
 smoke:attach-host-persistence
@@ -202,6 +216,7 @@ smoke:adoption-proof
 smoke:adoption-swap-strand
 smoke:adoption-passive-preflight
 smoke:renewal-record-honesty
+smoke:component-health
 smoke:reload-deadline-queue
 smoke:adoption-doctor-e2e
 smoke:membership-rw-renewal
@@ -299,6 +314,7 @@ smoke:manager-deregister
 smoke:scatter-pinned-probe
 smoke:agui-close-run
 smoke:claude-events-arm
+smoke:claude-run-error
 smoke:events-grant
 smoke:spawn-foreground-events
 smoke:seat-input
@@ -339,6 +355,11 @@ smoke:agui-opencode-map
 smoke:agui-opencode-source
 smoke:opencode-events-arm
 smoke:opencode-events-reset
+smoke:opencode-run-error
+# Beside the swap rather than at the end, because it grades the other half of the same event: what
+# that session leaves on disk once the wire is settled. It spawns two processes of its own and holds
+# one drain past the swap bound on purpose, so it is the slower of the pair.
+smoke:opencode-events-release
 smoke:goal-follow
 smoke:required-arg-seam
 smoke:attach-stdin
@@ -389,5 +410,135 @@ smoke:spawn-env-config
 smoke:spawn-env-e2e
 smoke:hermes-launch-env
 smoke:env-isolate
+
+# `cotal attach` redeems with the seed the MESH resolved, never one walked up from the cwd (#722):
+# a real authed broker that trusts one chain, a fossil `.cotal` holding another, and the binary run
+# from each directory in turn. Gated because the regression it covers was invisible to every
+# existing suite: they all run from a checkout that IS the resolved root, where the two answers
+# agree.
+smoke:attach-auth-root
+smoke:manager-reconcile-startup
+
+# Historical channel ambient must never drive automatic turns (#775). Found on the first real
+# mesh join a jcode seat ever made: the live E2E mesh is seconds old, so no suite had ever
+# delivered historical=true into a host-mode drive loop, and the join backfill arrived as a
+# storm of user turns (119 digests, 0 assistant output, provider emergency compaction).
+smoke:history-flood
+
+# The delete route reads its request body under a hard cap so an unbounded client cannot balloon the process (#721).
+smoke:web-body-cap
+
+# The block that carries peer messages into a turn must name the order of operations, not just the
+# reply verbs (#782). Found by dogfooding a live jcode seat: told to write a file and confirm, it
+# sent the confirmation five seconds later with zero file tool calls and no file on disk, twice.
+# The old tail offered three ways to reply and never mentioned doing the work, at the exact moment
+# the model chooses its next action.
+smoke:injection-framing
+
+# The inbox overflow valve must not let channel volume silence directed mail (#791). pullOnly is
+# `!mentionsMe && historical` and mentionsMe comes from a forgeable payload field, so a peer that
+# stamped the victim's name on every flooded message made none of its traffic pull-only: eviction
+# fell through to the oldest entry, a waiting DM, and acked it unhandled. Plain ambient volume did
+# the same with no forgery. The suite shipped with #776 buffered 120 against MAX_INBOX 200, so it
+# never crossed this valve at all.
+smoke:inbox-overflow-directed
+
+# The optional remote-exchange face: a real auth-service with both listeners proves the public
+# four-route allowlist, capless credential proof, loopback negative control, immediate revocation,
+# public-only view refusal, Origin/body hardening, peer isolation and bearer refresh after expiry.
+smoke:remote-exchange:live
+
+# A remotely enrolled managed agent uses its already-issued actor token + sentinel to mint through
+# the pinned public exchange, then connects and publishes on the real broker with no local auth service.
+smoke:remote-agent-bearer:live
+
+# A restarted seat must resume the session it left, not silently start blank (#789). The host called
+# createSession unconditionally, so stop+respawn forked a new session and orphaned the transcript:
+# a live seat answered NO PRIOR CONTEXT about work in its own 112 KB journal, while the TUI, spawned
+# with --resume, showed a human the history the agent could not recall.
+smoke:jcode-session-resume
+
+# A seat must name the provider actually carrying its model, and refuse a provider-prefixed model id
+# at the boundary (#785). Measured: one route reported three identities - requested gemini-3.7-flash
+# under a cliproxy default, logged as prv:OpenRouter, died in a cursor_plugin_error - and none of the
+# three appeared in the roster, the spawn confirmation, or the manager exit line. RuntimeInfo already
+# carried provider and routes in the response the model check reads; they were discarded.
+smoke:jcode-route-identity
+
+# A provider stream stall can close the Jcode Harness API during an inbox-driven turn. The connector
+# must preserve the mesh seat and unacknowledged batch, make exactly one private replacement, attach
+# the same session, and accept subsequent mesh work; a failed recovery exits rather than looping.
+smoke:jcode-provider-disconnect
+
+smoke:orientation
+
+# A signing key must not expire unattended. The manager minted its session key once at boot with a
+# flat 24h window and handed back that frozen anchor forever, so any manager with >24h uptime lost
+# its session plane: every attach failed closed with "outside its validity window", recoverable only
+# by restarting the manager, which kills every live session. It happened three times in one day.
+# Failing closed is correct (SPEC 13.10); never renewing is the defect. Rotate early, keep the old
+# key verifiable across an overlap, and never drop the newest.
+smoke:anchor-renewal
+
+# A connector must never return — success or failure — while the private Jcode tree it launched is
+# still executing. The SDK's managed stop keys the daemon off a servers.json entry matching the
+# alias socket path verbatim, so a canonicalized entry or wiped registry is a silent no-op, and the
+# setsid daemon (plus its MCP child) outlives the seat: an unmanaged orphan holding the seat's
+# private home. The connector now proves the teardown from the seat's own records — bounded SIGTERM,
+# exact-PID/group SIGKILL escalation, throw rather than report clean when a PID survives.
+smoke:jcode-lifecycle
+# The un-ack reprieve has to end (#807). #793 stopped the overflow valve acking a directed message
+# it evicts so the broker can redeliver it once there is room - but an un-acked id can be handed
+# straight back into a still-full inbox and evicted again, forever, spending throughput while every
+# seat reports healthy. Same shape as #790 one layer down. Count evictions per id, give up after
+# five, and say so on stderr (never emit("error") - with no listener that kills the seat).
+smoke:overflow-churn-bound
+
+# The auth-service serves the mesh discovery document `cotal meshes add --from` registers from, and
+# nothing had ever fed the server's ACTUAL bytes to that consumer: the producer's smoke asserted the
+# fields it had just written, and the consumer's smoke fed itself a hand-written fixture. The shape
+# defect that hid there (a flat document with no `userAuth` and no `provider`, refused with "a
+# provider name is required") is fixed, but the untested seam is the reason it shipped. This suite
+# is the crossing: live daemon, fetch over the wire, raw bytes into the shipped consumer — and it
+# grades the served provider name against the REGISTERED provider's own name, so the two cannot
+# drift back apart behind a re-hardcoded literal.
+smoke:discovery-bundle-consumable:live
+# A failed jcode turn must not become a hot loop (#790). The batch is acked only on success, so a
+# failure leaves pendingWake() positive and the finally re-drives the SAME batch instantly - one
+# stalled turn re-paid the full injection 62 times. The codex host has had scheduleErrorRetry the
+# whole time; this grades the same rule for jcode: growing delay, ceiling, one timer, give up.
+smoke:jcode-retry-policy
+# When a seat leaves, the manager must say WHY. A live supervisor lost several seats while it kept
+# running and its log carried no per-seat exit line at all, so "the supervisor reaped them" and
+# "they died on their own" were indistinguishable after the fact. Two different facts are required:
+# which path gave up the slot, and what the runtime saw when the child ended — and a runtime that
+# cannot see the exit must say so rather than print a fabricated code 0.
+smoke:seat-exit-cause
+smoke:empty-id-ingest
+smoke:hermes-empty-id
+# A manager that may no longer SERVE must not destroy the agents it was serving. The lease-loss exit
+# path did both in one act: it hard-stopped every managed child and deprovisioned its credential and
+# durables. Stopping serving is the right conclusion there; killing the seats is a separate act that
+# a connectivity fact does not license. Four occurrences on the live space "main" reached the
+# neighbouring branch and survived only because the lease re-read answered.
+smoke:detach-not-teardown
+# Appended at the end per this file's own rule: the cell has no ordering dependency, and appending
+# is what keeps two branches adding suites from conflicting. It is the end-to-end half of a guard
+# whose ingest half runs earlier as `smoke:cross-path-dedup`: that one drives hand-built deliveries
+# into the dedup branch, this one proves the CONNECTOR's boot window recovers over a real broker.
+smoke:claude-boot-wake
+# Control commands resolve ws:// / wss:// meshes too. Exercise the real CLI against one broker's
+# websocket and TCP listeners so raw node-transport regressions name their `wsconnect` refusal.
+smoke:control-transport-dial
+# A manager restart killed mid-barrier left the issuance gate frozen, and the successor refused
+# SPEC 13.8 until an operator ran reconcile-gate (#783 item 3 / #871). Boot now completes that
+# same dead registration when the freeze-holder is gone under a complete CONNZ sweep. Appended
+# at the end: no ordering dependency, and appending keeps two branches from conflicting.
+smoke:boot-self-heal-gate
+# A Claude seat must receive CLAUDE_CODE_OAUTH_TOKEN (the credential docs/deploy.md promises) and
+# must not receive CLAUDE_CODE_CHILD_SESSION. The allowlist that closed #866 dropped the token
+# because this connector declared no providerKeys; a container has no Keychain to fall back to.
+smoke:claude-launch-env
+smoke:web-console-auth
 smoke:no-implicit-general
 smoke:session-channels

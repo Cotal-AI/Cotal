@@ -236,6 +236,19 @@ export function loadAgentFile(path: string): AgentDef {
 export function saveAgentFile(path: string, def: AgentDef): void {
   if (!def.name) throw new Error('saveAgentFile: "name" is required');
   assertValidName(def.name);
+  // The read set must be SAID, not inferred. A persona saved without one used to inherit a channel
+  // nobody chose, and the file gave a later reader no way to tell a deliberate silence from a
+  // forgotten field. Refusing here rather than filling in an empty list keeps that distinction:
+  // auto-filling would turn every omission into a declaration and destroy the difference for good.
+  //
+  // This is the writer, so it binds every caller that builds a definition and saves it, including
+  // ones added later. It cannot see a file written as literal text, which is why the shipped
+  // templates are asserted separately.
+  if (!def.subscribe)
+    throw new Error(
+      `saveAgentFile: "subscribe" is required for "${def.name}" - list the channels it reads, ` +
+        `or [] for none (an agent with no channels is still reachable by direct message and anycast)`,
+    );
   // Build the frontmatter mapping in read order, then serialize with the `yaml` library — it owns
   // all quoting/escaping (a value with a `:`/`#`/`[`/quote round-trips safely, which the old
   // hand-rolled writer had to special-case). `lineWidth: 0` keeps scalars on one line (no folding).
@@ -244,9 +257,14 @@ export function saveAgentFile(path: string, def: AgentDef): void {
   if (def.kind) fm.kind = def.kind;
   if (def.description) fm.description = def.description;
   if (def.tags?.length) fm.tags = def.tags;
-  if (def.subscribe?.length) fm.subscribe = def.subscribe;
-  if (def.allowSubscribe?.length) fm.allowSubscribe = def.allowSubscribe;
-  if (def.allowPublish?.length) fm.allowPublish = def.allowPublish;
+  // The three channel-policy fields emit whenever they are SET, empty included: an empty list is a
+  // declaration ("no channels"), not an absent one, and the two are different states a reader and a
+  // future default can tell apart. Gating these on `.length` made a load-then-save silently rewrite
+  // an explicit `subscribe: []` into an omitted field, so a persona that declined every channel came
+  // back from a redefine indistinguishable from one that never named the field at all.
+  if (def.subscribe) fm.subscribe = def.subscribe;
+  if (def.allowSubscribe) fm.allowSubscribe = def.allowSubscribe;
+  if (def.allowPublish) fm.allowPublish = def.allowPublish;
   if (def.quiet?.length) fm.quiet = def.quiet;
   if (def.muted?.length) fm.muted = def.muted;
   if (def.model) fm.model = def.model;

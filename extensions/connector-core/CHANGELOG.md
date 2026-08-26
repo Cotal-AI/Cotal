@@ -1,5 +1,457 @@
 # @cotal-ai/connector-core
 
+## 0.32.0
+
+## 0.31.0
+
+### Minor Changes
+
+- 4ef59c3: A spawned seat now receives a constructed environment (PATH/HOME/locale, the machine-wide COTAL\_\* knobs, connector-declared provider keys) instead of the manager's ambient environment. Host-session markers such as CLAUDE_CODE_CHILD_SESSION no longer leak into seats and silently disable transcript saving. The Claude connector declares CLAUDE_CODE_OAUTH_TOKEN (and the rest of claude's documented credential set) so a container seat still authenticates; spawn.env remains the explicit opt-in for extra names, including a host marker a persona has chosen to receive.
+
+## 0.30.2
+
+### Patch Changes
+
+- 2395efd: A manager that died mid-registration left the issuance gate frozen, and the successor refused to
+  register until an operator ran `cotal reconcile-gate`. Boot now completes that same dead
+  registration itself when the freeze-holder is affirmatively gone under a complete CONNZ sweep
+  (`gone` and `sweepComplete=true`), then continues the normal takeover. Live, unknown,
+  unestablishable, and wrong-op-kind still refuse; there is no TTL.
+
+## 0.30.1
+
+### Patch Changes
+
+- aea08f9: Allow agents to clean up their presence and channel-registry ordered consumers, wait for real mesh readiness before opening Codex, and collapse repeated endpoint errors.
+
+## 0.30.0
+
+### Minor Changes
+
+- 569f4d3: An empty message id is never a dedup key, and an id-less delivery is individually addressable at the drain seam.
+
+  Two distinct messages that each carry an empty id collapsed to one: the receiver-side id
+  dedup read empty-equals-empty as a duplicate, silently dropped the second, and once the
+  first was handled it dropped every later empty-id message on arrival. Measured live, two
+  such messages arrived on the wire and only the first was ever delivered.
+
+  An empty id is now treated as no id: the ingest coalescing (pending, handled, protected)
+  is skipped for it in both directions, so distinct messages that carry an empty id are all
+  delivered. At the drain seam a per-delivery receive key (the wire id when there is one, a
+  per-session secret-namespaced minted key when the id is empty, never on any wire) is what
+  hosts, adapters, and the exact-key drain select by: cotal_inbox, the Claude Code hooks,
+  the OpenCode plugin, the Codex host, the Hermes bridge and its Python sidecar, and the pi
+  driver. The drain API is renamed for what it takes (drainInboxDeliveries, missingKeys).
+  Eviction classification, in-flight holds, scope routing, the focus-recall tie-break, and
+  the scoped drain's selection no longer key on the empty id either. The Hermes bridge no
+  longer wedges on an empty-id message. Delivery pumps in core now treat an absent or
+  non-string id as a malformed envelope per SPEC section 5 (durable terminate, live drop,
+  history and recall skip).
+
+  What this restores: before the receive key, an id-less delivery was unaddressable: the
+  raw id swept every pending empty-id item in one drain call, and once filtering closed
+  that, the item could never be drained or acked, was re-shown on every windowed inbox
+  read, and on a durable channel accumulated as an unretirable entry until the 200-entry
+  overflow valve evicted it, roughly a model turn of churn per entry, while one hostile
+  empty-id ambient publish self-drove back-to-back host turns on the pi adapter. This was
+  a violation of the SPEC section 8 ack-only-after-surfaced obligation at the receiver,
+  not only an adapter defect.
+
+  The cost is stated rather than hidden: with no id there is no coalescing either, so a
+  redelivered copy of an empty-id message can surface twice on a path that is already
+  at-least-once (live remains at-most-once). Dedup for real ids is unchanged: their
+  receive key is their wire id and their coalescing is untouched. SPEC section 4, section
+  7 item 5, section 8, and section 12 item 12 now state the receiver-scoped rule, and the
+  client-builder guidance mirrors it.
+
+  One named follow-up stays open: Plane-3 durable fan-out derives its publish msgID from
+  the message id, so distinct empty-id messages can still be collapsed inside the broker's
+  duplicate window on a durable channel before this receiver sees them. That path is its
+  own issue; this change's guarantee is the receiver.
+
+### Patch Changes
+
+- 68a8041: The inbox overflow valve now gives up on a directed message that keeps cycling. Leaving a
+  sacrificed directed message un-acked lets the broker redeliver it once there is room, which turns
+  permanent loss into a delay - but an un-acked id can be handed straight back into a still-full
+  inbox and evicted again, indefinitely, spending broker and connector throughput while every seat
+  involved reports healthy. Evictions are now counted per id and the reprieve ends after five, acking
+  the message and reporting the drop on stderr. The tally clears whenever a message is actually
+  handled, so one that eventually lands never carries history toward the cap, and the bookkeeping
+  itself is bounded so tracking churn cannot become a leak.
+- c6db901: The auth provider name is one exported constant shared by the provider and the discovery bundle, and the seam between the served document and the consumer that registers from it is now tested live.
+
+  The auth-service's public face serves `/.well-known/cotal-mesh`, and that document is exactly what
+  `cotal meshes add --from <origin>` fetches and registers from. The document's shape was fixed
+  separately; what was still held only by agreement is the provider NAME. It appeared as a bare
+  `"cotal"` literal at three sites, two of which are the two ends of one contract: the name the
+  registered `AuthProvider` answers to, and the name the served document advertises. A document naming
+  a provider other than the one serving it parses cleanly — the consumer requires a provider name, not
+  any particular one — and registers an entry that resolves to nothing. Those sites now read a single
+  exported `AUTH_PROVIDER_NAME`.
+
+  The regression guard lives at the composition root (`bin/smoke/discovery-bundle-consumable`), which
+  is the only tier permitted to import both the auth daemon and the CLI's consumer — the seam the
+  original defect hid behind is precisely the boundary those two packages may not cross directly. It
+  starts a real auth-service against a real broker and IdP, fetches the document over the wire, and
+  hands the raw bytes to the shipped `checkUserBundle`. Nothing in it constructs the shape it hopes to
+  see. That crossing is the part that had never existed: both sides had passed review because each
+  side's own tests build the shape that side expects, so the producer's smoke asserted the fields it
+  had just written and the consumer's smoke fed itself a hand-written fixture.
+
+  The provider-name cell compares the served name against `cotalAuthProvider.name` — the registered
+  provider's own identity — rather than against a string the test also chose, so it grades the outcome
+  (the two names agree) instead of the mechanism (both sites read one constant). Grading the mechanism
+  would pass a tree where both sites moved together, which is the failure this is for.
+
+  Scope, stated exactly: this unifies the provider name and proves the served document parses. It does
+  not change the document's shape or its fields, and registration applies further gates after that
+  parse — `checkServer`, TLS intent, and the dial policy on the bundle's `server` — so a deployment
+  that cannot publish an honestly dialable broker coordinate is still not registrable, and nothing
+  here weakens those gates or invents a coordinate to satisfy them.
+
+- 3443c57: Stabilize Jcode startup around asynchronous MCP registration: retry the mandatory orientation proof once, preserve loud refusal when it remains unavailable, open the foreground TUI during readiness, and issue the stale-orientation notice only after a completed mesh join.
+- 196dddb: Spec text plus one corrected source comment, carried into the embedded docs bundle: the `goaleff` and `epname` value
+  machines are now stated in the wire spec (phases, states, legal edges, per-phase field sets,
+  actor roles, and the rule that a settle requires the goal's terminal fact to exist first),
+  and three key-authority claims are corrected. `epmig` records cutover runs and supplies key
+  material nowhere else, so the `goaleff` generation token is the accepted submission's EPJ
+  `sourceSeq` and only that. `goalidx` gets its writer named as the goal-writer principal
+  rather than the bare commit principal. `effect` is marked as reachable only under
+  `protocol.v: 2`. The spec also now says explicitly that it does not decide which principal
+  may act as a sweeper, rather than leaving that to be inferred from a role name. The `epmig` record
+  kind's own source comment carried the same wrong claim the spec sentence corrects, and is fixed in
+  the same change so the two cannot drift apart again.
+
+## 0.29.2
+
+## 0.29.1
+
+## 0.29.0
+
+## 0.28.2
+
+## 0.28.1
+
+## 0.28.0
+
+### Minor Changes
+
+- a71fbd3: A failed turn is published as a run error, so a reader of an event plane can tell a turn that failed from a turn that finished.
+
+  Every connector used to close a run with `RUN_FINISHED` whichever way the turn ended, including a
+  turn its own harness had already classified as failed. `RUN_ERROR` was in the vocabulary, the
+  bracket machine accepted it as a close and the dashboard rendered it, but the shared close path had
+  no way to say it.
+
+  The close on the shared emitter and holder now takes an optional failure, and two connectors supply
+  one from a record they actually receive. Claude Code ends a failed turn on its own `StopFailure`
+  hook, and that turn now closes with `RUN_ERROR` carrying the harness's error kind (`rate_limit`,
+  `billing_error`, `server_error` and the rest) as the code. OpenCode reports a dead turn on
+  `session.error`, and that turn now closes with `RUN_ERROR` carrying OpenCode's own error name and
+  reason, except a turn a person stopped, which arrives on the same event and is not a failure.
+
+  The shared close also bounds that failure detail. Upstream free text (`error_details`,
+  `data.message`) can encode past the live frame ceiling; packing it as-is used to refuse the close
+  before any terminal became durable and then permanently kill the holder. The close now rebuilds the
+  one `RUN_ERROR` so it fits, keeps the code, and the emitted message says the original detail was
+  omitted or shortened because of the bound. A short message is unchanged. There is no second protocol
+  and no per-connector size table: every producer already goes through this close.
+
+  Deliberately not built: connector-specific caps, a second close method, preview-plane truncation on
+  the durable path, and any change to `packUnits`'s fail-loud rule for source observations. Those would
+  not close this hole and would duplicate a contract that already has a caller.
+
+  Migration: nothing is removed and no existing call changes shape. A consumer that only handles
+  `RUN_FINISHED` now sees fewer of them on failing sessions; the event type it needs to also handle
+  has been part of the vocabulary and accepted by the bracket machine all along.
+
+- 86f6b10: Remove the implicit `general` channel floor: undeclared access now grants nothing
+
+  An agent that declared no channel access used to fall back to `["general"]` for its
+  active read set and read ACL. That floor was applied in seven places — the provisioner,
+  the agent-file loader, the manager's spawn path, the CLI's `spawn`, the connector's
+  config resolver, and the endpoint's own channel list — so an agent with no frontmatter
+  silently joined a channel nobody had granted it.
+
+  The fallback also could not see the credentials it was guessing against. On a manifest
+  spawn the materialized persona carries no access frontmatter, so the connector fell back
+  to `general` while the minted creds allowed only the manifest's channels; the broker then
+  refused the subscription and the agent joined nothing, with no error naming the cause.
+  `COTAL_SUBSCRIBE` forwarding was added to paper over exactly this.
+
+  Undeclared read is now empty, matching the repo's no-fallbacks rule and the existing
+  default-deny on `allowPublish`. `Endpoint.send()` throws instead of defaulting to
+  `general` when the endpoint is on no concrete channel — a caller that never declared a
+  channel now gets a loud error rather than a message delivered somewhere it never asked
+  for.
+
+  The seeded personas change with it: `default_agent` no longer auto-subscribes to
+  `general` and no longer carries a wildcard post ACL (`allowPublish: [">"]` → `[]`,
+  default-deny), and the demo personas move to their own `welcome` channel. Channels are
+  implicit — created on first use — so no channel provisioning is required.
+
+  Breaking for anyone relying on the implicit floor: an agent that read `general` without
+  declaring it must now declare it.
+
+- 7bc71ab: Serialize the top-level session swap. The plugin bus does not await the event handler, so a second
+  top-level session created while the first swap is still draining captured the same holder to
+  retire and installed its replacement over the first one. The dropped replacement had already been
+  adopted, which is where its write-ahead log and subject frontier are opened, so it was orphaned
+  with an open handle and the session it held left a run open on the wire with nothing reporting it.
+  The holder they both replaced was drained twice.
+
+  Swaps now run one at a time, so each reads a holder that is installed and no longer being retired
+  underneath it, and the chain carries the absorbed tail of each swap, so the next one still runs
+  after a failed drain.
+  Installed rather than settled: a swap waits for the holder it RETIRES, not for the one it installs,
+  whose adoption is still starting when the swap resolves.
+  The connector also logs a retirement the way it already logs an adoption, which is what makes a
+  retirement that never happened visible at all.
+
+  Serializing the swap was not enough on its own, because the session id and the holder that serves
+  it are two separate things and an event could arrive while they disagreed. Ordering them only moved
+  the window: with the id assigned before the drain, an event in the gap was carried by the new id
+  into a holder still bound to the previous session, and that holder refuses a second session
+  permanently, so the event plane died rather than skipping a frame. Event work is now routed by
+  asking the holder what it is bound to, so an event reaches a holder only when that holder already
+  serves its session or serves nothing yet.
+
+  A session that OpenCode attaches to, rather than creates, is also covered. The first event of such
+  a run arrives before any session was created, and it now reaches the event plane instead of being
+  dropped, so an attached session publishes from its first turn rather than staying silent until the
+  next reset.
+
+  Stopping a seat is now a teardown rather than an exit. The cooperative stop and the editor
+  unloading the plugin run one shared routine, so neither can drift from the other, and it attempts
+  the offline publish in front of the join rather than behind it: a supervised seat is hard killed after
+  its runtime's grace window, so presence queued behind a long drain is the thing that gets lost.
+  Queued event work is then given a bounded chance to settle inside whatever time the runtime leaves.
+
+  Once that routine has begun, the connector starts no turn of its own, admits no hook work, and
+  runs no `cotal_*` tool call. That first part now holds for a drive that was ALREADY PAST the check
+  as well, which it did not before: the guards were read once, session creation was awaited, and
+  nothing looked again, so a turn admitted while the seat was healthy could be submitted after
+  departure had published. The phase condition is one predicate now, read on the way in and again on
+  the way back from that await, and a drive refused there consumes nothing, so the batch is still in
+  the inbox for a later wake in the same process.
+
+  Separately, the operator's spawn prompt is no longer lost when something else gets in front of it.
+  The boot task used to clear the prompt and then ask for a turn; if a natively submitted prompt had
+  already made the session busy, that request returned early and the text was gone. The text is now
+  cleared only once it has actually been submitted, and it counts as pending work everywhere the
+  connector asks whether there is anything to drive, so being beaten to the session costs a retry
+  rather than the prompt. What it does NOT do is cancel the editor. A hook steers
+  OpenCode by mutating its `output` argument rather than by what it returns, and `chat.message`'s
+  output carries no field that cancels or skips a turn, so a prompt submitted natively through the
+  editor or its API still starts one. Whether that turn's events reach the plane is timing rather
+  than a rule: the endpoint stays up until the end of the routine, so work already queued can still
+  settle, while work arriving after the fence closes is refused. The refusals are stated as a condition on the state rather than as a list of the callers
+  they cover, which is what let the earlier versions through: a turn could still be started by the
+  deferred drive a swap fires when its own cutover completes, a late presence event could put a seat
+  back on the mesh it had just left, and a tool call already inside the model's turn had no way to
+  know a stop was running. A refused tool call says so rather than returning nothing, because its
+  caller is waiting on a result and silence would read as a hang.
+
+  The same loss had one more door, and that one is a failure rather than a refusal. Every refusal
+  above leaves the drive through a guarded return, where the input it was carrying is put back by
+  hand. A submission the host rejects leaves through the error path instead, and that path put nothing
+  back. It looked safe only because most inputs are parked somewhere else already: the wake for an
+  @mention in focus is not, because its body is acked at ingest and stays recallable while the wake
+  itself lives only in the string handed to that one drive. So a rejected submission destroyed the
+  wake, and the retry that exists for exactly this case then saw no pending work and did not run,
+  leaving a seat that was never told to go and look. The error path now parks its input like every
+  other exit, so a failed submission costs a retry rather than the wake.
+
+  One slot, and one caller clearing another caller's wake. The three exits above each put their input
+  back by hand, but they all put it in the SAME place, and the clear that runs after a successful
+  submission sat on the far side of an await. A drive parked in session creation had read its input
+  before that await; a second caller then reached the entry guard, parked its own wake in that slot and
+  returned; and when the first call finally submitted, it emptied the slot on the strength of what IT
+  had taken. That is a lost update across an await, and it destroyed a wake that arrived through
+  exactly the guarded exit these changes exist to protect. The clear is now ownership checked, by
+  generation rather than by value, because the nudge names the sender and not the message, so two
+  mentions from one sender are byte identical and comparing them would report "still mine" about
+  someone else's input.
+
+  A wake could also be destroyed before it ever reached that slot. The handler for an @mention in
+  focus declined to ask for a turn while one was already running, which is the right thing to do one
+  handler above it, where the message is buffered in the inbox and the next turn picks it up. This
+  one has nothing buffered behind it: the body is acked and dropped as it arrives, so the nudge is
+  the only copy, and declining did not defer it, it discarded it. The turn then ended, found nothing
+  pending, and the seat was never told it had been mentioned at all. That wake is now handed over
+  whatever the seat is doing, so a busy seat parks it and drives it when the turn ends.
+
+  What that does and does not promise, stated narrowly on purpose. It does NOT prevent message loss:
+  an @mention in focus is acked at ingest, and where the channel permits replay its body stays
+  recallable from the server, so the content was never riding on the wake. Where a channel denies
+  replay, the body is gone by that channel's own policy and no wake can bring it back; the connector
+  deliberately does not buffer it, because doing so would hand a seat in focus history that the
+  channel refuses to everyone else. What this prevents is a caller's wake being erased, whether by an
+  unrelated call's clear or by a handler that never passed it on. One slot is the design rather than
+  a limit: a later wake overwriting an earlier one costs nothing, because any single wake that fires
+  makes the seat pull its inbox and recover whatever that channel will give back, while emptying the
+  slot entirely means no pull is ever triggered. The invariant is that at least one wake survives to
+  fire, not that every wake is kept.
+
+  Departure is also ordered behind the work the seat has already admitted, for as long as a short
+  bound allows. A presence write is not atomic, so a call admitted before the stop could be parked
+  mid-write while the teardown published offline, and then put the seat back to work after it had
+  announced it left; on the wire, a roster read `working` after `offline`. The teardown now waits,
+  briefly, for interactive work it has already admitted before it attempts departure, and joins the
+  slower event work afterwards as it already did. Event work is deliberately not in that wait,
+  because waiting on a drain is what publishing departure early exists to avoid.
+
+  That wait is for the whole admitted set rather than for the first thing to happen to it, and it says
+  so with `Promise.allSettled` rather than by absorbing each call by hand. The hand-rolled version was
+  the same defect one level up: a map can absorb SOME elements, and a review proved by live mutation
+  that absorbing only the two ends passed every cell the suite had at the time. The primitive waits for
+  every element and never rejects, so partial absorption is no longer a state this code can be in.
+
+  That wait is bounded below the shortest runtime grace window, which is what leaves room for
+  departure to be published before a hard kill under ordinary conditions. It is a margin rather than
+  a guarantee: the publish itself has no deadline, so a slow write in the time the bound leaves is
+  lost with everything else the kill takes. The other tradeoff is stated rather than implied: a
+  straggler that outlives the bound is not cancelled, so it can still complete after departure has
+  been published.
+
+  A wake that arrived before the boot prompt used to starve both of them, permanently and silently.
+  The two share one slot: the boot text was carried only when that slot was empty, so a focus
+  @mention landing while the boot task was still waiting for the session parked the nudge, and the
+  boot task's own request then read that nudge, put it straight back and returned. Nothing could
+  empty the slot afterwards, because emptying it takes a submission, a submission takes the boot text
+  cleared, and clearing it takes the submission that had just been refused. The seat stayed online
+  with nothing logged and no retry scheduled, and it went deaf: the spawn prompt, the wake, and every
+  later connector-submitted turn including a directed message were all lost for the life of the
+  process. Against the previous release this was a regression, which lost the wake and still
+  submitted the boot. The two now go out together in one turn rather than competing for the slot. The
+  boot floor says the operator's prompt is the first turn this connector submits, and a wake says
+  only that the seat should go and look, so there is nothing to order between them.
+
+  The event plane also gives back what a session took on disk, which is the other half of a `/new`
+  and the half that is not visible on the wire. Two things are created for a session that publishes
+  events and they have different lifetimes, so they are released differently.
+
+  The principal lock is per principal and per workspace, shared by every session of that agent. It
+  was taken and never given back: the connector read the location it came with and dropped the lock
+  itself, so nothing in shipped code released one. The record then went on naming a process that was
+  alive and no longer publishing, and a REPLACEMENT process for the same principal was refused its
+  own event plane. It is now released at the final event teardown and only there, since a `/new`
+  must keep it for the session that follows. Both ways out reach that teardown, so the editor
+  unloading the plugin while its host keeps running releases it exactly as a supervised stop does.
+
+  A session's write-ahead log is per session and its lifetime is stated rather than assumed, because
+  a log exists so a later start can recover what was not yet published and deleting one early
+  destroys exactly that. A retired session's log is removed once its run has been closed on the wire,
+  AND the drain that closed it settled rather than spending its bound, AND the log holds no frame the
+  broker never confirmed. Either of the last two keeps it, for different reasons that the connector
+  distinguishes in what it logs: an abandoned drain is uncancelled and may still be writing, while a
+  pending frame is the one thing only a later start reading that file can settle. The live session's
+  log survives teardown, because a teardown is not a retirement: nothing has told an observer that
+  thread ended, and a start that adopts it again is the case the log is for. So a process leaves one
+  log directory behind rather than one per `/new`.
+
+  `@cotal-ai/connector-core` gains a close on the emitter holder to go with that. Retiring a holder
+  was a dropped reference rather than an act: it refused nothing afterwards, and a late hook could
+  still start or pump an emitter its owner had finished with. Closing refuses admission and then
+  joins what is already queued. It cancels nothing and releases no durable state, because the log's
+  lifetime and the lock's are the connector's to decide and not the holder's.
+
+- a999a98: The advertised tool surface and the orientation card now gate on **authenticated**, not on "has static creds", so a user-auth agent is no longer told it can spawn.
+
+  `cotal_spawn` and `cotal_persona` ride the `spawn` capability, and the gate read `!config.creds` as
+  "open mode". That was true while there were two identity states. There is now a third: user-mode
+  auth. It carries no static creds by construction; the pair is refused at parse, at launch, and
+  at connect, one launch carrying one identity plane. So `!config.creds` was always true on a user-auth
+  agent, and every agent on a user-auth mesh was advertised both manager-op tools whatever its
+  capabilities. The wire still refused the call, so nothing could be done with them; what broke is the
+  guarantee the gate exists to keep, that an agent sees these tools only when it can actually use them
+  rather than discovering the denial by trying.
+
+  The orientation card was wrong twice on such a mesh. It listed both tools, and its access line said
+  `open mode (grants advisory, host-trusted)` for a mesh whose grants are broker-enforced. The tool
+  list is corrected by the wire the moment an agent tries; a card that misstates the security posture
+  is corrected by nothing.
+
+  Both sites now call one exported predicate, `isAuthed(config)`, mirroring the endpoint's own
+  open-vs-auth gate, so a third identity plane is one expression to change rather than a search.
+  `token` / `user` / `pass` are deliberately excluded: shared-token auth carries no owner+actor grant
+  and no per-agent publish ACL, so the broker gates nothing per agent for it and hiding the tools there
+  would be the same untruth in the other direction.
+
+  Open mode is unchanged in both directions: no identity plane means everything stays visible, exactly
+  as before.
+
+  Migration: an agent on a user-auth mesh without the `spawn` capability no longer sees `cotal_spawn`
+  or `cotal_persona`, and its orientation card now reports auth mode. Granting the capability restores
+  both. Static-creds and open-mode agents are unaffected.
+
+- 316f84d: Cap the dashboard delete route's request body at 8 KiB.
+
+  `POST /api/channel/delete` read its body with no size limit and no look at `content-length`, so the
+  ceiling on a request was the process heap: a 30 MB post was read in full, answered with a 70 MB
+  refusal, and cost 1.39 GB of peak RSS before the route formed any opinion.
+
+  The read now refuses at the threshold with a `413` naming the limit and the size that met it, on
+  both the declared length and the bytes as they arrive, so a body with no declared length is capped
+  too. It is never truncated to fit: a shortened channel name is a name the caller did not send, which
+  is the aliasing shape this route's validator already exists to refuse. Bodies under the cap, extra
+  fields included, are untouched.
+
+  The refusal also closes the connection the oversized body arrived on. Without that, a caller asking
+  to keep the connection alive still got to send every byte, because the server reads the rest of a
+  body to get the socket back for reuse: the refusal was early but the work was not bounded. Ordinary
+  within-cap requests keep their connection and their socket stays reusable.
+
+  `@cotal-ai/connector-core` is listed because it ships the docs bundle, which embeds the page this
+  change updates and is regenerated here. Its only diff is that regenerated file.
+
+### Patch Changes
+
+- 29c5268: A peer flooding a channel can no longer silence directed mail. The inbox overflow valve sacrificed
+  pull-only backlog first, but pull-only requires a non-forgeable signal it did not have: it is
+  `!mentionsMe && historical`, and `mentionsMe` is read from the payload `mentions` field, which the
+  sender controls. A peer stamping the victim's name on every flooded message made none of its traffic
+  pull-only, so eviction fell through to the oldest entry, which is the message that had been waiting
+  longest, and acked it without marking it handled - unrecoverable, since the broker then never
+  redelivers. Ordinary ambient channel traffic at volume did the same with no forgery at all.
+
+  Eviction now prefers channel traffic over anything addressed to this agent, reading directedness
+  from the subject-derived `kind` rather than from the payload, and a directed message that must be
+  sacrificed is left un-acked so it can be redelivered. Channel ambient is still acked, because
+  replaying it is what the earlier history flood was.
+
+- b8ee849: Announce the operator-global seed-store payload write, and its deletions, on the provenance channel. `cotal up` and the built-in-connector reconcile re-seed `~/.config/cotal/seed/store/<version>`, which is a machine-wide action (shared by every space, project directory, and checkout on the machine, moved only by `$XDG_CONFIG_HOME`), yet the store write was previously silent. It now emits a `wrote operator-global seed store payload` provenance line naming the path on each materialization, so re-seeding from a non-released checkout reads as the machine-wide write it is. The idempotent reuse path stays silent.
+
+  The same reconcile also garbage-collects unreferenced store generations, and that was silent too. A new `removed` verb on the provenance channel names every directory the collector deletes, because a silent delete is worse than a silent write: the write at least leaves the thing it made, while the delete leaves nothing to notice. The announce rides stderr with no failure policy, so a closed stderr keeps the write and loses the line; that bound is stated at the call site and in the config reference, which also documents the isolation mechanism.
+
+  The config reference that documents all of this ships inside the connector as well as in the docs tree, so the regenerated documentation bundle carries the same text: an agent asking `cotal_docs` for the configuration page now gets the announce, the removal announce, and the stderr bound along with everything else that page already said.
+
+- 1f44ca6: Add an optional reverse-proxy-facing auth exchange listener with generated mesh discovery, credential-based public proof, isolated throttling, and `cotal up --user-auth` configuration.
+- 4f7747f: The block that carries peer messages into a turn now names the order of operations rather than only
+  the reply verbs: do the work with your own tools, verify it, then reply, and never report an action
+  that was not performed. A delivered peer message is frequently a work order, and its tail arrives at
+  the moment the model chooses what to do next, so a reply-only tail reads as an invitation to answer
+  instead of to act.
+- e26f4d1: Allow an already-granted managed agent to refresh its bearer through a pinned HTTPS public exchange URL without local auth-service state or capability material.
+- 200a93f: Enable remote user-auth mesh registration now that managed agents can consume the recorded pinned exchange and sentinel through the remote bearer client. Remove the temporary development-only registration hatch and its fail-closed sequencing refusal.
+
+## 0.27.0
+
+### Minor Changes
+
+- 0aed7fa: Historical channel ambient is now buffered pull-only: a join backfill is delivered as recallable context instead of automatic turns, so a seat joining a long-lived mesh no longer receives the channel backlog as a storm of instructions. Historical @mentions and DMs keep automatic delivery, and live ambient is unchanged.
+
+## 0.26.0
+
+### Patch Changes
+
+- f339690: Document capability handles as a distinct cost of default environment inheritance, and make two env-boundary suites real gates.
+
+  The configuration guide told operators that `spawn.env` protects secrets living only in the environment, and reassured them that a shell reads `~/.ssh` either way. That understates what inheritance forwards. `SSH_AUTH_SOCK` names a live `ssh-agent` rather than holding a secret, so an inheriting child can ask that agent to sign for any key it holds, and it keeps that power when no private-key file exists on disk at all. The guide now names capability handles as their own class, states the `ssh-agent` case, and records that model-catalog discovery in the `codex` and `opencode` connectors runs the harness with the operator environment and does not consult `spawn.env`.
+
+  The environment-boundary suite asserted that an unenumerated `COTAL_*` sentinel was absent from a spawned child, but never set it in the parent, so the assertion could not fail. The sentinel is now injected, which makes the cell prove the reset is driven by the prefix rather than by the enumerated per-session list. `smoke:hermes-launch-env` and `smoke:env-isolate` are both added to the sharded CI suite list; the hermes suite carries the connector's inherit, reset and both-containment-mode coverage and was previously reachable only through a package-local command.
+
 ## 0.25.0
 
 ### Minor Changes

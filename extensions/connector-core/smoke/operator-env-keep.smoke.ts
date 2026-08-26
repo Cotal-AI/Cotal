@@ -1,12 +1,12 @@
 /**
  * OPERATOR_ENV_KEEP completeness, DERIVED FROM THE CONNECTOR SOURCES.
  *
- * WHAT THE DESIGN RESTS ON. `launchEnv` resets Cotal's whole `COTAL_*` prefix and then re-adds
- * {@link OPERATOR_ENV_KEEP}. The prefix strip needs no maintenance: a connector that starts setting
- * a new `COTAL_` name is covered the day it is written, which is the entire reason the reset is a
- * prefix and not a deny-list. The re-added list is the half that CAN rot, and it rots in exactly one
- * direction - somebody adds a name to it that a connector actually assigns per spawn, and that
- * name silently starts crossing from one agent into the next.
+ * WHAT THE DESIGN RESTS ON. `launchEnv` builds the child from a fixed OS allow-list and then copies
+ * {@link OPERATOR_ENV_KEEP} by name. There is no inherit mode, so a connector that starts setting a
+ * new `COTAL_` name cannot leak it: the name is simply not on the keep list. The keep list is the
+ * half that CAN rot, and it rots in exactly one direction - somebody adds a name to it that a
+ * connector actually assigns per spawn, and that name silently starts crossing from one agent into
+ * the next.
  *
  * THE PROPERTY, STATED AS A TEST RATHER THAN AS A DOC COMMENT. A name qualifies for the keep list
  * if and only if NO connector assigns it per spawn. That is checkable against the sources instead of

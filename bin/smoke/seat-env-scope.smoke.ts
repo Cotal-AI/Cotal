@@ -54,6 +54,7 @@ import "@cotal-ai/connector-claude-code";
 import "@cotal-ai/connector-opencode";
 import "@cotal-ai/connector-codex";
 import "@cotal-ai/connector-hermes";
+import "@cotal-ai/connector-jcode";
 import "@cotal-ai/pi";
 
 /** The variables that carry material a descendant has no business holding. `COTAL_CONTROL_SOCKET` is
@@ -92,7 +93,7 @@ const opts: LaunchOpts = {
 /** Every connector a manager can put a human-facing seat on. Named rather than swept out of the
  *  registry: a sweep silently shrinks to zero if the imports above ever stop registering, and a
  *  zero-length loop is a green suite that checked nothing. */
-const CONNECTORS = ["claude", "opencode", "codex", "hermes", "pi"] as const;
+const CONNECTORS = ["claude", "opencode", "codex", "hermes", "jcode", "pi"] as const;
 
 console.log(`• broker: ${SERVERS} (suite constant; this suite opens no connection to it)`);
 

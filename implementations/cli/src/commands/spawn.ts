@@ -423,16 +423,18 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   let credsPath: string | undefined;
   // The incarnation's lifecycle UID (SPEC 13.1), minted once per spawn: the launched endpoint binds
   // its lifecycle-keyed dm/dlv/chathist durables by it (auth modes pin the same names in the cred;
-  // open mode still needs it for the durable names). A foreground spawn is one lifecycle.
-  const lifecycleUid = mintLifecycleUid();
+  // open mode still needs it for the durable names). A foreground spawn is one lifecycle. `let`
+  // because a REMOTE provisioning replaces it below: the mesh minted that incarnation, and its
+  // durables and ledger row are keyed on ITS uid — a locally minted one can never match them.
+  let lifecycleUid = mintLifecycleUid();
   let userAuth: LaunchOpts["userAuth"];
   let userCleanup: (() => Promise<void>) | undefined;
   // The agent's access policy (flags > persona file) — minted into the creds AND forwarded to the
   // connector (COTAL_SUBSCRIBE / COTAL_ALLOW_*) so the session's runtime read/post set matches its
   // credentials. One source, so a `--subscribe` override can't land in the creds yet be lost at
   // runtime (the connector would otherwise read only the persona file and miss the override).
-  const subscribe = splitFlag(values.subscribe) ?? def.subscribe;
-  const allowSubscribe = splitFlag(values["allow-subscribe"]) ?? def.allowSubscribe ?? subscribe;
+  let subscribe = splitFlag(values.subscribe) ?? def.subscribe;
+  let allowSubscribe = splitFlag(values["allow-subscribe"]) ?? def.allowSubscribe ?? subscribe;
   let allowPublish = splitFlag(values["allow-publish"]) ?? def.allowPublish;
   // The AG-UI event plane, refused HERE for the same reason the manager refuses it before
   // provisioning: a connector that cannot emit must stop the launch while there is still nothing to
@@ -442,7 +444,35 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error(c.red(`\u2717 connector "${connector.name}" does not publish an AG-UI event plane, but --events was requested`));
     process.exit(1);
   }
-  if (target.mode === "user") {
+  // A REMOTE user mesh (registered with `meshes add --from`) that advertises a provisioning
+  // endpoint: the mesh grants the row and pre-creates the durables inside the owner's envelope,
+  // because the material to do that locally — the space's owner secret and account signer — only
+  // exists where the mesh runs. Checked BEFORE the local user branch, whose first act would be to
+  // ask for exactly that absent material and refuse.
+  const remoteProvisioningUrl = target.mode === "user" && target.userAuth?.remote
+    ? target.userAuth.endpoints?.agentProvisioningUrl
+    : undefined;
+  if (target.mode === "user" && target.userAuth?.remote && !remoteProvisioningUrl) {
+    console.error(c.red(`✗ mesh "${target.space}" runs elsewhere and advertises no agent-provisioning endpoint, so agents cannot be provisioned from this machine`));
+    console.error(c.dim(`  a user-mode agent's credentials are granted where the mesh's signer lives; ask the mesh operator to advertise one (\`cotal up --agent-provisioning-url …\`), or run the agent there`));
+    process.exit(1);
+  }
+  if (remoteProvisioningUrl) {
+    const remote = await provisionRemoteUserForeground(target, name, remoteProvisioningUrl);
+    userAuth = remote.userAuth;
+    userCleanup = remote.cleanup;
+    // The mesh's grant is the authority on what this agent may read and post; the launch forwards
+    // it verbatim so the session's runtime set matches the credentials it was actually issued.
+    // A local --subscribe that the mesh did not grant would be a lie told to the connector.
+    if (remote.material.subscribe) subscribe = remote.material.subscribe;
+    if (remote.material.allowSubscribe) allowSubscribe = remote.material.allowSubscribe;
+    if (remote.material.allowPublish) allowPublish = remote.material.allowPublish;
+    // Same authority rule for the incarnation uid: the mesh provisioned the durables and wrote the
+    // ledger row keyed on THIS uid, and the auth callout mints the agent's dm/dlv/chathist grants
+    // from the row. Launching with the locally minted uid instead leaves the agent asking for
+    // durables its credential does not name — an endless bind/violation loop, not a clean refusal.
+    lifecycleUid = remote.material.lifecycleUid;
+  } else if (target.mode === "user") {
     // USER mesh: the agent runs as a ledger-granted (owner, actor) principal under the LOGGED-IN
     // operator's owner — never a static identity (U10). Provisioning + grant + a one-shot bearer
     // preflight all happen BEFORE launch, so the spawned agent is never the first to discover a
@@ -513,9 +543,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // --share-tools selection. Default (no config) is none — the connector launches isolated.
   const cotalConfig = loadCotalConfig(target.root);
   const mcpServers = connectorServers(cotalConfig, agentType, parseShareSelection(values["share-tools"]));
-  // The operator's spawn-env policy travels the same route: absent means the child inherits their
-  // environment, present means containment. Resolved HERE, like the servers above, because a
-  // connector never reads the config file itself.
+  // The operator's spawn-env policy travels the same route: absent means no extras (the OS
+  // allow-list + operator knobs + connector-declared inputs), present means those names too.
+  // Resolved HERE, like the servers above, because a connector never reads the config file itself.
   const envAllow = spawnEnvAllow(cotalConfig);
 
   // Auth mode provisions the identity + writes its creds to disk BEFORE the connector validates the
@@ -630,6 +660,149 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // (a SIGKILLed CLI can't run this; the next same-name spawn's rotation is the backstop), loud
   // on failure, never blocking the exit code already set above.
   if (userCleanup) await userCleanup().catch((e) => console.error(c.red(`✗ revoking ${name}'s actor grant: ${(e as Error).message}`)));
+}
+
+/** What a remote mesh's agent-provisioning endpoint returns (U6 §2). The client validates every
+ *  field it uses: this arrives over the network from a deployment, so a missing or wrong-typed
+ *  piece must be a named refusal here, never an `undefined` written into a 0600 file. */
+interface RemoteAgentMaterial {
+  actor: string;
+  owner: string;
+  lifecycleUid: string;
+  actorToken: string;
+  sentinelCreds: string;
+  subscribe?: string[];
+  allowSubscribe?: string[];
+  allowPublish?: string[];
+}
+
+/** Validate the provisioning response. Returns the material, or the refusal sentence. */
+function checkRemoteAgentMaterial(v: unknown, actor: string): { ok: true; material: RemoteAgentMaterial } | { ok: false; message: string } {
+  const o = v as Partial<RemoteAgentMaterial> & { exists?: boolean };
+  const bad = (m: string): { ok: false; message: string } => ({ ok: false, message: m });
+  if (o === null || typeof o !== "object") return bad("the mesh's agent-provisioning endpoint did not answer with a JSON object");
+  // An idempotent "already exists" answer carries no material by design; it is not an error the
+  // client can repair by retrying, so it gets its own sentence naming the flag that rotates.
+  if (o.exists === true) return bad(`agent "${actor}" already exists on this mesh and its credentials were not reissued - spawn it under a different name, or ask the mesh operator to reissue it`);
+  const str = (k: keyof RemoteAgentMaterial): string | undefined => (typeof o[k] === "string" && o[k] ? (o[k] as string) : undefined);
+  for (const k of ["actor", "owner", "lifecycleUid", "actorToken", "sentinelCreds"] as const)
+    if (!str(k)) return bad(`the mesh's agent-provisioning endpoint returned no ${k} - it cannot provision agents for this mesh`);
+  const list = (k: "subscribe" | "allowSubscribe" | "allowPublish"): string[] | undefined =>
+    Array.isArray(o[k]) && (o[k] as unknown[]).every((s) => typeof s === "string") ? (o[k] as string[]) : undefined;
+  if (o.actor !== actor)
+    return bad(`the mesh provisioned actor "${String(o.actor)}" for a request naming "${actor}" - refusing material that does not match what was asked for`);
+  return {
+    ok: true,
+    material: {
+      actor: o.actor!, owner: o.owner!, lifecycleUid: o.lifecycleUid!, actorToken: o.actorToken!, sentinelCreds: o.sentinelCreds!,
+      ...(list("subscribe") ? { subscribe: list("subscribe") } : {}),
+      ...(list("allowSubscribe") ? { allowSubscribe: list("allowSubscribe") } : {}),
+      ...(list("allowPublish") ? { allowPublish: list("allowPublish") } : {}),
+    },
+  };
+}
+
+/** Foreground REMOTE-USER onboarding — the participant path for a mesh registered with
+ *  `meshes add --from` that advertises an agent-provisioning endpoint (U6 §2).
+ *
+ *  The local twin below ({@link provisionUserForeground}) cannot run here and must not try: it
+ *  needs the space's owner secret and account signer to grant a row and pre-create durables, and
+ *  those never leave the machine the mesh runs on. Instead the mesh's own endpoint does that work
+ *  inside the owner's delegation envelope and hands back ready material; this function's job is to
+ *  present the login bearer, validate what comes back, land it 0600, and prove the bearer chain
+ *  before launch — the same preflight discipline, with the grant performed remotely.
+ *
+ *  Deliberately NOT reusing the local path's cleanup: nothing here created broker state locally, so
+ *  teardown is the mesh's business (its lifecycle owns the row and the durables). The spawned
+ *  agent's material is shredded on exit; the row is not revoked from here, because this machine
+ *  holds no authority to revoke it. */
+async function provisionRemoteUserForeground(
+  target: MeshTarget,
+  name: string,
+  provisioningUrl: string,
+): Promise<{ userAuth: NonNullable<LaunchOpts["userAuth"]>; cleanup: () => Promise<void>; material: RemoteAgentMaterial }> {
+  const { space } = target;
+  const dir = userAuthStateDir(target.root, space);
+  const store = workspaceSecretStore(target.root);
+  const fail = (msg: string): never => {
+    console.error(c.red(`✗ ${msg}`));
+    process.exit(1);
+  };
+  const idpUrl = target.userAuth?.idp.url;
+  if (!idpUrl) return fail(`mesh "${space}" records no IdP to sign in against - re-register it with \`cotal meshes add ${space} --from <url> --mode user\``);
+  let provider: ReturnType<typeof resolveAuthProvider>;
+  try {
+    provider = resolveAuthProvider();
+  } catch (e) {
+    return fail((e as Error).message);
+  }
+  // The login proof rides the provisioning request, so the POST is the PROVIDER's (this package
+  // never touches the session cache); its thrown sentences are already operator-exact — the
+  // no-login gate names the `cotal login --idp …` line, a refusal carries the mesh's own reason.
+  if (!provider.postAgentProvisioning)
+    return fail(`the registered auth provider "${provider.name}" cannot provision agents on a remote mesh - run the agent where the mesh runs`);
+  let body: unknown;
+  try {
+    body = await provider.postAgentProvisioning({ url: provisioningUrl, idpUrl, actor: name });
+  } catch (e) {
+    return fail((e as Error).message);
+  }
+  const checked = checkRemoteAgentMaterial(body, name);
+  if (!checked.ok) return fail(checked.message);
+  const material = checked.material;
+  const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = agentSecretFilePaths(target.root, name);
+  try {
+    // Land both secrets 0600 through the store, exactly as the local path does — the bearer
+    // re-exec and the launch handoff read FILES.
+    await store.put(agentActorTokenKey(name), material.actorToken);
+    await store.put(agentSentinelCredsKey(name), material.sentinelCreds);
+    await materializeSecretToFile(store, agentActorTokenKey(name), tokenPath);
+    await materializeSecretToFile(store, agentSentinelCredsKey(name), sentinelPath);
+    rmSync(healthPath, { force: true });
+    provenance.wrote(`remote actor material ${material.owner}.${name} (user mode)`, tokenPath);
+    // The bearer preflight — the same one-shot proof the local path runs, pointed at the pinned
+    // exchange instead of a local service. A dead auth chain stops the spawn here.
+    const exchangeUrl = target.userAuth?.endpoints?.url;
+    if (!exchangeUrl) return fail(`mesh "${space}" records no exchange endpoint - re-register it with \`cotal meshes add ${space} --from <url> --mode user\``);
+    const bearerCmd = [
+      process.execPath,
+      ...process.execArgv,
+      process.argv[1],
+      provider.agentBearerCommand,
+      "--exchange-url", exchangeUrl,
+      "--space", space,
+      "--owner", material.owner,
+      "--actor", name,
+      "--token-file", tokenPath,
+      "--health-file", healthPath,
+    ];
+    await new Promise<void>((res2, rej) => {
+      execFile(bearerCmd[0], bearerCmd.slice(1), { timeout: 30_000, maxBuffer: 64 * 1024 }, (err, _stdout, stderr) => {
+        if (err) return rej(new Error(stderr.trim() || err.message));
+        res2();
+      });
+    });
+    return {
+      userAuth: { owner: material.owner, actor: name, sentinelCredsPath: sentinelPath, bearerCmd },
+      material,
+      // Local shred only. The remote row and its durables belong to the mesh's lifecycle; this
+      // machine has no authority to retire them and must not pretend otherwise.
+      cleanup: async () => {
+        await store.delete(agentActorTokenKey(name)).catch(() => {});
+        await store.delete(agentSentinelCredsKey(name)).catch(() => {});
+        rmSync(tokenPath, { force: true });
+        rmSync(sentinelPath, { force: true });
+        rmSync(healthPath, { force: true });
+      },
+    };
+  } catch (e) {
+    await store.delete(agentActorTokenKey(name)).catch(() => {});
+    await store.delete(agentSentinelCredsKey(name)).catch(() => {});
+    rmSync(tokenPath, { force: true });
+    rmSync(sentinelPath, { force: true });
+    rmSync(healthPath, { force: true });
+    return fail(`agent auth preflight failed for "${name}": ${(e as Error).message}`);
+  }
 }
 
 /** Foreground USER-MODE onboarding — the CLI-side twin of the manager's user spawn provisioning:

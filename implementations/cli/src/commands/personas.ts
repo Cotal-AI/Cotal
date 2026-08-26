@@ -35,7 +35,7 @@ const NAME_RE = /^[A-Za-z0-9_-]+$/;
 
 export async function personas(args: ParsedArgs): Promise<void> {
   const positionals = args.positionals;
-  const values = args.values as { role?: string; model?: string; prompt?: string; from?: string; verbose?: boolean; force?: boolean; running?: boolean; space?: string; server?: string; creds?: string };
+  const values = args.values as { role?: string; model?: string; prompt?: string; from?: string; subscribe?: string; verbose?: boolean; force?: boolean; running?: boolean; space?: string; server?: string; creds?: string };
 
   switch (positionals[0] ?? "list") {
     case "list":
@@ -61,6 +61,7 @@ export function personasComplete(argv: string[]): CompletionResult {
     { name: "model", type: "string" },
     { name: "prompt", type: "string" },
     { name: "from", type: "string" },
+    { name: "subscribe", type: "string" },
     { name: "verbose", type: "boolean", short: "v" },
     { name: "running", type: "boolean" },
     { name: "force", type: "boolean" },
@@ -179,7 +180,7 @@ function edit(name?: string): void {
   console.log(c.green(`✓ saved "${name}"`));
 }
 
-function create(name: string | undefined, v: { role?: string; model?: string; prompt?: string; from?: string; force?: boolean }): void {
+function create(name: string | undefined, v: { role?: string; model?: string; prompt?: string; from?: string; subscribe?: string; force?: boolean }): void {
   if (!name) return usage();
   if (!NAME_RE.test(name)) {
     console.error(c.red(`invalid persona name "${name}": use letters, digits, "_" or "-"`));
@@ -208,7 +209,17 @@ function create(name: string | undefined, v: { role?: string; model?: string; pr
     process.exit(1);
   }
 
-  const def: AgentDef = { name, role: v.role, model: v.model, persona };
+  // The channels it reads are stated, never guessed: `--subscribe a,b` or `--subscribe ""` for an
+  // agent that reads none. There is no default, because the two possible ones are both wrong - a
+  // channel the author did not ask for, or an empty set indistinguishable from forgetting to say.
+  if (v.subscribe === undefined) {
+    console.error(c.red("--subscribe is required: name the channels this persona reads"));
+    console.error(c.dim('e.g. --subscribe general   or   --subscribe "" for an agent reachable only by direct message'));
+    process.exit(1);
+  }
+  const subscribe = v.subscribe.split(",").map((s) => s.trim()).filter(Boolean);
+
+  const def: AgentDef = { name, role: v.role, model: v.model, persona, subscribe };
   saveAtomic(path, def);
   console.log(c.green(`✓ wrote persona "${name}"`));
   console.log(c.dim(`${path}\nspawn it:  cotal spawn ${name}${v.role ? ` --role ${v.role}` : ""}`));
@@ -253,7 +264,7 @@ function usage(): never {
   console.error(
     c.red(
       "usage: cotal personas <list [--verbose] [--running] | show <name> | edit <name> | " +
-        'new <name> (--prompt <text> | --from <file|->) [--role <r>] [--model <m>] [--force] | rm <name> --force>',
+        'new <name> (--prompt <text> | --from <file|->) --subscribe <a,b|""> [--role <r>] [--model <m>] [--force] | rm <name> --force>',
     ),
   );
   process.exit(1);

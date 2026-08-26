@@ -23,11 +23,16 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-const sandbox = mkdtempSync(join(tmpdir(), "cotal-ext-sb-"));
+// macOS commonly exposes tmpdir() through /var -> /private/var (and this harness may add another
+// alias). The CLI canonicalizes cwd, so register the same physical root or extension removal sees
+// two contexts and tries to reserve the same provider pidfile twice.
+const sandbox = realpathSync(mkdtempSync(join(tmpdir(), "cotal-ext-sb-")));
 const configDir = join(sandbox, "xdg");
 const home = join(sandbox, "home");
 mkdirSync(configDir, { recursive: true });
 mkdirSync(home, { recursive: true });
+// COTAL_HOME isolates only the registry; CLI project-root resolution still walks for `.cotal`.
+mkdirSync(join(sandbox, ".cotal"), { recursive: true });
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -46,6 +51,9 @@ const binCotal = resolve(import.meta.dirname, "..", "cotal.ts");
 const cotal = (args: string[], timeout = 180_000) =>
   spawnSync(realNode, [tsxCli, binCotal, ...args], { encoding: "utf8", env, cwd: sandbox, timeout });
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const target = cotal(["meshes", "add", "main", "--server", "nats://127.0.0.1:1", "--root", sandbox, "--mode", "open", "--force"]);
+ok("fixture mesh target is registered", target.status === 0, target.stderr);
 
 /** Build a fixture extension package on disk. `index` is its module body. */
 function fixture(name: string, index: string, pkgJson: Record<string, unknown> = {}): string {

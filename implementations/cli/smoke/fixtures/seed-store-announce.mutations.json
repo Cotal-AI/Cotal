@@ -1,0 +1,92 @@
+{
+  "suite": "implementations/cli/smoke/seed.smoke.ts",
+  "guard": "the operator-global seed store announces what it WRITES and what it REMOVES, names the exact path, and stays silent when it copies nothing",
+  "command": "pnpm smoke:seed",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/fixtures/seed-store-announce.mutations.json",
+  "why": [
+    "FIVE MUTATIONS. Four break a guard; one models a failure that no single edit to the product can",
+    "produce. The distinction is stated because a reader who assumes all five are the same kind will",
+    "over-read the third.",
+    "",
+    "M1 deletes the write announce, restoring exactly the defect #593 reports: the machine-wide payload",
+    "write happens and nothing in the output names a path outside the current directory.",
+    "",
+    "M2 announces the destination as the STORE ROOT rather than the payload directory. The generic cell",
+    "still passes, because the root is a substring of nothing it needs; the exact-destination cell is the",
+    "one that reddens. That is the point of having both: a line that says 'something under here' is not",
+    "the disclosure the issue asks for.",
+    "",
+    "M3 moves the announce onto the stager's IDEMPOTENT EARLY RETURN, so a re-seed that copies nothing",
+    "announces anyway. It reddens the reuse-path cell in the same-generation built-in add block. THIS",
+    "MUTATION IS REACHABLE AND THE FIXTURE PREVIOUSLY CLAIMED IT WAS NOT: an earlier version of this",
+    "file asserted that no command the suite drives reaches that early return. That was FALSE, and a",
+    "review lens demonstrated it live: the same-generation block strips a built-in from the manifest,",
+    "from disk and from both authority records while leaving its payload in the store, so the re-seed",
+    "calls the stager with an intact payload and takes the early return. Nothing asserted that block's",
+    "stderr, so a misplaced announce there passed green. The cell was added for that reason and this",
+    "mutation is what grades it.",
+    "",
+    "M4 deletes the REMOVAL announce. The store's destructive step, dropping an unreferenced generation,",
+    "is a machine-wide delete performed by a command an operator ran for a local reason, and a silent",
+    "delete is worse than a silent write: the write at least leaves the thing it made.",
+    "",
+    "M5 is the one that MODELS a failure rather than breaking a guard, and it is here because the",
+    "steady-state cell would otherwise be ungraded. That path is protected by two independent layers,",
+    "the reconcile returning NOOP without calling the stager and the stager's own early return, so no",
+    "single edit makes a steady-state boot copy bytes. M5 emits the line from the NOOP return itself,",
+    "which is precisely the failure the cell exists to catch.",
+    "",
+    "ORDER, because the suite is fail-fast and a red on the wrong leg is not a kill of the assertion",
+    "named. Each mutation's expectRed is the FIRST assertion that mutation can reach: M1 and M2 reach",
+    "the first-boot cells, M5 reaches the second-boot cell in the same block, M3 reaches nothing until",
+    "the same-generation block, and M4 nothing until the GC block.",
+    "",
+    "WHAT THIS STILL DOES NOT PROVE. It grades the announces, not the isolation: nothing here shows that",
+    "XDG_CONFIG_HOME actually relocates the store, which is existing behaviour this change documents",
+    "rather than adds. It also does not grade the extensions-prefix install on the reconcile path, which",
+    "is announced only inside the `ext add` child whose stderr the parent drops on success; that is",
+    "pre-existing and named in the PR body rather than fixed here."
+  ],
+  "mutations": [
+    {
+      "name": "the machine-wide payload write is silent again (the write announce is deleted)",
+      "file": "implementations/cli/src/seed/store.ts",
+      "find": "  provenance.wrote(`operator-global seed store payload (${name})`, dest);\n  return dest;",
+      "replace": "  return dest;",
+      "expectRed": "✗ FAIL: provenance: the machine-wide seed-store write is announced with its path (not silent)",
+      "cell": "✗ FAIL: provenance: the machine-wide seed-store write is announced with its path (not silent)"
+    },
+    {
+      "name": "the write announce names the store root instead of the payload directory it wrote",
+      "file": "implementations/cli/src/seed/store.ts",
+      "find": "  provenance.wrote(`operator-global seed store payload (${name})`, dest);",
+      "replace": "  provenance.wrote(`operator-global seed store payload (${name})`, seedStoreDir());",
+      "expectRed": "✗ FAIL: provenance: the announced destination is the payload directory itself, not just the store root",
+      "cell": "✗ FAIL: provenance: the announced destination is the payload directory itself, not just the store root"
+    },
+    {
+      "name": "the announce moves onto the idempotent early return, so a re-seed that copied nothing announces",
+      "file": "implementations/cli/src/seed/store.ts",
+      "find": "  if (!opts.force && existsSync(join(dest, \"package.json\"))) return dest;",
+      "replace": "  if (!opts.force && existsSync(join(dest, \"package.json\"))) {\n    provenance.wrote(`operator-global seed store payload (${name})`, dest);\n    return dest;\n  }",
+      "expectRed": "✗ FAIL: provenance: a re-seed that reuses an intact payload announces no seed-store write",
+      "cell": "✗ FAIL: provenance: a re-seed that reuses an intact payload announces no seed-store write"
+    },
+    {
+      "name": "the machine-wide generation DELETE is silent again (the removal announce is deleted)",
+      "file": "implementations/cli/src/seed/store.ts",
+      "find": "    provenance.removed(`operator-global seed store generation (${gen})`, genDir);",
+      "replace": "",
+      "expectRed": "✗ FAIL: provenance: the machine-wide seed-store DELETE is announced with its path (not silent)",
+      "cell": "✗ FAIL: provenance: the machine-wide seed-store DELETE is announced with its path (not silent)"
+    },
+    {
+      "name": "the announce is emitted from the steady-state NOOP boot, so a boot that copied nothing announces anyway",
+      "file": "implementations/cli/src/seed/reconcile.ts",
+      "find": "      return NOOP;\n    }\n  }",
+      "replace": "      process.stderr.write(\"wrote operator-global seed store payload (noop)\\n\");\n      return NOOP;\n    }\n  }",
+      "expectRed": "✗ FAIL: provenance: the idempotent no-op boot announces no seed-store write (announce tracks writes, not boots)",
+      "cell": "✗ FAIL: provenance: the idempotent no-op boot announces no seed-store write (announce tracks writes, not boots)"
+    }
+  ]
+}

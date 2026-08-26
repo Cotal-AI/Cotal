@@ -1,5 +1,227 @@
 # cotal-ai
 
+## 0.32.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.32.0
+- @cotal-ai/workspace@0.32.0
+- @cotal-ai/cli@0.32.0
+- @cotal-ai/manager@0.32.0
+- @cotal-ai/delivery@0.32.0
+- @cotal-ai/connector-core@0.32.0
+- @cotal-ai/auth@0.32.0
+
+## 0.31.0
+
+### Patch Changes
+
+- Updated dependencies [4ef59c3]
+  - @cotal-ai/connector-core@0.31.0
+  - @cotal-ai/core@0.31.0
+  - @cotal-ai/manager@0.31.0
+  - @cotal-ai/cli@0.31.0
+  - @cotal-ai/auth@0.31.0
+  - @cotal-ai/delivery@0.31.0
+  - @cotal-ai/workspace@0.31.0
+
+## 0.30.2
+
+### Patch Changes
+
+- Updated dependencies [2395efd]
+  - @cotal-ai/manager@0.30.2
+  - @cotal-ai/connector-core@0.30.2
+  - @cotal-ai/core@0.30.2
+  - @cotal-ai/workspace@0.30.2
+  - @cotal-ai/cli@0.30.2
+  - @cotal-ai/delivery@0.30.2
+  - @cotal-ai/auth@0.30.2
+
+## 0.30.1
+
+### Patch Changes
+
+- Updated dependencies [1b4b386]
+- Updated dependencies [aea08f9]
+  - @cotal-ai/cli@0.30.1
+  - @cotal-ai/core@0.30.1
+  - @cotal-ai/connector-core@0.30.1
+  - @cotal-ai/auth@0.30.1
+  - @cotal-ai/delivery@0.30.1
+  - @cotal-ai/manager@0.30.1
+  - @cotal-ai/workspace@0.30.1
+
+## 0.30.0
+
+### Minor Changes
+
+- ef01887: Add closed, host-issued remote manager-service authority for registered user-auth participants. It requires the dedicated `supervise` scope, restricts manager registration and credentials to one owner and opaque instance, and uses a lifecycle-bound prepare, activate, and renew flow with fail-closed renewal and same-owner descendant provisioning.
+
+### Patch Changes
+
+- 0def128: Report the host-authority requirement when a registered user-auth participant tries to supervise a remote mesh, and derive the registered broker address without accepting a mismatched override.
+- Updated dependencies [6d03de0]
+- Updated dependencies [68a8041]
+- Updated dependencies [cc1f2e2]
+- Updated dependencies [656921b]
+- Updated dependencies [0e673ff]
+- Updated dependencies [c6db901]
+- Updated dependencies [569f4d3]
+- Updated dependencies [b282f70]
+- Updated dependencies [3443c57]
+- Updated dependencies [97dea94]
+- Updated dependencies [0323f5b]
+- Updated dependencies [ef01887]
+- Updated dependencies [196dddb]
+- Updated dependencies [0def128]
+  - @cotal-ai/auth@0.30.0
+  - @cotal-ai/connector-core@0.30.0
+  - @cotal-ai/cli@0.30.0
+  - @cotal-ai/manager@0.30.0
+  - @cotal-ai/core@0.30.0
+  - @cotal-ai/delivery@0.30.0
+  - @cotal-ai/workspace@0.30.0
+
+## 0.29.2
+
+### Patch Changes
+
+- Updated dependencies [8531c13]
+  - @cotal-ai/core@0.29.2
+  - @cotal-ai/connector-core@0.29.2
+  - @cotal-ai/auth@0.29.2
+  - @cotal-ai/cli@0.29.2
+  - @cotal-ai/delivery@0.29.2
+  - @cotal-ai/manager@0.29.2
+  - @cotal-ai/workspace@0.29.2
+
+## 0.29.1
+
+### Patch Changes
+
+- Updated dependencies [9570a57]
+  - @cotal-ai/cli@0.29.1
+  - @cotal-ai/core@0.29.1
+  - @cotal-ai/workspace@0.29.1
+  - @cotal-ai/manager@0.29.1
+  - @cotal-ai/delivery@0.29.1
+  - @cotal-ai/connector-core@0.29.1
+  - @cotal-ai/auth@0.29.1
+
+## 0.29.0
+
+### Patch Changes
+
+- Updated dependencies [1f025c3]
+  - @cotal-ai/core@0.29.0
+  - @cotal-ai/auth@0.29.0
+  - @cotal-ai/workspace@0.29.0
+  - @cotal-ai/cli@0.29.0
+  - @cotal-ai/connector-core@0.29.0
+  - @cotal-ai/delivery@0.29.0
+  - @cotal-ai/manager@0.29.0
+
+## 0.28.2
+
+### Patch Changes
+
+- Updated dependencies [53f66c2]
+- Updated dependencies [53f66c2]
+  - @cotal-ai/cli@0.28.2
+  - @cotal-ai/core@0.28.2
+  - @cotal-ai/connector-core@0.28.2
+  - @cotal-ai/auth@0.28.2
+  - @cotal-ai/delivery@0.28.2
+  - @cotal-ai/manager@0.28.2
+  - @cotal-ai/workspace@0.28.2
+
+## 0.28.1
+
+### Patch Changes
+
+- Updated dependencies [2a383fe]
+  - @cotal-ai/core@0.28.1
+  - @cotal-ai/connector-core@0.28.1
+  - @cotal-ai/auth@0.28.1
+  - @cotal-ai/cli@0.28.1
+  - @cotal-ai/delivery@0.28.1
+  - @cotal-ai/manager@0.28.1
+  - @cotal-ai/workspace@0.28.1
+
+## 0.28.0
+
+### Minor Changes
+
+- 716f97c: The public exchange face's /.well-known/cotal-mesh bundle is now actually consumable by
+  `cotal meshes add --from`: the trust pins ride a `userAuth` arm (provider "cotal", idp pins,
+  pinned exchange endpoint) exactly as `checkUserBundle` records them, instead of the flat
+  idp/endpoints shape the consumer refused. New `--advertised-server <url>` on `cotal up` /
+  `auth-service` (with `--exchange-public-port`) sets the broker address the bundle advertises —
+  what participants dial through the reverse proxy (e.g. wss://…/mesh-ws) — instead of the
+  loopback/LAN address the callout itself dials.
+
+### Patch Changes
+
+- Updated dependencies [a71fbd3]
+- Updated dependencies [29c5268]
+- Updated dependencies [09b6a3b]
+- Updated dependencies [b8ee849]
+- Updated dependencies [1f44ca6]
+- Updated dependencies [4f7747f]
+- Updated dependencies [9216d21]
+- Updated dependencies [86f6b10]
+- Updated dependencies [7bc71ab]
+- Updated dependencies [a84cb62]
+- Updated dependencies [716f97c]
+- Updated dependencies [e26f4d1]
+- Updated dependencies [45db9f8]
+- Updated dependencies [200a93f]
+- Updated dependencies [e377c7b]
+- Updated dependencies [44738b2]
+- Updated dependencies [a999a98]
+- Updated dependencies [5db8641]
+- Updated dependencies [316f84d]
+- Updated dependencies [653c6cd]
+  - @cotal-ai/connector-core@0.28.0
+  - @cotal-ai/core@0.28.0
+  - @cotal-ai/cli@0.28.0
+  - @cotal-ai/workspace@0.28.0
+  - @cotal-ai/auth@0.28.0
+  - @cotal-ai/manager@0.28.0
+  - @cotal-ai/delivery@0.28.0
+
+## 0.27.0
+
+### Patch Changes
+
+- 900f630: Add the Jcode Harness API connector with a private managed session, Cotal MCP bridge, and operator documentation.
+- Updated dependencies [0aed7fa]
+- Updated dependencies [900f630]
+- Updated dependencies [08a9cb8]
+  - @cotal-ai/connector-core@0.27.0
+  - @cotal-ai/workspace@0.27.0
+  - @cotal-ai/manager@0.27.0
+  - @cotal-ai/auth@0.27.0
+  - @cotal-ai/cli@0.27.0
+  - @cotal-ai/delivery@0.27.0
+  - @cotal-ai/core@0.27.0
+
+## 0.26.0
+
+### Patch Changes
+
+- Updated dependencies [aa1fe5f]
+- Updated dependencies [3866fdc]
+- Updated dependencies [f339690]
+  - @cotal-ai/cli@0.26.0
+  - @cotal-ai/workspace@0.26.0
+  - @cotal-ai/manager@0.26.0
+  - @cotal-ai/connector-core@0.26.0
+  - @cotal-ai/auth@0.26.0
+  - @cotal-ai/delivery@0.26.0
+  - @cotal-ai/core@0.26.0
+
 ## 0.25.0
 
 ### Minor Changes
