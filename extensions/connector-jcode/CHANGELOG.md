@@ -1,5 +1,31 @@
 # @cotal-ai/connector-jcode
 
+## 0.31.0
+
+### Minor Changes
+
+- 4ef59c3: A spawned seat now receives a constructed environment (PATH/HOME/locale, the machine-wide COTAL\_\* knobs, connector-declared provider keys) instead of the manager's ambient environment. Host-session markers such as CLAUDE_CODE_CHILD_SESSION no longer leak into seats and silently disable transcript saving. The Claude connector declares CLAUDE_CODE_OAUTH_TOKEN (and the rest of claude's documented credential set) so a container seat still authenticates; spawn.env remains the explicit opt-in for extra names, including a host marker a persona has chosen to receive.
+
+### Patch Changes
+
+- a93ef08: `--variant` now selects a Jcode seat's reasoning effort instead of failing loud.
+  The connector declares `supportsModelVariant`, takes the tier from `--variant`
+  or a persona's `variant:`, and the host applies it to the session after the
+  model and before the seat's first turn — so no turn is ever served at an effort
+  nobody chose.
+
+  The tier is validated by Jcode, which owns the per-provider, per-model ladder
+  and names the accepted set when it refuses; the connector keeps no copy of it.
+  A rejected tier, or a model with no reasoning-effort surface, ends the launch
+  rather than clamping to a neighbouring effort. Its public diagnostic is limited
+  to the requested tier, effective model, fixed provider code, and a safely parsed
+  accepted ladder, never arbitrary downstream error text. Omitting the variant
+  keeps Jcode's own configured default.
+
+  The mandatory `cotal_orientation` readiness proof now repeats once when Jcode's first turn ran
+  against the pre-MCP tool snapshot. A second absence still refuses the launch; the retry is bounded
+  and never advertises an agent whose mesh tools were not proven callable.
+
 ## 0.30.2
 
 ### Patch Changes
