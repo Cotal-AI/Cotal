@@ -543,9 +543,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // --share-tools selection. Default (no config) is none — the connector launches isolated.
   const cotalConfig = loadCotalConfig(target.root);
   const mcpServers = connectorServers(cotalConfig, agentType, parseShareSelection(values["share-tools"]));
-  // The operator's spawn-env policy travels the same route: absent means the child inherits their
-  // environment, present means containment. Resolved HERE, like the servers above, because a
-  // connector never reads the config file itself.
+  // The operator's spawn-env policy travels the same route: absent means no extras (the OS
+  // allow-list + operator knobs + connector-declared inputs), present means those names too.
+  // Resolved HERE, like the servers above, because a connector never reads the config file itself.
   const envAllow = spawnEnvAllow(cotalConfig);
 
   // Auth mode provisions the identity + writes its creds to disk BEFORE the connector validates the

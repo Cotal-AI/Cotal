@@ -102,17 +102,18 @@ The guarantees, at a glance, each enforced by the broker per
   that bites at the next connect, and live-connection eviction
   ([identity & auth](identity-and-auth.md)). A copied signing *seed* still stays valid until
   rotation on either kind of mesh.
-- **The operator's own environment, in a spawned agent:** a managed spawn hands the child the
-  operator's environment, on the reasoning that a harness they installed should behave the way it
-  does in their shell, and that the alternative was Cotal maintaining a list of inference vendors.
-  So an agent can read whatever sits in the shell the mesh was started from. This is a smaller change
-  than it sounds: `HOME` and the config dirs were always forwarded, so an agent with a shell could
-  already read `~/.aws`, `~/.ssh` and `~/.cotal` off disk, and the model key is in its process by
-  necessity. It matters for secrets that exist **only** in the environment, such as an
-  `aws-vault exec` or `op run` shell. `spawn.env` in the [config file](config.md) restores an
-  allow-list for operators who need it; real containment is a workspace sandbox or a VM. What is
-  **not** optional is the reset of Cotal's own `COTAL_*` namespace, which stops one agent's
-  credential path, ACL or lifecycle uid from reaching another.
+- **Operator environment capability in a spawned agent:** a managed spawn receives a fixed OS
+  execution allow-list (PATH included, so connector binaries under `~/.local/bin` still resolve),
+  the machine-wide `COTAL_*` operator knobs, connector-declared provider inputs, shared-MCP
+  references, and only names explicitly added through `spawn.env` in the [config file](config.md).
+  It does not receive ambient host-session markers (`CLAUDE_CODE_CHILD_SESSION`, `CLAUDECODE`,
+  `CLAUDE_CODE_ENTRYPOINT`, and the analogous names other hosts use to mark a nested session),
+  temporary credentials, source-control tokens, or unrelated service secrets unless a persona or
+  operator names them. Connector-declared auth vars still cross: a Claude seat receives
+  `CLAUDE_CODE_OAUTH_TOKEN` (and the rest of that connector's documented credential set) so a
+  container with no Keychain can authenticate, which is the forwarding `docs/deploy.md` promises.
+  This boundary does not confine files accessible through HOME or other supplied filesystem roots.
+  Use a sandbox or VM when filesystem containment is required.
 - **Manager compromise:** the operator side is split into narrow, single-purpose profiles (there
   is **no allow-all cred**); the long-lived **supervisor** serves control and touches
   presence/its lease but cannot read a DM, create a consumer, or delete a stream; the destructive

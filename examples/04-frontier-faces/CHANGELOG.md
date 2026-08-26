@@ -1,5 +1,12 @@
 # @cotal-ai/example-04-frontier-faces
 
+## 0.0.45
+
+### Patch Changes
+
+- @cotal-ai/core@0.30.2
+- @cotal-ai/workspace@0.30.2
+
 ## 0.0.44
 
 ### Patch Changes

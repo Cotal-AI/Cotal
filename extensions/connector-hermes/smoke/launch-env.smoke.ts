@@ -1,28 +1,9 @@
 /**
- * Launch-env inheritance (no test runner) - the deliberately FLIPPED counterpart of the allow-list
- * snapshot this file used to hold.
+ * Launch-env allow-list (no test runner).
  *
- * WHY THE OLD CELL COULD NOT SURVIVE. It pinned `HERMES_PROVIDER_KEYS` against an independently
- * written snapshot, so a key silently dropped from the production list reddened here. That list is
- * gone. Cotal no longer decides which inference vendors exist, and a spawned agent inherits the
- * operator's environment, so there is no list left to snapshot.
- *
- * WHAT REPLACES IT, AT THE OLD CELL'S STRENGTH. The old assertion enumerated three sets: 30 provider
- * keys that MUST arrive, 9 excluded credential names that MUST NOT, and one unrelated secret that
- * MUST NOT. This file reuses those exact sets and inverts the last two. That is both the strongest
- * available statement of the new behaviour and the most legible diff: every name this connector used
- * to strip now arrives, on purpose, and the reviewer reads the inversion rather than a weakened
- * assertion. A flip that quietly asserted less than its predecessor would be the failure mode.
- *
- * THE HALF THAT DID NOT FLIP, asserted harder than before. Cotal's own per-session `COTAL_*` must
- * not cross from this process into the child. A connector assigns those CONDITIONALLY - `aclEnv`
- * omits an empty ACL, `materialEnv` returns `{}` with nothing to hand over, `if (opts.role)`,
- * `if (opts.lifecycleUid)` - so an inherited value is never overwritten and would survive into a
- * child that was never granted it. The parent below sets one name from every family that exists
- * (credential, launch material, lifecycle, ACL, identity, event plane, connector-private) and none
- * may appear in the child. `COTAL_LAUNCH_MATERIAL` is the sharpest of them: it names a 0600 file
- * holding a credential and a control token, and it is exactly the variable a deny-list written
- * before it existed would have missed.
+ * A spawned Hermes seat receives the OS allow-list, OPERATOR_ENV_KEEP, and this connector's
+ * declared provider keys. Host-session markers and unrelated operator secrets stay out unless
+ * named on spawn.env. Per-session COTAL_* never crosses from this process into the child.
  *
  * Run: pnpm --filter @cotal-ai/connector-hermes test
  */
@@ -34,8 +15,7 @@ if (process.platform === "win32") {
   process.exit(0);
 }
 
-/** The provider keys the retired allow-list named. They must still arrive - not because Cotal
- *  forwards them, but because it no longer removes anything. */
+/** The provider keys this connector declares. They must still arrive. */
 const PROVIDER_KEYS = [
   "OPENCODE_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "NOUS_API_KEY",
   "OPENCODE_GO_API_KEY", "OPENCODE_ZEN_API_KEY", "XAI_API_KEY", "GEMINI_API_KEY", "NOVITA_API_KEY",
@@ -46,13 +26,14 @@ const PROVIDER_KEYS = [
   "OLLAMA_API_KEY", "AZURE_FOUNDRY_API_KEY",
 ] as const;
 
-/** The names the old cell asserted were EXCLUDED. Each now arrives. This is the flip stated at its
- *  full width: the operator's VCS token and cloud credential reach the child, because the operator's
- *  environment is what the child is being given, and pretending otherwise while forwarding HOME was
- *  the dishonesty the old boundary carried. */
+/** Host / VCS / cloud names this connector does not declare. None may cross on the default path. */
 const FORMERLY_EXCLUDED = [
   "GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN", "HF_TOKEN", "ANTHROPIC_TOKEN",
   "CLAUDE_CODE_OAUTH_TOKEN", "GOOGLE_API_KEY", "LM_API_KEY", "QWEN_API_KEY",
+] as const;
+
+const HOST_MARKERS = [
+  "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_ENTRYPOINT", "CLAUDECODE",
 ] as const;
 
 /** One name from every per-session family a connector assigns conditionally. None may cross. */
@@ -65,36 +46,35 @@ const PER_SESSION = [
   "COTAL_CHANNEL", "COTAL_CODEX_HOME", "COTAL_OPENCODE_PROMPT", "COTAL_TOKEN",
 ] as const;
 
-/** Machine-wide operator knobs that DO cross: no connector assigns them per spawn, so they cannot
- *  carry one agent's grant into another. */
+/** Machine-wide operator knobs that DO cross: no connector assigns them per spawn. */
 const OPERATOR_KNOBS = ["COTAL_HOME", "COTAL_FEEDBACK_KEY", "COTAL_CODEX_BIN"] as const;
 
-for (const k of [...PROVIDER_KEYS, ...FORMERLY_EXCLUDED]) process.env[k] = `smoke-${k}`;
+for (const k of [...PROVIDER_KEYS, ...FORMERLY_EXCLUDED, ...HOST_MARKERS]) process.env[k] = `smoke-${k}`;
 for (const k of [...PER_SESSION, ...OPERATOR_KNOBS]) process.env[k] = `parent-${k}`;
 process.env.SOME_UNRELATED_SECRET = "smoke-unrelated";
 
-// ── Inherit mode (the default: no operator policy declared) ──────────────────────────────────────
+// ── Default allow-list (no operator extras declared) ─────────────────────────────────────────────
 const env = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-1" }).env ?? {};
 
 for (const k of PROVIDER_KEYS)
-  assert.equal(env[k], `smoke-${k}`, `${k} must reach the child: Cotal no longer filters provider keys`);
+  assert.equal(env[k], `smoke-${k}`, `${k} must reach the child: this connector declares it`);
 for (const k of FORMERLY_EXCLUDED)
-  assert.equal(env[k], `smoke-${k}`, `${k} must reach the child: the operator's environment is inherited whole`);
-assert.equal(env.SOME_UNRELATED_SECRET, "smoke-unrelated", "an unrelated operator variable is inherited like any other");
+  assert.ok(!(k in env), `${k} must not reach the child: it is not on this connector's allow-list`);
+assert.ok(!("SOME_UNRELATED_SECRET" in env), "an unrelated operator variable is withheld");
+for (const k of HOST_MARKERS)
+  assert.ok(!(k in env), `${k} leaked from this process into the child: a host-session marker must be withheld`);
 
-// The reset. A bare buildLaunch takes no creds, no acl, no lifecycle uid and no role, so EVERY name
-// below is one the connector does not assign, which is precisely when an inherited value survives.
 for (const k of PER_SESSION)
   assert.ok(!(k in env), `${k} leaked from this process into the child: a per-session name must be reset, not inherited`);
 
-// What the connector DOES assign for this child is present and is its own, not the parent's.
 assert.equal(env.COTAL_SPACE, "smoke", "the connector supplies this child's space");
 assert.equal(env.COTAL_NAME, "hermes-1", "the connector supplies this child's name");
+assert.ok(env.PATH !== undefined, "PATH is forwarded so the seat can still launch");
 
 for (const k of OPERATOR_KNOBS)
   assert.equal(env[k], `parent-${k}`, `${k} is a machine-wide operator knob and must cross`);
 
-// ── Allow-list mode (the operator declared `spawn.env`) ──────────────────────────────────────────
+// ── Allow-list extras (the operator declared `spawn.env`) ─────────────────────────────────────────
 const confined = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-2", envAllow: ["NOUS_API_KEY"] }).env ?? {};
 
 assert.equal(confined.NOUS_API_KEY, "smoke-NOUS_API_KEY", "a declared name is forwarded under containment");
@@ -103,14 +83,21 @@ assert.ok(!("SOME_UNRELATED_SECRET" in confined), "containment means the OS allo
 assert.ok(confined.PATH !== undefined, "the OS allow-list still carries what the child needs to run");
 for (const k of PER_SESSION)
   assert.ok(!(k in confined), `${k} must be absent under containment too`);
+for (const k of HOST_MARKERS)
+  assert.ok(!(k in confined), `${k} must stay withheld when spawn.env names something else`);
+
+// Opt-in: a persona / operator that names a host marker gets it. The default path never does.
+const opted = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-4", envAllow: ["CLAUDE_CODE_CHILD_SESSION"] }).env ?? {};
+assert.equal(opted.CLAUDE_CODE_CHILD_SESSION, "smoke-CLAUDE_CODE_CHILD_SESSION", "a host marker named on spawn.env is the explicit opt-in");
+assert.ok(!("CLAUDECODE" in opted), "an unnamed host marker stays withheld even when a sibling is opted in");
 
 // An empty array is a POLICY (the OS allow-list alone), not "unset". If this were read as unset the
 // child would inherit everything, which is the one way the opt-in could silently fail open.
 const bare = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-3", envAllow: [] }).env ?? {};
-assert.ok(!("NOUS_API_KEY" in bare), "an empty spawn.env is containment with nothing declared, never an absent policy");
+assert.equal(bare.NOUS_API_KEY, "smoke-NOUS_API_KEY", "empty spawn.env does not drop connector-declared provider keys");
+assert.ok(!("GH_TOKEN" in bare), "empty spawn.env still withholds undeclared names");
 assert.ok(bare.PATH !== undefined, "an empty spawn.env still carries the OS allow-list");
 
-// An initial prompt has no carrier into the gateway yet: it is refused at launch, never dropped.
 assert.throws(
   () => hermesConnector.buildLaunch({ space: "smoke", name: "hermes-1", prompt: "greet the operator" }),
   /initial prompt/,
@@ -118,6 +105,7 @@ assert.throws(
 );
 
 console.log(
-  `launch-env smoke: ${PROVIDER_KEYS.length + FORMERLY_EXCLUDED.length + 1} operator variables inherited, ` +
+  `launch-env smoke: ${PROVIDER_KEYS.length} declared provider keys forwarded, ` +
+    `${FORMERLY_EXCLUDED.length + HOST_MARKERS.length + 1} undeclared names withheld, ` +
     `${PER_SESSION.length} per-session names reset, ${OPERATOR_KNOBS.length} operator knobs crossed, both modes held`,
 );

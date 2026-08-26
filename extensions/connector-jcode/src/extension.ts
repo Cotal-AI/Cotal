@@ -55,7 +55,7 @@ export const jcodeConnector: Connector = {
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
     // Like Codex, the TUI decision belongs to the process that builds this launch. A foreground
     // spawn reads the operator shell; a detached spawn is built in the manager and reads its env.
-    // It must cross explicitly because launchEnv resets the per-session COTAL_* namespace.
+    // Copied by name because launchEnv does not inherit ambient COTAL_* (this name is per-launch).
     const tui = process.env.COTAL_JCODE_TUI?.trim();
     if (tui) env.COTAL_JCODE_TUI = tui;
 

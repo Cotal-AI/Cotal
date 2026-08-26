@@ -86,9 +86,15 @@ The manager launches the *real* `claude` (no wrapper):
 ```
 claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{…}}}' \
        --dangerously-load-development-channels server:cotal
-# env: COTAL_SPACE, COTAL_NAME, COTAL_ROLE, COTAL_SERVERS, COTAL_CHANNEL=1
+# env: COTAL_SPACE, COTAL_NAME, COTAL_ROLE, COTAL_CHANNEL=1, plus claude's documented auth vars
 ```
 
+- **Model auth.** Locally, `claude` still reads macOS Keychain / `~/.claude`. In a container or
+  CI there is no Keychain, so the connector forwards the documented credential set —
+  `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`), `ANTHROPIC_API_KEY` /
+  `ANTHROPIC_AUTH_TOKEN`, and the cloud-provider flags plus their credential vars. Host-session
+  markers (`CLAUDE_CODE_CHILD_SESSION`, `CLAUDECODE`) stay out so a nested seat still saves a
+  transcript. See [Deploy](deploy.md).
 - **MCP isolation.** A spawned agent runs with **only** the cotal MCP server:
   `--strict-mcp-config` ignores every other MCP source, crucially the operator's personal
   `~/.claude.json` servers (several spawns each booting a heavy helper would starve

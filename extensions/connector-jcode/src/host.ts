@@ -284,7 +284,19 @@ export async function runJcodeHost(): Promise<void> {
       // Re-copied above on every launch. Do not call the SDK default: it links rotating provider
       // auth files, while current jcode correctly refuses external auth paths that are symlinks.
       inheritLogins: false,
-      env: { JCODE_DISABLE_CLAUDE_MCP: "1", [launchBound.key]: launchBound.value },
+      // A managed seat never updates its own binary. Jcode's background updater restarts the
+      // process tree when it lands a release, which SIGTERMs the TUI — the only connection the
+      // server counts as a client — and nothing re-attaches afterwards, so the server's idle
+      // reaper takes the whole seat down five minutes later, mid-turn. Measured 2026-08-26: three
+      // seats, three identical chains, "Updated to v0.81.1. Restarting..." then a shutdown exactly
+      // 300s after the client was lost, one of them two seconds after starting a tool call. The
+      // seat's version is the operator's choice at spawn time; it must not change under a running
+      // agent.
+      env: {
+        JCODE_DISABLE_CLAUDE_MCP: "1",
+        JCODE_NO_AUTO_UPDATE: "1",
+        [launchBound.key]: launchBound.value,
+      },
     });
     const sdkExitListeners = process.listeners("exit").filter((listener) => !exitListenersBefore.has(listener));
     for (const listener of sdkExitListeners) process.removeListener("exit", listener);
