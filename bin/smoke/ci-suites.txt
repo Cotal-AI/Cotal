@@ -542,3 +542,4 @@ smoke:claude-launch-env
 smoke:web-console-auth
 smoke:no-implicit-general
 smoke:session-channels
+smoke:jcode-private-lifecycle
