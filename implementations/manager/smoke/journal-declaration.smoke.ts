@@ -3,7 +3,7 @@
  * quietly — and pinned at the invariant the flip must NOT break.
  *
  * WHY THIS SUITE IS GREEN WHILE THE DEFECT IS UNFIXED, said first because it looks backwards.
- * The defect is that spawn/launch ship as Model B — `class: "ephemeral"` — where SPEC:1465 makes
+ * The defect is that spawn/launch ship as Model B — `class: "ephemeral"` — where SPEC §13.3 makes
  * the class a MUST that matches the command's contract and §13.6 makes these action commands, whose
  * submissions are journal. The obvious instrument is a cell that fails today and passes when
  * the flip lands. It was asked for, and it is the wrong instrument HERE, for a mechanical reason:

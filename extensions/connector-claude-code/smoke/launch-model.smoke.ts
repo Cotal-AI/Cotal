@@ -53,6 +53,15 @@ const refusalFor = (extra: Record<string, unknown>): string | null => {
 
 console.log("claude connector: a model it cannot serve must stop the launch");
 
+// ---- an initial prompt is delivered trimmed as the leading positional, or refused when empty ------
+{
+  const spec = launch({ prompt: "  greet the operator  " });
+  check("prompt is claude's leading positional, trimmed", spec.args[0] === "greet the operator", spec.args[0]);
+  const msg = refusalFor({ prompt: "   " });
+  check("an empty prompt refuses the launch", msg !== null && /empty/.test(msg), msg);
+  check("no prompt, no positional", launch({}).args[0] === "--dangerously-load-development-channels");
+}
+
 // ---- REFUSED: provider-prefixed specifiers belonging to another runtime -------------------------
 for (const model of ["xai/grok-4.6", "openai/gpt-5.6-sol-fast", "google/gemini-2.5-pro"]) {
   const msg = refusalFor({ model });
@@ -108,7 +117,7 @@ check(
 //
 // A count is the only thing that sees a cell that is not there. It is a real assertion and it is
 // allowed to fail on a legitimate edit: change the cases above and change this number deliberately.
-const EXPECTED = 18;
+const EXPECTED = 21;
 check(
   `every cell ran - ${EXPECTED} expected, a conditional cell that vanishes is invisible without this`,
   pass + fail === EXPECTED, // counted BEFORE this check lands, so it counts the cells above it

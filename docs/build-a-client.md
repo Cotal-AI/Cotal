@@ -33,8 +33,10 @@ receive-side authenticity checks, and the presence/channel loops. See
   cotal mint <name> --profile agent          # write an agent creds file to join with
   ```
 
-  `cotal mint <name> --profile <agent|observer|admin>` also takes `--allow-subscribe a,b`
-  and `--allow-publish a,b` to scope the read/post ACLs, and `--out <path>`. The creds file
+  `cotal mint <name> --profile agent` also takes `--allow-subscribe a,b` and
+  `--allow-publish a,b` to scope the read/post ACLs, and `--out <path>`. Those two flags apply to
+  the **agent** profile only: `observer` and `admin` carry a fixed read set (`observer` reads the
+  whole chat plane) and `mint` refuses both flags there, so scope a reader with the agent profile. The creds file
   binds your principal (`owner.actor`, [SPEC §2](../SPEC.md#2-identity)) and your channel
   grants; see
   [identity-and-auth.md](identity-and-auth.md) and [run-a-mesh.md](run-a-mesh.md).
@@ -100,7 +102,10 @@ map to.
    [§7](../SPEC.md#7-channels). Resolve a channel's effective `live`/`durable` class from channel
    config and use one resolution everywhere. On a `durable` channel, tolerate the at-most-once
    `live` gap, catch up from the durable backstop, and deduplicate by `id` across the live,
-   backfill, and durable copies. If durable membership can't be established, report *joined live
+   backfill, and durable copies. Receiver deduplication MUST NOT coalesce copies
+   solely because `id` is the empty string (SPEC §4). Duplicate surfacing is disclosed only on
+   at-least-once paths, and the publisher obligation to supply a unique string id (SPEC §5) is
+   unchanged. If durable membership can't be established, report *joined live
    with the backstop unestablished*, never *joined durable*. See
    [delivery-daemon.md](delivery-daemon.md) and [presence-and-delivery.md](presence-and-delivery.md).
 

@@ -7,11 +7,14 @@ import { dirname, join } from "node:path";
 import {
   CotalEndpoint,
   deliveryOf,
+  isEventChannel,
   parseSubject,
   spacePrefix,
   mintCreds,
   newIdentity,
   clearChannel,
+  assertValidChannel,
+  type CotalMessage,
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
@@ -235,6 +238,12 @@ function releasePid(path: string): void {
 // OWN files, so a published/seeded copy is self-contained and never reaches into node_modules at
 // runtime — which is what lets web ship as a bundled first-party extension, seeded like the connectors.
 const jsType = "text/javascript; charset=utf-8";
+
+/** The one condition name for "the membership read did not answer", shared by the HTTP body and the
+ *  SSE event so a browser matches ONE token and a test asserts the same token the server emits.
+ *  Exported for the same reason `PAGE` is: a test that restates it only agrees with itself. */
+export const MEMBERSHIP_READ_FAILED = "membership-read-failed";
+
 /** Exported so a test can resolve what the browser is actually served, rather than restating the
  *  route table in its own source and agreeing with itself. */
 export const PAGE: Record<string, { path: string; type: string }> = {
@@ -243,6 +252,21 @@ export const PAGE: Record<string, { path: string; type: string }> = {
   // Shared message-part renderer for both pages. This map is an allow-list, so a page script that
   // depends on this file is broken until it has a row here, whatever the HTML requests.
   "/parts.js": { path: join(here, "web/parts.js"), type: jsType },
+  // Registers an `ag-ui.frame` renderer into the map `parts.js` consults. Served to both pages: a
+  // frame is as likely to arrive on the graph's detail row as in the console body, and a kind that
+  // draws on one page and shows a marker on the other is worse than one that shows a marker on both.
+  "/agui-frame.js": { path: join(here, "web/agui-frame.js"), type: jsType },
+  // The shape-B bootstrap: this page taps live before it reads history, so a frame's `seq` order has
+  // to be imposed by the consumer. Served to `/` only. The graph page reads the backfill into
+  // transient glow and "recently active" buffers and keeps no feed a live arrival appends to, so it
+  // has no merge to order; giving it the machine anyway would imply an ordering guarantee on a
+  // surface where nothing consumes one.
+  "/event-order.js": { path: join(here, "web/event-order.js"), type: jsType },
+  // Keep-last-good + the refusal guard, shared by BOTH pages so they cannot disagree about what a
+  // failed poll does to what is already on screen. Served to `/` and `/graph` alike: the wipe was
+  // measured on the graph page and the corrupted feed on the console page, and one page keeping its
+  // snapshot while the other drops it is the state this file exists to prevent.
+  "/snapshot.js": { path: join(here, "web/snapshot.js"), type: jsType },
   "/md.js": { path: join(here, "web/md.js"), type: jsType },
   "/app.js": { path: join(here, "web/app.js"), type: jsType },
   "/graph": { path: join(here, "web/graph.html"), type: "text/html; charset=utf-8" },
@@ -250,6 +274,412 @@ export const PAGE: Record<string, { path: string; type: string }> = {
   "/vendor/marked.umd.js": { path: join(here, "web/vendor/marked.umd.js"), type: jsType },
   "/vendor/purify.min.js": { path: join(here, "web/vendor/purify.min.js"), type: jsType },
 };
+
+/** What the two backfill routes need from an endpoint. Narrow on purpose: it is the seam the filter
+ *  is measured through, and a mock satisfying six methods it never calls would prove less. */
+export interface ActivitySource {
+  listChannels(): Promise<{ channel: string; messages: number; config?: unknown }[]>;
+  channelHistory(channel: string, opts: { limit: number }): Promise<CotalMessage[]>;
+  dmHistory(opts: { limit: number }): Promise<CotalMessage[]>;
+}
+
+/** The channels this dashboard LISTS and BACKFILLS: chat only.
+ *
+ * WHY AN AGENT'S EVENT CHANNEL IS NOT ONE OF THEM. `listChannels()` derives a row from every
+ * retained concrete subject and the chat stream caps per subject rather than by age, so the list
+ * grows by one row per agent that has ever run and those rows never age out. Unfiltered, the channel
+ * sidebar is buried under machine streams, the graph page grows a hub node for each, and
+ * `/api/activity` issues one `channelHistory` round trip per event channel and then merges the
+ * results into a global top-N that a human reading chat did not ask for. That is a cost that scales
+ * with the number of agents ever run, which is the wrong axis entirely.
+ *
+ * FILTERED BEFORE THE FETCH, NOT AFTER, AND THE ORDER IS THE CLAIM. Filtering the merged output
+ * would still pay every round trip and then discard the bytes. The console applies the identical
+ * rule at the identical point (`mesh-view.ts` filters `listChannels()` before `channelHistory`), and
+ * the two surfaces share this classifier rather than each spelling the convention, so they cannot
+ * disagree about what a channel is.
+ *
+ * WHAT IS NOT FILTERED, DELIBERATELY, IN TWO PLACES. The live SSE tap still carries frames, marked
+ * rather than dropped: dropping them would delete the only traffic this release taught the surface
+ * to draw, and delete it silently. And `/api/channels/<name>/history` still serves an event channel
+ * when a caller names one, because that route answers a question about a channel the caller already
+ * identified; a filter there would mean the dashboard could render a frame it could never fetch. */
+export function chatOnly<T extends { channel: string }>(rows: readonly T[]): T[] {
+  return rows.filter((row) => !isEventChannel(row.channel));
+}
+
+/** How long one aggregating request may take before it answers with what it has.
+ *
+ *  WHY A DEADLINE AT ALL, with the measurement that set it. `/api/activity` fans out one history
+ *  read per channel, and the cost of a read is the link, not the broker. Against a local broker
+ *  behind a 160ms-RTT, 128 KiB/s link with 40 channels and 12000 messages: the same aggregation
+ *  finished in 125ms for a reader ON the broker host and returned 500 `timeout` after 15.94s for the
+ *  reader across the link; at a less constrained 256 KiB/s it SUCCEEDED after 34491ms, which is the
+ *  same defect with a different ending. An unbounded aggregation has no answer for either case.
+ *
+ *  WHY THIS NUMBER. It is longer than a healthy remote read of this shape (the measured
+ *  `/api/channels` + a page per channel) and far shorter than a reader will sit in front of a blank
+ *  panel. It is not tuned to any one link: what makes the surface honest is that it always answers
+ *  and always says what it left out, not that the bound is optimal. */
+export const AGGREGATION_DEADLINE_MS = 8_000;
+
+/** How many per-source reads are in flight at once.
+ *
+ *  WHY NOT ALL OF THEM. Every source shares ONE connection to ONE broker, so past the point where
+ *  the link is saturated extra concurrency buys no throughput: it spreads the same bytes over more
+ *  unfinished reads, and a read that is 90% done when the deadline fires contributes nothing.
+ *
+ *  THE NUMBER IS MEASURED, NOT PREFERRED, and the measurement includes what it costs. Same corpus
+ *  (40 channels, 12000 chat messages, 2000 DMs), 160ms RTT, sources answered inside the 8000ms
+ *  deadline, three strategies, each arm on an idle link:
+ *
+ *      link          fan out all 41   pool of 8   pool of 1 widening on each completion
+ *      1024 KiB/s          1             16                        3
+ *       512 KiB/s          1              8                        3
+ *       256 KiB/s          1              0                        3
+ *       128 KiB/s          1              0                        1
+ *
+ *  The fan-out is the shape that shipped and it is the worst column at every speed: reading the whole
+ *  set at once is why the panel was empty rather than short. A pool that starts at one and widens on
+ *  each completed read was built and measured too, on the reasoning that it would adapt to a link it
+ *  cannot know; it does not pay, because at a healthy link a single source is round-trip bound rather
+ *  than throughput bound, so the first completion arrives too late to be useful evidence and the ramp
+ *  costs more than the adaptation returns.
+ *
+ *  WHAT THIS BOUND DECLINES, stated rather than left to be discovered. Below roughly 500 KiB/s at
+ *  this RTT and this corpus, no source completes inside the deadline, the page reports `0 of 41`, and
+ *  the browser keeps what it already had and marks it stale. The fan-out returned ONE source there,
+ *  so this trades a single channel's history for a response that is bounded and that says what it
+ *  left out. On a link that cannot serve the request, saying so is the answer. */
+export const AGGREGATION_CONCURRENCY = 8;
+
+/** The sentinel a source resolves to when the deadline beat it. */
+const LATE = Symbol("late");
+
+/** A promise that resolves at `ms`, plus the handle to cancel its timer. `unref` alone is not
+ *  enough: an 8-second timer in a long-lived server would hold a poll's worth of state per request. */
+function deadline(ms: number): { until: Promise<typeof LATE>; done(): void } {
+  let timer: NodeJS.Timeout;
+  const until = new Promise<typeof LATE>((resolve) => {
+    timer = setTimeout(() => resolve(LATE), ms);
+    timer.unref();
+  });
+  return { until, done: () => clearTimeout(timer) };
+}
+
+/** Race one source against the request's deadline.
+ *
+ *  THE WORK IS ABANDONED, NOT CANCELLED, and that is stated rather than implied: a JetStream read in
+ *  flight has no cancel, so a late read keeps running until it finishes and its ephemeral consumer is
+ *  reclaimed by its own inactivity threshold. "Bounded" here means the RESPONSE is bounded. Claiming
+ *  it bounds broker work would be the silent half of the defect this deadline exists to fix. */
+async function within<T>(p: Promise<T>, until: Promise<typeof LATE>): Promise<T | typeof LATE> {
+  return Promise.race([p, until]);
+}
+
+/** A request the CALLER got wrong, so the frame answers 400 rather than the 500 it gives a server
+ *  fault. Without this every malformed query reads, in the log and in the body, exactly like the
+ *  dashboard breaking. */
+export class BadRequest extends Error {}
+
+/** A body the caller sent that this server declines to READ, which is a different fact from a body
+ *  it read and disliked, and carries its own status. Deliberately NOT a `BadRequest`: 400 says
+ *  "what you sent is wrong", 413 says "I stopped before finding out", and a caller that retries on
+ *  400 by fixing its payload would loop forever on a size it never learns is the problem. */
+export class PayloadTooLarge extends Error {}
+
+/** The most a request body may weigh before the one write route refuses to keep reading it.
+ *
+ *  THE ROUTE'S BODY HAS ONE FIELD, a channel name, and `assertValidChannel` bounds a usable name
+ *  to dotted `[A-Za-z0-9_-]` segments that the wire will carry as a subject. The dashboard's own
+ *  delete sends about sixty bytes. 8 KiB is therefore not a guess at a working size, it is two
+ *  orders of magnitude ABOVE any name the broker would accept, chosen so that no legitimate
+ *  caller can meet it and an abusive one meets it immediately.
+ *
+ *  MEASURED, before this existed, against the shipped route over a local broker with a raw socket
+ *  rather than `fetch`, because `fetch` hides how much of the body actually left the client:
+ *    30,000,000 bytes posted -> ALL 30,000,000 sent, 70,000,144 bytes of refusal returned,
+ *    peak RSS +1.39 GB, 1022 ms. The read was unbounded and ran to completion before the route
+ *    formed an opinion, so the refusal was the expensive part rather than the cheap one. */
+const MAX_BODY_BYTES = 8 * 1024;
+
+/** THE LIMIT, PARSED ONCE, because three routes each re-deriving
+ *  `query.get("limit") ? Number(...) : N` is how they came to disagree about the same parameter.
+ *
+ *  MEASURED ON THE SHIPPED ROUTES, against a real broker, before this existed:
+ *    ?limit=abc       `Number("abc")` is NaN and every comparison against NaN is false, so core's
+ *                     `limit <= 0` guard does not fire and the widening search's two exits can
+ *                     never be true. No answer after 30s, and the ABANDONED request kept consuming
+ *                     half a core with its caller long gone, invisible because the process keeps
+ *                     serving everything else.
+ *    ?limit=Infinity  passes the same guard, and `slice(-Infinity)` is the whole array: a channel's
+ *                     entire retained history from a one word request. `1e999` is the same value.
+ *    ?limit=2.5       silently truncated to 2.
+ *    ?limit=" 5"      accepted as 5, because `Number()` trims whitespace.
+ *
+ *  So the accepted form is the narrow one: a plain run of digits naming a safe integer. `0` keeps
+ *  meaning zero, which is what it already did and what a caller expects; an absent or empty
+ *  parameter keeps meaning the route's own default, the one shape the old parse got right.
+ *
+ *  Everything else is REFUSED rather than clamped. A clamp would answer a request nobody made, and
+ *  the caller who wrote `limit=2.5` would never learn that the page they read was not the page they
+ *  asked for. */
+/** Codepoints `JSON.stringify` leaves RAW that PRODUCE NO GLYPH OF THEIR OWN, or that reorder the
+ *  text around them, stated as Unicode PROPERTIES rather than as a hand list. That wording is
+ *  narrower than "change what a reader sees" on purpose, and the narrowing is a review finding:
+ *  the looser phrase admits every combining mark, and the paragraph at the end of this comment is
+ *  why escaping those would be this issue pointed the other way. The first version of this WAS a hand list, and review
+ *  found it missing U+061C, U+2060, the variation selectors and the tag characters, every one of
+ *  which is exactly the thing the list said it closed. A list is a claim about a set nobody
+ *  maintains; the property IS the set, and it moves with the Unicode version the runtime carries.
+ *
+ *  Two properties, because neither contains the other and both name the same harm from a different
+ *  side. `Default_Ignorable_Code_Point` is the renders-as-nothing family: the soft hyphen, the
+ *  zero-width characters, the word joiner, the variation selectors, the tag characters and the BOM.
+ *  `Cf` is the format family: characters with no glyph of their own that change how the text around
+ *  them is read, which is where the interlinear annotation controls U+FFF9 to U+FFFB live. Review
+ *  found those three arriving raw against a class that had only the first property, and they are the
+ *  clearest case of the harm: they mark a span as base text plus its gloss, so a reader whose
+ *  terminal does not implement them sees the two runs concatenated into a sentence nobody wrote.
+ *  Measured, the second property adds 32 codepoints and not one of them is a letter or a digit.
+ *
+ *  `Bidi_Control` is deliberately absent: measured on this runtime, all twelve of its codepoints,
+ *  U+061C and the isolates included, are already default-ignorable, so naming it would be a second
+ *  name for one set. The suite pins those twelve by hand, so a Unicode version that separated them
+ *  goes red rather than quietly leaving a reordering character raw.
+ *
+ *  What no property covers is DEL and the C1 controls, which are `Cc`, and U+2028/U+2029, which are
+ *  line and paragraph separators, so those are named. C0 is absent because `JSON.stringify` already
+ *  escapes all of it.
+ *
+ *  NOT IN THIS CLASS, and deliberately: a VISIBLE character that merely resembles another. A Cyrillic
+ *  small a is a letter, it renders as itself, and escaping it would make a refusal about a name a
+ *  human typed unreadable, which is this issue pointed the other way. Confusables are a different
+ *  problem with a different answer, and quoting for a human to read is not it.
+ *
+ *  NOT IN THIS CLASS EITHER, and this one review reached by finding U+0338 COMBINING LONG SOLIDUS
+ *  OVERLAY arriving raw and asking whether it belonged: a COMBINING MARK. It produces a visible
+ *  mark on a visible base, and the property that carries it, `gc=Mn`, is the same one carrying the
+ *  acute accent in a name written in NFD, the Devanagari vowel signs, the Arabic and Hebrew points
+ *  and the Vietnamese tones. Measured on this runtime, marks are 2543 codepoints and only 263 of
+ *  them are already in the class, so escaping them would take about 2280 codepoints of ordinary
+ *  written language and render an accented name as its escapes. A mark CAN build a confusable
+ *  (U+0338 over `=` renders as a not-equals sign, so a quoted `a=b` can display as `a` not-equals
+ *  `b`), which is a real harm and the same one the paragraph above declines: it is unbounded, it
+ *  needs no combining mark to exist, and its answer is normalization or confusable detection
+ *  rather than making every script that writes with marks unreadable. The suite asserts both
+ *  exclusions rather than only describing them. */
+const INVISIBLE_AFTER_JSON = /[\p{Default_Ignorable_Code_Point}\p{gc=Cf}\u007f-\u009f\u2028\u2029]/gu;
+
+/** QUOTE A CALLER'S OWN VALUE SO AN OPERATOR CAN READ IT.
+ *
+ *  `JSON.stringify` was doing two jobs at every site below and only claims one of them. It builds
+ *  valid JSON, and on the way it escapes every C0 control, so `ESC` arrives as the six characters
+ *  `\u001b` and a newline as `\n`. It is not a renderer for humans and never said it was: DEL, the
+ *  C1 range, `U+2028`/`U+2029`, the bidi controls and the zero-width characters are all valid JSON
+ *  string content and pass through untouched.
+ *
+ *  MEASURED against the shipped `web()` entry before this existed, driving `/api/activity?limit=`
+ *  with each codepoint percent-encoded and reading the answer as BYTES rather than through a JSON
+ *  parse (a parse decodes the very thing under test and hands the input back whatever the server
+ *  wrote). Six of eight arrived raw in BOTH the 400 body and the operator's stderr line: DEL,
+ *  `U+0085`, `U+009B`, `U+202E`, `U+2028`, `U+2029`. `ESC` and `LF` came back escaped, which is
+ *  what makes the other six a finding rather than a property of the harness.
+ *
+ *  The escape is emitted as `\uXXXX`, so the message stays valid JSON on the body path and reads as
+ *  the codepoint it is on the terminal path. Applied where the value is QUOTED rather than where it
+ *  is written out, because the untrusted thing is the value and the message is derived from it: a
+ *  guard at the two exits fences those two exits, while a guard here travels with the sentence.
+ *
+ *  The loop below is per UTF-16 UNIT, not per codepoint: `u` hands the callback a whole codepoint,
+ *  so an astral one (a tag character, a musical control) arrives as its surrogate pair and has to
+ *  leave as two escapes. `\u1d173` is not a JSON escape, and a body carrying it would stop parsing
+ *  for the caller who asked what was wrong with their request. */
+export function quoteForOperator(value: string): string {
+  return JSON.stringify(value).replace(INVISIBLE_AFTER_JSON, (ch) => {
+    let out = "";
+    for (let i = 0; i < ch.length; i++) out += "\\u" + ch.charCodeAt(i).toString(16).padStart(4, "0");
+    return out;
+  });
+}
+
+/** The channel name out of the path. A percent escape the decoder cannot read is the caller having
+ *  typed a bad one, so it is refused as a bad request like any other malformed input. Left as a
+ *  bare `URIError` it reached the request frame unrecognised and was reported as a server fault,
+ *  which is the one thing the 400/500 split exists to prevent. */
+export function channelNameFromPath(raw: string): string {
+  let name: string;
+  try {
+    name = decodeURIComponent(raw);
+  } catch {
+    throw new BadRequest(`channel name ${quoteForOperator(raw)} is not valid percent-encoded text`);
+  }
+  return canonicalChannel(name);
+}
+
+/** A caller's channel name, refused unless it is ALREADY the name the wire uses.
+ *
+ *  The wire builds a channel's subject through `token()`, which rewrites anything outside
+ *  `[A-Za-z0-9_-]` to `_` rather than refusing it, so a name a caller invented and a real channel
+ *  collide: `abc` + U+202E and `abc_` are one channel on the wire while the dashboard answers with
+ *  whichever the caller typed. Measured against the shipped routes on a local broker before this
+ *  existed, with one message seeded on `abc_`: the history read under the first name returned the
+ *  second's message, and the delete route purged the second while answering
+ *  `{"ok":true,"channel":"abc<U+202E>","purged":1}`. Rendering that answer readably would have made
+ *  the lie legible without removing it, which is why this refuses the name instead.
+ *
+ *  Core already owns the rule, written for the same aliasing gap on the ACL side; the dashboard
+ *  simply never asked it. Its message is rebuilt here rather than passed through, because core
+ *  quotes the raw name with `JSON.stringify` and this route is the one place that must not. */
+function canonicalChannel(name: string): string {
+  try {
+    return assertValidChannel(name);
+  } catch {
+    throw new BadRequest(
+      `channel name ${quoteForOperator(name)} is not a channel: dotted segments of [A-Za-z0-9_-], ` +
+        `and a name the wire would rewrite would address a different channel than it names`,
+    );
+  }
+}
+
+/** The `limit` out of the query. The safe-integer refusal is reachable only through the digits-only
+ *  test above it, so its value cannot carry anything the quoter would escape today. It quotes
+ *  anyway: the guarantee that a refusal renders its input unambiguously should hold because the
+ *  quoting site holds it, not because a regex two lines up stays exactly as narrow as it is this
+ *  morning. */
+export function historyLimit(query: URLSearchParams, fallback: number): number {
+  const raw = query.get("limit");
+  if (raw === null || raw === "") return fallback;
+  if (!/^[0-9]+$/.test(raw))
+    throw new BadRequest(`limit must be a whole number of messages, received ${quoteForOperator(raw)}`);
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n))
+    throw new BadRequest(`limit ${quoteForOperator(raw)} is larger than this server can count exactly`);
+  return n;
+}
+
+/** One aggregated page, and what it is missing. `partial` and the counts are ALWAYS present, so a
+ *  page that ran out of time cannot be mistaken for a complete one by omission. The shape that made
+ *  `{"error":"timeout"}` indistinguishable from data is exactly this mistake one layer up. */
+export interface ActivityPage {
+  entries: ({ mode: "chat"; channel: string; msg: CotalMessage } | { mode: "unicast"; msg: CotalMessage })[];
+  /** True iff at least one source did not answer within the deadline. */
+  partial: boolean;
+  /** Sources that answered, out of sources asked (channels + the DM backlog). */
+  read: number;
+  of: number;
+  /** Every source that did not answer, NAMED. A count alone tells a reader something is missing and
+   *  not what, which on a dashboard is the difference between "one channel is slow" and "the space
+   *  is empty". */
+  missing: string[];
+  deadlineMs: number;
+}
+
+/** The all-activity backfill: recent chat history merged with DM history, oldest-first, capped, and
+ *  BOUNDED.
+ *
+ * WHAT CHANGED AND WHY, because the previous shape had two failure modes and no good one. It fanned
+ * out under `Promise.all` and awaited the DM backlog after it, so (1) one channel's rejection
+ * discarded every channel that had already answered and became the route's 500, and (2) there was no
+ * upper bound at all: the caller waited for the slowest read however long that took. Measured across
+ * a 160ms link, the first produced `500 {"error":"timeout"}` after 15.94s and the second produced a
+ * 34-second success. Neither is an answer a dashboard can render.
+ *
+ * Now every source - each channel AND the DM backlog, which used to be serialized after them - races
+ * one shared deadline. Sources that answered are merged; sources that refused or ran late are NAMED
+ * in the page. The page is never a 500 and never silently short.
+ *
+ * Extracted from the route so the filter above is reachable by a test that can see WHICH channels
+ * were asked for, which is the only evidence that separates filtering before the fetch from
+ * filtering after it. The route is a thin caller. */
+export async function activityBackfill(
+  ep: ActivitySource,
+  limit: number,
+  deadlineMs: number = AGGREGATION_DEADLINE_MS,
+  concurrency: number = AGGREGATION_CONCURRENCY,
+): Promise<ActivityPage> {
+  const clock = deadline(deadlineMs);
+  try {
+    // The channel list is inside the deadline too: it is a broker read like any other, and a request
+    // that could hang here would be bounded everywhere except its first step. There is no partial
+    // page to serve without it, so this one is a refusal rather than a partial: `0 of 0` would claim
+    // the space has no channels, which is a different answer and the wrong one.
+    //
+    // BOTH ENDINGS ARE NAMED, and the second is why this is not just a `within` call. The registry
+    // read has its OWN timeout inside the client, shorter than this deadline: measured across a
+    // 128 KiB/s link it rejected with the broker's bare `timeout` after 5s, before the deadline
+    // could fire, and that word travelled through the generic 500 handler to the browser as
+    // `{"error":"timeout"}` - five characters of cause for a panel that went blank. A refusal the
+    // reader cannot act on is the defect this change exists to remove, so the reason is wrapped in
+    // the name of the read that produced it.
+    const listed = await within(
+      ep.listChannels().catch((e: unknown) => {
+        throw new Error(`the channel list could not be read: ${e instanceof Error ? e.message : String(e)}`);
+      }),
+      clock.until,
+    );
+    if (listed === LATE)
+      throw new Error(`the channel list did not arrive within ${deadlineMs}ms`);
+    const chans = chatOnly(listed);
+
+    type Src = { name: string; read: () => Promise<ActivityPage["entries"]> };
+    const sources: Src[] = [
+      ...chans.map((ch) => ({
+        name: `#${ch.channel}`,
+        // Each message is tagged with the channel this server REQUESTED, so the backfill path does
+        // not depend on the payload claim either.
+        read: async () =>
+          (await ep.channelHistory(ch.channel, { limit })).map((msg) => ({ mode: "chat" as const, channel: ch.channel, msg })),
+      })),
+      {
+        name: "direct messages",
+        read: async () => (await ep.dmHistory({ limit })).map((msg) => ({ mode: "unicast" as const, msg })),
+      },
+    ];
+
+    // A POOL, NOT A FAN-OUT. Workers pull from a shared cursor, so at most `concurrency` reads are
+    // in flight and the rest wait their turn. A worker that finds the deadline already past does not
+    // start another read: the page is closed, and issuing broker work for it would be waste with a
+    // guaranteed-discarded result.
+    const settled: (ActivityPage["entries"] | typeof LATE)[] = new Array(sources.length).fill(LATE);
+    let next = 0;
+    let expired = false;
+    void clock.until.then(() => { expired = true; });
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const i = next++;
+        if (i >= sources.length || expired) return;
+        try {
+          const r = await within(sources[i].read(), clock.until);
+          if (r !== LATE) settled[i] = r;
+        } catch {
+          // A source that FAILED is missing for the same reason a late one is: it has nothing to
+          // contribute. It is named the same way, and it no longer takes the whole page with it.
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, sources.length) }, worker));
+
+    const entries: ActivityPage["entries"] = [];
+    const missing: string[] = [];
+    for (let i = 0; i < settled.length; i++) {
+      const r = settled[i];
+      if (r === LATE) missing.push(sources[i].name);
+      else entries.push(...r);
+    }
+    entries.sort((a, b) => a.msg.ts - b.msg.ts);
+    return {
+      entries: entries.slice(-limit),
+      partial: missing.length > 0,
+      read: sources.length - missing.length,
+      of: sources.length,
+      missing,
+      deadlineMs,
+    };
+  } finally {
+    clock.done();
+  }
+}
 
 /** A live observability dashboard for a space, served over HTTP + SSE. A read-only
  *  observer endpoint (invisible to peers) feeds the page presence, channel history,
@@ -359,9 +789,13 @@ export async function web(args: ParsedArgs): Promise<void> {
   // on every feed change (debounced; the client re-reads the snapshot). Best-effort — a space without the
   // feed (no delivery daemon, or provisioned before this feature) simply never emits, and the graph
   // degrades to traffic-only. The admin cred carries the read grant; agents never do.
-  let membershipWatch: { stop(): void } | undefined;
+  let membershipWatch: { stop(): Promise<void> } | undefined;
   const pushMembership = debounce(() => {
-    void ep.readMembership().then((m) => broadcast("membership", m)).catch(() => {});
+    // A swallowed rejection here left the graph showing its LAST GOOD snapshot indefinitely, which
+    // is worse than the HTTP case: the display was not merely empty, it was stale and confident.
+    void ep.readMembership()
+      .then((m) => broadcast("membership", m))
+      .catch((e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }));
   }, 150);
   try {
     membershipWatch = await ep.watchMembership(pushMembership);
@@ -429,7 +863,9 @@ export async function web(args: ParsedArgs): Promise<void> {
       send(res, "roster", ep.getRoster());
       // Seed this client's graph with the current membership snapshot (the live tap only carries
       // post-connect traffic; membership is state, so a fresh client needs it explicitly).
-      void ep.readMembership().then((m) => { if (!res.writableEnded) send(res, "membership", m); }).catch(() => {});
+      void ep.readMembership()
+        .then((m) => { if (!res.writableEnded) send(res, "membership", m); })
+        .catch((e) => { if (!res.writableEnded) send(res, MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }); });
       req.on("close", () => clients.delete(res));
       return;
     }
@@ -437,14 +873,25 @@ export async function web(args: ParsedArgs): Promise<void> {
     if (path === "/api/roster") return json(res, ep.getRoster());
     if (path === "/api/membership") {
       // Authoritative who-is-subscribed (broker-sourced); {asOf, members:[{id,live,durable,observedAt}]}.
-      // An unavailable feed returns an empty snapshot so the graph cleanly degrades to traffic-only.
+      //
+      // A FAILED READ IS NOT AN EMPTY ONE, AND THIS USED TO RETURN THE SAME BYTES FOR BOTH. The catch
+      // answered `{asOf: undefined, members: []}` with a 200, which `JSON.stringify` serialises as
+      // `{"members":[]}` — byte-identical to a successful read of a space where nobody is subscribed,
+      // because a key whose value is `undefined` is DROPPED, so the one field that might have
+      // separated them never reached the wire. The browser then had no way to tell "nobody
+      // subscribed" from "I could not find out", and the graph asserted the first.
+      //
+      // The refusal now names its own condition and carries a non-200, so a caller that checks
+      // neither still cannot mistake it for data.
       try { return json(res, await ep.readMembership()); }
-      catch { return json(res, { asOf: undefined, members: [] }); }
+      catch (e) {
+        return json(res, { error: MEMBERSHIP_READ_FAILED, reason: (e as Error).message }, 503);
+      }
     }
     if (path === "/api/channels") {
       // Resolve defaults at the endpoint so every web client renders the same channel policy the
       // core applies; the registry's `config` holds only per-channel overrides.
-      const channels = await ep.listChannels();
+      const channels = chatOnly(await ep.listChannels());
       return json(res, channels.map(({ channel, messages, config }) => ({
         channel,
         messages,
@@ -471,47 +918,76 @@ export async function web(args: ParsedArgs): Promise<void> {
       // fetched message is still at or above it, until none can extend above the cutoff. That is
       // worth doing, with a test encoding the counterexample above, and it is not this change.
       // Correctness first: fetch a full page per channel and merge.
-      const limit = query.get("limit") ? Number(query.get("limit")) : 200;
-      const chans = await ep.listChannels();
-      // Each message is tagged with the channel this server REQUESTED, so the backfill path does
-      // not depend on the payload claim either.
-      const chat = (
-        await Promise.all(
-          chans.map(async (ch) =>
-            (await ep.channelHistory(ch.channel, { limit })).map((msg) => ({
-              mode: "chat" as const,
-              channel: ch.channel,
-              msg,
-            })),
-          ),
-        )
-      ).flat();
-      const dms = (await ep.dmHistory({ limit })).map((msg) => ({ mode: "unicast" as const, msg }));
-      const all = [...chat, ...dms].sort((a, b) => a.msg.ts - b.msg.ts);
-      return json(res, all.slice(-limit));
+      const limit = historyLimit(query, 200);
+      const page = await activityBackfill(ep, limit);
+      // A partial page is worth SAYING on the server too: the operator watching this log is the one
+      // who can tell a slow link from a broken channel, and the browser's marker never reaches them.
+      if (page.partial)
+        console.error(c.yellow(`~ ${req.method ?? "GET"} ${path} partial: ${page.read}/${page.of} sources within ${page.deadlineMs}ms, missing ${page.missing.join(", ")}`));
+      return json(res, page);
     }
     if (path === "/api/dms") {
       // DM history for the Direct-messages lens (god-view); the client groups it by peer/pair.
-      const limit = query.get("limit") ? Number(query.get("limit")) : 500;
-      return json(res, await ep.dmHistory({ limit }));
+      //
+      // BOUNDED LIKE THE AGGREGATION, AND A REFUSAL RATHER THAN A PARTIAL. This is ONE read of one
+      // subject, so there is no subset to serve when it runs long: it either produced the page or it
+      // produced nothing. Measured across a 160ms link it took 16.59s, which is a 200 nobody is still
+      // waiting for. A named 503 at the deadline lets the browser keep the DM list it already has and
+      // say it is stale, which is strictly more than a page that arrives after the reader gave up.
+      const limit = historyLimit(query, 500);
+      const clock = deadline(AGGREGATION_DEADLINE_MS);
+      try {
+        const dms = await within(ep.dmHistory({ limit }), clock.until);
+        if (dms === LATE)
+          return json(res, { error: `direct messages: the read did not finish within ${AGGREGATION_DEADLINE_MS}ms` }, 503);
+        return json(res, dms);
+      } finally {
+        clock.done();
+      }
     }
     if (path.startsWith("/api/channels/") && path.endsWith("/history")) {
-      const name = decodeURIComponent(path.slice("/api/channels/".length, -"/history".length));
-      const limit = query.get("limit") ? Number(query.get("limit")) : 200;
-      return json(res, await ep.channelHistory(name, { limit }));
+      const name = channelNameFromPath(path.slice("/api/channels/".length, -"/history".length));
+      const limit = historyLimit(query, 200);
+      // BOUNDED LIKE ITS SIBLINGS, and deliberately the SAME bound rather than a new one. This is
+      // one read of one channel, so like `/api/dms` it has no subset to serve when it runs long: a
+      // named 503 lets the open channel keep the messages it already has and say they are stale,
+      // which beats a page that arrives after the reader gave up. Measured on a modelled link
+      // before this existed: 11360ms here, on a link where `/api/dms` already refused at 8005ms.
+      // The console page re-reads this route on every poll, so an unbounded read here is one slow
+      // channel holding the view open indefinitely.
+      const clock = deadline(AGGREGATION_DEADLINE_MS);
+      try {
+        const page = await within(ep.channelHistory(name, { limit }), clock.until);
+        if (page === LATE)
+          return json(res, { error: `#${name}: the read did not finish within ${AGGREGATION_DEADLINE_MS}ms` }, 503);
+        return json(res, page);
+      } finally {
+        clock.done();
+      }
     }
     // Delete a channel and its content. The only write path on this otherwise read-only
     // dashboard, so it's POST-gated and guarded by a confirm in the UI. Uses the manager cred
     // pre-minted at startup (auth mode) or the connection creds (open / --creds), NOT the account
     // seed (which we dropped). A wildcard / missing channel is a 400.
     if (path === "/api/channel/delete" && req.method === "POST") {
-      const body = await readBody(req).catch(() => ({}) as { channel?: string });
+      const body = await readBody(req).catch((e: unknown) => {
+        // A body this server DECLINED TO READ is not a body with no channel in it. Flattening the
+        // refusal into `{}` here would answer "channel required", which tells the caller to add a
+        // field it already sent and never mentions the size, so the loud refusal has to survive
+        // this catch. A malformed body still means "channel required", unchanged.
+        if (e instanceof PayloadTooLarge) throw e;
+        return {} as { channel?: string };
+      });
       const channel = typeof body.channel === "string" ? body.channel : "";
       if (!channel) {
         res.writeHead(400, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: "channel required" }));
         return;
       }
+      // BEFORE the purge, not after: this is the destructive route, and an aliasing name here
+      // deletes a channel the caller did not name. Throws a BadRequest, which the request frame
+      // turns into the same 400 and the same operator line every other refusal gets.
+      canonicalChannel(channel);
       try {
         // User mode mints a one-shot channel-purger VIEW per delete — the ledger is re-checked at
         // this click, and a mid-session revoke becomes this handler's 400, never a dead dashboard.
@@ -549,10 +1025,49 @@ export async function web(args: ParsedArgs): Promise<void> {
   const httpServer = createServer((req, res) => {
     void handleRequest(req, res).catch((e: unknown) => {
       const why = e instanceof Error ? e.message : String(e);
-      console.error(c.red(`! ${req.method ?? "GET"} ${req.url ?? "/"} failed: ${why}`));
+      // A caller error and a server fault are different facts and must not share a status. Before
+      // this split, a malformed query read in the log exactly like the dashboard breaking.
+      const status = e instanceof PayloadTooLarge ? 413 : e instanceof BadRequest ? 400 : 500;
+      const caller = status < 500;
+      console.error(c[caller ? "yellow" : "red"](`${caller ? "~" : "!"} ${req.method ?? "GET"} ${req.url ?? "/"} ${caller ? "refused" : "failed"}: ${why}`));
       if (res.headersSent) return void res.end();
-      res.writeHead(500, { "content-type": "application/json" });
+      // END THE CONNECTION A REFUSED BODY WAS RIDING ON, or the cap bounds only what the caller
+      // volunteers. On a keep-alive connection Node wants the socket back, so rather than closing
+      // under a caller that is still uploading it reads and discards the rest of the body first.
+      // The refusal is on the wire in 2 ms either way and the caller still gets to send all of it.
+      //
+      // MEASURED against the shipped route, one 30,000,000 byte post per row:
+      //   connection: close        3,211,264 of 30,000,000 accepted, +0 MB,   508 ms
+      //   connection: keep-alive  30,000,000 of 30,000,000 accepted, +32 MB, 6516 ms
+      // and with this header the keep-alive row becomes 3,407,872 accepted, +0 MB, 505 ms.
+      // The connection itself also stops lingering: a refused keep-alive request ends in 3 to 4 ms
+      // rather than sitting until the platform gives up on the body it was promised, at 6003 ms.
+      //
+      // The trade, stated rather than assumed: a caller can now force a new connection per refusal.
+      // That is cheaper than letting it spend the server's memory and six seconds of reading, and a
+      // caller that wanted connection churn could open connections without our help. Section 7 of
+      // the suite carries the negative arm: an ordinary within-cap request keeps its socket.
+      //
+      // WHAT THIS DOES NOT REACH. It is the connection this process owns. A reverse proxy that
+      // buffers a request before forwarding it owns its own ingress bound, and `connection` is
+      // hop-by-hop, so nothing here configures anything upstream of this server.
+      res.writeHead(status, e instanceof PayloadTooLarge
+        ? { "content-type": "application/json", connection: "close" }
+        : { "content-type": "application/json" });
       res.end(JSON.stringify({ error: why }));
+      // NO DRAIN HERE, DELIBERATELY. An earlier version resumed the request after answering, on the
+      // theory that discarding the remainder let more closes be clean and so let more callers read
+      // the 413. Three independent measurements, two of them from other people on another machine,
+      // could not reproduce any effect: the direction did not hold, and a real `fetch` client read
+      // the refusal in every arm with or without it. A line whose only defence is that it is
+      // harmless is not worth carrying, and once the refusal closes the connection there is no
+      // socket being kept for it to be for.
+      //
+      // WHETHER THE UPLOADING PEER READS THE 413 IS BEST EFFORT AND NOT CLAIMED. Cutting a caller
+      // off mid-upload leaves unread bytes in its receive buffer, that close goes out as an RST,
+      // and an RST makes the peer discard the response it had already buffered. That is the trade
+      // the cap exists to make, and the alternative is the unbounded read this replaces. The
+      // refusal that is never lost is the operator line above, written before the response is.
     });
   });
 
@@ -600,7 +1115,7 @@ export async function web(args: ParsedArgs): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     clearInterval(ping);
-    membershipWatch?.stop();
+    await membershipWatch?.stop();
     for (const res of clients) res.end();
     httpServer.close();
     await ep.stop();
@@ -790,8 +1305,8 @@ function webUrl(port: number): string {
   return port === WEB_PORT ? WEB_URL : `http://127.0.0.1:${port}/`;
 }
 
-function json(res: ServerResponse, data: unknown): void {
-  res.writeHead(200, { "content-type": "application/json" });
+function json(res: ServerResponse, data: unknown, status = 200): void {
+  res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(data));
 }
 
@@ -805,10 +1320,32 @@ function debounce(fn: () => void, ms: number): () => void {
 }
 
 async function readBody(req: IncomingMessage): Promise<{ channel?: string }> {
+  // A DECLARED size over the cap is refused before a single body byte is read. A declaration can
+  // lie, in either direction, so this is the cheap gate and the loop below is the real one.
+  const declared = Number(req.headers["content-length"]);
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw tooLarge(declared, "declared");
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
+  let seen = 0;
+  for await (const chunk of req) {
+    seen += (chunk as Buffer).length;
+    // AT the threshold, not after it. Throwing here abandons the iterator, so the rest of the
+    // upload is never read into this process, and the frame's reply closes the connection under
+    // a caller that is still sending. Truncating to the cap instead would be worse than not
+    // capping at all: a shortened channel name is a name the caller did not send, which is the
+    // aliasing shape the validator on this same route exists to refuse.
+    if (seen > MAX_BODY_BYTES) throw tooLarge(seen, "read");
+    chunks.push(chunk as Buffer);
+  }
   const raw = Buffer.concat(chunks).toString("utf8");
   return raw ? JSON.parse(raw) : {};
+}
+
+/** The refusal names the limit and how the limit was met, so an operator reading one line knows
+ *  whether the caller announced an oversized body or simply sent one. */
+function tooLarge(bytes: number, how: "declared" | "read"): PayloadTooLarge {
+  return new PayloadTooLarge(
+    `request body ${how === "declared" ? "declares" : "exceeds"} ${bytes} bytes, over the ${MAX_BODY_BYTES} byte limit for this route`,
+  );
 }
 
 /** Best-effort open of the dashboard in the default browser. The URL is already

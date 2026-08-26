@@ -52,6 +52,9 @@
       .pill .t { font-size: 11px; font-weight: 600; color: var(--green); }
       .pill.down { background: #2a1717; }
       .pill.down .d { background: var(--red); } .pill.down .t { color: var(--red); }
+      /* last-good data on screen, refresh refused - amber, and it carries a text label, never colour alone */
+      .pill.stale { background: var(--tint-amber); }
+      .pill.stale .d { background: var(--amber); } .pill.stale .t { color: var(--amber); }
 
       /* HealthBand tiles */
       .tiles { margin-left: auto; display: flex; gap: 10px; }
@@ -228,6 +231,14 @@
       }
       .chip.danger { color: var(--red); }
       .chip.danger:hover { background: #2a1717; border-color: var(--red); }
+
+      /* Ordering notice: what the bootstrap found out about the event stream it merged. Shape and
+         text carry the meaning; `.fault` only adds emphasis, so colour is never the whole signal. */
+      .order-notice {
+        flex: none; padding: 8px 20px; font-size: 12px; color: var(--fg);
+        background: var(--tile); border-bottom: 1px solid var(--line);
+      }
+      .order-notice.fault { border-left: 3px solid var(--amber); }
 
       .feed { overflow-y: auto; min-height: 0; flex: 1; display: flex; flex-direction: column;
         gap: 2px; padding: 8px; }
@@ -466,6 +477,7 @@
         <span class="title">Cotal</span>
         <span class="space" id="space"></span>
         <span class="pill down" id="conn"><span class="d"></span><span class="t">connecting</span></span>
+        <span class="pill stale" id="stale" hidden><span class="d"></span><span class="t"></span></span>
         <a class="brand-graph" href="/graph">Graph view →</a>
       </span>
       <div class="tiles" id="tiles"></div>
@@ -494,8 +506,11 @@
     </main>
     <script src="/vendor/marked.umd.js"></script>
     <script src="/vendor/purify.min.js"></script>
+    <script src="/snapshot.js"></script>
     <script src="/harness.js"></script>
     <script src="/parts.js"></script>
+    <script src="/agui-frame.js"></script>
+    <script src="/event-order.js"></script>
     <script src="/md.js"></script>
     <script src="/app.js"></script>
   </body>

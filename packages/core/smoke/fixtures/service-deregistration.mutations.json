@@ -1,0 +1,48 @@
+{
+  "command": "pnpm smoke:service-dereg",
+  "mutations": [
+    {
+      "name": "PREDICTED KILLED (1 red) - the delete stops being pinned to the revision it read, so it removes whatever is at the key NOW, which may be a successor that re-registered under the same id microseconds ago",
+      "file": "packages/core/src/endpoint-records.ts",
+      "find": "    await kv.delete(key, { previousSeq: expectedRevision });",
+      "replace": "    await kv.delete(key);",
+      "expectRed": "a delete pinned to a revision the key has moved past is a loud CONFLICT"
+    },
+    {
+      "name": "PREDICTED KILLED (>=1 red) - a tombstone stops counting as a prior registration, so the spec is written create-only again and a manager that deregistered on a clean stop can NEVER start again (the cliff this route would have shipped)",
+      "file": "packages/core/src/endpoint-service.ts",
+      "find": "    newRev = current\n      ? await updateRecordEntry(kv, key, spec, current.revision)\n      : await createRecordEntry(kv, key, spec);",
+      "replace": "    newRev = await createRecordEntry(kv, key, spec);",
+      "expectRed": "THE RECOVERY: the same instance id registers again OVER the deletion marker"
+    },
+    {
+      "name": "PREDICTED KILLED (1 red) - the STATUS key keeps its create-only fence, so the reborn instance registers and then can never converge: it is up, invisible to every scatter, and answers nothing",
+      "file": "packages/core/src/endpoint-service.ts",
+      "find": "  return stored ? updateRecordEntry(kv, key, status, stored.revision) : createRecordEntry(kv, key, status);",
+      "replace": "  return createRecordEntry(kv, key, status);",
+      "expectRed": "a status deleted and then written again is a rewrite over its own tombstone"
+    },
+    {
+      "name": "PREDICTED KILLED (1 red) - a deregistration that outlived its own record no longer advances the epoch, so a predecessor that survived its deregistration keeps a current-epoch authority",
+      "file": "packages/core/src/endpoint-service.ts",
+      "find": "  const isReRegistration = current !== undefined && current !== null;",
+      "replace": "  const isReRegistration = false;",
+      "expectRed": "and its epoch ADVANCED, so a predecessor that outlived its own deregistration is fenced"
+    },
+    {
+      "name": "PREDICTED KILLED (1 red) - a deletion marker stops reading as absent, so deregistering an already-deregistered instance claims a removal it did not make and a shutdown racing an operator reports a lie",
+      "file": "packages/core/src/endpoint-service.ts",
+      "find": "  if (!specEntry || specEntry.operation !== \"PUT\") return { removed: false, reason: \"absent\" };",
+      "replace": "  if (!specEntry) return { removed: false, reason: \"absent\" };",
+      "expectRed": "a second deregistration is ABSENT, not an error"
+    },
+    {
+      "name": "PREDICTED KILLED (1 red) - the two deletes swap order, so the half-deleted state a concurrent reader can catch becomes status-without-spec, the TORN state every reader refuses",
+      "file": "packages/core/src/endpoint-service.ts",
+      "find": "  const statusEntry = await kv.get(statusKey);",
+      "replace": "  const statusEntry = await kv.get(statusKey);\n  await deleteRecordEntry(kv, specKey, specEntry.revision);",
+      "expectRed": "the instance is deregistered again (setting up the tombstone)"
+    }
+  ],
+  "_note": "This suite imports `../src/index.js` RELATIVELY, so it loads SOURCE rather than `dist` and no build step belongs in these commands. Mutation 6 is the odd one out and says so: the delete ORDER cannot be reddened where the suite builds both half-states by hand, so it is expressed as a duplicate spec delete ahead of the status delete, which makes the later revision-pinned spec delete lose its CAS and report `superseded` instead of `removed`."
+}

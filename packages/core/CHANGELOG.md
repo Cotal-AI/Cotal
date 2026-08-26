@@ -1,5 +1,1078 @@
 # @cotal-ai/core
 
+## 0.30.2
+
+## 0.30.1
+
+### Patch Changes
+
+- aea08f9: Allow agents to clean up their presence and channel-registry ordered consumers, wait for real mesh readiness before opening Codex, and collapse repeated endpoint errors.
+
+## 0.30.0
+
+### Minor Changes
+
+- 0e673ff: Delivery daemon: the launcher stops dropping the transport, and stops reporting a daemon it did not start.
+
+  Two independent defects let `cotal up` print a healthy control plane over one that was not there.
+
+  **A same-root refresh relaunched the delivery daemon without TLS (#836).** `startDeliveryWithBroker`
+  re-derived the transport from `<root>/.cotal/broker-policy.json` whenever its caller passed no
+  `transport` — and the refresh path never passed one, even though it had already decided the same
+  fact from the mesh-registry entry and reconciled it against the live listener's `INFO`. The two
+  durable records are written by different paths, so on any root that records `tlsRequired` without
+  holding a policy file (registered with `cotal meshes add --tls`, or a mesh predating the policy
+  file) the daemon went out flagless against a TLS-required broker. Nothing looked wrong: the client
+  still upgrades on the server's unauthenticated greeting. The daemon holds a standing credential and
+  reconnects unattended, so that was a repeating exposure, not a one-shot. The transport requirement
+  is now a required argument to `startDeliveryWithBroker`; the policy re-derivation is gone and every
+  call site names its source.
+
+  **A stale lease answered for a daemon that had already exited (#837).** `waitForDeliveryLease`
+  accepted any `ready:true` lease. A daemon killed with `SIGKILL` never releases its lease, and the
+  record survives for the rest of the bucket TTL — so a replacement that lost the single-flight CAS
+  and exited was reported ready off the corpse's lease, and `up` exited 0 with no daemon running and a
+  pidfile fronting a dead pid. `waitForDeliveryLease` now takes `holder` and waits for that daemon
+  specifically (`undefined` only when adopting one that was already running, whose id is not knowable
+  from the launcher). `ensureDelivery` passes the id of the daemon it launched, and a launch whose
+  process is provably gone while holding no lease now fails loud, naming `.cotal/delivery.log`,
+  instead of returning success.
+
+  `waitForDeliveryLease` now requires `holder` — pass `undefined` for the previous behaviour.
+
+- 569f4d3: An empty message id is never a dedup key, and an id-less delivery is individually addressable at the drain seam.
+
+  Two distinct messages that each carry an empty id collapsed to one: the receiver-side id
+  dedup read empty-equals-empty as a duplicate, silently dropped the second, and once the
+  first was handled it dropped every later empty-id message on arrival. Measured live, two
+  such messages arrived on the wire and only the first was ever delivered.
+
+  An empty id is now treated as no id: the ingest coalescing (pending, handled, protected)
+  is skipped for it in both directions, so distinct messages that carry an empty id are all
+  delivered. At the drain seam a per-delivery receive key (the wire id when there is one, a
+  per-session secret-namespaced minted key when the id is empty, never on any wire) is what
+  hosts, adapters, and the exact-key drain select by: cotal_inbox, the Claude Code hooks,
+  the OpenCode plugin, the Codex host, the Hermes bridge and its Python sidecar, and the pi
+  driver. The drain API is renamed for what it takes (drainInboxDeliveries, missingKeys).
+  Eviction classification, in-flight holds, scope routing, the focus-recall tie-break, and
+  the scoped drain's selection no longer key on the empty id either. The Hermes bridge no
+  longer wedges on an empty-id message. Delivery pumps in core now treat an absent or
+  non-string id as a malformed envelope per SPEC section 5 (durable terminate, live drop,
+  history and recall skip).
+
+  What this restores: before the receive key, an id-less delivery was unaddressable: the
+  raw id swept every pending empty-id item in one drain call, and once filtering closed
+  that, the item could never be drained or acked, was re-shown on every windowed inbox
+  read, and on a durable channel accumulated as an unretirable entry until the 200-entry
+  overflow valve evicted it, roughly a model turn of churn per entry, while one hostile
+  empty-id ambient publish self-drove back-to-back host turns on the pi adapter. This was
+  a violation of the SPEC section 8 ack-only-after-surfaced obligation at the receiver,
+  not only an adapter defect.
+
+  The cost is stated rather than hidden: with no id there is no coalescing either, so a
+  redelivered copy of an empty-id message can surface twice on a path that is already
+  at-least-once (live remains at-most-once). Dedup for real ids is unchanged: their
+  receive key is their wire id and their coalescing is untouched. SPEC section 4, section
+  7 item 5, section 8, and section 12 item 12 now state the receiver-scoped rule, and the
+  client-builder guidance mirrors it.
+
+  One named follow-up stays open: Plane-3 durable fan-out derives its publish msgID from
+  the message id, so distinct empty-id messages can still be collapsed inside the broker's
+  duplicate window on a durable channel before this receiver sees them. That path is its
+  own issue; this change's guarantee is the receiver.
+
+- ef01887: Add closed, host-issued remote manager-service authority for registered user-auth participants. It requires the dedicated `supervise` scope, restricts manager registration and credentials to one owner and opaque instance, and uses a lifecycle-bound prepare, activate, and renew flow with fail-closed renewal and same-owner descendant provisioning.
+
+### Patch Changes
+
+- b282f70: Honor a connector's declared startup readiness window and make Jcode provider launch refusals diagnosable without exposing private harness output.
+- 0323f5b: The manager logged nothing when a seat left its ownership, on any path. A live
+  supervisor lost several seats while it kept running, and because its log carried
+  no per-seat exit line, "the supervisor reaped them" and "they died on their own"
+  were indistinguishable afterwards — the incident could not be attributed from
+  supervisor state at all.
+
+  Every free path now emits one line at `freeSlot`, the single chokepoint they all
+  pass through, naming the seat, its lifecycle uid, which path gave up the slot,
+  and what the runtime saw when the child ended. The cause is a required argument
+  with no default, so a new free path cannot compile without naming itself.
+
+  `AgentHandle` gains an optional `exitInfo()`; the pty runtime stops discarding
+  the exit code and signal node-pty already hands it. Absent means UNKNOWN and
+  prints as unavailable naming the runtime — a backend that attaches to an
+  externally-owned process (tmux/cmux/orca/herdr) cannot see how the child ended,
+  and a default of `code 0` there would fabricate a clean exit on precisely the
+  seats whose death nobody can explain.
+
+- 196dddb: Spec text plus one corrected source comment, carried into the embedded docs bundle: the `goaleff` and `epname` value
+  machines are now stated in the wire spec (phases, states, legal edges, per-phase field sets,
+  actor roles, and the rule that a settle requires the goal's terminal fact to exist first),
+  and three key-authority claims are corrected. `epmig` records cutover runs and supplies key
+  material nowhere else, so the `goaleff` generation token is the accepted submission's EPJ
+  `sourceSeq` and only that. `goalidx` gets its writer named as the goal-writer principal
+  rather than the bare commit principal. `effect` is marked as reachable only under
+  `protocol.v: 2`. The spec also now says explicitly that it does not decide which principal
+  may act as a sweeper, rather than leaving that to be inferred from a role name. The `epmig` record
+  kind's own source comment carried the same wrong claim the spec sentence corrects, and is fixed in
+  the same change so the two cannot drift apart again.
+
+## 0.29.2
+
+### Patch Changes
+
+- 8531c13: Reachability probes give websocket brokers a transport-sized budget. The 1s
+  default was tuned for the loopback/LAN TCP brokers local probes dial; a ws(s)
+  broker is by definition published through an HTTPS edge, where TLS + upgrade +
+  INFO + the auth round-trip routinely exceeds 1s cold — measured as a majority
+  of spawns against a Cloudflare-fronted mesh refusing with "not reachable" while
+  the broker was up. `isReachable` and `probeConnect` now default to 5s when the
+  server list dials over ws/wss; explicit `timeoutMs` callers are untouched.
+
+## 0.29.1
+
+## 0.29.0
+
+### Minor Changes
+
+- 1f025c3: `cotal spawn` works against a mesh registered from a remote bundle. A user-mode
+  agent's credentials must be granted where the space's signer lives, so a laptop
+  spawn previously refused with a message about missing local material. A mesh may
+  now advertise an agent-provisioning endpoint in its discovery bundle
+  (`cotal up --agent-provisioning-url <https://…>`, carried as
+  `userAuth.endpoints.agentProvisioningUrl`); spawn POSTs the operator's login
+  bearer there, lands the returned material 0600, and runs the same bearer
+  preflight before launch. A remote mesh that advertises none now refuses by
+  naming that fact and the operator's remedy, instead of blaming absent local
+  state. The endpoint is https-only (it receives the login bearer) and redirects
+  are refused, matching the registration fetch discipline.
+
+  The login proof itself never crosses the CLI package: the provisioning POST is
+  a new optional `AuthProvider.postAgentProvisioning` seam on core's provider
+  interface, implemented by `@cotal-ai/auth` — the CLI keeps its no-auth-import
+  boundary.
+
+  Also fixes `finalizeUserBundleEndpoint`, which replaced the bundle's endpoints
+  object and would have dropped any sibling field the composer set.
+
+## 0.28.2
+
+### Patch Changes
+
+- 53f66c2: The credless liveness probe spoke plaintext NATS at ws/wss servers, reading TLS
+  bytes and declaring a live broker down — which blocked `spawn` and reachability
+  reads with a wrong remedy. On ws servers it now dials the websocket transport
+  credless; an auth broker rejecting the bare connect still proves it is there.
+
+## 0.28.1
+
+### Patch Changes
+
+- 2a383fe: ws/wss dials no longer pass a `tls` block (the URL scheme already decides TLS on the
+  websocket transport, which refuses the option outright), and the standalone channel
+  helpers now pick their transport by scheme instead of always dialing TCP — so
+  `channels list`, `send`, and every endpoint connect work against a `wss://` broker.
+
+## 0.28.0
+
+### Minor Changes
+
+- 09b6a3b: Saving an agent file no longer drops a declared-empty channel policy. `subscribe`,
+  `allowSubscribe` and `allowPublish` are written whenever they are set, so a file that
+  declares an empty read set still says so after a save. They were previously emitted only
+  when non-empty, which meant loading and saving a persona rewrote an explicit empty list
+  into an absent field and lost the difference between "reads no channels" and "never said".
+  Defining a persona over an existing one loads and saves its file, so that path quietly
+  rewrote the stored policy of an agent whose content was being edited. An unset field is
+  still written as unset.
+- 86f6b10: Remove the implicit `general` channel floor: undeclared access now grants nothing
+
+  An agent that declared no channel access used to fall back to `["general"]` for its
+  active read set and read ACL. That floor was applied in seven places — the provisioner,
+  the agent-file loader, the manager's spawn path, the CLI's `spawn`, the connector's
+  config resolver, and the endpoint's own channel list — so an agent with no frontmatter
+  silently joined a channel nobody had granted it.
+
+  The fallback also could not see the credentials it was guessing against. On a manifest
+  spawn the materialized persona carries no access frontmatter, so the connector fell back
+  to `general` while the minted creds allowed only the manifest's channels; the broker then
+  refused the subscription and the agent joined nothing, with no error naming the cause.
+  `COTAL_SUBSCRIBE` forwarding was added to paper over exactly this.
+
+  Undeclared read is now empty, matching the repo's no-fallbacks rule and the existing
+  default-deny on `allowPublish`. `Endpoint.send()` throws instead of defaulting to
+  `general` when the endpoint is on no concrete channel — a caller that never declared a
+  channel now gets a loud error rather than a message delivered somewhere it never asked
+  for.
+
+  The seeded personas change with it: `default_agent` no longer auto-subscribes to
+  `general` and no longer carries a wildcard post ACL (`allowPublish: [">"]` → `[]`,
+  default-deny), and the demo personas move to their own `welcome` channel. Channels are
+  implicit — created on first use — so no channel provisioning is required.
+
+  Breaking for anyone relying on the implicit floor: an agent that read `general` without
+  declaring it must now declare it.
+
+- a84cb62: Saving a persona now requires it to name the channels it reads. `saveAgentFile` refuses a
+  definition with no `subscribe`, `cotal personas new` takes a required `--subscribe` (pass
+  an empty value for an agent reachable only by direct message and anycast), and a persona
+  defined over the wire is created with an empty read set, since that path deliberately
+  accepts no policy from its caller, and records that the caller was never offered the
+  choice so a reader can tell it apart from a persona whose author chose no channels. Previously a saved persona with no read set inherited
+  whatever default was current, so a file could grant a channel its author never chose and a
+  later reader could not tell a deliberate silence from a forgotten field. An empty list is
+  written rather than filled in, so the two stay distinguishable.
+- 44738b2: A remotely-registered user mesh now connects with stock cotal end to end, including over a websocket broker address.
+
+  `cotal meshes add <space> --from <url>` already landed a complete remote trust
+  position (IdP pins, public exchange URL, sentinel creds); the auth provider now
+  CONSUMES it at connect when no local user-auth material exists: login session →
+  fresh IdP JWT → the pinned exchange's capless public face → bearer + the
+  registration-landed sentinel. Nothing is discovered at connect time, the
+  transport rule (HTTPS, loopback-literal http only, names get no exception) is
+  checked before the IdP round trip, and every refusal names its exact remedy.
+
+  Brokers published through an HTTPS edge are dialable as `wss://host/path`:
+  core picks the websocket transport by scheme at every dial site (endpoint,
+  reachability, probe), `hostPort` defaults ws/wss to the web's ports, and
+  `join-target` classifies `wss://` as TLS-bearing (the handshake is the
+  transport's own) while `ws://` gets exactly the plaintext fences `nats://`
+  gets. The canonical server string keeps the URL path — behind an edge the
+  path is part of the broker's address.
+
+### Patch Changes
+
+- 9216d21: Reopen the derived membership-feed KV and rearm existing membership watches after an endpoint reconnect. The feed handle and watch iterator are connection-scoped: retaining either old epoch made membership reads fail with `closed connection` or left an existing dashboard watch silently stale while the endpoint's other planes had recovered. Replaced or stopped watches delete their ordered broker consumer rather than leaving it until the inactivity threshold; terminal self-heal records the predecessor identity and deletes it through the fresh connection; caller stop is awaitable, the dashboard waits before draining, and a stop concurrent with terminal close remains endpoint-owned until fresh-epoch deletion completes, while permanent endpoint shutdown still settles if no broker recovery is possible.
+- e377c7b: The manager's session signing key now renews itself instead of expiring after a day. It was minted
+  once at startup with a flat 24-hour window and the same frozen anchor was returned for the life of
+  the process, so any manager with more than a day of uptime lost its session plane permanently: every
+  attach failed closed with "outside its validity window", and the only recovery was restarting the
+  manager, which kills every live session. Failing closed on an expired key is correct and is
+  unchanged; never renewing the key was the defect. The key now rotates once a third of its window has
+  elapsed, the previous key stays verifiable for a ten-minute overlap so an artifact signed just
+  before a swap is not orphaned, renewal is driven both by a timer and opportunistically before
+  signing so a stalled timer alone cannot reintroduce the outage, and the newest key is never dropped.
+
+## 0.27.0
+
+## 0.26.0
+
+## 0.25.0
+
+### Minor Changes
+
+- c83e600: Let a caller hear its own goal's terminal, and say so distinctly when it cannot. `epCallerGrantRows`
+  returns `{pub, sub}` and documents its `sub` as the per-goal progress row that lets a caller follow
+  its own goal to terminal, but the `spawn` and `admin` mint branches took `.pub` alone, so a
+  spawn-capable credential could submit a goal and not hear it: the broker refused the follow, the
+  manager committed the terminal on time, and the caller reported a timeout about a goal that had
+  already settled. Both branches now fold `sub` in. Independently, a subscription error in the follow
+  path was discarded, which made a denied subscription indistinguishable from an empty one; it now
+  surfaces at once as a distinct refusal naming the subject, stating the goal is unaffected, and
+  telling the operator not to retry.
+
+  Every subscription error is surfaced, not only the permission one: whether the subscription failed
+  is knowable from the error being present, so narrowing that decision by error class would return
+  every other class to the silent timeout. What does key on the class is the diagnosis. A broker
+  refusal reports `permission-denied` and asks for the grant row; any other failure reports
+  `unavailable`, names the class, and says plainly that changing ACLs is the wrong remedy.
+
+- b501ec5: Parse the dashboard's history limit once, and bound the single-channel read.
+
+  Three history routes each re-derived the same limit parse, so a value that was not a whole number
+  took a different wrong path through each of them. `Number("abc")` is `NaN` and every comparison
+  against `NaN` is false, so the endpoint's `limit <= 0` guard never fired and its widening history
+  search could never reach either exit: the read did not return everything, it never returned, and the
+  abandoned request kept consuming CPU long after its caller had gone. `Infinity` reached the same
+  hole from the other end and returned a channel's entire retained history.
+
+  The limit is now parsed in one place and a value that is not a whole number is refused with a 400
+  naming what it received, so a caller's mistake is no longer reported as a server fault. The same
+  holds for the channel name in the URL: an escape that cannot be percent-decoded is a caller's typo
+  and is answered as a bad request rather than as the server having broken.
+
+  For every caller that does not go through those routes, the endpoint now requires a history limit to
+  be a whole number of messages it can count exactly, not merely a finite one. A page is taken with
+  `slice(-limit)` and slice truncates toward zero, so any limit between zero and one became `slice(0)`
+  and returned the subject's entire retained history; a magnitude past exact counting did the same. The
+  check sits above the empty-page check on purpose, since `-Infinity` is less than zero and would
+  otherwise be folded into a silent empty page.
+
+  The single-channel history read now carries the same per-request deadline as the aggregate routes,
+  with a named refusal, because the console view re-reads it on every poll. Zero still means zero,
+  negatives still mean an empty page, and an absent or empty limit still means the route's default.
+
+- a087c2b: A spawned agent now inherits the operator's environment. A harness you installed and configured
+  should behave under `cotal spawn` the way it behaves when you run it yourself, and the alternative
+  was Cotal maintaining a list of inference vendors: every new provider needed a change in Cotal
+  before it would work through a managed spawn. `MODEL_PROVIDER_KEYS` and the per-connector lists
+  that extended it are gone, and Cotal no longer names an inference vendor anywhere in its source.
+
+  Cotal still resets its own `COTAL_*` namespace before the child starts, keeping the machine-wide
+  knobs (`COTAL_HOME`, the feedback set, the default-agent pair, the `*_BIN` overrides, the timing
+  knobs). That reset is not configurable, because it is identity and not preference: a connector
+  supplies the per-session names for each child and does so conditionally, so an inherited value is
+  never overwritten and would hand an agent another agent's credential path, ACL, or lifecycle uid.
+  The whole prefix is stripped rather than a named list, because which names a connector sets varies
+  between connectors and a deny-list only ever names what its author remembered.
+
+  To confine a spawned agent instead, declare `spawn.env` in the cotal config file. The child then
+  gets a fixed OS allow-list plus exactly the names you list. An empty array is a real policy meaning
+  the OS allow-list alone. Note what this does and does not buy: `HOME` is forwarded either way, so
+  an agent with a shell reads `~/.aws` and `~/.ssh` regardless, and this protects only secrets that
+  live nowhere but the environment.
+
+- 0b602e4: Managed Pi sessions can now fork an existing Pi transcript into the mesh and recover the exact active Pi session after an unexpected process crash. The Pi adapter reports session changes through its authenticated local control endpoint and an owner-only atomic state file; the manager preserves the Cotal identity, lifecycle UID, credentials, children, and durable inbox across up to three restarts in two minutes, then retires a crash loop loudly. Deliberate stops never restart.
+- 34caaf4: Agent seats no longer export their connection material into the environment every descendant
+  process inherits. The broker URL, the creds path, the auth token, the user-mode identity and the
+  local control token now ride a private 0600 launch-material file whose path is the only thing in the
+  seat's environment; pi, codex and OpenCode drop even that path once they have read it (for OpenCode
+  that happens in the `opencode serve` process its seat shim starts, which is also what runs the
+  session's tool calls), while claude and hermes keep the reference because their readers are
+  short-lived children that start later. A session driven by hand still sets `COTAL_CREDS` / `COTAL_SERVERS` itself, and a
+  launch that carries both carriers is refused rather than resolved by precedence.
+- 8e38835: Carry the manager's readiness guidance on an `uncertain` goal terminal. The manager built a
+  diagnosis naming the agent and telling the operator to inspect rather than re-issue, then dropped
+  it: the terminal committed core's generic "the success signal did not arrive within the readiness
+  deadline", which reads as a plain failure and teaches a re-issue, and a re-issue after a launch
+  that actually succeeded mints a duplicate agent. `settleGoalUncertain` now accepts an optional
+  `reason` the committer supplies, and the manager passes the detail it already constructed; core's
+  line remains the fallback for a committer that supplies none.
+- 6959679: The dashboard survives a poll that fails, and its aggregation answers instead of failing.
+
+  A failed poll used to clear the peers and the channels. A 500's body is valid JSON and `fetch` does
+  not reject on one, so the refusal arrived as a successful parse and was stored as the snapshot. Reads
+  now refuse a non-200 by name, a refused read leaves the value the page already holds exactly where it
+  is, and the header says which source is stale and why. Recovery is the next successful read.
+
+  `/api/activity` no longer fans out every channel's history at once with no upper bound, where one
+  channel's rejection became the whole route's 500 and a slow link produced a 34-second success.
+  Sources race one shared deadline through a bounded pool, and the page always carries `partial`, the
+  counts, the named missing sources, and the deadline it used, so a short page cannot be mistaken for a
+  complete one. `/api/dms` is one read with no subset to serve, so its bound is a 503 that names the
+  deadline. A channel list that cannot be read is a refusal that says so rather than a page claiming
+  the space is empty.
+
+  The elevated observer/admin credential can now delete consumers on its own presence bucket. A KV
+  watch rebuilds itself when the link stalls and each rebuild deletes its predecessor; without that
+  grant the cleanup was refused, so orphaned consumers accumulated until their inactivity threshold and
+  the broker logged a violation every time.
+
+### Patch Changes
+
+- 636b4b8: Name the rejected property in closed-contract validation refusals. An `additionalProperties: false` refusal printed only `/ must NOT have additional properties`; the rejected key rides AJV's `params.additionalProperty` and was dropped, so a caller/responder version skew (a newer CLI sending a key an older deployed manager's contract predates) surfaced as a guessing game. Both render sites (the invocation-time `bad-request` and the responder-side `internal`) now append the key: `/ must NOT have additional properties: "events"`.
+
+## 0.24.0
+
+### Minor Changes
+
+- b7cc4fa: Host a cotal-lang run on the mesh.
+
+  `@cotal-ai/lang` gains the durability the language rested on but did not have: run pins with a
+  run clock, scope journal entries that record a race's winner and its losers so a replay resolves
+  the same arm, a refusal when a resume is handed a journal without the pins that decide it, and an
+  effect ceiling read from the pins rather than a default.
+
+  `@cotal-ai/core` gains the step journal's storage plane, the run record and its lease, the
+  checkpoint answer record, and the notice and migration records.
+
+  `@cotal-ai/runtime` is new: the mesh handler that performs a program's effects on the real planes
+  (durable pauses on the checkpoint plane, event awaits over durable consumers, notices), the
+  `RunDriver` the manager daemon hosts, journal-replay resume, migration onto edited source, and a
+  fork that redoes work under a new run id. Effects that need durable actions refuse through one
+  named seam rather than pretending to succeed.
+
+## 0.23.0
+
+## 0.22.0
+
+### Minor Changes
+
+- 57d3a57: A Claude session publishes a structured event plane, and the `tr-<name>` transcript mirror is
+  retired
+
+  A session launched with `cotal spawn --events` now actually publishes. The Claude connector maps
+  its session records to structured events behind the same hook relay the mirror used to sit behind:
+  run boundaries per turn, assistant text, reasoning, and each tool call with its arguments, its end
+  and its result, written to a per-session write-ahead log before they go on the wire so a restart
+  resumes at its cursor instead of replaying or skipping. Until now no connector constructed the
+  emitter at all, so every event channel was empty.
+
+  The `tr-<name>` mirror is removed in the same change rather than deprecated alongside it. Gone with
+  it: the `--transcript` and `--no-transcript` flags on `cotal spawn`, the `transcript` field on the
+  manager's spawn op and its service contract, `COTAL_TRANSCRIPT` and `COTAL_TRANSCRIPT_DEFAULT`,
+  `LaunchOpts.transcript`, `Connector.transcriptChannel`, and the mirror in all three connectors that
+  carried one.
+
+  MIGRATION. If you read a `tr-<name>` channel, nothing publishes to it any more. A managed session no
+  longer mirrors its prose there under any flag or environment variable, and a spawn that passes
+  `--transcript` now fails on an unknown flag rather than being ignored. Read the session's event
+  channel instead: launch with `--events` and subscribe to `events.<owner>.<actor>`, which is keyed on
+  the session's principal. On a static mesh that is `events.local.<key>`, where the key is what the
+  manager allocated and the spawn reply carries it as `id`; on a user-auth mesh it is
+  `events.<your-owner>.<agent-name>`, where the actor half is the agent's own name. `connect-claude.md`
+  gives both forms. `cotal console` and the web console render event frames directly. Unlike
+  `tr-<name>`, you cannot simply subscribe: the plane needs an out-of-band grant, and the command for
+  it is under "To let something read a plane" below.
+
+  What you gain and what you lose, both stated. A tool call now arrives with its full arguments, its
+  end and its result, in a vocabulary a program can read, where the mirror gave a truncated one-liner
+  of glyph-prefixed text. What you lose is prompt text somebody else wrote: the mirror republished
+  every prompt, and the event plane withholds the body of a turn the agent did not author, because
+  republishing a peer's message onto a channel that peer may not read crosses an ACL boundary. A
+  peer-authored turn still opens a run and still shows the work it caused. One stated limit on that,
+  because the loss column is only useful if it is complete: a tool result is this session's own output
+  and is republished, so peer text quoted inside one still reaches the wire. A cell in
+  `agui-authorship.smoke.ts` holds that as a measured limit rather than leaving it to be discovered.
+
+  A spawn may be granted the event plane of the agent it is creating, and no other. A spawn that names
+  a different agent's event channel in `allowSubscribe` or `allowPublish` is refused at the door,
+  because that channel carries the session's tool inputs and outputs. The same rule runs on a manager
+  resume: a retained inventory naming another agent's event channel is refused rather than adopted.
+
+  The rule reads a **concrete** channel, two principal tokens and nothing else. A pattern such as
+  `events.<owner>.>` is not an event channel to it and passes untouched, governed by ordinary ACL
+  authority. That is deliberate, since the pattern is the form an operator writes on purpose for an
+  observer.
+
+  To let something read a plane, grant it out of band. The refusal prints one command, spelled out in
+  full, for the mesh it is running on. On a user-auth mesh:
+  `cotal actor grant <reader> --owner <owner> --scope '' --allow-subscribe '<channel>' --allow-publish
+''`, every field named because `actor grant` is an upsert of the whole row and an omitted flag is the
+  wide default (`>` read, `>` post, `spawn,role:default` scope), not "leave it alone". On a static mesh there is no
+  actor ledger for `actor grant` to write to, so mint the reader instead:
+  `cotal mint watcher --profile agent --allow-subscribe '<channel>' --provision`, the agent profile and
+  not the observer one, since `mint` reads `--allow-subscribe` only for that profile and refuses it off
+  that profile.
+
+  `cotal mint` now REFUSES `--allow-subscribe` / `--allow-publish` off the agent profile rather than
+  ignoring them. Those profiles carry a FIXED read set, the chat plane for observer and the whole
+  messaging plane for admin, so
+  `--profile observer --allow-subscribe <one channel>` used to exit 0, print a success line, and hand
+  out a credential that reads every channel in the space: an operator asking to narrow got the
+  opposite, silently. `--role` and `--provision` were already refused there for the same reason. The
+  rows in `cli.md` and the sentence in `build-a-client.md` now say the same thing.
+
+## 0.21.0
+
+### Minor Changes
+
+- 4cf5f72: Give a session's structured event plane a way to be turned on, and a channel that names who is publishing.
+
+  An agent can now be launched with `cotal spawn --events`, foreground or detached, which publishes
+  that session's structured event stream, what it did rather than the prose it wrote, on a channel of
+  its own so an external observer or UI can read it. Off by default. Nothing about an existing launch
+  changes.
+
+  **The channel is named after the principal, never the display name.** It is `events.<owner>.<actor>`,
+  derived from the principal the manager actually allocated. A display name is UI convenience: this
+  mesh permits two live agents to carry one, and the manager itself auto-numbers a collision, so a
+  name-keyed channel would fuse two principals onto one subject and, in auth mode, would authorize both
+  onto it from a value that identifies neither. The derivation is a single function on the connector
+  contract, `eventChannel`, so the subject the manager grants and the subject the session publishes to
+  cannot drift apart. A connector that does not implement it refuses `--events` before any provisioning
+  rather than starting a session whose events have nowhere legal to land, and the refusal releases the
+  name it had already reserved.
+
+  **The flag and the grant are deliberately separate.** Holding publish rights on a channel is not a
+  request to publish to it. An agent file or a manifest can hand-write anything into `allowPublish`, so
+  if a grant could arm the plane, any author who could write an agent file could turn on a full
+  transcript of another seat's tool inputs and outputs without ever touching the launch grammar. Only
+  the launch arms the session; the grant is what makes the arming useful. `cotal_spawn`, the peer-facing
+  tool, does not expose the option at all. That is the shape of the tool and not a control-plane refusal:
+  the manager's spawn service op is a second door onto the same handler and still accepts the field,
+  which is a pre-existing property of that door and is fenced separately.
+
+  **The flag rides the whole launch path, including the record a restart reads.** It is on the
+  foreground launch, the detached spawn payload, the manager service contract, and the resume document,
+  so a manager restart brings an armed session back armed. The foreground path mints its own grant, from
+  the principal it allocated, and passes the workspace root the emitter's write-ahead log needs: a
+  session armed by one launch surface and not the other would be a flag that means two different
+  things. A resume adopts the credential the spawn wrote rather than minting a new
+  one, so what a restart can lose is the record: either the channel leaves `allowPublish`, or the
+  arming flag does and the session returns holding publish rights it will never use, which reads as a
+  working system with an empty panel. Both halves are now carried and both are asserted.
+
+  **One behaviour change to state plainly.** The foreground launch now passes the mesh's root as the
+  launch's workspace root, on every foreground spawn rather than only on an armed one, which is what the
+  manager has always done. Two connectors already read that field and root their per-agent home at it:
+  Codex, which puts its per-agent home under it, and OpenCode, which puts its database and its serve
+  pidfile there. Both previously fell back to the directory the operator happened to run the command
+  in. So a foreground Codex or OpenCode session moves its local state from that directory to the mesh
+  root, which is where its detached counterpart has always put it. Operators who ran `cotal spawn` from
+  somewhere other than the mesh root will find that session's state under the mesh root instead. The
+  Claude connector reads the field only on an armed launch, and Hermes and pi do not read it at all.
+
+  **Supporting pieces in the shared connector runtime.** The event vocabulary is exported from
+  `@cotal-ai/connector-core` for the first time, so a connector can reach it by package name instead of
+  by deep path. The emitter gained a way to close an open run out of band: a harness reports the end of
+  a turn through a lifecycle hook that writes no record, so a record-sourced stream previously had no
+  vehicle for a turn terminal. The closing frame is an ordinary frame with one exception, it republishes
+  the source cursor unchanged, because advancing it would mark records consumed that were never mapped
+  and leave a consumer no gap to notice it by. The emitter refuses to close while a message or a tool
+  call is still open under the run, while a frame is still pending recovery, and after a halt.
+
+  **One pre-existing limit this makes visible earlier.** In user mode the allocated actor is the display
+  name, and principal tokens forbid `-`, which is reserved as the principal name form's separator. The
+  manager's collision handling appends `-2`, so the second user-mode launch of any persona has never
+  been principal-keyable; it already failed at the identity and provisioning sites. The event grant is
+  derived before provisioning, so that launch now fails before it leaves a footprint rather than after.
+  The underlying naming limit is unchanged and is not addressed here.
+
+- 9c2412c: `cotal input --name <seat> --text <text> [--no-enter]` types one line into a running managed agent's terminal and returns, so a program can deliver a harness command (`/compact`, `/clear`, `/model`) without holding an `attach` stream open. It is backed by a new manager op `input`, which carries the same row shape and the same authorization as `attach` (capability `manager.lifecycle`, targeted, authz modes `owner` and `any`), takes `{text, enter?}` with the text verbatim up to 64KiB, and answers `{name, bytes}`. Enter is appended unless suppressed; nothing is echoed back. The manager's cluster document is revision 7, so a caller's `describe` sees the new command. `AgentHandle` gains an optional `write(data)`: the `pty` runtime implements it, and the external terminal runtimes (`tmux`, `cmux`, `orca`, `herdr`) do not own the child's input stream, so `input` refuses and names the runtime rather than dropping the keystroke. The command is granted only to operator credentials, in both modes, and NOT to the `spawn` capability that already carries `despawn` and `attach`. That placement is deliberate: an `attach` grant needs a `session-caller` credential to redeem and an agent profile cannot mint one, so `input` would be genuinely new authority rather than a restatement of `attach`, and the own-owner rule that bounds `despawn` covers every seat under an owner rather than only the ones a caller launched. Killing a peer is denial; typing into a peer is control of it. On a user-auth mesh `cotal input` therefore needs ledger scope `admin`, the scope `ps` already needs there.
+
+### Patch Changes
+
+- 219d33c: `cotal spawn --agent pi --prompt <text>` now delivers the prompt as Pi's initial message (its first turn) instead of silently dropping it; an empty prompt, or one starting with `-` or `@`, refuses the launch. The connector contract no longer describes an initial prompt as something a connector may ignore: a connector delivers it or throws at launch. The other connectors follow the same rule: Claude Code and Codex refuse a prompt that is empty after trimming instead of dropping it, and Hermes refuses an initial prompt outright until its first turn is wired.
+
+## 0.20.1
+
+### Patch Changes
+
+- 2752fe7: Stop `cotal ps` waiting on registrations whose host is gone, and give those registrations an exit.
+
+  A class scatter's gather has two exits: every frozen slot answered, or the deadline. The expected set
+  is frozen from the service registry, which records registration rather than liveness, and an instance
+  that crashes never deregisters, so its record goes on claiming a live instance for as long as the
+  bucket exists. That leaves a slot which can never answer, which makes the first exit unreachable, so
+  the deadline is paid in full on every scatter in the space, indefinitely. Measured on the laptop this
+  was built against: `cotal ps` at 12.5s with one true corpse in the set, ending in a row that read
+  `unreachable` for a machine that had been gone for weeks. There was no way to remove that record.
+  Three things were wrong, one per layer, and all three are fixed here.
+
+  **The scatter can now be told an instance is gone.** `epScatter` takes an optional `probeLiveness`
+  hook and ends the gather once every frozen slot has either produced a valid reply or been affirmed
+  gone. It moves the classification point and nothing else: an affirmed-gone slot is still `missing`,
+  still surfaced, still not `complete`, and a straggler arriving after an early finish is still reported
+  `late` rather than dropped. Only the verdict `gone` licenses anything; `live`, `unknown`, a hook that
+  throws, and any value outside the closed set all leave the full deadline standing, so a broken probe
+  degrades to exactly the previous behaviour rather than to a fast wrong answer. `epProbeInstanceInterest`
+  supplies that verdict from the broker itself: a `describe` cast on the instance's own rail with the
+  reserved no-responders sentinel as its reply-to, the same primitive and trust rule `epCall` already
+  relies on. A serving incarnation subscribes its instance rail for every command it serves and every
+  endpoint must serve `describe`, so silence on that rail is evidence of absence rather than absence of
+  evidence. The reply is never read, so an instance whose describe is broken still reads as present.
+
+  **And a probe is never a reason to still be running.** Against a live instance the probe is never
+  answered, because the request is a cast and a responder must not reply to one, so its deadline timer
+  runs the full budget on every healthy instance every time. Wired into `cotal ps` that was measured at
+  four extra seconds after the last row was printed, on a mesh with no dead registration in it at all:
+  12.8s with the probe against 8.8s with it switched off, same tree and same mesh. The timer is now
+  unref'd, so a probe still settles `unknown` at its budget for anyone waiting on it and no longer holds
+  the event loop open for a caller whose gather has already finished. The same measurement after the fix
+  is 8.6s to 9.4s.
+
+  **The probe belongs to the caller, not to the scatter.** Asking about an instance is a publish on that
+  instance's rail, and a credential holding no row for it is refused by the broker asynchronously while
+  the publish returns normally, so a refused probe is silent and silence is what a live but slow instance
+  looks like. Core cannot tell those apart because core does not know what the credential carries. So
+  `epScatterService` forwards a caller-supplied hook and never invents one, and the CLI supplies a closure
+  that returns `unknown` without publishing for any id outside its pinned set, and reports a refusal the
+  broker raises anyway instead of letting it expire into a timeout. That refusal is attributed to the
+  instance its own subject names, parsed as an exact route token, so one refusal is never charged to a
+  second frozen instance whose id happens to be a prefix of the refused one. `cotal ps` freezes the class on its
+  first connection, re-mints an instrument pinned to exactly the frozen ids, and resolves and scatters on
+  a second. `instancePinnedInstrumentCapabilities` accepts several ids as well as one; each still emits
+  its own concrete rows, so no wildcard instance is minted and the existing boundary on instance
+  addressing is unchanged.
+
+  **A registration now has an exit, in two explicit routes.** A manager that stops cleanly deletes its own
+  `svc` spec and status keys, so an instance that was shut down leaves no row behind; a manager that loses
+  its lease still tears down fail-closed and deliberately does not deregister, because at that point it is
+  not the authority on its own record. For the host that cannot cooperate, `cotal deregister-instance
+--instance <id>` removes the record, on the same evidence the scatter acts on and no weaker: it asks the
+  instance first and refuses if it answers, refuses if the probe could not run at all, refuses if the
+  instance is merely quiet, and deletes both keys at the revisions it read only when the broker affirms
+  that nothing is subscribed on that instance's own rail. Silence is never the evidence, because a wedged
+  process still holds its subscriptions and an unanswered describe is what a dead host, a hung one and a
+  slow one all look like. A dead process holds no subscription, so a real corpse still deletes. Nothing
+  sweeps the registry on age or on silence. Registering over a deregistration tombstone now works on both
+  keys, so a deregistered instance re-registers normally on its next start, with its epoch advancing.
+
+  **Rows split by what was actually established.** A silent instance already printed as registered with
+  no answer rather than as unreachable. Now that a probe exists, the four cases behind that one sentence
+  are distinguished: a registration the broker affirms is gone says the registration is stale and prints
+  the command that removes it, a probe that was refused and one that was never sent each say so, because
+  both are facts about the command rather than about the instance, and asked-and-silent keeps the wording
+  it has, since a slow host and a wedged one are the same observation.
+
+  **And one layer down, the same shape.** The manager writes `.cotal/manager.pid` itself rather than
+  having it written by whatever spawned it, so a supervisor started by a container entrypoint, by cron, or
+  by hand is recorded like a detached `cotal up` is; the record is removed on a clean stop, and only while
+  it still names that process. Every reader now verifies the recorded pid is alive and is a supervisor
+  before trusting it, and a live pid that belongs to something else is reported as a stale record and
+  never signalled.
+
+  This does not help against an instance that is connected but not answering. A hung responder holds its
+  subscriptions and is indistinguishable from a slow one, so it still costs the full deadline, which is
+  the correct result, and the removal verb refuses it for the same reason rather than unregistering a
+  process that is still running. A scatter with no probe wired behaves exactly as before.
+
+## 0.20.0
+
+## 0.19.0
+
+### Minor Changes
+
+- 10d9cd6: Adopt the AG-UI event vocabulary, and give a frame a wire identity a reader can recognise.
+
+  Cotal's agent-event stream carried glyph-prefixed text, so a consumer could display it and do nothing
+  else with it. The vocabulary replaces the payload: typed events with real identities, an envelope that
+  carries its own ordering, and a validator a surface can execute.
+
+  Core gains the frame's identity: the `ag-ui.frame` part kind, the event `type` discriminators, and
+  `isAguiFramePart`. It lives in core rather than in a connector because every connector emits it and
+  none may redefine it, which is what makes it a protocol shape rather than an adapter's choice. What
+  stays out of core is producer-side: the envelope version and every event constructor.
+
+  `@cotal-ai/connector-core` gains the vocabulary itself: the constructors, the frame envelope,
+  `parseAguiFrame`, the `AguiBrackets` stream machine, and the `cotal.*` CUSTOM table, which is empty
+  in v1. `parseAguiFrame` throws with the offending field named and `isAguiFramePart` never throws,
+  because routing and validity are different questions: collapsing them would make a protocol skew look
+  exactly like someone else's message, and a surface would show an empty pane for a stream it was
+  actively failing to parse. A protocol mismatch and an unrecognised event type are both refused rather
+  than partially rendered, since a skipped event is a hole in a transcript that still looks complete.
+
+  Bracketing is a property of a writer's stream and not of a single frame, so `AguiBrackets` is fed
+  frame after frame. A frame may legally open a run and not close it.
+
+  Nothing emits yet. The channel derivation, the payload-size split and the publishing emitter are not
+  in this change, and no connector constructs a frame outside a test.
+
+  `@ag-ui/core` is an exact-pinned, types-only devDependency: it declares zod as a runtime dependency
+  and connector-core is bundled into every seeded connector, so importing it at runtime would ship a
+  second zod major to every customer in order to validate events Cotal constructs itself. The
+  conformance suite imports the real schemas and parses every constructor's output under the schema
+  that owns it, which is what keeps the hand-written literals honest.
+
+- a1bc784: Display an agent event frame, and separate event channels from chat.
+
+  An `ag-ui.frame` part carries no text part by design, so every surface that renders a message as
+  flat text drew one as `[unrenderable part kind "ag-ui.frame"]`. A renderer now folds a frame's
+  events into readable lines: streamed text and reasoning deltas accumulate into one line rather than
+  one line each, a tool call reports its name, its arguments and its result, and a stream that ended
+  without its terminator is flushed and marked truncated instead of being dropped. An event type this
+  build does not know is named rather than skipped, because a skipped event is a hole in a transcript
+  that still looks complete. It registers through the part-renderer seam, so the standard resolves it
+  by the part's own kind and never learns what the vocabulary means.
+
+  The renderer is loaded by the composition root rather than by a connector. Connectors are removable
+  extensions materialized on demand, and no surface that renders imports one, so a provider that
+  registered only inside a connector would be absent from every process that draws.
+
+  The event channel's name and its classifier move into the standard, beside the frame's identity.
+  Both are things a reader needs in order to recognise an agent's stream without knowing which adapter
+  produced it, and the two surfaces that most need to classify cannot reach an extension package at
+  all. The constructor is re-exported from its former home, so no caller changes.
+
+  The classifier is now a derivation rather than a prefix test, and the two disagree on names a real
+  mesh produces. Nothing reserves the `events.` prefix, so a channel a human created and talks on
+  answered yes to "does this start with `events.`" and was swept out of the chat pane it was sent to.
+  A name that does not resolve to a principal is no longer treated as machine traffic, which returns
+  those channels to the view, and leaves a malformed publisher visible rather than hidden. The
+  collision is narrowed rather than closed: a chat channel whose remainder is itself principal shaped
+  is still indistinguishable from an agent's stream, and closing that means reserving the prefix on
+  the wire.
+
+  The console keeps event channels out of the channel strip and out of the history prefill. The order
+  matters more than the result: the channel list carries one entry per retained subject, so filtering
+  after the fetch would read history for every event channel and discard it, which is unbounded work
+  to display nothing. Live rows are marked rather than dropped, because hiding them would delete the
+  only traffic this change taught the console to draw.
+
+  The dashboard gains the same rendering through a per-kind lookup, so its dispatcher stays ignorant
+  of every kind anyone teaches it. A renderer that throws, returns a non-string, or shares a name with
+  an inherited object method is reported by name instead of blanking the body. The browser cannot
+  import the shared renderer, so the two implementations are held together by an executable
+  equivalence check rather than by intent.
+
+  The example harness records a message through the shared renderer instead of keeping only its text
+  parts, so a message whose content is not text is no longer written to the transcript as an empty
+  string and scored as an agent that said nothing.
+
+  No connector emits a frame yet, and no transcript mirror is removed. Display lands first on purpose:
+  a cutover shipped before a renderer would replace a readable mirror with a part every surface shows
+  as a marker.
+
+- a7267b3: Refuse a class-queue split before the command runs, instead of reporting it afterwards.
+
+  An endpoint call resolves one incarnation and then invokes through a queue that may pick another.
+  Until now the caller was the only party that noticed: the mismatch was detected on the reply, by
+  which time the responder had already handled the request. That is why the error had to say it
+  proved nothing about whether the command ran: a check that runs after the effect is a report, not
+  a guard. In a multi-manager space it is how one spawn becomes several: the effect lands on A, the
+  caller bound to B is told the call failed, and the retry duplicates it.
+
+  A request now carries the incarnation the caller resolved against (`bind`, a new optional
+  `EndpointRequest` field), and a responder that is not that incarnation refuses at the pre-effect
+  seam, before args validation, before target resolution, and before the governed gate that can
+  consume a one-use payment proof. The refusal carries `ai.cotal.ep.bind-refused` and states that
+  the command did not run, so re-resolving and re-issuing is safe. `failed-precondition` when a
+  different instance received it, `expired` when the same instance is at another epoch: the epoch is
+  carried even on the instance rail, where the subject grammar has no token for it and a successor
+  incarnation would otherwise serve its predecessor's caller.
+
+  The block confers nothing. It can only make a responder the subject already reached refuse, so it
+  narrows and never widens, and attribution still comes from the reply subject: a refusal
+  attributed to the very incarnation the caller bound is incoherent and is rejected rather than
+  honored, so the marker cannot be used to claim an effect away. It is refused rather than ignored
+  where it has no reading: on `describe`, which is what produces a bind, and on the scatter rail,
+  which addresses every incarnation by construction.
+
+  A long-lived client recovers from the refusal instead of stranding on it. `invokeService` caches
+  its resolve, and its existing split recovery keyed on a thrown marker, which a refusal, being an
+  ordinary reply, never raises. It now keys on the reply too, drops the stale bind, and re-issues
+  the call **once for any command**, not only for one on the repeat-safe allowlist. That allowlist
+  exists because a split used to be detected after the responder had handled the request, so core
+  could not tell a duplicate-able effect from a repaired one and had to fail closed; a bind refusal
+  removes the uncertainty rather than working around it, so the re-issue is a first attempt.
+
+  The allowlist still governs everything else, and that is the half that keeps this safe. A
+  responder that predates the fence ignores the field and executes, so its reply proves nothing
+  about whether the command ran, and re-issuing on it would duplicate the effect. The re-issue is
+  therefore withheld from every reply that does not carry the refusal, and the refusal is checked
+  rather than believed: the bind it was computed against must be the one this request carried, and
+  the incarnation it claims to be must be the one the reply subject attributes it to. Both halves
+  are derivable by the caller, and neither is something an unfenced responder can produce by
+  accident. A refusal that fails either is `internal`, not a licence to try again.
+
+  A re-issue that cannot be resolved surfaces the refusal, not the resolve. Re-resolving goes back
+  to the registry, and an endpoint that has since retired answers nothing, so a stale handle used
+  to be met with a describe deadline ten seconds later, with the one fact that said the command had
+  not run discarded on the way. The refusal now surfaces, carrying its marker, with the resolve
+  failure named as the reason the repair could not be attempted.
+
+  That recovery is counted, and the counter is the point. Handling a split makes it invisible, and
+  the routing event is the only evidence the split exists at all; silence it and the split rate
+  becomes unmeasurable exactly as it becomes survivable. `CotalEndpoint.splitRecoveryCount` is
+  always on and never behind a flag, and a `split-recovered` event carries the same fact for anyone
+  listening; the event can be missed, the count cannot. On a live two-manager mesh, 5 of 6 unpinned
+  class-anycast reads split, so this is not a rare-event counter.
+
+  The caller-side check remains, and remains necessary: a responder that predates the fence ignores
+  the field and executes, which leaves the older after-the-fact report, and the allowlist, as the
+  only protection in a skewed pair. That pair is now driven directly rather than argued about, by a
+  hand-rolled responder that answers the class rail without a fence; `serveEndpoint` cannot produce
+  the case, because its fence refuses a mismatched bind before the handler, so a request it executes
+  is one whose bind matched. `--on` still addresses a specific manager, but it is no longer what
+  stands between a split and a duplicated effect.
+
+  The suites count executions at the responder rather than publishes at the caller, and the change
+  was forced. "One publish" meant "one execution" only while a split was caught after the responder
+  had handled the request; under the fence the second publish carries the first execution, so the
+  old instrument reports a correctly repaired call and a duplicated one identically. Where a claim
+  narrowed, the cell says which condition moved it rather than being replaced.
+
+  SPEC §13.2 and §13.3 carry the normative rules; `docs/control-surface.md` is updated.
+
+- 5e95736: `replyRefusedBeforeEffect` no longer reads a self-contradictory reply as a refusal. The
+  `bind-refused` marker asserts that the command did not run, but the detail carries no outcome of its
+  own, so a reply could pair the marker with `outcome: "executed"`. The only consumer of this predicate
+  re-issues a command without the repeat-safe gate, so that contradiction was being resolved by
+  re-sending a command the same reply said had already run. A present outcome that disagrees with the
+  marker now wins. An absent outcome is still accepted, because the spec permits omitting it and
+  requiring it would stop core repairing splits for responders that do.
+- 19931dd: Add the generic part-renderer seam, the principal-channel grant witness, and expecting publish.
+
+  `PartRenderer` lets a surface draw a part kind core does not know, resolved by the part's own `kind`
+  so core never learns what any of them mean. A kind with no renderer and a renderer that throws get
+  different markers: a reader who meets one must not conclude the other, and neither may blank the
+  message or take the surface down.
+
+  `principalChannelWitness` / `assertPrincipalChannelGrants` catch a grant that matches no
+  principal-keyed channel. Keying a channel on a principal costs one token more than the flat form it
+  replaces, so an operator holding an old single-token wildcard gets a grant matching nothing, which
+  at the broker is indistinguishable from a channel with no traffic. The launch reports success and
+  the stream is silently mute. The mismatch is now named at grant time, and a witness subject is
+  returned rather than a boolean so a refusal can show the operator a subject their grant would have
+  covered.
+
+  `multicastExpecting` / `encodedSize` publish under a subject expectation, with the envelope built in
+  one place so a frame and any measurement of that frame cannot describe different messages.
+
+  A name carrying an unpaired UTF-16 surrogate is refused: it cannot survive UTF-8 encoding, so
+  distinct names would otherwise collapse into one identity.
+
+  `assertExpectationSemantics` now states its scope correctly. The `num_replicas: 1` requirement is a
+  property of the one chat stream it reads, not of the broker, and the old message read as a global
+  rule. A clustered deployment runs fine so long as that stream is R1, which a cluster can host.
+
+- 6074c26: Export the journal action rail from the package barrel, so a consumer can actually reach it.
+
+  `endpoint-goaleff`, `endpoint-epname` and `endpoint-effects` shipped as package-private modules.
+  They carry the durable action machinery the journal rail is built on: the at-most-one-launch
+  election and its edge assertion, the endpoint name claim and its edge assertion, and the effect
+  decision. Every sibling `endpoint-*` module is re-exported from `index.ts`; these three were not,
+  so `@cotal-ai/core` did not expose the surface they exist to provide and nothing outside the
+  package could import them. That was an omission rather than a decision: no consumer had asked for
+  them yet, and nothing failed while none did.
+
+  The freeze guard could not have caught it, and its green was not evidence either way. That scan
+  walks exported arrays and plain objects to prove each is deep-frozen; all five of these exports are
+  functions, so the scan is structurally blind to them and reports the same 18 arrays and 12
+  plain-objects whether or not the modules are exported at all. A guard that cannot distinguish the
+  change from its absence is silent about it, not supportive of it, and reading its pass as coverage
+  is how an omission like this survives.
+
+  So reachability is now asserted directly rather than inferred from that pass: each module's runtime
+  exports must be identical, by reference, to the barrel's same-named export. This reuses the identity
+  technique the suite already applies to its allow-listed re-export subpath. Dropping any one of the
+  three export lines reddens that module's named cell and only that cell.
+
+- cb9e1ad: Journal-class admission: enforce the fourth I-JSON condition, key the admission ceiling on the
+  class rather than the action marker, hold decision facts to the idempotency horizon, and register
+  the three coordination record kinds with their commit-path grants.
+
+  Out-of-range numbers are now quarantined. `JSON.parse("12345678901234567890")` yields
+  `12345678901234567000` and reports nothing, so a submission was admitted and its durable decision
+  bound a value the caller never sent. The check reads the raw bytes, because the parse destroys the
+  evidence, and its predicate is round-trip stability rather than magnitude: `0.1` is inexact in
+  binary and perfectly legal, while a literal that cannot survive text to double and back is not.
+
+  The admission ceiling is required on every journal-class command instead of only on those carrying
+  the action composite. A journal-class command without the marker was accepted with no ceiling and
+  refused if it declared one, though the journal rail's bind rows are derived from the class and
+  never from the marker.
+
+  `createEndpointStreams` now refuses a fact retention below the declared idempotency horizon. The
+  horizon is realized by retention rather than by a clock, so a shorter age does not shorten a
+  guarantee; it removes the mechanism, and a redelivered submission whose decision fact has been
+  evicted is accepted as new work. The horizon is a declared option defaulting to the documented
+  constant.
+
+  `goaleff`, `epname` and `epmig` are registered record kinds, and the commit path's grant enumerates
+  each at its own width. Registering a kind does not grant it, and a kind absent from that
+  enumeration is denied however it is registered.
+
+- be624af: State the effect outcome structurally when a bind refusal's re-issue cannot be resolved. The
+  error's message asserted the command had not run while its `outcome` field was absent, and an
+  omitted outcome must be read as `unknown` (SPEC 13.3), so the prose and the field a caller keys
+  on disagreed on the one path whose purpose is to be conclusive.
+
+### Patch Changes
+
+- 48c6631: A bind refusal that omits `outcome`, or states `unknown`, no longer licenses an automatic
+  re-issue: only an explicit `not-executed` does. Third-party responders that emit the
+  bind-refused marker without the outcome field will see their splits surfaced to the caller
+  rather than repaired, which is what the spec requires, since a refusal raised before dispatch is
+  required to carry `not-executed` in the first place.
+- ce1c248: A bind refusal is now checked for self-consistency whenever it carries the bind-refused marker,
+  rather than only when it also states `not-executed`. The checks establish that the reply is an
+  answer to this request from this responder, and that question does not depend on the outcome
+  field, so a refusal that omitted the outcome previously skipped them and was surfaced
+  unvalidated. Whether a caller may act on such a refusal is unchanged and still requires an
+  explicit `not-executed`.
+- 87c4130: Say what a refused publish, a goal deadline, and a class-queue split actually proved.
+
+  A refused publish now reports itself. `nc.publish` is fire-and-forget: a caller whose credential
+  does not authorize the subject gets an asynchronous answer on the _connection_, so the publish
+  returns normally and the only observable is that no reply arrives. That is indistinguishable from
+  an absent responder, though the two need opposite responses: mint the grant, or go find the
+  responder. An instance-addressed describe made with a class-rail credential is exactly that case,
+  and it read as an unresponsive manager: measured live, `ps --on <instance>` returned `no describe
+reply from manager within 10000ms` against a 115ms RTT while an untargeted describe answered from
+  either instance in well under a second. The describe now watches its connection for a permission
+  violation on its own subject and raises `permission-denied` naming that subject, the instance rail,
+  and the fact that the responder may be perfectly healthy. The watch closes its status iterator on
+  every exit, so it does not leave a listener parked on the connection per resolve.
+
+  A goal that produced no terminal in time no longer implies the goal failed. It was accepted; only
+  its terminal did not arrive within the wait. Observed live: seats that reported this had already
+  come up and were messaging peers, and retrying submitted a second goal that duplicated the effect.
+  The message now says the deadline is on the wait rather than the work, and says not to retry on it
+  alone.
+
+  An unpinned class-queue split no longer implies the effect did not land. Describe and invoke are
+  separate trips through the same anycast queue, so in a multi-instance space the instance that won
+  the queue received the request and may have executed it, possibly after the error was raised. The
+  core message now says so and points at `ps`/`inspect`/roster before any retry; it stops at "a call
+  that addresses one instance does not split". The CLI adds `--on <instance>` as the remedy, and only
+  on the commands that have the flag (`ps`, `stop`, `attach`, `spawn --detach`), which declare it to
+  the shared renderer; `models`, `up` and `down` ride the same rails and split the same way, and are
+  no longer told to type a flag they do not have. Absence of a pin is not evidence of the flag.
+
+  And a split is no longer silently retried into a duplicate effect. The client recovered from
+  `failed-precondition` by dropping its cached resolve and invoking again, which is a repair when the
+  bound incarnation is gone but a second attempt when the error came from a different live instance
+  answering the class queue: request received and answered (executed or refused; the reply does not
+  say which), error raised afterwards. Re-invoking there re-issued the command automatically, while
+  the error text told the operator not to retry; it is the mechanism behind one spawn producing
+  several seats. The retry now happens only for commands
+  whose second execution is observably indistinguishable from one: the reads and `describe`. Every
+  other command surfaces the split to its caller, carrying a marker that says a responder did answer
+  the request, so the caller can check before deciding. Surfacing also drops the stale bind: the
+  cached resolve named an incarnation a different live instance has just answered for, and keeping it
+  would send every later deliberate call on that endpoint into the same refusal, so the caller could
+  verify and still never reach the live instance. Dropping it re-issues nothing; the next call is the
+  caller's own.
+
+  The same rule now covers the adjacent case, a manager restarted in the same workspace root. That
+  restart keeps the logical instance id and advances its epoch, so a client that resolved before it
+  gets its next answer from the same id at a later epoch: `expired`, raised after the attributed reply
+  just like the split. It used to be rethrown untouched with the bind kept, so a long-lived client
+  (a connector's mesh agent, the console) reached the successor on every later call, may have applied
+  the effect each time, and never recovered. The stale-epoch refusal now carries the same
+  responder-answered marker, the guard keys on the marker rather than the error code, and its message
+  says which side is stale: a responder ahead of what the caller holds is a successor (re-resolve to
+  adopt it), one behind is a superseded incarnation still answering. The old text called the caller's
+  own bound epoch the responder's "current" epoch, which named the wrong side.
+
+  That classification is an allowlist and fails closed at both levels. It is keyed by endpoint, not by
+  bare command name, because the client is endpoint-agnostic and a flat list would lend the manager's
+  judgement to any endpoint that happened to reuse a name; an endpoint nobody has classified has no
+  repeat-safe commands, and an unlisted command is surfaced rather than repeated. `describe` is the one
+  exception, and structurally so: it is served by the machinery on every endpoint and can never be
+  redefined into something that mutates.
+
+  `models` is deliberately not on that list even though it is a read command. With `{refresh: true}` it
+  reaches the connector's model listing and, for OpenCode, re-fetches provider catalogs and rewrites a
+  cache: the same name, in the same grant class, answering differently because of an argument the
+  classification cannot see. A long-lived client invoking `models` through `invokeService` therefore
+  surfaces a split rather than absorbing it in a multi-instance space; encoding per-command argument
+  rules here would reintroduce exactly the fail-open shape this replaced.
+
+  Where this table bites, precisely: it is read only by `CotalEndpoint.invokeService`, the long-lived
+  client path. Its shipped callers are the connector's `cotal_*` manager tools (spawn, inspect, stop,
+  despawn, purge, define-persona), `cotal spawn -f` (launch) and `cotal down -f` (despawn), whose
+  splits now surface instead of being re-issued, plus the repeat-safe `ps` reads of `spawn -f`,
+  `down -f` and the console, which keep absorbing them. The one-shot CLI commands (`cotal ps`,
+  `cotal models`, `stop`, `attach`, `spawn --detach`) resolve fresh and invoke once on a short-lived
+  connection; they had no cached bind and no retry, and are unchanged. That is the clearest statement of what the list is: a client-side
+  stand-in for `effect` (SPEC 13.7), which the wire now carries and this change does not yet consult.
+  The spec grew both halves after this work began: `effect` declares whether repeating a command is
+  safe, and rides `protocol.v: 2`, while this tree still registers and resolves at `v: 1`, under which
+  every command reads as a write. Reconciling the two is a separate change and is named here rather
+  than described as absent from the wire.
+
+  The CLI no longer prefixes every failed manager call with "no manager reachable on the ep rails".
+  That verdict is stated only where the call went unanswered, as core marks it: no responder, or the
+  reply deadline elapsed with nothing attributed to the request. The catalog code alone was not
+  evidence of that. A manager that answers its describe with `ok:false` has the refusal rethrown under
+  its own code, `unavailable` included, and a store read after an answered describe raises the same
+  code; both printed as an unreachable manager while a manager was answering (reproduced live during
+  review). Core now sets a detail kind on the producers that observed silence and the CLI keys on it,
+  never on the code. A registry read on the caller's own side (the scatter's freeze or its reconcile)
+  is a third outcome with its own line, since the managers were not the failure and may all be up. A
+  refusal that states its own cause (a describe refused by the broker, a split, a stale epoch) is
+  printed as it is, because the prefix contradicted it, and an unanswered `--on <instance>` names the
+  instance that did not answer instead of pronouncing on the mesh (measured: three managers answering,
+  one typo in `--on`, "no manager reachable"). `up`'s resume readiness poll keys on that same
+  unanswered fact rather than on the message prefix.
+
+  `ps` prints the full instance id in its multi-manager view. That view appears only where the split
+  makes `--on <instance>` the one way to address a manager, and `--on` accepts nothing but the whole
+  26-32 character lifecycle token, so an abbreviated header named the remedy and withheld the value
+  it needed, and `--on <prefix>` was refused as a malformed token. The `stop`/`attach` seat-lookup
+  miss, which lists the instances that did not answer for the same purpose, prints them whole too and
+  says the id must be passed as printed. `spawn` refuses `--on` outside a detached imperative spawn: a
+  foreground spawn has no manager to pin and a manifest deploy launches through the manager class
+  queue, so the flag was accepted there and silently ignored. An empty `--on` (`--on ""`, an unset
+  shell variable) is refused at the flag on all four commands: `ps` and the detached `spawn` carried it
+  to the mint, which refused it as an invalid token, while `stop` and `attach` read it as absent and
+  fell through to the seat lookup, so one input had two answers and one of them was a dropped pin.
+
+  The peer-side manager tools stop reading silence off the catalog code too. `MeshAgent`'s manager
+  invoke reported "no responder answered - a manager may be down, or this credential holds no <cmd>
+  capability and the broker denied the request" for every `deadline-exceeded`, and the bare code for
+  everything else. That was wrong in both directions. The broker's no-responders 503 arrives as
+  `unavailable` carrying the unanswered marker, so the one case where the capability explanation is
+  certain was the one case that did not get it: an agent denied a capability was told only
+  "unavailable". And an answered `ok:false` describe is also `unavailable`, deliberately unmarked
+  because a manager did answer -- and this surface is read by agents, where a claim of silence invites
+  the retry that duplicates a spawn. Same code, opposite conditions, separated only by the marker,
+  which is now what the verdict keys on.
+
+- c038730: A manager lease renew that gets no answer no longer terminates the manager; the key is re-read
+  first.
+
+  `renewLease` treated every throw from the CAS renew as the lease being lost and fail-closed the
+  whole instance: it cleared the renew timer, tore down every agent it managed, and exited. One of the
+  things that throws there is a request that gets no answer within its deadline, and no answer proves
+  nothing about the key. It does not prove the write failed, it does not prove the key expired, and it
+  does not prove anyone else took it. The write may even have landed with only the acknowledgement
+  lost, in which case the manager killed itself over a lease it had just successfully renewed, and
+  took its agents with it.
+
+  A failed renew is now a question rather than a verdict. The manager re-reads its own key, which
+  separates "it is gone" from "I could not find out", and fails closed only on proof: the key is
+  absent, or it is present and holds a different process. When the key is still its own the manager
+  adopts whatever revision the broker actually has and keeps serving, saying so. When no answer is
+  available at all the bound is time rather than attempts, because past one whole TTL without a renew
+  that landed the key may have expired and been re-acquired, so the instance can no longer claim to
+  hold it and stops on that ground, in those words.
+
+  That window runs from the last write that actually restarted the key's TTL, and only such a write
+  refills it. A re-read that finds the key present, still its own, and at the SAME revision is a real
+  answer and the manager does keep serving on it, but it did not touch the key, so it cannot buy the
+  holder more time. Reading a key is not refreshing it, and treating the two alike would let an
+  instance whose writes are all being dropped serve on reads forever.
+
+  Waiting is only safe if there is room to wait, so the renew budget gained slack. The TTL is
+  unchanged and no stored config moves, but the holder now renews at a quarter of it rather than a
+  half, and each attempt carries a deadline shorter than the period instead of the JetStream default,
+  which was itself half the TTL. Under the old numbers exactly one attempt fitted inside the window
+  and its own deadline consumed the remainder, so a single slow round trip was terminal by
+  construction.
+
+  Renews also no longer overlap. A renew whose reply is late runs past the next tick, since the
+  re-read that follows it has a deadline of its own, and a second renew started there read the same
+  cached revision and was refused over a sequence the first one had legitimately moved. That conflict
+  was self-inflicted, and it reproduced on every attempt before the guard.
+
+  Measured against a real manager process, with a relay between it and the broker holding back one
+  direction for exactly one renew deadline: the request reaches the broker and takes effect, only the
+  acknowledgement is delayed. On the old code the manager exited while its key was present, still its
+  own, and carrying a revision newer than the one it was holding.
+
+- 758e1e3: Pin `json-canonicalize` exactly, so a published install cannot resolve a broken tarball.
+
+  `json-canonicalize@2.0.1` was published without the `bundles/` directory its own `package.json`
+  `main` points at. A `^2.0.0` range therefore resolves, on any fresh install, to a package that
+  cannot be imported: `cotal --version` crashes with `ERR_MODULE_NOT_FOUND` before printing
+  anything.
+
+  The repo never saw it. A lockfile pins 2.0.0 and CI stayed green throughout; a published package
+  carries no lockfile, so npm re-resolves every range at install time and users got a version CI had
+  never exercised. That gap between what CI resolves and what an install resolves is the actual
+  defect this fixes.
+
+  Both ranges are now exact, and `smoke:dep-pins` keeps them that way: it fails if either floats
+  back to a range, and fails if its quarantine list stops matching any declared dependency, so a
+  list that has quietly stopped applying cannot read as a list that holds.
+
+  Stated as a limit rather than left implied: the new cell proves the range is exact, not that the
+  pinned version is installable. Only installing the packed tarball against the live registry proves
+  that, which is `smoke:seed-tarball:live` - and that suite sits outside `smoke:ci`, so the
+  instrument that would have caught this incident exists and does not run. Wiring it into the gate
+  is a separate decision about live-network tests in CI, not something this change makes quietly.
+
+- 8572a5d: Report which bind went stale when a class-queue split is recovered, and grade the describe/invoke
+  probe's forced arm on the caller-visible contract.
+
+  `split-recovered` carried `servedBy`, the incarnation that answered, without `boundTo`, the one the
+  handle thought it was addressing. A listener could therefore see that a split had been recovered but
+  not which bind went stale, which is the difference between one handle to drop and a class that is
+  churning. Both halves of the fact are now on the event.
+
+  The probe's forced arm previously required the repair to land, which asserts a coin comes up heads:
+  core repairs a bind refusal exactly once and lets a second refusal surface, while in a two-manager
+  space roughly half of all class-queue calls split, so the re-issue goes back through the same queue
+  and is split again about half the time. That second refusal is a correct and conclusive outcome, and
+  grading it as a failure reddened the suite on runs where the property it exists to protect held
+  completely. The arm now accepts either face: the repair landed exactly once, or it was refused again
+  and stated that nothing ran.
+
+  Accepting an absence of effects requires proving the arm could have produced one, so a positive
+  control on the arming runs before any question about the outcome. The forcing writes a bind naming no
+  live incarnation; the control reads it back through a fresh cache lookup, proving the entry the
+  client sends from was mutated rather than a copy, and requires the first refusal to name that bind.
+
+  Without it the ambient system supplied the signal. The probe's space splits naturally about half the
+  time, so a run that forced nothing still saw a refusal, a repair, and a second refusal naming a
+  different instance: every symptom of the case under test, produced by the ordinary race. Measured
+  with the forcing removed, the arm passed 4 of 6 runs. With the control it is caught 6 of 6. Reading
+  the first refusal's bind is what required it on the event, because once the repair re-issues, the
+  error the caller ends up holding names the second refusal and not the first.
+
 ## 0.18.0
 
 ### Minor Changes

@@ -26,6 +26,7 @@ import {
   mintMembershipObserverCreds, newIdentity, serverConfig, setupSpaceStreams,
 } from "@cotal-ai/core";
 import { authDir, DELIVERY_CREDS_KEY, remintDaemonCreds, saveSpaceAuth, writeRenewalRecord } from "@cotal-ai/workspace";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -56,10 +57,25 @@ try {
   const obs = await mintMembershipObserverCreds(auth, newIdentity());
   const evictor = await mintConnectionEvictorCreds(auth, newIdentity());
 
-  const dir = mkdtempSync(join(tmpdir(), "cotal-e2e-doc-"));
+  const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+  // The CONNECTOR SEED STORE lives under `globalConfigDir()`, so it is the operator's real
+  // `~/.config/cotal` unless XDG_CONFIG_HOME says otherwise. Every `cotal` command here — the
+  // delivery daemon and each `doctor auth` — runs the seed reconcile, which REFUSES outright when
+  // the store's generation is newer than the binary being run. On a box whose store was stamped by
+  // a later release than the tip under test, three cells red with "this cotal X is older than the
+  // seed store's generation Y", which looks exactly like a behaviour red and is not one. Isolated,
+  // the suite grades the code and nothing else.
+  process.env.XDG_CONFIG_HOME = join(dir, "xdg");
+  mkdirSync(process.env.XDG_CONFIG_HOME, { recursive: true });
   writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
   const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
-  cleanups.push(() => { srv.kill("SIGKILL"); rmSync(dir, { recursive: true, force: true }); });
+  // Owned, so a SIGNALLED run takes the broker and its store dir with it. `cleanups` drains in a
+  // `finally` and this suite registers no signal handler at all, so before this line a SIGINT left
+  // both behind. The SIGKILL below stays SIGKILL on purpose: measured on one fixture, 20 trials each,
+  // SIGTERM then an immediate rmSync hit ENOTEMPTY 3 times and SIGKILL zero, because SIGTERM asks for
+  // a graceful shutdown and a graceful shutdown flushes JetStream into the tree being walked.
+  const releaseBroker = teardownOnSignal(srv, dir);
+  cleanups.push(() => { srv.kill("SIGKILL"); rmSync(dir, { recursive: true, force: true }); releaseBroker(); });
   let up = false;
   for (let i = 0; i < 50; i++) { if (await isReachable(servers)) { up = true; break; } await wait(200); }
   if (!up) throw new Error("nats-server did not come up");

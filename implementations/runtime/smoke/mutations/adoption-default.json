@@ -1,0 +1,75 @@
+{
+  "suite": "implementations/runtime/smoke/run-driver.smoke.ts",
+  "guard": "a handler that owns external state repairs it on takeover without being wired to",
+  "command": "pnpm smoke:runtime-run-driver",
+  "completionMarker": "run-driver.smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/adoption-default.json",
+  "why": [
+    "Found by review, and the finding was not that the seam was wrong -- it was that the seam had NO",
+    "CALLER. `onActivated` was optional and nothing in the tree passed one, not a production path and",
+    "not this suite, so every adopted run left its checkpoint timers armed at the predecessor's",
+    "instance and epoch, firing onto subjects nobody consumes. Replaying the program does not repair",
+    "that: the pause replays as pending and goes straight back to waiting.",
+    "",
+    "An optional hook with no caller is INDISTINGUISHABLE AT RUNTIME from a driver that has nothing",
+    "to repair, which is why no test caught it and why the repair is a default rather than a note. A",
+    "handler that knows how to repair its own state declares `adopted`; the driver still only decides",
+    "WHEN, which was the original design and stays intact.",
+    "",
+    "Two of the four mutations are narrowness. A default that OVERRODE an explicit callback, or that",
+    "required every handler to carry the method, would satisfy the headline cell perfectly -- and one",
+    "of those turns the callback into dead surface while the other refuses every handler in this file",
+    "that owns no external state at all.",
+    "",
+    "SPECIFIER BOUNDARY, and it is one config away rather than absent. Every mutation config in",
+    "this lane mutates a module its suite imports through a RELATIVE `../src/*.js` path, and no",
+    "command carries a build step -- all are bare `tsx` -- so the mutated bytes are the bytes the",
+    "suite loads. The suites in THIS directory nonetheless boot `@cotal-ai/core` and `@cotal-ai/lang`",
+    "through package specifiers that resolve to `dist`. So a future config that targets",
+    "`packages/lang/src` or `packages/core/src` under a `pnpm smoke:runtime-*` command would be VOID",
+    "ON ARRIVAL: the mutant would sit in `src` while the suite graded an untouched `dist`, and the",
+    "kill rate would measure module resolution rather than the guard. Either mutate the module the",
+    "suite imports relatively, or put a build between the mutation and the run."
+  ],
+  "mutations": [
+    {
+      "name": "the default is removed: the seam goes back to a hook nothing passes",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "  const adopt = req.onActivated ?? adoptionOf(req.handler)?.adopted.bind(req.handler);",
+      "replace": "  const adopt = req.onActivated;",
+      "expectRed": "REPAIRED: a successor repairs the previous holder's state WITHOUT any callback being wired",
+      "cell": "REPAIRED: a successor repairs the previous holder's state WITHOUT any callback being wired",
+      "note": "This is the shipped state before the repair. It passed every test in the tree, which is the whole reason the finding needed a reviewer rather than a suite."
+    },
+    {
+      "name": "PARANOID: the handler's method OVERRIDES an explicit callback instead of backing it",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "  const adopt = req.onActivated ?? adoptionOf(req.handler)?.adopted.bind(req.handler);",
+      "replace": "  const adopt = adoptionOf(req.handler)?.adopted.bind(req.handler) ?? req.onActivated;",
+      "expectRed": "an explicit onActivated still wins: the default is a fallback, not a replacement",
+      "cell": "an explicit onActivated still wins: the default is a fallback, not a replacement",
+      "note": "The precedence is the difference between a default and a hijack. A caller that passes a callback has stated what the repair is; taking the handler's instead would silently ignore an explicit instruction, and the headline cell cannot see it because both orders call SOMETHING."
+    },
+    {
+      "name": "the repair is called, but handed nothing to repair",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "  if (adopt !== undefined) await adopt(resumed);",
+      "replace": "  if (adopt !== undefined) await adopt([]);",
+      "expectRed": "...and is handed the prefix the activation validated, which is what names the pauses to re-arm",
+      "cell": "...and is handed the prefix the activation validated, which is what names the pauses to re-arm",
+      "note": "A repair handed nothing cannot re-arm anything, so `it was called` is not the property. Note this passes the FRESH-run cell, whose prefix is legitimately empty -- which is why that cell is a control and not the proof."
+    }
+  ],
+  "ungradable": [
+    {
+      "name": "PARANOID: every handler is assumed to carry the method",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "  typeof (handler as AdoptingHandler | undefined)?.adopted === \"function\"",
+      "replace": "  handler !== undefined",
+      "found": "2026-08-16",
+      "why": "RECLASSIFIED, not deleted, and not counted as a kill. Graded INCONCLUSIVE twice and the harness is right both times. Removing the `typeof` test makes the driver bind a method that is not there, which throws for EVERY handler in this suite that owns no external state -- and that is cell 1, long before the narrowness cell at the end. The suite dies at its first await rather than reddening a cell, so the run never reaches its terminal marker and any verdict would be about the stop.",
+      "coverage": "The claim is NOT uncovered: the guard sits on a path every cell in this file traverses, so its removal is caught by the whole suite at once. What it cannot be is NAMED -- no single cell can be the one that reddens, because the file aborts. Routing the narrowness cell through `attempt` was tried and does not help: the throw happens at cell 1, which does not and should not catch.",
+      "notDoneOnPurpose": "Wrapping every cell in the file to make one mutation gradable would weaken 53 assertions to strengthen a report, and a suite that swallows exceptions everywhere is the instrument this harness exists to detect. Recorded here rather than re-aimed at a cell it does not name, which would have been a kill claimed for a guard the mutation did not measure."
+    }
+  ]
+}

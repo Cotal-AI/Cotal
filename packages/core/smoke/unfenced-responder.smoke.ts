@@ -38,7 +38,7 @@
  * Run: pnpm smoke:unfenced-responder
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -50,6 +50,7 @@ import {
   type EndpointReply, type EpCaller, type ResolvedService,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let pass = 0, fail = 0;
 const c = (name: string, cond: boolean, extra?: unknown) => {
@@ -60,7 +61,7 @@ const c = (name: string, cond: boolean, extra?: unknown) => {
 /** Declared, not implied: a live suite can end in ways that redden no line, and `fail === 0` reads
  *  as PASS in every one of them. Measured by this lane's own crash controls — a mid-run exit prints
  *  nothing at all, and an import-time throw does not even reach this handler. */
-const EXPECTED_CELLS = 33;
+const EXPECTED_CELLS = 34;
 process.on("exit", () => {
   const ran = pass + fail;
   if (ran !== EXPECTED_CELLS) {
@@ -80,8 +81,9 @@ const argsContract = compileContract({ root: { type: "object", properties: { n: 
 const outContract = compileContract({ root: { type: "object", properties: { ran: { type: "boolean" } }, required: ["ran"], additionalProperties: false } });
 
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "unfenced-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, sd);
 await new Promise((r) => setTimeout(r, 900));
 
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -141,6 +143,10 @@ const sub = nc.subscribe(epServeFilter(SPACE, "one", EP), {
           code: "failed-precondition",
           message: `${EP}.${env.op.command} WAS NOT RUN - this is ${IID_REAL} epoch ${EPOCH} (SPEC 13.2)`,
           details: [{ kind: EP_BIND_REFUSED, endpoint: EP, command: env.op.command, boundTo, servedBy }],
+          // A FENCED responder refusing before dispatch MUST state this (SPEC 13.3), and since the
+          // caller now requires it before re-issuing, a fixture that omitted it was modelling a
+          // responder the spec forbids and would never be repaired.
+          outcome: "not-executed",
         },
       };
     }
@@ -325,6 +331,13 @@ try {
   c("...and still carries the bind-refused marker, so a caller keys on the same fact either way",
     replyRefusedBeforeEffect(goneThrew instanceof EpEnvelopeError ? goneThrew.toEpError() : undefined),
     goneThrew instanceof EpEnvelopeError ? goneThrew.details : goneThrew);
+  // §13.3: `WAS NOT RUN` in the message is prose; `outcome` is the field a caller keys on, and an
+  // omitted one MUST be read as `unknown`. Every cell above is satisfied by prose plus the marker,
+  // so a rethrow that dropped the outcome told a reader one thing and a machine the opposite, on
+  // the one path whose entire purpose is to be conclusive.
+  c("...and says so STRUCTURALLY, not only in prose (an omitted outcome reads as `unknown`)",
+    (goneThrew instanceof EpEnvelopeError ? goneThrew.outcome : undefined) === "not-executed",
+    { outcome: goneThrew instanceof EpEnvelopeError ? goneThrew.outcome ?? "(absent)" : "(not an EpEnvelopeError)" });
   c("...and nothing ran on the way to saying so", executions === exec4, { exec4, executions });
 
   // ---- 5. THE REFUSAL MUST BE DERIVABLE, NOT MERELY PRESENT ------------------------------------
@@ -390,6 +403,10 @@ try {
   await ep.stop().catch(() => {});
   await nc.drain().catch(() => nc.close());
   broker.kill("SIGKILL");
+  // The store dir goes with it. Reaping the broker and leaving its tree is what made this
+  // suite leak a directory on every green run.
+  rmSync(sd, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);

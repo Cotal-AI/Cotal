@@ -43,6 +43,7 @@ import {
   type EpCapability,
 } from "@cotal-ai/core";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -91,7 +92,7 @@ const cap: EpCapability = { endpoint: EP, command: "spawn", target: { mode: "own
 const callerRows = epCallerGrantRows(S, [cap], { owner: "u_abc", actor: "cli", uid: UID });
 
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-stauth-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(sd, "server.conf"), [
   `port: ${PORT}`,
   `jetstream { store_dir: ${JSON.stringify(join(sd, "js"))} }`,
@@ -110,6 +111,7 @@ writeFileSync(join(sd, "server.conf"), [
   "}",
 ].join("\n"));
 const broker = spawn("nats-server", ["-c", join(sd, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, sd);
 
 const conns: NatsConnection[] = [];
 try {
@@ -291,6 +293,7 @@ try {
   broker.kill("SIGKILL");
   await new Promise((r) => broker.once("exit", r));
   rmSync(sd, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(fail === 0 ? `\nSTORAGE-AUTHORITY CONFINEMENT OK ✅  (${ok} passed, ${fail} failed)` : `\nSTORAGE-AUTHORITY CONFINEMENT FAILED ❌  (${ok} passed, ${fail} failed)`);

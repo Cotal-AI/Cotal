@@ -1,0 +1,69 @@
+{
+  "suite": "extensions/connector-jcode/smoke/session-resume.smoke.ts",
+  "guard": "a restarting seat resumes its own prior session - same working dir, not archived, non-empty transcript, richest transcript wins - and otherwise starts fresh rather than adopting a session it cannot prove is its own",
+  "command": "pnpm smoke:jcode-session-resume",
+  "completionMarker": "session resume:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/session-resume.json",
+  "why": [
+    "Found by dogfooding, not by a gate. A seat was stopped and respawned under the same name; it",
+    "returned to the same private home with its 112 KB journal intact, then answered NO PRIOR CONTEXT",
+    "when asked to recall from history alone a file it had written an hour earlier. The restart had",
+    "forked a 1.7 KB session and orphaned the real one, because the host called createSession",
+    "unconditionally while the SDK already offered listSessions and attachSession (#789).",
+    "",
+    "The rule is conservative on purpose: resuming the WRONG session is worse than starting clean,",
+    "because a seat that silently inherits another lane's context acts on it with full confidence.",
+    "So the mutations attack both directions - the shipped defect (never resume), and each guard that",
+    "keeps a resume honest (working dir, archived, empty transcript, richest-wins). An over-eager",
+    "resume that adopts a foreign or retired session is a security-shaped bug, not a convenience one.",
+    "",
+    "M6 note: an earlier version of M6 rewrote `[...usable].sort` to `usable.sort`, and it SURVIVED.",
+    "That was a bad mutation rather than a coverage gap - `usable` is produced by `filter`, which",
+    "already returns a fresh array, so sorting it in place is unobservable and the spread is merely",
+    "defensive. M6 now sorts the CALLER's array, which is the defect shape the assertion exists for."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the shipped defect: never resume, always start blank",
+      "file": "extensions/connector-jcode/src/session-resume.ts",
+      "find": "  if (!candidates?.length) return undefined;",
+      "replace": "  if (!candidates?.length) return undefined;\n  return undefined;",
+      "expectRed": "a single matching prior session is resumed"
+    },
+    {
+      "name": "M2 adopt a session belonging to a different working directory",
+      "file": "extensions/connector-jcode/src/session-resume.ts",
+      "find": "      typeof c.working_dir === \"string\" &&\n      c.working_dir === cwd &&",
+      "replace": "      true &&",
+      "expectRed": "a foreign working_dir is refused"
+    },
+    {
+      "name": "M3 resume sessions the operator explicitly archived",
+      "file": "extensions/connector-jcode/src/session-resume.ts",
+      "find": "      c.archived !== true &&",
+      "replace": "      true &&",
+      "expectRed": "an archived session is never auto-resumed"
+    },
+    {
+      "name": "M4 treat an empty or unknown transcript as resumable memory",
+      "file": "extensions/connector-jcode/src/session-resume.ts",
+      "find": "      typeof c.transcript_bytes === \"number\" &&\n      c.transcript_bytes > 0,",
+      "replace": "      true,",
+      "expectRed": "a zero-byte transcript carries no memory and is skipped"
+    },
+    {
+      "name": "M5 pick the thinnest transcript - the restart's own stub outranks the real session",
+      "file": "extensions/connector-jcode/src/session-resume.ts",
+      "find": "      (b.transcript_bytes ?? 0) - (a.transcript_bytes ?? 0) || a.session_id.localeCompare(b.session_id),",
+      "replace": "      (a.transcript_bytes ?? 0) - (b.transcript_bytes ?? 0) || a.session_id.localeCompare(b.session_id),",
+      "expectRed": "the largest transcript is chosen"
+    },
+    {
+      "name": "M6 sort the CALLER's array in place instead of the filtered copy",
+      "file": "extensions/connector-jcode/src/session-resume.ts",
+      "find": "  return [...usable].sort(",
+      "replace": "  (candidates as ResumeCandidate[]).sort((x, y) => (y.transcript_bytes ?? 0) - (x.transcript_bytes ?? 0));\n  return [...usable].sort(",
+      "expectRed": "the input list is not mutated (no in-place sort)"
+    }
+  ]
+}

@@ -1,0 +1,76 @@
+{
+  "suite": "implementations/runtime/smoke/run-driver.smoke.ts",
+  "guard": "The version-2 entry's host seam: a failure that crosses the thread boundary is rehydrated into the class drive() grades (L5010 as JournalAppendRejected, L5012 as RunReleased), and the host's stop conditions reach the run at the walker's own granularity - before the first effect when the horizon predates the run, and at every effect boundary after, riding the append rather than a timer.",
+  "command": "pnpm smoke:runtime-run-driver",
+  "completionMarker": "run-driver.smoke:",
+  "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/engine-host.json   # --config resolves against the repo root, never the cwd",
+  "mutations": [
+    {
+      "name": "a lost journal crosses back as a plain error rather than the class the driver grades",
+      "file": "implementations/runtime/src/engine-host.ts",
+      "find": "  if (failed.code === \"L5010\") {",
+      "replace": "  if ((false as boolean) && failed.code === \"L5010\") {",
+      "expectRed": "the superseded driver is RELEASED, not completed and not thrown",
+      "cell": "the superseded driver is RELEASED, not completed and not thrown",
+      "note": "drive() grades a lost run by instanceof, and instanceof does not survive a thread boundary - the rehydration map is what puts the class back. Mutated, a superseded driver's L5010 arrives as a generic error, drive() rethrows it as a run failure, and a run somebody else now owns is recorded as failed by a process that no longer speaks for it."
+    },
+    {
+      "name": "a release crosses back as a failure",
+      "file": "implementations/runtime/src/engine-host.ts",
+      "find": "  if (failed.code === \"L5012\") {\n    return new RunReleased(failed.reason ?? failed.message);\n  }",
+      "replace": "  if ((false as boolean) && failed.code === \"L5012\") {\n    return new RunReleased(failed.reason ?? failed.message);\n  }",
+      "expectRed": "a driver past its work horizon RELEASES the run rather than failing it",
+      "cell": "a driver past its work horizon RELEASES the run rather than failing it",
+      "note": "The host stopping is not a fact about the program, and the outcome contract says so as `released`. Mutated, the thread's RunReleased crosses as a plain error, drive() records `failed` onto a run that neither failed nor finished, and the next driver reads a terminal state about work that is still resumable."
+    },
+    {
+      "name": "the stop rides only the timer, not the append boundary",
+      "file": "implementations/runtime/src/engine-host.ts",
+      "find": "  const store = new WitnessedStore(req.store, () => {\n    const reason = req.shouldStop();\n    if (reason !== undefined) publish(reason);\n  });",
+      "replace": "  const store = new WitnessedStore(req.store, () => {});",
+      "expectRed": "it stopped BETWEEN effects, not before the run and not after it: exactly one effects",
+      "cell": "it stopped BETWEEN effects, not before the run and not after it: exactly one effects",
+      "note": "Every effect is bracketed by durable appends, so the check riding the append is what gives the engine the walker's own between-effects granularity. Mutated, only the 100ms timer is left, a millisecond-scale run finishes before its first tick, and a driver past its horizon performs the second effect the walker would have refused."
+    },
+
+    {
+      "name": "a throwing stop check crashes the host from the poll's timer stack",
+      "file": "implementations/runtime/src/engine-host.ts",
+      "find": "    } catch (e) {\n      pollFault = e ?? new Error(\"the host's stop check threw a falsy value\");\n      clearInterval(poll);\n      worker.stop(\"the host's stop check itself threw; the driver re-raises the fault\");\n    }",
+      "replace": "    } catch (e) {\n      throw e;\n    }",
+      "expectRed": "a stop check that throws on the poll's own stack is the RUN'S fault, never an uncaught exception",
+      "cell": "a stop check that throws on the poll's own stack is the RUN'S fault, never an uncaught exception",
+      "note": "Rethrowing from the timer callback is exactly the unguarded shape this guard replaced: the throw lands on Timeout._onTimeout, bypasses the driver's catch, and without the cell's own uncaughtException trap it kills the host process (MEASURED at c24be213). The cell traps the escape so the kill is a named red rather than a dead suite. The stop check throws ONCE: a throw on every tick, after the listener is removed, killed the process before `run-driver.smoke:` and graded INCONCLUSIVE (measured at d4033944)."
+    },
+    {
+      "name": "the poll ticks but reads nothing, so a stop with no append traffic is never heard",
+      "file": "implementations/runtime/src/engine-host.ts",
+      "find": "      const reason = req.shouldStop();\n      if (reason !== undefined) worker.stop(reason);",
+      "replace": "      void req;",
+      "expectRed": "a stop only the poll can see, raised inside a parked effect with no append traffic, still stops the run at the next effect",
+      "cell": "a stop only the poll can see, raised inside a parked effect with no append traffic, still stops the run at the next effect",
+      "note": "The timer's one load-bearing window, measured: a stop true only while an effect is parked in the host reaches the run through no other path, because the append boundaries on either side of the park see the flag lowered. Neutered, the run completes and performs the second effect the stop should have prevented. Every other suite stayed green under this mutant before the cell existed."
+    }
+  ],
+
+  "unkillable": [
+    {
+      "name": "the worker entry's existence check reaches for a fallback path",
+      "file": "implementations/runtime/src/engine-host.ts",
+      "why": "`resolveWorkerEntry` refuses a missing dist artifact by name. Ungradable from this suite because the suite cannot run at all without the artifact the check guards: `smoke:lang-engine` builds it and every honest run of this config has it on disk, so a mutant deleting the existence check is a no-op at its own program point and could only report SURVIVED. The refusal text is held by the code beside a comment naming the build step; the day a fixture can stage a missing dist without breaking the suite's own imports, this belongs in the set above."
+    },
+    {
+      "name": "the poll's boot-window publish cannot be graded from a suite cell",
+      "file": "implementations/runtime/src/engine-host.ts",
+      "why": "The timer's other unique contribution is a stop that becomes true after the upfront `already` sample and before the thread's first pre-effect check (a SAB read that sees only published stops). That window is observable ONLY while worker boot exceeds STOP_POLL_MS. Live probe, last-effect shape, first effect parking 500ms, shouldStop callers recorded, at the shipped constant STOP_POLL_MS=100: shipped poll -> effects 0, callers [upfront, poll, ...], L5012 released; publish-dropped mutant (`setInterval(() => { req.shouldStop(); }, STOP_POLL_MS)`) -> effects 1, callers [upfront, append, append], COMPLETED. Slow-box simulation (STOP_POLL_MS raised to 600, boot now inside the tick): shipped itself -> effects 1, callers [upfront, append, poll, append], COMPLETED, observationally identical to the mutant. Boot on this box (start to first pre-effect dispatch) 350-387ms against 100ms (~3.7x margin), corroborated independently 362-403ms; worker.ts's own cold-start-to-first-message figure (22.8-26.4ms, lockdown included) is the counterweight and is UNDER the tick, so a leaner host lands in the unobservable regime. A call-count cell reds on correct code wherever boot wins; a caller-trace cell (\"a poll call happened\") survives the publish-dropped mutant. No deterministic cell exists as the code is shaped. Closing the window by construction (thread signals ready, or re-check on the first bridge message) is a design change, not a fold into this PR. The parked-window role IS graded (the cell above); this row is only the boot window. Probe must be run at the shipped constant: at 600 the shipped path exhibits the mutant's observable outcome. The same regime makes the upfront-publish mutant ungradable from this config: neutering `const already = req.shouldStop(); worker.stop(already)` reddens the zero-effects cell on a COLD worker (measured at 1ffead51: effects=['sleep:1h'], 78 passed 1 failed) and SURVIVES on a WARM worker because the poll's first tick covers the window (measured in the same copy's whole-config run, after three earlier mutants had already booted the worker). Recorded 2026-08-20 from the round-1 panel's joint probe at c24be213; the code path is unchanged through 1ffead51."
+    }
+  ],
+  "why": [
+    "SPECIFIER BOUNDARY, inherited from this directory: the suite loads `@cotal-ai/lang` through a",
+    "package specifier that resolves to `dist`, so nothing here mutates `packages/lang/src` - the",
+    "bridge's own guards are graded from `packages/lang/smoke/mutations/engine-seam.json`, whose",
+    "suite imports the source relatively. Everything in THIS config mutates",
+    "`implementations/runtime/src/engine-host.ts`, which the suite imports through `../src/index.js`",
+    "- the mutated bytes are the bytes it loads, and the command carries no build."
+  ]
+}

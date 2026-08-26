@@ -12,7 +12,7 @@
  *
  * Run: node scripts/mutation-proof.selftest.mjs
  */
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync, statSync } from "node:fs";
 import { execSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -241,6 +241,23 @@ writeFileSync(
     mutations: [{ label: "typo: the key is `name`", file: "src/impl.js", find: "if (n > 10)", replace: "if (false)", expectRed: "oversized values are refused" }],
   }),
 );
+// A key a sibling tool reads is not an unknown key.
+writeFileSync(
+  join(root, "sibling-keys.json"),
+  JSON.stringify({
+    command: `${process.execPath} suite.mjs`,
+    mutations: [{ name: "carries the keys the coverage pass reads", file: "src/impl.js", find: "if (n > 10)", replace: "if (false)", expectRed: "the guard refuses an oversized value", cell: "the guard refuses an oversized value", note: "prose for the next reader" }],
+  }),
+);
+// ...and the control, because a widened allowlist that refuses nothing is a removal, not a fix.
+writeFileSync(
+  join(root, "unknown-top-key.json"),
+  JSON.stringify({
+    command: `${process.execPath} suite.mjs`,
+    complitionMarker: "a real typo of a real key",
+    mutations: [{ name: "fine", file: "src/impl.js", find: "if (n > 10)", replace: "if (false)", expectRed: "the guard refuses an oversized value" }],
+  }),
+);
 writeFileSync(
   join(root, "no-expect.json"),
   JSON.stringify({
@@ -285,6 +302,46 @@ r = runTool([
   "--expect-red", "the guard refuses an oversized value",
 ]);
 check("a real red followed by a crash is still KILLED", r.status === 0 && r.stdout.includes("KILLED"), r.stdout.slice(-400));
+
+// 7e-quater. THE SAME RUN, UNDER A SUITE THAT OPTED IN — and the control that keeps the cell above
+// meaning what it says. `completionMarker` lets a suite declare "a run of mine that did not finish
+// is not evidence I want counted", which is a STRICTER bargain than the default, not a correction
+// to it. The two cells differ in exactly one config field, so if the opt-in ever stops being an
+// opt-in and becomes global, the control goes red and says so.
+writeFileSync(
+  join(root, "marked.mjs"),
+  [
+    "import { admit, unrelated } from './src/impl.js';",
+    "const c = (n, v) => { console.log(v ? `  ✓ ${n}` : `  ✗ FAIL: ${n}`); if (!v) process.exitCode = 1; };",
+    "c('the guard refuses an oversized value', admit(50) === false);",
+    "if (unrelated() !== 'untouched') throw new Error('the unrelated helper blew up');",
+    "c('the unrelated helper is untouched', admit(7) === true);",
+    "console.log('SELFTEST SUITE DONE');",
+    "",
+  ].join("\n"),
+);
+const crashAfterRed = {
+  name: "reddens the named cell for real, then crashes before the suite ends",
+  file: "src/impl.js",
+  find: "if (n > 10)\n    return false;",
+  replace: "if (false)\n    return false;\n  if (n === 7) throw new Error('and then a crash');",
+  expectRed: "the guard refuses an oversized value",
+};
+writeFileSync(
+  join(root, "completion-optin.json"),
+  JSON.stringify({ command: `${process.execPath} marked.mjs`, completionMarker: "SELFTEST SUITE DONE", mutations: [crashAfterRed] }),
+);
+writeFileSync(
+  join(root, "completion-control.json"),
+  JSON.stringify({ command: `${process.execPath} marked.mjs`, mutations: [crashAfterRed] }),
+);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm completion", { cwd: root });
+r = runTool(["--config", "completion-optin.json"]);
+check("a suite that declared a completion marker gets INCONCLUSIVE, not KILLED, when the run stops early",
+  r.status !== 0 && verdictIs(r.stdout, "INCONCLUSIVE") && r.stdout.includes("SELFTEST SUITE DONE"), r.stdout.slice(-400));
+r = runTool(["--config", "completion-control.json"]);
+check("...and THE SAME RUN with no marker declared is still KILLED, so this is opt-in and not a new default",
+  r.status === 0 && r.stdout.includes("KILLED"), r.stdout.slice(-400));
 
 // 7e-ter. EXIT STATUS IS NOT THE EVIDENCE, THE OTHER WAY ROUND. A teardown that calls
 // `process.exit(0)` after the suite printed real failures and set `exitCode = 1` hands the grader a
@@ -484,6 +541,19 @@ r = runTool(["--config", "unknown-key.json"]);
 check("an unknown mutation key is an ERROR, not a shrug",
   r.status !== 0 && r.stdout.includes("ERROR") && r.stdout.includes("unknown mutation key"), r.stdout.slice(-300));
 
+// The claim is exactly "these keys no longer make a mutation ungradable", so that is what this
+// asserts: no ERROR, and a real verdict reached. Which verdict depends on where in this file the
+// fixture sits and is not the property under test — asserting KILLED here would pin the fixture's
+// position rather than the allowlist.
+r = runTool(["--config", "sibling-keys.json"]);
+check("...but a key a SIBLING tool reads is not unknown, and the mutation is GRADED rather than refused",
+  !r.stdout.includes("unknown mutation key") && !r.stdout.includes("ERROR")
+    && /KILLED|SURVIVED|WRONG-RED|INCONCLUSIVE|UNGRADABLE/.test(r.stdout), r.stdout.slice(-300));
+
+r = runTool(["--config", "unknown-top-key.json"]);
+check("...and a mis-spelled TOP-LEVEL key is refused, at the level the silent ignore actually lived at",
+  r.status !== 0 && r.stdout.includes("complitionMarker"), r.stdout.slice(-300));
+
 // 7g. Mandatory since the first version's header, unenforced until now.
 r = runTool(["--config", "no-expect.json"]);
 check("a mutation with no expectRed is refused",
@@ -507,6 +577,37 @@ check("an anchored progress pattern counts per LINE, not once per transcript",
 const after = execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim();
 check("every run restored the tree", after === "", { after });
 check("...and the guard is byte-intact", readFileSync(join(root, "src/impl.js"), "utf8").includes("if (n > 10)"));
+
+// 9. Restoring the BYTES is not restoring the FILE. `copyFileSync` is a write, so a restored file
+// carries a fresh mtime while its content is provably unchanged — and every tool that compares a
+// source against a build reads exactly that. After a real graded run, `smoke:dist-freshness` named
+// `packages/core` stale and refused the 261-suite chain at its first entry, for a file nobody had
+// edited. The sha checks above stay green through all of it, which is why this asserts the TIME.
+//
+// Back-date first: without it a fast restore lands in the same millisecond as the original and the
+// check passes whether or not the timestamp was preserved.
+const timed = join(root, "src/impl.js");
+const OLD_MS = Date.now() - 3600_000;
+execSync(`touch -d ${JSON.stringify(new Date(OLD_MS).toISOString())} ${JSON.stringify(timed)}`);
+const mtimeBefore = statSync(timed).mtimeMs;
+const startedMs = Date.now();
+r = runTool([
+  "--command", `${process.execPath} suite.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;",
+  "--expect-red", "oversized values are refused",
+]);
+const mtimeAfter = statSync(timed).mtimeMs;
+// Not an equality test. `statSync` surfaces a nanosecond timestamp as a millisecond Date and
+// `utimesSync` can only write that precision back, so a faithful restore still lands up to 1ms
+// off. The defect is not imprecision, it is the mtime becoming NOW — so the discriminating
+// question is whether the restored time predates the run that touched it.
+check("a restored file keeps its original mtime, not the time of the restore",
+  verdictIs(r.stdout, "KILLED") && mtimeAfter < startedMs && Math.abs(mtimeAfter - mtimeBefore) <= 1,
+  { mtimeBefore, mtimeAfter, startedMs, movedMs: mtimeAfter - mtimeBefore });
+check("...and the content is unchanged too, so the time was not preserved by skipping the restore",
+  readFileSync(timed, "utf8").includes("if (n > 10)"));
 
 rmSync(root, { recursive: true, force: true });
 console.log(`\nMUTATION-PROOF SELF-TEST PASSED ✅  (${pass} checks)`);

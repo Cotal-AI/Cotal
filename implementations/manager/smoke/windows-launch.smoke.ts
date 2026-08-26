@@ -35,6 +35,7 @@ import { resolveOnPath } from "@cotal-ai/workspace";
 import { launchEnv, controlEndpoint, startControlServer, type MeshAgent } from "@cotal-ai/connector-core";
 import { quoteCmdArg, buildCmdCommandLine, resolveComspec, preparePtyLaunch } from "../src/runtime/windows-launch.js";
 import { controlShutdown } from "../src/control-shutdown.js";
+import { controlSession } from "../src/control-session.js";
 import { createRuntime } from "../src/index.js";
 
 const isWin = process.platform === "win32";
@@ -173,7 +174,10 @@ function launchCapture(command: string, args: string[], env: NodeJS.ProcessEnv, 
   return new Promise((resolve) => {
     let h: ReturnType<ReturnType<typeof createRuntime>["spawn"]>;
     try {
-      h = createRuntime("pty", "winsmoke").spawn("winsmoke", { command, args, env }, cwd);
+      // `process.env` values are `string | undefined`; a LaunchSpec carries only the defined ones,
+      // which is also what the child would receive, since node drops an undefined entry.
+      const defined = Object.fromEntries(Object.entries(env).filter((e): e is [string, string] => e[1] !== undefined));
+      h = createRuntime("pty", "winsmoke").spawn("winsmoke", { command, args, env: defined }, cwd);
     } catch (e) {
       resolve(`THREW:${(e as Error).message}`);
       return;
@@ -390,7 +394,11 @@ function waitListening(server: ReturnType<typeof startControlServer>): Promise<v
     events.push(ev);
     return { handled: true };
   };
-  const server = startControlServer(stubAgent, ep, handle, { onShutdown: () => shutdowns++ });
+  let sessionId: string | undefined = "01999999-9999-7999-8999-000000000001";
+  const server = startControlServer(stubAgent, ep, handle, {
+    onShutdown: () => shutdowns++,
+    onSession: () => sessionId,
+  });
   await waitListening(server);
 
   // F2: a WRONG token is dropped before the handler — no reply, the event never reaches it.
@@ -405,7 +413,19 @@ function waitListening(server: ReturnType<typeof startControlServer>): Promise<v
   eq("auth: right token → handler reply returned", r3.trim(), JSON.stringify({ handled: true }));
   eq("auth: right token → handler saw the event", events.at(-1), { hook_event_name: "SessionStart", k: 1 });
 
-  // F4: a valid {op:"shutdown"} routes to onShutdown, NOT the hook handler.
+  // F4: the authenticated read-only session query returns the current host-session id and never
+  // reaches the hook handler. A wrong token receives nothing; a not-yet-ready session refuses.
+  const sessionEventsBefore = events.length;
+  eq("session: authenticated query returns the exact host id", await controlSession(ep), sessionId);
+  eq("session: query is NOT routed through the hook handler", events.length, sessionEventsBefore);
+  eq("session: wrong token receives no reply", await sendFrame(ep.path, { token: "nope", op: "session" }), "");
+  sessionId = undefined;
+  const sessionNotReady = await sendFrame(ep.path, { token: ep.token, op: "session" });
+  check("session: not-yet-ready is a loud negative reply", /session not ready/.test(sessionNotReady));
+  sessionId = "01999999-9999-7999-8999-000000000002";
+  eq("session: a replacement Pi session is reported immediately", await controlSession(ep), sessionId);
+
+  // F5: a valid {op:"shutdown"} routes to onShutdown, NOT the hook handler.
   const evBefore = events.length;
   const r4 = await sendFrame(ep.path, { token: ep.token, op: "shutdown" });
   await sleep(50);
@@ -413,12 +433,12 @@ function waitListening(server: ReturnType<typeof startControlServer>): Promise<v
   eq("shutdown: onShutdown fired", shutdowns, 1);
   eq("shutdown: NOT routed through the hook handler", events.length, evBefore);
 
-  // F5: a {op:"shutdown"} with a WRONG token shuts nothing down.
+  // F6: a {op:"shutdown"} with a WRONG token shuts nothing down.
   await sendFrame(ep.path, { token: "nope", op: "shutdown" });
   await sleep(50);
   eq("shutdown: wrong token → onShutdown NOT fired", shutdowns, 1);
 
-  // F6: the manager's controlShutdown client round-trips to a server's onShutdown (the WS4 wire path).
+  // F7: the manager's controlShutdown client round-trips to a server's onShutdown (the WS4 wire path).
   const ep2 = controlEndpoint("smoke", "ws4");
   let ws4 = false;
   const server2 = startControlServer(stubAgent, ep2, handle, { onShutdown: () => (ws4 = true) });

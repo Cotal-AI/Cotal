@@ -1,0 +1,89 @@
+{
+  "command": "pnpm smoke:codex-events-lifecycle",
+  "mutations": [
+    {
+      "name": "L1 a restarted thread is adopted into the bound holder, which is exactly the state this PR opened in",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "      events = newEventHolder(startCursor);\n      rollout = path;",
+      "replace": "      events = events ?? newEventHolder(startCursor);\n      rollout = path;",
+      "expectRed": "the plane KEEPS PUBLISHING after the restart"
+    },
+    {
+      "name": "L2 the drain stops closing the old thread's run, so an observer is left holding a run that never ends",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "    if (rollout !== undefined) events.flush(rollout);\n    events.closeRun(Date.now());\n    await events.settled();",
+      "replace": "    if (rollout !== undefined) events.flush(rollout);\n    await events.settled();",
+      "expectRed": "and no run the dead thread opened was left open"
+    },
+    {
+      "name": "L3 shutdown stops draining the plane, so a mid-turn exit publishes a run that is never closed",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "      flushEvents();\n      events?.closeRun(Date.now());\n      await events?.settled();",
+      "replace": "      await Promise.resolve();",
+      "expectRed": "a mid-turn exit CLOSES the run it left open"
+    },
+    {
+      "name": "L4 the bind stops retrying at a turn boundary, so a seat whose rollout appeared late never publishes at all",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "    if (eventsArmed && eventsThread !== undefined) void bindEvents(eventsThread, 1);",
+      "replace": "    if (false) void bindEvents(\"\", 1);",
+      "expectRed": "a rollout that appeared AFTER the launch gave up still binds"
+    },
+    {
+      "name": "L5 the launch stops binding at all, so an armed seat publishes nothing on the ordinary path",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "      eventsThread = threadId;\n      void bindEvents(threadId, ROLLOUT_ATTEMPTS);",
+      "replace": "      eventsThread = threadId;",
+      "expectRed": "an armed seat PUBLISHES its thread's activity"
+    },
+    {
+      "name": "L6 a dead emitter stays bound, so a seat whose broker was down at launch publishes nothing for the rest of its life",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "    if (events?.failure !== undefined) {",
+      "replace": "    if (events !== undefined && events.failure !== undefined && false) {",
+      "expectRed": "broker-late:the next turn boundary REBINDS the dead plane"
+    },
+    {
+      "name": "L8 giving up on a successor stops draining the predecessor at all, so a run whose process is gone is left open on the wire",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "        if (events !== undefined) {\n          await drainBinding();\n          events = undefined;\n          rollout = undefined;\n        }",
+      "replace": "        if (false) {\n          await drainBinding();\n          events = undefined;\n          rollout = undefined;\n        }",
+      "expectRed": "restart-late:the dead thread's run was CLOSED when the plane gave up on its successor"
+    },
+    {
+      "name": "L7 the give-up drains the predecessor but stops CLEARING it, so every later boundary feeds a thread whose process is gone",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "          await drainBinding();\n          events = undefined;\n          rollout = undefined;",
+      "replace": "          await drainBinding();",
+      "expectRed": "restart-late:the successor thread PUBLISHES once its file appears"
+    },
+    {
+      "name": "L9 the bind's boundary is written into the log before the emitter starts, so a start that then fails leaves a resume behind and the next bind republishes what the seat did while it was cut off",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "        const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });",
+      "replace": "        const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });\n        if (wal.frontier.sourceCursor === undefined) await wal.advanceCursorOnly(startCursor);",
+      "expectRed": "the recovered stream carries ONE turn, the first one after the rebind, and nothing the seat did before it"
+    },
+    {
+      "name": "L10 the bind's boundary is substituted on EVERY read rather than only on a log with no cursor, so the stream restarts from it and republishes what it has already sent",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "    return this.inner.read(cursor ?? this.start);",
+      "replace": "    return this.inner.read(this.start);",
+      "expectRed": "the recovered stream carries ONE turn, the first one after the rebind, and nothing the seat did before it"
+    },
+    {
+      "name": "L11 a seat that recovers its plane says nothing about it, so a reader watching the log cannot tell a recovery from a plane that was never down",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "      log(`AG-UI: the emitter stopped (${events.failure.message}), rebinding at this boundary`);",
+      "replace": "      log(`AG-UI: the emitter stopped (${events.failure.message})`);",
+      "expectRed": "broker-late:and it said so rather than recovering silently"
+    },
+    {
+      "name": "L12 the bind's boundary is not substituted, so the emitter positions itself wherever the file ends when its own setup has finished",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "source: new BoundStartSource<CodexRecord>(new JsonlFileSource<CodexRecord>(rolloutPath), startCursor),",
+      "replace": "source: new JsonlFileSource<CodexRecord>(rolloutPath),",
+      "expectRed": "a turn written INSIDE the emitter's setup window is PUBLISHED rather than left behind the cursor"
+    }
+  ]
+}

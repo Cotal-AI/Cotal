@@ -275,7 +275,7 @@ export class PiDriver {
     this.inbox.discardTombstoned();
     this.inbox.discardMatching((item) => ownChannelEcho(this.mesh, item));
     const reserved = new Set(this.batches.flatMap((batch) => batch.ids));
-    const available = this.inbox.peek("automatic").filter((item) => !reserved.has(item.id));
+    const available = this.inbox.peek("automatic").filter((item) => !reserved.has(item.recvKey));
     if (!force && this.nudges.length === 0 && !available.some((item) => wakeable(this.mesh, item))) {
       if (this.batches.length === 0) this.publishIdleWhenSettled(this.context);
       return;
@@ -288,7 +288,7 @@ export class PiDriver {
     } else {
       const items = this.inbox.select(reserved, BATCH_LIMIT);
       if (items.length === 0) return;
-      ids = items.map((item) => item.id);
+      ids = items.map((item) => item.recvKey);
       content = formatInjection(items);
     }
     if (!content) return;

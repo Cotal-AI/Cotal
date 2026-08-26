@@ -1,0 +1,24 @@
+{
+  "suite": "extensions/connector-core/smoke/orientation.smoke.ts",
+  "guard": "rotating ordered-consumer failures are deduplicated by fault family while orientation retains the concrete latest cause",
+  "command": "pnpm --filter @cotal-ai/connector-core... build && pnpm smoke:orientation",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/endpoint-error-dedupe.json",
+  "mutations": [
+    {
+      "name": "dedupe on the generated ordered-consumer name, making every retry look unique again",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    const fingerprint = error.message.replace(/oc_[A-Za-z0-9]+_\\d+/g, \"oc_*\");",
+      "replace": "    const fingerprint = error.message;",
+      "expectRed": "rotating ordered-consumer errors are logged once per fault family",
+      "cell": "rotating ordered-consumer errors are logged once per fault family"
+    },
+    {
+      "name": "orientation hides the concrete connection failure again",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "${issue ? `; last error: ${issue.slice(0, 300)}` : \"; connection is still starting\"}",
+      "replace": "; connection is still starting",
+      "expectRed": "orientation names the live connection fault",
+      "cell": "orientation names the live connection fault"
+    }
+  ]
+}

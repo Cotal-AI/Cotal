@@ -1,0 +1,54 @@
+{
+  "suite": "extensions/connector-core/smoke/agui-emitter.smoke.ts",
+  "guard": "an emitter publishes to the channel derived from its endpoint's allocated principal, and to nothing a caller, a record or a write-ahead log can name",
+  "command": "pnpm smoke:agui-emitter",
+  "completionMarker": "agui-emitter smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/agui-subject.json",
+  "why": [
+    "This plane is defined to carry tool inputs and outputs, so which subject a session publishes",
+    "to is an authorization question rather than a routing detail. The manager mints a publish",
+    "grant for exactly one channel. A session that could be talked into publishing somewhere else",
+    "would either be silently unauthorized, which reads as a working system with an empty panel, or",
+    "authorized onto a channel whose name a reader trusts to identify its author.",
+    "",
+    "WHAT THE CELLS ASSERT IS AN ABSENCE, so the endpoint instrument records the channel of every",
+    "publish rather than only its parts. A recorder that discards the channel can testify to",
+    "nothing about which channel was used.",
+    "",
+    "SPECIFIER BOUNDARY, checked rather than assumed. The suite imports the emitter by relative",
+    "source path (../src/agui.js), and agui.ts reaches eventChannelForSession by relative source",
+    "path (./launch.js), so the bytes mutated are the bytes graded. No dist is in that chain and no",
+    "build is in the command. Its package-name imports are eventChannel and principalKey from",
+    "@cotal-ai/core, used by the CELLS to state the expected answer and deliberately not mutated:",
+    "a mutation there would move the assertion and the subject together and could not fail."
+  ],
+  "mutations": [
+    {
+      "name": "S1 a self-minted identity falls back to deriving a channel instead of refusing",
+      "file": "extensions/connector-core/src/launch.ts",
+      "find": "  if (ep.actorIsEphemeral)\n    throw new Error(",
+      "replace": "  if (false as boolean)\n    throw new Error(",
+      "expectRed": "subject:an-EPHEMERAL-actor-refuses-events-rather-than-inventing-a-channel",
+      "cell": "subject:an-EPHEMERAL-actor-refuses-events-rather-than-inventing-a-channel",
+      "note": "The tempting repair, written out: an endpoint with no declared id and no credentials self-mints a random actor per process, so the fallback produces a different channel every restart and one that no grant minted in advance can match."
+    },
+    {
+      "name": "S2 adopt a write-ahead log belonging to another principal",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "    if (wal.principal !== live)\n      throw new Error(",
+      "replace": "    if (false as boolean)\n      throw new Error(",
+      "expectRed": "subject:a-WAL-from-another-principal-REFUSES-rather-than-publishing-under-two-identities",
+      "cell": "subject:a-WAL-from-another-principal-REFUSES-rather-than-publishing-under-two-identities",
+      "note": "The write-ahead log is the one input that carries a principal of its own, so it is the one that could put a session's frames under another identity while every other check still passed."
+    },
+    {
+      "name": "S3 pin the channel to a constant instead of deriving it from the principal",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "    const channel = eventChannelForSession(endpoint);",
+      "replace": "    const channel = \"events.local.aaa\";",
+      "expectRed": "subject:CONTROL-the-channel-tracks-the-principal-rather-than-being-a-constant",
+      "cell": "subject:CONTROL-the-channel-tracks-the-principal-rather-than-being-a-constant",
+      "note": "The control cell exists for exactly this: without a second principal, every other subject cell is satisfied by a hard-coded string that happens to match the fixture."
+    }
+  ]
+}

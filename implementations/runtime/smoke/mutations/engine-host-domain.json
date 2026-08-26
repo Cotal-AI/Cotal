@@ -1,0 +1,23 @@
+{
+  "suite": "implementations/runtime/smoke/mesh-checkpoint.smoke.ts",
+  "guard": "An effect failure that crosses the version-2 entry's thread boundary keeps its whole domain: the driver rehydrates code+kind back into the EffectError the walker would have raised in-process, so failure handling downstream branches on the same fields either way.",
+  "command": "pnpm smoke:runtime-mesh-checkpoint",
+  "completionMarker": "mesh-checkpoint.smoke:",
+  "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/engine-host-domain.json   # --config resolves against the repo root, never the cwd",
+  "mutations": [
+    {
+      "name": "an effect failure crosses the driver boundary stripped of its domain",
+      "file": "implementations/runtime/src/engine-host.ts",
+      "find": "  if (failed.code !== undefined && failed.kind !== undefined) {\n    return new EffectError(failed.code, failed.kind, failed.message, failed.detail);\n  }",
+      "replace": "  if ((false as boolean) && failed.code !== undefined && failed.kind !== undefined) {\n    return new EffectError(failed.code as string, failed.kind as string, failed.message, failed.detail);\n  }",
+      "expectRed": "and the effect FAILS rather than returning a resolved checkpoint with an empty value",
+      "cell": "and the effect FAILS rather than returning a resolved checkpoint with an empty value",
+      "note": "The cell reads `kind === \"handler-fault\"` off the raised failure, which is exactly the field this branch restores. Mutated, a bypassed checkpoint's L4000 arrives as a plain error with a code and no kind, and a caller that branches on the domain - as this suite does on the walker's own raise - reads a different failure than the one that happened. Found live before the branch existed: this cell was the red that demanded it."
+    }
+  ],
+  "why": [
+    "One mutation, its own config, because the observing cell lives in a different suite than the",
+    "rest of the engine-host guards: mesh-checkpoint is where a real handler throw crosses the",
+    "boundary with a kind a cell actually reads."
+  ]
+}

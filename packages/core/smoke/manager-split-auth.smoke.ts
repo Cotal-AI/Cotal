@@ -68,6 +68,7 @@ import {
   BASELINE_LIFECYCLE_ENDPOINT,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { assertEphemeralBroker } from "./_ephemeral-only.js";
 
 const PORT = await pickFreePort();
@@ -96,9 +97,10 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 
 const space = `mgr-split-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-mgrsplit-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 
 /** Publish `subject` as a request using `creds`. Auth Violation ⇒ DENIED; anything else (JS-API error,
  *  No-Responders, timeout) ⇒ ALLOWED (the publish itself was accepted). `inboxPrefix` matches the cred's
@@ -279,6 +281,19 @@ try {
       await tryPublish(agCreds, `$JS.API.CONSUMER.MSG.NEXT.${DM}.${dmDurable(DEV_OWNER, agId.id, otherUid)}`, agId.id) === "denied");
     check("bind the SAME alias's dlv durable under a LIED lifecycle uid DENIED",
       await tryPublish(agCreds, `$JS.API.CONSUMER.MSG.NEXT.${DLV}.${dlvDurable(DEV_OWNER, agId.id, otherUid)}`, agId.id) === "denied");
+    // A KV watch is a client-managed ordered consumer. The client deletes the current `oc_*`
+    // consumer when the watch resets or stops, so CREATE+INFO without DELETE is not a usable
+    // read grant: cleanup is broker-refused, the watcher rebuilds again, and consumers accumulate.
+    // The generated name cannot be pinned at mint time, so the narrow boundary is the two public
+    // read-only KV streams an agent actually watches — never another KV stream or a stream delete.
+    check("delete an ordered presence-watch consumer ALLOWED (watch reset/stop cleanup)",
+      await tryPublish(agCreds, `$JS.API.CONSUMER.DELETE.${PKV}.oc_agent-presence-probe_1`, agId.id) === "allowed");
+    check("delete an ordered channel-registry-watch consumer ALLOWED (watch reset/stop cleanup)",
+      await tryPublish(agCreds, `$JS.API.CONSUMER.DELETE.KV_${channelBucket(space)}.oc_agent-channels-probe_1`, agId.id) === "allowed");
+    check("delete a consumer on a different KV stream DENIED (cleanup grant is not KV-wide)",
+      await tryPublish(agCreds, `$JS.API.CONSUMER.DELETE.KV_${membersBucket(space)}.oc_agent-escape-probe_1`, agId.id) === "denied");
+    check("delete the presence STREAM itself DENIED (consumer cleanup is not bucket destruction)",
+      await tryPublish(agCreds, `$JS.API.STREAM.DELETE.${PKV}`, agId.id) === "denied");
   }
 
   console.log("deprovisioner (ephemeral, TARGET-PINNED teardown — deletes ONE agent's local-principal footprint, nothing else):");
@@ -440,4 +455,5 @@ try {
   srv.kill("SIGKILL");
   await awaitExit(srv);
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }

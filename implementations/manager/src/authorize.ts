@@ -11,7 +11,7 @@ export interface NamedControlTarget {
 }
 
 /**
- * The named-target (stop/attach) authorization decision — pure, so the policy is pinnable without
+ * The named-target (stop/attach/input) authorization decision — pure, so the policy is pinnable without
  * a broker. The caller already passed the broker's tier admission (cred-gated publish); this
  * decides what the manager honors, fail-closed, ONLY from the subject-pinned caller principal and
  * the target's spawn-time records:
@@ -53,7 +53,7 @@ export async function authorizeNamedControl(opts: {
     }
     return (
       `not authorized: ${target.name} runs under another owner - your grant covers agents under your own owner; ` +
-      `cross-owner stop/attach needs scope "admin" on your actor. Re-grant with "admin" ADDED to your current ` +
+      `cross-owner stop/attach/input needs scope "admin" on your actor. Re-grant with "admin" ADDED to your current ` +
       `scope (the upsert replaces the list; see \`cotal actor list\`)`
     );
   }

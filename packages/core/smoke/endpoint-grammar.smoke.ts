@@ -105,7 +105,8 @@ c("retired control plane → null", parseEpSubject("cotal.demo.control.spawn.u_a
 c("v0 chat plane → null on this surface", parseEpSubject("cotal.demo.chat.u_abc.worker.general") === null);
 
 // ── reply derivation from the authenticated request (confused-deputy boundary) ──
-const derived = deriveReplySubject("demo", pInst!, { instanceId: IID, epoch: 7 });
+if (pInst?.plane !== "request") throw new Error("the inst fixture must parse as a request subject");
+const derived = deriveReplySubject("demo", pInst, { instanceId: IID, epoch: 7 });
 c("derived reply copies caller triple + nonce, pins responder identity",
   derived === `cotal.demo.ep.reply.manager.${IID}.7.u_abc.worker.${UID}.${NONCE}`);
 

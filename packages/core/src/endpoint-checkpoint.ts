@@ -92,6 +92,27 @@ function closedKeys(o: Record<string, unknown>, allowed: readonly string[], what
       throw new EpEnvelopeError(code, `${what} carries the unknown field "${k}"; checkpoint schemas are closed (SPEC 13.6)`);
 }
 
+/** The `<token>` grammar as a predicate, asked THROUGH the asserter so the two can never drift —
+ *  a second regex here would be a copy of a rule that lives somewhere else. */
+function isIdToken(v: string): boolean {
+  try {
+    assertIdToken(v);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A caller-supplied answer id, refused in the seam's own vocabulary rather than the token
+ *  asserter's: an id that could not key a record must not reach a settle fact, because a fact
+ *  naming an unreachable answer reads as an accepted answer that cannot be produced. */
+function snapshotAnswerId(v: unknown): string | undefined {
+  if (v === undefined) return undefined;
+  if (typeof v !== "string" || !isIdToken(v))
+    throw new EpEnvelopeError("failed-precondition", `an answer id must be an id token ([A-Za-z0-9_-]{1,64}); a settle fact never names an answer no key could hold (SPEC 13.6)`);
+  return v;
+}
+
 function isHolder(v: unknown): v is { id: string; lifecycleUid: string } {
   if (v === null || typeof v !== "object" || Array.isArray(v)) return false;
   const o = v as Record<string, unknown>;
@@ -235,6 +256,13 @@ export interface CheckpointStatusValue extends Record<string, unknown> {
   settledGeneration?: number;
   settledHolder?: { id: string; lifecycleUid: string };
   settledTs?: number;
+  /**
+   * WHICH answer a resume accepted (the checkpoint-answer record's id), recorded so the derived
+   * settle fact is reconstructable field-for-field after a crash between the CAS and the publish.
+   * Present only on a `resumed` settlement, and OPTIONAL there: a plain approval hold carries no
+   * answer payload, and inventing an id for it would name a record that does not exist.
+   */
+  settledAnswerId?: string;
 }
 
 /** The one-use settlement: resume and expiry race for this single create-only CAS. */
@@ -244,6 +272,19 @@ export interface CheckpointSettleFact {
   settle: "resumed" | "expired";
   generation: number;
   holder?: { id: string; lifecycleUid: string };
+  /**
+   * The ANSWER this settlement accepted.
+   *
+   * The payload of an answer — its value, its artifact — deliberately does NOT live here: these
+   * keys are closed and this fact is the small arbiter of a race. But the arbiter has to NAME what
+   * it chose. Every resolver reaches a workflow checkpoint through the run driver and therefore
+   * presents as the SAME principal, so an answer cannot be matched back to the winning settle by
+   * its presenter: the key `(token, answerId)` and this field are what discriminate. A loser's
+   * answer record is orphaned and read by nothing.
+   *
+   * Absent on an expiry (nothing was accepted) and on a resume that carried no answer.
+   */
+  answerId?: string;
   ts: number;
 }
 
@@ -251,7 +292,7 @@ function parseSettle(raw: unknown, subject: string, ref: CheckpointRef): Checkpo
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new EpEnvelopeError("internal", `checkpoint settle fact on ${subject} is not an object; garbled state never authorizes (SPEC 13.6)`);
   const o = raw as Record<string, unknown>;
-  closedKeys(o, ["v", "token", "settle", "generation", "holder", "ts"], `checkpoint settle fact on ${subject}`, "internal");
+  closedKeys(o, ["v", "token", "settle", "generation", "holder", "answerId", "ts"], `checkpoint settle fact on ${subject}`, "internal");
   if (o.v !== 1 || o.token !== ref.token || (o.settle !== "resumed" && o.settle !== "expired")
     || typeof o.generation !== "number" || !Number.isSafeInteger(o.generation) || o.generation < 1
     || typeof o.ts !== "number" || !Number.isSafeInteger(o.ts) || o.ts < 0)
@@ -260,10 +301,15 @@ function parseSettle(raw: unknown, subject: string, ref: CheckpointRef): Checkpo
   // (an expiry has no resuming principal; a holder on it would forge resume attribution).
   if (o.settle === "resumed" ? !isHolder(o.holder) : o.holder !== undefined)
     throw new EpEnvelopeError("internal", `checkpoint settle fact on ${subject} violates its ${String(o.settle)} variant (resumed requires the holder; expired forbids one) (SPEC 13.6)`);
+  // An answerId names an accepted answer, so an EXPIRY may never carry one: a fact claiming the
+  // deadline accepted somebody's answer would attribute a settlement nobody made.
+  if (o.answerId !== undefined && (o.settle !== "resumed" || typeof o.answerId !== "string" || !isIdToken(o.answerId)))
+    throw new EpEnvelopeError("internal", `checkpoint settle fact on ${subject} carries an answerId that is malformed or on an expiry; only a resume accepts an answer (SPEC 13.6)`);
   return {
     v: 1, token: o.token as string, settle: o.settle,
     generation: o.generation,
     ...(o.holder !== undefined ? { holder: { id: (o.holder as { id: string }).id, lifecycleUid: (o.holder as { lifecycleUid: string }).lifecycleUid } } : {}),
+    ...(o.answerId !== undefined ? { answerId: o.answerId as string } : {}),
     ts: o.ts,
   };
 }
@@ -272,7 +318,7 @@ function parseCpStatus(raw: unknown, key: string): CheckpointStatusValue {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new EpEnvelopeError("internal", `checkpoint status ${key} is not an object; garbled state never authorizes (SPEC 13.6)`);
   const o = raw as Record<string, unknown>;
-  closedKeys(o, ["state", "deadlineGeneration", "deadline", "observedSpecRevision", "settledGeneration", "settledHolder", "settledTs"], `checkpoint status ${key}`, "internal");
+  closedKeys(o, ["state", "deadlineGeneration", "deadline", "observedSpecRevision", "settledGeneration", "settledHolder", "settledTs", "settledAnswerId"], `checkpoint status ${key}`, "internal");
   if ((o.state !== "waiting" && o.state !== "resumed" && o.state !== "expired")
     || typeof o.deadlineGeneration !== "number" || !Number.isSafeInteger(o.deadlineGeneration) || o.deadlineGeneration < 1
     || typeof o.deadline !== "number" || !Number.isSafeInteger(o.deadline) || o.deadline < 0
@@ -292,6 +338,8 @@ function parseCpStatus(raw: unknown, key: string): CheckpointStatusValue {
   // settledGeneration must EQUAL the deadlineGeneration, so `deriveSettleFact` and the one-use
   // `.cp` fact can never publish a settled coordinate that contradicts the generation the
   // checkpoint actually reached. A record naming two different generations is garbled, never split.
+  if (o.settledAnswerId !== undefined && (o.state !== "resumed" || typeof o.settledAnswerId !== "string" || !isIdToken(o.settledAnswerId)))
+    throw new EpEnvelopeError("internal", `checkpoint status ${key} carries a settledAnswerId that is malformed or on a non-resumed state; only a resume accepts an answer (SPEC 13.6)`);
   if (o.state !== "waiting" && o.settledGeneration !== o.deadlineGeneration)
     throw new EpEnvelopeError("internal", `checkpoint status ${key} settles generation ${String(o.settledGeneration)} but its deadline generation is ${String(o.deadlineGeneration)}; a settlement is of the current generation (SPEC 13.6)`);
   return {
@@ -300,6 +348,7 @@ function parseCpStatus(raw: unknown, key: string): CheckpointStatusValue {
     ...(o.settledGeneration !== undefined ? { settledGeneration: o.settledGeneration as number } : {}),
     ...(o.settledHolder !== undefined ? { settledHolder: { id: (o.settledHolder as { id: string }).id, lifecycleUid: (o.settledHolder as { lifecycleUid: string }).lifecycleUid } } : {}),
     ...(o.settledTs !== undefined ? { settledTs: o.settledTs as number } : {}),
+    ...(o.settledAnswerId !== undefined ? { settledAnswerId: o.settledAnswerId as string } : {}),
   };
 }
 
@@ -463,6 +512,7 @@ function deriveSettleFact(ref: CheckpointRef, s: CheckpointStatusValue): Checkpo
     v: 1, token: ref.token, settle: s.state === "expired" ? "expired" : "resumed",
     generation: s.settledGeneration,
     ...(s.settledHolder !== undefined ? { holder: { id: s.settledHolder.id, lifecycleUid: s.settledHolder.lifecycleUid } } : {}),
+    ...(s.settledAnswerId !== undefined ? { answerId: s.settledAnswerId } : {}),
     ts: s.settledTs,
   };
 }
@@ -470,6 +520,7 @@ function deriveSettleFact(ref: CheckpointRef, s: CheckpointStatusValue): Checkpo
 /** Canonical settle-fact equality (field-exact, holder included). */
 function settleFactsEqual(a: CheckpointSettleFact, b: CheckpointSettleFact): boolean {
   return a.token === b.token && a.settle === b.settle && a.generation === b.generation && a.ts === b.ts
+    && a.answerId === b.answerId
     && (a.holder === undefined) === (b.holder === undefined)
     && (a.holder === undefined || b.holder === undefined
       || (a.holder.id === b.holder.id && a.holder.lifecycleUid === b.holder.lifecycleUid));
@@ -848,12 +899,16 @@ export async function resumeCheckpoint(
   js: JetStreamClient,
   jsm: JetStreamManager,
   space_: string,
-  args: { ref: CheckpointRef; presenter: { id: string; lifecycleUid: string }; now: number },
+  args: { ref: CheckpointRef; presenter: { id: string; lifecycleUid: string }; now: number; answerId?: string },
 ): Promise<CheckpointSettleFact> {
   // Snapshot the FULL operation input to detached locals at entry; nothing below reads args again.
   const ref = snapshotCpRef(args.ref);
   const presenter = snapshotHolder(args.presenter, "a resume presenter");
   const now = assertOwnerClock(args.now);
+  // Detached at entry with everything else, and VALIDATED here rather than at the settle: an
+  // answerId that is not a token would key no record, and a settle fact naming an unreachable
+  // answer is worse than one naming none — it reads as an accepted answer that cannot be produced.
+  const answerId = snapshotAnswerId(args.answerId);
   const specKey = recordSpecKey(RECORD_KINDS.cp, cpQualifiers(ref));
   const specEntry = await kv.get(specKey);
   if (!specEntry || specEntry.operation !== "PUT")
@@ -877,7 +932,9 @@ export async function resumeCheckpoint(
     const settle: "resumed" | "expired" = now >= status.value.deadline ? "expired" : "resumed";
     const settled = await settleCheckpoint(kv, js, jsm, space_, {
       ref, settle, now, statusEntry: status,
-      ...(settle === "resumed" ? { holder: presenter } : {}),
+      // The deadline fence can turn this call into an EXPIRY, and an expiry accepts nothing: the
+      // answerId travels only on the branch that actually resumes.
+      ...(settle === "resumed" ? { holder: presenter, ...(answerId !== undefined ? { answerId } : {}) } : {}),
     });
     if (settled.outcome === "stale") continue; // a heartbeat advanced the generation — retry once
     if (settled.outcome === "won" && settle === "resumed") return settled.fact!;
@@ -958,6 +1015,7 @@ async function settleCheckpoint(
     ref: CheckpointRef; settle: "resumed" | "expired"; now: number;
     statusEntry: { value: CheckpointStatusValue; revision: number };
     holder?: { id: string; lifecycleUid: string };
+    answerId?: string;
   },
 ): Promise<{ outcome: "won" | "lost" | "stale"; fact?: CheckpointSettleFact }> {
   const settledStatus: CheckpointStatusValue = assertStatusValue({
@@ -967,6 +1025,7 @@ async function settleCheckpoint(
     observedSpecRevision: args.statusEntry.value.observedSpecRevision,
     settledGeneration: args.statusEntry.value.deadlineGeneration,
     ...(args.holder !== undefined ? { settledHolder: args.holder } : {}),
+    ...(args.answerId !== undefined ? { settledAnswerId: args.answerId } : {}),
     settledTs: args.now,
   });
   try {

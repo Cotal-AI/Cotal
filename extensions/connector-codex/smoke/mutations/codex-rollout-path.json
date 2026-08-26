@@ -1,0 +1,61 @@
+{
+  "command": "pnpm smoke:codex-rollout-path",
+  "mutations": [
+    {
+      "name": "P1 the suffix match becomes a prefix match, letting one thread's emitter consume another's bytes",
+      "file": "extensions/connector-codex/src/agui-rollout.ts",
+      "find": "      else if (name.startsWith(\"rollout-\") && name.endsWith(suffix)) return p;",
+      "replace": "      else if (name.startsWith(\"rollout-\") && name.includes(threadId)) return p;",
+      "expectRed": "a thread id that merely PREFIXES a filename does not match"
+    },
+    {
+      "name": "P2 the search roots at the operator's home instead of the one it was handed, which is the campaign's own defect",
+      "file": "extensions/connector-codex/src/agui-rollout.ts",
+      "find": "  const stack = [sessions];",
+      "replace": "  const stack = [sessions, join(codexHome, \"..\", \"..\", \"..\", \"operator-codex\", \"sessions\")];",
+      "expectRed": "and never reaches into another home holding the same thread id"
+    },
+    {
+      "name": "P3 the waiter stops retrying, so a rollout that appears late is never adopted",
+      "file": "extensions/connector-codex/src/agui-rollout.ts",
+      "find": "  for (let i = 0; i < attempts; i++) {",
+      "replace": "  for (let i = 0; i < 1; i++) {",
+      "expectRed": "waits for a file that appears late"
+    },
+    {
+      "name": "P4 the waiter stops giving up, so a thread whose rollout never appears blocks behind a caller that cannot see it",
+      "file": "extensions/connector-codex/src/agui-rollout.ts",
+      "find": "  const attempts = opts?.attempts ?? 40;",
+      "replace": "  const attempts = 1;",
+      "expectRed": "and the budget is the one it was given, minus the wait it does not take"
+    },
+    {
+      "name": "P5 the walk follows a symlink again, so a link planted under sessions decides which bytes this emitter publishes",
+      "file": "extensions/connector-codex/src/agui-rollout.ts",
+      "find": "      if (entry.isSymbolicLink()) continue;",
+      "replace": "      if (false) continue;",
+      "expectRed": "a symlinked rollout file with a matching name is refused"
+    },
+    {
+      "name": "P6 the link test moves inside the loop only, so the one directory nobody discovers is the one the walk starts from",
+      "file": "extensions/connector-codex/src/agui-rollout.ts",
+      "find": "    if (lstatSync(sessions).isSymbolicLink()) return undefined;",
+      "replace": "    if (false) return undefined;",
+      "expectRed": "a symlinked sessions directory is not walked"
+    },
+    {
+      "name": "P7 the waiter sleeps after its last look instead of between looks, so a single-look retry costs the caller a macrotask",
+      "file": "extensions/connector-codex/src/agui-rollout.ts",
+      "find": "    if (i + 1 < attempts) await sleep(intervalMs);",
+      "replace": "    await sleep(intervalMs);",
+      "expectRed": "and the budget is the one it was given, minus the wait it does not take"
+    },
+    {
+      "name": "P8 the handed home is no longer tested, so a link at the walk's own entry point redirects every byte below it",
+      "file": "extensions/connector-codex/src/agui-rollout.ts",
+      "find": "    if (lstatSync(codexHome).isSymbolicLink()) return undefined;",
+      "replace": "    if (false) return undefined;",
+      "expectRed": "a symlinked CODEX_HOME is refused outright"
+    }
+  ]
+}

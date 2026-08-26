@@ -45,6 +45,11 @@ console.log("✓ 2 — the index names the version and offers real page slugs");
   const spec = await runDocs({ page: "spec" });
   assert.match(spec.text, /Cotal Wire Specification/, "spec alias returns SPEC.md");
 
+  const lang = await runDocs({ page: "lang" });
+  assert.match(lang.text, /# Cotal Lang: the workflow language/, "lang alias returns spec/cotal-lang.md");
+  const langAlt = await runDocs({ page: "cotal-lang.md" });
+  assert.match(langAlt.text, /# Cotal Lang: the workflow language/, "cotal-lang alias resolves too");
+
   const schema = await runDocs({ page: "schema" });
   assert.match(schema.text, /"\$schema"|"\$id"|"properties"/, "schema alias returns JSON Schema");
 
@@ -52,13 +57,13 @@ console.log("✓ 2 — the index names the version and offers real page slugs");
   const alt = await runDocs({ page: "Architecture.md" });
   assert.match(alt.text, /# Architecture/);
 }
-console.log("✓ 3 — page reads carry real markdown; spec/schema aliases resolve");
+console.log("✓ 3 — page reads carry real markdown; spec/lang/schema aliases resolve");
 
 // 4 — unknown page fails loud and lists what's available.
 {
   const miss = await runDocs({ page: "does-not-exist" });
   assert.equal(miss.isError, true);
-  assert.match(miss.text, /spec, schema/, "error lists the available pages");
+  assert.match(miss.text, /spec, lang, schema/, "error lists the available pages");
 }
 console.log("✓ 4 — an unknown page fails loud and lists what is available");
 

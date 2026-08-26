@@ -38,7 +38,7 @@
  * Every mutation must name the assertion it expects to redden (`expectRed`). "It went red" and "it
  * went red for my reason" are the same exit code until you say which.
  */
-import { readFileSync, writeFileSync, copyFileSync, existsSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, copyFileSync, existsSync, rmSync, statSync, utimesSync } from "node:fs";
 import { execSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -120,7 +120,34 @@ const progressCount = (output, pattern) => {
 /** Keys a mutation may carry. An unknown key is an ERROR, not a shrug: this tool exists because
  *  every step of the experiment has a way to lie, and "the field I set was quietly ignored" is one
  *  of them — a mis-spelled `expectRed` turns a graded proof into an ungraded red. */
-const MUTATION_KEYS = new Set(["name", "file", "find", "replace", "expectRed", "command", "allowMultiple", "afterRestore"]);
+const MUTATION_KEYS = new Set([
+  "name", "file", "find", "replace", "expectRed", "command", "allowMultiple", "afterRestore",
+  // Read outside this file: `cell` names the assertion a coverage pass requires, `note` and
+  // `cellTemplate` are read by `mutation-coverage.mjs`. They were rejected here while being
+  // genuinely consumed, which errored every mutation in every config that carries one.
+  "cell", "note", "cellTemplate", "completionMarker",
+]);
+
+/**
+ * Keys a config may carry at the TOP level, checked for exactly the reason the mutation keys are.
+ *
+ * The allowlist above was watching the level where nothing was wrong. `completionMarker` is a
+ * top-level key that two configs in this repo set and that no version of this tool had ever read:
+ * a field silently ignored for as long as it has existed, which is precisely the failure the
+ * mutation-key check was written to prevent, one level up and unwatched.
+ */
+const CONFIG_KEYS = new Set([
+  // Read here.
+  "command", "mutations", "progressPattern", "minTicks", "completionMarker",
+  // Read by `mutation-coverage.mjs`, which grades the same configs from the other side. The
+  // allowlist is the union across the toolchain, because a key this file ignores is not thereby
+  // unused, and rejecting one would break the sibling rather than catch a typo.
+  "suite", "guard", "grades", "kind", "unkillable", "why", "proveWith",
+  // Read by NOTHING, on purpose: prose an operator leaves for the next reader. Listed rather than
+  // tolerated, so that "no tool reads this" is a stated property instead of the thing you discover
+  // when you wonder why setting it changed nothing.
+  "_note", "resolved", "redundant", "ungradable",
+]);
 
 function proveOne(m, opts) {
   const cwd = opts.cwd;
@@ -153,6 +180,7 @@ function proveOne(m, opts) {
   const backup = join(tmpdir(), `mutation-proof-${createHash("sha1").update(path).digest("hex").slice(0, 12)}.bak`);
   copyFileSync(path, backup);
   const shaBefore = sha(path);
+  const { atime: atimeBefore, mtime: mtimeBefore } = statSync(path);
 
   // Restoring the FILE is not restoring the TREE when the command under test compiles it. The sha
   // check below proves the source is byte-identical again; it says nothing about a `dist/` the run
@@ -162,6 +190,16 @@ function proveOne(m, opts) {
   const restore = () => {
     copyFileSync(backup, path);
     const ok = sha(path) === shaBefore;
+    // Restore the TIMESTAMP as well as the bytes. `copyFileSync` is a write, so the file's mtime
+    // becomes now even though the line above proves the content is what it was. Anything that
+    // compares source mtimes against a build then reports a stale artefact for a file nobody
+    // edited: `smoke:dist-freshness` does exactly that, and after a graded run it named
+    // `packages/core` stale and refused the 261-suite chain at its first entry.
+    //
+    // Only when the content is verified identical. If `ok` is false the file is NOT what it was,
+    // and back-dating it would hide a failed restore from the tools that compare timestamps —
+    // the one case where a bumped mtime is telling the truth.
+    if (ok) utimesSync(path, atimeBefore, mtimeBefore);
     rmSync(backup, { force: true });
     if (ok && m.afterRestore) {
       const rr = run(m.afterRestore, cwd, opts.timeoutMs);
@@ -294,6 +332,43 @@ function proveOne(m, opts) {
         why: `exited ${r.status}, but the named assertion printed exactly what it prints when GREEN `
            + `(${JSON.stringify(named[0].trim())}) — it did not go red, so this red is some other failure`, ticks };
     }
+    // Last question, and ONLY here: did the run reach its own end?
+    //
+    // Everything above is stronger than this and runs first. A KILLED at this point means the named
+    // assertion printed a line the green run does not print, which is direct evidence the cell went
+    // red. The residual case is a stop BEFORE the region that happens to emit a novel line
+    // mentioning the cell — a stack frame naming it, a wrapper echoing the label — which satisfies
+    // every condition above. It is narrow, and unlike the cases above it has not been reproduced
+    // here; a terminal marker is convention-free and costs one substring test, so it is offered
+    // rather than assumed.
+    //
+    // DELIBERATELY OPT-IN, and deliberately last. `a real red followed by a crash is still KILLED`
+    // is a pinned cell in the self-test and it is right: the red already happened and a later crash
+    // does not retract it. Declaring a `completionMarker` says "in THIS suite, a run that did not
+    // finish is not evidence I want counted", which is a stricter bargain a suite opts into. With no
+    // marker declared, grading is exactly main's, so the pinned cell keeps its meaning.
+    //
+    // THE MARKER MUST BE A LINE THE SUITE PRINTS WHETHER IT PASSES OR FAILS — a counting suite's
+    // summary line, not its success banner. Measured the wrong way round first: pointed at this
+    // tool's own self-test with the marker set to `MUTATION-PROOF SELF-TEST PASSED`, every genuine
+    // kill graded INCONCLUSIVE, because a fail-fast suite exits at the first red and a success
+    // banner is by construction the one line a killed run never reaches. A success marker inverts
+    // this check into a machine for discarding exactly the evidence it was added to protect. A
+    // fail-fast suite with no line common to both outcomes should not declare one at all.
+    const marker = m.completionMarker ?? opts.completionMarker;
+    if (marker !== undefined && !r.output.includes(marker)) {
+      return {
+        label,
+        verdict: "INCONCLUSIVE",
+        why: r.output.trim() === ""
+          // Named apart from the general case on purpose. Folded together it reads "your assertion
+          // never printed", which sends a reader to re-aim a mutation that is aimed correctly.
+          // Nothing ran at all.
+          ? `the run produced NO OUTPUT — it never started, so this says nothing about any cell (exit ${r.status})`
+          : `red and named, but the run never printed ${JSON.stringify(marker)}, so it stopped before finishing and this suite asked not to count an unfinished run (exit ${r.status})`,
+        ticks,
+      };
+    }
     return { label, verdict: "KILLED", why: `red, and named: ${m.expectRed}`, ticks };
   } catch (e) {
     restore();
@@ -317,8 +392,10 @@ if (a.config) {
   // `resolve`, not `join`: an ABSOLUTE --config path joined to cwd becomes a nonexistent path under
   // the repo, and the tool dies on ENOENT with the two paths glued together.
   const cfg = JSON.parse(readFileSync(resolve(cwd, a.config), "utf8"));
+  const unknownCfg = Object.keys(cfg).filter((k) => !CONFIG_KEYS.has(k));
+  if (unknownCfg.length) usage(`config has unknown top-level key(s): ${unknownCfg.join(", ")}`);
   mutations = cfg.mutations ?? usage("config has no `mutations` array");
-  opts = { ...opts, command: cfg.command ?? opts.command, progressPattern: cfg.progressPattern ?? opts.progressPattern, minTicks: cfg.minTicks ?? opts.minTicks };
+  opts = { ...opts, command: cfg.command ?? opts.command, progressPattern: cfg.progressPattern ?? opts.progressPattern, minTicks: cfg.minTicks ?? opts.minTicks, completionMarker: cfg.completionMarker ?? opts.completionMarker };
 } else if (a.file && a.find !== undefined && a.replace !== undefined) {
   mutations = [{ file: a.file, find: a.find, replace: a.replace, expectRed: a["expect-red"] }];
 } else {

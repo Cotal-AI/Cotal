@@ -217,7 +217,7 @@ function decimalValueKey(literal: string): string {
 }
 
 /**
- * Out-of-range numbers in the RAW bytes — the fourth I-JSON condition SPEC:1654-1655 names
+ * Out-of-range numbers in the RAW bytes — the fourth I-JSON condition SPEC §13.4 names
  * ("unparseable, duplicate object names, lone surrogate, out-of-range number") and the only one
  * this module did not enforce.
  *

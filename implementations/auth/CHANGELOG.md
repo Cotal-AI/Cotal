@@ -1,5 +1,324 @@
 # @cotal-ai/auth
 
+## 0.30.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.30.2
+- @cotal-ai/workspace@0.30.2
+
+## 0.30.1
+
+### Patch Changes
+
+- Updated dependencies [aea08f9]
+  - @cotal-ai/core@0.30.1
+  - @cotal-ai/workspace@0.30.1
+
+## 0.30.0
+
+### Minor Changes
+
+- ef01887: Add closed, host-issued remote manager-service authority for registered user-auth participants. It requires the dedicated `supervise` scope, restricts manager registration and credentials to one owner and opaque instance, and uses a lifecycle-bound prepare, activate, and renew flow with fail-closed renewal and same-owner descendant provisioning.
+
+### Patch Changes
+
+- 6d03de0: The public exchange face no longer refuses a request that would have succeeded. The
+  refused-exchange throttle was enforced before the request body was read, so a full bucket denied
+  every request from that peer key, including callers holding a valid IdP JWT or actor token. On
+  the public face the default peer key is the socket address, so in the reverse-proxy topology the
+  docs recommend, every client shares one bucket and thirty unauthenticated POSTs denied the
+  public mint path for a rolling minute. The gate is now evaluated up front but enforced only on a
+  genuine credential failure, so a throttled peer still mints with a valid credential while a
+  failed exchange is answered 429 rather than its specific reason.
+- c6db901: The auth provider name is one exported constant shared by the provider and the discovery bundle, and the seam between the served document and the consumer that registers from it is now tested live.
+
+  The auth-service's public face serves `/.well-known/cotal-mesh`, and that document is exactly what
+  `cotal meshes add --from <origin>` fetches and registers from. The document's shape was fixed
+  separately; what was still held only by agreement is the provider NAME. It appeared as a bare
+  `"cotal"` literal at three sites, two of which are the two ends of one contract: the name the
+  registered `AuthProvider` answers to, and the name the served document advertises. A document naming
+  a provider other than the one serving it parses cleanly — the consumer requires a provider name, not
+  any particular one — and registers an entry that resolves to nothing. Those sites now read a single
+  exported `AUTH_PROVIDER_NAME`.
+
+  The regression guard lives at the composition root (`bin/smoke/discovery-bundle-consumable`), which
+  is the only tier permitted to import both the auth daemon and the CLI's consumer — the seam the
+  original defect hid behind is precisely the boundary those two packages may not cross directly. It
+  starts a real auth-service against a real broker and IdP, fetches the document over the wire, and
+  hands the raw bytes to the shipped `checkUserBundle`. Nothing in it constructs the shape it hopes to
+  see. That crossing is the part that had never existed: both sides had passed review because each
+  side's own tests build the shape that side expects, so the producer's smoke asserted the fields it
+  had just written and the consumer's smoke fed itself a hand-written fixture.
+
+  The provider-name cell compares the served name against `cotalAuthProvider.name` — the registered
+  provider's own identity — rather than against a string the test also chose, so it grades the outcome
+  (the two names agree) instead of the mechanism (both sites read one constant). Grading the mechanism
+  would pass a tree where both sites moved together, which is the failure this is for.
+
+  Scope, stated exactly: this unifies the provider name and proves the served document parses. It does
+  not change the document's shape or its fields, and registration applies further gates after that
+  parse — `checkServer`, TLS intent, and the dial policy on the bundle's `server` — so a deployment
+  that cannot publish an honestly dialable broker coordinate is still not registrable, and nothing
+  here weakens those gates or invents a coordinate to satisfy them.
+
+- Updated dependencies [0e673ff]
+- Updated dependencies [569f4d3]
+- Updated dependencies [b282f70]
+- Updated dependencies [0323f5b]
+- Updated dependencies [ef01887]
+- Updated dependencies [196dddb]
+  - @cotal-ai/core@0.30.0
+  - @cotal-ai/workspace@0.30.0
+
+## 0.29.2
+
+### Patch Changes
+
+- Updated dependencies [8531c13]
+  - @cotal-ai/core@0.29.2
+  - @cotal-ai/workspace@0.29.2
+
+## 0.29.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.29.1
+- @cotal-ai/workspace@0.29.1
+
+## 0.29.0
+
+### Minor Changes
+
+- 1f025c3: `cotal spawn` works against a mesh registered from a remote bundle. A user-mode
+  agent's credentials must be granted where the space's signer lives, so a laptop
+  spawn previously refused with a message about missing local material. A mesh may
+  now advertise an agent-provisioning endpoint in its discovery bundle
+  (`cotal up --agent-provisioning-url <https://…>`, carried as
+  `userAuth.endpoints.agentProvisioningUrl`); spawn POSTs the operator's login
+  bearer there, lands the returned material 0600, and runs the same bearer
+  preflight before launch. A remote mesh that advertises none now refuses by
+  naming that fact and the operator's remedy, instead of blaming absent local
+  state. The endpoint is https-only (it receives the login bearer) and redirects
+  are refused, matching the registration fetch discipline.
+
+  The login proof itself never crosses the CLI package: the provisioning POST is
+  a new optional `AuthProvider.postAgentProvisioning` seam on core's provider
+  interface, implemented by `@cotal-ai/auth` — the CLI keeps its no-auth-import
+  boundary.
+
+  Also fixes `finalizeUserBundleEndpoint`, which replaced the bundle's endpoints
+  object and would have dropped any sibling field the composer set.
+
+### Patch Changes
+
+- Updated dependencies [1f025c3]
+  - @cotal-ai/core@0.29.0
+  - @cotal-ai/workspace@0.29.0
+
+## 0.28.2
+
+### Patch Changes
+
+- Updated dependencies [53f66c2]
+  - @cotal-ai/core@0.28.2
+  - @cotal-ai/workspace@0.28.2
+
+## 0.28.1
+
+### Patch Changes
+
+- Updated dependencies [2a383fe]
+  - @cotal-ai/core@0.28.1
+  - @cotal-ai/workspace@0.28.1
+
+## 0.28.0
+
+### Minor Changes
+
+- 1f44ca6: Add an optional reverse-proxy-facing auth exchange listener with generated mesh discovery, credential-based public proof, isolated throttling, and `cotal up --user-auth` configuration.
+- 716f97c: The public exchange face's /.well-known/cotal-mesh bundle is now actually consumable by
+  `cotal meshes add --from`: the trust pins ride a `userAuth` arm (provider "cotal", idp pins,
+  pinned exchange endpoint) exactly as `checkUserBundle` records them, instead of the flat
+  idp/endpoints shape the consumer refused. New `--advertised-server <url>` on `cotal up` /
+  `auth-service` (with `--exchange-public-port`) sets the broker address the bundle advertises —
+  what participants dial through the reverse proxy (e.g. wss://…/mesh-ws) — instead of the
+  loopback/LAN address the callout itself dials.
+- e26f4d1: Allow an already-granted managed agent to refresh its bearer through a pinned HTTPS public exchange URL without local auth-service state or capability material.
+- 44738b2: A remotely-registered user mesh now connects with stock cotal end to end, including over a websocket broker address.
+
+  `cotal meshes add <space> --from <url>` already landed a complete remote trust
+  position (IdP pins, public exchange URL, sentinel creds); the auth provider now
+  CONSUMES it at connect when no local user-auth material exists: login session →
+  fresh IdP JWT → the pinned exchange's capless public face → bearer + the
+  registration-landed sentinel. Nothing is discovered at connect time, the
+  transport rule (HTTPS, loopback-literal http only, names get no exception) is
+  checked before the IdP round trip, and every refusal names its exact remedy.
+
+  Brokers published through an HTTPS edge are dialable as `wss://host/path`:
+  core picks the websocket transport by scheme at every dial site (endpoint,
+  reachability, probe), `hostPort` defaults ws/wss to the web's ports, and
+  `join-target` classifies `wss://` as TLS-bearing (the handshake is the
+  transport's own) while `ws://` gets exactly the plaintext fences `nats://`
+  gets. The canonical server string keeps the URL path — behind an edge the
+  path is part of the broker's address.
+
+### Patch Changes
+
+- Updated dependencies [09b6a3b]
+- Updated dependencies [b8ee849]
+- Updated dependencies [9216d21]
+- Updated dependencies [86f6b10]
+- Updated dependencies [a84cb62]
+- Updated dependencies [45db9f8]
+- Updated dependencies [e377c7b]
+- Updated dependencies [44738b2]
+  - @cotal-ai/core@0.28.0
+  - @cotal-ai/workspace@0.28.0
+
+## 0.27.0
+
+### Patch Changes
+
+- Updated dependencies [900f630]
+  - @cotal-ai/workspace@0.27.0
+  - @cotal-ai/core@0.27.0
+
+## 0.26.0
+
+### Patch Changes
+
+- Updated dependencies [aa1fe5f]
+  - @cotal-ai/workspace@0.26.0
+  - @cotal-ai/core@0.26.0
+
+## 0.25.0
+
+### Patch Changes
+
+- Updated dependencies [636b4b8]
+- Updated dependencies [c83e600]
+- Updated dependencies [b501ec5]
+- Updated dependencies [a087c2b]
+- Updated dependencies [0b602e4]
+- Updated dependencies [34caaf4]
+- Updated dependencies [8e38835]
+- Updated dependencies [6959679]
+  - @cotal-ai/core@0.25.0
+  - @cotal-ai/workspace@0.25.0
+
+## 0.24.0
+
+### Patch Changes
+
+- Updated dependencies [b7cc4fa]
+  - @cotal-ai/core@0.24.0
+  - @cotal-ai/workspace@0.24.0
+
+## 0.23.0
+
+### Patch Changes
+
+- Updated dependencies [5634356]
+  - @cotal-ai/workspace@0.23.0
+  - @cotal-ai/core@0.23.0
+
+## 0.22.0
+
+### Patch Changes
+
+- dfad94f: Fix two refusals that told an operator to run a grant which silently widened the row
+
+  `cotal actor grant` is an upsert of the WHOLE row. Every flag the operator does not name is filled
+  from the wide default: `>` read, `>` post, `spawn,role:default` scope. Two refusals printed a
+  re-grant that named `--scope` and nothing else, so following either one reset the row's channel ACLs
+  to everything.
+
+  The elevated-view refusal is the sharper of the two. Asked for a view the grant lacks, it printed
+  `cotal actor grant <actor> --owner <owner> --scope <current+needed>` and called that "the upsert
+  replaces the scope list". An operator adding one view to a deliberately narrow row reset that row's
+  read and post sets to `>` and `>` in the same paste, and the same sentence sent them to
+  `cotal actor list` to confirm, where the widened row reads as confirmation that it worked. The row
+  is a human operator's, and the ACL is minted fresh at every connect, so it takes effect on the next
+  one with no restart.
+
+  The missing-spawner refusal has the longer reach. Repairing a broken delegation chain, it printed
+  `cotal actor grant <actor> --owner <owner> --scope spawn` and stopped, authoring a spawner that
+  reads and posts on every channel. A spawner's own ACL is the ceiling every agent beneath it is
+  attenuated against, so one pasted repair set a whole-plane ceiling for everything spawned under it
+  from then on.
+
+  The two doors now differ, on purpose. The elevated-view refusal has the row in hand, so it prints
+  every field it is replacing, values included. The two delegation refusals have no row to copy from,
+  so they print NO runnable command at all and name the flags and the wide default in prose instead:
+  a line carrying channel values would invent them, and a line short of all three flags widens on
+  paste. Both say what leaving a flag off means. `docs/cli.md` no
+  longer tells a reader that a re-grant adds to the current scope, the `cotal actor grant` usage line
+  now states what an omitted flag defaults to, and the two remaining hints that name a bare grant say
+  that it is the full envelope, matching the wording `cotal login` already used.
+
+  Both refusals are gated by cells that parse the service's own refusal string rather than matching a
+  hardcoded command, so the text and the assertion cannot drift apart, and a mutation per site reverts
+  each refusal to its shipped text and reddens that cell.
+
+  The strings are not new. Every release from v0.11.0 to v0.21.0 carries all three, which is the whole
+  life of the per-user actor ledger. Nothing about the on-disk row changes here, so no migration is
+  needed, but an operator who followed either refusal should check the affected rows with
+  `cotal actor list`: a widened row cannot be told from a deliberately full one, since the row records
+  only when it was granted, not what it held before.
+
+- Updated dependencies [57d3a57]
+  - @cotal-ai/workspace@0.22.0
+  - @cotal-ai/core@0.22.0
+
+## 0.21.0
+
+### Patch Changes
+
+- Updated dependencies [4cf5f72]
+- Updated dependencies [219d33c]
+- Updated dependencies [9c2412c]
+  - @cotal-ai/core@0.21.0
+  - @cotal-ai/workspace@0.21.0
+
+## 0.20.1
+
+### Patch Changes
+
+- Updated dependencies [2752fe7]
+  - @cotal-ai/core@0.20.1
+  - @cotal-ai/workspace@0.20.1
+
+## 0.20.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.20.0
+- @cotal-ai/workspace@0.20.0
+
+## 0.19.0
+
+### Patch Changes
+
+- Updated dependencies [48c6631]
+- Updated dependencies [10d9cd6]
+- Updated dependencies [a1bc784]
+- Updated dependencies [a7267b3]
+- Updated dependencies [ce1c248]
+- Updated dependencies [5e95736]
+- Updated dependencies [19931dd]
+- Updated dependencies [6074c26]
+- Updated dependencies [24687a3]
+- Updated dependencies [17f14be]
+- Updated dependencies [87c4130]
+- Updated dependencies [cb9e1ad]
+- Updated dependencies [c038730]
+- Updated dependencies [758e1e3]
+- Updated dependencies [be624af]
+- Updated dependencies [8572a5d]
+  - @cotal-ai/core@0.19.0
+  - @cotal-ai/workspace@0.19.0
+
 ## 0.18.0
 
 ### Minor Changes

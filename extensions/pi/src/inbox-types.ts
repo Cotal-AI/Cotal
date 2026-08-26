@@ -14,6 +14,10 @@ export type InboxScope = "all" | "automatic" | "pull-only";
 
 export interface InboxItem {
   id: string;
+  /** Opaque per-delivery receive key (#624): the address for exact drains and in-flight holds. The
+   *  wire id when the message carries one; a minted key when the id is empty (an empty id is never
+   *  a dedup key and never an address). Never dedup authority. */
+  recvKey: string;
   ts: number;
   fromId: string;
   fromName: string;
@@ -34,10 +38,10 @@ export interface InboxItem {
   contextId?: string;
 }
 
-/** An exact-id drain: the items found plus the ids that were not present. */
+/** An exact-key drain: the items found plus the receive keys that were not present. */
 export interface ExactDrainResult {
   items: InboxItem[];
-  missingIds: string[];
+  missingKeys: string[];
 }
 
 // --- drift guard (build-only; not shipped) ---

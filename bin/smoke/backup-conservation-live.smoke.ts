@@ -34,6 +34,7 @@ import {
   INBOX_READER_DURABLE,
   chatStream,
   dlvDurable,
+  mintLifecycleUid,
   dlvStream,
   dmDurable,
   dmStream,
@@ -206,7 +207,8 @@ interface Member {
 
 /** A durable channel member that is also the role's TASK worker. It acks only what it is told to, so
  *  the cut inherits genuinely unresolved work instead of a drained mesh. */
-function memberEndpoint(mesh: Mesh, identity: Identity, creds: string, ackable: Set<string>): Member {
+function memberEndpoint(mesh: Mesh, identity: Identity, creds: string, uid: string,
+  ackable: Set<string>): Member {
   const seen: Received[] = [];
   const errors: string[] = [];
   const endpoint = new CotalEndpoint({
@@ -214,6 +216,7 @@ function memberEndpoint(mesh: Mesh, identity: Identity, creds: string, ackable: 
     servers: mesh.server,
     creds,
     card: { id: identity.id, name: "member", role: ROLE, kind: "agent" },
+    lifecycleUid: uid,
     channels: [CHANNEL],
     heartbeatMs: 500,
     ttlMs: 2000,
@@ -237,7 +240,7 @@ function memberEndpoint(mesh: Mesh, identity: Identity, creds: string, ackable: 
  *  take it offline and queue work it still owes. Leaves the mesh with one pending INBOX -> DLV handoff
  *  and one unresolved TASK item, neither ever delivered — so a post-cut replay is immediate and the
  *  test never has to wait out a 60s canonical ack_wait to observe at-least-once. */
-async function seedPlane3State(mesh: Mesh, auth: SpaceAuth, sampler: Sampler): Promise<{ identity: Identity; creds: string }> {
+async function seedPlane3State(mesh: Mesh, auth: SpaceAuth, sampler: Sampler): Promise<{ identity: Identity; creds: string; uid: string }> {
   const provisioner = new CotalEndpoint({
     space: mesh.space,
     servers: mesh.server,
@@ -248,12 +251,14 @@ async function seedPlane3State(mesh: Mesh, auth: SpaceAuth, sampler: Sampler): P
   provisioner.on("error", () => {});
   await provisioner.start();
   const identity = newIdentity();
+  const uid = mintLifecycleUid();
   let creds: string;
   try {
     // Pre-creates the member's bind-only DM/DLV durables, records the read ACL the delivery daemon
     // re-authorizes every durable entry against, and ensures the role's TASK queue.
     creds = await provisionAgent(provisioner, auth, identity, {
       subscribe: [CHANNEL], allowSubscribe: [CHANNEL], allowPublish: [CHANNEL], role: ROLE,
+      lifecycleUid: uid,
     });
   } finally {
     await provisioner.stop();
@@ -269,7 +274,7 @@ async function seedPlane3State(mesh: Mesh, auth: SpaceAuth, sampler: Sampler): P
   poster.on("error", () => {});
   await poster.start();
 
-  const member = memberEndpoint(mesh, identity, creds, new Set([TASK_ACKED]));
+  const member = memberEndpoint(mesh, identity, creds, uid, new Set([TASK_ACKED]));
   try {
     await member.endpoint.start();
     // The self-join at connect arms the Plane-3 backstop for the durable-class boot channel; without
@@ -294,13 +299,14 @@ async function seedPlane3State(mesh: Mesh, auth: SpaceAuth, sampler: Sampler): P
   } finally {
     await poster.stop();
   }
-  return { identity, creds };
+  return { identity, creds, uid };
 }
 
 /** Wait for the seeded state to settle into exactly the shape the scenarios assert on, and return
  *  that stable pre-cut sample. */
-async function stablePreCutSample(mesh: Mesh, sampler: Sampler, identity: Identity): Promise<SpaceSample> {
-  const dlvKey = `${dlvStream(mesh.space)}/${dlvDurable(DEV_OWNER, identity.id)}`;
+async function stablePreCutSample(mesh: Mesh, sampler: Sampler, identity: Identity,
+  uid: string): Promise<SpaceSample> {
+  const dlvKey = `${dlvStream(mesh.space)}/${dlvDurable(DEV_OWNER, identity.id, uid)}`;
   const taskKey = `${taskStream(mesh.space)}/${taskDurable(ROLE)}`;
   let sample!: SpaceSample;
   await waitUntil(
@@ -355,9 +361,10 @@ async function conservationScenario(): Promise<void> {
     let preCut: SpaceSample;
     let identity: Identity;
     let creds: string;
+    let uid: string;
     try {
-      ({ identity, creds } = await seedPlane3State(mesh, auth, sampler));
-      preCut = await stablePreCutSample(mesh, sampler, identity);
+      ({ identity, creds, uid } = await seedPlane3State(mesh, auth, sampler));
+      preCut = await stablePreCutSample(mesh, sampler, identity, uid);
     } finally {
       await sampler.close();
     }
@@ -381,8 +388,8 @@ async function conservationScenario(): Promise<void> {
       checkpoints.map((c) => `${c.stream}/${c.name}`).sort(),
       [
         `${chatStream(mesh.space)}/${FANOUT_DURABLE}`,
-        `${dlvStream(mesh.space)}/${dlvDurable(DEV_OWNER, identity.id)}`,
-        `${dmStream(mesh.space)}/${dmDurable(DEV_OWNER, identity.id)}`,
+        `${dlvStream(mesh.space)}/${dlvDurable(DEV_OWNER, identity.id, uid)}`,
+        `${dmStream(mesh.space)}/${dmDurable(DEV_OWNER, identity.id, uid)}`,
         `${inboxStream(mesh.space)}/${INBOX_READER_DURABLE}`,
         `${taskStream(mesh.space)}/${taskDurable(ROLE)}`,
       ].sort(),
@@ -414,7 +421,7 @@ async function conservationScenario(): Promise<void> {
     // Ordinary resume over the SAME store: the unresolved pre-cut work must still be claimable by the
     // same principal, and the resolved item must stay resolved.
     must("ordinary same-principal resume", run("up", "--detach", "--server", mesh.server, "--space", mesh.space));
-    const resumed = memberEndpoint(mesh, identity, creds, new Set([PENDING_POST, TASK_UNRESOLVED]));
+    const resumed = memberEndpoint(mesh, identity, creds, uid, new Set([PENDING_POST, TASK_UNRESOLVED]));
     try {
       await resumed.endpoint.start();
       await waitUntil(
@@ -455,9 +462,10 @@ async function restoredMeshWorksScenario(): Promise<void> {
     const sampler = await openSampler(mesh, auth);
     let identity: Identity;
     let creds: string;
+    let uid: string;
     try {
-      ({ identity, creds } = await seedPlane3State(mesh, auth, sampler));
-      await stablePreCutSample(mesh, sampler, identity);
+      ({ identity, creds, uid } = await seedPlane3State(mesh, auth, sampler));
+      await stablePreCutSample(mesh, sampler, identity, uid);
     } finally {
       await sampler.close();
     }
@@ -473,7 +481,7 @@ async function restoredMeshWorksScenario(): Promise<void> {
     must("list restored registry", listed);
     assert.match(listed.stdout, new RegExp(`#${CHANNEL}`));
 
-    const member = memberEndpoint(mesh, identity, creds, new Set([PENDING_POST, POST_RESTORE_POST]));
+    const member = memberEndpoint(mesh, identity, creds, uid, new Set([PENDING_POST, POST_RESTORE_POST]));
     const poster = new CotalEndpoint({
       space: mesh.space,
       servers: mesh.server,

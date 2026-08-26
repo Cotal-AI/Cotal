@@ -52,6 +52,7 @@ import {
 import { holderLivenessFromReply } from "../src/holder-liveness.js";
 import { GateReconcileRefused, reconcileEndpointGate, type GateReconcileCondition, type HolderLiveness } from "../src/reconcile-gate.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // ---------------------------------------------------------------------------
 // FIRST ACTION, BEFORE ANY WORK: this smoke provisions credentials, revokes rows, and KICKs live
@@ -110,12 +111,13 @@ const auth = await createSpaceAuth(space);
 const observerCreds = await mintMembershipObserverCreds(auth, newIdentity());
 const evictorCreds = await mintConnectionEvictorCreds(auth, newIdentity());
 
-const dir = mkdtempSync(join(tmpdir(), "cotal-gate391-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(
   join(dir, "server.conf"),
   serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }),
 );
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<void> =>
   new Promise((resolve) => {
     if (proc.exitCode !== null || proc.signalCode !== null) return resolve();
@@ -454,5 +456,6 @@ try {
   srv.kill("SIGKILL"); // exact PID — never pkill nats-server
   await awaitExit(srv);
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 process.exit(process.exitCode ?? 0);

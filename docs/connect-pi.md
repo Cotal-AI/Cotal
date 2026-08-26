@@ -9,14 +9,16 @@ Because it runs *inside* the session's process, it is the one connector that can
 turn mid-flight.
 
 **Alpha** means the core path works today (spawn it, load it into your own interactive pi, or
-embed it via pi's SDK), while session resume, model variants, MCP sharing, and raw launch
-options are not wired yet and **fail loud** rather than degrade.
+embed it via pi's SDK). Pi session fork/resume and supervised crash recovery are wired; model
+variants, MCP sharing, and raw launch options are not and **fail loud** rather than degrade.
 
 ## Surfaces
 
 One standalone artifact supports three Pi-hosted surfaces:
 
-1. `cotal spawn --agent pi` launches the installed `pi` binary in the manager's PTY.
+1. `cotal spawn --agent pi` launches the installed `pi` binary in the manager's PTY. `--prompt` is
+   delivered as Pi's initial message (its first turn); a prompt that is empty or starts with `-` or
+   `@` refuses the launch, since Pi would read it as an option or a file reference.
 2. Interactive Pi discovers a copied `~/.pi/agent/extensions/cotal.js`.
 3. Pi SDK applications using the default resource loader discover that same copy. SDK applications
    must bind Pi's extension lifecycle when they expect an idle session to be driven proactively.
@@ -54,8 +56,15 @@ redelivery.
 
 `reload`, `new`, `resume`, and `fork` tear down Pi's extension runtime. The adapter keeps its mesh,
 control listener, delivery association, and ordered presence chain in a process-global identity map,
-then binds the replacement runtime on its next `session_start`. Only `session_shutdown { reason:
-"quit" }` stops the mesh.
+then binds the replacement runtime on its next `session_start`. It also atomically records the new
+Pi session id. Only `session_shutdown { reason: "quit" }` stops the mesh.
+
+For managed PTY seats, `cotal spawn --agent pi --resume <pi-session-id>` forks that transcript into
+a new meshed Pi session (`pi --fork`; the source is untouched). After readiness, the manager binds
+the exact current Pi session through the token-authenticated local control socket. An unexpected Pi
+process exit reopens that session with the same Cotal identity, lifecycle UID, credentials and durable
+inbox. Three restarts are allowed in a rolling two-minute window; a fourth is a crash loop and retires
+the seat loud. A deliberate stop/despawn/maintenance cut never restarts it.
 
 ## Host boundaries
 
@@ -66,7 +75,7 @@ then binds the replacement runtime on its next `session_start`. Only `session_sh
   sandbox hooks remain on the normal agent path.
 - `cotal_inbox` destructively pulls quiet ambient while the driver retains ownership of automatic
   traffic; normal focus recall shown alongside it remains read-only.
-- Pi resume, variants, MCP sharing, and raw launch options fail loudly until implemented.
+- Pi model variants, MCP sharing, and raw launch options fail loudly until implemented.
 
 ## Install
 

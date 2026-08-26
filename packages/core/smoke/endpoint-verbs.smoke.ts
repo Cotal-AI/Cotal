@@ -28,6 +28,7 @@ import {
   type EpRegistrationState,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -84,8 +85,9 @@ function respond(nc: NatsConnection, filter: string, batch: (req: ParsedEpReques
 
 // ── live broker ──
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-epverbs-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, sd);
 
 try {
   let up = false;
@@ -461,5 +463,6 @@ try {
 } finally {
   broker.kill("SIGKILL");
   rmSync(sd, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 if (fail > 0) process.exit(1);

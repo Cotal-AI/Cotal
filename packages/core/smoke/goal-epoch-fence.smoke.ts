@@ -4,7 +4,7 @@
  * WHAT THIS SUITE USED TO ASSERT, and why it was replaced. It encoded the epoch-scoped terminal
  * subject `…result.<execEpoch>`: one create-only subject per executor epoch, so a superseded
  * manager's terminal landed where no current reader looked. That mechanism was BOTH
- * non-conformant (SPEC:1433 (§13.2 reserved subjects) reserves the flat `goal.<cOwner>.<cActor>.<cUid>.<goalId>.result`
+ * non-conformant (SPEC §13.2 (reserved subjects) reserves the flat `goal.<cOwner>.<cActor>.<cUid>.<goalId>.result`
  * with no epoch token) AND actively wrong. It conflated two different jobs:
  *   - as a READ fence it produced WRONG ANSWERS. The window is "commit the terminal, then die
  *     before projecting it", where the pre-restart fact is the LEGITIMATE outcome, not a corpse's
@@ -60,6 +60,7 @@ import {
   type EpCaller, type GoalRef, type ParsedEpRequest, type ActionContext,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -89,8 +90,9 @@ c("a goal's terminal subject is the ONE flat SPEC:1433 (§13.2 reserved subjects
   && !/\.result\.\d+$/.test(goalResultSubject(SPACE, ref("g1"))));
 
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-epfence-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, sd);
 
 const newGoal = async (ctx: ActionContext, id: string, acceptedEpoch: number | undefined): Promise<GoalRef> => {
   const g = ref(id);
@@ -232,6 +234,7 @@ try {
 } finally {
   broker.kill("SIGKILL");
   rmSync(sd, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(`${fail === 0 ? "GOAL TERMINAL ATTRIBUTION SMOKE OK ✅" : "GOAL TERMINAL ATTRIBUTION SMOKE FAILED ❌"}  (${ok} passed, ${fail} failed)`);

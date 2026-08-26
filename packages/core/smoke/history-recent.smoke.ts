@@ -20,11 +20,18 @@ import { join } from "node:path";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { connect } from "@nats-io/transport-node";
 import { CotalEndpoint, isReachable, newIdentity, setupSpaceStreams } from "../src/index.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { pickFreePort } from "./_free-port.js";
 
-const PORT = 14772;
+// An OS-assigned port, not the 14772 this suite used to hardcode. Two concurrent runs did not
+// collide loudly: the first to bind won, the second ATTACHED TO IT, both published 60 messages
+// into the same stream, and both then failed on `reads the whole channel back (120 of 60)`. That
+// reads like a duplicate-delivery bug in history backfill and is a port collision two causes
+// upstream. Reproduced before this line changed.
+const PORT = await pickFreePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = "hist";
-const store = mkdtempSync(join(tmpdir(), "cotal-hist-"));
+const store = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   assert.ok(cond, `${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
@@ -34,6 +41,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const srv = spawn("nats-server", ["-p", String(PORT), "-js", "-sd", store], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, store);
 try {
   let up = false;
   for (let i = 0; i < 60; i++) { if (await isReachable(SERVER)) { up = true; break; } await wait(150); }
@@ -233,5 +241,6 @@ try {
 } finally {
   srv.kill("SIGKILL");
   rmSync(store, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 process.exit(0);

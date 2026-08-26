@@ -4,44 +4,91 @@ import { DEFAULT_SERVER } from "@cotal-ai/core";
 import { selfArgv } from "./self-exec.js";
 import { resolveSpace } from "./status.js";
 import { cotalPath } from "./paths.js";
-import { parsePid, probeLiveness, type LivenessProbe } from "@cotal-ai/workspace";
+import {
+  commandIsCotalSupervisor, parsePid, probeLiveness, readProcessCommand,
+  MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, type CommandReader, type LivenessProbe,
+} from "@cotal-ai/workspace";
 
 /** Exported so the delivery cutover preflight can NAME the pid it refused on: an error that says
  *  "cannot be attributed" without saying which pid is not actionable. */
-export const MANAGER_PID_PATH = (): string => cotalPath("manager.pid");
+export const MANAGER_PID_PATH = (): string => cotalPath(MANAGER_PIDFILE);
 const PID_PATH = MANAGER_PID_PATH;
 /** Sibling marker of `manager.pid`: written by THIS build's manager (which no longer hosts Plane-3 —
  *  the server-side delivery daemon does). Its presence beside a live `manager.pid` proves the manager is
  *  "delivery-aware" / non-hosting. A live `manager.pid` WITHOUT this marker is an OLD (pre-delivery-daemon)
  *  manager that still calls `startPlane3` — the delivery preflight stops it before the daemon binds, so an
  *  old hosting manager never double-binds `fanout`/`reader` against the new daemon. */
-const DELIVERY_AWARE_MARKER = () => cotalPath("manager.delivery-aware");
+const DELIVERY_AWARE_MARKER = () => cotalPath(MANAGER_DELIVERY_AWARE_MARKER);
 
-/** The recorded manager's liveness, THREE-VALUED plus absent, because collapsing it to a boolean is
- *  what made this dangerous. Both collapses are silent and both are wrong:
+/** The recorded manager's state. THREE-VALUED liveness plus absent, because collapsing it to a
+ *  boolean is what made this dangerous. Both collapses are silent and both are wrong:
  *    `!== "dead"`  -> an `unknown` reports UP forever; no retry clears it and nothing starts.
  *    `=== "alive"` -> an `unknown` reports DOWN and a second manager launches onto a possibly-live one.
  *  `unknown` is REACHABLE on a real kernel, not just under a test shim: a Linux seccomp filter
  *  (`SECCOMP_RET_ERRNO`) or an LSM policy can return an arbitrary errno for `kill(pid, 0)` without
  *  executing it at all, and libuv preserves it. Proven with a live seccomp BPF filter, not by
- *  interposition. So the caller has to SEE the third state and refuse. */
-export function managerLiveness(probe: LivenessProbe = probeLiveness): "alive" | "dead" | "unknown" | "absent" | "unattributable" {
+ *  interposition. So the caller has to SEE the third state and refuse.
+ *
+ *  `foreign` is the fifth: the recorded pid is ALIVE and is provably NOT a manager. A record
+ *  outliving its process is the same class of defect one layer down from a service registration
+ *  outliving its host, and it resolves the same way — the number is eventually reused by an
+ *  unrelated process, and from `kill(pid, 0)` alone that reads as a healthy manager forever. */
+export type ManagerRecordState = "alive" | "dead" | "unknown" | "absent" | "unattributable" | "foreign";
+
+/** The recorded manager, with the evidence behind the verdict — callers that must EXPLAIN a refusal
+ *  need the pid and the command line that earned it, and a bare state cannot carry them. */
+export interface ManagerRecord {
+  state: ManagerRecordState;
+  /** The recorded pid, when the file held one. */
+  pid?: number;
+  /** The live process's command line, when it was readable (present on `alive` and `foreign`). */
+  command?: string;
+}
+
+/** Read + attribute the manager record in one place, so every caller decides on the same evidence.
+ *
+ *  ATTRIBUTION MAY ONLY DOWNGRADE ON PROOF. A live pid is demoted to `foreign` when its command line
+ *  was READ and does not name the manager daemon — never when the read failed, never on a platform
+ *  that cannot look, never on a process that died during the read. The asymmetry is the safety
+ *  argument, and it is the same one the liveness probe makes: absence of evidence must fail toward
+ *  the old behaviour (trust the record), because the opposite error starts a second manager on top
+ *  of a live one. */
+export function managerRecordState(probe: LivenessProbe = probeLiveness, readCommand: CommandReader = readProcessCommand): ManagerRecord {
   const p = PID_PATH();
-  if (!existsSync(p)) return "absent";
+  if (!existsSync(p)) return { state: "absent" };
   const raw = readFileSync(p, "utf8").trim();
-  if (raw === "") return "absent"; // a pre-protocol husk: nothing is behind it
+  if (raw === "") return { state: "absent" }; // a pre-protocol husk: nothing is behind it
   const pid = parsePid(raw);
   // NOT `absent`. Folding non-empty corrupt content into "no manager recorded" is what let the
   // ensure paths OVERWRITE it and launch a replacement, which is the same defect as deleting it:
   // that record may front a live process nobody can identify. `absent` means no pidfile (or an
   // empty husk); corrupt content is its own state and every action path must refuse on it.
-  if (pid === undefined) return "unattributable";
-  return probe(pid);
+  if (pid === undefined) return { state: "unattributable" };
+  const liveness = probe(pid);
+  if (liveness !== "alive") return { state: liveness, pid };
+  const cmd = readCommand(pid);
+  if (cmd.kind !== "command") return { state: "alive", pid }; // gone/unreadable: established nothing
+  return { state: commandIsCotalSupervisor(cmd.command) ? "alive" : "foreign", pid, command: cmd.command };
 }
 
-/** True only if the manager is PROVABLY running. `unknown` is not up, and callers that would ACT on
- *  that answer must use {@link managerLiveness} instead: this boolean cannot express the difference
- *  between "not running" and "cannot tell", and acting on the difference is the whole point. */
+/** {@link managerRecordState}'s verdict alone, for the callers that only branch on it. */
+export function managerLiveness(probe: LivenessProbe = probeLiveness, readCommand: CommandReader = readProcessCommand): ManagerRecordState {
+  return managerRecordState(probe, readCommand).state;
+}
+
+/** One line describing what was found behind the record, for a caller that has to explain itself. */
+export function describeManagerRecord(r: ManagerRecord): string {
+  if (r.state === "absent") return "no manager pid recorded";
+  if (r.state === "unattributable") return `the manager pidfile holds content that is not a pid`;
+  const who = r.command !== undefined ? ` running \`${r.command}\`` : "";
+  return `recorded manager pid ${String(r.pid)} is ${r.state}${who}`;
+}
+
+/** True only if the manager is PROVABLY running. `unknown` is not up, and neither is `foreign` — a
+ *  live process that is not a manager answers no control plane. Callers that would ACT on that
+ *  answer must use {@link managerRecordState} instead: this boolean cannot express the difference
+ *  between "not running", "cannot tell" and "someone else's process", and acting on the difference
+ *  is the whole point. */
 export function managerUp(): boolean {
   return managerLiveness() === "alive";
 }
@@ -124,8 +171,18 @@ export function startManagerDetached(
  *  says nobody is ANSWERING; it does not say the recorded pid is dead. Overwriting an unknown or
  *  unattributable record is the same defect as deleting it, reached through a different verb, which
  *  is the third time that shape has appeared in this change. Any future starter calls this first. */
-export function assertManagerRecordReplaceable(probe: LivenessProbe = probeLiveness): void {
-  const state = managerLiveness(probe);
+export function assertManagerRecordReplaceable(probe: LivenessProbe = probeLiveness, readCommand: CommandReader = readProcessCommand): void {
+  const record = managerRecordState(probe, readCommand);
+  const state = record.state;
+  // A FOREIGN record is replaceable, and saying what was found is the point of allowing it. The pid
+  // is alive, so `probeLiveness` alone would have called this a healthy manager and every start
+  // path would have skipped forever; it is provably not a manager, so nothing is orphaned by
+  // writing over it. Announced rather than silent: a recycled pid means the record outlived its
+  // process, and an operator who never hears that will meet it again.
+  if (state === "foreign")
+    console.error(
+      `! ${describeManagerRecord(record)} - that is not a manager, so the record is stale (its process exited and the pid was reused). Replacing it.`,
+    );
   if (state === "unattributable")
     throw new Error(
       `the manager pidfile at ${PID_PATH()} holds content that is not a pid (${JSON.stringify(readFileSync(PID_PATH(), "utf8").trim())}).\n` +
@@ -143,10 +200,11 @@ export function assertManagerRecordReplaceable(probe: LivenessProbe = probeLiven
 export function ensureManager(
   o: { space?: string; server?: string; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number } = {},
   probe: LivenessProbe = probeLiveness,
+  readCommand: CommandReader = readProcessCommand,
 ): { running: boolean } {
-  const state = managerLiveness(probe);
+  const state = managerLiveness(probe, readCommand);
   if (state === "alive") return { running: true };
-  assertManagerRecordReplaceable(probe); // refuses on unknown / unattributable
+  assertManagerRecordReplaceable(probe, readCommand); // refuses on unknown / unattributable, reports foreign
   startManagerDetached(o);
   return { running: true };
 }
@@ -175,7 +233,11 @@ export type StopVerdict = "stopped" | "already-gone";
  *  A correct fix upstream reaching a latent destructive bug downstream is the worst shape available,
  *  so this refuses instead: records are removed only on proven death, never on a signal we could not
  *  send or a death we could not confirm. Found by review, with a kernel seccomp proof. */
-export async function stopManager(probe: LivenessProbe = probeLiveness, signal: SignalFn | undefined = undefined): Promise<StopVerdict> {
+export async function stopManager(
+  probe: LivenessProbe = probeLiveness,
+  signal: SignalFn | undefined = undefined,
+  readCommand: CommandReader = readProcessCommand,
+): Promise<StopVerdict> {
   const send: SignalFn = signal ?? ((pid, sig) => process.kill(pid, sig));
   const p = PID_PATH();
   const marker = DELIVERY_AWARE_MARKER();
@@ -210,6 +272,19 @@ export async function stopManager(probe: LivenessProbe = probeLiveness, signal: 
   if (before === "dead") {
     clear();
     return "already-gone";
+  }
+  // A LIVE pid that is provably NOT a manager is never signalled. The record outlived its process
+  // and the number was reused, so SIGTERM here would kill an unrelated process — the exact
+  // destructive shape the rest of this function refuses on doubt, reached through certainty. The
+  // record is removed because it is provably stale, and what was found is printed: an operator who
+  // is told only "already gone" will not know their pidfile was pointing at a stranger.
+  if (before === "alive") {
+    const cmd = readCommand(pid);
+    if (cmd.kind === "command" && !commandIsCotalSupervisor(cmd.command)) {
+      console.error(`! recorded manager pid ${pid} is alive but is running \`${cmd.command}\`, which is not a manager - not signalling it; removing the stale record instead.`);
+      clear();
+      return "already-gone";
+    }
   }
   if (before === "unknown")
     throw new Error(

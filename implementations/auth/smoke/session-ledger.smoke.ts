@@ -43,6 +43,7 @@ import { makeLedgerScannerOverConnection } from "../src/ledger-scanner.js";
 import { parseLedgerRow } from "../src/credential-ledger.js";
 import { tryReserveUid, createGateFrozen, reopenGate } from "../src/lifecycle-registry.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -91,8 +92,9 @@ const PRESENTER = { id: HOLDER_ID, lifecycleUid: HOLDER_UID };
 const sid = (n: number) => `${"q".repeat(20)}${String(n).padStart(4, "0")}`;
 
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-sessadapter-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, sd);
 
 try {
   let up = false;
@@ -551,6 +553,7 @@ try {
   broker.kill("SIGKILL");
   await new Promise((r) => broker.once("exit", r));
   rmSync(sd, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(fail === 0 ? `\nSESSION ADAPTER SMOKE OK ✅  (${ok} passed, ${fail} failed)` : `\nSESSION ADAPTER SMOKE FAILED ❌  (${ok} passed, ${fail} failed)`);

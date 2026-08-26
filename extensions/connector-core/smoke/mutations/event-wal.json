@@ -1,0 +1,83 @@
+{
+  "suite": "extensions/connector-core/smoke/event-wal.smoke.ts",
+  "guard": "a log has no publish expectation until the principal's shared record is bound to it, and a handle that is no longer entitled to write its own log cannot move that shared record, and an abandonment that cannot reach the shared record refuses rather than clearing half of it",
+  "command": "pnpm smoke:event-wal",
+  "completionMarker": "event-wal smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/event-wal.json",
+  "why": [
+    "THE UNBOUND EXPECTATION IS THE DEFECT'S OWN SHAPE. A log is keyed per session; the subject it",
+    "publishes to is keyed per principal. Returning this log's own last ack when nothing is bound is",
+    "returning the exact number that took every agent's second session dark, and the argument for",
+    "allowing it was that no shipped path reaches it. That argument was true, and it is the same",
+    "argument the released seam shipped on: two correct components with an assumption standing where",
+    "a guard belongs. So the assumption is a guard.",
+    "",
+    "THE ORDERING FINDING CAME OUT OF MAKING THAT GUARD REAL, WHICH IS WHY IT IS GRADED HERE. With",
+    "the fallback gone, a suite cell that had always passed went red and showed that the generation",
+    "guard ran inside `write`, AFTER the shared record moved. A handle whose file had been rewritten",
+    "underneath it advanced the PRINCIPAL's tip and only then learned it was not allowed to write.",
+    "The record belongs to every thread of that principal, so a refusal that arrives after the",
+    "mutation refuses the wrong thing.",
+    "",
+    "SPECIFIER BOUNDARY. The suite imports `../src/event-wal.js` by relative source path, so the",
+    "bytes mutated are the bytes graded; no dist, no build in the command. Its only package import",
+    "for this behaviour is the in-memory double from @cotal-ai/smoke-kit, which is test-only and",
+    "carries none of the behaviour under test."
+  ],
+  "mutations": [
+    {
+      "name": "S16 an unbound log offers its own last ack instead of refusing",
+      "file": "extensions/connector-core/src/event-wal.ts",
+      "find": "    if (!this.subject)\n      throw new Error(\n        `event WAL ${this.path}: no subject frontier is bound, so there is no expectation to publish. ` +\n",
+      "replace": "    if (false)\n      throw new Error(\n        `event WAL ${this.path}: no subject frontier is bound, so there is no expectation to publish. ` +\n",
+      "expectRed": "[H] an UNBOUND log has no expectation and says so, rather than offering its own last ack",
+      "cell": "[H] an UNBOUND log has no expectation and says so, rather than offering its own last ack",
+      "note": "The released behaviour restored as a default. It is not reachable from any shipped path today, which is exactly why it needs a guard rather than a comment: the next caller is the one that reaches it. Its find carries the message's first line because `abandon` now refuses the unbound case in the same shape, so the two-line form no longer picks out one site."
+    },
+    {
+      "name": "S17 the stale-writer check runs after the shared record has already moved",
+      "file": "extensions/connector-core/src/event-wal.ts",
+      "find": "    await this.assertNotClobbering();\n    await subject.advance(ackSeq);\n",
+      "replace": "    await subject.advance(ackSeq);\n",
+      "expectRed": "[H] ...and the PRINCIPAL's shared tip never moved for it",
+      "cell": "[H] ...and the PRINCIPAL's shared tip never moved for it",
+      "note": "Removing the early check puts the generation guard back inside `write`, where it still refuses the write but only after the principal's shared tip has taken this handle's number. The sibling cell that asserts the refusal is a STALE-WRITER refusal is what makes this one legible: without it the mutant merely changes which error comes out."
+    },
+    {
+      "name": "S18 rebinding the same record is refused instead of ignored",
+      "file": "extensions/connector-core/src/event-wal.ts",
+      "find": "    if (this.subject === frontier) return;\n",
+      "replace": "",
+      "expectRed": "[H] rebinding the SAME record is a no-op, not a refusal",
+      "cell": "[H] rebinding the SAME record is a no-op, not a refusal",
+      "note": "Refusing it forces a caller that seeds a log and then starts an emitter over it to hold two handles on one file, which is exactly the state the generation guard refuses."
+    },
+    {
+      "name": "S19 a different record silently replaces the bound one",
+      "file": "extensions/connector-core/src/event-wal.ts",
+      "find": "    if (this.subject) throw new Error(`event WAL ${this.path}: a DIFFERENT subject frontier is already bound`);\n",
+      "replace": "",
+      "expectRed": "[H] ...and a DIFFERENT record is refused, even though it holds the same number",
+      "cell": "[H] ...and a DIFFERENT record is refused, even though it holds the same number",
+      "note": "The cell uses a second record holding the SAME number on purpose: a check that compared tips rather than identity would pass here while accepting a genuinely different subject's record."
+    },
+    {
+      "name": "S24 `abandon` clears this log and leaves the principal's shared record standing",
+      "file": "extensions/connector-core/src/event-wal.ts",
+      "find": "    if (!this.subject)\n      throw new Error(\n        `event WAL ${this.path}: no subject frontier is bound, so an abandonment here would clear ` +\n",
+      "replace": "    if (false)\n      throw new Error(\n        `event WAL ${this.path}: no subject frontier is bound, so an abandonment here would clear ` +\n",
+      "expectRed": "[H] abandon REFUSES an unbound log rather than clearing half of it",
+      "cell": "[H] abandon REFUSES an unbound log rather than clearing half of it",
+      "note": "This was `await this.subject?.reset()`, and the optional call is how a PARTIAL abandonment gets reported as a whole one: with nothing bound it cleared the log's half, returned success, and left the shared tip where it was. The method's own contract is that partial abandonment is not a state."
+    },
+    {
+      "name": "S25 a stale handle may reset the principal's shared record on its way out",
+      "file": "extensions/connector-core/src/event-wal.ts",
+      "find": "    await this.assertNotClobbering();\n    if (!this.subject)\n",
+      "replace": "    if (!this.subject)\n",
+      "expectRed": "[H] ...and the PRINCIPAL's shared record was never reset for it",
+      "cell": "[H] ...and the PRINCIPAL's shared record was never reset for it",
+      "note": "S17 grades the same ordering rule in `recordAck` only. Two copies of one check are two claims, and a suite that grades one of them and reports the invariant is the missing-arm shape. Both anchors are CODE ONLY: the prose that used to sit between these statements was moved above the block so the pair is adjacent, because an anchor that spans a comment is disarmed by anyone tidying prose."
+    }
+  ]
+}

@@ -34,11 +34,19 @@ import {
   ARTIFACT_STORE_MAX_BYTES,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+
+/** A one-chunk web stream. `ReadableStream.from` is Node's own and is absent from the lib types
+ *  the artifact store's `put` is declared against, so build the stream with the constructor both
+ *  sides agree on rather than reaching for an undeclared static. */
+const bytesStream = (bytes: Uint8Array): ReadableStream<Uint8Array> =>
+  new ReadableStream<Uint8Array>({ start(c) { c.enqueue(bytes); c.close(); } });
 
 const SPACE = "artstore";
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-artstore-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, sd);
 const servers = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -179,7 +187,7 @@ try {
   let putErr = "";
   try {
     const os = await new Objm(jetstream(fnc)).create(fb);
-    await os.put({ name: "probe" }, ReadableStream.from([new Uint8Array([1, 2, 3])]));
+    await os.put({ name: "probe" }, bytesStream(new Uint8Array([1, 2, 3])));
   } catch (e) { putErr = (e as Error).message; }
   await fnc.close();
   check("a rollup-denied store REJECTS every put (the consequence being guarded)",
@@ -204,7 +212,7 @@ try {
     retention: "limits" as never, allow_rollup_hdrs: true, max_age: 1_000_000_000,
   });
   const aos = await new Objm(jetstream(anc)).create(ab);
-  await aos.put({ name: "vanishing" }, ReadableStream.from([new Uint8Array([1, 2, 3])]));
+  await aos.put({ name: "vanishing" }, bytesStream(new Uint8Array([1, 2, 3])));
   await wait(1800);
   const aged_state = (await (await jetstreamManager(anc)).streams.info(objectStoreStream(ab))).state.messages;
   await anc.close();
@@ -228,9 +236,9 @@ try {
     retention: "limits" as never, allow_rollup_hdrs: true, max_msgs: 2,
   });
   const cos = await new Objm(jetstream(cnc)).create(cb);
-  await cos.put({ name: "first" }, ReadableStream.from([new Uint8Array([1])]));
+  await cos.put({ name: "first" }, bytesStream(new Uint8Array([1])));
   let secondErr = "";
-  try { await cos.put({ name: "second" }, ReadableStream.from([new Uint8Array([1])])); }
+  try { await cos.put({ name: "second" }, bytesStream(new Uint8Array([1]))); }
   catch (e) { secondErr = (e as Error).message; }
   await cnc.close();
   check("a message-capped store refuses a second artifact with the byte cap free",
@@ -254,6 +262,7 @@ try {
 } finally {
   broker.kill("SIGKILL");
   rmSync(sd, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(`\nartifact-store: ${ok} passed, ${fail} failed`);

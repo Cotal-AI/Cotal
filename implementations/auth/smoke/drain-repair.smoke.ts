@@ -28,6 +28,7 @@ import { contractDigest, createSpaceAuth, ensureAuthorityStores, epfStreamName, 
 import { openAuthorityClient } from "../src/authority-client.js";
 import { assertAppliableCommitKey, assertEffectsCancelSubject, assertPoolRepairSubject, drainApplierGrants, drainCancellerGrants, drainReconcilerGrants, makeDrainRepairers } from "../src/drain-repair.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -91,9 +92,10 @@ console.log("B. the closed pool-repair subject");
 console.log("C. live exact-coordinate confinement over the real JWT broker");
 const space = `drrp-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const tmp = mkdtempSync(join(tmpdir(), "cotal-drrp-"));
+const tmp = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(tmp, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(tmp, "js") }));
 const srv = spawn("nats-server", ["-c", join(tmp, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, tmp);
 const dataAccount = { pub: auth.account.pub, signingSeed: auth.account.signingSeed };
 const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<void> =>
   new Promise((resolve) => {
@@ -225,6 +227,7 @@ try {
   srv.kill("SIGTERM"); // exact PID — never pkill nats-server
   await awaitExit(srv);
   rmSync(tmp, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(fail === 0 ? `\nDRAIN-REPAIR SMOKE OK ✅  (${pass} passed, ${fail} failed)` : `\nDRAIN-REPAIR SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);

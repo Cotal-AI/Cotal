@@ -1,6 +1,6 @@
 /**
  * EPS GRANT SWEEP (control-surface v0.4, Lane B finding 1) — the STRUCTURAL guard behind
- * SPEC.md:2526: "both sides of a session hold only redemption-minted per-session credentials
+ * SPEC §13.9: "both sides of a session hold only redemption-minted per-session credentials
  * (§13.6); no standing EPS grant exists on either side", and the §13.9 matrix rows at 2695-2698
  * which require the EXACT `eps.<endpoint>.<sessionId>.<epoch>.{in,out}` subject on all four legs.
  *

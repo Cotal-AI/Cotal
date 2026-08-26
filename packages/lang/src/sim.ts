@@ -47,7 +47,21 @@ export interface SimFault {
 export interface SimScript {
   readonly turns?: Readonly<Record<string, Scripted<TurnResultValue>>>;
   readonly asks?: Readonly<Record<string, Scripted<unknown>>>;
-  readonly checkpoints?: Readonly<Record<string, Scripted<CheckpointResultValue>>>;
+  /**
+   * ⚠️ `at` IS NOT SCRIPTABLE. Both of `checkpoint()`'s return paths stamp it from virtual time
+   * and neither one reads a scripted value, so anything written here was required by the type and
+   * then silently discarded. Demanding a field the implementation overwrites makes every fixture
+   * carry a number that means nothing, and reads to the next author as though it were honoured.
+   *
+   * The refusal is a rule, not a list: it fires exactly where `SimScript` is already the expected
+   * type of the literal being written, and nowhere else. So a literal at a call taking a
+   * `SimScript`, under an annotation on a `const` or a later-assigned `let`, in a parameter declared
+   * `SimScript`, or under `satisfies SimScript` is now an error. A literal typed before it meets this
+   * type, or never measured against it, escapes: inferred then passed by name, put through an `as`
+   * cast, or handed to a parameter declared `unknown`. Those still compile with `at` present and
+   * still have it discarded. This closes the idioms a new author reaches for; not the loophole.
+   */
+  readonly checkpoints?: Readonly<Record<string, Scripted<Omit<CheckpointResultValue, "at">>>>;
   /** Keyed by the `wait` step's name. A scripted `null` is a timeout, which is a choice. */
   readonly events?: Readonly<Record<string, Scripted<unknown>>>;
   readonly clock?: {
@@ -84,6 +98,14 @@ interface Consumption {
  * Every effect resolves from the script or fails loudly. Sleeps are instant and advance the
  * virtual clock by the duration the program asked for, so a program that waits four hours is
  * tested in microseconds without pretending the wait did not happen.
+ *
+ * ONE clock, advanced in ask order — deliberately, and worth saying here because this file is
+ * where a reader would conclude otherwise: concurrent branches do NOT get independent virtual
+ * time. Two racing sleeps advance the same clock as their requests arrive, so under simulation a
+ * race is decided by ask order (then declaration order), not by which duration is shorter. The
+ * run clocks (`RunClock`, per branch) sit above this and stay per-branch; it is the TIMEBASE the
+ * simulator feeds them that is shared. A live handler with real waiting behaves differently, and
+ * `scopes.smoke` section 1b is the cell that pins the difference.
  */
 export class SimHandler implements EffectHandler {
   private virtualNow: number;
@@ -213,7 +235,7 @@ export class SimHandler implements EffectHandler {
     };
   }
 
-  /** Instant, and honest: the clock moves by exactly what the program asked to wait. */
+  /** Instant: the SHARED virtual clock moves by what the program asked to wait (see the class note). */
   async sleep(req: SleepRequest, ctx: EffectContext): Promise<null> {
     this.checkFault(ctx);
     this.advance(parseDuration(req.duration));

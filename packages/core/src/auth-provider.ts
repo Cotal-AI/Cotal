@@ -1,5 +1,6 @@
 import { registry, type Extension } from "./registry.js";
 import type { SecretStore } from "./secret-store.js";
+import type { RemoteManagerAuthorityMaterial, RemoteManagerAuthorityRequest } from "./remote-manager-authority.js";
 
 /**
  * The one extension kind an identity/auth implementation registers so a composition root can turn
@@ -52,6 +53,19 @@ export interface AuthProvider extends Extension {
    */
   userCredentials(opts: { store: SecretStore; dir: string; space: string; actor: string; view?: string }): Promise<{ bearer: string; sentinelCreds: string }>;
   /**
+   * Request the closed remote manager-service authority material from the host's loopback/operator
+   * exchange. This is an explicitly typed lifecycle protocol, not a generic profile mint: the
+   * provider must authenticate the signed-in human, fresh-check `supervise`, bind the returned
+   * material to the requested manager instance/lifecycle, and refuse public or managed-agent paths.
+   * Optional so providers without remote supervision fail loud at the caller rather than falling
+   * back to static/local trust.
+   */
+  managerServiceAuthority?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteManagerAuthorityRequest;
+  }): Promise<RemoteManagerAuthorityMaterial>;
+  /**
    * The derived owner token (`u_…`) of THIS machine's cached login for the given space — resolved
    * offline from the login session + the space's local user-auth material (no IdP round trip).
    * The spawn paths use it to answer "whose agents are these": a foreground/manifest spawn runs
@@ -59,6 +73,20 @@ export interface AuthProvider extends Extension {
    * `cotal login --idp …` line) or when the space has no user-auth material (in `store`/`dir`).
    */
   ownerForLogin(opts: { store: SecretStore; dir: string; space: string }): Promise<string>;
+  /**
+   * CLIENT side of a REMOTE mesh's agent-provisioning endpoint (a discovery bundle advertising
+   * `agentProvisioningUrl`): present this machine's login proof for `idpUrl` to `url`, asking it
+   * to provision `actor`, and return the endpoint's parsed JSON answer verbatim. This method
+   * lives on the provider because the LOGIN PROOF rides the request — the caller never touches
+   * the session cache. The transport discipline is the provider's too: redirects are refused
+   * (a 302 could walk the proof onto another host), and every failure MUST throw one sentence
+   * with the exact operator action — not signed in names the `cotal login --idp …` line, an
+   * endpoint refusal surfaces the endpoint's own reason. The caller owns validating the returned
+   * material's shape; this method proves and carries, it does not interpret. Optional: a
+   * provider without a remote-provisioning story simply lacks it, and the caller refuses with
+   * its own named message.
+   */
+  postAgentProvisioning?(opts: { url: string; idpUrl: string; actor: string }): Promise<unknown>;
   /**
    * Read-only OFFLINE introspection for status surfaces (`cotal status`): this machine's cached
    * login for the space and — where the space's ledger is locally readable — whether that login's

@@ -1,0 +1,160 @@
+{
+  "suite": "extensions/connector-core/smoke/subject-frontier.smoke.ts",
+  "guard": "the per-principal subject record refuses every state its own writer cannot produce, and never conflates a record that is MISSING with one that reads zero; and the record on disk is the frontier, so a view that has gone stale under a second writer is refused rather than writing its own number over a later one",
+  "command": "pnpm smoke:subject-frontier",
+  "completionMarker": "subject-frontier smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/subject-frontier.json",
+  "why": [
+    "An absent record means this principal never published, so a tip may be recovered from the session",
+    "logs beside it. A record that READS ZERO is what abandonment writes after a channel purge, and",
+    "recovering into that one silently undoes the abandonment and restores an expectation the subject",
+    "no longer has. Missing and zero are different states, and this is the second place in this plane",
+    "where conflating them is the defect rather than a nicety.",
+    "",
+    "SPECIFIER BOUNDARY, checked rather than assumed: the suite imports ../src/subject-frontier.js by",
+    "relative source path, and imports nothing else from this repository. No dist, no build step.",
+    "",
+    "NOT PROVED HERE: that a real publish takes its expectation from this record. That needs a broker",
+    "and is graded by smoke:agui-multi-session and its own config.",
+    "",
+    "NOT PROVED HERE, AND NAMED RATHER THAN IMPLIED. The recovery scan opens each log with",
+    "O_NOFOLLOW behind the lstat refusal, to close the window between the check and the open. No",
+    "cell here can drive that race, and no mutation is registered against the flag, because a",
+    "mutant that survives and gets explained away is worse evidence than an absence stated plainly.",
+    "The flag is also absent on Windows, which is why the refusal is decided by the lstat and not",
+    "by the flag: a guard that evaporates on one platform is not a guard, it is a platform note.",
+    "",
+    "THE ACKED PENDING IS THE SECOND HALF OF THE UPGRADE PATH AND IT WAS MISSING FROM THE FIRST",
+    "VERSION. A reviewer executed it: absent record plus a sibling holding frontier 5 and an acked",
+    "pending at 12 recovered 5 and persisted it. The frontier alone is not where the assigned",
+    "sequence lives when a log took an ack and died before folding.",
+    "",
+    "THE RECORD IS THE FILE, NOT A VIEW OF IT. `advance` compared the new sequence against this",
+    "object's in-memory document while the implementation's own header said it compared against the",
+    "value on disk, so two views of one record took the tip BACKWARDS and both calls returned",
+    "normally: A.advance(10) then B.advance(6) left 6. Measured before the guard, and measured again",
+    "through a real broker afterwards: a stale view publishes a stale expectation and JetStream's",
+    "compare-and-set refuses it before any ack exists to record, so nothing shipped reaches the",
+    "regression today. That is the argument the released defect shipped on, so it is guarded here",
+    "rather than written down."
+  ],
+  "mutations": [
+    {
+      "name": "S5 recover a tip into a record that READS zero, not only into an absent one",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "    return new FileSubjectFrontier(path, FileSubjectFrontier.parse(path, bytes, opts));\n",
+      "replace": "    const parsedDoc = FileSubjectFrontier.parse(path, bytes, opts);\n    return new FileSubjectFrontier(path, { ...parsedDoc, tip: parsedDoc.tip || (await FileSubjectFrontier.recoverTipFromThreadLogs(dirname(path), opts.principal)) });\n",
+      "expectRed": "reset:a-record-that-READS-zero-is-not-re-seeded-from-a-thread-log",
+      "cell": "reset:a-record-that-READS-zero-is-not-re-seeded-from-a-thread-log",
+      "note": "The tempting simplification: treat a zero tip as 'nothing yet' wherever it appears. It reads as a tidy-up and it undoes an abandonment."
+    },
+    {
+      "name": "S7 an unreadable sibling log is skipped instead of refused",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "        throw new SubjectFrontierCorruptError(walPath, \"a readable thread log while recovering the subject tip\", (e as Error).message);",
+      "replace": "        continue;",
+      "expectRed": "recover:an-UNREADABLE-sibling-log-is-fatal-not-skipped",
+      "cell": "recover:an-UNREADABLE-sibling-log-is-fatal-not-skipped",
+      "note": "Skipping under-counts the tip, which does not fail here. It fails later, permanently, with a message about a moved subject tip that points at everything except the file quietly ignored."
+    },
+    {
+      "name": "S10 a symlinked thread directory is followed instead of refused",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "      if (ent.isSymbolicLink())\n",
+      "replace": "      if (false)\n",
+      "expectRed": "recover:a-SYMLINKED-thread-directory-is-refused-not-followed",
+      "cell": "recover:a-SYMLINKED-thread-directory-is-refused-not-followed",
+      "note": "The create path refuses a symlinked component, so the recovery path following one puts the guard on only the half nobody attacks. The planted log carries the SAME principal on purpose, because a foreign one would be refused by the principal check and would red this cell without proving anything about the link."
+    },
+    {
+      "name": "S11 the log inside a real thread directory is read without checking it is a real file",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "      if (st.isSymbolicLink())\n",
+      "replace": "      if (false)\n",
+      "expectRed": "recover:the-symlinked-log-refusal-comes-from-the-PORTABLE-check-not-the-flag",
+      "cell": "recover:the-symlinked-log-refusal-comes-from-the-PORTABLE-check-not-the-flag",
+      "note": "The entry check clears the directory and stops there. Without this the guard is one level short rather than absent: a real thread directory holding a linked wal.json reaches the same foreign log by one more hop. The lstat is the graded layer because it is the portable one; O_NOFOLLOW behind it closes the check-to-open window, which no cell in this suite can reach. It survived once against a cell that only required a refusal: on a platform holding O_NOFOLLOW the flag refuses too, and both refusals say `never a symlink`. The cell now asserts the portable layer's own detail, because the claim under test is which layer decides."
+    },
+    {
+      "name": "S12 a hardlinked log is read, because neither the entry check nor the flag can see one",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "      if (st.nlink > 1)\n",
+      "replace": "      if (false)\n",
+      "expectRed": "recover:a-HARDLINKED-log-is-refused-because-a-log-this-writer-made-has-one-name",
+      "cell": "recover:a-HARDLINKED-log-is-refused-because-a-log-this-writer-made-has-one-name",
+      "note": "A hard link presents a real directory holding a real file, so `isSymbolicLink` is false and `O_NOFOLLOW` has nothing to refuse, while the file is the same inode as one outside the principal directory. The writer creates each log fresh, so a second name for it is a state it cannot produce."
+    },
+    {
+      "name": "S13 recovery reads the frontier only, and loses the sequence an acked pending holds",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "      if (pending && pending.state === \"acked\") {\n",
+      "replace": "      if (false && pending && pending.state === \"acked\") {\n",
+      "expectRed": "recover:an-ACKED-but-unfolded-log-carries-its-ackSeq-not-its-stale-frontier",
+      "cell": "recover:an-ACKED-but-unfolded-log-carries-its-ackSeq-not-its-stale-frontier",
+      "note": "The crash window the acked state exists for, met on the upgrade path. The recovered under-count is PERSISTED, and a present record is never rescanned, so the wrong tip is frozen in on the first open. The session that could fold that log never runs again because upgrading forks the session id."
+    },
+    {
+      "name": "S14 an acked pending behind its own frontier is taken instead of refused",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "        if (!(acked > seq))\n",
+      "replace": "        if (false)\n",
+      "expectRed": "recover:an-acked-pending-BEHIND-its-own-frontier-is-refused-not-ignored",
+      "cell": "recover:an-acked-pending-BEHIND-its-own-frontier-is-refused-not-ignored",
+      "note": "EventWal enforces ackSeq > frontier.lastSubjectSeq when it writes an acked pending, so a document that violates it has halves from different vintages. This scan refuses what its own writer cannot produce rather than picking whichever number is larger."
+    },
+    {
+      "name": "S20 `advance` grades the caller's view instead of the record on disk",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "      if (disk === undefined ? this.doc.tip !== 0 : disk !== this.doc.tip)\n        throw new SubjectFrontierMovedError(this.path, this.doc.tip, disk);\n",
+      "replace": "",
+      "expectRed": "moved:a-SECOND-view-of-one-record-is-REFUSED-rather-than-taking-the-tip-backwards",
+      "cell": "moved:a-SECOND-view-of-one-record-is-REFUSED-rather-than-taking-the-tip-backwards",
+      "note": "The released comparison. The header of this implementation always claimed a decrease was refused because it was lower than the value ON DISK; until this guard the comparison was against memory, so two views of one record took the tip backwards and both calls returned normally. Not reachable through a publish today (a stale view publishes a stale expectation and the broker refuses it first, measured), which is why it needs a guard rather than a paragraph."
+    },
+    {
+      "name": "S21 an ABSENT record on the re-read is read as zero rather than as its own state",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "disk === undefined ? this.doc.tip !== 0 : disk !== this.doc.tip",
+      "replace": "disk !== undefined && disk !== this.doc.tip",
+      "expectRed": "moved:a-view-whose-record-was-DELETED-underneath-it-is-refused-too",
+      "cell": "moved:a-view-whose-record-was-DELETED-underneath-it-is-refused-too",
+      "note": "Missing is not zero, for the third time in this plane. The VIRGIN cell must SURVIVE this mutant: a guard that refused an absent record outright would refuse every principal's first publish, and the pair of cells is what separates the two absences."
+    },
+    {
+      "name": "S22 the re-read takes a number out of a document that failed its own shape checks",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "    return FileSubjectFrontier.parse(this.path, bytes, { space: this.doc.space, principal: this.doc.principal }).tip;\n",
+      "replace": "    return JSON.parse(bytes.toString(\"utf8\")).tip;\n",
+      "expectRed": "moved:a-record-that-went-CORRUPT-under-a-live-writer-is-refused-BEFORE-the-write",
+      "cell": "moved:a-record-that-went-CORRUPT-under-a-live-writer-is-refused-BEFORE-the-write",
+      "note": "Validating only on the way in lets a writer that opened a good file overwrite a bad one, which destroys the evidence of whatever produced it. The sibling cell asserting the corrupt bytes are still on disk is what makes the refusal mean `refused before the write` rather than merely `threw`."
+    },
+    {
+      "name": "S23 `advance` is not ordered against itself on one instance",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "    const next = this.chain.then(op, op);\n",
+      "replace": "    const next = op();\n",
+      "expectRed": "moved:concurrent-advances-on-ONE-view-cannot-both-pass-a-check-neither-still-satisfies",
+      "cell": "moved:concurrent-advances-on-ONE-view-cannot-both-pass-a-check-neither-still-satisfies",
+      "note": "The re-read is a read-modify-write, so unordered callers all read the same tip before any of them renames and all of them pass. The cell uses three calls carrying the SAME number: ordered exactly one can succeed, unordered all three do, so the count discriminates. An increasing trio would succeed three times either way and grade nothing."
+    },
+    {
+      "name": "S28 the recovery scan stops at the first thread directory, so the population it reads is a subset of the population it claims",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "    for (const ent of entries) {\n",
+      "replace": "    for (const ent of entries.slice(0, 1)) {\n",
+      "expectRed": "population:the-max-is-found-when-it-sits-in-the-LAST-sibling-by-name",
+      "cell": "population:the-max-is-found-when-it-sits-in-the-LAST-sibling-by-name",
+      "note": "EXPECT A BLAST RADIUS, and that is the point rather than a defect in the plant: a scan reading one sibling still returns a number and still refuses a poisoned log that happens to come first, so several cells go red together and the count is reported with the result. Registered because a floor, a count, or a canary cannot see a shrunken population: each of those asks whether the scan produced something, and this asks whether it read everything. The cell it is named for puts the highest tip in the LAST directory by name, which is the reading a subset cannot produce."
+    },
+    {
+      "name": "S29 any pending is folded as though it were acked, which reads an assigned sequence out of a frame the broker never answered",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "      if (pending && pending.state === \"acked\") {\n",
+      "replace": "      if (pending) {\n",
+      "expectRed": "recover:a-SENT-but-unacked-pending-adds-nothing-because-it-CARRIES-no-assigned-sequence",
+      "cell": "recover:a-SENT-but-unacked-pending-adds-nothing-because-it-CARRIES-no-assigned-sequence",
+      "note": "The omission of `sent_unacked` is deliberate and is now written down, so it is graded: a deliberate omission nobody can break is indistinguishable from an oversight nobody noticed. The mutant makes the scan reach for an `ackSeq` that the state is forbidden to carry."
+    }
+  ]
+}

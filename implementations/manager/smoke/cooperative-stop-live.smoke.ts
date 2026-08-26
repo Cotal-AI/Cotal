@@ -35,6 +35,7 @@ import {
 import { controlEndpoint, startControlServer, type MeshAgent } from "@cotal-ai/connector-core";
 import { controlShutdown } from "../src/control-shutdown.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // An OS-assigned free port (see _free-port.ts): a port Windows has reserved makes nats-server fail
 // to bind and the wait below time out as a phantom flake.
@@ -61,9 +62,10 @@ const check = (name: string, cond: boolean, extra?: unknown): void => {
 
 const space = `coopstop-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-coopstop-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 
 // Built outside try so finally can tear them down even if a mid-scenario assertion throws.
 let alice: CotalEndpoint | undefined;
@@ -188,6 +190,7 @@ try {
   srv.kill("SIGKILL");
   await awaitExit(srv); // await actual exit so a failed run never leaks the broker onto its port
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(`\n${fail === 0 ? "COOPERATIVE-STOP SMOKE OK ✅" : "COOPERATIVE-STOP SMOKE FAILED ❌"}  (${pass} passed, ${fail} failed)`);

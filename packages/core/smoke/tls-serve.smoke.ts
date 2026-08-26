@@ -1,11 +1,12 @@
 import { strict as assert } from "node:assert";
-import { writeFileSync, mkdirSync, mkdtempSync, openSync, readFileSync } from "node:fs";
+import { writeFileSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import net from "node:net";
 import tlsMod from "node:tls";
 import { createSpaceAuth, serverConfig, openServerConfig, mintCreds, newIdentity, isReachable, validateTlsMaterial, probeServedCert } from "../src/index.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // The broker-TLS fence, proved by EXECUTION rather than by inspecting the rendered config.
 //
@@ -21,7 +22,7 @@ import { createSpaceAuth, serverConfig, openServerConfig, mintCreds, newIdentity
 // Non-circularity is built in: `plaintextConnectAccepted` is asserted TRUE against a plaintext
 // broker in the same run. Without that control, "the plaintext client was refused" would also be
 // satisfied by a probe that is simply broken, or by a broker that never started at all.
-const dir = mkdtempSync(join(tmpdir(), "cotal-tlsserve-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const space = "tlsserve";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -141,9 +142,12 @@ function freePort(): Promise<number> {
 }
 
 // Every broker this smoke starts, so the finally-block can reap them even when an assertion throws.
-const started: Array<{ tag: string; child: ReturnType<typeof spawn> }> = [];
+const started: Array<{ tag: string; child: ReturnType<typeof spawn>; release: () => void }> = [];
 function killAll(): void {
-  for (const s of started) { try { s.child.kill("SIGKILL"); } catch { /* already gone */ } }
+  for (const s of started) {
+    try { s.child.kill("SIGKILL"); } catch { /* already gone */ }
+    s.release();
+  }
   started.length = 0;
 }
 process.on("exit", killAll);
@@ -152,7 +156,10 @@ async function startBroker(tag: string, conf: string): Promise<{ log: string; ki
   const log = join(dir, `${tag}.log`);
   const fd = openSync(log, "w");
   const child = spawn("nats-server", ["-c", conf], { stdio: ["ignore", fd, fd] });
-  const entry = { tag, child };
+  // Each broker is owned, and each carries the one shared scratch dir: removing it is idempotent
+  // under `force`, and it means whichever broker is still owned when a signal lands takes the
+  // directory with it rather than leaving it to whichever one happened to be reaped last.
+  const entry = { tag, child, release: teardownOnSignal(child, dir) };
   started.push(entry);
   // A broker that dies at boot (bad cert, bound port) must not surface later as a mysterious
   // assertion failure — say so at the point of death, with the log that explains it.
@@ -315,4 +322,7 @@ await sleep(300);
 console.log("tls-serve smoke: OK - cleartext refused by TLS-required listeners in BOTH auth and open mode, served leaf matches disk, controls proved each probe detects a real handshake");
 } finally {
   killAll();
+  // The scratch dir goes with them. Its absence here is why this suite leaked a directory on
+  // every green run: the brokers were reaped and the tree they wrote was not.
+  rmSync(dir, { recursive: true, force: true });
 }

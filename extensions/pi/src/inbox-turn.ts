@@ -3,7 +3,7 @@ import type { ExactDrainResult, InboxItem, InboxScope } from "./inbox-types.js";
 export interface InboxSource {
   peekInbox(scope?: InboxScope): InboxItem[];
   drainInbox(limit?: number): InboxItem[];
-  drainInboxIds(ids: readonly string[]): ExactDrainResult;
+  drainInboxDeliveries(keys: readonly string[]): ExactDrainResult;
 }
 
 export interface CommitResult {
@@ -28,25 +28,28 @@ export class InboxTurn {
     return this.source.peekInbox(scope);
   }
 
-  /** Remove already-confirmed late duplicates by exact id, even behind pull-only traffic. */
+  /** Remove already-confirmed late duplicates by exact receive key, even behind pull-only traffic.
+   *  #624: tombstones and selection address the DELIVERY (InboxItem.recvKey). An empty wire id is
+   *  never a key, so two distinct id-less deliveries never cross-reserve or cross-tombstone each
+   *  other inside a turn. */
   discardTombstoned(): number {
-    const ids = this.source.peekInbox().filter((item) => this.hasTombstone(item.id)).map((item) => item.id);
-    if (ids.length) this.source.drainInboxIds(ids);
+    const ids = this.source.peekInbox().filter((item) => this.hasTombstone(item.recvKey)).map((item) => item.recvKey);
+    if (ids.length) this.source.drainInboxDeliveries(ids);
     return ids.length;
   }
 
   /** Exact discard for adapter-local traffic such as own echoes, even behind pull-only items. */
   discardMatching(match: (item: InboxItem) => boolean): number {
-    const ids = this.source.peekInbox().filter(match).map((item) => item.id);
-    if (ids.length) this.source.drainInboxIds(ids);
+    const ids = this.source.peekInbox().filter(match).map((item) => item.recvKey);
+    if (ids.length) this.source.drainInboxDeliveries(ids);
     return ids.length;
   }
 
-  /** Select the next automatic FIFO batch after already-reserved ids. */
+  /** Select the next automatic FIFO batch after already-reserved receive keys. */
   select(reserved: ReadonlySet<string>, limit: number): InboxItem[] {
     const selected: InboxItem[] = [];
     for (const item of this.source.peekInbox("automatic")) {
-      if (reserved.has(item.id)) continue;
+      if (reserved.has(item.recvKey)) continue;
       selected.push(item);
       if (selected.length >= limit) break;
     }
@@ -58,9 +61,9 @@ export class InboxTurn {
     if (ids.length === 0) return { drained: 0, tombstoned: 0 };
 
     this.discardTombstoned();
-    const result = this.source.drainInboxIds(ids);
-    for (const id of result.missingIds) this.addTombstone(id);
-    return { drained: result.items.length, tombstoned: result.missingIds.length };
+    const result = this.source.drainInboxDeliveries(ids);
+    for (const key of result.missingKeys) this.addTombstone(key);
+    return { drained: result.items.length, tombstoned: result.missingKeys.length };
   }
 
   private hasTombstone(id: string): boolean {

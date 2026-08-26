@@ -280,7 +280,7 @@ try {
   crashLaunch = true;
   const spawnC = await mgr.startAgent({ name: "crashy", agent: "smoke-sl" });
   crashLaunch = false;
-  check("a spawn that throws at buildLaunch fails WITH the injected crash (not an earlier refusal)", spawnC.ok === false && /injected buildLaunch crash/.test(spawnC.ok ? "" : spawnC.error), spawnC);
+  check("a spawn that throws at buildLaunch fails WITH the injected crash (not an earlier refusal)", spawnC.ok === false && /injected buildLaunch crash/.test(spawnC.error ?? ""), spawnC);
   const cSettled = await until(async () => (await readSlotOnly("crashy"))?.phase === "retired", 30_000, "the crashed spawn's rollback terminal");
   check("the crashed spawn's slot reached RETIRED (no active orphan — F3)", cSettled);
   const cSlot = await readSlotOnly("crashy");
@@ -347,7 +347,7 @@ try {
 
   // ── 8. F2: endpointCapabilities refusal ────────────────────────────────────
   const spawnEp = await mgr.startAgent({ name: "epcap", agent: "smoke-sl", ...({ endpointCapabilities: [{ endpoint: "x", verb: "call" }] } as Record<string, unknown>) });
-  check("a static spawn carrying endpointCapabilities is REFUSED (F2, fail-closed in code)", spawnEp.ok === false && /endpointCapabilities/.test(spawnEp.ok ? "" : spawnEp.error), spawnEp);
+  check("a static spawn carrying endpointCapabilities is REFUSED (F2, fail-closed in code)", spawnEp.ok === false && /endpointCapabilities/.test(spawnEp.error ?? ""), spawnEp);
 } finally {
   await (mgr as unknown as { stop?: () => Promise<void> }).stop?.().catch(() => {});
   await stopBroker();

@@ -1,0 +1,28 @@
+{
+  "suite": "packages/lang/smoke/surface.smoke.ts",
+  "guard": "`xs.length = n` is a permitted write that truncates; a longer, negative or non-integer length is L4017 rather than an escaping host TypeError. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-surface",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/array-length.json",
+  "mutations": [
+    {
+      "name": "a longer length is allowed, so JavaScript fills the gap with holes",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "        if (typeof value !== \"number\" || !Number.isInteger(value) || value < 0 || value > obj.length) {",
+      "replace": "        if (typeof value !== \"number\" || !Number.isInteger(value) || value < 0) {",
+      "expectRed": "`xs.length = n` longer than the array, negative, or not an integer is L4017, catchable, and names the bound",
+      "completionMarker": "ok a member outside the table on an array is L4014, with the table in the message",
+      "cell": "`xs.length = n` longer than the array, negative, or not an integer is L4017, catchable, and names the bound",
+      "note": "Holes are a value class the language does not have; the cell holds the refusal of the one write that would create them."
+    },
+    {
+      "name": "the length branch is dropped, so the write falls through to setOwn and escapes as the host's TypeError (the old behaviour)",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "      if (prop === \"length\") {",
+      "replace": "      if (prop === \"length\" && false) {",
+      "expectRed": "`xs.length = n` longer than the array, negative, or not an integer is L4017, catchable, and names the bound",
+      "completionMarker": "ok a member outside the table on an array is L4014, with the table in the message",
+      "cell": "`xs.length = n` longer than the array, negative, or not an integer is L4017, catchable, and names the bound",
+      "note": "Measured before the rule: `xs.length = 1` left run() as a bare TypeError with no code (setOwn cannot define the non-configurable `length`)."
+    }
+  ]
+}

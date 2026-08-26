@@ -1,0 +1,65 @@
+{
+  "suite": "packages/lang/smoke/semantics.smoke.ts",
+  "guard": "The pure fragment is JavaScript: compound assignment applies its operator, update expressions return the right value, `for (let ...)` gives each iteration its own binding. (This suite is FAIL-FAST: `ok()` throws, so each mutation names the marker printed just UPSTREAM of the cell it breaks; the control cell is first and prints on every run.)",
+  "command": "pnpm smoke:lang-semantics",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/pure-fragment.json",
+  "why": [
+    "The defect that motivated this suite shipped SILENTLY in both halves: the validator never read",
+    "`node.operator` on an AssignmentExpression and the interpreter evaluated the right-hand side and",
+    "assigned it, so `x += 1` was admitted and executed as `x = 1` with no error anywhere. The only",
+    "loop in the old suite was written `attempt = attempt + 1`, so nothing pinned it. Each mutation",
+    "below reinstates one such drift and requires the differential cell that compares against node",
+    "to notice; a differential cell that stays green under a semantic mutation is measuring nothing."
+  ],
+  "mutations": [
+    {
+      "name": "compound assignment is plain assignment again",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "    const v = applyBinary(op.slice(0, -1), cur, r);\n    read.set(v);\n    return v;",
+      "replace": "    read.set(r);\n    return r;",
+      "expectRed": "compound assignment, every operator",
+      "completionMarker": "ok a program that logs a literal",
+      "cell": "compound assignment, every operator",
+      "note": "The shipped defect, exactly. `let n = 10; n += 5` logged 5."
+    },
+    {
+      "name": "exponent evaluates as multiplication",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "    case \"**\":\n      return a ** b;",
+      "replace": "    case \"**\":\n      return a * b;",
+      "expectRed": "compound assignment, every operator",
+      "completionMarker": "ok a program that logs a literal",
+      "cell": "compound assignment, every operator",
+      "note": "One operator wrong out of eighteen. The compound cell exponentiates (`n **= 3`), so it is the first to see it; the arithmetic cell would too."
+    },
+    {
+      "name": "postfix update returns the new value",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "          env.set(name, next, frame.depth);\n          return prefix ? next : old;",
+      "replace": "          env.set(name, next, frame.depth);\n          return next;",
+      "expectRed": "update expressions, prefix and postfix, on bindings and members",
+      "completionMarker": "ok compound assignment, every operator",
+      "cell": "update expressions, prefix and postfix, on bindings and members"
+    },
+    {
+      "name": "a for loop shares one binding across iterations",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "          if (perIteration.length > 0) loopEnv = loopEnv.perIteration(perIteration);\n",
+      "replace": "",
+      "expectRed": "for loop per-iteration bindings",
+      "completionMarker": "ok if / else if / else, while, for, for-of, break, continue",
+      "cell": "for loop per-iteration bindings",
+      "note": "The pre-existing behaviour: closures made in a `for (let ...)` body all watched the counter move. Nothing pinned it before, and no orchestration program is likely to hit it, but the claim under test is 'the pure fragment is JavaScript', not 'the likely part of it is'."
+    },
+    {
+      "name": "a thrown primitive is wrapped into a record on the way to catch",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "  if (e instanceof Error) return deepFreeze({ code: \"L4000\", kind: \"host\", message: e.message });\n  return e;",
+      "replace": "  if (e instanceof Error) return deepFreeze({ code: \"L4000\", kind: \"host\", message: e.message });\n  if (e !== null && typeof e === \"object\") return e;\n  return deepFreeze({ code: \"L4000\", kind: \"thrown\", message: String(e) });",
+      "expectRed": "try / catch / finally with thrown records and rethrow",
+      "completionMarker": "ok switch with braced and unbraced cases, default, fallthrough-free",
+      "cell": "try / catch / finally with thrown records and rethrow",
+      "note": "The pre-existing behaviour, found by this suite: `throw \"inner\"` reached `catch (e)` as `{ code: \"L4000\", kind: \"thrown\", message: \"inner\" }`."
+    }
+  ]
+}

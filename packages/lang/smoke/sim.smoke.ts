@@ -6,9 +6,9 @@
  * invents a plausible turn result green-lights broken programs, which is worse than not having
  * one, so most of this suite is about what the simulator refuses to do.
  */
-import { SimHandler, SimUnscriptedError } from "../src/sim.js";
+import { SimHandler, SimUnscriptedError, type SimScript } from "../src/sim.js";
 import { EffectError, type EffectContext } from "../src/effects.js";
-import { KeyScope, type StepKey } from "../src/keys.js";
+import { KeyScope, digest, requestId, type StepKey } from "../src/keys.js";
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -18,9 +18,23 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 };
 
 const bound: Record<string, unknown>[] = [];
-const ctxFor = (key: StepKey): EffectContext => ({
+// ⚠️ THIS DOUBLE WAS MISSING TWO FIELDS THE INTERPRETER ALWAYS SUPPLIES. `requestId` and
+// `attempt` are not optional on `EffectContext`, so a handler reading either one saw `undefined`
+// under these tests and a real value in production, the double and the thing it stands in for
+// disagreeing with nothing to say so while the suite ran under tsx.
+//
+// `requestId` is derived through the PRODUCTION function rather than spelled here. An earlier
+// revision wrote `${stepKeyString(key)}@${attempt}`, which is present, typed, and impossible: an
+// endpoint id token is `[A-Za-z0-9_-]{1,64}` (see `keys.ts`, and `KEY_RESERVED_RE` names `/`, `#`
+// and `:` as reserved), and that form carries all three plus `@`. Supplying a well-typed value the
+// real system can never emit is the same defect as supplying none, wearing a better disguise.
+const SIM_RUN_ID = "sim-run";
+const SIM_INPUT_HASH = digest({ sim: true });
+const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
   key,
   signal: { cancelled: false, onCancel: () => {} },
+  requestId: requestId(SIM_RUN_ID, key, SIM_INPUT_HASH, attempt),
+  attempt,
   bind: async (e) => {
     bound.push(e);
   },
@@ -58,7 +72,7 @@ const ctxFor = (key: StepKey): EffectContext => ({
   ok("an unscripted step throws rather than inventing a result", err !== null);
   ok("the error carries the L6001 code", err?.code === "L6001", err?.code);
   ok("and names the step key", err?.stepKey === "/turn:verify#0", err?.stepKey);
-  ok("and tells the author exactly what to add", err?.message.includes('{ turns: { "verify"'), err?.message);
+  ok("and tells the author exactly what to add", err?.message.includes('{ turns: { "verify"') === true, err?.message);
 }
 
 // ---- 3) running past the end of a scripted list also fails --------------------------------------
@@ -95,7 +109,7 @@ const ctxFor = (key: StepKey): EffectContext => ({
 
 {
   const sim = new SimHandler({
-    checkpoints: { "approve-plan": { status: "resolved", value: true, by: "sim", at: 0 } },
+    checkpoints: { "approve-plan": { status: "resolved", value: true, by: "sim" } },
     clock: { start: 500 },
   });
   const s = new KeyScope();
@@ -105,6 +119,58 @@ const ctxFor = (key: StepKey): EffectContext => ({
   // that returned the program's view would be deciding the disposition, which is the interpreter's
   // job and is what makes an edited onExpiry reapplyable at all.
   ok("a checkpoint answer is injected without a human", r.outcome === "resolved" && (r as { value?: unknown }).value === true, r);
+}
+
+// ---- 5b) `at` is stamped from virtual time on BOTH paths, whatever a script says ---------------
+//
+// `SimScript.checkpoints` refuses `at`, and the TYPE is the only thing that refuses it. A script
+// whose type is inferred and then passed by name, a cast, or a parameter declared `unknown` all
+// reach the handler with the field intact, and the three runtime consumers use exactly that last
+// route. So the promise the type makes is a promise about the implementation, and until this cell
+// existed nothing held the implementation to it: both return paths could start honouring a scripted
+// `at` and every check in this package stayed green.
+//
+// `simFrom` takes `unknown` on purpose. It is the escape the prose names, written the way the real
+// consumer writes it, so this cell drives the same route a caller can actually reach.
+{
+  const simFrom = (script: unknown) => new SimHandler(script as never);
+  const scriptWith = (status: string, clock: { start: number; checkpoint: string }) => ({
+    checkpoints: { gate: { status, value: true, at: 999_999 } },
+    clock,
+  });
+  const MINUTE = 60_000;
+
+  // The two paths run on DIFFERENT clocks, and each expectation is computed from its own fixture.
+  // One fixture cannot tell "stamps virtual time" from "returns the constant that fixture happens to
+  // produce": with both cells on `clock.start` 500 and the default 1m, a `checkpoint()` that ignored
+  // the clock entirely and returned that fixture's own 60500 satisfied both and the suite stayed
+  // green. Two clocks, neither of them the old one, and no constant satisfies both.
+  // The returned VALUE is not the property either, and a second survivor proved it. An
+  // implementation can compute the right number without moving the clock it claims to read:
+  // `const at = this.virtualNow + parseDuration(...)` with no `advance` returns 181_500 while
+  // `now()` stays at 1_500, and because the timebase is SHARED, every later sleep, turn or journal
+  // stamp then starts from the stale time. Both cells stayed green under exactly that. So each one
+  // reads the clock AFTER the call and requires it to have moved to where the stamp says it is.
+  // A THIRD survivor, and the reason each cell now runs a prior effect. On a fresh handler making a
+  // single call, `virtualNow` and `clock.start + clock.checkpoint` are the same number, so a
+  // `checkpoint()` that RECOMPUTED the stamp from the script instead of reading the running clock
+  // satisfied both the value and the `now()` check. It is wrong the moment anything moved the clock
+  // first: with a 5m sleep ahead of it, the recomputation is short by the whole sleep. So each path
+  // sleeps on its own handler first, which makes the running clock and the fixture arithmetic
+  // disagree, and only the running clock gives the expected number.
+  const resolvedSim = simFrom(scriptWith("resolved", { start: 1_500, checkpoint: "3m" }));
+  await resolvedSim.sleep({ duration: "5m" }, ctxFor(new KeyScope().nextEffect("sleep", "warm")));
+  const resolved = await resolvedSim
+    .checkpoint({ prompt: "ok?" }, ctxFor(new KeyScope().nextEffect("checkpoint", "gate")));
+  ok("a scripted `at` is discarded on the RESOLVED path, which stamps the shared clock it has moved",
+    resolved.at === 1_500 + 5 * MINUTE + 3 * MINUTE && resolvedSim.now() === resolved.at, { ...resolved, now: resolvedSim.now() });
+
+  const expiredSim = simFrom(scriptWith("expired", { start: 7_000, checkpoint: "2m" }));
+  await expiredSim.sleep({ duration: "9m" }, ctxFor(new KeyScope().nextEffect("sleep", "warm")));
+  const expired = await expiredSim
+    .checkpoint({ prompt: "ok?" }, ctxFor(new KeyScope().nextEffect("checkpoint", "gate")));
+  ok("a scripted `at` is discarded on the EXPIRED path too, which is the other return",
+    expired.at === 7_000 + 9 * MINUTE + 2 * MINUTE && expiredSim.now() === expired.at, { ...expired, now: expiredSim.now() });
 }
 
 // ---- 6) a scripted timeout is a choice, and costs its full budget ------------------------------------
@@ -151,9 +217,234 @@ const ctxFor = (key: StepKey): EffectContext => ({
   const h = await sim.spawn({ persona: "builder", worktree: "wt-1" }, ctxFor(s.nextEffect("spawn", "")));
   ok("spawn returns a stable, site-independent handle", h.agent === "sim.builder" && h.persona === "builder");
   ok("and it carries no host-local state", !("path" in h) && !("session" in h));
-  ok("and the effect bound something before settling", bound.length === 1 && "simAgent" in (bound[0] ?? {}));
+  // The VALUE, not the key: an earlier version asserted only that `simAgent` was present, and binding
+  // the string "WRONG" under that key left every cell in this file green. Comparing it against the
+  // handle the call RETURNED is what makes the journal fact and the returned reference the same
+  // thing, which is the property crash recovery actually needs.
+  ok("and the effect bound the agent it returned, before settling", bound.length === 1 && bound[0]?.simAgent === h.agent, bound);
   const h2 = await sim.spawn({ persona: "builder" }, ctxFor(s.nextEffect("spawn", "")));
   ok("a second spawn of the same persona is a distinct agent", h2.agent !== h.agent, h2.agent);
+}
+
+// ---- 8b) and so does every OTHER effect that binds, each with its own fact -----------------------------
+//
+// `spawn` was the only bound effect any cell read. A security review deleted `checkpoint`'s
+// `await ctx.bind(...)` and all fifteen lang suites stayed green; the same deletion in `turn` (line
+// 207) and in `ask` (line 214) is green too. So three durable external writes had nothing holding
+// them to being written, and the effect they exist for is crash recovery: a settled effect whose
+// binding never landed is replayed against state the journal cannot see.
+//
+// The bound STRING is the property, and so is WHEN it was bound. `turn` and `ask` bind `simGoal`
+// and `checkpoint` binds `simCheckpoint`, so a checkpoint that bound the goal fact would be
+// indistinguishable from a turn to anything reading the journal; and a fact bound after the effect
+// has already moved the world is not the write crash recovery needs, it is a note about a write
+// that already happened.
+//
+// The first version of this block asserted neither. It read the shared array after the await
+// returned and asked only whether the right KEY was present, and both weaknesses were measured
+// rather than argued: binding the literal "WRONG" under the right key in all three handlers left
+// this file at 28 passed, and moving `turn`'s bind below its `advanceBy` left it at 28 passed too.
+// An engineering review found both.
+//
+// The clock is what makes the order observable. Every handler binds, THEN advances, then stamps the
+// advanced clock into what it returns, so a bind that really happened first sees the PRE-advance
+// clock while a bind moved after the advance sees the post-advance one. Recording `sim.now()` at
+// bind time turns "before settling" from a title into a comparison.
+{
+  const sim = new SimHandler({
+    turns: { build: { status: "done", at: 0 } },
+    asks: { q: 3 },
+    checkpoints: {
+      gate: [{ status: "resolved", value: true, by: "sim" }, { status: "resolved", value: true, by: "sim" }],
+      lapsed: { status: "expired" },
+      signed: { status: "resolved", value: "ship", by: "david", artifact: "plan.md" },
+    },
+  });
+  const s = new KeyScope();
+  const agent = { agent: "a", persona: "p" };
+  const seen: { fact: Record<string, unknown>; at: number }[] = [];
+  const ctxAt = (key: StepKey, attempt = 0): EffectContext => ({
+    ...ctxFor(key, attempt),
+    bind: async (e) => { seen.push({ fact: e, at: sim.now() }); },
+  });
+
+  const t0 = sim.now();
+  await sim.turn({ agent }, ctxAt(s.nextEffect("turn", "build")));
+  ok("a turn binds its goal fact, by value, before it advances the clock",
+    seen.length === 1 && seen[0]?.fact.simGoal === "/turn:build#0" && seen[0]?.at === t0 && sim.now() > t0,
+    { seen, t0, now: sim.now() });
+
+  const t1 = sim.now();
+  await sim.ask({ agent, schema: {} }, ctxAt(s.nextEffect("ask", "q")));
+  ok("an ask binds its own goal fact the same way, and its own key",
+    seen.length === 2 && seen[1]?.fact.simGoal === "/ask:q#0" && seen[1]?.at === t1 && sim.now() > t1,
+    { seen, t1, now: sim.now() });
+
+  const t2 = sim.now();
+  const gate = s.nextEffect("checkpoint", "gate");
+  await sim.checkpoint({ prompt: "ok?" }, ctxAt(gate));
+  ok("a checkpoint binds its OWN fact, which is not the goal fact",
+    seen.length === 3 && seen[2]?.fact.simCheckpoint === "/checkpoint:gate#0"
+      && !("simGoal" in (seen[2]?.fact ?? {})) && seen[2]?.at === t2 && sim.now() > t2,
+    { seen, t2, now: sim.now() });
+
+  // `checkpoint` is the only bound effect with TWO returns, and every cell above scripts the
+  // resolved one. An engineering review measured what that leaves open: gating the bind on the
+  // disposition, `if (scripted.status !== "expired") await ctx.bind(...)`, left this file at 43 of
+  // 43 and the whole package at rc 0, because no fixture anywhere reached the other return with a
+  // bind it could see. Expiry is the worse path to lose, since it is the one the interpreter
+  // escalates from: a crash there replays an escalation against a journal with no record of the
+  // checkpoint that caused it. Reproduced on this tree before this cell was written.
+  const t3 = sim.now();
+  const lapsed = await sim.checkpoint({ prompt: "still?" }, ctxAt(s.nextEffect("checkpoint", "lapsed")));
+  ok("and it binds on the EXPIRED return too, the path the interpreter escalates from",
+    lapsed.outcome === "expired" && seen.length === 4 && seen[3]?.fact.simCheckpoint === "/checkpoint:lapsed#0"
+      && !("simGoal" in (seen[3]?.fact ?? {})) && seen[3]?.at === t3 && sim.now() > t3,
+    { seen, t3, now: sim.now(), lapsed });
+
+  // ...and every cell above builds its context at attempt 0, so the VALUE bound on the escalation
+  // is covered nowhere: 8c's escalation arms watch entered and settled, and the interpret cell
+  // counts binds and reads presence. An engineering review measured the gap with
+  // `ctx.attempt === 1 ? "WRONG-VALUE" : stepKeyString(ctx.key)` at the checkpoint bind site, which
+  // left all 788 checks in the package green while the escalated attempt recorded a fact that
+  // points at nothing. The step key does not depend on the attempt, which is the property: an
+  // escalation rebinds to the SAME external step, so a crash mid-escalation recovers the same
+  // reference the first attempt recorded. Reproduced on this tree at 788 before this cell existed.
+  const t4 = sim.now();
+  await sim.checkpoint({ prompt: "again?" }, ctxAt(gate, 1));
+  ok("and the ESCALATION attempt binds the same fact by value, not merely some fact",
+    seen.length === 5 && seen[4]?.fact.simCheckpoint === "/checkpoint:gate#0"
+      && !("simGoal" in (seen[4]?.fact ?? {})) && seen[4]?.at === t4 && sim.now() > t4,
+    { seen, t4, now: sim.now() });
+
+  // ...and the resolved return has to carry what the script said, not just the right shape. The
+  // `by` and `artifact` spreads are each droppable on their own: a simulator that returned the
+  // decision without WHO made it reads as a clean approval, which is the one field an audit of a
+  // checkpoint exists to answer.
+  const decided = await sim.checkpoint({ prompt: "sign?" }, ctxAt(s.nextEffect("checkpoint", "signed")));
+  ok("a resolved checkpoint returns the script's value, its approver and its artifact",
+    decided.outcome === "resolved" && decided.value === "ship"
+      && decided.by === "david" && decided.artifact === "plan.md",
+    { ...decided });
+}
+
+// ---- 8c) and none of them SETTLES while its own bind is still in flight -------------------------
+//
+// 8b pins each bind's VALUE and its place against the clock. Neither survives as evidence that the
+// effect WAITED for the bind, because both are invisible to a bind that resolves immediately: an
+// effect that awaited it and one that fired it and walked away record the same fact at the same
+// clock. Measured: turning `await ctx.bind(...)` into `void ctx.bind(...)` left all 28 cells above
+// green. A real bind is a durable write, so an effect that settles while its own binding is still
+// in flight is precisely the crash-recovery hole these cells exist to close: a crash in that gap
+// loses the reference the record was supposed to make recoverable. The bind below therefore does
+// NOT settle on its own, so the only way for the effect to finish is to await it.
+
+{
+  const settlesOnlyAfterItsBind = async (
+    name: string,
+    start: (sim: SimHandler, held: (k: StepKey, attempt?: number) => EffectContext, s: KeyScope) => Promise<unknown>,
+    checkpoints: SimScript["checkpoints"] = { gate: { status: "resolved", value: true, by: "sim" } },
+  ) => {
+    const sim = new SimHandler({
+      turns: { build: { status: "done", at: 0 } },
+      asks: { q: 3 },
+      checkpoints,
+    });
+    const s = new KeyScope();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const st = { entered: false, settled: false };
+    const held = (k: StepKey, attempt = 0): EffectContext => ({
+      ...ctxFor(k, attempt),
+      bind: async () => { st.entered = true; await gate; },
+    });
+    const running = start(sim, held, s).then(() => { st.settled = true; });
+    // Several macrotask turns, not one microtask drain: an effect that dropped the await would have
+    // advanced its clock and returned many times over by now.
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+    ok(`${name} reaches its bind and does NOT settle while that bind is in flight`,
+      st.entered && !st.settled, { ...st });
+    release();
+    await running;
+    ok(`${name} settles once its bind has completed`, st.settled, { ...st });
+  };
+
+  await settlesOnlyAfterItsBind("spawn",
+    (sim, held, s) => sim.spawn({ persona: "builder" }, held(s.nextEffect("spawn", ""))));
+  await settlesOnlyAfterItsBind("a turn",
+    (sim, held, s) => sim.turn({ agent: { agent: "a", persona: "p" } }, held(s.nextEffect("turn", "build"))));
+  await settlesOnlyAfterItsBind("an ask",
+    (sim, held, s) => sim.ask({ agent: { agent: "a", persona: "p" }, schema: {} }, held(s.nextEffect("ask", "q"))));
+  await settlesOnlyAfterItsBind("a checkpoint",
+    (sim, held, s) => sim.checkpoint({ prompt: "ok?" }, held(s.nextEffect("checkpoint", "gate"))));
+  // ...and the SECOND attempt, which is the only context in this system whose `attempt` is not 0.
+  // `interpret.ts` escalates a checkpoint exactly once, calling the handler again with
+  // `{ ...ctx, requestId: nextId, attempt: 1 }`, so the escalation is a real reachable path and not
+  // a shape invented here. Every arm above builds its context at attempt 0, and a review showed
+  // what that costs: `if (ctx.attempt === 0) await ctx.bind(...)` at the checkpoint bind site left
+  // ALL 40 cells green while the escalated checkpoint settled carrying the FIRST attempt's stale
+  // fact, so a crash with attempt 1 open had nothing to rebind from. Reproduced on this tree at
+  // 40 of 40 before this pair was written.
+  await settlesOnlyAfterItsBind("a checkpoint on its escalation attempt",
+    (sim, held, s) => sim.checkpoint({ prompt: "ok?" }, held(s.nextEffect("checkpoint", "gate"), 1)));
+  // ...and the EXPIRED return, which every arm above misses because they all script `resolved`. A
+  // checkpoint has two returns and they leave the same bind site by different branches, so an arm
+  // on one of them says nothing about the other: `if (scripted.status === "expired") void
+  // ctx.bind(...)` left all 15 lang suites green at 792 checks, because the fact is still recorded
+  // synchronously and 8b's presence, value and order cells all still hold. Expiry is the path the
+  // interpreter escalates from, so a crash in the bind-append gap there loses the reference an
+  // escalation would be replayed against. Reviewed and reproduced on this tree before this arm.
+  await settlesOnlyAfterItsBind("a checkpoint that EXPIRED",
+    (sim, held, s) => sim.checkpoint({ prompt: "still?" }, held(s.nextEffect("checkpoint", "lapsed"))),
+    { lapsed: { status: "expired" } });
+
+  // ...and a bind that FAILS has to take the effect down with it. A held bind that eventually
+  // SUCCEEDS proves the effect waits; it cannot see an effect that waits and then throws the result
+  // away. Measured: `await ctx.bind(...).catch(() => {})` left all 36 cells above green while the
+  // effect settled with no durable fact recorded, which is the same crash-recovery hole reached by
+  // swallowing rather than by skipping. A rejected bind is the realistic case, since the durable
+  // write is what fails.
+  const failsWithItsBind = async (
+    name: string,
+    start: (sim: SimHandler, failing: (k: StepKey, attempt?: number) => EffectContext, s: KeyScope) => Promise<unknown>,
+    checkpoints: SimScript["checkpoints"] = { gate: { status: "resolved", value: true, by: "sim" } },
+  ) => {
+    const sim = new SimHandler({
+      turns: { build: { status: "done", at: 0 } },
+      asks: { q: 3 },
+      checkpoints,
+    });
+    const s = new KeyScope();
+    const boom = new Error("durable bind failed");
+    const failing = (k: StepKey, attempt = 0): EffectContext => ({
+      ...ctxFor(k, attempt),
+      bind: async () => { throw boom; },
+    });
+    let settled = false;
+    let caught: unknown;
+    try { await start(sim, failing, s); settled = true; } catch (e) { caught = e; }
+    // Identity, not just "it threw": the effect must surface THAT failure rather than replace it
+    // with one of its own, or a caller cannot tell a failed durable write from anything else.
+    ok(`${name} does not settle when its bind REJECTS, and surfaces that failure unchanged`,
+      !settled && caught === boom, { settled, caught: caught instanceof Error ? caught.message : caught });
+  };
+
+  await failsWithItsBind("spawn",
+    (sim, failing, s) => sim.spawn({ persona: "builder" }, failing(s.nextEffect("spawn", ""))));
+  await failsWithItsBind("a turn",
+    (sim, failing, s) => sim.turn({ agent: { agent: "a", persona: "p" } }, failing(s.nextEffect("turn", "build"))));
+  await failsWithItsBind("an ask",
+    (sim, failing, s) => sim.ask({ agent: { agent: "a", persona: "p" }, schema: {} }, failing(s.nextEffect("ask", "q"))));
+  await failsWithItsBind("a checkpoint",
+    (sim, failing, s) => sim.checkpoint({ prompt: "ok?" }, failing(s.nextEffect("checkpoint", "gate"))));
+  await failsWithItsBind("a checkpoint on its escalation attempt",
+    (sim, failing, s) => sim.checkpoint({ prompt: "ok?" }, failing(s.nextEffect("checkpoint", "gate"), 1)));
+  // The expired return again, on the rejecting side: swallowing the failure and skipping the write
+  // are two ways to reach the same hole, and an arm on one branch of the return covers neither for
+  // the other.
+  await failsWithItsBind("a checkpoint that EXPIRED",
+    (sim, failing, s) => sim.checkpoint({ prompt: "still?" }, failing(s.nextEffect("checkpoint", "lapsed"))),
+    { lapsed: { status: "expired" } });
 }
 
 // ---- 9) unused script entries are reported --------------------------------------------------------------

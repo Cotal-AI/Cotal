@@ -268,6 +268,8 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
 
   let stopped = false;
   let polling = false;
+  /** The poll currently running, so {@link stop} can wait for it instead of draining underneath it. */
+  let inFlight: Promise<void> | undefined;
   let rerun = false; // a trigger fired mid-poll → run once more after
   let reqSeq = 0;
   let clusterWarned = false; // log the multi-server completeness limit at most once (never fires at N=1)
@@ -412,16 +414,23 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
     if (stopped) return;
     if (polling) { rerun = true; return; } // a poll is in flight — coalesce, run once more after it
     polling = true;
-    try {
-      do {
-        rerun = false;
-        await reconcile();
-      } while (rerun && !stopped);
-    } catch (e) {
-      log(`poll failed (graph membership degraded; delivery unaffected): ${(e as Error).message}`);
-    } finally {
-      polling = false;
-    }
+    // The running poll is held as a PROMISE, not just a boolean, because `stop()` has to await it and a
+    // flag cannot be awaited. Every caller drives this through `void poll()` off a timer or a trigger, so
+    // without this handle nothing in the process holds the work and teardown cannot wait for it.
+    inFlight = (async () => {
+      try {
+        do {
+          rerun = false;
+          await reconcile();
+        } while (rerun && !stopped);
+      } catch (e) {
+        log(`poll failed (graph membership degraded; delivery unaffected): ${(e as Error).message}`);
+      } finally {
+        polling = false;
+        inFlight = undefined;
+      }
+    })();
+    await inFlight;
   }
 
   // Re-poll triggers — debounced. There is NO SUB/UNSUB event, so these only shorten join/leave-the-mesh
@@ -461,6 +470,20 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
       if (rwTimer) clearTimeout(rwTimer);
       if (debounce) clearTimeout(debounce);
       try { subConnect.unsubscribe(); subDisconnect.unsubscribe(); } catch { /* draining */ }
+      // WAIT FOR THE POLL ALREADY RUNNING, BEFORE THE DRAIN. `stopped` is set above, so the do/while
+      // exits after the reconcile in progress rather than starting another; this only waits out the one
+      // already in flight. Skipping it drains the connection out from under a live `reconcile()`, which
+      // then throws and is logged as `poll failed ... connection closed` — a manufactured error for an
+      // ordinary shutdown, printed AFTER the caller believed teardown had finished. That line is not
+      // free: it reads as a leak to whoever greps the log next, and it has already cost one
+      // investigation. A teardown must not invent evidence.
+      //
+      // Unbounded on purpose, and stated rather than hidden: a `reconcile()` that never settles hangs
+      // `stop()`. The drain below is already unbounded in exactly the same way, so this adds no new class
+      // of risk, and a timeout here would silently resume tearing down underneath a live poll, which is
+      // the behaviour being removed. `inFlight` never rejects (the poll catches internally), so no
+      // `.catch` is needed to keep `stop()` from throwing.
+      await inFlight;
       await Promise.allSettled([connA.drain(), connB.drain()]);
     },
   };

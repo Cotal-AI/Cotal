@@ -1,0 +1,59 @@
+{
+  "suite": "bin/smoke/reaper.smoke.ts",
+  "guard": "the reaper kills a smoke broker only when its recorded owner is dead, and leaves every other broker alone",
+  "command": "pnpm smoke:reaper",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/fixtures/reaper.mutations.json",
+  "why": [
+    "THE FIRST MUTATION IS THE ONE THIS FILE EXISTS FOR. An earlier version of this reaper matched the",
+    "token alone, and a tokened broker is not a leaked broker: the token records which suite minted the",
+    "tree, not that the suite is done with it. Two lanes run smokes on a shared box constantly, and the",
+    "prefix-only version was REPRODUCED listing a live lane's broker for the kill. It would have",
+    "SIGKILLed a running broker mid-suite and reddened that lane with a diagnosis pointing at its own",
+    "code. The untokened negative control could never have caught that, because the victim is tokened.",
+    "So the owner-liveness check is the load-bearing guard here, and disabling it must redden the",
+    "owner-alive control specifically.",
+    "",
+    "A MUTATION CAN BE DANGEROUS TO RUN, WHICH IS ITSELF PART OF THE DESIGN. mutation-proof executes",
+    "the real suite against the real machine. The obvious mutation, deleting the prefix filter so the",
+    "reaper claims every nats-server it sees, is NOT used: measured on one box, it would kill 14",
+    "unrelated brokers rather than fail a test. Even the owner-check mutation below has a real blast",
+    "radius, since with it disabled the reaper claims any TOKENED broker regardless of owner, which is",
+    "precisely another lane's live broker. Before running this fixture, confirm no tokened broker on",
+    "the box belongs to anyone else (`reapSmokeBrokers({dryRun:true})` reporting ownedLive 0 with no",
+    "concurrent smoke run is the check). A test that damages the machine to prove a point is not a",
+    "test worth running, and that constraint shaped which mutations exist here rather than being an",
+    "excuse for having fewer.",
+    "",
+    "BOTH ANCHORS ARE CODE ONLY, AND THE FIRST ONE HAD TO BE REPAIRED TO BECOME SO. As first written",
+    "it ran to the end of the line and swallowed the trailing `// someone is still using it`, which",
+    "the fixture gate caught. That is not a formatting nit: the guard this fixture protects is the",
+    "load-bearing one, and an anchor that includes prose can be disarmed by someone tidying a comment,",
+    "in a commit whose diff announces nothing. The mutation would then silently stop being applied and",
+    "the cell below would go green for no reason at all. The anchor stops at the closing brace, so the",
+    "comment is free to change and the guard stays armed.",
+    "",
+    "THE SECOND MUTATION SEPARATES REPORTING FROM ACTING. The reaper both kills a process and returns a",
+    "list naming it, and a single green cell could conflate those. Removing the kill while leaving the",
+    "bookkeeping intact reddens the positive control alone and leaves 'the killed broker is named in",
+    "the report' green, which is exactly the false green this file exists to make impossible: a reaper",
+    "that reports a clean sweep it never performed."
+  ],
+  "mutations": [
+    {
+      "name": "the owner-liveness check is disabled, so a tokened broker is claimed while its owner is still running",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "    if (alive(Number(owner[1]))) { ownedLive++; continue; }",
+      "replace": "    if (false) { ownedLive++; continue; }",
+      "expectRed": "✗ FAIL: NEGATIVE CONTROL: a tokened broker whose owner is ALIVE is untouched",
+      "cell": "✗ FAIL: NEGATIVE CONTROL: a tokened broker whose owner is ALIVE is untouched"
+    },
+    {
+      "name": "the reaper reports the kill without performing it",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "      process.kill(pid, \"SIGKILL\");",
+      "replace": "      void pid;",
+      "expectRed": "✗ FAIL: POSITIVE CONTROL: the broker whose owner is DEAD is killed",
+      "cell": "✗ FAIL: POSITIVE CONTROL: the broker whose owner is DEAD is killed"
+    }
+  ]
+}

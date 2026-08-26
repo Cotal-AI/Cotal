@@ -35,6 +35,8 @@ export interface DocsBundle {
   pages: DocsPage[];
   /** The normative wire contract (SPEC.md). Reachable as page "spec". */
   spec: { title: string; body: string };
+  /** The normative workflow-language reference (spec/cotal-lang.md). Reachable as page "lang". */
+  lang: { title: string; body: string };
   /** The machine-readable message schema (JSON). Reachable as page "schema". */
   schema: { title: string; body: string };
 }
@@ -44,11 +46,12 @@ export const DOCS_VERSION = DOCS_BUNDLE.version;
 
 const REMOTE_BASE = "https://docs.cotal.ai";
 
-/** Resolve a `page` argument to a bundle entry. "spec"/"schema" are aliases for the two
+/** Resolve a `page` argument to a bundle entry. "spec"/"lang"/"schema" are aliases for the three
  *  non-page docs; everything else matches a page slug (case-insensitive). */
 function resolvePage(page: string): DocsPage | undefined {
   const key = page.trim().toLowerCase().replace(/\.md$/, "");
   if (key === "spec") return { slug: "spec", title: DOCS_BUNDLE.spec.title, kind: "normative", summary: "", body: DOCS_BUNDLE.spec.body };
+  if (key === "lang" || key === "cotal-lang") return { slug: "lang", title: DOCS_BUNDLE.lang.title, kind: "normative", summary: "", body: DOCS_BUNDLE.lang.body };
   if (key === "schema") return { slug: "schema", title: DOCS_BUNDLE.schema.title, kind: "reference", summary: "", body: DOCS_BUNDLE.schema.body };
   return DOCS_BUNDLE.pages.find((p) => p.slug === key);
 }
@@ -58,6 +61,7 @@ function resolvePage(page: string): DocsPage | undefined {
 function remoteUrl(slug: string): string {
   const base = `${REMOTE_BASE}/v/${DOCS_BUNDLE.version}`;
   if (slug === "schema") return `${base}/cotal.schema.json`;
+  if (slug === "lang") return `${base}/cotal-lang.md`;
   return `${base}/${slug}.md`;
 }
 
@@ -81,6 +85,7 @@ export function renderDocsIndex(): string {
     "",
     "## The normative sources",
     `- \`spec\` — ${DOCS_BUNDLE.spec.title} (the wire contract; where a page disagrees, the spec wins)`,
+    `- \`lang\` — ${DOCS_BUNDLE.lang.title} (the workflow language a durable run executes; spec §14)`,
     `- \`schema\` — ${DOCS_BUNDLE.schema.title} (authoritative for message shapes)`,
     "",
     "## Pages",
@@ -178,6 +183,7 @@ function buildIndex(): { sections: Section[]; df: Map<string, number>; avgdl: nu
   const sections: Section[] = [];
   for (const p of DOCS_BUNDLE.pages) sections.push(...sectionsOf(p.slug, p.title, p.body));
   sections.push(...sectionsOf("spec", DOCS_BUNDLE.spec.title, DOCS_BUNDLE.spec.body));
+  sections.push(...sectionsOf("lang", DOCS_BUNDLE.lang.title, DOCS_BUNDLE.lang.body));
   // The schema is JSON (no Markdown headings) — index it as a single section.
   const sTok = [...tokenize(DOCS_BUNDLE.schema.title), ...tokenize(DOCS_BUNDLE.schema.title), ...tokenize(DOCS_BUNDLE.schema.body)];
   sections.push({ slug: "schema", pageTitle: DOCS_BUNDLE.schema.title, heading: DOCS_BUNDLE.schema.title, text: DOCS_BUNDLE.schema.body, tokens: sTok, len: sTok.length });
@@ -307,7 +313,7 @@ export async function runDocs(args: DocsArgs): Promise<ToolResult> {
     if (!found) {
       const names = DOCS_BUNDLE.pages.map((p) => p.slug).join(", ");
       return {
-        text: `No Cotal doc page "${page}". Available: spec, schema, ${names}. Call cotal_docs() for the index.`,
+        text: `No Cotal doc page "${page}". Available: spec, lang, schema, ${names}. Call cotal_docs() for the index.`,
         isError: true,
       };
     }

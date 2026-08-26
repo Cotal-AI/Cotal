@@ -1,0 +1,36 @@
+{
+  "suite": "implementations/manager/smoke/supervise-registered-user.smoke.ts",
+  "guard": "a registered remote user mesh derives its recorded broker but refuses supervision with the host-authority workaround, and a mismatched explicit broker never overrides the registry",
+  "command": "pnpm --filter @cotal-ai/manager build && pnpm smoke:supervise-registered-user",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/supervise-registered-user.mutations.json",
+  "_note": "The public command imports @cotal-ai/manager through the package export, so the mutation command builds the manager before the subprocess runs. Each mutation rebuilds again after source restoration, preventing a gitignored dist artifact compiled from the mutant from contaminating the next run.",
+  "mutations": [
+    {
+      "name": "registered user entries no longer take the remote-host authority refusal branch",
+      "file": "implementations/manager/src/commands.ts",
+      "find": "    if (target.mode === \"user\" && target.userAuth?.remote === true) {\n      if (v.server !== undefined && v.server !== target.server)\n        throw new Error(`--server ${v.server} does not match registered space \"${target.space}\" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);\n      return { space: target.space, server: target.server, remoteUser: true };\n    }",
+      "replace": "    if (false) {\n      if (v.server !== undefined && v.server !== target.server)\n        throw new Error(`--server ${v.server} does not match registered space \"${target.space}\" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);\n      return { space: target.space, server: target.server, remoteUser: true };\n    }",
+      "expectRed": "registered participant without login/authority refuses before manager start, never false down/up advice",
+      "cell": "registered participant without login/authority refuses before manager start, never false down/up advice",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "an explicit server mismatch is accepted instead of refusing a split target",
+      "file": "implementations/manager/src/commands.ts",
+      "find": "    if (target.mode === \"user\" && target.userAuth?.remote === true) {\n      if (v.server !== undefined && v.server !== target.server)\n        throw new Error(`--server ${v.server} does not match registered space \"${target.space}\" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);\n      return { space: target.space, server: target.server, remoteUser: true };\n    }",
+      "replace": "    if (target.mode === \"user\" && target.userAuth?.remote === true) {\n      if (false)\n        throw new Error(`--server ${v.server} does not match registered space \"${target.space}\" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);\n      return { space: target.space, server: target.server, remoteUser: true };\n    }",
+      "expectRed": "explicit --server mismatch is named before remote-host refusal or dial",
+      "cell": "explicit --server mismatch is named before remote-host refusal or dial",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "an absent registration falls through instead of emitting the host-or-join recovery",
+      "file": "implementations/manager/src/commands.ts",
+      "find": "if (isWorkspaceTargetError(error) && error.code === \"unknown-space\")\n      throw new Error(`neither hosting '${localSpace}' (no cotal up root here) nor registered to it (no meshes entry) — \\`cotal up\\` to host, or \\`cotal meshes add\\` to join`);",
+      "replace": "if (false)\n      throw new Error(`neither hosting '${localSpace}' (no cotal up root here) nor registered to it (no meshes entry) — \\`cotal up\\` to host, or \\`cotal meshes add\\` to join`);",
+      "expectRed": "neither hosting nor registered gets the exact host-or-join recovery",
+      "cell": "neither hosting nor registered gets the exact host-or-join recovery",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    }
+  ]
+}

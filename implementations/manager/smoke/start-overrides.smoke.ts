@@ -65,7 +65,12 @@ const fakeHandle = (name: string): AgentHandle => ({
   getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string; lifecycleUid: string }> }).agents.values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle", lifecycleUid: a.lifecycleUid })),
 };
 
+// The connector callback below is what assigns this, and the checker cannot follow a call into
+// a registered extension. A bare `x = undefined` reset therefore narrows the binding to
+// `undefined` for the rest of the block and every later read reports on `never`, so the reset
+// goes through a call, which leaves the declared type in place. Runtime behaviour is identical.
 let lastOpts: LaunchOpts | undefined;
+const resetOpts = () => { lastOpts = undefined; };
 const recCon: Connector = {
   kind: "connector",
   name: "smoke-ov",
@@ -78,7 +83,7 @@ const j = (v: unknown) => JSON.stringify(v);
 
 // 1 — ACL overrides win over the persona file (flags > file, foreground-parity precedence).
 {
-  lastOpts = undefined;
+  resetOpts();
   const reply = await mgr.startAgent({
     name: "team",
     agent: "smoke-ov",
@@ -94,7 +99,7 @@ const j = (v: unknown) => JSON.stringify(v);
 
 // 2 — no overrides → the persona file still rules (regression guard on the new precedence code).
 {
-  lastOpts = undefined;
+  resetOpts();
   await mgr.startAgent({ name: "team", agent: "smoke-ov" });
   check("no override → file subscribe", j(lastOpts?.subscribe) === j(["team"]), lastOpts?.subscribe);
   check("no override → file allowPublish", j(lastOpts?.allowPublish) === j(["team"]), lastOpts?.allowPublish);
@@ -102,30 +107,30 @@ const j = (v: unknown) => JSON.stringify(v);
 
 // 3 — allowSubscribe defaults from the OVERRIDDEN subscribe (one source feeds creds + connector).
 {
-  lastOpts = undefined;
+  resetOpts();
   await mgr.startAgent({ name: "plain", agent: "smoke-ov", subscribe: ["ops"] });
   check("allowSubscribe defaults from overridden subscribe", j(lastOpts?.allowSubscribe) === j(["ops"]), lastOpts?.allowSubscribe);
 }
 
 // 4 — prompt threads verbatim.
 {
-  lastOpts = undefined;
+  resetOpts();
   await mgr.startAgent({ name: "plain", agent: "smoke-ov", prompt: "hello team" });
   check("prompt threads into LaunchOpts.prompt", lastOpts?.prompt === "hello team", lastOpts?.prompt);
-  lastOpts = undefined;
+  resetOpts();
   await mgr.startAgent({ name: "plain", agent: "smoke-ov" });
   check("no --prompt → LaunchOpts.prompt undefined", lastOpts?.prompt === undefined, lastOpts?.prompt);
 }
 
 // 5 — share-tools selection narrows the declared servers; `none` = none; absent = all; unknown fails.
 {
-  lastOpts = undefined;
+  resetOpts();
   await mgr.startAgent({ name: "plain", agent: "smoke-ov" });
   check("absent shareTools → all declared servers", j(Object.keys(lastOpts?.mcpServers ?? {})) === j(["alpha", "beta"]), lastOpts?.mcpServers);
-  lastOpts = undefined;
+  resetOpts();
   await mgr.startAgent({ name: "plain", agent: "smoke-ov", shareTools: "alpha" });
   check("named selection → that server only", j(Object.keys(lastOpts?.mcpServers ?? {})) === j(["alpha"]), lastOpts?.mcpServers);
-  lastOpts = undefined;
+  resetOpts();
   await mgr.startAgent({ name: "plain", agent: "smoke-ov", shareTools: "none" });
   check("shareTools none → no servers", j(Object.keys(lastOpts?.mcpServers ?? {})) === j([]), lastOpts?.mcpServers);
   const bad = await mgr.startAgent({ name: "plain", agent: "smoke-ov", shareTools: "gamma" });
@@ -135,12 +140,12 @@ const j = (v: unknown) => JSON.stringify(v);
 // 6 — the identity override (`--name` alongside a ref) wins over the file's `name:` and threads
 // into both the reply and LaunchOpts (foreground's `requested = values.name ?? def.name` parity).
 {
-  lastOpts = undefined;
+  resetOpts();
   const r = await mgr.startAgent({ name: "team", agent: "smoke-ov", identity: "scout" });
   check("identity override spawns", r.ok === true, r);
   check("identity override wins over file name:", (r.data as { name?: string })?.name === "scout", r.data);
   check("identity threads into LaunchOpts.name", lastOpts?.name === "scout", lastOpts?.name);
-  lastOpts = undefined;
+  resetOpts();
   await mgr.startAgent({ name: "plain", agent: "smoke-ov" });
   // Earlier sections spawned `plain` repeatedly — uniqueName auto-numbers, so match the series.
   check("no identity override → file name: (auto-numbered)", /^plain(-\d+)?$/.test(lastOpts?.name ?? ""), lastOpts?.name);
@@ -169,7 +174,7 @@ const j = (v: unknown) => JSON.stringify(v);
   const prev = process.env.COTAL_DEFAULT_AGENT;
   process.env.COTAL_DEFAULT_AGENT = "smoke-ov";
   try {
-    lastOpts = undefined;
+    resetOpts();
     const r = await mgr.startAgent({ name: "plain" });
     check("COTAL_DEFAULT_AGENT spawn succeeds", r.ok === true, r);
     check("COTAL_DEFAULT_AGENT used as manager default", (r.data as { agent?: string })?.agent === "smoke-ov", r.data);

@@ -8,7 +8,7 @@
 
 import { EventEmitter } from "node:events";
 import type { CotalEndpoint, CotalMessage, EndpointRef, Presence, PresenceStatus } from "@cotal-ai/core";
-import { deliveryOf, chatWildcard, partsToText } from "@cotal-ai/core";
+import { deliveryOf, chatWildcard, isEventChannel, partsToText } from "@cotal-ai/core";
 
 // ---- the model the surfaces render -----------------------------------------
 
@@ -26,6 +26,13 @@ export interface FeedEntry {
   toService?: string; // anycast
   toNames?: string[]; // unicast targets, resolved off the roster
   count?: number; // burst multiplicity for coalesced unicast
+  /** This row arrived on an agent's structured-event channel rather than a chat channel.
+   *
+   *  DERIVED ONCE, HERE, because the header's rule is that a surface lays this model out and never
+   *  re-derives it. Every surface that wanted to tell event traffic from chat would otherwise
+   *  re-spell the convention locally, and three copies of a classifier is three chances to disagree
+   *  about one channel. Absent on unicast and anycast rows, which carry no channel at all. */
+  events?: boolean;
   text: string;
 }
 
@@ -254,6 +261,13 @@ export class MeshView extends EventEmitter {
       delivery: kind === "anycast" ? "anycast" : "multicast", // "chat" → multicast
       channel: kind === "anycast" ? undefined : msg.channel,
       toService: kind === "anycast" ? msg.toService : undefined,
+      // MARKED, NEVER DROPPED. The channel-list filter below keeps event channels out of the tab
+      // strip and out of the history prefill, for a cost reason; the live feed is a different
+      // question and the answer here is different on purpose. Dropping an event row would delete
+      // the only traffic this release just taught the console to draw, and it would delete it
+      // silently, which is the failure mode this whole lane exists to remove. A surface that wants
+      // a chat-only feed can filter on this flag and say so in its own UI.
+      events: kind === "anycast" ? undefined : isEventChannel(msg.channel) || undefined,
       text: bodyText(msg),
     });
   }
@@ -301,8 +315,11 @@ export class MeshView extends EventEmitter {
     this.seen.add(e.id);
     this.feed.push(e);
     this.trim();
-    // Surface a brand-new channel as a tab now, not at the next poll.
-    if (e.delivery === "multicast" && e.channel && !this.channelCounts.has(e.channel))
+    // Surface a brand-new channel as a tab now, not at the next poll. The third filter site, and it
+    // is not redundant: this one runs on live arrival, so without it an event channel would appear
+    // as a tab the moment a frame landed and then vanish at the next `refreshChannels`, which reads
+    // as a flickering bug rather than as a filter.
+    if (e.delivery === "multicast" && e.channel && !e.events && !this.channelCounts.has(e.channel))
       this.channelCounts.set(e.channel, 1);
     this.dirty = true;
     this.emit("entry", e);
@@ -327,8 +344,17 @@ export class MeshView extends EventEmitter {
     } catch {
       return;
     }
+    // THE FILTER RUNS BEFORE THE HISTORY READ, AND THE ORDER IS THE WHOLE POINT.
+    //
+    // `listChannels()` derives an entry from every RETAINED CONCRETE SUBJECT, and the chat stream
+    // caps per subject rather than by age or count, so a session's last frames are retained
+    // indefinitely and this list grows by one row per agent that has ever run. Filtering after the
+    // fetch would enumerate every one of them, issue a `channelHistory` round trip each, and then
+    // throw the results away: unbounded work to display nothing. That is a performance defect
+    // rather than a cosmetic one, which is why it is filtered here and not in the loop below.
+    const chat = chans.filter((c) => !isEventChannel(c.channel));
     const batches = await Promise.all(
-      chans.map((c) =>
+      chat.map((c) =>
         this.ep.channelHistory(c.channel, { limit: HISTORY_LIMIT }).catch(() => [] as CotalMessage[]),
       ),
     );
@@ -387,7 +413,11 @@ export class MeshView extends EventEmitter {
     } catch {
       return;
     }
-    for (const { channel, messages } of chans) this.channelCounts.set(channel, messages);
+    // Event channels are not chat tabs: one per agent that has ever run would bury the handful of
+    // channels a human actually talks on. Same classifier as the prefill, so the tab strip and the
+    // backlog cannot disagree about what a channel is.
+    for (const { channel, messages } of chans)
+      if (!isEventChannel(channel)) this.channelCounts.set(channel, messages);
     this.dirty = true;
   }
 

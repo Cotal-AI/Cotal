@@ -1,0 +1,28 @@
+{
+  "suite": "packages/lang/smoke/interpret.smoke.ts",
+  "guard": "Freeze on share holds AT the share for inputs, and a journal seeded from serialized entries freezes its replayed results. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-interpret",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/freeze-boundary.json",
+  "mutations": [
+    {
+      "name": "effect inputs stay writable after the dispatch, the shipped defect",
+      "file": "packages/lang/src/perform.ts",
+      "find": "  for (const arg of args) deepFreeze(arg);",
+      "replace": "",
+      "expectRed": "the options bag crosses like any input: an ask's schema is frozen at the share (L2031)",
+      "completionMarker": "ok a workflow's catch does not swallow a divergence",
+      "cell": "an effect's input is frozen AT the share: mutating it afterwards is L2031",
+      "note": "The notify cell is blind to this line: the notify arm deep-freezes its fact on its own, so deleting the blanket share-freeze leaves that cell green. The options bag is the surface only the blanket freeze covers, and mutating an ask's schema after the call is the defect that was measured before the line existed."
+    },
+    {
+      "name": "a seeded journal hands back thawed deserialized results, the shipped defect",
+      "file": "packages/lang/src/journal.ts",
+      "find": "      this.byKey.set(full, deepFreeze(e));",
+      "replace": "      this.byKey.set(full, e);",
+      "expectRed": "a replayed result out of a SERIALIZED journal is frozen again: writing it is L2031",
+      "completionMarker": "ok an effect's input is frozen AT the share: mutating it afterwards is L2031",
+      "cell": "a replayed result out of a SERIALIZED journal is frozen again: writing it is L2031",
+      "note": "The live path freezes before settle, so only the JSON round trip exposes this: parsed entries are fresh writable objects, and replay returned them as-is."
+    }
+  ]
+}

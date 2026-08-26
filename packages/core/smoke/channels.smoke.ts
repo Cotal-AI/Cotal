@@ -22,6 +22,7 @@ import {
   isReachable, chatSubject, DEV_OWNER, type CotalMessage, type Delivery, type MessageMeta,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // Fresh OS-assigned port per run: a fixed port means a single leaked broker (from a crashed/failed
 // prior run) collides with — or serves stale JetStream state to — every subsequent run, which reads
@@ -55,8 +56,9 @@ function recorder(name: string, id: string, channels: string[]) {
 }
 const has = (got: Rec[], text: string) => got.filter((g) => g.text === text);
 
-const dir = mkdtempSync(join(tmpdir(), "cotal-chan-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const srv = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   assert.ok(cond, `${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
@@ -85,7 +87,7 @@ try {
     Object.hasOwn(specialReg.channels ?? {}, "__proto__")
       && specialReg.channels?.__proto__?.description === "Prototype token"
       && Object.hasOwn(specialReg.channels ?? {}, "constructor")
-      && specialReg.channels?.constructor?.description === "Constructor token");
+      && (specialReg.channels?.["constructor"] as { description?: string } | undefined)?.description === "Constructor token");
   check("registry read keeps the normal object prototype", Object.getPrototypeOf(specialReg.channels) === Object.prototype);
   assert.throws(() => validateChannelConfig({ description: "x".repeat(1000) }), /too long/);
   check("validation rejects oversize", true);
@@ -130,7 +132,9 @@ try {
   {
     const nc = await connect({ servers });
     const js = jetstream(nc);
-    const forged: CotalMessage = {
+    // Deliberately NOT annotated `CotalMessage`: the union is exclusive, and a frame carrying both
+    // `channel` and `to` is precisely the forgery under test. The wire is bytes; this is those bytes.
+    const forged = {
       id: randomUUID(),
       ts: Date.now(),
       space,
@@ -246,5 +250,6 @@ try {
     setTimeout(resolve, 3000);
   });
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 process.exit(0);

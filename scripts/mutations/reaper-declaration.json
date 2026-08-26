@@ -1,0 +1,197 @@
+{
+  "grades": "bin/smoke/reaper.smoke.ts",
+  "guard": "the declaration beside the reaper is what the compiler emits from the reaper, so the two cannot describe different modules",
+  "command": "pnpm smoke:reaper",
+  "progressPattern": "✓",
+  "completionMarker": "cells ran)",
+  "why": "reap-smoke-brokers.mjs stays plain JavaScript because it runs on the CI runner before any workspace build, so its .ts consumers need a declaration beside it. Two hand written guards over a hand written declaration each passed GREEN over real drift, because each was an enumeration of the shapes its author thought of. The declaration is now emitted from the module and compared byte for byte, so there is no shape to recognise. Mutations 1 through 9 are each a shape that beat one of those guards, or the mirror of one, and every one of those must move the SAME cell: that is the property, that the kind of change does not matter. Row 10 is deliberately not one of them and moves a different cell on purpose: it turns the module's type checking OFF, which the first nine all silently depend on, and it is named by the guard that reads the property rather than the one that compares bytes. The completion marker is the suite's own final banner, which it prints on either outcome, so a run that dies before reaching the cell grades INCONCLUSIVE rather than passing as a kill.",
+  "mutations": [
+    {
+      "name": "an export is RENAMED in the module and the declaration does not follow",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "export function reportReaped(label, result) {",
+      "replace": "export function reportReapedResult(label, result) {",
+      "expectRed": "the committed declaration is what the compiler emits from the module",
+      "cell": "the committed declaration is what the compiler emits from the module"
+    },
+    {
+      "name": "an export is ADDED to the module and the declaration does not follow",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "export const SMOKE_BROKER_PREFIX = \"cotal-smoke-broker-\";",
+      "replace": "export const SMOKE_BROKER_PREFIX = \"cotal-smoke-broker-\";\nexport const REAPER_VERSION = 2;",
+      "expectRed": "the committed declaration is what the compiler emits from the module",
+      "cell": "the committed declaration is what the compiler emits from the module",
+      "note": "The MIRROR of the rename. A guard that only checks declared-implies-present calls an undeclared export fine, and an undeclared export is what an untyped consumer then reads with no type at all."
+    },
+    {
+      "name": "a REQUIRED parameter is added AFTER a defaulted one, so Function.length does not move",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "export function reportReaped(label, result) {",
+      "replace": "export function reportReaped(label, result, onDone = () => {}, finalRequired) {",
+      "expectRed": "the committed declaration is what the compiler emits from the module",
+      "cell": "the committed declaration is what the compiler emits from the module",
+      "note": "The exact input that beat the previous guard, and the reason arity is no longer compared at all. Function.length is the count of parameters BEFORE THE FIRST DEFAULT, not the count of parameters that are required: this mutant carries four parameters and reports length 2, so a guard comparing it against a declaration that says two printed agreement about a signature that had changed underneath it. An earlier version of this note said the real call site, shard.mjs reportReaped(cmd, after), threw TypeError at runtime. A security review refuted that and it is corrected here: JavaScript enforces no required parameter, so that call binds finalRequired to undefined and returns (measured on the planted mutant: functionLength=2, two-argument-call=returned). There is no runtime input that makes a JavaScript arity mutant fatal, so this row does not promise one. What kills it is the module's own JSDoc under // @ts-check: gen:reaper-dts exits 1 with Parameter 'finalRequired' implicitly has an 'any' type, before any declaration is emitted to compare. Nothing here counts parameters, so there is nothing to count wrongly."
+    },
+    {
+      "name": "an alias RE-EXPORT is added to the module and the declaration does not follow",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "export const SMOKE_BROKER_PREFIX = \"cotal-smoke-broker-\";",
+      "replace": "export const SMOKE_BROKER_PREFIX = \"cotal-smoke-broker-\";\nexport { SMOKE_BROKER_PREFIX as PREFIX_ALIAS };",
+      "expectRed": "the committed declaration is what the compiler emits from the module",
+      "cell": "the committed declaration is what the compiler emits from the module",
+      "note": "One of three forms that landed in NEITHER side of the previous guard's comparison: the alias is not a variable statement so the parse missed it, and it is a declaration-only name so the module key set missed it too. Both directions agreed by being equally blind, which is the worst way for a comparison to pass."
+    },
+    {
+      "name": "a DEFAULT export is added to the module and the declaration does not follow",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "export const SMOKE_BROKER_PREFIX = \"cotal-smoke-broker-\";",
+      "replace": "export const SMOKE_BROKER_PREFIX = \"cotal-smoke-broker-\";\nexport default reapSmokeBrokers;",
+      "expectRed": "the committed declaration is what the compiler emits from the module",
+      "cell": "the committed declaration is what the compiler emits from the module",
+      "note": "The previous guard's own comment claimed re-exports and default exports needed no case because the set comparison caught them. It did not: this is the second of the three forms that both sides missed."
+    },
+    {
+      "name": "a NAMESPACE MERGE is added to an exported function and the declaration does not follow",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "  for (const { pid, args } of result.reaped) console.log(`  [reaper]   killed pid ${pid}: ${args.slice(0, 120)}`);\n}",
+      "replace": "  for (const { pid, args } of result.reaped) console.log(`  [reaper]   killed pid ${pid}: ${args.slice(0, 120)}`);\n}\nreportReaped.version = \"1\";",
+      "expectRed": "the committed declaration is what the compiler emits from the module",
+      "cell": "the committed declaration is what the compiler emits from the module",
+      "note": "The third form. A merged member reads as declared and resolves to undefined at runtime, which is the failure a declaration is supposed to prevent. The expando now sits BELOW the function it merges into, and where it sits is the whole point: anchored on the signature line, the inserted statement landed between the JSDoc block and the declaration, the JSDoc re-attached to the expando, the function lost its @param types, and the generator threw an implicit-any BEFORE the emitted bytes were ever compared. The cell went red, but on @ts-check catching a detached comment, which mutation 7 already covers. It was a mislabeled duplicate that never reached the property its name claims. Anchored on the last line of the body plus the closing brace, the JSDoc stays attached, the emit gains `export namespace reportReaped { let version: string; }`, and the cell reds on the byte comparison, naming the first differing byte. The find is still code only, because a find that spans a comment is disarmed by anyone tidying the comment and smoke:mutation-fixtures refuses one."
+    },
+    {
+      "name": "a field's TYPE drifts in the module while its name stays",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "rows.push({ pid: Number(pid), args });",
+      "replace": "rows.push({ pid: String(pid), args });",
+      "expectRed": "the committed declaration is what the compiler emits from the module",
+      "cell": "the committed declaration is what the compiler emits from the module",
+      "note": "Neither previous guard compared a single type, so a pid that became a string was agreement: names matched, arity matched, the report's field set matched. This one is killed by the module's own JSDoc under // @ts-check rather than by the bytes, and the cell reports the compiler's message instead of a diff, because the generator refuses to emit a declaration it could not typecheck."
+    },
+    {
+      "name": "the generated declaration is hand edited and the module does not follow",
+      "file": "bin/smoke/reap-smoke-brokers.d.mts",
+      "find": "export function reportReaped(label: string, result: ReapReport): void;",
+      "replace": "export function reportReaped(label: string, result: ReapReport, onDone: () => void): void;",
+      "expectRed": "the committed declaration is what the compiler emits from the module",
+      "cell": "the committed declaration is what the compiler emits from the module",
+      "note": "The mirror direction. The generated file carries a do-not-edit banner, and this is what makes that banner enforceable rather than advisory. What the edit buys is a declaration promising a parameter the module does not have: a `.ts` consumer writing reportReaped(cmd, after, done) compiles, and `done` is then silently dropped and never called. Nothing throws, exactly as nothing throws in the row above, so this row promises a silent wrong result and not a crash. The cell reads no shapes out of the declaration, so the hand edit is caught as bytes that are not what the compiler emits."
+    },
+    {
+      "name": "the module uses a library feature BEYOND the consumers' lib, which a looser generator would emit as any",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "export const SMOKE_BROKER_PREFIX = \"cotal-smoke-broker-\";",
+      "replace": "export const SMOKE_BROKER_PREFIX = \"cotal-smoke-broker-\";\nexport const FUTURE_PAIR = Promise.withResolvers();",
+      "expectRed": "the committed declaration is what the compiler emits from the module",
+      "cell": "the committed declaration is what the compiler emits from the module",
+      "note": "The generator's OWN configuration is a boundary, and an instrument does not verify its own boundary, so the boundary gets a mutant. An earlier version of this generator hand listed target ESNext while the consumers are checked at target ES2022 and lib ES2023. Under that pairing this exact line emitted PromiseWithResolvers<any>, the repository's skipLibCheck let a consumer swallow the unresolved type as any, and a consumer could then be compiled green against operations the runtime does not have: the declaration certified a lie and the suite stayed at 21 passed. The generator now reads the root tsconfig.json, the project that actually typechecks those consumers, so the same line fails loud instead: Property 'withResolvers' does not exist on type 'PromiseConstructor'. This mutation is what stops a future edit from restating the options and reopening it."
+    },
+    {
+      "name": "the module's type checking is turned OFF, which every row above silently depends on",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "import { execFileSync } from \"node:child_process\";",
+      "replace": "// @ts-nocheck\nimport { execFileSync } from \"node:child_process\";",
+      "expectRed": "the module's JSDoc is really being checked: a deliberate type error in it stops the emit",
+      "cell": "the module's JSDoc is really being checked: a deliberate type error in it stops the emit",
+      "note": "Three rows above are killed by the module's JSDoc rather than by the emitted bytes, so they all rest on the module being checked, and until this row nothing mutated that. It could not: the check was asserted by reading `// @ts-check` off line 1, an anchor on it is prose, and smoke:mutation-fixtures refuses a find that spans a comment. The guard is now behavioural, so the anchor can be code. `// @ts-nocheck` above the import is still leading trivia and still disables the file, while `// @ts-check` stays on line 1 and the old read stayed GREEN through exactly this. Measured on this tree: the declaration cell stays GREEN here and only this cell reds, which is the point, since the drift rows are the ones this protects."
+    },
+    {
+      "name": "the RUNTIME drifts under a declaration that still reads as true",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "export function reportReaped(label, result) {\n  if (!result.supported) {",
+      "replace": "export function reportReaped(label, result) {\n  void (/** @type {any} */ (label)).toFixed(2);\n  if (!result.supported) {",
+      "expectRed": "and that same consumer RUNS against the module, so the declaration describes the code and not just its comments",
+      "cell": "and that same consumer RUNS against the module, so the declaration describes the code and not just its comments",
+      "note": "Every row above ties the declaration to the module's JSDoc, and a double cast is the one thing `// @ts-check` cannot see through, so a JSDoc that lies about its own implementation emits a declaration that lies too. A security review built exactly that (`@param {number} label` plus a cast back to string before a string-only use) and the suite stayed at 23 of 23. This row is the mirror: the declaration still promises a string and the code now demands a number of it, which no comparison of bytes or of comments can see. Only the executed consumer can, and it is the cell that reds."
+    },
+    {
+      "name": "a RETURN VALUE drifts under a declaration that still reads as true",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "    supported: true,",
+      "replace": "    supported: /** @type {boolean} */ (/** @type {unknown} */ (\"yes\")),",
+      "expectRed": "and every field the declaration promises of a report is the type the report actually carries",
+      "cell": "and every field the declaration promises of a report is the type the report actually carries",
+      "note": "The row above covers a PARAMETER the declaration lies about; this covers a RETURN FIELD, which the fixed consumer could not see. A security review proved that gap by declaring ReapReport.supported as a string, double casting the returned booleans so the module still typechecked, and regenerating: the declaration promised a string, the runtime returned a boolean, and the suite stayed at 25 of 25 because the consumer read reaped[].owner and never supported. The surface is now read out of the declaration by the compiler, so this mutant reds without anyone having named the field."
+    },
+    {
+      "name": "a DRY RUN falls through into the kill path",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "    if (dryRun) { reaped.push({ pid, args, owner: Number(owner[1]) }); continue; }",
+      "replace": "    if (dryRun) { reaped.push({ pid, args, owner: Number(owner[1]) }); }",
+      "expectRed": "and it SIGNALS nothing: the broker it claimed is still alive after it",
+      "cell": "and it SIGNALS nothing: the broker it claimed is still alive after it",
+      "note": "Dropping one `continue` turns the read-only mode into a killer while every type, every JSDoc line and every declaration byte stays identical, so nothing in this config could see it and the suite had no cell for dryRun at all. An engineering review measured 25 of 25 green under it. The suite now calls dryRun against its own orphan fixture and requires the broker to survive; the wait before that check is load-bearing, since a child SIGKILLed a moment ago still answers kill(pid, 0)."
+    },
+    {
+      "name": "a COUNTER in the returned report stops being a number",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "    unparseable,\n",
+      "replace": "    unparseable: /** @type {any} */ (\"not-a-count\"),\n",
+      "expectRed": "and every field the declaration promises of a report is the type the report actually carries",
+      "cell": "and every field the declaration promises of a report is the type the report actually carries",
+      "note": "A second return-field drift, on a field no hand-written consumer read. It is here because the fixed consumer that preceded the surface reader was beaten twice on exactly this axis, once on supported and once on this counter, by two different reviews. Since the shape is read out of the declaration rather than named here, both die to the same cell."
+    },
+    {
+      "name": "the reducer stops reading a LITERAL, so a checked parameter arm becomes unverifiable",
+      "file": "bin/smoke/gen-reaper-dts.mts",
+      "find": "    if (type.flags & ts.TypeFlags.BooleanLiteral) return { kind: \"primitive\", name: \"boolean\" };\n",
+      "replace": "",
+      "expectRed": "and no leaf of a parameter the declaration admits is a type the reducer cannot check either",
+      "cell": "and no leaf of a parameter the declaration admits is a type the reducer cannot check either",
+      "note": "Both lenses proved the hole from the DECLARATION side, with a field declared `() => void` or `object` while the runtime returned a boolean. That drift cannot be a row here: its only anchor is a JSDoc line, and `smoke:mutation-fixtures` refuses a `find` that spans prose, for the reason the namespace-merge row documents. It is verified by hand instead (an OPTIONAL field declared as a bare `object` regenerates cleanly and reds the return-side cell alone). This row severs the same property from the side that has a code anchor. It used to drop `boolean` from the PRIMITIVES set, which stopped severing anything once literals began reducing to their base primitive: `boolean` is `true | false` to the checker, so the union path reached the same answer and the harness correctly reported a mutant that applied and changed nothing. It now removes the literal reduction itself, which is what an optional boolean PARAMETER depends on: without it that arm is an object whose only member is an opaque `valueOf`, and the parameter-side cell says so."
+    },
+    {
+      "name": "the reporter's declared return drifts from the nothing it gives back",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "    console.log(`  [reaper] no leaked smoke brokers after ${label} (${result.inspected} nats-server live, ${result.unclaimable} not claimed${owned}${old})`);\n    return;\n",
+      "replace": "    console.log(`  [reaper] no leaked smoke brokers after ${label} (${result.inspected} nats-server live, ${result.unclaimable} not claimed${owned}${old})`);\n    return /** @type {*} */ (result.inspected);\n",
+      "expectRed": "and the reporter's declared return is held to what the call actually gives back",
+      "cell": "and the reporter's declared return is held to what the call actually gives back",
+      "note": "Its declared return was read out of the declaration and then held to nothing, so the value it gives back could drift freely."
+    },
+    {
+      "name": "the declaration WIDENS a parameter the code never widened",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "export function reportReaped(label, result) {\n",
+      "replace": "export function reportReaped(/** @type {string | number} */ label, result) {\n  label = /** @type {string} */ (/** @type {unknown} */ (label)).slice(0);\n",
+      "expectRed": "and that same consumer RUNS against the module, so the declaration describes the code and not just its comments",
+      "cell": "and that same consumer RUNS against the module, so the declaration describes the code and not just its comments",
+      "note": "Row 11 is the runtime moving under a fixed declaration. This is the other direction and it beat the suite: the declaration grows an arm the code never accepted, and because the consumer still passes the arm it always passed, nothing ever calls the new one. A security review widened this to `string | number`, kept the body string-only behind a double cast, and the whole suite stayed at 34 of 34 while a consumer written to the `number` arm compiled with zero diagnostics and threw at runtime. The consumer's calls are now generated from the declared arms, so a widened parameter is called with a value of its new arm and this cell reds. Reproduced first-party at 34 of 34 before the generated calls existed. The row regenerates the declaration from the mutated module, because the point IS the declaration widening; `afterRestore` regenerates it again from the restored source, so the committed bytes come back. The anchor is the signature line alone: an inline parameter type overrides the leading `@param`, so the widening rides in the replacement and the `find` stays code only, which `pnpm smoke:mutation-fixtures` requires.",
+      "command": "pnpm gen:reaper-dts && pnpm smoke:reaper",
+      "afterRestore": "pnpm gen:reaper-dts"
+    },
+    {
+      "name": "the declaration widens a parameter to a SHAPE the code never accepted, beside a shape it does",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "export function reportReaped(label, result) {\n",
+      "replace": "export function reportReaped(label, /** @type {ReapReport | { supported: true, reaped: null }} */ result) {\n  result = /** @type {ReapReport} */ (/** @type {unknown} */ (result));\n",
+      "expectRed": "every arm the declaration admits for a parameter is one this consumer passes a value of, so a widened parameter cannot arrive unexercised",
+      "cell": "every arm the declaration admits for a parameter is one this consumer passes a value of, so a widened parameter cannot arrive unexercised",
+      "command": "pnpm gen:reaper-dts && pnpm smoke:reaper",
+      "afterRestore": "pnpm gen:reaper-dts",
+      "note": "Row 17 widens a parameter to a new PRIMITIVE arm, and the generated calls catch it because a primitive names its own sample. This is the same widening one level in, where the new arm is an object beside an object. An engineering review found that the arms were keyed by KIND, so the value pinned for the report answered for the new arm too: the suite stayed at 36 of 36 while a consumer written to `{ supported: true, reaped: null }` compiled with zero diagnostics and threw `Cannot read properties of null` against the real module. The key is structural now, so the widened arm is one nobody pinned and it is reported as unexercised rather than silently covered. The row regenerates the declaration from the mutated module, because the emitted declaration is what the consumer is written against."
+    },
+    {
+      "name": "a new arm of the DESTRUCTIVE export's parameter, whose generated call would kill brokers",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "export function reapSmokeBrokers({ dryRun = false } = {}) {\n",
+      "replace": "export function reapSmokeBrokers(/** @type {{ dryRun?: boolean } | boolean} */ opts = {}) {\n  const { dryRun = false } = /** @type {{ dryRun?: boolean }} */ (/** @type {unknown} */ (opts));\n",
+      "expectRed": "and the half that RUNS reaps nothing: every call it makes to the one export that kills a process is a dry run",
+      "cell": "and the half that RUNS reaps nothing: every call it makes to the one export that kills a process is a dry run",
+      "command": "pnpm gen:reaper-dts && pnpm smoke:reaper",
+      "afterRestore": "pnpm gen:reaper-dts",
+      "note": "The generated calls are what make a widened parameter reachable, and for the one export that SIGKILLs a process they are also a hazard: a security review found the generated `reapSmokeBrokers(undefined);` in the half that runs, and the module reads a missing argument as `dryRun` false. Reproduced first-party: an orphan fixture died to that exact call while `{ dryRun: true }` left it alive, and all 36 cells stayed green, because `nothing here may generate a call that reaps` was a comment and no cell. On a shared box the broker that dies belongs to another lane. The `undefined` arm is compiled but not run now, and this row grows a NEW arm the generator would sample live: the cell reads the text before it runs and gates the run on it, so the mutant reds without reaping anything."
+    },
+    {
+      "name": "the declaration grows a SECOND call signature, which the enumeration reads none of",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "export function reportReaped(label, result) {\n",
+      "replace": "/**\n * @overload\n * @param {number} label\n * @param {ReapReport} result\n * @returns {void}\n *\n * @overload\n * @param {string} label\n * @param {ReapReport} result\n * @returns {void}\n *\n * @param {string | number} label\n * @param {ReapReport} result\n * @returns {void}\n */\nexport function reportReaped(label, result) {\n",
+      "expectRed": "and every callable export declares exactly ONE call signature, because the enumeration reads the first and would be blind to a second",
+      "cell": "and every callable export declares exactly ONE call signature, because the enumeration reads the first and would be blind to a second",
+      "command": "pnpm gen:reaper-dts && pnpm smoke:reaper",
+      "afterRestore": "pnpm gen:reaper-dts",
+      "note": "The arm keys distinguish shapes WITHIN one call signature and say nothing about a second one. `declaredModuleSurface` read only the first signature, so a declaration promising an overload was enumerated by nothing, compiled by nothing and run by nothing. Reproduced first-party at the previous tip: adding exactly this overload and regenerating left the suite at 40 passed, 0 failed while the committed declaration promised `reportReaped(label: number, ...)`, which the module does not honour. The fix does not enumerate every signature, it refuses more than one: a bound described by what it declines beats one that silently covers signature 0. The same cell reds in the opposite direction, verified by hand with a valid program that made the export a non-callable object: `reportReaped is enumerated as a callable and declares 0`."
+    }
+  ]
+}

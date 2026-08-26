@@ -20,8 +20,13 @@
  * re-declares the renderer, so a cell cannot pass against a version of the function that no longer
  * exists. The route table is likewise the REAL `PAGE` export from `web.ts`, not a copy of its keys.
  *
- * WHAT THEY DO NOT CLAIM. Rendering an AG-UI frame, and the `events.*` filter, are separate work
- * and untouched. These cells prove nothing about how a frame should eventually be drawn.
+ * WHAT THEY DO NOT CLAIM. These cells measure the NO-RENDERER path, the fallbacks `parts.js` takes
+ * for a kind nothing has taught it, and that is now a precondition rather than the only case, since
+ * `parts.js` consults a renderer registry and `agui-frame.js` registers into it. The precondition is
+ * asserted below, not assumed. Frame RENDERING and its parity with the node renderer belong to
+ * `agui-frame-dispatch.smoke.ts` and `bin/smoke/agui-render-parity.smoke.ts`. The dashboard's
+ * `events.*` filter is still separate, unbuilt work: the console's filter lives in `MeshView`, which
+ * these pages do not use. Nothing here says how a frame should be drawn.
  *
  * AND THE EXACT EDGE OF THE REACH CLAIM, because it moved once already and could be overread again.
  * Three things are checked and they are not the same thing: the shared renderer is SERVED and LOADED

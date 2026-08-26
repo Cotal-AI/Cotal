@@ -37,9 +37,11 @@ import {
   readMember,
   principalKey,
   DEV_OWNER,
+  type CotalMessage,
   type Delivery,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // Fresh OS-assigned port per run + await-exit on every broker kill (below): a fixed port plus a SIGKILL
 // that doesn't await the child's exit leaks the broker, and the next run collides with the squatter
@@ -76,9 +78,10 @@ const pkey = (id: string) => principalKey(DEV_OWNER, id).key;
 
 const space = `selfjoin-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-selfjoin-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 let server = srv; // mutable: the reconnect test restarts the broker and tracks the live process
 
 try {
@@ -143,7 +146,7 @@ try {
   });
   const got: string[] = [];
   const gotDurable: string[] = []; // keys delivered with durable:true (the Plane-3 backstop copy)
-  a.on("message", (m, d: Delivery) => {
+  a.on("message", (m: CotalMessage, d: Delivery) => {
     const key = `#${m.channel}:${m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("")}`;
     got.push(key);
     if (d.durable) gotDurable.push(key);
@@ -303,7 +306,6 @@ try {
   // holds a members-bucket grant). Use a `delivery` cred with its own per-id inbox.
   const seedId = newIdentity();
   const kvNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auth, seedId, "delivery"))), inboxPrefix: `_INBOX_${seedId.id}`, maxReconnectAttempts: 0 });
-  kvNc.on?.("error", () => {});
   const kv = await openMembersRegistry(kvNc, space);
   const opsRec = (await readMember(kv, "ops", pkey(aId.id), uidA))!.record;
   await commitMember(kv, { ...opsRec, activated: false });
@@ -337,7 +339,7 @@ try {
   });
   const gotB: string[] = [];
   b.on("error", () => {});
-  b.on("message", (m, d: Delivery) => { gotB.push(`#${m.channel}:${m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("")}`); d.ack(); });
+  b.on("message", (m: CotalMessage, d: Delivery) => { gotB.push(`#${m.channel}:${m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("")}`); d.ack(); });
   await b.start();
 
   // Poll for bob's boot self-join to hydrate (connect + daemon round-trip) rather than assume a fixed
@@ -372,6 +374,7 @@ try {
   server.kill("SIGKILL");
   await awaitExit(server); // await actual exit so a failed run never leaks the broker onto its port
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(`\nSELF-SERVE-JOIN SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

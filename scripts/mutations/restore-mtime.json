@@ -1,0 +1,45 @@
+{
+  "suite": "scripts/mutation-proof.selftest.mjs",
+  "guard": "restore() puts the original mtime back, not the time of the restore",
+  "command": "node scripts/mutation-proof.selftest.mjs",
+  "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/restore-mtime.json",
+  "why": [
+    "`copyFileSync` is a write, so restoring the BYTES gives the file a fresh mtime while its",
+    "content is provably unchanged. Every tool that compares a source against a build reads exactly",
+    "that: after a graded run of 94 mutations, `smoke:dist-freshness` named `packages/core` stale",
+    "and refused the 261-suite chain at its first entry, for a file nobody had edited.",
+    "",
+    "The existing sha assertions stay green through the whole defect, which is why the cell these",
+    "mutations redden asserts the TIME. Two mutations rather than one because 'the call is gone'",
+    "and 'the call is there with the wrong value' are different failures, and a cell that only",
+    "notices an absent call would pass a restore that faithfully wrote the wrong timestamp.",
+    "",
+    "NO top-level `completionMarker`. This suite is fail-fast, so its success banner is not printed",
+    "on a red run; pointing a completion marker at it turns every genuine kill INCONCLUSIVE.",
+    "",
+    "NOT ASSERTED, and recorded rather than implied: the `if (ok)` condition on the restore. It",
+    "exists so that a FAILED restore is not back-dated -- that is the one case where a bumped mtime",
+    "is telling the truth, and hiding it would conceal a corrupted tree from the tools that compare",
+    "timestamps. No cell drives it, because reaching it needs the backup itself to be wrong after",
+    "`copyFileSync` succeeds, and the harness offers no seam for that. Making the call unconditional",
+    "would therefore SURVIVE. It is a real unasserted guard, left in place with its reason stated."
+  ],
+  "mutations": [
+    {
+      "name": "the restore does not put the timestamp back at all",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "    if (ok) utimesSync(path, atimeBefore, mtimeBefore);\n",
+      "replace": "",
+      "expectRed": "a restored file keeps its original mtime, not the time of the restore",
+      "cell": "a restored file keeps its original mtime, not the time of the restore"
+    },
+    {
+      "name": "the restore writes the CURRENT time instead of the original",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "    if (ok) utimesSync(path, atimeBefore, mtimeBefore);",
+      "replace": "    if (ok) utimesSync(path, new Date(), new Date());",
+      "expectRed": "a restored file keeps its original mtime, not the time of the restore",
+      "cell": "a restored file keeps its original mtime, not the time of the restore"
+    }
+  ]
+}

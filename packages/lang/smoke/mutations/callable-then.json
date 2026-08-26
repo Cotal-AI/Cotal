@@ -1,0 +1,28 @@
+{
+  "suite": "packages/lang/smoke/surface.smoke.ts",
+  "guard": "No value the interpreter builds may be a thenable: every write of a record member (a literal key or a computed one, in a literal, a spread, a rest pattern, or a member assignment) refuses a callable `then` with L4021, so the host's promise machinery can never adopt a program value in place of the value itself.",
+  "command": "pnpm smoke:lang-surface",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/lang/smoke/mutations/callable-then.json",
+  "mutations": [
+    {
+      "name": "the callable-then refusal is dropped, so the record is built and adopted",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "  if (key === \"then\" && typeof value === \"function\") {\n    throw new RuntimeFault(\n      \"L4021\",",
+      "replace": "  if (key === \"then\" && typeof value === \"function\" && false) {\n    throw new RuntimeFault(\n      \"L4021\",",
+      "expectRed": "each refuse a callable `then` with L4021",
+      "completionMarker": "ok but identity comparison takes any operands",
+      "cell": "a record literal, a member write, and a computed member write each refuse a callable `then` with L4021",
+      "note": "Without the refusal the first sub-check's run does not fail, it PENDS: the built record is adopted at the interpreter's own async boundary and nothing ever settles it, which is the hang half of the original defect. The cell races a four-second timer precisely so the mutation produces a red rather than a hang, because a hang grades INCONCLUSIVE and proves nothing."
+    },
+    {
+      "name": "a member assignment bypasses the refusal and writes `then` directly",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "    setRecordMember(obj, prop, value);",
+      "replace": "    setOwn(obj, prop, value);",
+      "expectRed": "each refuse a callable `then` with L4021",
+      "completionMarker": "ok but identity comparison takes any operands",
+      "cell": "a record literal, a member write, and a computed member write each refuse a callable `then` with L4021",
+      "note": "The literal route still refuses, so this mutation redds on the member-write sub-check only: `o.then = fn` builds the thenable silently and the run completes green where the cell expects L4021."
+    }
+  ]
+}

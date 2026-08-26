@@ -42,7 +42,7 @@ import {
   deprovisionTargetPrincipal,
 } from "./subjects.js";
 import { idFromCreds } from "./identity.js";
-import { ensureAuthorityStores } from "./endpoint-binding.js";
+import { createEndpointStreams } from "./endpoint-binding.js";
 import { openAclRegistry, deleteAcl } from "./acls.js";
 import {
   BACKUP_MAX_MSGS_PER_SUBJECT,
@@ -83,10 +83,35 @@ export const DINBOX_MAX_ACK_PENDING = 1000;
 export const LEASE_TTL_MS = 30_000;
 
 /** Manager singleton-lease TTL (ms) — the bucket-level `max_age` on `cotal_manager_<space>`. Shorter
- *  than the delivery lease so a crashed manager frees the space for a replacement promptly; the holder
- *  renews at ~half it, leaving a 2× margin so a brief GC/scheduling pause never self-evicts a healthy
- *  manager. Tune here (independent of the delivery lease above). */
+ *  than the delivery lease so a crashed manager frees the space for a replacement promptly. Tune here
+ *  (independent of the delivery lease above); the holder's pacing inside this window is
+ *  {@link MANAGER_LEASE_RENEW_MS} / {@link MANAGER_LEASE_ATTEMPT_MS}. */
 export const MANAGER_LEASE_TTL_MS = 10_000;
+
+/** How often the holder refreshes its manager lease, and the deadline it gives each attempt.
+ *
+ *  THESE TWO NUMBERS ARE ONE BUDGET, and neither means anything alone. The TTL above is the whole
+ *  window a holder has to prove it is still there. Renewing at TTL/2 with the request deadline left
+ *  at the JetStream default (5s, which is also TTL/2) puts exactly ONE attempt inside the window and
+ *  lets that attempt's own deadline consume the entire remainder — so a single slow round trip is
+ *  terminal, by construction, on a holder that is otherwise healthy. At TTL/4 with a deadline under
+ *  the period, no single attempt can spend the window and there is room to ask again.
+ *
+ *  HOW MUCH ROOM, EXACTLY, because "N attempts fit" is a claim about the composed path and not about
+ *  these two numbers. A renew that times out is followed by a re-read with a deadline of its own, and
+ *  the in-flight guard skips any tick that falls while the pair is running, so the unit to count is
+ *  the pair and not the tick. On the path this budget exists for — the renew gets no answer and the
+ *  re-read does — the pair costs about one deadline and three of them complete inside the TTL. Under a
+ *  TOTAL blackout, where both halves spend their deadline, the pair costs two and exactly ONE completes
+ *  inside the TTL while the next completes just after it. That second completion is the fail-close
+ *  decision, and arriving one attempt past the TTL is the intended behaviour rather than a shortfall:
+ *  the holder stops as soon as it can no longer prove anything, and not before.
+ *
+ *  They are CLIENT-SIDE PACING ONLY. Unlike the TTL, which is written into the bucket at `cotal up`
+ *  and so has to be reconciled on an existing mesh (see {@link ttlBuckets}), changing these two
+ *  touches no stored config and needs no migration. */
+export const MANAGER_LEASE_RENEW_MS = MANAGER_LEASE_TTL_MS / 4;
+export const MANAGER_LEASE_ATTEMPT_MS = 2_000;
 
 /** Bucket-level `max_bytes` cap on the derived membership feed (`cotal_membership_<space>`). The
  *  per-agent keying keeps each value tiny (a handful of channel patterns), so 64 MiB bounds the footprint
@@ -229,7 +254,7 @@ export function dmDurableConfig(
   // lifecycle scoping lives in the consumer: the NAME carries the uid (exact-name deprovision) and
   // delivery starts at the ACTIVATION FRONTIER — the DM stream sequence captured when this lifecycle
   // was provisioned — so a same-alias successor inherits none of the predecessor's pending DMs
-  // (SPEC :467). `activationFrontier` = that captured `last_seq`; delivery begins at frontier+1.
+  // (SPEC §8). `activationFrontier` = that captured `last_seq`; delivery begins at frontier+1.
   // Callers that provision a genuinely fresh lifecycle pass the sequence they captured; 0 = from the
   // stream start (an explicit choice, e.g. a stream created after the lifecycle in tests).
   const frontier = opts.activationFrontier ?? 0;
@@ -609,7 +634,7 @@ export async function setupSpaceStreams(opts: {
     // start reconcile re-ensures for pre-existing spaces (Unit B) — and the up-time seed creates
     // them so neither daemon needs first-write stream creation. Create-or-verify, idempotent,
     // drift fails loud.
-    await ensureAuthorityStores(jsm, kvm, opts.space);
+    await createEndpointStreams(jsm, kvm, opts.space);
     // #286: `kvm.create` above is a no-op on an ALREADY-EXISTING bucket, so a bucket from a cotal that
     // predated these TTLs keeps its old (often unlimited) `max_age` and never expires dead presence /
     // stale leases. Reconcile the three TTL'd buckets' `max_age` here (STREAM.UPDATE), idempotently.

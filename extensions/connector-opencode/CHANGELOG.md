@@ -1,5 +1,438 @@
 # @cotal-ai/connector-opencode
 
+## 0.30.2
+
+## 0.30.1
+
+### Patch Changes
+
+- 1814250: The published OpenCode plugin bundle exports exactly one symbol: the `cotal` plugin. OpenCode's loader treats every export of a plugin module as a plugin factory, so the log-marker constants `src/plugin.ts` exports for the smokes broke plugin loading when that file was bundled directly. The bundle now builds from a thin entry (`src/plugin.entry.ts`) that re-exports only `cotal`; the constants remain exported from the source module for the smokes.
+
+## 0.30.0
+
+### Minor Changes
+
+- 569f4d3: An empty message id is never a dedup key, and an id-less delivery is individually addressable at the drain seam.
+
+  Two distinct messages that each carry an empty id collapsed to one: the receiver-side id
+  dedup read empty-equals-empty as a duplicate, silently dropped the second, and once the
+  first was handled it dropped every later empty-id message on arrival. Measured live, two
+  such messages arrived on the wire and only the first was ever delivered.
+
+  An empty id is now treated as no id: the ingest coalescing (pending, handled, protected)
+  is skipped for it in both directions, so distinct messages that carry an empty id are all
+  delivered. At the drain seam a per-delivery receive key (the wire id when there is one, a
+  per-session secret-namespaced minted key when the id is empty, never on any wire) is what
+  hosts, adapters, and the exact-key drain select by: cotal_inbox, the Claude Code hooks,
+  the OpenCode plugin, the Codex host, the Hermes bridge and its Python sidecar, and the pi
+  driver. The drain API is renamed for what it takes (drainInboxDeliveries, missingKeys).
+  Eviction classification, in-flight holds, scope routing, the focus-recall tie-break, and
+  the scoped drain's selection no longer key on the empty id either. The Hermes bridge no
+  longer wedges on an empty-id message. Delivery pumps in core now treat an absent or
+  non-string id as a malformed envelope per SPEC section 5 (durable terminate, live drop,
+  history and recall skip).
+
+  What this restores: before the receive key, an id-less delivery was unaddressable: the
+  raw id swept every pending empty-id item in one drain call, and once filtering closed
+  that, the item could never be drained or acked, was re-shown on every windowed inbox
+  read, and on a durable channel accumulated as an unretirable entry until the 200-entry
+  overflow valve evicted it, roughly a model turn of churn per entry, while one hostile
+  empty-id ambient publish self-drove back-to-back host turns on the pi adapter. This was
+  a violation of the SPEC section 8 ack-only-after-surfaced obligation at the receiver,
+  not only an adapter defect.
+
+  The cost is stated rather than hidden: with no id there is no coalescing either, so a
+  redelivered copy of an empty-id message can surface twice on a path that is already
+  at-least-once (live remains at-most-once). Dedup for real ids is unchanged: their
+  receive key is their wire id and their coalescing is untouched. SPEC section 4, section
+  7 item 5, section 8, and section 12 item 12 now state the receiver-scoped rule, and the
+  client-builder guidance mirrors it.
+
+  One named follow-up stays open: Plane-3 durable fan-out derives its publish msgID from
+  the message id, so distinct empty-id messages can still be collapsed inside the broker's
+  duplicate window on a durable channel before this receiver sees them. That path is its
+  own issue; this change's guarantee is the receiver.
+
+## 0.29.2
+
+## 0.29.1
+
+## 0.29.0
+
+## 0.28.2
+
+## 0.28.1
+
+## 0.28.0
+
+### Minor Changes
+
+- a71fbd3: A failed turn is published as a run error, so a reader of an event plane can tell a turn that failed from a turn that finished.
+
+  Every connector used to close a run with `RUN_FINISHED` whichever way the turn ended, including a
+  turn its own harness had already classified as failed. `RUN_ERROR` was in the vocabulary, the
+  bracket machine accepted it as a close and the dashboard rendered it, but the shared close path had
+  no way to say it.
+
+  The close on the shared emitter and holder now takes an optional failure, and two connectors supply
+  one from a record they actually receive. Claude Code ends a failed turn on its own `StopFailure`
+  hook, and that turn now closes with `RUN_ERROR` carrying the harness's error kind (`rate_limit`,
+  `billing_error`, `server_error` and the rest) as the code. OpenCode reports a dead turn on
+  `session.error`, and that turn now closes with `RUN_ERROR` carrying OpenCode's own error name and
+  reason, except a turn a person stopped, which arrives on the same event and is not a failure.
+
+  The shared close also bounds that failure detail. Upstream free text (`error_details`,
+  `data.message`) can encode past the live frame ceiling; packing it as-is used to refuse the close
+  before any terminal became durable and then permanently kill the holder. The close now rebuilds the
+  one `RUN_ERROR` so it fits, keeps the code, and the emitted message says the original detail was
+  omitted or shortened because of the bound. A short message is unchanged. There is no second protocol
+  and no per-connector size table: every producer already goes through this close.
+
+  Deliberately not built: connector-specific caps, a second close method, preview-plane truncation on
+  the durable path, and any change to `packUnits`'s fail-loud rule for source observations. Those would
+  not close this hole and would duplicate a contract that already has a caller.
+
+  Migration: nothing is removed and no existing call changes shape. A consumer that only handles
+  `RUN_FINISHED` now sees fewer of them on failing sessions; the event type it needs to also handle
+  has been part of the vocabulary and accepted by the bracket machine all along.
+
+- 7bc71ab: Serialize the top-level session swap. The plugin bus does not await the event handler, so a second
+  top-level session created while the first swap is still draining captured the same holder to
+  retire and installed its replacement over the first one. The dropped replacement had already been
+  adopted, which is where its write-ahead log and subject frontier are opened, so it was orphaned
+  with an open handle and the session it held left a run open on the wire with nothing reporting it.
+  The holder they both replaced was drained twice.
+
+  Swaps now run one at a time, so each reads a holder that is installed and no longer being retired
+  underneath it, and the chain carries the absorbed tail of each swap, so the next one still runs
+  after a failed drain.
+  Installed rather than settled: a swap waits for the holder it RETIRES, not for the one it installs,
+  whose adoption is still starting when the swap resolves.
+  The connector also logs a retirement the way it already logs an adoption, which is what makes a
+  retirement that never happened visible at all.
+
+  Serializing the swap was not enough on its own, because the session id and the holder that serves
+  it are two separate things and an event could arrive while they disagreed. Ordering them only moved
+  the window: with the id assigned before the drain, an event in the gap was carried by the new id
+  into a holder still bound to the previous session, and that holder refuses a second session
+  permanently, so the event plane died rather than skipping a frame. Event work is now routed by
+  asking the holder what it is bound to, so an event reaches a holder only when that holder already
+  serves its session or serves nothing yet.
+
+  A session that OpenCode attaches to, rather than creates, is also covered. The first event of such
+  a run arrives before any session was created, and it now reaches the event plane instead of being
+  dropped, so an attached session publishes from its first turn rather than staying silent until the
+  next reset.
+
+  Stopping a seat is now a teardown rather than an exit. The cooperative stop and the editor
+  unloading the plugin run one shared routine, so neither can drift from the other, and it attempts
+  the offline publish in front of the join rather than behind it: a supervised seat is hard killed after
+  its runtime's grace window, so presence queued behind a long drain is the thing that gets lost.
+  Queued event work is then given a bounded chance to settle inside whatever time the runtime leaves.
+
+  Once that routine has begun, the connector starts no turn of its own, admits no hook work, and
+  runs no `cotal_*` tool call. That first part now holds for a drive that was ALREADY PAST the check
+  as well, which it did not before: the guards were read once, session creation was awaited, and
+  nothing looked again, so a turn admitted while the seat was healthy could be submitted after
+  departure had published. The phase condition is one predicate now, read on the way in and again on
+  the way back from that await, and a drive refused there consumes nothing, so the batch is still in
+  the inbox for a later wake in the same process.
+
+  Separately, the operator's spawn prompt is no longer lost when something else gets in front of it.
+  The boot task used to clear the prompt and then ask for a turn; if a natively submitted prompt had
+  already made the session busy, that request returned early and the text was gone. The text is now
+  cleared only once it has actually been submitted, and it counts as pending work everywhere the
+  connector asks whether there is anything to drive, so being beaten to the session costs a retry
+  rather than the prompt. What it does NOT do is cancel the editor. A hook steers
+  OpenCode by mutating its `output` argument rather than by what it returns, and `chat.message`'s
+  output carries no field that cancels or skips a turn, so a prompt submitted natively through the
+  editor or its API still starts one. Whether that turn's events reach the plane is timing rather
+  than a rule: the endpoint stays up until the end of the routine, so work already queued can still
+  settle, while work arriving after the fence closes is refused. The refusals are stated as a condition on the state rather than as a list of the callers
+  they cover, which is what let the earlier versions through: a turn could still be started by the
+  deferred drive a swap fires when its own cutover completes, a late presence event could put a seat
+  back on the mesh it had just left, and a tool call already inside the model's turn had no way to
+  know a stop was running. A refused tool call says so rather than returning nothing, because its
+  caller is waiting on a result and silence would read as a hang.
+
+  The same loss had one more door, and that one is a failure rather than a refusal. Every refusal
+  above leaves the drive through a guarded return, where the input it was carrying is put back by
+  hand. A submission the host rejects leaves through the error path instead, and that path put nothing
+  back. It looked safe only because most inputs are parked somewhere else already: the wake for an
+  @mention in focus is not, because its body is acked at ingest and stays recallable while the wake
+  itself lives only in the string handed to that one drive. So a rejected submission destroyed the
+  wake, and the retry that exists for exactly this case then saw no pending work and did not run,
+  leaving a seat that was never told to go and look. The error path now parks its input like every
+  other exit, so a failed submission costs a retry rather than the wake.
+
+  One slot, and one caller clearing another caller's wake. The three exits above each put their input
+  back by hand, but they all put it in the SAME place, and the clear that runs after a successful
+  submission sat on the far side of an await. A drive parked in session creation had read its input
+  before that await; a second caller then reached the entry guard, parked its own wake in that slot and
+  returned; and when the first call finally submitted, it emptied the slot on the strength of what IT
+  had taken. That is a lost update across an await, and it destroyed a wake that arrived through
+  exactly the guarded exit these changes exist to protect. The clear is now ownership checked, by
+  generation rather than by value, because the nudge names the sender and not the message, so two
+  mentions from one sender are byte identical and comparing them would report "still mine" about
+  someone else's input.
+
+  A wake could also be destroyed before it ever reached that slot. The handler for an @mention in
+  focus declined to ask for a turn while one was already running, which is the right thing to do one
+  handler above it, where the message is buffered in the inbox and the next turn picks it up. This
+  one has nothing buffered behind it: the body is acked and dropped as it arrives, so the nudge is
+  the only copy, and declining did not defer it, it discarded it. The turn then ended, found nothing
+  pending, and the seat was never told it had been mentioned at all. That wake is now handed over
+  whatever the seat is doing, so a busy seat parks it and drives it when the turn ends.
+
+  What that does and does not promise, stated narrowly on purpose. It does NOT prevent message loss:
+  an @mention in focus is acked at ingest, and where the channel permits replay its body stays
+  recallable from the server, so the content was never riding on the wake. Where a channel denies
+  replay, the body is gone by that channel's own policy and no wake can bring it back; the connector
+  deliberately does not buffer it, because doing so would hand a seat in focus history that the
+  channel refuses to everyone else. What this prevents is a caller's wake being erased, whether by an
+  unrelated call's clear or by a handler that never passed it on. One slot is the design rather than
+  a limit: a later wake overwriting an earlier one costs nothing, because any single wake that fires
+  makes the seat pull its inbox and recover whatever that channel will give back, while emptying the
+  slot entirely means no pull is ever triggered. The invariant is that at least one wake survives to
+  fire, not that every wake is kept.
+
+  Departure is also ordered behind the work the seat has already admitted, for as long as a short
+  bound allows. A presence write is not atomic, so a call admitted before the stop could be parked
+  mid-write while the teardown published offline, and then put the seat back to work after it had
+  announced it left; on the wire, a roster read `working` after `offline`. The teardown now waits,
+  briefly, for interactive work it has already admitted before it attempts departure, and joins the
+  slower event work afterwards as it already did. Event work is deliberately not in that wait,
+  because waiting on a drain is what publishing departure early exists to avoid.
+
+  That wait is for the whole admitted set rather than for the first thing to happen to it, and it says
+  so with `Promise.allSettled` rather than by absorbing each call by hand. The hand-rolled version was
+  the same defect one level up: a map can absorb SOME elements, and a review proved by live mutation
+  that absorbing only the two ends passed every cell the suite had at the time. The primitive waits for
+  every element and never rejects, so partial absorption is no longer a state this code can be in.
+
+  That wait is bounded below the shortest runtime grace window, which is what leaves room for
+  departure to be published before a hard kill under ordinary conditions. It is a margin rather than
+  a guarantee: the publish itself has no deadline, so a slow write in the time the bound leaves is
+  lost with everything else the kill takes. The other tradeoff is stated rather than implied: a
+  straggler that outlives the bound is not cancelled, so it can still complete after departure has
+  been published.
+
+  A wake that arrived before the boot prompt used to starve both of them, permanently and silently.
+  The two share one slot: the boot text was carried only when that slot was empty, so a focus
+  @mention landing while the boot task was still waiting for the session parked the nudge, and the
+  boot task's own request then read that nudge, put it straight back and returned. Nothing could
+  empty the slot afterwards, because emptying it takes a submission, a submission takes the boot text
+  cleared, and clearing it takes the submission that had just been refused. The seat stayed online
+  with nothing logged and no retry scheduled, and it went deaf: the spawn prompt, the wake, and every
+  later connector-submitted turn including a directed message were all lost for the life of the
+  process. Against the previous release this was a regression, which lost the wake and still
+  submitted the boot. The two now go out together in one turn rather than competing for the slot. The
+  boot floor says the operator's prompt is the first turn this connector submits, and a wake says
+  only that the seat should go and look, so there is nothing to order between them.
+
+  The event plane also gives back what a session took on disk, which is the other half of a `/new`
+  and the half that is not visible on the wire. Two things are created for a session that publishes
+  events and they have different lifetimes, so they are released differently.
+
+  The principal lock is per principal and per workspace, shared by every session of that agent. It
+  was taken and never given back: the connector read the location it came with and dropped the lock
+  itself, so nothing in shipped code released one. The record then went on naming a process that was
+  alive and no longer publishing, and a REPLACEMENT process for the same principal was refused its
+  own event plane. It is now released at the final event teardown and only there, since a `/new`
+  must keep it for the session that follows. Both ways out reach that teardown, so the editor
+  unloading the plugin while its host keeps running releases it exactly as a supervised stop does.
+
+  A session's write-ahead log is per session and its lifetime is stated rather than assumed, because
+  a log exists so a later start can recover what was not yet published and deleting one early
+  destroys exactly that. A retired session's log is removed once its run has been closed on the wire,
+  AND the drain that closed it settled rather than spending its bound, AND the log holds no frame the
+  broker never confirmed. Either of the last two keeps it, for different reasons that the connector
+  distinguishes in what it logs: an abandoned drain is uncancelled and may still be writing, while a
+  pending frame is the one thing only a later start reading that file can settle. The live session's
+  log survives teardown, because a teardown is not a retirement: nothing has told an observer that
+  thread ended, and a start that adopts it again is the case the log is for. So a process leaves one
+  log directory behind rather than one per `/new`.
+
+  `@cotal-ai/connector-core` gains a close on the emitter holder to go with that. Retiring a holder
+  was a dropped reference rather than an act: it refused nothing afterwards, and a late hook could
+  still start or pump an emitter its owner had finished with. Closing refuses admission and then
+  joins what is already queued. It cancels nothing and releases no durable state, because the log's
+  lifetime and the lock's are the connector's to decide and not the holder's.
+
+## 0.27.0
+
+## 0.26.0
+
+## 0.25.0
+
+### Minor Changes
+
+- 17f8c57: OpenCode sessions publish AG-UI events, so a seat's work is readable by a program rather than only by a person.
+
+  A session spawned with `--events` now publishes run boundaries, assistant text, reasoning and every
+  tool call with its arguments, its end and its result, on `events.<owner>.<actor>`. Until now only
+  Claude Code did; an OpenCode seat's event panel was empty.
+
+  Migration: nothing is removed and no behaviour changes for a session that does not ask for events.
+  A personal `opencode` with the plugin installed still publishes nothing, because arming is
+  `COTAL_EVENTS` and the launcher sets it only for a `--events` spawn.
+
+  Two limits are deliberate and documented. No user-authored text is published: OpenCode injects a
+  peer batch by prepending it into the human's own text part, so one record holds both authors with no
+  boundary in it to filter on, and guessing where one ends would fail open the moment either formatter
+  changed. And no step events or usage numbers: OpenCode's step records carry no step name and no key
+  shared between start and finish, and what the finish carries is cost and tokens, so emitting a step
+  boundary would tell a reader that a phase ended when what happened is that counts arrived.
+
+  One OpenCode process can hold several sessions, and `/new` is a context reset that keeps the mesh
+  identity. Each session publishes under its own thread id on the one channel. The session being left
+  is flushed and its open run is closed before the switch, so a reader is never left holding a run
+  that never ends.
+
+  The reader is the same on every connector, so the channel, the grant and how to subscribe are
+  documented once in the Claude Code page and linked from the OpenCode one.
+
+  `@cotal-ai/connector-core` is listed because the generated documentation bundle it carries is
+  regenerated with the pages.
+
+- a087c2b: A spawned agent now inherits the operator's environment. A harness you installed and configured
+  should behave under `cotal spawn` the way it behaves when you run it yourself, and the alternative
+  was Cotal maintaining a list of inference vendors: every new provider needed a change in Cotal
+  before it would work through a managed spawn. `MODEL_PROVIDER_KEYS` and the per-connector lists
+  that extended it are gone, and Cotal no longer names an inference vendor anywhere in its source.
+
+  Cotal still resets its own `COTAL_*` namespace before the child starts, keeping the machine-wide
+  knobs (`COTAL_HOME`, the feedback set, the default-agent pair, the `*_BIN` overrides, the timing
+  knobs). That reset is not configurable, because it is identity and not preference: a connector
+  supplies the per-session names for each child and does so conditionally, so an inherited value is
+  never overwritten and would hand an agent another agent's credential path, ACL, or lifecycle uid.
+  The whole prefix is stripped rather than a named list, because which names a connector sets varies
+  between connectors and a deny-list only ever names what its author remembered.
+
+  To confine a spawned agent instead, declare `spawn.env` in the cotal config file. The child then
+  gets a fixed OS allow-list plus exactly the names you list. An empty array is a real policy meaning
+  the OS allow-list alone. Note what this does and does not buy: `HOME` is forwarded either way, so
+  an agent with a shell reads `~/.aws` and `~/.ssh` regardless, and this protects only secrets that
+  live nowhere but the environment.
+
+- 34caaf4: Agent seats no longer export their connection material into the environment every descendant
+  process inherits. The broker URL, the creds path, the auth token, the user-mode identity and the
+  local control token now ride a private 0600 launch-material file whose path is the only thing in the
+  seat's environment; pi, codex and OpenCode drop even that path once they have read it (for OpenCode
+  that happens in the `opencode serve` process its seat shim starts, which is also what runs the
+  session's tool calls), while claude and hermes keep the reference because their readers are
+  short-lived children that start later. A session driven by hand still sets `COTAL_CREDS` / `COTAL_SERVERS` itself, and a
+  launch that carries both carriers is refused rather than resolved by precedence.
+
+## 0.24.0
+
+## 0.23.0
+
+## 0.22.0
+
+### Minor Changes
+
+- 57d3a57: A Claude session publishes a structured event plane, and the `tr-<name>` transcript mirror is
+  retired
+
+  A session launched with `cotal spawn --events` now actually publishes. The Claude connector maps
+  its session records to structured events behind the same hook relay the mirror used to sit behind:
+  run boundaries per turn, assistant text, reasoning, and each tool call with its arguments, its end
+  and its result, written to a per-session write-ahead log before they go on the wire so a restart
+  resumes at its cursor instead of replaying or skipping. Until now no connector constructed the
+  emitter at all, so every event channel was empty.
+
+  The `tr-<name>` mirror is removed in the same change rather than deprecated alongside it. Gone with
+  it: the `--transcript` and `--no-transcript` flags on `cotal spawn`, the `transcript` field on the
+  manager's spawn op and its service contract, `COTAL_TRANSCRIPT` and `COTAL_TRANSCRIPT_DEFAULT`,
+  `LaunchOpts.transcript`, `Connector.transcriptChannel`, and the mirror in all three connectors that
+  carried one.
+
+  MIGRATION. If you read a `tr-<name>` channel, nothing publishes to it any more. A managed session no
+  longer mirrors its prose there under any flag or environment variable, and a spawn that passes
+  `--transcript` now fails on an unknown flag rather than being ignored. Read the session's event
+  channel instead: launch with `--events` and subscribe to `events.<owner>.<actor>`, which is keyed on
+  the session's principal. On a static mesh that is `events.local.<key>`, where the key is what the
+  manager allocated and the spawn reply carries it as `id`; on a user-auth mesh it is
+  `events.<your-owner>.<agent-name>`, where the actor half is the agent's own name. `connect-claude.md`
+  gives both forms. `cotal console` and the web console render event frames directly. Unlike
+  `tr-<name>`, you cannot simply subscribe: the plane needs an out-of-band grant, and the command for
+  it is under "To let something read a plane" below.
+
+  What you gain and what you lose, both stated. A tool call now arrives with its full arguments, its
+  end and its result, in a vocabulary a program can read, where the mirror gave a truncated one-liner
+  of glyph-prefixed text. What you lose is prompt text somebody else wrote: the mirror republished
+  every prompt, and the event plane withholds the body of a turn the agent did not author, because
+  republishing a peer's message onto a channel that peer may not read crosses an ACL boundary. A
+  peer-authored turn still opens a run and still shows the work it caused. One stated limit on that,
+  because the loss column is only useful if it is complete: a tool result is this session's own output
+  and is republished, so peer text quoted inside one still reaches the wire. A cell in
+  `agui-authorship.smoke.ts` holds that as a measured limit rather than leaving it to be discovered.
+
+  A spawn may be granted the event plane of the agent it is creating, and no other. A spawn that names
+  a different agent's event channel in `allowSubscribe` or `allowPublish` is refused at the door,
+  because that channel carries the session's tool inputs and outputs. The same rule runs on a manager
+  resume: a retained inventory naming another agent's event channel is refused rather than adopted.
+
+  The rule reads a **concrete** channel, two principal tokens and nothing else. A pattern such as
+  `events.<owner>.>` is not an event channel to it and passes untouched, governed by ordinary ACL
+  authority. That is deliberate, since the pattern is the form an operator writes on purpose for an
+  observer.
+
+  To let something read a plane, grant it out of band. The refusal prints one command, spelled out in
+  full, for the mesh it is running on. On a user-auth mesh:
+  `cotal actor grant <reader> --owner <owner> --scope '' --allow-subscribe '<channel>' --allow-publish
+''`, every field named because `actor grant` is an upsert of the whole row and an omitted flag is the
+  wide default (`>` read, `>` post, `spawn,role:default` scope), not "leave it alone". On a static mesh there is no
+  actor ledger for `actor grant` to write to, so mint the reader instead:
+  `cotal mint watcher --profile agent --allow-subscribe '<channel>' --provision`, the agent profile and
+  not the observer one, since `mint` reads `--allow-subscribe` only for that profile and refuses it off
+  that profile.
+
+  `cotal mint` now REFUSES `--allow-subscribe` / `--allow-publish` off the agent profile rather than
+  ignoring them. Those profiles carry a FIXED read set, the chat plane for observer and the whole
+  messaging plane for admin, so
+  `--profile observer --allow-subscribe <one channel>` used to exit 0, print a success line, and hand
+  out a credential that reads every channel in the space: an operator asking to narrow got the
+  opposite, silently. `--role` and `--provision` were already refused there for the same reason. The
+  rows in `cli.md` and the sentence in `build-a-client.md` now say the same thing.
+
+## 0.21.0
+
+## 0.20.1
+
+## 0.20.0
+
+## 0.19.0
+
+### Minor Changes
+
+- 4e8d776: The `cotal_*` tools now refuse an argument they do not model instead of silently
+  dropping it. A call carrying an unmodelled key (`owner` or `actor` alongside the
+  real arguments) previously succeeded with that key stripped before the tool ran,
+  so the caller was told nothing and the tool did something other than what was
+  asked. It is now refused by name, on every adapter and on every tool: the MCP
+  renderers and pi publish a closed schema and the host rejects the call, while
+  OpenCode and Hermes pass the caller's object through untouched and are closed at
+  the connector's own dispatch. Tools that take no arguments are closed too: they
+  were previously published with no schema at all, so a host had nothing to check
+  against and forwarded the extras to be dropped, as is `cotal_inbox`, whose
+  arguments four of the connectors replace with their own. Behaviourally breaking
+  for any caller that was relying on extra keys being ignored. Every refusal names
+  the rejected keys; where the connector is the one refusing it also lists the
+  arguments the tool accepts, or says it takes none.
+
+### Patch Changes
+
+- 885c82e: `cotal spawn --agent opencode --prompt <text>` now submits that text as the session's first turn.
+  The connector built its launch spec without ever reading the prompt, so an OpenCode seat accepted
+  the flag, joined the roster, loaded its persona, and then sat idle until something else woke it.
+  The prompt now rides the child environment to the in-process plugin, which submits it once, after
+  the session exists and the mesh link is up, and never again on a later readiness event. Peer
+  traffic that arrives during boot stays buffered and is delivered when that first turn ends, so the
+  operator's prompt really is the first turn. An initial prompt with no text in it is refused at
+  launch instead of being accepted and dropped.
+
 ## 0.18.0
 
 ## 0.17.0

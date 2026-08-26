@@ -1,0 +1,48 @@
+{
+  "suite": "packages/lang/smoke/surface.smoke.ts",
+  "guard": "The crossing boundary refuses sparse arrays, cycles, and own __proto__ fields by name, while diamonds still cross. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-surface",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/crossing-shapes.json",
+  "mutations": [
+    {
+      "name": "holes cross silently again (forEach-style skipping)",
+      "file": "packages/lang/src/values.ts",
+      "find": "          if (!(i in value)) {",
+      "replace": "          if (false) {",
+      "expectRed": "the crossing boundary refuses a sparse array, a cycle, and an own __proto__ field by name",
+      "completionMarker": "ok `json.stringify` is the canonical form (sorted keys, no spaces)",
+      "cell": "the crossing boundary refuses a sparse array, a cycle, and an own __proto__ field by name",
+      "note": "With the index check gone a sparse array crosses and its holes canonicalize into silent nulls — the exact silent-canonicalization class the boundary exists to refuse."
+    },
+    {
+      "name": "cycles are 'checked' by the host stack again",
+      "file": "packages/lang/src/values.ts",
+      "find": "      if (s.has(value)) {\n        throw new NotCrossable(\"opaque\", `${path} closes a cycle: the value contains itself, and a cycle has no canonical form`);\n      }\n      s.add(value);",
+      "replace": "",
+      "expectRed": "the crossing boundary refuses a sparse array, a cycle, and an own __proto__ field by name",
+      "completionMarker": "ok `json.stringify` is the canonical form (sorted keys, no spaces)",
+      "cell": "the crossing boundary refuses a sparse array, a cycle, and an own __proto__ field by name",
+      "note": "Without the set the walk recurses forever and leaves as a raw RangeError, not the named refusal the cell requires."
+    },
+    {
+      "name": "an own __proto__ field crosses again",
+      "file": "packages/lang/src/values.ts",
+      "find": "      if (Object.prototype.hasOwnProperty.call(value, \"__proto__\")) {",
+      "replace": "      if (false) {",
+      "expectRed": "the crossing boundary refuses a sparse array, a cycle, and an own __proto__ field by name",
+      "completionMarker": "ok `json.stringify` is the canonical form (sorted keys, no spaces)",
+      "cell": "the crossing boundary refuses a sparse array, a cycle, and an own __proto__ field by name",
+      "note": "The field the literal (L1028), the member write (L4014), and json.parse (L4016) all refuse crossed freely when a handler minted it."
+    },
+    {
+      "name": "the path set never releases on the way out, so diamonds are refused too",
+      "file": "packages/lang/src/values.ts",
+      "find": "      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {\n        assertCrossable(v, `${path}.${k}`, s);\n      }\n      s.delete(value);\n      return;",
+      "replace": "      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {\n        assertCrossable(v, `${path}.${k}`, s);\n      }\n      return;",
+      "expectRed": "but a diamond — one sub-record referenced twice — still crosses",
+      "completionMarker": "ok the crossing boundary refuses a sparse array, a cycle, and an own __proto__ field by name",
+      "cell": "but a diamond — one sub-record referenced twice — still crosses",
+      "note": "Tracking everything visited instead of the path down refuses `{ a: shared, b: shared }` as a false cycle — the guard cell holds that a diamond crosses."
+    }
+  ]
+}

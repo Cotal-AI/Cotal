@@ -1,0 +1,73 @@
+{
+  "suite": "implementations/runtime/smoke/mesh-seam.smoke.ts",
+  "guard": "The seam that refuses an effect whose substrate has not landed: it must refuse BY NAME, with a code that survives the interpreter, and must not swallow an effect it does not gate.",
+  "command": "pnpm smoke:runtime-mesh-seam",
+  "completionMarker": "mesh-seam.smoke:",
+  "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/not-yet-durable-seam.json   # --config resolves against the repo root, never the cwd",
+  "mutations": [
+    {
+      "name": "the refusal carries no code, so the journal records a generic handler fault",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "  readonly code = \"L5016\";",
+      "replace": "  readonly code = undefined as unknown as string;",
+      "expectRed": "spawn refuses with L5016 rather than pretending",
+      "cell": "spawn refuses with L5016 rather than pretending",
+      "cellTemplate": "${name} refuses with L5016 rather than pretending"
+    },
+    {
+      "name": "spawn is not seamed, so it fails as a missing method",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "  async spawn(_req: unknown, _ctx: EffectContext): Promise<never> {",
+      "replace": "  async spawnNotSeamed(_req: unknown, _ctx: EffectContext): Promise<never> {",
+      "expectRed": "spawn refuses at the handler, as the class itself",
+      "cell": "spawn refuses at the handler, as the class itself",
+      "cellTemplate": "${name} refuses at the handler, as the class itself"
+    },
+    {
+      "name": "conclave is not seamed, so a zero-member conclave reaches a null plane",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "  async openConclave(_req: unknown, _ctx: EffectContext): Promise<never> {",
+      "replace": "  async openConclaveNotSeamed(_req: unknown, _ctx: EffectContext): Promise<never> {",
+      "expectRed": "openConclave refuses at the handler, as the class itself",
+      "cell": "openConclave refuses at the handler, as the class itself",
+      "cellTemplate": "${name} refuses at the handler, as the class itself"
+    },
+    {
+      "name": "monitor is not seamed",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "  async monitor(_req: unknown, _ctx: EffectContext): Promise<never> {",
+      "replace": "  async monitorNotSeamed(_req: unknown, _ctx: EffectContext): Promise<never> {",
+      "expectRed": "monitor refuses at the handler, as the class itself",
+      "cell": "monitor refuses at the handler, as the class itself",
+      "cellTemplate": "${name} refuses at the handler, as the class itself"
+    },
+    {
+      "name": "the five refusals drift into five reasons",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    throw new NotYetDurable(\"turn(\u2026)\", ACTION_MACHINERY);",
+      "replace": "    throw new NotYetDurable(\"turn(\u2026)\", \"something else entirely\");",
+      "expectRed": "turn gives the one shared reason",
+      "cell": "turn gives the one shared reason",
+      "cellTemplate": "${name} gives the one shared reason"
+    },
+    {
+      "name": "the seam swallows an UNGATED effect too",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "  async sleep(req: SleepRequest, ctx: EffectContext): Promise<null> {",
+      "replace": "  async sleep(req: SleepRequest, ctx: EffectContext): Promise<null> {\n    throw new NotYetDurable(\"sleep(\u2026)\", ACTION_MACHINERY);",
+      "expectRed": "sleep is not refused by the seam",
+      "cell": "sleep is not refused by the seam: it reaches the plane and fails there instead"
+    }
+  ],
+  "why": [
+    "SPECIFIER BOUNDARY, and it is one config away rather than absent. Every mutation config in",
+    "this lane mutates a module its suite imports through a RELATIVE `../src/*.js` path, and no",
+    "command carries a build step -- all are bare `tsx` -- so the mutated bytes are the bytes the",
+    "suite loads. The suites in THIS directory nonetheless boot `@cotal-ai/core` and `@cotal-ai/lang`",
+    "through package specifiers that resolve to `dist`. So a future config that targets",
+    "`packages/lang/src` or `packages/core/src` under a `pnpm smoke:runtime-*` command would be VOID",
+    "ON ARRIVAL: the mutant would sit in `src` while the suite graded an untouched `dist`, and the",
+    "kill rate would measure module resolution rather than the guard. Either mutate the module the",
+    "suite imports relatively, or put a build between the mutation and the run."
+  ]
+}

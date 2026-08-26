@@ -1,20 +1,31 @@
 /**
- * The spawned-agent env allow-list (P3) — the single chokepoint for what a child process sees.
+ * The spawned-agent env (P3) - the single chokepoint for what a child process sees.
  *
  * Connectors build the child's env as `{ ...launchEnv(...), <COTAL_* identity>, <connector vars> }`
- * and the runtimes pass ONLY that (never `...process.env`). So the operator's *unrelated* env
- * (AWS creds, GH tokens, other service keys sitting in their shell) stops bleeding into every
- * spawned child. What a child sees is auditable from the spec, not "whatever the manager
- * inherited."
+ * and runtimes pass only that env. The default is a fixed OS allow-list, the machine-wide
+ * {@link OPERATOR_ENV_KEEP} knobs, connector-declared provider keys, and `mcpKeys` — never the
+ * manager's ambient environment. This is both a capability and a session-identity boundary:
+ * sockets, temporary credentials, and host markers such as `CLAUDE_CODE_CHILD_SESSION` must not
+ * become properties of every seat merely because an ancestor ran `cotal up` inside a host.
+ * An operator deliberately expands the boundary only through `spawn.env`.
  *
- * Scope this is HONEST about (P6): it closes ENV-VAR bleed. It does NOT close (i) model-key
- * exfil for key-based providers — the agent holds the key in its own process to do inference, so
- * a compromised agent exfils from its OWN env, spawn-gating the key only breaks the child's LLM
- * function (the real fix is per-agent model auth, a separate roadmap item); nor (ii) filesystem
- * secret access — HOME / XDG / platform config dirs are forwarded, so a child can still read
- * ~/.aws / ~/.ssh / ~/.config off disk (needs a workspace sandbox, a separate control).
+ * Scope this is HONEST about (P6). This does not close filesystem secret access: HOME / XDG /
+ * platform config dirs are forwarded, so a child with a shell reads ~/.aws, ~/.ssh, ~/.config and
+ * ~/.cotal straight off disk. An allow-list stops env-ONLY secrets - an `aws-vault exec` or
+ * `op run` shell, CI-injected values - and nothing that has a file behind it. Nor does it close
+ * model-key exfil: a key-based agent holds its provider key in its own process in order to do
+ * inference. Cotal's own connection material is not in the environment at all: {@link materialEnv}
+ * moved the credential, the broker address and the control token behind a 0600 file.
  */
-import type { McpServerSpec } from "@cotal-ai/core";
+import {
+  eventChannel,
+  LAUNCH_MATERIAL_ENV,
+  parsePrincipalKey,
+  principalKey,
+  writeLaunchMaterial,
+  type LaunchMaterial,
+  type McpServerSpec,
+} from "@cotal-ai/core";
 
 /** OS env a coding-agent TUI genuinely needs to run — find its binary (PATH), render (TERM /
  *  COLORTERM), resolve home/config/data roots (HOME / XDG_*_HOME on Unix,
@@ -72,37 +83,67 @@ const OS_ENV_ALLOW = [
   "PUBLIC",
 ] as const;
 
-/** Model-provider API keys a key-based connector may forward to its child. claude needs none
- *  (macOS Keychain / OAuth token, not an env key) → strong isolation for free; opencode/hermes
- *  need the key for the provider behind the agent's model → forward just these, by NAME, only if
- *  present. This is the single chokepoint for model-key forwarding — the seam for spawner-
- *  conditional gating (per-agent model auth) later. Never `...process.env`. */
+/** Model-provider API keys a key-based connector may forward to its child. Other connectors extend
+ *  this list locally when their supported provider surface is broader. */
 export const MODEL_PROVIDER_KEYS = [
   "OPENCODE_API_KEY",
   "ANTHROPIC_API_KEY",
   "OPENAI_API_KEY",
   "OPENROUTER_API_KEY",
   "NOUS_API_KEY",
-  "NEBIUS_API_KEY",
 ] as const;
 
-/** Build the base env a spawned agent runs with: the OS allow-list plus any named keys the
- *  connector declares the agent needs — `providerKeys` (the model-provider key) and `mcpKeys`
- *  (the `${VAR}` secrets a shared MCP server references, see {@link mcpServerEnvKeys}). Every entry
- *  is copied from the manager's env BY NAME and only when present — never required, never spread
- *  wholesale, so the operator's unrelated secrets don't bleed into the child (P3).
+/** The `COTAL_*` an operator sets MACHINE-WIDE, which a child legitimately needs. The qualifying
+ *  property is not "harmless" but "no connector assigns it per spawn": a name no launch path writes
+ *  cannot carry one agent's grant into another, which is why this list stays correct as connectors
+ *  are added and a deny-list of per-session names would not. `COTAL_HOME` is the load-bearing entry
+ *  - it redirects the mesh registry, and a child that shells out to `cotal` must resolve the one
+ *  its parent did. `COTAL_CODEX_BIN` and its siblings are operator binary overrides, and sit here
+ *  precisely BECAUSE the neighbouring per-launch `COTAL_CODEX_HOME`/`_CONFIG`/`_TUI`/`_PROMPT` do
+ *  not. Host-session markers (`CLAUDE_CODE_CHILD_SESSION`, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`,
+ *  and the analogous names other hosts use to mark a nested session) are never on this list: a
+ *  seat's transcript/resume behaviour is a property of the seat, never of how many layers up
+ *  someone once ran `cotal up` inside an agent. Connector-declared auth vars such as
+ *  `CLAUDE_CODE_OAUTH_TOKEN` are not operator knobs and live on the connector's providerKeys. */
+export const OPERATOR_ENV_KEEP = [
+  "COTAL_HOME",
+  "COTAL_FEEDBACK_KEY",
+  "COTAL_FEEDBACK_EMAIL",
+  "COTAL_FEEDBACK_URL",
+  "COTAL_DEFAULT_AGENT",
+  "COTAL_DEFAULT_PERSONA",
+  "COTAL_SKIP_CONNECTOR_SEED",
+  "COTAL_SKIP_ASSIST",
+  "COTAL_DETACH_KEY",
+  "COTAL_COMPLETE_DEBUG",
+  "COTAL_DEBUG",
+  "COTAL_SERVE_HEADLESS",
+  "COTAL_EVENTS_DEFAULT",
+  "COTAL_MEMBERSHIP_INTERVAL_MS",
+  "COTAL_DELIVERY_BROKER_GONE_MS",
+  "COTAL_IDP_TIMEOUT_MS",
+  "COTAL_CODEX_BIN",
+  "COTAL_OPENCODE_BIN",
+  "COTAL_ORCA_BIN",
+] as const;
+
+/** Build the base env a spawned agent runs with.
  *
- *  Matching is CASE-INSENSITIVE and each value is copied under the OS's OWN key casing: Windows
- *  spells these `Path`/`ComSpec`/`windir`, so a canonical-only copy would either miss them (a plain
- *  read of `process.env.SystemRoot` differs from `process.env.systemroot`) or, worse, emit BOTH
- *  `Path` and `PATH` — a case-duplicate Windows process creation chokes on. Keying off the source
- *  env's actual casing (one entry per lowercased name) forwards each var exactly once. */
+ *  The child receives the OS allow-list, {@link OPERATOR_ENV_KEEP}, connector-declared provider
+ *  keys, `mcpKeys` (the `${VAR}` secrets a shared MCP server references), and names deliberately
+ *  added by `spawn.env`. There is no inherit mode: omitting `envAllow` adds no extras, never the
+ *  manager's ambient environment. Host-session markers therefore cannot leak unless a persona or
+ *  operator names them on `spawn.env`.
+ *
+ *  Allow-list matching is CASE-INSENSITIVE and each value is copied under the OS's OWN key casing:
+ *  Windows spells these `Path`/`ComSpec`/`windir`, so a canonical-only copy would either miss them
+ *  (a plain read of `process.env.SystemRoot` differs from `process.env.systemroot`) or, worse, emit
+ *  BOTH `Path` and `PATH` - a case-duplicate Windows process creation chokes on. Keying off the
+ *  source env's actual casing (one entry per lowercased name) forwards each var exactly once. */
 export function launchEnv(
-  opts: { providerKeys?: readonly string[]; mcpKeys?: readonly string[] } = {},
+  opts: { providerKeys?: readonly string[]; mcpKeys?: readonly string[]; envAllow?: readonly string[] } = {},
 ): Record<string, string> {
   const env: Record<string, string> = {};
-  // lowercased name -> the OS's actual key casing; one entry per var (the OS env has no case-dup),
-  // so every allow-list name resolves to a single source key and the result carries no case-dup.
   const sourceKey = new Map<string, string>();
   for (const k of Object.keys(process.env)) sourceKey.set(k.toLowerCase(), k);
   const copy = (name: string): void => {
@@ -112,7 +153,8 @@ export function launchEnv(
     if (v !== undefined) env[src] = v;
   };
   for (const k of OS_ENV_ALLOW) copy(k);
-  for (const k of [...(opts.providerKeys ?? []), ...(opts.mcpKeys ?? [])]) copy(k);
+  for (const k of OPERATOR_ENV_KEEP) copy(k);
+  for (const k of [...(opts.providerKeys ?? []), ...(opts.mcpKeys ?? []), ...(opts.envAllow ?? [])]) copy(k);
   return env;
 }
 
@@ -175,32 +217,171 @@ export function connectorLaunchOptions(
   return Object.entries(launchOptions);
 }
 
-/** USER-MODE launch identity as `COTAL_*` env, when present — the one place the LaunchOpts.userAuth
- *  → env mapping lives, so every connector forwards the identical contract configFromEnv parses.
- *  Refuses a creds+userAuth combination here (one launch, one identity plane — U10). */
-export function userAuthEnv(opts: {
+/**
+ * The launch's CONNECTION MATERIAL as a private file, and one env entry naming it.
+ *
+ * This replaces `userAuthEnv` and the per-connector `COTAL_CREDS` / `COTAL_SERVERS` /
+ * `COTAL_CONTROL_TOKEN` assignments it used to sit beside. Those put the broker address, the
+ * credential and a control-plane bearer into the seat's process environment, which every descendant
+ * of the seat inherits: the build it runs, the linter, the third-party CLI, the test suite that
+ * reads its broker from the environment. Nothing in that chain asked for any of it, and there is no
+ * moment where a human sees a credential being handed over, so there is no natural moment to object.
+ *
+ * Now they ride a 0600 file (see `writeLaunchMaterial`) and only its PATH is exported. The identity
+ * that is not secret - space, name, role, id, lifecycle uid, the ACLs, the control SOCKET path -
+ * stays in the environment where the launcher's contract has always put it, because a descendant
+ * learning the seat's name is not the failure.
+ *
+ * Refuses a creds+userAuth combination here (one launch, one identity plane - U10), which is where
+ * `userAuthEnv` refused it.
+ */
+export function materialEnv(opts: {
   creds?: string;
+  servers?: string;
+  token?: string;
+  controlToken?: string;
   userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
 }): Record<string, string> {
-  if (!opts.userAuth) return {};
-  if (opts.creds)
+  if (opts.userAuth && opts.creds)
     throw new Error("launch: creds (static auth) and userAuth (user-mode auth) are mutually exclusive — one launch carries one identity plane");
-  return {
-    COTAL_OWNER: opts.userAuth.owner,
-    COTAL_ACTOR: opts.userAuth.actor,
-    COTAL_SENTINEL_CREDS: opts.userAuth.sentinelCredsPath,
-    COTAL_BEARER_CMD: JSON.stringify(opts.userAuth.bearerCmd),
-  };
+  const material: LaunchMaterial = {};
+  if (opts.creds) material.creds = opts.creds;
+  if (opts.servers) material.servers = opts.servers;
+  if (opts.token) material.token = opts.token;
+  if (opts.controlToken) material.controlToken = opts.controlToken;
+  if (opts.userAuth) material.userAuth = opts.userAuth;
+  // Nothing to hand over (an open mesh launched with no control endpoint) → no file and no env
+  // entry, rather than a file that says nothing. writeLaunchMaterial refuses the empty case too;
+  // this is the caller-side half of the same rule.
+  if (Object.keys(material).length === 0) return {};
+  return { [LAUNCH_MATERIAL_ENV]: writeLaunchMaterial(material) };
 }
 
-/** The per-agent transcript-mirror channel: `tr-<name>`, the name lowercased and reduced to
- *  subject-safe characters. The SINGLE source of this connector convention — connectors publish here
- *  (their plugin/runtime path AND their `Connector.transcriptChannel` method both call this), and the
- *  manager grants pub on it through that contract method. It lives in the connector layer, NOT core:
- *  transcript mirroring is a connector feature, not the normative wire standard. Sanitizer kept exact
- *  (illegal runs collapse to a single `-`) — changing it would rename every live transcript channel. */
-export function transcriptChannel(name: string): string {
-  return `tr-${name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-")}`;
+/** The per-agent EVENT channel and its classifier, RE-EXPORTED FROM CORE.
+ *
+ *  They were defined here, and they moved. The convention is one every connector publishes to and
+ *  every reader has to recognise, so it is a protocol shape rather than an adapter's choice, and it
+ *  now lives beside the frame's identity in `packages/core/src/event-channel.ts`. The comment that
+ *  used to sit here argued the opposite in those words: that an agent event stream is a connector
+ *  feature and a classifier for the convention belongs beside its constructor. The second half was
+ *  right and is why they moved TOGETHER; the first half was wrong, and the evidence is that the two
+ *  surfaces which most need to classify, the console's mesh view and the dashboard, cannot reach
+ *  this package at all.
+ *
+ *  `isEventChannel` is no longer a prefix test. It derives the principal and refuses a name that
+ *  does not resolve to one, which is what retires the known limit this file used to document. The
+ *  reasoning for that direction is on the core function.
+ *
+ *  Re-exported rather than relocated silently, so every existing importer of `../src/launch.js`
+ *  keeps working and the move is not a breaking change to this package's surface. */
+export {
+  EVENT_CHANNEL_PREFIX,
+  eventChannel,
+  eventChannelPrincipal,
+  isEventChannel,
+} from "@cotal-ai/core";
+
+/** The event channel for a LIVE session, derived from the endpoint's own principal — what the
+ *  broker will actually enforce against, never `config.name` and never the launch env.
+ *
+ *  REFUSES AN EPHEMERAL ACTOR LOUDLY, and that refusal is the whole point. An endpoint with neither
+ *  a declared `card.id` nor creds SELF-MINTS a random actor per process ({@link CotalEndpoint} dev
+ *  branch), so its channel would differ on every restart and could never match a grant minted in
+ *  advance. The tempting repair — fall back to the display name for that one mode — would reinstate
+ *  the fused-channel defect on the single path that has no credential to grade it against, which is
+ *  where it would live forever. So the mode fails closed: events are unavailable without a stable
+ *  identity, and the operator is told which.
+ *
+ *  Structurally typed rather than importing `CotalEndpoint`, so the three connectors' publish paths
+ *  and a test can drive the SAME refusal. */
+export function eventChannelForSession(
+  ep: { principal: { owner: string; actor: string }; actorIsEphemeral: boolean },
+): string {
+  if (ep.actorIsEphemeral)
+    throw new Error(
+      "events are not available for a session with a self-minted identity: this endpoint has no " +
+        "declared id and no credentials, so its actor is a fresh random token per process and its " +
+        "event channel could never match a grant. Launch it with an identity (an authed mesh, or " +
+        "an explicit id) to publish events.",
+    );
+  return eventChannel(ep.principal);
+}
+
+/**
+ * Resolve a DISPLAY NAME to its event channel, against the presence records a reader already holds.
+ *
+ * **THIS EXISTS BECAUSE THE RE-KEY MADE THE CHANNEL UNGUESSABLE, AND THAT COST IS REAL.** While the
+ * channel was `events.<sanitised name>`, a viewer holding a roster row could construct it by string
+ * arithmetic. It now carries the principal — in the dev default that is `events.local.<56-char
+ * nkey>` — which nothing about a display name predicts. The isolation defect the re-key fixed was
+ * worth that; leaving every reader to invent its own lookup would not be, because each one would
+ * invent a different answer to the ambiguity below and most would invent the wrong one.
+ *
+ * **AMBIGUITY IS REFUSED, NOT RESOLVED, AND IT IS THE WHOLE POINT OF THE FUNCTION.** Display names
+ * are not unique and never were: `assertValidName` permits two agents to carry the same one, and
+ * this mesh runs duplicate lane names routinely. A resolver that returned the FIRST match would
+ * reinstate the exact defect the re-key removed — two distinct principals fused onto one answer —
+ * except now at the READ end, where it is worse: a viewer would silently display one agent's stream
+ * under another agent's name, and nothing on the wire would look wrong. So a name matching two
+ * DIFFERENT principals throws and names both.
+ *
+ * **Rows that agree on the principal are ONE agent, not an ambiguity.** A roster carries stale
+ * presence within its TTL, so the same agent legitimately appears more than once; refusing that
+ * would make the function useless exactly when a reader most needs it. The test is on the resolved
+ * principal, never on the row count.
+ *
+ * **It resolves from `owner`/`actor` when present and falls back to parsing `id`** — both are the
+ * same principal by construction (`card.id` is `principalKey(owner, actor).key`), and `id` is the
+ * field every peer is guaranteed to carry. It does NOT guess: a row whose principal cannot be
+ * determined from either is reported as such rather than skipped, because silently skipping the one
+ * row that mattered turns a wrong answer into a confident wrong answer.
+ *
+ * @throws naming the failure, never returning a sentinel — a reader that got `undefined` would show
+ *   an empty pane, and an empty pane is indistinguishable from a correctly-empty one.
+ */
+export function eventChannelForName(
+  name: string,
+  peers: readonly { name: string; id?: string; owner?: string; actor?: string }[],
+): string {
+  const matches = peers.filter((p) => p.name === name);
+  if (matches.length === 0)
+    throw new Error(
+      `no peer named "${name}" in the ${peers.length} presence record(s) given, so its event ` +
+        `channel cannot be resolved. Event channels are keyed on the agent's PRINCIPAL ` +
+        `(events.<owner>.<actor>) and cannot be derived from a display name alone — the name has to ` +
+        `be matched against presence first.`,
+    );
+
+  const seen = new Map<string, { owner: string; actor: string }>();
+  const unresolvable: string[] = [];
+  for (const p of matches) {
+    const principal =
+      p.owner && p.actor ? { owner: p.owner, actor: p.actor } : parsePrincipalKey(p.id ?? "");
+    if (!principal) {
+      unresolvable.push(p.id ?? "<no id>");
+      continue;
+    }
+    seen.set(principalKey(principal.owner, principal.actor).key, principal);
+  }
+
+  if (seen.size > 1)
+    throw new Error(
+      `"${name}" is ambiguous: it matches ${seen.size} distinct principals (${[...seen.keys()]
+        .map((k) => `"${k}"`)
+        .join(", ")}), and they are different agents with different event channels. Display names ` +
+        `are not identities and are not unique, so resolving this to any one of them would show one ` +
+        `agent's stream under another's name. Address the principal you mean.`,
+    );
+
+  const only = [...seen.values()][0];
+  if (!only)
+    throw new Error(
+      `"${name}" matched ${matches.length} presence record(s) but none carries a resolvable ` +
+        `principal (saw ${unresolvable.map((u) => `"${u}"`).join(", ")}). An event channel is keyed ` +
+        `on <owner>.<actor>, so a record with neither an owner/actor pair nor a principal-shaped id ` +
+        `names no channel.`,
+    );
+  return eventChannel(only);
 }
 
 /** The environment-variable NAMES a set of shared MCP server specs reference via `${VAR}` /

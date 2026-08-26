@@ -46,6 +46,7 @@ import {
   type CotalMessage,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 /** A message's text lives in `parts`, not a `text` field. Asserting on `m.text` compares
  *  `undefined === undefined` for the empty case and silently passes a page that carries nothing. */
@@ -62,9 +63,10 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 
 const space = `read-history-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-readhist-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 
 let mgr: CotalEndpoint | undefined, daemon: CotalEndpoint | undefined;
 let poster: CotalEndpoint | undefined, reader: CotalEndpoint | undefined;
@@ -363,6 +365,7 @@ try {
   srv.kill("SIGKILL");
   await wait(200);
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 console.log(fail === 0 ? `\nREAD-HISTORY SMOKE OK ✅  (${pass} passed, 0 failed)` : `\nREAD-HISTORY SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);

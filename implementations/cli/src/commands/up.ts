@@ -160,6 +160,11 @@ export const upFlags: FlagSpec[] = [
   { name: "open", type: "boolean", description: "unauthenticated dev mesh (no JWT/ACLs)" },
   { name: "user-auth", type: "boolean", description: "per-USER auth: login + bearer through the space's auth service" },
   { name: "idp", type: "string", value: "<url>", description: "with --user-auth: the IdP auth base URL to pin (first enable)" },
+  { name: "exchange-public-port", type: "string", value: "<n>", description: "with --user-auth: also serve the PUBLIC exchange face on this loopback port (TLS terminates at a reverse proxy)" },
+  { name: "exchange-public-url", type: "string", value: "<https://…>", description: "with --exchange-public-port: the advertised public base URL (the reverse proxy's address)" },
+  { name: "exchange-trusted-proxy", type: "boolean", description: "with --exchange-public-port: attribute peers by the last X-Forwarded-For hop (opt-in; default: socket address)" },
+  { name: "advertised-server", type: "string", value: "<url>", description: "with --exchange-public-port: the broker address the public bundle advertises - what participants dial (default: --server)" },
+  { name: "agent-provisioning-url", type: "string", value: "<https://…>", description: "with --exchange-public-port: the deployment's remote agent-provisioning endpoint the public bundle advertises" },
   { name: "rotate-sys", type: "boolean", description: "renew the expired/expiring $SYS creds by rotating the system account (agents, data and creds survive; needs a stopped mesh)" },
   { name: "detach", type: "boolean", description: "run in the background (stop with `cotal down`)" },
   { name: "runtime", type: "string", value: "<name>", description: "agent runtime for the mesh manager (default pty; extension runtimes are explicit-only, see `cotal runtimes`); with -f overrides the manifest's runtime" },
@@ -185,6 +190,7 @@ export function upComplete(argv: string[]): CompletionResult {
 export async function up(args: ParsedArgs): Promise<void> {
   const values = args.values as {
     server?: string; "store-dir"?: string; space?: string; open?: boolean; "user-auth"?: boolean; idp?: string;
+    "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean; "advertised-server"?: string; "agent-provisioning-url"?: string;
     channels?: string; detach?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean;
     restore?: string; "restore-only"?: string; "accept-missing-source"?: boolean; "rotate-sys"?: boolean;
     "tls-cert"?: string; "tls-key"?: string;
@@ -447,6 +453,7 @@ export async function up(args: ParsedArgs): Promise<void> {
   if (values.idp && !wantUser && !values.file) {
     throw new Error('--idp is for user-auth spaces; pair it with --user-auth, or set broker.auth: "user" in a manifest');
   }
+  const publicExchange = publicExchangeArgs(values, wantUser);
   // An open mesh has no operator, no system account, and no $SYS creds, so there is nothing to
   // rotate; the request is a misunderstanding to name, never a silent no-op that reports success.
   if (values["rotate-sys"] && values.open) {
@@ -748,7 +755,7 @@ export async function up(args: ParsedArgs): Promise<void> {
           console.error(c.red(`✗ ${(e as Error).message}`));
           process.exit(1);
         }
-        const svc = await startUserAuthService(held.space, server, { prepared, stateDir });
+        const svc = await startUserAuthService(held.space, server, { prepared, stateDir }, publicExchange);
         userAuth = svc.userAuth;
         // The refresh IS the recovery command — a heal that didn't heal must not exit 0.
         if (!svc.ok) process.exitCode = 1;
@@ -774,7 +781,10 @@ export async function up(args: ParsedArgs): Promise<void> {
         // A repair replaces the manager, so it must carry the mesh's recorded exposure forward — a
         // bare `cotal up` here has no `--host` of its own, and dropping it silently moves the attach
         // face back to loopback while everything else keeps working.
-        const controlPlane = await startDeliveryWithBroker(held.space, server, {
+        // `wantTls` above is this branch's transport decision — the registry record reconciled
+        // against the live listener's INFO (a disagreement already exited). It is what the daemon
+        // must be launched with; #836 was this call dropping it.
+        const controlPlane = await startDeliveryWithBroker(held.space, server, wantTls, {
           runtime: values.runtime,
           attachHost: attachHostFor(held.space, values.host),
         });
@@ -829,6 +839,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       open: values.open,
       userAuth: wantUser ? { idpUrl: values.idp } : undefined,
       rotateSys: values["rotate-sys"],
+      publicExchange,
       channels: values.channels,
       // The RAW flag, not the loopback-defaulted `host` above: `startMeshDetached` applies the same
       // default itself, and what it records must distinguish "the operator asked for this address"
@@ -997,7 +1008,7 @@ export async function up(args: ParsedArgs): Promise<void> {
     // every user-mode connect to this broker is denied, so `up` must not report a usable user mesh
     // (nor let agents race it) on a half-started auth plane. (Foreground `up` doesn't exit here, so
     // `ok` has no exit code to carry — the red consequence line above is the operator signal.)
-    const svc = await startUserAuthService(space, server, setup);
+    const svc = await startUserAuthService(space, server, setup, publicExchange);
     // Record BEFORE the control plane comes up: the manager's fail-closed mode detection requires
     // an authoritative registry entry (marker-without-registry is a refused start, not a guess),
     // so the record must exist by the time it boots. A manager/delivery failure after this leaves
@@ -1026,7 +1037,7 @@ export async function up(args: ParsedArgs): Promise<void> {
     // It is part of the server, so `cotal up` starts it by default; open dev mode has no daemon.
     // Class-2 credential renewal is NOT wired here: the MANAGER is the renewal owner (it is resident
     // in every mesh mode — foreground, --detach, refresh — where this foreground process is not).
-    const controlPlane = await startDeliveryWithBroker(space, server, {
+    const controlPlane = await startDeliveryWithBroker(space, server, transport.kind === "tls-required", {
       runtime: values.runtime,
       // The address the broker was bound to. This is what lets `cotal attach` reach this manager
       // from another machine; without it the attach face stays loopback-only, so exposing terminals
@@ -1034,7 +1045,6 @@ export async function up(args: ParsedArgs): Promise<void> {
       attachHost: effectiveAttachHost,
       resumeAttempt,
       resumeCommitToken: restored?.managerCommit?.durableCommitToken ?? ordinaryAttempt?.managerCommit?.durableCommitToken,
-      transport,
       wsPort: setup?.wsPort, // P2 item 6: the console session client's broker ws port
     });
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
@@ -1376,7 +1386,7 @@ async function resumeProvenOrdinaryListener(pending: PendingOrdinaryResume): Pro
     ...(adoptAttachHost ? { attachHost: adoptAttachHost } : {}),
     ts: new Date().toISOString(),
   }, "started");
-  const controlPlane = await startDeliveryWithBroker(pending.space, pending.server, {
+  const controlPlane = await startDeliveryWithBroker(pending.space, pending.server, adoptedTlsRequired(pending.root), {
     runtime: pending.runtime,
     attachHost: adoptAttachHost,
     resumeAttempt: pending.attemptId,
@@ -1425,7 +1435,7 @@ async function resumeProvenRestoreListener(prepared: PreparedRestore): Promise<v
     ...(restoreAttachHost ? { attachHost: restoreAttachHost } : {}),
     ts: new Date().toISOString(),
   }, "started");
-  const controlPlane = await startDeliveryWithBroker(prepared.space, prepared.server, {
+  const controlPlane = await startDeliveryWithBroker(prepared.space, prepared.server, adoptedTlsRequired(prepared.root), {
     runtime: prepared.runtime,
     attachHost: restoreAttachHost,
     resumeAttempt: prepared.attemptId,
@@ -1633,6 +1643,32 @@ async function completeResumeActivation(
   }
 }
 
+/** Validate + assemble the auth-service daemon's public-exchange argv from `up`'s flags. The three
+ *  flags travel with --user-auth (an open mesh has no exchange to publish); --exchange-public-url
+ *  and --exchange-trusted-proxy modify the public listener, so they require its port. Returned as
+ *  an argv ARRAY — the daemon re-exec never shell-interpolates. */
+function publicExchangeArgs(
+  v: { "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean; "advertised-server"?: string; "agent-provisioning-url"?: string },
+  wantUser: boolean,
+): string[] {
+  const port = v["exchange-public-port"];
+  const url = v["exchange-public-url"];
+  const proxy = Boolean(v["exchange-trusted-proxy"]);
+  const advertised = v["advertised-server"];
+  const provisioning = v["agent-provisioning-url"];
+  if (port === undefined && url === undefined && !proxy && advertised === undefined && provisioning === undefined) return [];
+  if (!wantUser)
+    throw new Error("--exchange-public-port/--exchange-public-url/--exchange-trusted-proxy/--advertised-server/--agent-provisioning-url are for user-auth spaces - pair them with --user-auth");
+  if (port === undefined) throw new Error("--exchange-public-url/--exchange-trusted-proxy/--advertised-server/--agent-provisioning-url require --exchange-public-port");
+  return [
+    "--exchange-public-port", port,
+    ...(url !== undefined ? ["--exchange-public-url", url] : []),
+    ...(proxy ? ["--exchange-trusted-proxy"] : []),
+    ...(advertised !== undefined ? ["--advertised-server", advertised] : []),
+    ...(provisioning !== undefined ? ["--agent-provisioning-url", provisioning] : []),
+  ];
+}
+
 /** Bring the space's USER-AUTH service up with the broker (user mode only — `setup.prepared` is the
  *  provider's output). Loud both ways (U5): a ready service prints the login line; a service that
  *  never became ready prints the exact consequence + recourse. Returns the registry metadata either
@@ -1644,10 +1680,16 @@ async function startUserAuthService(
   space: string,
   server: string,
   setup?: { prepared?: AuthPrepared; stateDir?: string },
+  publicExchange?: string[],
 ): Promise<{ userAuth?: UserAuthInfo; ok: boolean }> {
   if (!setup?.prepared || !setup.stateDir) return { ok: true };
   try {
-    const endpoints = await ensureAuthService({ space, server, stateDir: setup.stateDir, prepared: setup.prepared });
+    const raw = await ensureAuthService({ space, server, stateDir: setup.stateDir, prepared: setup.prepared, extraArgs: publicExchange });
+    // The PUBLIC face's advertised URL (when enabled) supersedes the loopback bind in the registry's
+    // convenience endpoint — the discovery bundle is GENERATED from what the daemon actually serves,
+    // never hand-written. The provider reports it; nothing here reads provider state files.
+    const base = typeof raw.publicUrl === "string" ? raw.publicUrl : String(raw.url);
+    const endpoints = { url: base, ...(typeof raw.publicUrl === "string" ? { managerAuthorityUrl: `${base.replace(/\/$/, "")}/manager-service-authority` } : {}) };
     const info = assertUserAuthInfo({ ...setup.prepared.publicAuth, endpoints });
     console.log(c.green("✓ user-auth service up") + c.dim(` - sign in with: cotal login --idp ${info.idp.url}`));
     return { userAuth: info, ok: true };
@@ -1846,27 +1888,35 @@ function applyUpOverrides(prepared: PreparedManifest, o: UpManifestFlags): Prepa
 async function startDeliveryWithBroker(
   space: string,
   server: string,
+  /**
+   * Whether this listener requires TLS, decided by the CALLER.
+   *
+   * NON-OPTIONAL, for exactly the reason {@link DetachOpts.transport} is. This used to be an
+   * optional `transport` that the callee fell back on `readBrokerPolicy(cotalRoot())` for whenever
+   * it was absent — and the refresh path (#836) never passed it. That path decides the same fact
+   * from the mesh-registry entry AND the live `INFO`, refuses on any disagreement, and then handed
+   * the decision to nobody: a root whose registry records `tlsRequired` while holding no
+   * `broker-policy.json` (registered with `cotal meshes add --tls`, or a mesh that predates the
+   * policy file) relaunched the delivery daemon FLAGLESS against a TLS broker. Nothing looked
+   * wrong, because the daemon still upgrades on the server's unauthenticated INFO — and it holds a
+   * STANDING credential and reconnects unattended, so that exposure repeats with nobody watching.
+   *
+   * A second durable record consulted in the callee is how the caller's copy went silently unused.
+   * One decision, and it arrives as an argument.
+   */
+  tlsRequired: boolean,
   mgr?: {
     runtime?: string;
     launch?: string;
     attachHost?: string;
     resumeAttempt?: string;
     resumeCommitToken?: string;
-    /** When the caller already applied a transport this turn, pass it so delivery does not
-     *  re-read a policy file that is not yet committed (S9). Otherwise fall back to the record. */
-    transport?: BrokerTransport;
     /** P2 item 6: broker ws listener port for the console session client. */
     wsPort?: number;
   },
 ): Promise<boolean> {
   try {
-    // Prefer the in-memory decision for a fresh apply (policy may not be on disk yet — S9).
-    // Fall back to the recorded policy for resume/restore/refresh paths that start no new listener.
-    const tls =
-      mgr?.transport?.kind === "tls-required" ||
-      readBrokerPolicy(cotalRoot())?.transport.kind === "tls-required";
-    const { transport: _t, ...mgrRest } = mgr ?? {};
-    await ensureControlPlane({ space, server, tls, ...mgrRest });
+    await ensureControlPlane({ space, server, tls: tlsRequired, ...(mgr ?? {}) });
     return true;
   } catch (e) {
     // Non-fatal (live messaging is unaffected) — but never SILENT: without the manager,
@@ -1906,6 +1956,9 @@ export interface DetachOpts {
   seed?: ChannelRegistryFile;
   /** Live boot lines, tailed from the server's log file (safe for a detached child). */
   onLine?: (line: string) => void;
+  /** PUBLIC-exchange daemon argv (`--exchange-public-port` et al), threaded verbatim to the
+   *  auth-service daemon when THIS boot starts it. */
+  publicExchange?: string[];
   /** Manifest launch (`cotal up -f`): the ONE control-plane manager started alongside the broker
    *  carries this runtime + resolved launch-spec path — never a second supervise (singleton lease). */
   runtime?: string;
@@ -2022,7 +2075,7 @@ export async function startMeshDetached(
     }
   }
   // USER MODE: the auth service comes up FIRST among the daemons (see the foreground path).
-  const svc = await startUserAuthService(space, server, setup);
+  const svc = await startUserAuthService(space, server, setup, opts.publicExchange);
   // Record BEFORE the control plane: the manager's fail-closed mode detection needs the
   // authoritative registry entry at boot (marker-without-registry refuses). Detached: the entry
   // outlives this process — `cotal down` removes it.
@@ -2042,17 +2095,16 @@ export async function startMeshDetached(
     ts: new Date().toISOString(),
   }, "started");
   // Commit policy BEFORE delivery launch (S9). Listener is proved; refuse paths never reach here.
-  // startDeliveryWithBroker also receives `transport` so it does not depend on the file alone.
+  // startDeliveryWithBroker is HANDED the transport decision, so it does not depend on the file at all.
   commitTransportPolicy(cotalRoot(), transport);
   // Bring up the delivery daemon WITH the detached broker (auth mode only; `cotal down` tears both down).
-  const controlPlane = await startDeliveryWithBroker(space, server, {
+  const controlPlane = await startDeliveryWithBroker(space, server, transport.kind === "tls-required", {
     runtime: opts.runtime,
     launch: opts.launch,
     // See the foreground path: the broker's bind address is what makes attach reachable off-box.
     attachHost: effectiveAttachHost,
     resumeAttempt: opts.resumeAttempt,
     resumeCommitToken: opts.resumeCommitToken,
-    transport,
     wsPort: setup?.wsPort, // P2 item 6: the console session client's broker ws port
   });
   return {

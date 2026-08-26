@@ -150,9 +150,33 @@ export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze(["stop"] as const)
  *  so they ride owner mode. Owner-mode `stop` is DELIBERATELY ABSENT: on the v0.3 surface a named
  *  stop and a despawn both free-slot + deprovision, so an owner-mode `stop` would be a wire synonym
  *  of `despawn` (distsys) — one owner-mode terminal command keeps the vocabulary single. Self-`stop`
- *  stays in the BASELINE (the v0.3 self-service tier's only op); it is the lighter self-halt. */
+ *  stays in the BASELINE (the v0.3 self-service tier's only op); it is the lighter self-halt.
+ *  `input` (type into the seat) is DELIBERATELY ABSENT from this set, and the reasoning is worth
+ *  keeping because the obvious argument for including it is false. That argument runs: owner-mode
+ *  `attach` already reaches the same pty through `AttachSession.write`, so granting `input` adds
+ *  nothing. It does not reach it. `attach` returns a §13.6 grant, and REDEEMING one needs a
+ *  `session-caller` credential carrying `eps.<endpoint>.<sessionId>.<epoch>.in`, which this profile
+ *  does not hold and cannot mint, because minting reads the space signing seed. Executed: a
+ *  spawn-capability credential's minted JWT carries the owner-mode `attach` request row and ZERO
+ *  `eps.` rows, so its holder can ask for a grant it can never use.
+ *
+ *  What that leaves is a genuine widening, and on a user mesh it is not bounded by "your own
+ *  children": {@link authorizeNamedControl}'s owner-domain arm admits any agent under the caller's
+ *  owner, spawned by anyone. So a spawn-scoped agent would gain blind WRITE into a sibling's
+ *  harness, a seat whose command line it did not choose. It can already `despawn` that sibling,
+ *  but killing a peer is denial; typing into a peer is control of it, and the two are different in
+ *  kind. `input` therefore rides the operator instrument set only
+ *  ({@link operatorInstrumentCapabilities}), where the holder is already the administrative
+ *  authority for the domain. */
 export const SPAWN_CREATE_COMMANDS = Object.freeze(["spawn"] as const);
 export const SPAWN_OWNER_LIFECYCLE_COMMANDS = Object.freeze(["despawn", "attach"] as const);
+/** The seat-input command, granted ONLY into operator-authorized credentials (see the note above
+ *  for why it is not in the spawn set). Both modes are minted here, unlike `despawn`/`attach`,
+ *  whose owner-mode rows an operator inherits from the spawn set: with `input` absent from that
+ *  set an operator would otherwise hold the any-mode row and not the owner-mode one, and the CLI
+ *  rides OWNER reach on a user mesh (a bearer's one deterministic path). Granting only `any` there
+ *  would leave `cotal input` broker-denied on exactly the mesh mode the feature is for. */
+export const OPERATOR_INPUT_COMMANDS = Object.freeze(["input"] as const);
 /** The spawn capability's UNTARGETED additions (the 1c grant-migration table): the connector's
  *  persona write (`define-persona`, caller-scoped by the pinned triple) and per-agent status read
  *  (`inspect` - the responder narrows the view to the caller's owner domain, like `ps`). These
@@ -235,6 +259,7 @@ const DELIVERY_COMMANDS_SNAP = Object.freeze([...BASELINE_DELIVERY_COMMANDS]);
 const SELF_LIFECYCLE_SNAP = Object.freeze([...BASELINE_SELF_LIFECYCLE_COMMANDS]);
 const SPAWN_CREATE_SNAP = Object.freeze([...SPAWN_CREATE_COMMANDS]);
 const SPAWN_OWNER_SNAP = Object.freeze([...SPAWN_OWNER_LIFECYCLE_COMMANDS]);
+const OPERATOR_INPUT_SNAP = Object.freeze([...OPERATOR_INPUT_COMMANDS]);
 const SPAWN_SERVICE_SNAP = Object.freeze([...SPAWN_SERVICE_COMMANDS]);
 const MANAGER_READ_SNAP = Object.freeze([...MANAGER_READ_COMMANDS]);
 const MANAGER_ADMIN_SNAP = Object.freeze([...MANAGER_ADMIN_COMMANDS]);
@@ -284,7 +309,8 @@ export function spawnCallerCapabilities(callerOwner: string): EpCapability[] {
  *  `define-persona` - structurally barred from cross-agent reach, exactly like its ctl row.
  *
  *  `admin` (the stop/attach/deploy instrument): everything above plus ANY-mode `despawn`/`attach`
- *  (tOwner `"*"`) and the `manager.admin` command family. The 1c admin-reach decision: operator
+ *  (tOwner `"*"`), BOTH modes of `input` (which no other profile grants at all), and the
+ *  `manager.admin` command family. The 1c admin-reach decision: operator
  *  cross-agent terminal/interactive ops ride authz-mode `any` on the SAME commands (no wire
  *  synonym) - the any-mode subject row is minted ONLY into operator-authorized credentials: the
  *  `control-caller-admin`/`deployer`/`teardown` instruments AND an agent credential explicitly
@@ -292,7 +318,7 @@ export function spawnCallerCapabilities(callerOwner: string): EpCapability[] {
  *  ctl-tier equivalent already held `ctl.<admin>`, so this is parity, not a new escalation). An
  *  ordinary agent, incl. the `spawn` capability, never carries it. So the broker grant is the tier boundary exactly as
  *  `ctl.<admin>` is today, and the responder maps mode `any` to its admin authorization path. */
-export function operatorInstrumentCapabilities(tier: "privileged" | "admin"): EpCapability[] {
+export function operatorInstrumentCapabilities(tier: "privileged" | "admin", callerOwner?: string): EpCapability[] {
   const caps: EpCapability[] = [
     ...MANAGER_READ_SNAP.map((command) => ({
       endpoint: BASELINE_LIFECYCLE_ENDPOINT, command,
@@ -310,14 +336,28 @@ export function operatorInstrumentCapabilities(tier: "privileged" | "admin"): Ep
         endpoint: BASELINE_LIFECYCLE_ENDPOINT, command,
         target: { mode: "any", tOwner: "*" } as EpTarget,
       })),
+      ...OPERATOR_INPUT_SNAP.map((command) => ({
+        endpoint: BASELINE_LIFECYCLE_ENDPOINT, command,
+        target: { mode: "any", tOwner: "*" } as EpTarget,
+      })),
       ...MANAGER_ADMIN_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
     );
+    // The owner-mode half of `input`, minted only when the mint site knows the caller's own owner.
+    // An operator on a USER mesh reaches seats through OWNER reach, not any-mode (the bearer's one
+    // deterministic path), and `input` is in no other capability set, so without this row the
+    // command is broker-denied on exactly the mesh mode it exists for. `tOwner` is the caller's
+    // own owner, never a wildcard: §13.2 forbids an owner-mode standing mint naming a foreign one.
+    if (callerOwner !== undefined)
+      caps.push(...OPERATOR_INPUT_SNAP.map((command) => ({
+        endpoint: BASELINE_LIFECYCLE_ENDPOINT, command,
+        target: { mode: "owner", tOwner: callerOwner } as EpTarget,
+      })));
   }
   return caps;
 }
 
-/** The SAME tier set, pinned to ONE instance — the issuance `--on <instanceId>` was always meant to
- *  get. These instruments are ONE-SHOT, minted per control call, and the resolve that chose the
+/** The SAME tier set, pinned to NAMED instances — the issuance `--on <instanceId>` was always meant
+ *  to get. These instruments are ONE-SHOT, minted per control call, and the resolve that chose the
  *  instance runs BEFORE the mint, so the exact id can be handed down and the emitter's
  *  `if (cap.instanceId)` branch produces exactly `ep.inst.<endpoint>.<iid>.<command>` for THIS
  *  invocation and nothing else. No wildcard instance is minted anywhere, which is what keeps the
@@ -325,17 +365,37 @@ export function operatorInstrumentCapabilities(tier: "privileged" | "admin"): Ep
  *  instruments that already hold it, and a plain, spawn-capable, or observer credential still gets
  *  no instance route at all.
  *
+ *  SEVERAL ids are accepted, and that does NOT relax the rule above. `cotal ps` scatters, so it has
+ *  no single instance to pin — but it FREEZES the class first, and a frozen set is a list of exact
+ *  ids known before the mint, which is the same precondition `--on` satisfies with one. Each id
+ *  still emits its own concrete rows; the count changes, the shape does not. The alternative
+ *  considered and rejected was a wildcard instance row for the tier, which is a widening three
+ *  review seats already refused and which `inst-route-grant` asserts against by shape.
+ *
  *  `describe` is included EXPLICITLY. The baseline describe row is class-rail only
  *  ({@link epDescribeAllGrantRow}), so without this the pinned RESOLVE that must precede a pinned
  *  invoke is refused at the broker — and refused invisibly, because the client renders that refusal
  *  as a describe timeout. Here it is a concrete endpoint+instance capability, not the normative
- *  wildcard form, so the exact-arity discipline of the caller grammar is preserved. */
-export function instancePinnedInstrumentCapabilities(tier: "privileged" | "admin", instanceId: string): EpCapability[] {
-  assertLifecycleToken(instanceId, "instanceId"); // fail loud at mint on a malformed id, never widen a subject
-  return [
-    { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "describe", instanceId },
-    ...operatorInstrumentCapabilities(tier).map((cap) => ({ ...cap, instanceId })),
-  ];
+ *  wildcard form, so the exact-arity discipline of the caller grammar is preserved. It is also what
+ *  the §13.5 scatter's liveness probe publishes, so a frozen instance the broker has to be asked
+ *  about is reachable at all. */
+export function instancePinnedInstrumentCapabilities(tier: "privileged" | "admin", instanceId: string | string[]): EpCapability[] {
+  const ids = Array.isArray(instanceId) ? instanceId : [instanceId];
+  if (ids.length === 0)
+    throw new Error("instancePinnedInstrumentCapabilities needs at least one instanceId; an empty pin would mint the tier's class rows under a name that promises a pin");
+  // No caller owner is threaded, so the admin tier's OWNER-mode `input` row is absent here, and
+  // that is correct rather than an oversight: a pinned instrument is minted only on the static /
+  // open path (`resolveControlTarget` returns on the user branch before any instrument is minted,
+  // so an instanceId never reaches a bearer mint), and the CLI rides ANY reach there. An owner-mode
+  // row would be dead weight on the one path that cannot use it.
+  const tierCaps = operatorInstrumentCapabilities(tier);
+  return ids.flatMap((id) => {
+    assertLifecycleToken(id, "instanceId"); // fail loud at mint on a malformed id, never widen a subject
+    return [
+      { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "describe", instanceId: id },
+      ...tierCaps.map((cap) => ({ ...cap, instanceId: id })),
+    ];
+  });
 }
 
 /** All BASELINE caller rows (Appendix B): the wildcard describe form + the baseline capability

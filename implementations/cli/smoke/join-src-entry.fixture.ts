@@ -12,7 +12,7 @@ import { join } from "../src/commands/join.js";
 const [mode, uid] = process.argv.slice(2);
 const CREDS = process.env.JPAIR_CREDS!;
 const base = { space: "jpair", server: "nats://127.0.0.1:1" as const }; // port 1 refuses instantly
-const values: Record<string, unknown> =
+const values: Record<string, string | boolean | undefined> =
   mode === "creds-flag" ? { ...base, creds: CREDS, "lifecycle-uid": uid }
   : mode === "creds-none" ? { ...base, creds: CREDS }
   : mode === "creds-envonly" ? { ...base, creds: CREDS }

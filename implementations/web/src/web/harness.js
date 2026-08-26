@@ -31,6 +31,12 @@ window.COTAL_HARNESS = {
     glyph: "➤",
     svg: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3 3 10.5l7 2.5 2.5 7L21 3Z"/><path d="M21 3 10 13"/></svg>`,
   },
+  jcode: {
+    label: "Jcode",
+    color: "#4ade80", // no official mark — custom angle-bracket glyph, green
+    glyph: "⟨⟩",
+    svg: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4 3 12l5 8"/><path d="m16 4 5 8-5 8"/></svg>`,
+  },
   pi: {
     label: "Pi",
     color: "#7dd3fc", // no official mark — simple π glyph, sky

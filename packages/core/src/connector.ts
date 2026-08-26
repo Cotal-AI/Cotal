@@ -58,9 +58,9 @@ export interface LaunchOpts {
    *  config, env); a connector with no option surface fails loud. Fed by `--opt k=v`, a persona's
    *  `launchOptions:` mapping, or a manifest `launchOptions:` — merged per key. */
   launchOptions?: Record<string, unknown>;
-  /** An initial message for the session to act on the moment it starts. Connectors
-   *  that support an auto-submitted first prompt (Claude Code) deliver it; others
-   *  ignore it. Used to make a driving session greet the operator on launch. */
+  /** An initial message for the session to act on the moment it starts (`cotal spawn --prompt`).
+   *  A connector delivers it as the harness's first turn or throws at launch; it never ignores it,
+   *  because an operator who passed a prompt is waiting on the turn it starts. */
   prompt?: string;
   /** An OPAQUE prior-session handle to FORK FROM when launching — never reused, never resolved by
    *  core. Like `creds` / `configPath`, this is a HOST-LOCAL pointer (into e.g. `~/.claude`), NOT a
@@ -70,17 +70,34 @@ export interface LaunchOpts {
    *  left untouched — resuming MUST NOT hijack the source session. A connector that can't fork
    *  THROWS at {@link Connector.buildLaunch} rather than silently spawning fresh. */
   resume?: string;
-  /** Mirror this session's transcript to the connector's per-agent transcript channel (see
-   *  {@link Connector.transcriptChannel}) so peers/observers can read what the agent actually did
-   *  (sets `COTAL_TRANSCRIPT`). Defaults to OFF; set `true` to opt in — surfaced as the `--transcript`
-   *  flag on `cotal spawn` / `cotal start`. */
-  transcript?: boolean;
+  /** Exact session of THIS connector process to continue after a supervised process restart.
+   *  Distinct from {@link resume}: `resume` forks FROM an existing transcript into a new session;
+   *  `continueSession` reopens the already-meshed session itself. Manager-internal only, never a
+   *  CLI/manifest/model-provided field. A connector that cannot preserve its mesh surface across
+   *  same-session continuation throws rather than silently launching fresh. */
+  continueSession?: string;
+  /** Publish this session's AG-UI event plane to the agent's own event channel (see
+   *  {@link Connector.eventChannel}), so an external observer or UI can read what the agent actually
+   *  did as structured events rather than as prose (sets `COTAL_EVENTS`). Defaults to OFF; set `true`
+   *  to opt in, surfaced as the `--events` flag on `cotal spawn` / `cotal start`.
+   *
+   *  The flag ARMS the emitter. It is deliberately separate from the grant the manager mints from
+   *  {@link Connector.eventChannel}: holding publish rights on a channel is not a request to publish
+   *  to it, so a hand-written `allowPublish` entry cannot turn events on for a session the launch
+   *  path never armed. */
+  events?: boolean;
   /** Operator MCP servers to SHARE with this agent, resolved from the cotal config by the caller
    *  (see {@link connectorServers}). Keyed by server name, `.mcp.json`-shaped, with `${VAR}`
    *  secret refs intact. A connector renders them into its own host format; the default is none
    *  (Claude launches isolated with `--strict-mcp-config`). Connectors that don't support sharing
    *  throw on a non-empty map rather than silently dropping it. */
   mcpServers?: Record<string, McpServerSpec>;
+  /** Extra environment names an operator deliberately declared in `spawn.env`, resolved by the
+   *  caller exactly as {@link mcpServers} is. The default supplies no extras: the child receives the
+   *  fixed OS allow-list, the machine-wide `COTAL_*` operator knobs, and connector-declared inputs
+   *  only. Connectors never read config themselves. Host-session markers are not forwarded unless
+   *  named here. */
+  envAllow?: readonly string[];
   /** The manager's workspace root. Connectors that keep per-agent local state (e.g. the OpenCode
    *  connector's SQLite DB + serve pidfile) pin it here so a per-agent working directory — which can
    *  point at any repo — doesn't scatter that state into the target tree. The per-agent working
@@ -106,6 +123,10 @@ export interface LaunchSpec {
    *  OpenCode (in-process plugin) connectors mint one; absent only for a connector with no control
    *  plane at all. */
   control?: { path: string; token: string };
+  /** Connector-owned host-session state file. A supervised restart reads this exact manager-provided
+   *  path after process exit, then verifies the successor reports the same session over `control`.
+   *  Contains no transcript or credential; currently used by Pi for its current session id. */
+  sessionStatePath?: string;
 }
 
 /** One provider-specific model variant. `options` is opaque connector metadata for UIs; core never
@@ -155,15 +176,18 @@ export interface Connector extends Extension {
   /** Optional model catalog hook. The manager calls this for selector UIs; launch remains authority-free
    *  and still accepts any string the operator supplies. */
   listModels?(opts?: ModelCatalogOpts): ModelCatalog | Promise<ModelCatalog>;
-  /** The channel this connector publishes an agent's transcript mirror to (see
-   *  {@link LaunchOpts.transcript}). OPTIONAL — like {@link LaunchOpts.prompt}, only connectors that
-   *  actually mirror (Claude Code, OpenCode) implement it; one that doesn't (e.g. Hermes) omits it. The
-   *  naming convention is the CONNECTOR's, not the wire standard, so it's defined in the extension, not
-   *  core. The manager calls it to grant the agent publish rights on its transcript channel at provision
-   *  time (auth-mode publish is default-deny), so the grant and what the connector publishes to come from
-   *  one source and can't drift. If `transcript` is requested for a connector that lacks this, the
-   *  manager fails loud rather than silently skipping the grant. */
-  transcriptChannel?(name: string): string;
+  /** The channel this connector publishes an agent's AG-UI event plane to (see
+   *  {@link LaunchOpts.events}). OPTIONAL: only connectors that actually emit implement it, and
+   *  asking for `events` from one that does not FAILS LOUD in the manager rather than minting a
+   *  grant nothing will ever use.
+   *
+   *  It takes the agent's PRINCIPAL, never its display name. A display name is UI convenience and is
+   *  not an identity: this mesh permits two live agents to carry one name, so a name-keyed channel
+   *  fuses two principals' streams onto one subject and authorizes both onto it from the same
+   *  name-only value. The principal is the address. Connectors derive the channel with core's own
+   *  `eventChannel`, so the grant the manager mints here and the subject the session publishes to
+   *  are the same derivation and cannot drift. */
+  eventChannel?(principal: { owner: string; actor: string }): string;
   /** External executables this connector invokes beyond `LaunchSpec.command` (e.g. the
    *  `claude` / `opencode` CLI). A preflight PATH hint, not a full environment validator: the
    *  manager checks each is on PATH before spawning and fails with a clear error naming the
@@ -183,9 +207,21 @@ export interface Connector extends Extension {
    *  stays as the backstop. Only a connector that forks-from a prior session (never hijacks it) sets
    *  this `true`. */
   readonly supportsResume?: boolean;
+  /** Whether this connector can reopen the exact host session named by
+   *  {@link LaunchOpts.continueSession} after a supervised process crash. Default-deny. */
+  readonly supportsSessionContinuation?: boolean;
   /** Whether this connector can honor {@link LaunchOpts.variant}. Default-deny so a variant request
    *  fails before provisioning side effects in the manager. */
   readonly supportsModelVariant?: boolean;
+  /**
+   * Connector-specific upper bound for reaching mesh presence after its process is launched.
+   *
+   * The manager's generic readiness window applies when absent. A connector whose documented
+   * bootstrap legitimately exceeds that generic window must declare a positive safe integer here,
+   * so a live slow boot is not terminalized `uncertain` before it can join. This is a bounded wait,
+   * not an application-health promise: presence still means only that the seat joined the mesh.
+   */
+  readonly readinessTimeoutMs?: number;
   /** One short clause telling the operator what to expect on a FOREGROUND spawn, appended to the
    *  "spawning <name> on the mesh" line. What happens next differs per harness — one opens on an
    *  interactive gate, another paints a full-screen UI after a pause — and a hint naming the wrong

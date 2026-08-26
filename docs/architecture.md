@@ -176,18 +176,31 @@ laterally; the manager only births and configures them.
   floor bounds spawn/despawn churn, so a capability-holding but compromised peer cannot
   fork-bomb the host. The gate runs at goal acceptance, before any identity is minted or
   process launched, so a refused spawn leaves nothing behind.
-- **Declared env, not inherited.** Runtimes pass spawned children an explicit allow-list
-  (PATH / HOME / locale / TERM + the model key + opted-in shared-server vars, forwarded by
-  name), never `process.env`, so the operator's unrelated secrets stop bleeding into every
-  agent. This closes env-var bleed; it does not prevent filesystem reads or exfiltration
-  of the model key itself.
+- **Declared environment boundary.** A spawned agent receives a fixed OS allow-list (PATH/HOME/
+  locale, including PATH entries connector binaries live in), the machine-wide `COTAL_*` operator
+  knobs, connector-declared provider inputs, explicitly shared MCP references, and names
+  deliberately added through `spawn.env`. It never inherits the manager's ambient environment, so
+  host-session markers (`CLAUDE_CODE_CHILD_SESSION` and the analogous names other hosts use) and
+  unrelated capabilities cannot become properties of every seat. Connection material rides a private
+  file instead of the environment.
 - **Instance addressing.** One space can hold more than one manager. Each keeps a stable
   logical instance id across restarts and advances its process epoch when it comes back, so
   peers address a specific manager without caring which process currently serves it. `cotal
   spawn <persona> --detach --on <instance>` pins one instance (`ps`, `stop` and `attach` take
   the same flag); an untargeted spawn rides class anycast and the acceptance records which
   instance took it. `ps` and `status` scatter across every registered instance and label a
-  non-answering one unreachable, never dropping it.
+  non-answering one as registered with no answer within the deadline, never dropping it.
+- **A manager holds a liveness lease, and only proof ends it.** Each instance keeps its own key
+  in the space's manager bucket and refreshes it several times over inside the key's TTL. A
+  refresh that gets *no answer* is not a lost lease: it proves nothing about the key, and the
+  write may even have landed with only the acknowledgement lost. So the manager re-reads the key
+  before deciding. It keeps serving when the key is still its own, adopting whatever revision the
+  broker actually has, and shuts itself down only on proof: the key is gone, or it now holds a
+  different process. Going longer than the TTL with no refresh that *landed* is its own reason
+  to stop, and it says so in those words. That window runs from the last write that actually
+  restarted the key's TTL: a re-read that finds the key unchanged is a real answer and the
+  manager keeps serving on it, but reading a key does not refresh it, so it buys no extra time.
+  Either way that stops one instance, never the space; a sibling manager keeps serving.
 - **Attach is a mesh session.** The console and dashboard discover agents over the **mesh**
   (presence, `ps`). `cotal attach` no longer hands back a `127.0.0.1` URL: it redeems a
   one-use, holder-bound session offer, and the terminal bytes stream over the mesh on

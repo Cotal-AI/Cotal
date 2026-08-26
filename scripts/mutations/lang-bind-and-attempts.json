@@ -1,0 +1,135 @@
+{
+  "grades": "suite",
+  "guard": "each effect's durable bind is awaited on EVERY return it can take, the bind lands on the exact step that asked for it including its scope, and the escalation record says what each attempt settled as and who it went to",
+  "command": "pnpm --filter @cotal-ai/lang test",
+  "progressPattern": "  ok ",
+  "why": "Three review rounds found the same shape here: a cell that pins one branch of a two-branch return, one half of an identity, or an identity without its outcome. Each row below severs a case the suite claimed and names the cell that has to notice.",
+  "mutations": [
+    {
+      "name": "the checkpoint's EXPIRED return fires its bind and walks away",
+      "file": "packages/lang/src/sim.ts",
+      "find": "    await ctx.bind({ simCheckpoint: stepKeyString(ctx.key) });\n",
+      "replace": "    if (scripted.status === \"expired\") { void ctx.bind({ simCheckpoint: stepKeyString(ctx.key) }); } else { await ctx.bind({ simCheckpoint: stepKeyString(ctx.key) }); }\n",
+      "expectRed": "a checkpoint that EXPIRED reaches its bind and does NOT settle while that bind is in flight",
+      "cell": "a checkpoint that EXPIRED reaches its bind and does NOT settle while that bind is in flight",
+      "note": "A checkpoint has two returns; every held arm before this one scripted the resolved one."
+    },
+    {
+      "name": "the checkpoint's EXPIRED return swallows a failed bind",
+      "file": "packages/lang/src/sim.ts",
+      "find": "    await ctx.bind({ simCheckpoint: stepKeyString(ctx.key) });\n",
+      "replace": "    if (scripted.status === \"expired\") { await ctx.bind({ simCheckpoint: stepKeyString(ctx.key) }).catch(() => {}); } else { await ctx.bind({ simCheckpoint: stepKeyString(ctx.key) }); }\n",
+      "expectRed": "a checkpoint that EXPIRED does not settle when its bind REJECTS, and surfaces that failure unchanged",
+      "cell": "a checkpoint that EXPIRED does not settle when its bind REJECTS, and surfaces that failure unchanged",
+      "note": "Waiting and then discarding the result reaches the same hole as never waiting."
+    },
+    {
+      "name": "the bind matches on the step's leaf, discarding the scope it ran under",
+      "file": "packages/lang/src/journal.ts",
+      "find": "    const k = Journal.keyOf(key);\n    const entry = this.byKey.get(k);\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "replace": "    const hit = [...this.byKey.entries()].find(([, e]) => e.kind === key.kind && e.name === key.name && e.occurrence === key.occurrence);\n    const k = hit?.[0] ?? Journal.keyOf(key);\n    const entry = hit?.[1];\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "expectRed": "the bind lands in the branch that asked for it, and its sibling running the same step is untouched",
+      "cell": "the bind lands in the branch that asked for it, and its sibling running the same step is untouched",
+      "note": "Severs the bind alone rather than every key in the package: parallel branches run the SAME step, so a leaf match takes the first sibling."
+    },
+    {
+      "name": "the bind matches the scope and the name but discards which iteration asked",
+      "file": "packages/lang/src/journal.ts",
+      "find": "    const k = Journal.keyOf(key);\n    const entry = this.byKey.get(k);\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "replace": "    const base = Journal.keyOf(key).replace(/#\\d+$/, \"\");\n    const hit = [...this.byKey.entries()].find(([kk]) => kk.replace(/#\\d+$/, \"\") === base);\n    const k = hit?.[0] ?? Journal.keyOf(key);\n    const entry = hit?.[1];\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "expectRed": "the bind lands on the iteration that asked for it, and the earlier one running the same step under the same scope is untouched",
+      "cell": "the bind lands on the iteration that asked for it, and the earlier one running the same step under the same scope is untouched",
+      "note": "A loop runs the same step twice under one scope, so the two rows differ only by occurrence and the scope cell cannot see this."
+    },
+    {
+      "name": "the bind matches the scope, the name and the occurrence but discards the KIND",
+      "file": "packages/lang/src/journal.ts",
+      "find": "    const k = Journal.keyOf(key);\n    const entry = this.byKey.get(k);\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "replace": "    const full = Journal.keyOf(key);\n    const scopeOf = full.slice(0, full.lastIndexOf(\"/\"));\n    const hit = [...this.byKey.entries()].find(([, e]) => e.scope === scopeOf && e.name === key.name && e.occurrence === key.occurrence);\n    const k = hit?.[0] ?? full;\n    const entry = hit?.[1];\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "expectRed": "the bind lands on the kind that asked for it, and the other kind sharing its name and occurrence is untouched",
+      "cell": "the bind lands on the kind that asked for it, and the other kind sharing its name and occurrence is untouched",
+      "note": "Occurrences count per kind:name tag, so two kinds under one name and one scope are both #0 and differ in nothing the other three cells constrain."
+    },
+    {
+      "name": "the bind normalises the occurrences INSIDE the scope path, so two runs of one scope collide",
+      "file": "packages/lang/src/journal.ts",
+      "find": "    const k = Journal.keyOf(key);\n    const entry = this.byKey.get(k);\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "replace": "    const full = Journal.keyOf(key);\n    const flatten = (s: string): string => { const i = s.lastIndexOf(\"/\"); return s.slice(0, i).replace(/#\\d+/g, \"\") + s.slice(i); };\n    const hit = [...this.byKey.entries()].find(([kk]) => flatten(kk) === flatten(full));\n    const k = hit?.[0] ?? full;\n    const entry = hit?.[1];\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "expectRed": "the bind lands in the run of the scope that asked for it, and the earlier run of the same scope is untouched",
+      "cell": "the bind lands in the run of the scope that asked for it, and the earlier run of the same scope is untouched",
+      "note": "The scope is a path of frames each carrying its own occurrence; the branch cell and the leaf-occurrence cell both survive a lookup that keeps the frames and drops which run they were."
+    },
+    {
+      "name": "the first attempt's record says it resolved when it expired",
+      "file": "packages/lang/src/perform.ts",
+      "find": "              { attempt: 0, requestId: ctx.requestId, settled: \"expired\" },\n",
+      "replace": "              { attempt: 0, requestId: ctx.requestId, settled: \"resolved\" },\n",
+      "expectRed": "each attempt records what it settled as, and the escalation records who it went to",
+      "cell": "each attempt records what it settled as, and the escalation records who it went to",
+      "note": "The identities were asserted; what the attempts settled as was not."
+    },
+    {
+      "name": "the escalation's record drops who it escalated to",
+      "file": "packages/lang/src/perform.ts",
+      "find": "              { attempt: 1, requestId: nextId, to: cpTo ?? null, settled: second.outcome },\n",
+      "replace": "              { attempt: 1, requestId: nextId, settled: second.outcome },\n",
+      "expectRed": "each attempt records what it settled as, and the escalation records who it went to",
+      "cell": "each attempt records what it settled as, and the escalation records who it went to",
+      "note": "A record of an escalation with no recipient is the half that a future consumer would trust."
+    },
+    {
+      "name": "the bind normalises the run index of an INNER scope frame, so two runs of a nested block collide",
+      "file": "packages/lang/src/journal.ts",
+      "find": "    const k = Journal.keyOf(key);\n    const entry = this.byKey.get(k);\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "replace": "    const full = Journal.keyOf(key);\n    const flattenInner = (s: string): string => {\n      const cut = s.lastIndexOf(\"/\");\n      const parts = s.slice(0, cut).split(\"/\");\n      const carry = parts.map((part, i) => (/#\\d+$/.test(part) ? i : -1)).filter((i) => i >= 0);\n      if (carry.length >= 2) {\n        const last = carry[carry.length - 1];\n        parts[last] = parts[last].replace(/#\\d+$/, \"\");\n      }\n      return parts.join(\"/\") + s.slice(cut);\n    };\n    const hit = [...this.byKey.entries()].find(([kk]) => flattenInner(kk) === flattenInner(full));\n    const k = hit?.[0] ?? full;\n    const entry = hit?.[1];\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "expectRed": "the bind lands in the run of the INNER scope that asked for it, with the outer run identical on both rows",
+      "cell": "the bind lands in the run of the INNER scope that asked for it, with the outer run identical on both rows",
+      "note": "Only fires where the path is nested, so the outermost-run cell cannot see it: the claim about the scope path has to hold at every depth."
+    },
+    {
+      "name": "the bind normalises the NAME of every scope frame, so two differently named scopes collide",
+      "file": "packages/lang/src/journal.ts",
+      "find": "    const k = Journal.keyOf(key);\n    const entry = this.byKey.get(k);\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "replace": "    const full = Journal.keyOf(key);\n    const dropFrameNames = (s: string): string => {\n      const cut = s.lastIndexOf(\"/\");\n      const path = s.slice(0, cut).split(\"/\").map((part) => (/#\\d+$/.test(part) ? part.replace(/^([^:]+):[^#]*(#\\d+)$/, \"$1$2\") : part)).join(\"/\");\n      return path + s.slice(cut);\n    };\n    const hit = [...this.byKey.entries()].find(([kk]) => dropFrameNames(kk) === dropFrameNames(full));\n    const k = hit?.[0] ?? full;\n    const entry = hit?.[1];\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "expectRed": "the bind lands in the scope whose NAME asked for it, and the scope beside it sharing every other frame field is untouched",
+      "cell": "the bind lands in the scope whose NAME asked for it, and the scope beside it sharing every other frame field is untouched",
+      "note": "Every scope cell above runs its two rows under one `parallel:review` frame, so a key that keeps a frame's kind, occurrence and branch and drops its name satisfies all of them."
+    },
+    {
+      "name": "the bind normalises the KIND of every scope frame, so a parallel and a race sharing a name collide",
+      "file": "packages/lang/src/journal.ts",
+      "find": "    const k = Journal.keyOf(key);\n    const entry = this.byKey.get(k);\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "replace": "    const full = Journal.keyOf(key);\n    const dropFrameKinds = (s: string): string => {\n      const cut = s.lastIndexOf(\"/\");\n      const path = s.slice(0, cut).split(\"/\").map((part) => (/#\\d+$/.test(part) ? part.replace(/^[^:]+:/, \"\") : part)).join(\"/\");\n      return path + s.slice(cut);\n    };\n    const hit = [...this.byKey.entries()].find(([kk]) => dropFrameKinds(kk) === dropFrameKinds(full));\n    const k = hit?.[0] ?? full;\n    const entry = hit?.[1];\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "expectRed": "the bind lands in the scope whose KIND asked for it, and the scope sharing its name, occurrence and branch is untouched",
+      "cell": "the bind lands in the scope whose KIND asked for it, and the scope sharing its name, occurrence and branch is untouched",
+      "note": "`nextScope` counts per kind:name tag, so a parallel and a race opened under one name are both #0; the frame-name row keeps the name and cannot see this."
+    },
+    {
+      "name": "the RECOVERY arm says attempt 0 resolved when the only path to attempt 1 is its expiry",
+      "file": "packages/lang/src/perform.ts",
+      "find": "                { attempt: 0, requestId: attemptId(0), settled: \"expired\" },\n",
+      "replace": "                { attempt: 0, requestId: attemptId(0), settled: \"resolved\" },\n",
+      "expectRed": "and the recovered chain records that attempt 0 expired, what attempt 1 settled as, and who it went to",
+      "cell": "and the recovered chain records that attempt 0 expired, what attempt 1 settled as, and who it went to",
+      "note": "A different write site from the live chain: the resumed run is exactly when nobody is left to remember what happened."
+    },
+    {
+      "name": "the RECOVERY arm drops who the escalation went to",
+      "file": "packages/lang/src/perform.ts",
+      "find": "                { attempt: ctx.attempt, requestId: ctx.requestId, to: cpTo ?? null, settled: raw.outcome },\n",
+      "replace": "                { attempt: ctx.attempt, requestId: ctx.requestId, settled: raw.outcome },\n",
+      "expectRed": "and the recovered chain records that attempt 0 expired, what attempt 1 settled as, and who it went to",
+      "cell": "and the recovered chain records that attempt 0 expired, what attempt 1 settled as, and who it went to",
+      "note": "The recipient was asserted on the live chain only, so dropping it on recovery stayed green."
+    },
+    {
+      "name": "the NON-ESCALATING record says expired whatever the checkpoint settled as",
+      "file": "packages/lang/src/perform.ts",
+      "find": "            return { ...first, attempts: [{ attempt: ctx.attempt, requestId: ctx.requestId, settled: first.outcome }] };\n",
+      "replace": "            return { ...first, attempts: [{ attempt: ctx.attempt, requestId: ctx.requestId, settled: \"expired\" }] };\n",
+      "expectRed": "a checkpoint that never escalates records one attempt, what it settled as, and no recipient",
+      "cell": "a checkpoint that never escalates records one attempt, what it settled as, and no recipient",
+      "note": "The most travelled of the three write sites and the one no cell read."
+    }
+  ]
+}

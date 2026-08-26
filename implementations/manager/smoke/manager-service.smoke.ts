@@ -39,11 +39,12 @@ import {
   epcredFamilyPrefix, parseLedgerRow, rawDigest, recordSpecKey, RECORD_KINDS,
   epCall, epRequestSubject, epCallerReplyFilter, EpEnvelopeError,
   serveIssuanceGateKv,
-  type EpServeLedgerRow,
+  type CredentialLedgerRow,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_STATUS_CONTRACT, type ManagerStatus } from "../src/manager-service-contract.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const freePort = (): Promise<number> =>
   new Promise((res, rej) => {
@@ -63,12 +64,13 @@ const enc = new TextEncoder(), dec = new TextDecoder();
 
 const space = `mgrsvc-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-mgrsvc-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth); // the manager's start() reloads auth from disk
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 // The smoke reaches private state ONLY to observe/force fence states the wire cannot cheaply
@@ -101,8 +103,10 @@ try {
   const recKv = await kvm.open(recordsBucket(space));
   const gateKey = epgateKey(MANAGER_ENDPOINT, iid);
   const readGate = async () => parseEndpointGate((await authKv.get(gateKey))!.value, gateKey);
-  const credRows = async (): Promise<EpServeLedgerRow[]> => {
-    const rows: EpServeLedgerRow[] = [];
+  // `parseLedgerRow` returns a CredentialLedgerRow; the annotation named the serve-grant row type,
+  // which is a different shape.
+  const credRows = async (): Promise<CredentialLedgerRow[]> => {
+    const rows: CredentialLedgerRow[] = [];
     const it = await authKv.keys(`${epcredFamilyPrefix(MANAGER_ENDPOINT, iid)}.>`);
     for await (const k of it) rows.push(parseLedgerRow((await authKv.get(k))!.value, k));
     return rows;
@@ -175,7 +179,7 @@ try {
   {
     const replies: unknown[] = [];
     const sub = callerNc.subscribe(epCallerReplyFilter(space, caller), {
-      callback: (_e, m) => replies.push(JSON.parse(dec.decode(m.data))),
+      callback: (_e, m) => { replies.push(JSON.parse(dec.decode(m.data))); },
     });
     const n = `n${String(Date.now()).padStart(23, "0")}`;
     const subj = epRequestSubject(space, { route: { mode: "one" }, endpoint: MANAGER_ENDPOINT, command: "describe", caller, nonce: n });
@@ -265,6 +269,7 @@ try {
 } finally {
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(`\n${fail === 0 ? "MANAGER SERVICE SMOKE OK ✅" : "MANAGER SERVICE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);

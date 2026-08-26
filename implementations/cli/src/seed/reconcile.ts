@@ -181,6 +181,39 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
   if (child.kind === "ambiguous")
     throw new Error(`a connector seed may be mid-flight (marker ${child.path}) - if no cotal process is running, remove it and retry`);
 
+  // REFUSE TO WRITE A GENERATION OLDER THAN THE STORE'S. An older binary run against a store stamped
+  // newer misses the fast path (its generation is not the stamp), refreshes NOTHING (the refresh below
+  // fires only when the running binary is strictly newer), and then writes its own older generation
+  // over the stamp at the commit. The store is left claiming a generation whose payloads are not the
+  // ones installed, and the next command from the newer binary sees the skew and reinstalls every
+  // connector to stamp it back. Two binaries alternating flap the store and pay a full reseed each way.
+  //
+  // Reproduced live before this guard existed: seed a home with 0.18.0, then run `cotal ext list` from
+  // a 0.16.0 build against the same home. A READ command, not a seed. The stamp went 0.18.0 -> 0.16.0
+  // with the 213 payload files byte-identical, and the next 0.18.0 command re-added all six connectors.
+  //
+  // `reset` and `force` are the operator saying "rebuild this store for the version I am running",
+  // which is the supported way down. Everything else refuses loudly and writes nothing. This sits
+  // BEFORE the maintenance quarantine below so an older `--repair` cannot move files aside either.
+  let storeGeneration: string | undefined;
+  try {
+    storeGeneration = readStamp()?.generation;
+  } catch {
+    storeGeneration = undefined; // corrupt JSON: the maintenance path below quarantines it
+  }
+  if (
+    mode !== "reset" &&
+    mode !== "force" &&
+    storeGeneration !== undefined &&
+    isValidSemver(storeGeneration) &&
+    isStrictlyNewer(storeGeneration, generation)
+  ) {
+    throw new Error(
+      `this cotal ${generation} is older than the seed store's generation ${storeGeneration} - ` +
+        "run the newer cotal, or `cotal ext seed --reset` to rebuild the store for this version",
+    );
+  }
+
   // Maintenance modes must survive a corrupt manifest / corrupt seed state: quarantine the unreadable
   // file(s) aside so the reads below (and the commit) can't wedge on them. `manifestRebuilt` ⇒ reconcile
   // against ON-DISK truth (a quarantined manifest has no reliable "removed" record); `repairAllSeeded`

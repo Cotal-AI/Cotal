@@ -29,9 +29,11 @@ import {
   newIdentity,
   setupSpaceStreams,
   DEV_OWNER,
+  type CotalMessage,
   type Delivery,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -55,9 +57,12 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 
 const space = `plane3gate-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-plane3gate-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 let server = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+// Re-owned on every restart. Owning only the FIRST child would leave the LIVE broker unowned
+// after a respawn while the suite still read as migrated: ownership held on a dead pid.
+let releaseBroker = teardownOnSignal(server, dir);
 
 try {
   let up = false;
@@ -111,7 +116,7 @@ try {
   });
   const got: string[] = [];
   a.on("error", () => {});
-  a.on("message", (m, d: Delivery) => { got.push(m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("")); d.ack(); });
+  a.on("message", (m: CotalMessage, d: Delivery) => { got.push(m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("")); d.ack(); });
   await a.start();
   await wait(300);
 
@@ -130,7 +135,9 @@ try {
   got.length = 0;
   server.kill("SIGKILL");
   await awaitExit(server); // the restart reuses PORT — the old broker must free the socket first
+  releaseBroker();
   server = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+  releaseBroker = teardownOnSignal(server, dir);
   let back = false;
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { back = true; break; } await wait(200); }
   if (!back) throw new Error("broker did not restart");
@@ -151,5 +158,6 @@ try {
   server.kill("SIGKILL");
   await awaitExit(server);
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 process.exit(fail === 0 ? 0 : 1);

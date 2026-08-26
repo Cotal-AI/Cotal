@@ -23,6 +23,7 @@ import {
   stripSpaceAuth,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -78,10 +79,13 @@ function signingKeys(jwt: string): string[] {
 const space = `signing-rot-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const oldSigner = stripSpaceAuth(auth);
-const dir = mkdtempSync(join(tmpdir(), "cotal-signrot-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const conf = join(dir, "server.conf");
 writeFileSync(conf, serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 let srv = spawn("nats-server", ["-c", conf], { stdio: "ignore" });
+// Re-owned on every restart. Owning only the FIRST child would leave the LIVE broker unowned
+// after a respawn while the suite still read as migrated: ownership held on a dead pid.
+let releaseBroker = teardownOnSignal(srv, dir);
 
 try {
   await waitReachable();
@@ -101,7 +105,9 @@ try {
   srv.kill();
   await awaitExit(srv);
   writeFileSync(conf, serverConfig(rotated, [rotated], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
+  releaseBroker();
   srv = spawn("nats-server", ["-c", conf], { stdio: "ignore" });
+  releaseBroker = teardownOnSignal(srv, dir);
   await waitReachable();
 
   check("pre-rotation copied data-account user cred is denied after broker loads rotated account JWT", await tryConnect(oldCreds, oldUser.id) === "rejected");
@@ -118,6 +124,7 @@ try {
   srv.kill();
   await awaitExit(srv);
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 if (fail) {

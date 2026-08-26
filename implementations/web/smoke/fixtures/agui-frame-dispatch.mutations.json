@@ -1,0 +1,33 @@
+{
+  "command": "pnpm smoke:agui-frame-dispatch",
+  "mutations": [
+    {
+      "name": "D1 the own-property guard is dropped, so a part whose kind is an inherited method name resolves Object.prototype.toString as its renderer and the body draws [object Window] with no kind named and no failure reported",
+      "file": "implementations/web/src/web/parts.js",
+      "find": "    const render =\n      renderers && Object.prototype.hasOwnProperty.call(renderers, p.kind) ? renderers[p.kind] : undefined;",
+      "replace": "    const render = renderers && renderers[p.kind];",
+      "expectRed": "an inherited property name (`toString`) is NOT mistaken for a registered renderer"
+    },
+    {
+      "name": "D2 a renderer returning a non-string is passed straight through, so the body carries [object Object] via the same coercion this file exists to remove",
+      "file": "implementations/web/src/web/parts.js",
+      "find": "      if (typeof out === \"string\") return out;",
+      "replace": "      return out;",
+      "expectRed": "a renderer returning a NON-STRING is named, not coerced into [object Object]"
+    },
+    {
+      "name": "D3 a throwing renderer degrades to the empty string instead of a named marker, which reinstates the blank body through the extension seam: the same bug with a new door",
+      "file": "implementations/web/src/web/parts.js",
+      "find": "        return `[renderer for part kind ${JSON.stringify(p.kind)} failed: ${err && err.message ? err.message : String(err)}]`;",
+      "replace": "        return \"\";",
+      "expectRed": "a THROWING renderer degrades to a named marker, not a blank body"
+    },
+    {
+      "name": "D4 the registration moves off the wire kind, so the file loads, registers, and draws nothing, which is exactly what an absent file looks like from the page",
+      "file": "implementations/web/src/web/agui-frame.js",
+      "find": "  const KIND = \"ag-ui.frame\";",
+      "replace": "  const KIND = \"agui.frame\";",
+      "expectRed": "agui-frame.js registers a function under EXACTLY the frame kind"
+    }
+  ]
+}

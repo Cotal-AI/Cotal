@@ -23,6 +23,49 @@ let dmSel = null; // { peer, with } when a Direct-messages thread is open
 let agentSel = null; // peer id when an Agent Detail drill-down is open (else selected/dmSel drive the view)
 let activity = []; // {mode, msg} ring buffer for the all-activity view
 let channelMsgs = []; // messages for the selected channel
+// The shape-B bootstrap for each of the two merge sites: this page opens the live feed and only then
+// fetches the backfill, so a frame's `seq` order is the consumer's problem. One machine per
+// bootstrap, re-armed BEFORE its fetch starts, so frames arriving during the fetch are held rather
+// than ordered against a baseline that has not been established yet.
+let feedOrder = window.COTAL_EVENT_ORDER.create();
+let channelOrder = window.COTAL_EVENT_ORDER.create();
+// Gap and prefix notes, newest last, keyed for the surface that draws them. Kept rather than logged:
+// a gap that only reaches the console is a gap nobody sees.
+let orderNotes = [];
+function noteOrder(notes) {
+  for (const n of notes) orderNotes.push(n);
+  if (orderNotes.length > 50) orderNotes = orderNotes.slice(-50);
+}
+/** In-flight bootstrap, so a second caller shares it instead of arming a rival machine. */
+let refreshing = null;
+
+/** The notes, as the banner the feed views draw above their rows.
+ *
+ *  THIS EXISTS BECAUSE COMPUTING A GAP AND DRAWING ONE ARE DIFFERENT CLAIMS. The notes were collected
+ *  into an array that nothing read, so the machine detected a missing frame and the page said nothing:
+ *  a gap that reaches only an unused variable is a gap nobody sees, which is the same silence this
+ *  lane exists to remove, one layer up. A reader has to be able to act differently on a lost frame, an
+ *  evicted prefix and an ordinary feed.
+ *
+ *  The three kinds are drawn as three different statements, because collapsing them would put the one
+ *  that always happens on a late join next to the one that must never be ignored. */
+function orderNoticeHtml() {
+  if (!orderNotes.length) return "";
+  const gaps = orderNotes.filter((n) => n.type === "gap");
+  const races = orderNotes.filter((n) => n.type === "boundary-hole");
+  const prefixes = orderNotes.filter((n) => n.type === "prefix-incomplete");
+  const failures = orderNotes.filter((n) => n.type === "backfill-failed");
+  const parts = [];
+  if (gaps.length) {
+    const missing = gaps.reduce((sum, g) => sum + (g.missing || 0), 0);
+    parts.push(`<b>${missing} event frame${missing === 1 ? "" : "s"} missing</b> (${gaps.length} break${gaps.length === 1 ? "" : "s"} in the stream)`);
+  }
+  if (races.length) parts.push(`${races.length} possible ordering race${races.length === 1 ? "" : "s"} at start-up, unconfirmed`);
+  if (prefixes.length) parts.push(`${prefixes.length} stream${prefixes.length === 1 ? "" : "s"} joined after the start, earlier frames not retained`);
+  if (failures.length) parts.push(`history unavailable, so ordering is based on live frames only`);
+  if (!parts.length) return "";
+  return `<div class="order-notice${gaps.length ? " fault" : ""}">${parts.join(" · ")}</div>`;
+}
 let modes = new Set(MODES); // delivery modes currently shown
 let paused = false; // freeze auto-scroll so a value can be read
 let expandAll = false; // channel-wide: expand every clamped message body (else per-message toggle)
@@ -74,6 +117,37 @@ function setConn(live) {
   const el = $("conn");
   el.className = "pill" + (live ? "" : " down");
   el.querySelector(".t").textContent = live ? "live" : "disconnected";
+}
+
+/** Say WHICH sources are showing their last good value, and why. Visible, not a console line: the
+ *  whole point of keeping the snapshot is that the reader knows they are looking at it. Cleared by
+ *  the next refresh in which everything landed, which is what recovery looks like from here. */
+/** What the marker is currently saying, so a source read OUTSIDE the poll can add to it without
+ *  erasing the poll's own findings. `refresh()` sets the four polled sources; the open channel's
+ *  history is read later, inside `select()`, and a bare `setStale([channel])` there would drop the
+ *  roster/channels/dms/activity refusals from the same label. */
+let staleNow = [];
+function setStale(stale) {
+  staleNow = stale;
+  renderStale();
+}
+/** Mark ONE source, or clear it, leaving every other source's mark alone. A successful read clears
+ *  its own mark and nobody else's, which is what makes recovery per source rather than all-or-nothing. */
+function markStale(name, entry) {
+  const rest = staleNow.filter((s) => s.name !== name);
+  setStale(entry ? [...rest, entry] : rest);
+}
+function renderStale() {
+  const el = $("stale");
+  if (!el) return;
+  const label = window.COTAL_SNAPSHOT.staleLabel(staleNow);
+  el.hidden = !label;
+  // CLEARED, NOT JUST HIDDEN. Returning early on recovery left the previous label and its tooltip
+  // sitting in the element. Hidden text is invisible until something else unhides it, and then the
+  // reader is told a source is stale that recovered some time ago. Recovery has to erase the claim,
+  // not park it.
+  el.querySelector(".t").textContent = label;
+  el.title = staleNow.map((s) => `${s.name}: ${s.reason}`).join("\n");
 }
 
 // ── Header: golden-signal tiles ───────────────────────────────────────────────
@@ -432,6 +506,7 @@ function renderAllActivity() {
         <span class="chip pause${paused ? " on" : ""}" id="pause">${paused ? "▶ resume" : "⏸ pause"}</span>
       </span>
     </div>
+    ${orderNoticeHtml()}
     <div class="feed">${rows.length ? rows.map(rowHTML).join("") : `<div class="empty">waiting for messages…</div>`}</div>`;
   for (const chip of center.querySelectorAll(".chip[data-mode]"))
     chip.onclick = () => {
@@ -516,6 +591,7 @@ function renderChannel() {
       </div>
       <div class="purpose">${purpose}</div>
     </div>
+    ${orderNoticeHtml()}
     <div class="clist">${items.length ? items.map(cmsgHTML).join("") : `<div class="empty">no messages</div>`}</div>`;
   const list = $("center").querySelector(".clist");
   list.scrollTop = list.scrollHeight;
@@ -745,6 +821,14 @@ function refreshDerived() {
 }
 
 let loadSeq = 0;
+/** The channel `channelMsgs` currently holds, so a refused re-read of THE SAME channel can keep what
+ *  is on screen. `selected` cannot answer this: `select()` assigns it before the clear below, so by
+ *  then it already names the channel being opened rather than the one being displayed. Without this,
+ *  retention would show the previous channel's messages under the new channel's name, which is worse
+ *  than an empty view. */
+let shownChannel = null;
+/** The in-flight channel bootstrap: `{key, promise}`, so a second call for the same channel shares it. */
+let selecting = null;
 async function select(key) {
   agentSel = null;
   dmSel = null;
@@ -754,12 +838,77 @@ async function select(key) {
   if (!isDemo) renderRoster(rosterRows()); // clear any stale Agent Detail highlight
   if (isDemo) return (renderCenter(), renderRail());
   if (key !== "*") {
+    // SINGLE FLIGHT PER CHANNEL, for the reason the feed has one. `refresh()` calls `select(selected)`
+    // on every poll, so two bootstraps for the SAME open channel overlapped routinely: the second
+    // re-armed `channelOrder` while the first was still fetching, and the first machine, holding every
+    // frame that arrived in that window, became unreachable. The staleness guard did not save it,
+    // because returning early is exactly what left the buffer undrained.
+    if (selecting && selecting.key === key) return selecting.promise;
     const seq = ++loadSeq;
+    // HELD BEFORE THE CLEAR, and only when it belongs to THIS channel. A fresh selection must not
+    // inherit the last channel's messages, so a switch holds nothing and starts empty as before.
+    const held = shownChannel === key ? channelMsgs : [];
     channelMsgs = [];
+    // ARMED BEFORE THE FETCH IS ISSUED, which is the whole ordering. Re-armed on every selection
+    // because each one is a fresh two-phase bootstrap: a new history read, and a live tap that is
+    // already delivering into it. Held in a LOCAL as well, so this bootstrap settles the machine it
+    // armed even if a selection of a different channel has since rebound the global.
+    const order = window.COTAL_EVENT_ORDER.create();
+    channelOrder = order;
+    let release;
+    selecting = { key, promise: new Promise((r) => (release = r)) };
     renderCenter();
-    const msgs = await (await fetch(`/api/channels/${encodeURIComponent(key)}/history?limit=200`)).json();
-    if (seq !== loadSeq) return;
-    channelMsgs = msgs;
+    // Same reason as the activity feed: a failed history read must not leave the boundary unpassed
+    // and the frames of this channel held out of the view that was opened to look at them. What it
+    // is NOT any more is an empty batch: it is the last history that was actually read, so a refused
+    // poll on the open channel keeps what is on screen instead of emptying it.
+    let msgs = [];
+    let refused = null;
+    try {
+      // READ THROUGH THE SAME GATE AS EVERY OTHER SOURCE. This was the one read on either page that
+      // still consumed a body without consulting the status, and it is the read behind the open
+      // channel. A 500 here answers `{"error":"..."}`, which is valid JSON that `fetch` does not
+      // reject, so the catch below never fired: the object was handed to the order machine as a
+      // history, the channel drew empty, and nothing said why. Measured on the shipped code before
+      // this line changed: last-good gone, no backfill-failed note, no stale mark.
+      msgs = await window.COTAL_SNAPSHOT.readJson(
+        await fetch(`/api/channels/${encodeURIComponent(key)}/history?limit=200`),
+        `#${key} history`,
+      );
+    } catch (err) {
+      // A REFUSED READ KEEPS WHAT THE READER ALREADY HAD, for the same reason the four polled
+      // sources do. `refresh()` re-selects the open channel on EVERY poll, so on a link where the
+      // read keeps missing, an empty batch here emptied the open channel once per poll. The held
+      // messages take the place of the history that could not be read, which keeps the merge and
+      // the ordering below identical to the successful path.
+      refused = err && err.message ? err.message : String(err);
+      msgs = held;
+      noteOrder([{ type: "backfill-failed", channel: key, reason: refused }]);
+    } finally {
+      // SETTLED ON EVERY PATH, INCLUDING THE STALE ONE. A superseded load must not rebind the view it
+      // no longer owns, and it must still drain the machine it armed; skipping the settle is what
+      // orphaned frames. When the selection has moved on, the released rows are dropped with the rest
+      // of that view, which is correct because the reader is no longer looking at that channel.
+      const settled = order.backfill(msgs);
+      if (seq === loadSeq) {
+        noteOrder(settled.notes);
+        // Same merge as the activity feed and for the same reason: chat that arrived live during this
+        // fetch is only in `channelMsgs`, released frames are only in `settled.emit`, and an assignment
+        // either way round drops one of them.
+        const merged = settled.emit.slice();
+        const ids = new Set(merged.map((m) => m && m.id));
+        for (const m of channelMsgs) if (m && !ids.has(m.id)) merged.push(m);
+        channelMsgs = merged.slice(-500);
+        shownChannel = key;
+        // SAID, NOT JUST KEPT. Retention without the mark shows old messages as though they were
+        // current, which is the half of this rule that turns a silent wipe into a silent lie. Marked
+        // per source: a refused history does not erase the poll's other marks, and a read that lands
+        // clears this one without touching theirs.
+        markStale(`#${key} history`, refused ? { kind: "refused", name: `#${key} history`, reason: refused } : null);
+      }
+      if (selecting && selecting.key === key) selecting = null;
+      release();
+    }
   }
   renderCenter();
   renderRail();
@@ -776,42 +925,184 @@ function selectDM(peer, w) {
 }
 
 async function refresh() {
-  roster = await (await fetch("/api/roster")).json();
-  refreshDerived();
-  const list = await (await fetch("/api/channels")).json();
-  // L2 shape is flat {channel,messages,description?,replay,replayWindow?,deliveryClass}.
-  // Tolerate a nested-config server briefly (pre-restart) without re-deriving defaults.
-  channels = new Map(
-    list.map((c) => {
-      if (c.replay !== undefined || c.deliveryClass !== undefined || (c.description && !c.config))
-        return [c.channel, c];
-      const cfg = c.config || {};
-      return [
-        c.channel,
-        {
-          messages: c.messages,
-          description: cfg.description,
-          replay: cfg.replay,
-          replayWindow: cfg.replayWindow,
-          deliveryClass: cfg.deliveryClass,
+  // ── ONE BOOTSTRAP AT A TIME, AND IT ALWAYS ENDS ─────────────────────────────────────────────────
+  //
+  // SINGLE FLIGHT. Arming a machine and settling it are two ends of ONE bootstrap, and this function
+  // could previously be re-entered between them. The stock startup does exactly that: the file ends
+  // with `refresh(); connect();`, and `connect()`'s open handler calls `refresh()` again, so a second
+  // call re-armed `feedOrder` while the first was still fetching. The first machine, holding whatever
+  // arrived in that window, was then unreachable: the settle ran on the NEW binding and the old
+  // machine's buffer went with it. Measured on the shipped merge logic, a frame held on the first
+  // machine was simply absent from the feed afterwards. A reconnect flap did it too.
+  //
+  // Overlapping callers now share the in-flight bootstrap instead of starting a rival one. A
+  // concurrent duplicate would have re-fetched the same pages anyway, so nothing is lost by
+  // coalescing, and the pairing of one arm to one settle is restored.
+  if (refreshing) return refreshing;
+  let release;
+  refreshing = new Promise((r) => (release = r));
+  // Captured before the first await: `onMessage` appends here while every request below is in flight,
+  // and the settle rebinds `activity`.
+  const live = activity;
+  feedOrder = window.COTAL_EVENT_ORDER.create();
+  // The batch the settle will use. Only the all-activity path fills it; every other path settles on
+  // empty, which is the machine's specified empty-history arm rather than a shortcut.
+  let batch = [];
+  let activityPage = null;
+  try {
+    // ── A FAILED READ KEEPS WHAT IS ON SCREEN ─────────────────────────────────────────────────────
+    //
+    // This was a sequential chain of `(await fetch(u)).json()`, and both of its properties were
+    // wrong on a slow link. A 500 body is valid JSON and `fetch` does not reject on one, so the
+    // REFUSAL was assigned into `roster` / `channels` / `dms` as if it were the snapshot; and the
+    // first read that did throw skipped every read after it, so one slow route emptied the feed and
+    // left the rest of the page un-refreshed with nothing saying so. Measured against a broker
+    // behind a 160ms link: `/api/activity` 500 `{"error":"timeout"}` produced
+    // `Uncaught TypeError: activity is not iterable` fifteen times in twenty-five seconds.
+    //
+    // `refreshAll` reads all four concurrently, applies ONLY the ones that succeeded, and returns
+    // what did not land. `apply` is the only writer, so a refusal cannot reach page state at all.
+    const SNAP = window.COTAL_SNAPSHOT;
+    // The all-activity backfill is a source ONLY when the reader is on all-activity. The other three
+    // lenses settle the order machine on an empty batch, which is its specified empty-history arm,
+    // and asking for a page nobody will draw is exactly the per-channel fan-out this change bounded.
+    const onAllActivity = !agentSel && !dmSel && selected === "*";
+    const stale = await SNAP.refreshAll([
+      // The space name used to be a one-shot at boot with a bare `fetch().then((r) => r.json())`, so
+      // a refusal arrived as data and the header read `· undefined` for the rest of the session:
+      // the same defect as the rest of this change, on the one read that never came back to correct
+      // itself. It is a source like any other now, so it is gated, named when it is stale, and
+      // replaced by the next poll that lands. `/api/meta` is `{space, pid}` computed in process, so
+      // reading it every poll costs no broker work.
+      {
+        name: "space",
+        read: async () => SNAP.readJson(await fetch("/api/meta"), "space"),
+        apply: (meta) => { $("space").textContent = `· ${meta.space}`; document.title = `Cotal · ${meta.space}`; },
+      },
+      {
+        name: "peers",
+        read: async () => SNAP.readJson(await fetch("/api/roster"), "peers"),
+        apply: (v) => { roster = v; refreshDerived(); },
+      },
+      {
+        name: "channels",
+        read: async () => SNAP.readJson(await fetch("/api/channels"), "channels"),
+        // L2 shape is flat {channel,messages,description?,replay,replayWindow?,deliveryClass}.
+        // Tolerate a nested-config server briefly (pre-restart) without re-deriving defaults.
+        apply: (list) => {
+          channels = new Map(
+            list.map((c) => {
+              if (c.replay !== undefined || c.deliveryClass !== undefined || (c.description && !c.config))
+                return [c.channel, c];
+              const cfg = c.config || {};
+              return [
+                c.channel,
+                {
+                  messages: c.messages,
+                  description: cfg.description,
+                  replay: cfg.replay,
+                  replayWindow: cfg.replayWindow,
+                  deliveryClass: cfg.deliveryClass,
+                },
+              ];
+            }),
+          );
         },
-      ];
-    }),
-  );
-  dms = await (await fetch("/api/dms?limit=500")).json();
-  renderSidebarNav();
-  if (agentSel) {
-    renderCenter();
-  } else if (dmSel) {
-    renderCenter();
-  } else if (selected !== "*") {
-    select(selected);
-  } else {
-    activity = await (await fetch("/api/activity?limit=200")).json();
+      },
+      {
+        name: "direct messages",
+        read: async () => SNAP.readJson(await fetch("/api/dms?limit=500"), "direct messages"),
+        apply: (v) => { dms = v; },
+      },
+      // Read alongside the other three rather than after them, so a refusal on it is reported in the
+      // same place instead of being swallowed, and so it no longer waits for them on a slow link.
+      //
+      // `/api/activity` answers an ENVELOPE now, never a bare array, and the shape change is a guard
+      // rather than a nuisance: a caller that ignores `partial` breaks here instead of rendering a
+      // short page as a complete one. NO TOLERANCE FOR A BARE ARRAY either, and that is not
+      // pedantry: `[].entries` is a real Array METHOD, so a `page.entries ?? page` tolerance quietly
+      // hands a FUNCTION to the merge when the answer is a list. It is read exactly one way.
+      ...(onAllActivity
+        ? [{
+            name: "activity",
+            read: async () => SNAP.readJson(await fetch(`/api/activity?limit=200`), "activity"),
+            apply: (page) => { batch = page.entries; activityPage = page; },
+          }]
+        : []),
+    ]);
+    // A PARTIAL PAGE IS NOT A REFUSAL AND IS NOT SILENCE. The entries it carries are real and are
+    // applied; what the reader is told is that some sources did not answer in time, which sources,
+    // and how many did. Reported on the same marker as a refusal so there is one place to look.
+    if (activityPage && activityPage.partial)
+      stale.push({
+        kind: "partial",
+        name: "activity",
+        reason: `${activityPage.read} of ${activityPage.of} sources answered within ${activityPage.deadlineMs}ms; missing ${activityPage.missing.join(", ")}`,
+      });
+    setStale(stale);
+    // The order machine's own failure arm keeps its own note: a refused history read is what makes a
+    // backfill incomplete, and the notice that draws it is about ordering. The other three sources
+    // are carried by the stale pill and are not backfill failures, so they are not reported as ones.
+    const backfillRefused = stale.find((s) => s.name === "activity" && s.kind !== "partial");
+    if (backfillRefused) noteOrder([{ type: "backfill-failed", reason: backfillRefused.reason }]);
+    renderSidebarNav();
+    // THE BOUNDARY MUST PASS EVEN WHEN THE FETCH DOES NOT, and this is not a soft failure mode
+    // invented here. `pending` is drained only by the settle, so a rejected request used to mean the
+    // machine never settled and every frame held during it stayed invisible for the life of the page,
+    // with nothing on screen saying so. That is strictly worse than what this code replaced, where a
+    // failed fetch simply left the live arrivals in place.
+    //
+    // A failed history read IS an empty history batch: the machine already specifies that case, and
+    // specifies that the baseline then comes from the earliest BUFFERED frame. So the boundary is
+    // settled on empty rather than skipped, and the refusal is SURFACED (as a stale mark above and a
+    // note here) instead of being swallowed. Reporting it is what keeps this from being a silent degrade.
+    if (agentSel || dmSel) {
+      renderCenter();
+    } else if (selected !== "*") {
+      select(selected);
+    }
+  } finally {
+    // ── THE SETTLE, ON EVERY EXIT PATH ────────────────────────────────────────────────────────────
+    //
+    // IT USED TO RUN ONLY ON THE ALL-ACTIVITY BRANCH, while the arm ran unconditionally at the top.
+    // So whenever the reader was on a channel, a DM or an agent, every live frame was held by a
+    // machine that this function had armed and would never settle, and none of them reached the feed.
+    // Switching back to all activity showed a feed that had never received them, and the next refresh
+    // replaced the machine and took the buffer with it. A `finally` is the only placement that
+    // survives all four branches plus a throw from anything between the arm and here. The source
+    // reads no longer supply that throw, because a refusal is reported rather than propagated; the
+    // renders below the reads still can, and the cost of missing it is the same.
+    activity = batch;
     // Same trust rule as the live feed: the backfill is tagged with the channel the SERVER
     // requested, so the payload claim is overwritten at ingress rather than downstream.
     for (const e of activity) if (e?.msg) e.msg.channel = e.channel;
+    // MERGED, NOT ASSIGNED OVER. This read `activity = await fetch(...)`, which DISCARDED every live
+    // entry `onMessage` had appended while the fetch was in flight. Retention hid it: the backfill
+    // re-read the same messages from the broker, so the overwritten arrivals came back. Event
+    // channels are no longer in that backfill, by the server's filter, so for a frame there is
+    // nothing to come back and the assignment would be a silent deletion of exactly the traffic this
+    // lane exists to make visible. The two halves of this change are that tightly coupled: the filter
+    // is what turns the pre-existing overwrite into a loss, and this is what makes the filter safe.
+    const settled = feedOrder.backfill(activity);
+    noteOrder(settled.notes);
+    // Live frames were HELD by the machine and come back inside `settled.emit` in seq order; live
+    // chat passed straight through and is only in `live`. Both have to survive, so the backfill is
+    // the BASE and unseen live arrivals are appended after it, newest last, deduped by id against
+    // what the backfill already carried.
+    //
+    // WHAT THIS ORDER DOES AND DOES NOT CLAIM. Frames of one chain are exactly ordered, by `seq`,
+    // which is the claim this file exists to make. Where a released frame sits relative to a chat
+    // message that arrived during the same fetch is approximate. It is deliberately not fixed by
+    // sorting the merged rows on `ts`: a producer's clock is not its sequence, so two frames whose
+    // timestamps disagree with their sequence numbers would be swapped back by that sort, trading the
+    // guarantee for the cosmetic.
+    const merged = settled.emit.slice();
+    const ids = new Set(merged.map((e) => e && e.msg && e.msg.id));
+    for (const e of live) if (e && e.msg && !ids.has(e.msg.id)) merged.push(e);
+    activity = merged.slice(-500);
     renderCenter();
+    refreshing = null;
+    release();
   }
 }
 
@@ -835,8 +1126,15 @@ function onMessage(entry) {
   // A conditional trust rule is not a trust rule. "Overwrite when I have something better" leaves
   // the untrusted value in place exactly when the trusted one is missing.
   msg.channel = entry.channel;
-  if (!activity.some((e) => e.msg.id === msg.id)) {
-    activity.push(entry);
+  // ORDERED, NOT JUST DEDUPED. Message-id dedupe answers "have I seen this exact message"; it cannot
+  // answer "is a frame missing between these two", because the thing that would say so is `seq`. A
+  // frame arriving before the backfill it belongs after is HELD here and released by `backfill()` in
+  // `seq` order; everything else passes through and is deduped by id exactly as before.
+  const fed = feedOrder.live(entry);
+  noteOrder(fed.notes);
+  for (const e of fed.emit) {
+    if (activity.some((a) => a.msg.id === e.msg.id)) continue;
+    activity.push(e);
     if (activity.length > 500) activity.shift();
   }
   if (mode === "unicast" && !dms.some((m) => m.id === msg.id)) {
@@ -849,8 +1147,14 @@ function onMessage(entry) {
     const ch = channels.get(msg.channel);
     channels.set(msg.channel, { ...(ch ?? {}), messages: (ch?.messages ?? 0) + 1 });
     if (!dmSel && selected === msg.channel) {
-      channelMsgs.push(msg);
-      if (channelMsgs.length > 500) channelMsgs.shift();
+      // The selected-channel view runs the same race: `select()` fetches this channel's history with
+      // the feed already open, so a live frame can arrive before the retained range it follows.
+      const sel = channelOrder.live(msg);
+      noteOrder(sel.notes);
+      for (const m of sel.emit) {
+        channelMsgs.push(m);
+        if (channelMsgs.length > 500) channelMsgs.shift();
+      }
     } else {
       unread.set(msg.channel, (unread.get(msg.channel) ?? 0) + 1);
     }
@@ -1098,12 +1402,6 @@ if (isDemo) {
   document.title = "Cotal · demo";
   renderDemo();
 } else {
-  fetch("/api/meta")
-    .then((r) => r.json())
-    .then((m) => {
-      $("space").textContent = `· ${m.space}`;
-      document.title = `Cotal · ${m.space}`;
-    });
   refresh();
   connect();
 }

@@ -37,6 +37,7 @@ import {
   type MembershipRecord,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const servers = `nats://127.0.0.1:${PORT}`;
@@ -50,8 +51,9 @@ const OA = "local.ownera", OB = "local.ownerb";
 const A = "local.alice", B = "local.bob", CA = "local.carol", D = "local.dave", E = "local.eve";
 const Z = "local.zeta", AL = "local.al", BO = "local.bo", CY = "local.cy";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const dir = mkdtempSync(join(tmpdir(), "cotal-memreg-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const srv = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -213,5 +215,6 @@ main()
       setTimeout(resolve, 3000);
     });
     rmSync(dir, { recursive: true, force: true });
+    releaseBroker(); // last: ownership is held until this teardown has actually finished
     process.exit(process.exitCode ?? 0);
   });

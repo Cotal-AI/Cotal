@@ -24,6 +24,7 @@ import {
   principalKey, presenceBucket, spacePrefix,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -62,9 +63,10 @@ async function trySubscribe(creds: string, id: string, subject: string, graceMs 
 
 const space = `xowner-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-xowner-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 
 try {
   let up = false;
@@ -78,7 +80,7 @@ try {
   // distinct lifecycle (SPEC §13.1): agent creds are lifecycle-keyed, so each mint carries its own uid.
   const idA1 = newIdentity(), idA2 = newIdentity(), idB1 = newIdentity();
   const uidA1 = mintLifecycleUid(), uidA2 = mintLifecycleUid(), uidB1 = mintLifecycleUid();
-  const grants = { allowSubscribe: ["general"], allowPublish: ["general"] } as const;
+  const grants = { allowSubscribe: ["general"], allowPublish: ["general"] };
   const a1 = await mintCreds(auth, idA1, "agent", { ...grants, principal: { owner: OWNER_A, actor: "actora1" }, lifecycleUid: uidA1 });
   await mintCreds(auth, idA2, "agent", { ...grants, principal: { owner: OWNER_A, actor: "actora2" }, lifecycleUid: uidA2 });
   await mintCreds(auth, idB1, "agent", { ...grants, principal: { owner: OWNER_B, actor: "actorb1" }, lifecycleUid: uidB1 });
@@ -131,4 +133,5 @@ try {
   srv.kill("SIGKILL");
   await awaitExit(srv);
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }

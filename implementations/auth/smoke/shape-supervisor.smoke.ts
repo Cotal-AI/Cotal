@@ -27,6 +27,7 @@ import { Kvm } from "@nats-io/kv";
 import { assertAuthorityStreamShape, type AuthorityStreamCfg } from "../src/lifecycle-registry.js";
 import { openAuthorityClient, openSupervisedConnectReader } from "../src/authority-client.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -51,10 +52,14 @@ function throwsSync(fn: () => void): boolean { try { fn(); return false; } catch
 
 const space = `shapesup-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const tmp = mkdtempSync(join(tmpdir(), "cotal-shapesup-"));
+const tmp = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const conf = join(tmp, "server.conf");
 writeFileSync(conf, serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(tmp, "js") }));
 let srv = spawn("nats-server", ["-c", conf], { stdio: "ignore" });
+// Reassigned at the bounce below, so ownership is reassigned with it. Holding the FIRST handle
+// past the respawn would leave ownership pinned to a dead pid while the live broker was unowned,
+// which reads as handled and is worse than not owning it at all.
+let releaseBroker = teardownOnSignal(srv, tmp);
 
 const dataAccount = { pub: auth.account.pub, signingSeed: auth.account.signingSeed };
 const quiet = () => {};
@@ -108,7 +113,9 @@ try {
   await awaitExit(srv);
   const downDenied = await (async () => { for (let i = 0; i < 25; i++) { if (throwsSync(() => reader!.current())) return true; await wait(100); } return false; })();
   check("BLOCKER 1b: current() DENIES while the connection is down (unproved between binds)", downDenied);
+  releaseBroker();
   srv = spawn("nats-server", ["-c", conf], { stdio: "ignore" });
+  releaseBroker = teardownOnSignal(srv, tmp);
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) break; await wait(200); }
   const reproved = await (async () => { for (let i = 0; i < 60; i++) { try { reader!.current(); return true; } catch { await wait(250); } } return false; })();
   check("BLOCKER 1b: current() SERVES again only after the rebind shape proof re-runs", reproved);
@@ -126,4 +133,5 @@ try {
   srv.kill();
   await awaitExit(srv);
   rmSync(tmp, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }

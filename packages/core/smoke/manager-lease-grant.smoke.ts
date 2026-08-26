@@ -52,6 +52,7 @@ import {
   principalKey, DEV_OWNER,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -64,10 +65,14 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-leasegrant-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
-process.on("exit", () => { try { srv.kill("SIGKILL"); } catch { /* gone */ } rmSync(dir, { recursive: true, force: true }); });
+// This suite's exit handler already kills the broker AND removes the store dir, which is the
+// complete pattern: measured, it leaves zero residue on a long lived box. Ownership adds the
+// case that handler cannot reach, a runner that terminates without running `exit` handlers.
+const releaseBroker = teardownOnSignal(srv, dir);
+process.on("exit", () => { try { srv.kill("SIGKILL"); } catch { /* gone */ } rmSync(dir, { recursive: true, force: true }); releaseBroker(); });
 
 const enc = (o: unknown) => new TextEncoder().encode(JSON.stringify(o));
 const holder = principalKey(DEV_OWNER, "sup").key;

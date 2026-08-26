@@ -9,7 +9,7 @@ import { setup, setupFlags } from "./commands/setup.js";
 import { join } from "./commands/join.js";
 import { console_ } from "./commands/console.js";
 import { spawn, spawnComplete, spawnFlags, spawnRequiredExtensions } from "./commands/spawn.js";
-import { attach, attachFlags, managedAgentComplete, ps, psFlags, stop, stopFlags } from "./commands/agents.js";
+import { attach, attachFlags, input, inputFlags, managedAgentComplete, ps, psFlags, stop, stopFlags } from "./commands/agents.js";
 import { models, modelsComplete, modelsFlags } from "./commands/models.js";
 import { c } from "./ui.js";
 import { personas, personasComplete } from "./commands/personas.js";
@@ -217,9 +217,9 @@ const baseCommands: Command[] = [
       { name: "out", type: "string", value: "<path>", description: "output path (default .cotal/auth/creds/<name>.creds)" },
       { name: "signer", type: "boolean", description: "emit a stripped account-signing file instead" },
       { name: "force", type: "boolean", description: "with --signer: overwrite an existing file" },
-      { name: "allow-subscribe", type: "string", value: "<a,b>", description: "read ACL override (comma-separated)" },
-      { name: "allow-publish", type: "string", value: "<a,b>", description: "post ACL override (comma-separated)" },
-      { name: "role", type: "string", value: "<role>", description: "agent role: scopes its anycast task queue (svc_<role>); overrides the agent file" },
+      { name: "allow-subscribe", type: "string", value: "<a,b>", description: "agent profile: read ACL override (comma-separated); refused off it" },
+      { name: "allow-publish", type: "string", value: "<a,b>", description: "agent profile: post ACL override (comma-separated); refused off it" },
+      { name: "role", type: "string", value: "<role>", description: "agent profile: scopes its anycast task queue (svc_<role>); overrides the agent file; refused off it" },
       { name: "provision", type: "boolean", description: "agent profile: also pre-create the identity's bind-only DM/deliver durables (+ role task queue) on the live mesh, so the credential can consume; needs the broker reachable" },
       spaceFlag,
       serverFlag,
@@ -366,11 +366,20 @@ const baseCommands: Command[] = [
   },
   {
     kind: "command",
+    name: "input",
+    group: "Agents",
+    summary: "type one line into an agent's terminal without attaching - --name <n> --text <t>",
+    flags: inputFlags,
+    run: input,
+    complete: managedAgentComplete,
+  },
+  {
+    kind: "command",
     name: "personas",
     group: "Agents",
     summary: "list/manage local personas (.cotal/agents)",
     usage:
-      "personas <list [-v] [--running] | show <name> | edit <name> | new <name> (--prompt <t>|--from <f>) [--role <r>] [--model <m>] | rm <name> --force>",
+      'personas <list [-v] [--running] | show <name> | edit <name> | new <name> (--prompt <t>|--from <f>) --subscribe <a,b|""> [--role <r>] [--model <m>] | rm <name> --force>',
     positionals: "<list | show <name> | edit <name> | new <name> | rm <name>>",
     flags: [
       ...targetFlags,
@@ -378,6 +387,7 @@ const baseCommands: Command[] = [
       { name: "model", type: "string", value: "<m>", description: "new: the persona's model" },
       { name: "prompt", type: "string", value: "<t>", description: "new: the persona's prompt text" },
       { name: "from", type: "string", value: "<f>", description: "new: seed the prompt from a file" },
+      { name: "subscribe", type: "string", value: '<a,b|"">', description: 'new: channels the persona reads ("" = none) - required' },
       { name: "verbose", type: "boolean", short: "v", description: "list: include role/model/description" },
       { name: "running", type: "boolean", description: "list: mark personas live on the mesh" },
       { name: "force", type: "boolean", description: "rm: required - delete without prompting" },

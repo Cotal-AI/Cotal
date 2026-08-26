@@ -30,7 +30,9 @@ const results: { name: string; ok: boolean; detail: string }[] = [];
 const check = (name: string, ok: boolean, detail: unknown = "") =>
   results.push({ name, ok, detail: typeof detail === "string" ? detail : JSON.stringify(detail) });
 
-const LIVE_BROKER = "nats://broker.cotal.ai:4222";
+// Annotated `string` rather than left as a literal: this is a tripwire, and comparing two
+// literal types is reported as an unintentional comparison even though holding is the point.
+const LIVE_BROKER: string = "nats://broker.cotal.ai:4222";
 /** This suite starts no broker and records no server. The assertion is kept as the FIRST action
  *  anyway, because "this one doesn't dial anything" is exactly the reasoning that puts a suite on
  *  the live host. */

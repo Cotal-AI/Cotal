@@ -49,9 +49,19 @@ export interface ConnectorConfig {
   mcpServers?: Record<string, McpServerSpec>;
 }
 
-/** The parsed cotal config file: a section per connector, keyed by connector name ("claude", …). */
+/** Deliberate extra environment names for a spawned agent. The default boundary is a fixed OS
+ *  allow-list, the machine-wide `COTAL_*` operator knobs, and connector-declared inputs. `env` adds
+ *  named capability (including a host-session marker a persona has opted into); an empty array adds
+ *  none. There is no inherit mode. */
+export interface SpawnConfig {
+  env?: string[];
+}
+
+/** The parsed cotal config file: a section per connector, keyed by connector name ("claude", …),
+ *  plus machine-local spawn policy. */
 export interface CotalConfig {
   connectors?: Record<string, ConnectorConfig>;
+  spawn?: SpawnConfig;
 }
 
 /** Operator-level config dir: `$XDG_CONFIG_HOME/cotal`; else `%APPDATA%\Cotal` on Windows (the
@@ -101,7 +111,12 @@ function mergeConfig(base: CotalConfig, over: CotalConfig): CotalConfig {
     const o = over.connectors?.[name];
     connectors[name] = { ...b, ...o, mcpServers: { ...(b?.mcpServers ?? {}), ...(o?.mcpServers ?? {}) } };
   }
-  return { connectors };
+  // `spawn` replaces WHOLESALE rather than merging per key the way servers do. An allow-list is one
+  // policy statement, and a space-local file that names three variables means those three, not those
+  // three plus whatever the operator-level file happened to list. Silently unioning two allow-lists
+  // would widen the narrower one, which is the wrong direction for a containment setting.
+  const spawn = over.spawn ?? base.spawn;
+  return spawn === undefined ? { connectors } : { connectors, spawn };
 }
 
 /** Load the merged cotal config: the operator-level file as the base, the space-local file layered
@@ -145,4 +160,9 @@ export function parseShareSelection(value: string | undefined): readonly string[
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+/** Extra spawned-agent environment names the operator declared. Undefined means no extras. */
+export function spawnEnvAllow(config: CotalConfig): readonly string[] | undefined {
+  return config.spawn?.env;
 }

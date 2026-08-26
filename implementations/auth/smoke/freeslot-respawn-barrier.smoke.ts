@@ -1,34 +1,63 @@
 /**
- * FREESLOT RESPAWN BARRIER smoke (control-surface P1 gate; EXPECTED RED until the P2 alias
- * reservation + lifecycle-keyed cleanup land) — proves by EXECUTION the despawn/respawn race that
- * had previously only been established by code-read:
+ * FREESLOT RESPAWN BARRIER smoke (control-surface P1 gate). It proves by EXECUTION the
+ * despawn/respawn contract that had previously only been established by code-read.
  *
- *   `freeSlot` frees the agent's name synchronously, then fires `deprovision` DETACHED. The
- *   teardown's LOCAL half (creds/secret shred + ledger revoke) completes in the detached call's
- *   synchronous prefix — on the same event-loop tick as `freeSlot` — so no same-name respawn can
- *   ever observe it mid-flight. Its BROKER half (`deprovisionBroker`: the dm_/dlv_ durables and
- *   the read-ACL row, all keyed by (owner, actor-name)) runs after the first await, across a cred
- *   mint plus a fresh broker connection plus JS-API deletes. A same-name respawn that provisions
- *   inside that window hands the REPLACEMENT's freshly minted broker footprint to the stale
- *   teardown: its durables and ACL row are deleted while the manager keeps listing it as live.
+ * THE RACE IT WAS WRITTEN AGAINST, described in the PAST tense because this tree no longer has it:
+ *
+ *   `freeSlot` freed the agent's name synchronously, then fired `deprovision` DETACHED. Its BROKER
+ *   half (`deprovisionBroker`: the dm_/dlv_ durables and the read-ACL row, all keyed by (owner,
+ *   actor-name)) ran after the first await, across a cred mint plus a fresh broker connection plus
+ *   JS-API deletes. A same-name respawn that provisioned inside that window handed the
+ *   REPLACEMENT's freshly minted broker footprint to the stale teardown, which deleted its durables
+ *   and ACL row while the manager kept listing it as live.
+ *
+ * WHAT THIS TREE DOES INSTEAD, which is what the cells below execute. The name is NOT freed while
+ * any teardown phase is in flight: the hold clears only after the standing-authority revoke and the
+ * lifecycle retirement both confirm. The broker deletes are lifecycle-uid-pinned, so a stale or
+ * replayed teardown for a retired incarnation is broker-denied against a same-name successor, whose
+ * resource names embed a different uid (`Manager.deprovisionBroker`, SPEC 13.1). The three barrier
+ * contracts below are what say so, by running.
  *
  * The BARRIER CONTRACT is the spec/plan acceptance timeline for terminal despawn (retire before
  * alias release; cleanup pinned to the retired lifecycle; detached cleanup = idempotent
  * reconciliation that can never resolve through the current alias occupant):
  *
  *   1. RESERVATION — while the predecessor's cleanup is pending, a same-name spawn must not
- *      yield a new live agent under the exact alias. Today the alias frees instantly (RED).
+ *      yield a new live agent under the exact alias. Holds on this tree: the spawn is refused
+ *      with the reserved-pending-retirement operator face (GREEN).
  *   2. LIFECYCLE KEYING — after retirement, the same-alias replacement's broker resources must
- *      be DISTINCT names from the predecessor's. Today the names collide exactly (RED).
+ *      be DISTINCT names from the predecessor's. Holds on this tree (GREEN).
  *   3. REPLAY SAFETY — re-delivering the predecessor's captured broker cleanup (the
  *      at-least-once world: crash recovery, redelivery, reconciliation retry) must leave the
- *      live replacement's footprint untouched. Today it silently destroys it (RED).
+ *      live replacement's footprint untouched. Holds on this tree (GREEN).
  *
- * All three flip green under the full P2 slice (alias reservation + lifecycle-keyed resources +
+ * MEASURED on this tree: 24 passed, 0 failed. All three barrier contracts above hold, so the P2
+ * slice this suite was written to wait for has landed. It had been reading RED for a reason of its
+ * own: phase D retried the respawn 20 times at 250ms, a ~5s budget, while the alias frees in two
+ * stages that together take ~8s. Timed from the awaited teardown, the first ~1.0s is refused
+ * RESERVED; from ~1.3s to ~7.0s the reservation has released but the predecessor's ADVISORY presence
+ * row is still live, so uniqueName numbers the successor `worker-2` and the auth plane refuses that
+ * name-form because `-` is the reserved principal name-form separator; the exact alias is taken at
+ * ~8.0s. That second stage is bounded by the presence record's TTL plus one sweep tick (endpoint.ts:
+ * ttlMs 6000, sweep every ttlMs/3), so the repair is a deadline budgeted past that ceiling, not a
+ * product change. The numbered-name refusal inside the window is real and is tracked as #693 and
+ * #667: for those few seconds the manager mints a name its own auth plane rejects, rather than the
+ * reserved-pending-retirement face it gives in the first second. This suite no longer waits on it.
+ * At this branch's merge-base the suite threw before its first cell, so its cells are newly VISIBLE
+ * rather than newly caused. The suite is now GATED: it is in bin/smoke/ci-suites.txt, so a CI shard
+ * runs it on every push. It was ungated for the month it could not start, which is how the retry
+ * budget and the presence TTL drifted past each other with nothing to report it.
+ *
+ * All three are green under the landed P2 slice (alias reservation + lifecycle-keyed resources +
  * `(principal, lifecycleUid)`-pinned cleanup). The CONTRACT asserts need no edits for that; only
  * a mechanical rename is expected if P2 restructures the private `deprovisionBroker` seam this
  * harness wraps. The teardown's LOCAL half (creds/secret shred + ledger revoke) is asserted GREEN
- * throughout: its synchronous prefix protects it, and the replay is broker-only.
+ * throughout. NOT because it is synchronous: the ledger revoke is AWAITED and production says so
+ * itself (`deprovisionBroker`'s doc: "the revoke is awaited and can be deliberately slow, so it is
+ * not merely a synchronous prefix"). What holds it is the ORDER of the single-flighted chain, the
+ * local half completing before the broker phase begins, plus `standingAuthorityLive`, which is set
+ * before the revoke is attempted and RETAINED when it fails so the hold can never free the name
+ * (`manager.ts` around the revoke; INT-2 runs that EACCES path). The replay is broker-only.
  *
  * The footprint checks ENUMERATE by principal prefix (via a harness-only inspector cred — no
  * production profile grants CONSUMER.LIST) and attribute predecessor/successor sets by TIMELINE:
@@ -50,6 +79,7 @@ const SUBCOMMAND = process.argv[2] ?? "";
 if (SUBCOMMAND === "agent-bearer" || SUBCOMMAND === "auth-service") {
   await import("@cotal-ai/auth");
   const { registry } = await import("@cotal-ai/core");
+  type Command = import("@cotal-ai/core").Command;
   const rest = process.argv.slice(3);
   const values: Record<string, string | boolean | undefined> = {};
   const positionals: string[] = [];
@@ -62,9 +92,10 @@ if (SUBCOMMAND === "agent-bearer" || SUBCOMMAND === "auth-service") {
       else values[key] = true;
     } else positionals.push(a);
   }
-  const cmd = registry
-    .all<{ name: string; run: (a: { values: typeof values; positionals: string[]; raw: readonly string[] }) => Promise<void> }>("command")
-    .find((c) => c.name === SUBCOMMAND);
+  // The real contract, rather than a hand-written shape: `all` constrains its type argument to
+  // Extension, which the inline shape did not satisfy because it omitted `kind`, and ParsedArgs is
+  // exactly the values/positionals/raw triple this dispatcher already passes.
+  const cmd = registry.all<Command>("command").find((c) => c.name === SUBCOMMAND);
   if (!cmd) { console.error(`self-dispatch: command "${SUBCOMMAND}" is not registered`); process.exit(1); }
   try {
     await cmd.run({ values, positionals, raw: rest });
@@ -84,6 +115,14 @@ type ControlReply = import("@cotal-ai/core").ControlReply;
 
 const { spawn } = await import("node:child_process");
 const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } = await import("node:fs");
+
+/** `Manager.list` is PRIVATE; the cells below read one field off the row `cotal ps` renders, so the
+ *  reach goes through one named view rather than a cast per call site, and the view names that field
+ *  and no other. Widening the method to public would be a shipped-source change made for a test's
+ *  convenience, which is not this change's business. */
+type PsRow = { name: string };
+const psList = (m: object, ownerFilter?: string): PsRow[] =>
+  (m as unknown as { list: (o?: string) => PsRow[] }).list(ownerFilter);
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 
@@ -111,7 +150,7 @@ const { jetstreamManager } = await import("@nats-io/jetstream");
 const { Kvm } = await import("@nats-io/kv");
 const { encodeUser, fmtCreds } = await import("@nats-io/jwt");
 const { fromPublic, fromSeed } = await import("@nats-io/nkeys");
-const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, agentLifecycleSecretFilePaths } = await import("@cotal-ai/workspace");
+const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, agentLifecycleSecretFilePaths, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const {
   cotalAuthProvider, establishIdpSession, grantActor, loadAuthServiceInfo,
   managedActorLedgerDir, ledgerRowFilename,
@@ -155,6 +194,10 @@ const SPACE = `fsb-${Math.floor(Math.random() * 1e6)}`;
 const CLIENT_ID = "cotal-cli";
 const AGENT = "worker";
 const dir = userAuthStateDir(root, SPACE);
+// The provider's SECRET seam. `prepareServer` and `ownerForLogin` both REQUIRE it (callout account,
+// issuer keys, owner secret, service key projection all ride it); the calls below used to omit it,
+// so the provider was reached with `store` undefined. Same workspace-rooted store the CLI composes.
+const store = workspaceSecretStore(root);
 const credsDir = join(authDir(root), "creds");
 const coreDist = join(import.meta.dirname, "..", "..", "..", "packages", "core", "dist", "index.js");
 
@@ -279,6 +322,7 @@ try {
   };
 
   const prepared = await cotalAuthProvider.prepareServer({
+    store,
     space: SPACE,
     operatorSeed: auth.operator.seed,
     account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
@@ -340,13 +384,15 @@ try {
     dir: home, idpUrl: base, clientId: CLIENT_ID,
     onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode),
   });
-  const OWNER = await cotalAuthProvider.ownerForLogin({ dir, space: SPACE });
+  const OWNER = await cotalAuthProvider.ownerForLogin({ store, dir, space: SPACE });
   grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "role:worker"], allowSubscribe: ["general"], allowPublish: ["general"], label: "smoke operator" });
 
-  // Broker-footprint inspectors. The checks ENUMERATE by principal PREFIX rather than binding
-  // today's exact resource names, so the same asserts stay compilable and flip green under the
-  // lifecycle-keyed rename (dm_<principal> becomes dm_<principal>-<lifecycleUid> etc.) without
-  // editing the smoke. Enumeration (`$JS.API.CONSUMER.LIST`) is deliberately grantable by NO
+  // Broker-footprint inspectors. The checks ENUMERATE by principal PREFIX rather than binding one
+  // exact resource name. The lifecycle-keyed rename has LANDED on this tree, so the names they
+  // match already carry the uid (`dm_<owner>-<actor>-<lifecycleUid>`, built by `lifecycleNameKey`
+  // in `subjects.ts`, SPEC 13.1); the prefix form is what let these asserts survive that rename
+  // without being edited, and it is what keeps them standing through the next one.
+  // Enumeration (`$JS.API.CONSUMER.LIST`) is deliberately grantable by NO
   // production profile, so the inspector rides a HARNESS-ONLY god cred signed with the account
   // key the smoke already owns — observability of the harness, never a surface of the code under test.
   const principal = principalKey(OWNER, AGENT);
@@ -394,13 +440,14 @@ try {
 
   // ---------- C. retirement barrier: despawn with the broker cleanup held, probe the alias ----------
   console.log("C) despawn with the broker cleanup held; the alias must not be reassignable");
-  // Hold the predecessor's broker teardown on a gate — deprovisionBroker ONLY, so the teardown's
-  // synchronous prefix (creds/secret shred + ledger revoke) runs untouched at despawn time exactly
-  // as in production. Instance-level wrap of the private method (runtime-visible; the repo's
+  // Hold the predecessor's broker teardown on a gate, deprovisionBroker ONLY, so the local half of
+  // the teardown (creds/secret shred + the AWAITED ledger revoke) runs untouched at despawn time
+  // exactly as in production, and only the phase that follows it is held. Instance-level wrap of the private method (runtime-visible; the repo's
   // smokes already reach into manager privates): the FIRST broker teardown for this agent name
   // parks until released; everything else passes through and is recorded so every deleter in play
   // stays attributable. The gated call's ARG is captured — section E replays it, modeling the
-  // at-least-once redelivery of a retired lifecycle's cleanup that the fix must make harmless.
+  // at-least-once redelivery of a retired lifecycle's cleanup that the lifecycle pinning makes
+  // harmless.
   type DeprovArg = { id: string; name: string };
   type DeprovBroker = (a: DeprovArg) => Promise<void>;
   type Handle = import("@cotal-ai/core").AgentHandle;
@@ -422,25 +469,29 @@ try {
     brokerCalls.push({ name: a.name, gated: false, done });
     return done;
   };
-  const listNames = (): string[] => manager!.list().map((a: { name: string }) => a.name);
+  const listNames = (): string[] => psList(manager!).map((a) => a.name);
 
   const stopReply = await mAny.opStop({ name: AGENT, graceful: false }, mAny.ep.ref().id, true);
   check("despawn reply ok", stopReply.ok === true, stopReply);
-  // The broker phase engages a few microtasks after freeSlot (the teardown's synchronous prefix +
-  // the ledger-revoke await sit before it) — poll briefly for the gate to be taken.
+  // The broker phase engages after freeSlot, with the creds/secret shred and the AWAITED ledger
+  // revoke ahead of it in the same chain, so the delay is a real await and not a microtask hop.
+  // Poll for the gate to be taken.
   for (let i = 0; i < 100 && !gatedRun; i++) await wait(20);
   check("the detached teardown reached its broker cleanup and is held on the gate",
     gatedRun !== undefined && predArg !== undefined);
-  // The teardown's LOCAL half already ran in its synchronous prefix, exactly as in production: the
-  // predecessor's ledger row is gone at this point. Asserting it keeps the probe honest — the gate
-  // must not have deferred anything the real code does synchronously.
-  check("predecessor row already revoked by the synchronous prefix (gate held nothing local)",
+  // The teardown's LOCAL half has already completed here, exactly as in production, because the
+  // ledger revoke is AWAITED ahead of the broker phase rather than racing it. Asserting it keeps the
+  // probe honest: the gate must not have deferred anything the real chain finishes first. An earlier
+  // version of this comment and of the cell name below called that a "synchronous prefix", which is
+  // the wrong mechanism and contradicted production's own note; a review caught it.
+  check("predecessor row already revoked before the broker phase (gate held nothing local)",
     !existsSync(managedRowPath(OWNER)));
 
   // BARRIER 1 — while the predecessor's cleanup is pending, the alias must stay RESERVED: a
   // same-name spawn must not yield a NEW live agent under the exact alias (refusing loudly or
-  // auto-numbering both satisfy it). Today the name frees the instant the slot empties, so this
-  // spawn succeeds as the exact alias — the enabling condition of the whole race.
+  // auto-numbering both satisfy it). Holds on this tree: the spawn is refused, and the companion
+  // cell below pins that refusal to the reserved-pending-retirement operator face rather than to
+  // the incidental numbered-name refusal that follows once the reservation releases.
   rmSync(join(root, "child-connected"), { force: true });
   const namesBeforeProbe = listNames();
   const probe: ControlReply = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER });
@@ -452,17 +503,21 @@ try {
   check("BARRIER: the refusal reads as the operator face (reserved pending retirement + despawn→retirement bridge + retry NEXT)",
     probe.ok === false && /reserved pending retirement/i.test(probe.error ?? "")
     && /despawn started/i.test(probe.error ?? "") && /retry/i.test(probe.error ?? ""), probe);
-  // Clear whatever the probe created (today: a live exact-alias agent; under the fix: possibly an
-  // auto-numbered sibling) and let its own cleanup fully settle so it cannot confound section E.
+  // Clear whatever the probe created and let its own cleanup fully settle so it cannot confound
+  // section E. On this tree the probe is refused outright and creates nothing, so probeDelta is
+  // empty and this loop is a no-op; it stays as a guard, because a tree that DID hand out a live
+  // agent or an auto-numbered sibling here would otherwise carry it into section E.
   for (const n of probeDelta) await mAny.opStop({ name: n, graceful: false }, mAny.ep.ref().id, true);
   await Promise.allSettled(brokerCalls.filter((c) => !c.gated).map((c) => c.done.catch(() => {})));
 
-  // Release: let the predecessor's retirement complete, as the fix does before freeing the alias.
+  // Release: let the predecessor's retirement complete, which is what the manager does before it
+  // frees the alias.
   releaseGate();
   await gatedRun!.catch(() => {});
   // Witness (leak direction): the predecessor's broker footprint must be fully retired before the
-  // alias is handed to a replacement — true today (the name-keyed deletes take everything) and
-  // required under the fix (retire-before-free).
+  // alias is handed to a replacement, the retire-before-free half of the contract. The deletes are
+  // lifecycle-uid-pinned rather than name-keyed, so this asserts the PREDECESSOR's own footprint is
+  // gone, not that a name sweep took everything under the alias.
   const fpRetired = await footprint();
   check("witness: the predecessor's broker footprint is fully retired before the alias frees",
     fpRetired.dm.length === 0 && fpRetired.dlv.length === 0 && fpRetired.acl.length === 0, fpRetired);
@@ -470,18 +525,26 @@ try {
   // ---------- D. the replacement: same-alias respawn AFTER retirement completed ----------
   console.log("D) same-alias respawn after the predecessor retired");
   rmSync(join(root, "child-connected"), { force: true });
-  // Retry loop: today the alias is free immediately; under the fix the reservation may release a
-  // beat after the awaited teardown settles. Never accept an auto-numbered stand-in — the
-  // contract is about THE alias — so any stray sibling is stopped and the spawn retried.
+  // Retry to a DEADLINE rather than for a fixed number of tries: the alias frees in two stages and
+  // the second stage is a timer. Timed from the awaited teardown on this tree, the first ~1.0s is
+  // refused RESERVED (the reservation still holds the name); from ~1.3s to ~7.0s the reservation has
+  // released but the predecessor's ADVISORY presence row is still live, so uniqueName numbers the
+  // successor and the auth plane refuses that name-form; the exact alias is taken at ~8.0s. That
+  // second stage is bounded by the presence record's TTL plus one sweep tick (endpoint.ts: ttlMs
+  // 6000, sweep every ttlMs/3), so the old 20-try/250ms budget of ~5s expired inside it and read as
+  // a failure. Budget past that ceiling with room for a loaded runner. An auto-numbered stand-in is
+  // never accepted, because the contract is about THE alias, so a stray sibling is stopped and the
+  // spawn retried.
+  const respawnDeadline = Date.now() + 30_000;
   let r2: ControlReply | undefined;
-  for (let i = 0; i < 20; i++) {
+  do {
     const before = listNames();
     r2 = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER });
     const delta = listNames().filter((n) => !before.includes(n));
     if (r2.ok === true && delta.includes(AGENT)) break;
     for (const n of delta) await mAny.opStop({ name: n, graceful: false }, mAny.ep.ref().id, true);
     await wait(250);
-  }
+  } while (Date.now() < respawnDeadline);
   check("same-alias respawn ok after the predecessor retired", r2?.ok === true && listNames().includes(AGENT), r2);
   // ux follow-through 1: the clean respawn reads as a FRESH spawn of THE alias — never an
   // auto-numbered stand-in, never a lingering refusal string.
@@ -530,19 +593,23 @@ try {
   const replacementToken = readFileSync(agentLifecycleSecretFilePaths(root, AGENT, succUid).actorToken, "utf8").trim();
   // BARRIER 2 — lifecycle keying: the replacement's broker resources must be DISTINCT names from
   // the predecessor's, or any stale/replayed cleanup for the retired lifecycle can resolve to the
-  // replacement's rows. Today the names collide exactly.
+  // replacement's rows. Holds on this tree: the successor's resources are lifecycle-keyed and
+  // disjoint from the predecessor's.
   const distinct = (pre: string[], succ: string[]): boolean => succ.length > 0 && succ.every((n) => !pre.includes(n));
   check("BARRIER: the replacement's broker resources are lifecycle-distinct from the predecessor's",
     distinct(fp1.dm, fpS.dm) && distinct(fp1.dlv, fpS.dlv) && distinct(fp1.acl, fpS.acl),
     { predecessor: { dm: fp1.dm, dlv: fp1.dlv, acl: fp1.acl }, successor: { dm: fpS.dm, dlv: fpS.dlv, acl: fpS.acl } });
   const callsBeforeReplay = brokerCalls.length;
 
-  // ---------- E. THE REPLAY (red on current code) ----------
+  // ---------- E. THE REPLAY ----------
   // Deliver the predecessor's captured broker cleanup AGAIN, now that the replacement is live —
-  // the at-least-once world the fix must survive: detached cleanup is idempotent reconciliation
+  // the at-least-once world this has to survive: detached cleanup is idempotent reconciliation
   // against the RETIRED lifecycle and can never resolve through the current alias occupant.
-  // Today the cleanup is keyed by (owner, actor-name) alone, so the replay lands on the
-  // replacement's freshly minted footprint and silently destroys it.
+  // Holds on this tree: the cleanup is pinned to the retired lifecycle, so the replay leaves the
+  // live replacement's footprint intact. Proven non-vacuous rather than assumed: repointing the
+  // replayed cleanup at the SUCCESSOR's lifecycle uid deletes its resources and reds exactly the
+  // three named BARRIER cells (dm durable, dlv durable, read-ACL), so these cells are not green
+  // merely because an unobserved no-op ran.
   console.log("E) replay the retired predecessor's broker cleanup against the live replacement");
   replayAtMs = Date.now();
   await origBroker(predArg!).catch(() => { /* a conforming retired-lifecycle no-op may also throw */ });
@@ -566,20 +633,22 @@ try {
   check("witness: no manager-driven broker cleanup fired between respawn and replay (single deleter)",
     brokerCalls.length === callsBeforeReplay,
     brokerCalls.map(({ name, gated }) => ({ name, gated })));
-  // Witnesses (green today AND under the fix): the replay is broker-only — it never touches the
-  // ledger or the secret files, so the replacement's mint authority stays intact and its child
-  // stays connected. The damage above is therefore SILENT split-brain: the manager lists a live,
-  // authenticated agent that can no longer be delivered to (durables gone) and whose reads are no
-  // longer authorized (ACL row gone).
+  // Witnesses: the replay is broker-only. It never touches the ledger or the secret files, so the
+  // replacement's mint authority stays intact and its child stays connected either way. That is
+  // what makes the barrier cells above the whole story, and it is why their failure mode would be
+  // SILENT split-brain rather than a visible outage: a tree whose replay reached the successor
+  // would leave the manager listing a live, authenticated agent that could no longer be delivered
+  // to (durables gone) and whose reads were no longer authorized (ACL row gone), with nothing
+  // failing loudly. On this tree the replay is lifecycle-pinned and those cells pass.
   check("witness: replacement ledger row survives the replay (broker cleanup owns no local state)", fpPost.row, fpPost);
   check("witness: replacement row still carries the replacement's tokenHash", rowHash(OWNER) === hash2, { want: hash2, got: rowHash(OWNER) });
   const ex = await agentExchange(AGENT, replacementToken, OWNER);
   check("witness: replacement actor token still mints a bearer (exchange 200)", ex.status === 200 && typeof ex.body.token === "string", { status: ex.status, error: ex.body.error });
   check("witness: the manager still lists the replacement, child alive (the damage is silent)",
-    manager.list().some((a: { name: string }) => a.name === AGENT) && newHandle?.status() === "running",
+    psList(manager).some((a) => a.name === AGENT) && newHandle?.status() === "running",
     { listed: listNames(), child: childDiag() });
 
-  console.log(`\nFREESLOT RESPAWN BARRIER ${fail === 0 ? "OK ✅" : "RED ❌ (expected until the P2 alias reservation + lifecycle-keyed cleanup land)"}  (${pass} passed, ${fail} failed)`);
+  console.log(`\nFREESLOT RESPAWN BARRIER ${fail === 0 ? "OK ✅" : "RED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
 } catch (e) {
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);

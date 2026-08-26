@@ -208,6 +208,25 @@ c("absent args validate against the void schema as null", assertArgsValid(voidVa
 rejects("present args against the void schema are bad-request", "bad-request",
   () => assertArgsValid(voidValidate, { any: 1 }));
 
+// A closed-contract refusal must NAME the offending property. AJV carries the rejected key only in
+// `params.additionalProperty`; dropping it prints "/ must NOT have additional properties" and
+// turns a caller/responder version skew (a newer caller sending a key an older deployed
+// responder's contract predates) into a guessing game: nothing says which key or which side is
+// stale. The args and output render sites share one helper, so both are asserted.
+{
+  const closed = compileContractSchema({ root: { type: "object", properties: { name: { type: "string" } }, required: ["name"], additionalProperties: false } });
+  let argsMsg = "";
+  try { assertArgsValid(closed, { name: "x", events: true }); } catch (e) { argsMsg = (e as Error).message; }
+  c("a closed-contract args refusal names the offending property", /additional properties: "events"/.test(argsMsg), argsMsg);
+  let outMsg = "";
+  try { assertOutputValid(closed, { name: "x", events: true }); } catch (e) { outMsg = (e as Error).message; }
+  c("a closed-contract output refusal names the offending property", /additional properties: "events"/.test(outMsg), outMsg);
+  // Control: the name is appended ONLY for the additionalProperties keyword, never fabricated.
+  let typeMsg = "";
+  try { assertArgsValid(closed, { name: 7 }); } catch (e) { typeMsg = (e as Error).message; }
+  c("a non-additionalProperties refusal does not grow a property name", !typeMsg.includes("additional properties:"), typeMsg);
+}
+
 // The §13.8 validation budget on the REQUEST path is REPORTED, not enforced. No available
 // instrument can justify refusing a caller on it: elapsed counts the machine (this budget refused
 // an 82ms cold-JIT validation of a small, schema-VALID object during a gate run), and process CPU

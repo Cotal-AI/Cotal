@@ -40,6 +40,7 @@ import {
   observeGate, createGateFrozen, freezeGate, reopenGate, retireGate,
 } from "../src/lifecycle-registry.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -57,7 +58,7 @@ const headKey = (o: string, a: string) => recordAtomicKey(LIFECYCLE_HEAD, [o, a]
 const uidKey = (u: string) => recordAtomicKey(UID_RESERVATION, [u]);
 
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-lifereg-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 // A conf broker with a full ADMIN user, a SCOPED mapping-reader user (records leader read +
 // the bind-time STREAM.INFO shape proof, §13.9; a CONNECTION-scoped inbox, never the
 // account-wide default), and a SCOPED minting-profile WRITER user (the registry's real
@@ -88,6 +89,7 @@ authorization {
 }
 `);
 const broker = spawn("nats-server", ["-c", join(sd, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, sd);
 
 try {
   let up = false;
@@ -133,7 +135,12 @@ try {
     // the barrier's own throwaway enumeration consumer would trigger the deletion. Refuse at bind.
     await createEndpointStreams(jsm, kvm, "shaperet");
     const retRecords = (await jsm.streams.info("KV_cotal_records_shaperet")).config;
-    await jsm.streams.update("KV_cotal_records_shaperet", { ...retRecords, retention: "interest" as never });
+    // The client's `StreamUpdateConfig` deliberately omits `retention` (its update API models the
+    // field as immutable), so the whole literal carries the cast, the same shape line 129 uses to
+    // build the mirrored store. The point of the cell is to stand up a store the client's own types
+    // say cannot exist and prove the registry refuses it at BIND rather than trusting those types;
+    // the server accepts the change, which is exactly why the bind check has to exist.
+    await jsm.streams.update("KV_cotal_records_shaperet", { ...retRecords, retention: "interest" } as never);
     await rejects("a records store with INTEREST retention refuses at bind (non-Limits deletes authority rows on ack)",
       () => openLifecycleRegistry(nc, "shaperet"), "failed-precondition");
   }
@@ -408,6 +415,7 @@ try {
   broker.kill("SIGKILL");
   await new Promise((r) => broker.once("exit", r));
   rmSync(sd, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(fail === 0 ? `\nLIFECYCLE REGISTRY SMOKE OK ✅  (${ok} passed, ${fail} failed)` : `\nLIFECYCLE REGISTRY SMOKE FAILED ❌  (${ok} passed, ${fail} failed)`);

@@ -30,6 +30,7 @@ import {
   type CotalMessage, type Delivery, type MessageMeta,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort(), SERVERS = `nats://127.0.0.1:${PORT}`, space = "e2eacl";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -62,10 +63,11 @@ async function rawPubDenied(creds: string, id: string, subject: string): Promise
   }
 }
 
-const dir = mkdtempSync(join(tmpdir(), "cotal-e2e-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const auth = await createSpaceAuth(space);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 
 /** Write a real agent file and load it back — exercises the file → AgentDef path the launcher uses. */
 function agentFile(name: string, fm: string) {
@@ -232,5 +234,6 @@ try {
   srv.kill("SIGKILL");
   await awaitExit(srv);
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 process.exit(process.exitCode ?? (fail ? 1 : 0)); // force-exit: lingering endpoint reconnect timers keep the loop alive

@@ -103,7 +103,9 @@ try {
   conns.push(tapNc);
   const readNc = await connect({ servers: SERVER, maxReconnectAttempts: 0 });
   conns.push(readNc);
-  const rctx: ActionContext = await actionContext(readNc, SPACE, { resolveExecutorEpoch: () => A.serviceServe?.grant.epoch ?? 0 });
+  // The result subject carries no epoch token, so the read context takes no epoch resolver: a
+  // terminal is judged against the goal's OWN accepted epoch, never the current one.
+  const rctx: ActionContext = await actionContext(readNc, SPACE);
   const goalRef = (goalId: string): GoalRef => ({ endpoint: MANAGER_ENDPOINT, caller, goalId });
 
   // Capture the request frame A is about to receive. Replaying real bytes keeps the duplicate a

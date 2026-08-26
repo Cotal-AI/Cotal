@@ -62,7 +62,7 @@ c("WRONG-TODAY: the boot sweep skips goals via `goalAcceptances`, an IN-MEMORY m
 pending("the CANONICALIZER writes goalidx create-only BEFORE the bind (step 4a), so the index no longer depends on a live manager's memory");
 
 console.log("\n── THE MECHANISM THAT MUST LIVE — read this before deleting anything ──");
-// SPEC:2391 REQUIRES a provisioner sweep over `goalidx`. J2 replaces the IMPLEMENTATION and never
+// SPEC §13.7 REQUIRES a provisioner sweep over `goalidx`. J2 replaces the IMPLEMENTATION and never
 // the MECHANISM. Three orphan classes exist that the effects durable structurally cannot see — the
 // worst being a crash after `goalidx` and before the bind, where no decision message will ever
 // exist, so the occupancy row leaks FOREVER if the sweep is gone.

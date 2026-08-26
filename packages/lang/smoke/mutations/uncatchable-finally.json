@@ -1,0 +1,18 @@
+{
+  "suite": "packages/lang/smoke/interpret.smoke.ts",
+  "guard": "An uncatchable fault unwinds past `finally` too: no effect, no log, and the fault is not replaced. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-interpret",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/uncatchable-finally.json",
+  "mutations": [
+    {
+      "name": "the finalizer runs unconditionally again, the shipped defect",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "        try {\n          completion = await this.execute(node.block as AnyNode, env, frame);\n        } catch (e) {\n          if (uncatchable(e)) throw e;",
+      "replace": "        try {\n          completion = await this.execute(node.block as AnyNode, env, frame);\n        } catch (e) {\n          if (uncatchable(e)) { if (node.finalizer !== null && node.finalizer !== undefined) { try { await this.execute(node.finalizer as AnyNode, env, frame); } catch { /* replaced below */ } } throw e; }",
+      "expectRed": "a `finally` does not run past a divergence: no effect, no log, and the divergence survives",
+      "completionMarker": "ok a workflow's catch does not swallow a divergence",
+      "cell": "a `finally` does not run past a divergence: no effect, no log, and the divergence survives",
+      "note": "The mutant re-runs the finalizer on the uncatchable path (the measured pre-fix behavior): the cleanup log fires and the cleanup effect is dispatched past the divergence, which the cell holds cannot happen."
+    }
+  ]
+}

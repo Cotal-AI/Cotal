@@ -1,0 +1,42 @@
+{
+  "suite": "implementations/auth/smoke/views.smoke.ts",
+  "guard": "the elevated-view refusal only promises a line to run on the branch that was handed the row's real ACLs",
+  "command": "pnpm smoke:views",
+  "completionMarker": "views smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/view-remedy-no-line.json",
+  "why": [
+    "`cotal actor grant` is a whole-row upsert, so the view refusal prints the row back with the missing",
+    "scope ADDED and every other field spelled out. That is only possible when the bridge's authorizeActor",
+    "supplied the row's read and post sets. A custom IdP integration need not supply them, and this suite's",
+    "bridge is exactly that shape: scope and a lifecycle uid, no ACLs.",
+    "",
+    "On that branch there is no line, so the refusal must not say there is one. The first version of this",
+    "fix put 'run exactly the line below, which already carries every other field the row holds today' in",
+    "the shared preamble, above a branch that printed nothing: a named remedy that does not exist at the",
+    "render site. N1 replays it. N2 covers the other direction, a branch that stops declaring its own",
+    "silence, so the cell cannot pass by the absence of a needle alone.",
+    "",
+    "SPECIFIER BOUNDARY. views.smoke.ts imports the bridge by relative source path (../src/index.js), so",
+    "the mutated file is the file that runs and there is no build in the command."
+  ],
+  "mutations": [
+    {
+      "name": "N1 the promise moves back into the shared preamble, above a branch with no line",
+      "file": "implementations/auth/src/idp.ts",
+      "find": "            `the \"${req.view}\" view needs scope \"${need}\", which your grant lacks. Ask the mesh operator to re-grant the WHOLE ROW with \"${need}\" ADDED to its scope. This is not a scope edit: ` +",
+      "replace": "            `the \"${req.view}\" view needs scope \"${need}\", which your grant lacks. Ask the mesh operator to re-grant the WHOLE ROW with \"${need}\" ADDED to its scope. This is not a scope edit: run exactly the line below, which already carries every other field the row holds today. ` +",
+      "expectRed": "the no-ACL view refusal promises no line to run, and prints no grant command at all",
+      "cell": "the no-ACL view refusal promises no line to run, and prints no grant command at all",
+      "note": "Byte-for-byte the first version of this fix, blocked by a security lens: the sentence is unconditional and the no-ACL branch prints no such line. The neighbouring cells that match on `needs scope \"admin\"` and on ADDED / WHOLE ROW stay green, because the preamble still carries them."
+    },
+    {
+      "name": "N2 the no-ACL branch stops saying that no line is printed",
+      "file": "implementations/auth/src/idp.ts",
+      "find": "      \"no ready-to-run line is printed here, and that is deliberate: this bridge did not supply the row's \" +",
+      "replace": "      \"this is a whole-row upsert: \" +",
+      "expectRed": "the no-ACL view refusal promises no line to run, and prints no grant command at all",
+      "cell": "the no-ACL view refusal promises no line to run, and prints no grant command at all",
+      "note": "The positive half of the cell. Without it the assertion would pass on any refusal that merely lacks the two forbidden needles, including one that says nothing about why it printed no command."
+    }
+  ]
+}

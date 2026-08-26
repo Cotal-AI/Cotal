@@ -162,10 +162,12 @@ try {
     const gwReadCreds = await mintCreds(auth, newIdentity(), "goal-writer", { goalWriter: { endpoint: MANAGER_ENDPOINT } });
     const readNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: gwReadCreds, tls: false }), maxReconnectAttempts: 0 });
     conns.push(readNc);
-    // Reading an EXECUTOR-PINNED goal terminal resolves the executor's CURRENT epoch (item 3's (i)
-    // fence): after the synthetic takeover the gate is at epoch obs+1, so the reader looks at
-    // result.<obs+1> and the corpse's fenced (old-epoch) attempt is invisible → no terminal.
-    const rctx = await actionContext(readNc, space, { resolveExecutorEpoch: (execIid) => (execIid === iid ? obs!.processEpoch + 1 : null) });
+    // The terminal subject carries NO epoch token (endpoint-action.ts): an earlier revision scoped
+    // the result by executor epoch, and that is precisely the defect it removed, because judging a
+    // terminal against the CURRENT epoch hid a legitimate pre-restart winner. So the read takes no
+    // epoch resolver, and the absence below is the corpse having written no fact at all rather than
+    // a fact filed under a superseded epoch the reader declined to look at.
+    const rctx = await actionContext(readNc, space);
     const result = await readGoalResult(rctx, ref);
     check("FENCE (a) the superseded corpse never committed a terminal (own-gate currency refused — no wrong terminal)", result === undefined, result);
   }

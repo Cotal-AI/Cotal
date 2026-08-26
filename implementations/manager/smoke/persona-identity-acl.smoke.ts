@@ -32,6 +32,11 @@ function check(label: string, cond: boolean, extra?: unknown): void {
   if (!cond) failures++;
 }
 
+/** `ControlReply.data` is `unknown` on the wire, so the identity a reply reports is read through
+ *  one narrow view rather than four spot casts. */
+const replyName = (r: { data?: unknown }): string | undefined =>
+  (r.data as { name?: string } | undefined)?.name;
+
 // Decode the `nats` permission block out of a minted creds file (the JWT is the first line after the
 // BEGIN marker; its middle segment is base64url JSON).
 function credAcl(path: string): { sub: string[]; pub: string[] } {
@@ -88,7 +93,7 @@ try {
   {
     const reply = await mgr.startAgent({ name: "review-critic", agent: "smoke-rec2" });
     check("spawn by filename succeeds", reply.ok === true, reply);
-    check("identity is the file's name: (socrates), not the filename", reply.ok && reply.data?.name === "socrates", reply.ok && reply.data?.name);
+    check("identity is the file's name: (socrates), not the filename", reply.ok && replyName(reply) === "socrates", reply.ok && replyName(reply));
 
     // Lifecycle-keyed cred file (`<name>.<uid>.creds`) — the reply's uid names this incarnation's file.
     const socratesUid = reply.ok ? String((reply.data as { lifecycleUid?: string }).lifecycleUid ?? "") : "";
@@ -107,7 +112,7 @@ try {
   // 3 — A second spawn of the same persona auto-numbers the IDENTITY (socrates → socrates-2).
   {
     const reply = await mgr.startAgent({ name: "review-critic", agent: "smoke-rec2" });
-    check("second spawn auto-numbers the identity", reply.ok && reply.data?.name === "socrates-2", reply.ok && reply.data?.name);
+    check("second spawn auto-numbers the identity", reply.ok && replyName(reply) === "socrates-2", reply.ok && replyName(reply));
   }
 } finally {
   await stopBroker();

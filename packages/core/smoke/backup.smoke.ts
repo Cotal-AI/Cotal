@@ -42,6 +42,10 @@ assert.equal(inventory.full.length, 8);
 // LIFETIME, not durability - artifact bytes are transferable, not records. Its own `artifact`
 // class exists so this line cannot be read as "derived, therefore recomputable".
 assert.equal(inventory.excluded.length, 5);
+// Comparator mechanics ONLY: the list below is synthesized from the inventory itself, so this line
+// can never fail for a family the inventory lost or never knew. That is the #643 circularity; the claim
+// it used to carry (that the inventory agrees with a real broker) is proved by the GATED live
+// suite `smoke:backup-inventory` (backup-inventory.smoke.ts), which enumerates broker truth.
 assert.deepEqual(validateSpaceBackupInventory(space, [...inventory.full, ...inventory.excluded.map((s) => s.name)]), inventory);
 assert.throws(() => validateSpaceBackupInventory(space, inventory.full), /missing/);
 assert.throws(

@@ -96,7 +96,7 @@ try {
   const bySpace = await resolveControlTarget({ space: "team-alpha" }, "control-caller-privileged");
   ok("--space resolves the registry-recorded broker", bySpace.server === OTHER, bySpace.server);
   ok("did NOT fall back to DEFAULT_SERVER (:4222)", bySpace.server !== DEFAULT_SERVER, bySpace.server);
-  ok("open mesh ⇒ no creds minted", bySpace.creds === undefined, bySpace.creds);
+  ok("open mesh ⇒ no creds minted", bySpace.auth.creds === undefined, bySpace.auth);
   ok("resolved space is preserved", bySpace.space === "team-alpha", bySpace.space);
   // The new preflight must NOT prune a LIVE registered entry — the load-bearing safety property.
   ok("live registered entry survives the preflight prune sweep", loadMeshes().some((m) => m.space === "team-alpha"), loadMeshes());
@@ -120,7 +120,7 @@ try {
   const rawOpen = await resolveControlTarget({ server: OVERRIDE, space: "not-registered" }, "control-caller-privileged");
   ok(
     "--server + unregistered --space → raw open (no creds, no registry)",
-    rawOpen.server === OVERRIDE && rawOpen.space === "not-registered" && rawOpen.creds === undefined,
+    rawOpen.server === OVERRIDE && rawOpen.space === "not-registered" && rawOpen.auth.creds === undefined,
     rawOpen,
   );
 

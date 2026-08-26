@@ -1,6 +1,7 @@
-import { basename, dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
 import {
   MeshAgent,
   configFromEnv,
@@ -8,10 +9,13 @@ import {
   startControlServer,
   type AgentConfig,
   type InboxItem,
+  controlFromEnv,
+  scrubLaunchMaterial,
 } from "@cotal-ai/connector-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { PiDriver, type CotalBatchDetails, type PiContextLike } from "./driver.js";
 import { registerCotalTools } from "./tools.js";
+import { wrapped } from "./wrap.js";
 
 const CUSTOM_TYPE = "cotal-inbox";
 const RUNTIMES = Symbol.for("cotal.pi.runtimes");
@@ -22,6 +26,8 @@ interface PiRuntime {
   driver: PiDriver;
   controlServer?: ReturnType<typeof startControlServer>;
   personaCleaned: boolean;
+  sessionId?: string;
+  expectedSessionId?: string;
 }
 
 type GlobalWithPi = typeof globalThis & { [RUNTIMES]?: Map<string, PiRuntime> };
@@ -48,25 +54,27 @@ function messageText(content: unknown): string {
     .join("\n");
 }
 
-function wrapped(line: string): { render(width: number): string[]; invalidate(): void } {
-  return {
-    invalidate(): void {},
-    render(width: number): string[] {
-      const size = Math.max(16, width);
-      const out: string[] = [];
-      for (const source of line.split("\n")) {
-        let rest = source;
-        while (rest.length > size) {
-          const whitespace = rest.lastIndexOf(" ", size);
-          const cut = whitespace > size / 2 ? whitespace : size;
-          out.push(rest.slice(0, cut));
-          rest = rest.slice(cut).trimStart();
-        }
-        out.push(rest);
-      }
-      return out;
-    },
-  };
+function sessionStatePath(): string | undefined {
+  const explicit = process.env.COTAL_PI_SESSION_STATE?.trim();
+  if (explicit) return explicit;
+  // Upgrade path for seats launched before COTAL_PI_SESSION_STATE existed. Managed Pi receives the
+  // persona path and lifecycle UID; from <root>/.cotal/agents/<name>.md the same lifecycle-keyed
+  // state path is derivable without selecting a newest session.
+  const agentFile = process.env.COTAL_AGENT_FILE?.trim();
+  const name = process.env.COTAL_NAME?.trim();
+  const lifecycleUid = process.env.COTAL_LIFECYCLE_UID?.trim();
+  const agentsDir = agentFile ? dirname(agentFile) : "";
+  const cotalDir = agentsDir ? dirname(agentsDir) : "";
+  if (!agentFile || !name || !lifecycleUid || basename(agentsDir) !== "agents" || basename(cotalDir) !== ".cotal")
+    return undefined;
+  return join(cotalDir, "pi-sessions", `${name}-${lifecycleUid}.json`);
+}
+
+export function persistSessionId(sessionId: string, status: "running" | "quit" = "running"): void {
+  const path = sessionStatePath();
+  if (!path) return;
+  mkSecretDir(dirname(path));
+  writeSecretFileAtomic(path, `${JSON.stringify({ version: 1, sessionId, status })}\n`);
 }
 
 function cleanPersonaFile(runtime: PiRuntime): void {
@@ -84,13 +92,7 @@ function cleanPersonaFile(runtime: PiRuntime): void {
   }
 }
 
-function createRuntime(config: AgentConfig): PiRuntime {
-  const path = process.env.COTAL_CONTROL_SOCKET?.trim();
-  const token = process.env.COTAL_CONTROL_TOKEN?.trim();
-  if (Boolean(path) !== Boolean(token)) {
-    throw new Error("pi connector: COTAL_CONTROL_SOCKET and COTAL_CONTROL_TOKEN must be provided together");
-  }
-
+function createRuntime(config: AgentConfig, control: { path: string; token: string } | undefined): PiRuntime {
   const mesh = new MeshAgent(config);
   const driver = new PiDriver(mesh);
   const runtime: PiRuntime = {
@@ -105,12 +107,16 @@ function createRuntime(config: AgentConfig): PiRuntime {
   mesh.on("mention-wake", (item: InboxItem) => driver.onMentionWake(item));
   mesh.start();
 
-  if (path && token) {
+  if (control) {
     runtime.controlServer = startControlServer(
       mesh,
-      { path, token },
-      async () => ({ ok: false, error: "pi uses in-process lifecycle events; only shutdown is supported" }),
-      { fatalBind: true, onShutdown: () => driver.requestShutdown() },
+      control,
+      async () => ({ ok: false, error: "pi uses in-process lifecycle events; only control operations are supported" }),
+      {
+        fatalBind: true,
+        onShutdown: () => driver.requestShutdown(),
+        onSession: () => runtime.sessionId,
+      },
     );
   }
   return runtime;
@@ -124,13 +130,38 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   }
 
   const config = configFromEnv();
+  // CLI startup opens/creates/forks the session BEFORE extension factories run, so the first
+  // session_start may already be past. Pi publishes the active id through PI_SESSION_ID for exactly
+  // this host-integration case. Later in-process /resume/new/fork transitions are captured by the
+  // session_start handler below.
+  const startupSessionId = process.env.PI_SESSION_ID?.trim() || undefined;
+  const expectedSessionId = process.env.COTAL_PI_EXPECTED_SESSION?.trim() || undefined;
+  delete process.env.COTAL_PI_EXPECTED_SESSION;
+  // The socket path rides the env; the first-frame token rides the launch material, so a shell this
+  // seat runs cannot pick a control-plane bearer out of its own environment. Read BEFORE the scrub
+  // below, and read on every load rather than inside createRuntime: a second load reuses the cached
+  // runtime, but the first one must not find the pointer already gone. That ordering is not a
+  // detail - reversed, it refused every pi launch with the half-pair error `controlFromEnv` throws,
+  // which is the failure that contract is supposed to produce and did.
+  const control = controlFromEnv();
+  // Both readers are done, so the pointer to the launch material has none left. Dropping it here is
+  // what keeps it out of the environment of every shell command, build and tool this seat runs.
+  scrubLaunchMaterial();
   config.connector = "pi";
   const key = runtimeKey(config);
   const runtimes = runtimeMap();
   let runtime = runtimes.get(key);
   if (!runtime) {
-    runtime = createRuntime(config);
+    runtime = createRuntime(config, control);
     runtimes.set(key, runtime);
+  }
+  runtime.expectedSessionId = expectedSessionId;
+  if (startupSessionId) {
+    if (expectedSessionId && startupSessionId !== expectedSessionId)
+      throw new Error(`pi connector: expected startup session ${expectedSessionId}, host opened ${startupSessionId}`);
+    runtime.sessionId = startupSessionId;
+    runtime.expectedSessionId = undefined;
+    persistSessionId(startupSessionId);
   }
   runtime.driver.bind(pi);
   registerCotalTools(pi, runtime.mesh, runtime.config);
@@ -138,6 +169,11 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
 
   pi.on("session_start", (_event, context) => {
     cleanPersonaFile(runtime);
+    runtime.sessionId = context.sessionManager.getSessionId();
+    if (runtime.expectedSessionId && runtime.sessionId !== runtime.expectedSessionId)
+      throw new Error(`pi connector: expected session ${runtime.expectedSessionId}, host opened ${runtime.sessionId}`);
+    runtime.expectedSessionId = undefined;
+    persistSessionId(runtime.sessionId);
     runtime.driver.onSessionStart(asContext(context));
   });
   pi.on("agent_start", (_event, context) => runtime.driver.onAgentStart(asContext(context)));
@@ -151,6 +187,7 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   pi.on("session_shutdown", async (event) => {
     runtime.driver.onSessionShutdown();
     if (event.reason !== "quit") return;
+    if (runtime.sessionId) persistSessionId(runtime.sessionId, "quit");
     await runtime.driver.quit();
     try {
       runtime.controlServer?.close();

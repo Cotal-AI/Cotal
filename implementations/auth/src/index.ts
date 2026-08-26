@@ -36,6 +36,7 @@ export {
 } from "./issuer.js";
 export {
   createIdpBridge,
+  verifyIdpToken,
   type IdpConfig,
   type ActorGrant,
   type CreateIdpBridgeOpts,
@@ -64,6 +65,7 @@ export {
   validateRetainedManagedAgent,
 } from "./continuity.js";
 export {
+  AUTH_PROVIDER_NAME,
   authCalloutKey,
   authIssuerKey,
   authOwnerSecretKey,
@@ -108,7 +110,8 @@ export {
   type ActorKind,
   type ActorRow,
 } from "./ledger.js";
-export { runAuthService, openAuthAuthorityPlane, JWKS_MAX_AGE_SEC, type AuthAuthorityPlane } from "./service.js";
+export { runAuthService, openAuthAuthorityPlane, JWKS_MAX_AGE_SEC, composeUserBundle, finalizeUserBundleEndpoint, checkAdvertisedServer, checkAgentProvisioningUrl, type AuthAuthorityPlane } from "./service.js";
+export { remoteManagerIssuerGrants } from "./authority-client.js";
 // The R1 connect-arm deny-new READ seam (SPEC 13.1): the reader grant builder, the sealed
 // shape-proved reader, and the pure connect-credential check the production composition runs.
 // The WRITE side (authority-client, root-credential, activateLifecycleAtUid) stays
@@ -117,6 +120,7 @@ export {
   authConnectReaderGrants, openConnectReader, authorizeConnectCredential,
   type ConnectReader,
 } from "./connect-reader.js";
+export { issueRemoteManagerAuthority, parseRemoteManagerAuthorityRequest, type IssueRemoteManagerAuthorityArgs } from "./manager-authority.js";
 export { cotalAuthProvider } from "./provider.js"; // self-registers the "auth-provider" extension
 import "./commands.js"; // self-registers `login` / `logout` / `actor` / `auth-service` into the core Registry
 // NB: writeEndpointGate (the D14 endpoint-registration stand-in) is deliberately NOT

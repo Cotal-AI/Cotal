@@ -59,7 +59,7 @@ normative shapes are [SPEC Appendix B](../SPEC.md#appendix-b-profile-acls); in b
 
 | Profile | Is |
 |---|---|
-| **agent** | The ordinary peer: publishes as itself to its declared channels, reads within its read ACL + its own DM/task inboxes. |
+| **agent** | The ordinary peer: publishes as itself to its declared channels, reads within its read ACL + its own DM/task inboxes. Its read-only presence and channel-registry watches may create, inspect, and delete only their own client-managed ordered consumers; those cleanup grants cannot delete KV records or streams. |
 | **observer** | Read-only chat + presence; DMs invisible. What `cotal console` runs. |
 | **admin** | Elevated *read-only* god-view: sees DMs and anycast live, still writes nothing. A deliberate opt-in (`cotal web`). |
 | operator-side | Narrow single-purpose creds for the machinery (supervising, provisioning, teardown, delivery); the reference implementation splits these so no one connection can read every DM *and* delete every stream ([security model](security.md)). |
@@ -94,7 +94,7 @@ files to hand out, and revoking a grant actually bites.
 
 **The flow.** Each person runs `cotal login --idp <url>` once per machine. After that,
 any command works: cached IdP session → fresh IdP proof per connect (so IdP-side
-revocation bites here too) → a local exchange turns it into a short-lived Cotal bearer →
+revocation bites here too) → the configured exchange turns it into a short-lived Cotal bearer →
 the broker's **auth callout** checks the bearer and the ledger at connect time and mints
 a scoped credential on the spot. Every bearer also names a **root credential** row in the
 space's credential ledger, proved live at each connect, so revoking that one credential
@@ -103,15 +103,46 @@ bites at the very next connect. The operator grants access with
 channels, may spawn), and `--allow-subscribe` / `--allow-publish` / `--scope` narrow it.
 No ledger row, no access; there is no allow-by-default.
 
-**One auth service per space** hosts both halves: the NATS auth callout and the loopback
-token exchange. It starts with the broker, is torn down by `cotal down`, and holds the
+**One auth service per space** hosts both halves: the NATS auth callout and the token
+exchange. Its default HTTP listener remains loopback-only and requires the per-start capability
+stored in the owner-only `auth-service.json` file. An operator may add a second listener with
+`cotal up --user-auth ... --exchange-public-port <port> --exchange-public-url https://auth.example`.
+That listener still binds `127.0.0.1`; put a reverse proxy in front of it and terminate TLS there.
+In-process TLS is deliberately not another deployment mode: it would duplicate certificate renewal
+and fork proxy-based deployments.
+
+The public listener has a closed surface: `GET /health`, `GET /jwks`, `POST /exchange`, and
+`GET /.well-known/cotal-mesh`; every other path is 404. It does **not** require the loopback
+capability. That capability proves same-uid access to a 0600 local file and has no remote meaning;
+on the public face the credential is the proof. A human presents an EdDSA IdP JWT checked against
+the pinned JWKS, issuer, and audience. An agent presents its spawn-time actor token, whose hash must
+match a fresh managed-ledger row. Elevated `view` exchanges stay loopback-only.
+
+The well-known response contains the IdP pins and the actual deny-all sentinel credential remote
+agents need before the bearer-driven auth callout. The pins ride a `userAuth` arm that names the
+auth provider, and that name is the same one the local arm registers under — a document naming a
+different provider than the one serving it would register an entry nothing can resolve, so both read
+one constant. Treat it as bootstrap material: the sentinel cannot publish or subscribe, but
+consumers must still take the bundle only from the intended HTTPS origin and must verify TLS.
+`--exchange-trusted-proxy` opts into peer attribution by the **last** `X-Forwarded-For` hop; use it
+only when the listener is reachable solely through a proxy you control.
+Without it, forwarded headers are ignored and the socket address is the peer key. Public failure
+buckets are per-source and separate from loopback exchange budgets. The in-process LRU retains at
+most 1024 peer buckets: that bounds memory and isolates ordinary sources, but an attacker cycling
+more than 1024 trusted-proxy last hops can evict earlier 429 state. It is not a mint bypass; a valid
+credential is still required, so use upstream reverse-proxy rate limiting when that throttle-escape
+matters to the deployment.
+
+The service starts with the broker, is torn down by `cotal down`, and holds the
 data-account signing key for the callout (a running manager is the other standing holder, for
 the creds it mints); the operator seed never enters it. It also owns the space's two authority
 stores (lifecycle records and the credential ledger), provisions them at boot, and refuses
 connects it cannot credential-check against them; there is no fallback path. If it
 dies while the broker lives, re-running `cotal up` heals it, and a boot whose auth
 service never became ready exits non-zero, so automation never reads a dead identity
-plane as success. "One per space" is enforced, not assumed (SPEC §13.13): at boot the
+plane as success. Changing any public-listener flag requires `cotal down` followed by `cotal up`
+with the new values; a refresh adopts an already-running auth service rather than silently replacing
+its listener policy. "One per space" is enforced, not assumed (SPEC §13.13): at boot the
 service takes a broker-backed ownership claim, so a second same-space auth process refuses
 with instructions instead of silently splitting the plane, and a crashed one's claim is
 reclaimed only once the broker confirms its connections are gone — a verdict trusted only
@@ -170,6 +201,40 @@ is spawn-grade (the manager still refuses a manifest claiming another owner). Vi
 only on a signed-in human exchange (an agent's managed exchange never mints one), are
 authorized against the fresh ledger row at every connect, and expire with the bearer, so
 narrowing or revoking a grant bites within minutes here too.
+
+### Remote manager authority
+
+A registered user remains an ordinary `agent` bearer by default. Running a detached manager
+on a remote user-auth mesh needs the closed server-authored **`manager-service`** view, which
+is distinct from every general-purpose profile. The operator grants it only by adding
+`supervise` to that user's actor-ledger scope. `supervise` is deliberately distinct from
+`spawn` and `admin`: spawn controls your agents, admin permits the separate cross-owner
+operations, and neither grants persistent manager registration authority.
+
+Only a signed-in human may request this view from the loopback/operator exchange. The public
+exchange and every managed-agent secret exchange refuse it. At exchange and each connection,
+the auth service re-reads the actor row; revoking or removing `supervise` therefore denies the
+next view exchange and connection. A grant must carry the whole requested row just like every
+other actor update, so re-grant its channel envelope, role, and all wanted scope tokens, not
+only `supervise`.
+
+The service is one opaque manager instance for the user's derived owner and a fixed
+server-selected manager actor. Its authority is limited to that instance's manager
+registration, contracts, status, endpoint rails, gate and credential family; it cannot read or
+write another owner or instance. It never exposes a signer, static provisioner credential, owner
+secret, raw stream/KV/consumer authority, or a generic credential-mint API. The host creates the
+public-nkey JWT material through the typed lifecycle-bound protocol: **prepare → activate →
+renew**. Each request is replay-safe and idempotent at its lifecycle/instance operation
+coordinate; the host writes its credential ledger row and finalizes the gate before it releases
+usable material.
+
+A remote manager can provision only descendants of the same derived owner, and the host
+validates that relation and the current manager grant for every provision. It cannot broaden the
+user's envelope or provision a sibling owner's agent. Renewals are bounded. If login, the
+`supervise` grant, or the host manager authority service is unavailable, the manager reports a
+degraded state and refuses new agents, restarts, or replacement credentials rather than
+substituting local/static authority. Existing live agents remain running only while their own
+valid authority permits it; recovery requires the host service and a fresh successful renewal.
 
 **A hard branch, not a fallback.** On a user-auth space, commands never fall back to
 static minting or credless connects: a missing login or a down auth service is one
@@ -243,8 +308,11 @@ cotals://<token>@host:4222/<space>?channel=general   # cotals:// = TLS required;
 
 Humans: `cotal join --link …`. Agents: `COTAL_LINK=… ` in the environment. The connector
 expands it and auto-joins. Token/user-pass links are the open-mode path; the default
-authed path threads a minted creds file (`COTAL_CREDS`), and the endpoint adopts the
-credential's identity as its card id.
+authed path threads a minted creds file, and the endpoint adopts the credential's identity
+as its card id. A seat the manager spawned reaches that file through its **launch
+material** rather than through `COTAL_CREDS` in an environment every descendant process
+inherits (see [Configuration](config.md#launch-material)); a session you drive by hand
+still sets `COTAL_CREDS` itself.
 
 ## Honest limitations (v0)
 

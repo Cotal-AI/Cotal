@@ -38,6 +38,7 @@ import { credRowKey, enumerateOperationIntents, parseLedgerRow, runAgentTakeover
 import { runAgentRetirementBarrier, type RetirementDeps } from "../src/retirement-barrier.js";
 import { makeLedgerScannerOverConnection } from "../src/ledger-scanner.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -55,11 +56,12 @@ const rejects = async (fn: () => Promise<unknown>): Promise<string> => { try { a
 
 const space = `barpl-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const tmp = mkdtempSync(join(tmpdir(), "cotal-barpl-"));
+const tmp = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const dir = join(tmp, "state");
 mkdirSync(dir, { recursive: true });
 writeFileSync(join(tmp, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(tmp, "js") }));
 const srv = spawn("nats-server", ["-c", join(tmp, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, tmp);
 
 const OWNER = deriveOwnerToken("s".repeat(32), "better-auth|human-1");
 const dataAccount = { pub: auth.account.pub, signingSeed: auth.account.signingSeed };
@@ -461,4 +463,5 @@ try {
   srv.kill();
   await awaitExit(srv);
   rmSync(tmp, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }

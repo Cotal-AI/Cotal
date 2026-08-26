@@ -28,10 +28,31 @@ Three modes:
 - **`--open`.** An unauthenticated, live-only dev mesh (no auth, no delivery daemon). For
   quick local experiments.
 
-All bind **loopback** by default. `--host 0.0.0.0` widens the bind independently of the
-auth mode, so "network-reachable" never silently means "unauthenticated". With no explicit
-`--server`, `cotal up` auto-selects a free local port when the default address is already
-held by another project; an explicit `--server` fails loud on collision.
+The broker and local services bind **loopback** by default. `--host 0.0.0.0` widens the broker
+bind independently of the auth mode, so "network-reachable" never silently means
+"unauthenticated". With no explicit `--server`, `cotal up` auto-selects a free local port when
+the default address is already held by another project; an explicit `--server` fails loud on
+collision.
+
+A user-auth mesh can expose only its credential exchange through an operator-owned HTTPS reverse
+proxy while leaving the existing local exchange untouched:
+
+```bash
+cotal up --user-auth --idp https://idp.example/api/auth \
+  --exchange-public-port 7443 \
+  --exchange-public-url https://auth.example
+```
+
+The public listener itself still binds `127.0.0.1:7443`; configure the proxy to terminate TLS and
+forward to it. It serves only `/health`, `/jwks`, `/exchange`, and `/.well-known/cotal-mesh` with
+the documented methods. It needs no local file capability: the signed IdP JWT or managed-agent
+actor token is the proof, while the original loopback listener remains capability-gated. Add
+`--exchange-trusted-proxy` only when that listener is reachable exclusively through your trusted
+proxy; it keys failure throttling by the last `X-Forwarded-For` hop instead of the socket address.
+The well-known bundle includes IdP pins and a deny-all sentinel credential, so fetch it only from
+the configured HTTPS origin. To change these listener flags, stop and restart the mesh; a refresh
+of an already-running service does not replace its bind or proxy policy. See
+[Identity & auth](identity-and-auth.md#per-user-auth-people-sign-in) for the trust boundary.
 
 `cotal status` prints the detailed setup, process, registry, and live mesh status;
 `cotal setup` (after the first run) prints the compact card.
@@ -39,6 +60,27 @@ held by another project; an explicit `--server` fails loud on collision.
 Stop one part without tearing down the mesh by naming its registered component: `cotal down
 manager`, `cotal down delivery`, or `cotal down web`. Component names from installed extensions
 join the same surface; `cotal down` with no names retains whole-stack behavior.
+
+## Remote supervised agents
+
+On a remote user-auth mesh, foreground `cotal spawn` remains the default participant path. A
+participant can run detached agents only after the host advertises and operates the remote manager
+authority service, and the participant's actor-ledger row includes `supervise`. This is not implied
+by `spawn` or `admin`.
+
+The participant's loopback/operator exchange obtains one closed `manager-service` view for its
+ordinary derived owner, a fixed server-selected manager actor, and one opaque manager instance.
+The host, not the participant, issues the public-nkey JWT material via the replay-safe,
+lifecycle-bound prepare → activate → renew exchange. It never exports the space signer, a static
+provisioner credential, or generic storage authority. The manager may provision only descendants
+of that same owner, with host validation at each provision.
+
+When the authority service, login, or renewal is unavailable, the remote manager degrades
+fail-closed: it refuses new agents, restarts, and credential replacement rather than pretending
+local authority exists. Existing agents remain live only while their independent credentials are
+valid. Restore service and renew successfully before asking it to recover an agent. See
+[Identity & auth](identity-and-auth.md#remote-manager-authority) and the [CLI
+reference](cli.md#supervise).
 
 ## Spawning agents
 
@@ -137,35 +179,59 @@ useful when the mesh is simply down right now).
 #### Which addresses you may register
 
 Registering a mesh is how this machine starts sending agent credentials to a broker it does not
-run, and this build has no way to demand an encrypted connection yet: NATS announces itself in
-plaintext before anyone authenticates, so an attacker on the path can pose as the broker and read
-the credential out of the connect. A `tls://` URL does not help, because it is the connect
-options, not the scheme, that make the client insist.
+run. NATS announces itself in plaintext before anyone authenticates, so an attacker on the path
+can pose as the broker and read the credential out of the connect — unless the connection
+**requires TLS**, which is recorded on the entry and enforced on every dial through it.
 
-So the address is the gate, and only two kinds are accepted:
+What the record will require decides what you may register:
 
-- **loopback** — `127.0.0.0/8` or `::1`, where nothing leaves the machine;
-- **your private overlay** — `100.64.0.0/10` or `fd7a:115c:a1e0::/48`, but only with
+- **Without required TLS**, the address is the gate: **loopback** (`127.0.0.0/8`, `::1`), or
+  **your private overlay** (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) with
   `--allow-unencrypted-overlay`, because the protection is real only while the tunnel is running
-  and this command cannot check that for you.
+  and this command cannot check that for you. Hostnames are refused — whoever answers the lookup
+  would be choosing which machine receives your credentials.
+- **With required TLS** (`--tls`, or a `tls://` URL — the scheme is recorded and enforced, not
+  cosmetic), a **hostname or public address** is accepted too: the certificate chain and
+  hostname check pick the peer, not the resolver. A `tls://` registration against a broker that
+  cannot complete the handshake fails at registration — unless you pass `--force`, which records
+  the entry without verifying it at all — and on every later dial regardless.
 
-Everything else is refused, including ordinary private ranges like `10.x` and `192.168.x`: a
-café's wifi is a private network too, and being private is not the same as being yours. `--force`
-does not waive this — it exists for a mesh that is *down*, not for sending credentials somewhere
-unsafe.
+Ordinary private ranges like `10.x` and `192.168.x` are refused in **both** modes: a café's wifi
+is a private network too, being private is not the same as being yours, and no public CA issues
+certificates for those ranges. How an address is *spelled* changes nothing: `[::ffff:192.168.1.10]`,
+`3232235786`, `0300.0250.01.012` and `192.168.257` are all private addresses that your machine
+would dial as such, so each gets the same refusal as its dotted form. `--force` does not waive any of this — it exists for a mesh that
+is *down*, not for sending credentials somewhere unsafe.
 
-Hostnames are refused as well, even ones that resolve somewhere allowed, because then whoever
-answers the lookup would be choosing which machine receives your credentials. Pass the address
-itself. When serving the broker over TLS arrives, the client will verify the certificate's
-hostname and names become safe to use again.
+#### Registering a hosted user-auth mesh
 
-An overlay address is **refused unless you accept the dependency explicitly**, with
-`--allow-unencrypted-overlay`. The address is not the guarantee: it is protected while the tunnel
-is up, and if the tunnel is down that range is ordinary carrier-grade NAT and whoever answers the
-dial receives your credentials. Only you can know which it is, so the command asks you to say so.
-Your acceptance is recorded on the mesh entry rather than printed and forgotten. The guided form
-asks the same question instead of taking the flag, and the flag disappears once the broker can be
-served over TLS.
+A user-auth space's IdP pins are established where the mesh runs and are never guessed. Register
+one from **supplied** trust: `--user-auth-file bundle.json` (exported on the mesh's machine), or
+`--from https://…/.well-known/cotal-mesh`, which asks before it contacts the address at all,
+fetches the discovery document over HTTPS, shows you the pins, and asks again before adopting
+them. Redirects are refused rather than followed — a 302 can walk a pinned fetch down to
+plaintext or onto another host — and the pinned exchange must be an `https://` URL too. The one
+exception is an exchange on **this machine**, where nothing leaves the box: plain `http://` is
+accepted for a loopback *literal* (`127.0.0.1`, `::1`, and any spelling of them), but **not** for
+`localhost`, which is a name a hosts entry or a poisoned lookup could point elsewhere — use the
+literal. Registration checks that the pinned exchange
+answers `/health` and `/jwks` as the pinned issuer and that the broker refuses a bare connect —
+that refusal is the pass. The bundle's sentinel credentials are written to a private (0600) file
+under the entry's root; the registry itself never carries the secret.
+
+**Without required TLS**, an overlay address is **refused unless you accept the dependency
+explicitly**, with `--allow-unencrypted-overlay`. The address is not the guarantee: it is protected
+while the tunnel is up, and if the tunnel is down that range is ordinary carrier-grade NAT and
+whoever answers the dial receives your credentials. Only you can know which it is, so the command
+asks you to say so. Your acceptance is recorded on the mesh entry rather than printed and
+forgotten, and the guided form asks the same question instead of taking the flag.
+
+**With required TLS** (`--tls`, or a `tls://` URL) that consent is no longer asked for, and the
+flag is not needed: the handshake is what protects the connection, so the acceptance it stood in
+for has been replaced by proof rather than promise. `cotal meshes add <space> --server
+nats://100.64.0.1 --tls` registers an overlay address with no prompt, no flag and no recorded
+acceptance — this is the "the flag disappears once the broker can be served over TLS" case, and it
+has now arrived.
 
 This gate is on **registration**. `cotal join --creds --server <url>` deliberately takes an
 explicit connection at face value and does not consult the registry, so it is not covered — join
@@ -243,6 +309,18 @@ disaster-consent, and degraded-recovery details.
 markers), `show <name>`, `edit <name>` (re-validates on save), `new <name>`, `rm <name>
 --force`. The runtime counterpart is the `cotal_persona` tool, which goes over the wire
 with the manager's ownership checks. Fields: [agent files](agent-files.md).
+
+## Manager restart and a frozen issuance gate
+
+A manager that dies mid-registration leaves its issuance gate *frozen* under that registration
+op. The freeze is correct: it stops two incarnations serving at once. The successor now completes
+that dead op on boot, using the same guard as [`cotal reconcile-gate`](cli.md#reconcile-gate): it
+acts only when the freeze-holder is affirmatively gone under a complete CONNZ sweep (`gone` and
+`sweepComplete=true`), abort-reopens the gate (generation+1, processEpoch unchanged), and continues
+the normal takeover. A live holder, an incomplete sweep, or an unreachable delivery daemon still
+refuses — silence is never death, and there is no TTL. Use `cotal reconcile-gate` when the boot
+path cannot run (daemon down, a non-manager endpoint, or you want to lift the freeze without
+starting a manager).
 
 ## When something looks absent
 

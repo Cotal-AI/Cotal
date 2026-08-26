@@ -52,6 +52,11 @@ function log(msg: string): void {
 function wireItem(i: InboxItem): Record<string, unknown> {
   return {
     id: i.id,
+    // #624: the opaque per-delivery receive key. The sidecar echoes this back on `delivered`, so
+    // the bridge can ack THIS delivery. For an id-less message the wire id is "", which the
+    // delivered guard below would treat as falsy and never match: the bridge would wedge forever
+    // after surfacing one empty-id message. The receive key is never "" and never a dedup key.
+    recvKey: i.recvKey,
     ts: i.ts,
     kind: i.kind,
     channel: i.channel,
@@ -103,7 +108,7 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
     const pending = agent.peekInbox("automatic");
     if (!pending.length) return;
     const next = pending[0];
-    awaitingId = next.id;
+    awaitingId = next.recvKey;
     sendFrame(adapter, { t: "incoming", msg: wireItem(next) });
   };
 
@@ -151,13 +156,15 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
         pump();
         return;
       case "delivered":
-        if (frame.id && frame.id === awaitingId) {
+        // Address by the receive key the sidecar echoes (NOT the wire id: an id-less message's
+        // id is "", which the old truthiness guard silently never matched).
+        if (typeof frame.recvKey === "string" && frame.recvKey !== "" && frame.recvKey === awaitingId) {
           // Ack exactly the surfaced message — but ONLY if it's still the front. MeshAgent
           // force-evicts (and acks) from the FRONT at MAX_INBOX, so a large ambient burst during a
           // long turn can already have evicted our in-flight item; draining the front then would
           // mis-ack a newer, unsurfaced message (losing it). If the front is no longer ours, the
           // overflow already acked it — just resync and let pump() surface the new front.
-          agent.drainInboxIds([awaitingId]);
+          agent.drainInboxDeliveries([awaitingId]);
           awaitingId = undefined;
           pump();
         }

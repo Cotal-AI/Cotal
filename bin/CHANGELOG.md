@@ -1,5 +1,655 @@
 # cotal-ai
 
+## 0.30.2
+
+### Patch Changes
+
+- Updated dependencies [2395efd]
+  - @cotal-ai/manager@0.30.2
+  - @cotal-ai/connector-core@0.30.2
+  - @cotal-ai/core@0.30.2
+  - @cotal-ai/workspace@0.30.2
+  - @cotal-ai/cli@0.30.2
+  - @cotal-ai/delivery@0.30.2
+  - @cotal-ai/auth@0.30.2
+
+## 0.30.1
+
+### Patch Changes
+
+- Updated dependencies [1b4b386]
+- Updated dependencies [aea08f9]
+  - @cotal-ai/cli@0.30.1
+  - @cotal-ai/core@0.30.1
+  - @cotal-ai/connector-core@0.30.1
+  - @cotal-ai/auth@0.30.1
+  - @cotal-ai/delivery@0.30.1
+  - @cotal-ai/manager@0.30.1
+  - @cotal-ai/workspace@0.30.1
+
+## 0.30.0
+
+### Minor Changes
+
+- ef01887: Add closed, host-issued remote manager-service authority for registered user-auth participants. It requires the dedicated `supervise` scope, restricts manager registration and credentials to one owner and opaque instance, and uses a lifecycle-bound prepare, activate, and renew flow with fail-closed renewal and same-owner descendant provisioning.
+
+### Patch Changes
+
+- 0def128: Report the host-authority requirement when a registered user-auth participant tries to supervise a remote mesh, and derive the registered broker address without accepting a mismatched override.
+- Updated dependencies [6d03de0]
+- Updated dependencies [68a8041]
+- Updated dependencies [cc1f2e2]
+- Updated dependencies [656921b]
+- Updated dependencies [0e673ff]
+- Updated dependencies [c6db901]
+- Updated dependencies [569f4d3]
+- Updated dependencies [b282f70]
+- Updated dependencies [3443c57]
+- Updated dependencies [97dea94]
+- Updated dependencies [0323f5b]
+- Updated dependencies [ef01887]
+- Updated dependencies [196dddb]
+- Updated dependencies [0def128]
+  - @cotal-ai/auth@0.30.0
+  - @cotal-ai/connector-core@0.30.0
+  - @cotal-ai/cli@0.30.0
+  - @cotal-ai/manager@0.30.0
+  - @cotal-ai/core@0.30.0
+  - @cotal-ai/delivery@0.30.0
+  - @cotal-ai/workspace@0.30.0
+
+## 0.29.2
+
+### Patch Changes
+
+- Updated dependencies [8531c13]
+  - @cotal-ai/core@0.29.2
+  - @cotal-ai/connector-core@0.29.2
+  - @cotal-ai/auth@0.29.2
+  - @cotal-ai/cli@0.29.2
+  - @cotal-ai/delivery@0.29.2
+  - @cotal-ai/manager@0.29.2
+  - @cotal-ai/workspace@0.29.2
+
+## 0.29.1
+
+### Patch Changes
+
+- Updated dependencies [9570a57]
+  - @cotal-ai/cli@0.29.1
+  - @cotal-ai/core@0.29.1
+  - @cotal-ai/workspace@0.29.1
+  - @cotal-ai/manager@0.29.1
+  - @cotal-ai/delivery@0.29.1
+  - @cotal-ai/connector-core@0.29.1
+  - @cotal-ai/auth@0.29.1
+
+## 0.29.0
+
+### Patch Changes
+
+- Updated dependencies [1f025c3]
+  - @cotal-ai/core@0.29.0
+  - @cotal-ai/auth@0.29.0
+  - @cotal-ai/workspace@0.29.0
+  - @cotal-ai/cli@0.29.0
+  - @cotal-ai/connector-core@0.29.0
+  - @cotal-ai/delivery@0.29.0
+  - @cotal-ai/manager@0.29.0
+
+## 0.28.2
+
+### Patch Changes
+
+- Updated dependencies [53f66c2]
+- Updated dependencies [53f66c2]
+  - @cotal-ai/cli@0.28.2
+  - @cotal-ai/core@0.28.2
+  - @cotal-ai/connector-core@0.28.2
+  - @cotal-ai/auth@0.28.2
+  - @cotal-ai/delivery@0.28.2
+  - @cotal-ai/manager@0.28.2
+  - @cotal-ai/workspace@0.28.2
+
+## 0.28.1
+
+### Patch Changes
+
+- Updated dependencies [2a383fe]
+  - @cotal-ai/core@0.28.1
+  - @cotal-ai/connector-core@0.28.1
+  - @cotal-ai/auth@0.28.1
+  - @cotal-ai/cli@0.28.1
+  - @cotal-ai/delivery@0.28.1
+  - @cotal-ai/manager@0.28.1
+  - @cotal-ai/workspace@0.28.1
+
+## 0.28.0
+
+### Minor Changes
+
+- 716f97c: The public exchange face's /.well-known/cotal-mesh bundle is now actually consumable by
+  `cotal meshes add --from`: the trust pins ride a `userAuth` arm (provider "cotal", idp pins,
+  pinned exchange endpoint) exactly as `checkUserBundle` records them, instead of the flat
+  idp/endpoints shape the consumer refused. New `--advertised-server <url>` on `cotal up` /
+  `auth-service` (with `--exchange-public-port`) sets the broker address the bundle advertises —
+  what participants dial through the reverse proxy (e.g. wss://…/mesh-ws) — instead of the
+  loopback/LAN address the callout itself dials.
+
+### Patch Changes
+
+- Updated dependencies [a71fbd3]
+- Updated dependencies [29c5268]
+- Updated dependencies [09b6a3b]
+- Updated dependencies [b8ee849]
+- Updated dependencies [1f44ca6]
+- Updated dependencies [4f7747f]
+- Updated dependencies [9216d21]
+- Updated dependencies [86f6b10]
+- Updated dependencies [7bc71ab]
+- Updated dependencies [a84cb62]
+- Updated dependencies [716f97c]
+- Updated dependencies [e26f4d1]
+- Updated dependencies [45db9f8]
+- Updated dependencies [200a93f]
+- Updated dependencies [e377c7b]
+- Updated dependencies [44738b2]
+- Updated dependencies [a999a98]
+- Updated dependencies [5db8641]
+- Updated dependencies [316f84d]
+- Updated dependencies [653c6cd]
+  - @cotal-ai/connector-core@0.28.0
+  - @cotal-ai/core@0.28.0
+  - @cotal-ai/cli@0.28.0
+  - @cotal-ai/workspace@0.28.0
+  - @cotal-ai/auth@0.28.0
+  - @cotal-ai/manager@0.28.0
+  - @cotal-ai/delivery@0.28.0
+
+## 0.27.0
+
+### Patch Changes
+
+- 900f630: Add the Jcode Harness API connector with a private managed session, Cotal MCP bridge, and operator documentation.
+- Updated dependencies [0aed7fa]
+- Updated dependencies [900f630]
+- Updated dependencies [08a9cb8]
+  - @cotal-ai/connector-core@0.27.0
+  - @cotal-ai/workspace@0.27.0
+  - @cotal-ai/manager@0.27.0
+  - @cotal-ai/auth@0.27.0
+  - @cotal-ai/cli@0.27.0
+  - @cotal-ai/delivery@0.27.0
+  - @cotal-ai/core@0.27.0
+
+## 0.26.0
+
+### Patch Changes
+
+- Updated dependencies [aa1fe5f]
+- Updated dependencies [3866fdc]
+- Updated dependencies [f339690]
+  - @cotal-ai/cli@0.26.0
+  - @cotal-ai/workspace@0.26.0
+  - @cotal-ai/manager@0.26.0
+  - @cotal-ai/connector-core@0.26.0
+  - @cotal-ai/auth@0.26.0
+  - @cotal-ai/delivery@0.26.0
+  - @cotal-ai/core@0.26.0
+
+## 0.25.0
+
+### Minor Changes
+
+- aa6c63d: Codex seats publish an AG-UI event plane
+
+  A Codex seat launched with `cotal spawn --events` now publishes a structured account of its work on
+  `events.<owner>.<actor>`: run boundaries per turn, assistant text, reasoning summaries, and the tool
+  calls the model makes through Codex's function-call and custom-tool interfaces, each with its
+  arguments, its end, and its result. Before this the connector had no event plane at all, so an
+  external observer watching a mesh saw nothing from a Codex seat.
+
+  The durable source is the thread's rollout file inside the seat's own isolated `CODEX_HOME`, not the
+  live app-server stream. The file is written by the child and outlives this process's view of it, so a
+  seat that restarts its own app-server picks a thread's records up where it stopped rather than from
+  whatever the socket delivers next.
+
+  Four behaviours are worth knowing before reading a stream. A turn that fails ends its run with a run
+  error carrying the code Codex reported, rather than as a finished run, because Codex records a
+  failure on the turn's own completion record. No user authored text is ever published: your prompts,
+  the peer messages injected into the thread, and the persona's developer instructions are all
+  withheld, because the events channel carries a different read ACL from the channel you typed into.
+  A restarted app-server is a new thread and gets a new stream: the seat finishes the old one, closing
+  any run it left open, before it begins the new one. That holds even when the new thread's file is
+  slow to appear, though the order there is the other way round: the seat spends its whole bounded
+  look for the successor first, and the old run is closed when that look gives up, not at the moment
+  the restart happened. From the give-up on it publishes nothing until a later turn boundary binds
+  the successor, rather than continuing to report the dead thread's activity as if it were live. And Codex's own built-in tools, web search, tool
+  search and image generation, are not published, because their records carry an end with no start and
+  no key that joins the halves.
+
+  What is published is worth stating plainly: an observer of the events channel sees every tool call's
+  arguments and outputs verbatim, so withholding user authored text does not make the stream safe to
+  widen.
+
+  Two limits are worth knowing as well. A stream begins at the last complete record in the file at the
+  moment the seat binds to it, never at the beginning of the thread, so anything written before that
+  moment is not republished; the seat says so in its log when it happens. And a seat whose broker was
+  unreachable when it started loses its emitter, reports that it did, and rebuilds it at a later turn
+  boundary once the broker is there, so the outage costs the turns it covered rather than the rest of
+  the seat's life.
+
+  Migration: none. The plane is opt in per spawn, arming is separate from authorization, and a seat
+  launched without `--events` behaves exactly as before.
+
+- 34caaf4: Agent seats no longer export their connection material into the environment every descendant
+  process inherits. The broker URL, the creds path, the auth token, the user-mode identity and the
+  local control token now ride a private 0600 launch-material file whose path is the only thing in the
+  seat's environment; pi, codex and OpenCode drop even that path once they have read it (for OpenCode
+  that happens in the `opencode serve` process its seat shim starts, which is also what runs the
+  session's tool calls), while claude and hermes keep the reference because their readers are
+  short-lived children that start later. A session driven by hand still sets `COTAL_CREDS` / `COTAL_SERVERS` itself, and a
+  launch that carries both carriers is refused rather than resolved by precedence.
+
+### Patch Changes
+
+- Updated dependencies [636b4b8]
+- Updated dependencies [3f1ee2f]
+- Updated dependencies [17f8c57]
+- Updated dependencies [aa6c63d]
+- Updated dependencies [a4e4c49]
+- Updated dependencies [b31d2af]
+- Updated dependencies [c83e600]
+- Updated dependencies [b501ec5]
+- Updated dependencies [838c01e]
+- Updated dependencies [a087c2b]
+- Updated dependencies [0b602e4]
+- Updated dependencies [b33ba93]
+- Updated dependencies [34caaf4]
+- Updated dependencies [a7742a7]
+- Updated dependencies [8e38835]
+- Updated dependencies [6959679]
+  - @cotal-ai/core@0.25.0
+  - @cotal-ai/manager@0.25.0
+  - @cotal-ai/cli@0.25.0
+  - @cotal-ai/connector-core@0.25.0
+  - @cotal-ai/auth@0.25.0
+  - @cotal-ai/delivery@0.25.0
+  - @cotal-ai/workspace@0.25.0
+
+## 0.24.0
+
+### Patch Changes
+
+- Updated dependencies [b7cc4fa]
+- Updated dependencies [5b0642e]
+  - @cotal-ai/core@0.24.0
+  - @cotal-ai/connector-core@0.24.0
+  - @cotal-ai/auth@0.24.0
+  - @cotal-ai/cli@0.24.0
+  - @cotal-ai/delivery@0.24.0
+  - @cotal-ai/manager@0.24.0
+  - @cotal-ai/workspace@0.24.0
+
+## 0.23.0
+
+### Minor Changes
+
+- 5e3951a: events: an agent's second session publishes again, and the halt names the causes that can actually produce it
+
+  Only an agent's first session ever published AG-UI events. Every session after it halted the emitter
+  permanently. The write-ahead log is keyed per session and the event channel is keyed per principal,
+  so a new session opened with an expectation that its channel was empty, while its own previous
+  session had already filled it. The broker refused the publish and the emitter stopped for good. On a
+  mesh with user authentication the agent name is the actor, and a restart forks the session id, so
+  the first restart of any agent spawned with the event plane armed was enough to take its event
+  stream dark. An agent on a static credential is reached the same way through preserve and resume,
+  which relaunches the recorded identity while the session under it is new. Reproduced against a real
+  broker across three sessions, and it did not recover on its own.
+
+  Alongside the per-session logs the connector now keeps one record per principal, holding the last
+  sequence the broker assigned on that channel, so a new session continues the stream instead of
+  starting again from nothing. An installation upgrading from a release without that record recovers
+  the sequence from the session logs already on disk, so the fix applies to agents that have already
+  run rather than only to ones starting fresh. That recovery reads the sequence a log took an
+  acknowledgement for but did not fold, which is where the real number sits when a session died in
+  that window, and it refuses a log it cannot account for rather than taking the largest number it can
+  find. An abandonment after a channel purge clears the record with the logs, and a record that reads
+  zero is never re-seeded, because that is what abandonment writes.
+
+  The halt message previously offered three causes, another writer, a restored stream, or a filtered
+  purge, and the real one was not among them, so an operator went looking for a rogue writer. It now
+  names what a moved tip can actually mean, including a concurrent session under the same principal
+  and a frontier record that disagrees with the stream. It also names the one cause that is not
+  another writer at all: a crash between the shared record's advance and the log's own record of the
+  ack leaves the record ahead of the expectation the log is still holding, so the retry publishes a
+  sequence the subject has already passed and the halt looks exactly like a foreign write. The
+  message says what that state looks like on disk. It also states the real gap in the per-principal
+  lock rather than claiming the lock prevents the case the halt fires on: the lock file lives under a
+  workspace root, so a second emitter started against a different root meets no lock, while another
+  host or a stale pid refuse the start instead of slipping past. And where it used to name an
+  abandonment as the remedy, it now says no command performs one, names the directory that has to go,
+  and says removing less leaves a mixed state the next start refuses. Clearing that state is valid
+  only once the channel itself is back to empty, which of the causes above is true of a filtered
+  purge alone; on any other cause the tip stays where it is, so removing the directory returns the
+  same halt with the logs a tip could have been rebuilt from now gone, and the channel purge is the
+  half that comes first.
+
+  The scan that recovers a tip from the session logs refuses a linked entry and refuses a linked log,
+  matching the directory chain that creates this state and already refused a symlinked component.
+  Without that, a link planted where a session directory belongs took the scan to a log in another
+  tree. What it does not close is a session directory swapped for a link in the moment between the
+  check and the open: the non-following open flag covers the final name only, and closing that window
+  would take a per-component walk the scan does not do. A log reachable under more than one name is
+  refused too, and the ordinary way to produce one is copying a workspace with hard links, which makes
+  the recovery refuse every log rather than half-trust them.
+
+  The record itself is now graded on the file rather than on the writer's view of it. A second view of
+  one record could take the tip backwards with no error at all, because the comparison was against
+  memory while the rule was written about the value on disk. Nothing shipped reaches that today, and
+  that is measured rather than assumed: a stale view publishes a stale expectation and the broker
+  refuses it before an acknowledgement exists to record. It is guarded anyway, because an assumption
+  recorded in prose where a guard belongs is what produced this defect in the first place. A record
+  that goes corrupt underneath a live writer is now refused before the write instead of being
+  overwritten, and an abandonment refuses outright when it cannot reach the shared record, rather than
+  clearing the log's half and reporting a completed abandonment.
+
+  MIGRATION: `AguiEmitter.start` now requires a `subjectFrontier`, and refuses at runtime without one
+  rather than falling back to the per-session number, because that fallback is the defect. `EventWal`
+  refuses the same way: a log with no record bound has no publish expectation and says so instead of
+  offering its own last acknowledged sequence, and an abandonment on an unbound log now refuses rather
+  than clearing half of the state, so anyone driving a log outside the emitter must bind one first.
+  Anyone embedding the emitter directly must open a `FileSubjectFrontier` at the `subjectPath` that
+  `ensureEventWalDir` now returns and pass it. Connectors in this repository are updated. No wire
+  bytes move and no grant changes: the channel grammar is unchanged.
+
+### Patch Changes
+
+- Updated dependencies [401f0d6]
+- Updated dependencies [5634356]
+- Updated dependencies [5e3951a]
+  - @cotal-ai/cli@0.23.0
+  - @cotal-ai/workspace@0.23.0
+  - @cotal-ai/connector-core@0.23.0
+  - @cotal-ai/auth@0.23.0
+  - @cotal-ai/delivery@0.23.0
+  - @cotal-ai/manager@0.23.0
+  - @cotal-ai/core@0.23.0
+
+## 0.22.0
+
+### Minor Changes
+
+- 57d3a57: A Claude session publishes a structured event plane, and the `tr-<name>` transcript mirror is
+  retired
+
+  A session launched with `cotal spawn --events` now actually publishes. The Claude connector maps
+  its session records to structured events behind the same hook relay the mirror used to sit behind:
+  run boundaries per turn, assistant text, reasoning, and each tool call with its arguments, its end
+  and its result, written to a per-session write-ahead log before they go on the wire so a restart
+  resumes at its cursor instead of replaying or skipping. Until now no connector constructed the
+  emitter at all, so every event channel was empty.
+
+  The `tr-<name>` mirror is removed in the same change rather than deprecated alongside it. Gone with
+  it: the `--transcript` and `--no-transcript` flags on `cotal spawn`, the `transcript` field on the
+  manager's spawn op and its service contract, `COTAL_TRANSCRIPT` and `COTAL_TRANSCRIPT_DEFAULT`,
+  `LaunchOpts.transcript`, `Connector.transcriptChannel`, and the mirror in all three connectors that
+  carried one.
+
+  MIGRATION. If you read a `tr-<name>` channel, nothing publishes to it any more. A managed session no
+  longer mirrors its prose there under any flag or environment variable, and a spawn that passes
+  `--transcript` now fails on an unknown flag rather than being ignored. Read the session's event
+  channel instead: launch with `--events` and subscribe to `events.<owner>.<actor>`, which is keyed on
+  the session's principal. On a static mesh that is `events.local.<key>`, where the key is what the
+  manager allocated and the spawn reply carries it as `id`; on a user-auth mesh it is
+  `events.<your-owner>.<agent-name>`, where the actor half is the agent's own name. `connect-claude.md`
+  gives both forms. `cotal console` and the web console render event frames directly. Unlike
+  `tr-<name>`, you cannot simply subscribe: the plane needs an out-of-band grant, and the command for
+  it is under "To let something read a plane" below.
+
+  What you gain and what you lose, both stated. A tool call now arrives with its full arguments, its
+  end and its result, in a vocabulary a program can read, where the mirror gave a truncated one-liner
+  of glyph-prefixed text. What you lose is prompt text somebody else wrote: the mirror republished
+  every prompt, and the event plane withholds the body of a turn the agent did not author, because
+  republishing a peer's message onto a channel that peer may not read crosses an ACL boundary. A
+  peer-authored turn still opens a run and still shows the work it caused. One stated limit on that,
+  because the loss column is only useful if it is complete: a tool result is this session's own output
+  and is republished, so peer text quoted inside one still reaches the wire. A cell in
+  `agui-authorship.smoke.ts` holds that as a measured limit rather than leaving it to be discovered.
+
+  A spawn may be granted the event plane of the agent it is creating, and no other. A spawn that names
+  a different agent's event channel in `allowSubscribe` or `allowPublish` is refused at the door,
+  because that channel carries the session's tool inputs and outputs. The same rule runs on a manager
+  resume: a retained inventory naming another agent's event channel is refused rather than adopted.
+
+  The rule reads a **concrete** channel, two principal tokens and nothing else. A pattern such as
+  `events.<owner>.>` is not an event channel to it and passes untouched, governed by ordinary ACL
+  authority. That is deliberate, since the pattern is the form an operator writes on purpose for an
+  observer.
+
+  To let something read a plane, grant it out of band. The refusal prints one command, spelled out in
+  full, for the mesh it is running on. On a user-auth mesh:
+  `cotal actor grant <reader> --owner <owner> --scope '' --allow-subscribe '<channel>' --allow-publish
+''`, every field named because `actor grant` is an upsert of the whole row and an omitted flag is the
+  wide default (`>` read, `>` post, `spawn,role:default` scope), not "leave it alone". On a static mesh there is no
+  actor ledger for `actor grant` to write to, so mint the reader instead:
+  `cotal mint watcher --profile agent --allow-subscribe '<channel>' --provision`, the agent profile and
+  not the observer one, since `mint` reads `--allow-subscribe` only for that profile and refuses it off
+  that profile.
+
+  `cotal mint` now REFUSES `--allow-subscribe` / `--allow-publish` off the agent profile rather than
+  ignoring them. Those profiles carry a FIXED read set, the chat plane for observer and the whole
+  messaging plane for admin, so
+  `--profile observer --allow-subscribe <one channel>` used to exit 0, print a success line, and hand
+  out a credential that reads every channel in the space: an operator asking to narrow got the
+  opposite, silently. `--role` and `--provision` were already refused there for the same reason. The
+  rows in `cli.md` and the sentence in `build-a-client.md` now say the same thing.
+
+### Patch Changes
+
+- Updated dependencies [dfad94f]
+- Updated dependencies [57d3a57]
+  - @cotal-ai/auth@0.22.0
+  - @cotal-ai/connector-core@0.22.0
+  - @cotal-ai/manager@0.22.0
+  - @cotal-ai/workspace@0.22.0
+  - @cotal-ai/core@0.22.0
+  - @cotal-ai/cli@0.22.0
+  - @cotal-ai/delivery@0.22.0
+
+## 0.21.0
+
+### Patch Changes
+
+- Updated dependencies [4cf5f72]
+- Updated dependencies [219d33c]
+- Updated dependencies [9c2412c]
+  - @cotal-ai/core@0.21.0
+  - @cotal-ai/connector-core@0.21.0
+  - @cotal-ai/workspace@0.21.0
+  - @cotal-ai/cli@0.21.0
+  - @cotal-ai/manager@0.21.0
+  - @cotal-ai/auth@0.21.0
+  - @cotal-ai/delivery@0.21.0
+
+## 0.20.1
+
+### Patch Changes
+
+- Updated dependencies [2752fe7]
+  - @cotal-ai/core@0.20.1
+  - @cotal-ai/workspace@0.20.1
+  - @cotal-ai/cli@0.20.1
+  - @cotal-ai/manager@0.20.1
+  - @cotal-ai/connector-core@0.20.1
+  - @cotal-ai/auth@0.20.1
+  - @cotal-ai/delivery@0.20.1
+
+## 0.20.0
+
+### Patch Changes
+
+- Updated dependencies [4743594]
+  - @cotal-ai/cli@0.20.0
+  - @cotal-ai/core@0.20.0
+  - @cotal-ai/workspace@0.20.0
+  - @cotal-ai/manager@0.20.0
+  - @cotal-ai/delivery@0.20.0
+  - @cotal-ai/connector-core@0.20.0
+  - @cotal-ai/auth@0.20.0
+
+## 0.19.0
+
+### Minor Changes
+
+- a1bc784: Display an agent event frame, and separate event channels from chat.
+
+  An `ag-ui.frame` part carries no text part by design, so every surface that renders a message as
+  flat text drew one as `[unrenderable part kind "ag-ui.frame"]`. A renderer now folds a frame's
+  events into readable lines: streamed text and reasoning deltas accumulate into one line rather than
+  one line each, a tool call reports its name, its arguments and its result, and a stream that ended
+  without its terminator is flushed and marked truncated instead of being dropped. An event type this
+  build does not know is named rather than skipped, because a skipped event is a hole in a transcript
+  that still looks complete. It registers through the part-renderer seam, so the standard resolves it
+  by the part's own kind and never learns what the vocabulary means.
+
+  The renderer is loaded by the composition root rather than by a connector. Connectors are removable
+  extensions materialized on demand, and no surface that renders imports one, so a provider that
+  registered only inside a connector would be absent from every process that draws.
+
+  The event channel's name and its classifier move into the standard, beside the frame's identity.
+  Both are things a reader needs in order to recognise an agent's stream without knowing which adapter
+  produced it, and the two surfaces that most need to classify cannot reach an extension package at
+  all. The constructor is re-exported from its former home, so no caller changes.
+
+  The classifier is now a derivation rather than a prefix test, and the two disagree on names a real
+  mesh produces. Nothing reserves the `events.` prefix, so a channel a human created and talks on
+  answered yes to "does this start with `events.`" and was swept out of the chat pane it was sent to.
+  A name that does not resolve to a principal is no longer treated as machine traffic, which returns
+  those channels to the view, and leaves a malformed publisher visible rather than hidden. The
+  collision is narrowed rather than closed: a chat channel whose remainder is itself principal shaped
+  is still indistinguishable from an agent's stream, and closing that means reserving the prefix on
+  the wire.
+
+  The console keeps event channels out of the channel strip and out of the history prefill. The order
+  matters more than the result: the channel list carries one entry per retained subject, so filtering
+  after the fetch would read history for every event channel and discard it, which is unbounded work
+  to display nothing. Live rows are marked rather than dropped, because hiding them would delete the
+  only traffic this change taught the console to draw.
+
+  The dashboard gains the same rendering through a per-kind lookup, so its dispatcher stays ignorant
+  of every kind anyone teaches it. A renderer that throws, returns a non-string, or shares a name with
+  an inherited object method is reported by name instead of blanking the body. The browser cannot
+  import the shared renderer, so the two implementations are held together by an executable
+  equivalence check rather than by intent.
+
+  The example harness records a message through the shared renderer instead of keeping only its text
+  parts, so a message whose content is not text is no longer written to the transcript as an empty
+  string and scored as an agent that said nothing.
+
+  No connector emits a frame yet, and no transcript mirror is removed. Display lands first on purpose:
+  a cutover shipped before a renderer would replace a readable mirror with a part every surface shows
+  as a marker.
+
+### Patch Changes
+
+- 758e1e3: Pin `json-canonicalize` exactly, so a published install cannot resolve a broken tarball.
+
+  `json-canonicalize@2.0.1` was published without the `bundles/` directory its own `package.json`
+  `main` points at. A `^2.0.0` range therefore resolves, on any fresh install, to a package that
+  cannot be imported: `cotal --version` crashes with `ERR_MODULE_NOT_FOUND` before printing
+  anything.
+
+  The repo never saw it. A lockfile pins 2.0.0 and CI stayed green throughout; a published package
+  carries no lockfile, so npm re-resolves every range at install time and users got a version CI had
+  never exercised. That gap between what CI resolves and what an install resolves is the actual
+  defect this fixes.
+
+  Both ranges are now exact, and `smoke:dep-pins` keeps them that way: it fails if either floats
+  back to a range, and fails if its quarantine list stops matching any declared dependency, so a
+  list that has quietly stopped applying cannot read as a list that holds.
+
+  Stated as a limit rather than left implied: the new cell proves the range is exact, not that the
+  pinned version is installable. Only installing the packed tarball against the live registry proves
+  that, which is `smoke:seed-tarball:live` - and that suite sits outside `smoke:ci`, so the
+  instrument that would have caught this incident exists and does not run. Wiring it into the gate
+  is a separate decision about live-network tests in CI, not something this change makes quietly.
+
+- c3dd6a5: fix(web): route on the channel the broker policed, not the one the publisher claimed
+
+  The browser dashboard decided which channel a message belonged to by reading `msg.channel` off the
+  payload. That field is written by the publisher, and the broker polices **subjects**, not payload
+  fields, so a sender could put any channel name in a message body and have the dashboard file it
+  into that channel's transcript, including a channel the sender had no permission to publish to.
+
+  The verified channel was already available and was being discarded: the observer parses the subject
+  to recover the authenticated sender, then dropped the rest of it. Routing now uses the channel
+  derived from the subject the broker actually enforced. Where no authoritative channel exists
+  (direct messages and anycast carry none), the publisher's claim is cleared rather than trusted, so a
+  forged value cannot survive into a transcript, a channel list, or an unread badge.
+
+  Two rendering fixes ride along, because a message whose content vanishes is the same class of defect
+  one surface over. A part kind the surface has no renderer for previously produced an empty body, so
+  a message with content displayed as a blank line; it now renders a marker naming the kind, and a
+  part carrying data keeps that data instead of having it replaced by the marker. A surface that
+  prints a marker while dropping the content looks like successful rendering, which is precisely the
+  failure being removed. The two dashboard surfaces now share one parts renderer so they cannot drift
+  apart on what a part looks like; that drift is how the original defect reached both of them.
+
+  **Limits worth stating.** The new suites drive the served JavaScript directly: they execute the
+  shipped handler and backfill functions and assert message content and destination, but no cell opens
+  a browser or asserts rendered HTML, so this proves the routing and the renderer's return value, not
+  that either survives to the pixels. Rendering of external observer/UI event frames, and the filter
+  that selects them, are separate work and are untouched here. The dashboard's loopback HTTP surface
+  is unauthenticated and this change does not alter that; a failed membership read still renders as a
+  successful empty result, so a viewer cannot distinguish "nobody is subscribed" from "the read
+  failed". Both predate this change and are named so the routing fix is not mistaken for making that
+  surface safe.
+
+- 0e44e37: fix(web): tell the browser a membership read failed instead of serving it as empty
+
+  The dashboard's `/api/membership` route answered a failed read with `{asOf: undefined, members: []}`
+  and a 200. `JSON.stringify` drops a key whose value is `undefined`, so those bytes are
+  `{"members":[]}`, byte-identical to a successful read of a space where nobody is subscribed. The
+  graph then reported the feed as `membership: traffic-only`, which asserts that the mesh publishes no
+  membership feed, when the truth was that the read did not answer.
+
+  A failed read now carries a 503 and names its condition; the two server-sent-event paths emit a
+  named event instead of swallowing the rejection; and the page stops manufacturing an empty snapshot
+  from a failed fetch or a non-200. The freshness pill gains an `unreadable` state, tested before
+  `traffic-only` so a refusal cannot borrow that phrase.
+
+- Updated dependencies [48c6631]
+- Updated dependencies [ae2f31b]
+- Updated dependencies [10d9cd6]
+- Updated dependencies [a1bc784]
+- Updated dependencies [a7267b3]
+- Updated dependencies [ce1c248]
+- Updated dependencies [5e95736]
+- Updated dependencies [19931dd]
+- Updated dependencies [6074c26]
+- Updated dependencies [24687a3]
+- Updated dependencies [17f14be]
+- Updated dependencies [87c4130]
+- Updated dependencies [cb9e1ad]
+- Updated dependencies [c038730]
+- Updated dependencies [007a17b]
+- Updated dependencies [eae512e]
+- Updated dependencies [7f83b8c]
+- Updated dependencies [82dd701]
+- Updated dependencies [758e1e3]
+- Updated dependencies [be624af]
+- Updated dependencies [12f2df8]
+- Updated dependencies [8572a5d]
+- Updated dependencies [4e8d776]
+  - @cotal-ai/core@0.19.0
+  - @cotal-ai/connector-core@0.19.0
+  - @cotal-ai/cli@0.19.0
+  - @cotal-ai/workspace@0.19.0
+  - @cotal-ai/manager@0.19.0
+  - @cotal-ai/delivery@0.19.0
+  - @cotal-ai/auth@0.19.0
+
 ## 0.18.0
 
 ### Minor Changes

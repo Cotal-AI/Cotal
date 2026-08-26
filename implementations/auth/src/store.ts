@@ -44,6 +44,12 @@ import {
 
 const STORE_VER = 1;
 
+/** The registered auth-provider name, as it appears in a mesh registry entry's `userAuth.provider`
+ *  and in the discovery bundle the public face serves. ONE constant, because those two must agree:
+ *  the bundle is the input `cotal meshes add --from` registers from, so a bundle naming a different
+ *  provider than the provider that serves it would register an entry nothing can resolve. */
+export const AUTH_PROVIDER_NAME = "cotal" as const;
+
 /** Canonical {@link SecretStore} keys of the four secret kinds — one builder per kind, mirroring
  *  today's `.cotal/auth/<space>/<file>` layout so the local filesystem composition is unchanged.
  *  A hosted adapter treats them as opaque ids (its own resolve adds tenant scope). The space
@@ -305,6 +311,11 @@ export interface AuthServiceInfo {
   pid: number;
   /** High-entropy per-start exchange capability (hex). NEVER copied into the mesh registry. */
   cap: string;
+  /** The PUBLIC exchange base URL when the optional public face is enabled — the operator's
+   *  `--exchange-public-url` (the reverse proxy's https address) or the local bind. `up` copies
+   *  this (never `cap`) into the registry's `UserAuthInfo.endpoints.url` so the discovery bundle
+   *  is generated, not hand-written. */
+  publicUrl?: string;
 }
 
 interface ServiceFile extends AuthServiceInfo {
@@ -314,9 +325,9 @@ interface ServiceFile extends AuthServiceInfo {
 export function loadAuthServiceInfo(dir: string): AuthServiceInfo | undefined {
   const f = readStoreFile<ServiceFile>(join(dir, SERVICE_FILE), "auth service info");
   if (!f) return undefined;
-  if (!f.url || typeof f.pid !== "number" || !f.cap)
+  if (!f.url || typeof f.pid !== "number" || !f.cap || (f.publicUrl !== undefined && typeof f.publicUrl !== "string"))
     throw new Error(`${join(dir, SERVICE_FILE)}: malformed auth service info - restart the mesh (\`cotal down\` then \`cotal up\`)`);
-  return { url: f.url, pid: f.pid, cap: f.cap };
+  return { url: f.url, pid: f.pid, cap: f.cap, ...(f.publicUrl !== undefined ? { publicUrl: f.publicUrl } : {}) };
 }
 
 export function saveAuthServiceInfo(dir: string, info: AuthServiceInfo): void {

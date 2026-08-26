@@ -36,6 +36,7 @@ import { acquirePlaneClaim, parsePlaneClaimRow, scannerDeathCopy, PLANE_CLAIM_KE
 import { openAuthAuthorityPlane } from "../src/service.js";
 import type { EvictPrincipal } from "../src/credential-ledger.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -46,9 +47,10 @@ const rejects = async (fn: () => Promise<unknown>): Promise<string> => { try { a
 
 const space = `plcl-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const tmp = mkdtempSync(join(tmpdir(), "cotal-plcl-"));
+const tmp = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(tmp, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(tmp, "js") }));
 const srv = spawn("nats-server", ["-c", join(tmp, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, tmp);
 const dataAccount = { pub: auth.account.pub, signingSeed: auth.account.signingSeed };
 const quiet = () => {};
 
@@ -294,6 +296,7 @@ try {
   srv.kill("SIGTERM");
   if (srv.exitCode === null && srv.signalCode === null) await new Promise<void>((resolve) => { srv.once("exit", () => resolve()); setTimeout(resolve, 3000); });
   rmSync(tmp, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(fail === 0 ? `\nPLANE-CLAIM SMOKE OK ✅  (${pass} passed, ${fail} failed)` : `\nPLANE-CLAIM SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);

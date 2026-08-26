@@ -160,12 +160,10 @@ try {
   // the reconcile index directly off the broker, so the successor's reconcile is observed at the source.
   const readNc = await connect({ servers: SERVER, maxReconnectAttempts: 0 });
   conns.push(readNc);
-  // Reads of an EXECUTOR-PINNED goal terminal (item 3's (i) fence, now in production) resolve the
-  // executor's CURRENT epoch. The predecessor serves at epoch 0; after the M5 restart the SAME logical
-  // instance re-registers at epoch 1 and the successor settles the orphan there, so the reader tracks
-  // the current serving epoch (0 before the restart, the successor's epoch after).
-  let readerExecEpoch = 0;
-  const rctx: ActionContext = await actionContext(readNc, SPACE, { resolveExecutorEpoch: () => readerExecEpoch });
+  // The result subject carries no epoch token, so one read context covers the whole suite: the
+  // predecessor's and the successor's terminals are addressed identically, and a fact stays valid
+  // however far the process epoch advances after it was committed.
+  const rctx: ActionContext = await actionContext(readNc, SPACE);
   const goalRef = (goalId: string): GoalRef => ({ endpoint: MANAGER_ENDPOINT, caller, goalId });
   const idxKv = await new Kvm(readNc).open(recordsBucket(SPACE));
 
@@ -350,9 +348,6 @@ try {
     (mgr2 as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 2_000;
     await mgr2.start();
     mgr = mgr2;
-    // The successor re-registered the SAME logical instance at an ADVANCED epoch; the reader now
-    // resolves that current epoch so it sees the successor's settle (result.<successorEpoch>).
-    readerExecEpoch = (mgr2 as unknown as { serviceServe?: { grant?: { epoch?: number } } }).serviceServe?.grant?.epoch ?? 0;
     const successorIid = (mgr2 as unknown as { managerLifecycleUid: string }).managerLifecycleUid;
     check("M5 the successor is a FRESH incarnation (a new process, advanced epoch)", successorIid !== managerIid, { successorIid, managerIid });
     const after = await pollResult(ref, 4_000);

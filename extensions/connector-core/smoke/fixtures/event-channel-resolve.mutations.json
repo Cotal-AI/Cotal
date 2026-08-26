@@ -1,0 +1,19 @@
+{
+  "command": "pnpm smoke:event-channel-resolve",
+  "mutations": [
+    {
+      "name": "R1 an ambiguous name resolves to the first match instead of refusing, which shows one agent's stream under another's name",
+      "file": "extensions/connector-core/src/launch.ts",
+      "find": "  if (seen.size > 1)\n    throw new Error(",
+      "replace": "  if (false as boolean)\n    throw new Error(",
+      "expectRed": "ambiguous:two-principals"
+    },
+    {
+      "name": "R2 two rows for the SAME principal are counted as two agents, so one agent addressed twice reads as an ambiguity",
+      "file": "extensions/connector-core/src/launch.ts",
+      "find": "    seen.set(principalKey(principal.owner, principal.actor).key, principal);",
+      "replace": "    seen.set(`${principalKey(principal.owner, principal.actor).key}:${seen.size}`, principal);",
+      "expectRed": "dup:same-principal-twice-is-one-agent"
+    }
+  ]
+}

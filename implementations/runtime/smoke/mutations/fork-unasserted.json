@@ -1,0 +1,82 @@
+{
+  "kind": "unasserted-probe",
+  "suite": "implementations/runtime/smoke/fork-run.smoke.ts",
+  "guard": "the guards in fork.ts that NO cell was written for",
+  "command": "pnpm smoke:runtime-fork",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/fork-unasserted.json",
+  "why": [
+    "Every mutation in fork-cut.json was authored against a cell that had just been written for it,",
+    "so its clean sweep measures the guards that were aimed at and says nothing about the rest. This",
+    "config is the opposite experiment: it mutates guards NO cell was written for and PREDICTS",
+    "SURVIVED. A survivor here is a finding \u2014 a guard nothing is watching \u2014 not a failure.",
+    "",
+    "It carries two positive controls that predict KILLED. Without them a batch of survivors is",
+    "ambiguous between 'these guards are unasserted' and 'the suite did not run at all', which are",
+    "the same observation from outside. The controls are what make the survivors mean something.",
+    "",
+    "FIRST RUN, 2026-08-16: 5/5 predictions matched \u2014 both controls KILLED, all three probes",
+    "SURVIVED, no unexpected kills. Then the three survivors turned out NOT to be one category.",
+    "A surviving mutant means either 'no cell watches this guard' or 'this guard has no observable",
+    "effect at all', and those demand opposite repairs \u2014 write a cell, or delete the code. Telling",
+    "them apart needs a second step the mutation cannot do for you: run the shipped guard and the",
+    "mutated one over every input the guard was written for and see whether ANY input distinguishes",
+    "them. See `redundant` below for the one that did not.",
+    "",
+    "SPECIFIER BOUNDARY, and it is one config away rather than absent. Every mutation config in",
+    "this lane mutates a module its suite imports through a RELATIVE `../src/*.js` path, and no",
+    "command carries a build step -- all are bare `tsx` -- so the mutated bytes are the bytes the",
+    "suite loads. The suites in THIS directory nonetheless boot `@cotal-ai/core` and `@cotal-ai/lang`",
+    "through package specifiers that resolve to `dist`. So a future config that targets",
+    "`packages/lang/src` or `packages/core/src` under a `pnpm smoke:runtime-*` command would be VOID",
+    "ON ARRIVAL: the mutant would sit in `src` while the suite graded an untouched `dist`, and the",
+    "kill rate would measure module resolution rather than the guard. Either mutate the module the",
+    "suite imports relatively, or put a build between the mutation and the run."
+  ],
+  "mutations": [
+    {
+      "name": "CONTROL (expect KILLED): the L5002 refusal for a fork onto a new program is skipped",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  if (req.newProgramHash !== undefined) {",
+      "replace": "  if (false && req.newProgramHash !== undefined) {",
+      "expectRed": "a fork onto a new program is refused, because nothing pins a program hash",
+      "cell": "a fork onto a new program is refused, because nothing pins a program hash",
+      "completionMarker": "fork-run.smoke:"
+    },
+    {
+      "name": "CONTROL (expect KILLED): the L5018 refusal for a cut never reached is skipped",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  if (!reached && recorded && !stoppedForAnotherReason) {",
+      "replace": "  if (false && !reached && recorded && !stoppedForAnotherReason) {",
+      "expectRed": "with L5018, because a cut never reached is the whole journal",
+      "cell": "with L5018, because a cut never reached is the whole journal",
+      "completionMarker": "fork-run.smoke:"
+    },
+    {
+      "name": "PROBE (expect SURVIVED): an unexpected error class is swallowed instead of rethrown",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "    } else if (!(err instanceof ForkFrontier) && !(err instanceof JournalReadOnlyError)) {",
+      "replace": "    } else if (false && !(err instanceof JournalReadOnlyError)) {",
+      "expectRed": "(none \u2014 no cell drives an unexpected error class through planFork)",
+      "cell": "an unexpected error class propagates out of planFork rather than becoming a false L5018",
+      "completionMarker": "fork-run.smoke:",
+      "note": "SURVIVED, NOT CONFIRMED AS A FINDING. A survivor is evidence only once the mutant is shown to reproduce a defect, and this one is not: nothing has demonstrated that an error outside the five known classes is raised on any path the cells drive, so 'swallowed' may be unobservable for a reason that has nothing to do with assertion. Recorded as unconfirmed rather than counted as an unasserted guard. SURVIVED 2026-08-16 as predicted, and left as a live finding rather than half-closed. Swallowing here is not silent \u2014 `reached` stays false and the caller gets L5018 \u2014 so the failure is a TRUE-shaped refusal with a FALSE reason, the same defect the L5014 pairing just fixed one branch of. To assert it a cell needs the walk to raise an error outside the five known classes, which the DSL gives no direct way to do from a source string; the cheapest honest route is a stub source module that throws, and that is a suite-harness change rather than a cell."
+    }
+  ],
+  "resolved": [
+    {
+      "name": "an unwalkable scope on the way to the cut raises no L5014",
+      "found": "2026-08-16",
+      "why": "SURVIVED as predicted: `L5014` and `UnwalkableScope` appeared ZERO times in the suite. `planFork` had a whole refusal branch for a scope the walk cannot enter and no cell had ever produced one. Closed by four cells forking past a settled conclave; the mutation moved to fork-cut.json, where it is now predicted KILLED. It is NOT recorded in both files: a mutation counted in the confirm set and the probe set at once is double-counted.",
+      "alsoFound": "The cell that closed it immediately failed on something the probe could not have shown: planFork emitted L5014 AND L5018 together, and L5018's sentence \u2014 the program's own path does not arrive there \u2014 is false when the path arrives and the walk simply could not follow it. Measured across all three stop reasons: divergence gave [L5001, L5018], the conclave gave [L5014, L5018], a genuinely unreached step gave [L5018]. Fixed at the guard; both directions now have mutations."
+    }
+  ],
+  "redundant": [
+    {
+      "name": "unwrapCut's self-referential-reason stop is removed",
+      "find": "    if (inner === undefined || inner === cur) return cur;",
+      "found": "2026-08-16",
+      "why": "SURVIVED as predicted, but it is NOT an unasserted guard and no cell should be written for it. Running the shipped guard against the mutated one over every shape it was written for \u2014 a 1-cycle, a 2-cycle, a plain chain, no reason at all, and a chain deeper than the bound \u2014 returns an IDENTICAL result in all five cases: the `for` loop's own bound of 8 already terminates every cycle, and `inner === cur` only ever catches the 1-cycle the bound would catch anyway. No input distinguishes them, so no cell could kill it. Recorded here rather than in `unasserted` because the repair is the opposite one: this is dead weight in the source, not a hole in the suite. Left in place as its own decision rather than deleted in a test commit.",
+      "conditionChecked": "CHECKED 2026-08-16 after the caution that 'no difference observed' is only as strong as the inputs it was observed over, and that a guard defending a CONFIGURATION is invisible to every fixture that does not set it. Named the condition and set it. The stop can only ever defend against non-termination on a self-reference, so the condition is 'the loop bound is not doing that job'. The bound is a LITERAL 8 at fork.ts:355 \u2014 not a parameter, not config, no caller supplies it \u2014 so no configuration exists that could make the stop observable, which is the specific failure mode this check was run to exclude. Setting the condition anyway by removing the bound: with the stop, a 1-cycle terminates at iteration 0 but a 2-CYCLE RUNS AWAY exactly as the mutant does. So the stop is UNOBSERVABLE given the bound and INSUFFICIENT without it. The classification stands and its reason is stronger: redundant by SUBSUMPTION, not merely unexercised. The live risk is not this guard, it is a future edit deleting the bound in the belief that the cycle stop covers cycles \u2014 it covers exactly one shape of cycle."
+    }
+  ]
+}

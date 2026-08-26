@@ -1,0 +1,51 @@
+{
+ "what": "A version 1 run whose program calls `len` on a RECORD. The walker that wrote this (0830407f) answered `undefined`; the walker that is current refuses L4016 at that line, before any entry is consumed. Written once, on that walker, because no current walker can produce it.",
+ "languageVersion": "1",
+ "source": "const r = { a: 1, b: 2 };\nconst n = len(r);\nlog(\"len of a record was\", n);\nconst b = await spawn(\"b\");\nlog(\"done\");",
+ "runId": "v1-len-on-a-record",
+ "seed": "v1-len",
+ "startedAt": 1700000000000,
+ "pins": {
+  "seed": "v1-len",
+  "startedAt": 1700000000000,
+  "yieldEvery": 1024,
+  "stepBudget": 1000000,
+  "effectCeiling": 10000,
+  "languageVersion": "1"
+ },
+ "entries": [
+  {
+   "v": 1,
+   "seq": 0,
+   "run": "v1-len-on-a-record",
+   "scope": "",
+   "kind": "spawn",
+   "name": "b",
+   "occurrence": 0,
+   "inputHash": "sha256:d6c80482a86677fc954aa1263f4419c88b74dde27f07e1c3147fa54551d6da09",
+   "requestId": "uF-hc9RDMbU0UXA7_d4nq__MLm7UXjymx7Ad9Isv3EQ",
+   "attempt": 0,
+   "state": "settled",
+   "startedAt": 0,
+   "external": {
+    "simAgent": "sim.b"
+   },
+   "status": "ok",
+   "endedAt": 0,
+   "result": {
+    "agent": "sim.b",
+    "persona": "b"
+   }
+  }
+ ],
+ "logs": [
+  [
+   "len of a record was",
+   null
+  ],
+  [
+   "done"
+  ]
+ ],
+ "value": null
+}

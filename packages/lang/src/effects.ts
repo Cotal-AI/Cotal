@@ -177,6 +177,29 @@ export class Cancelled extends Error {
 }
 
 /**
+ * The host is stopping before the next effect, and the program is not at fault.
+ *
+ * A driver holds a run under a lease with an absolute horizon, and it may be asked to hand the run
+ * back. Neither is a fact about the workflow: it has not failed and it has not finished, it is
+ * exactly where its journal says it is. So this is raised BEFORE an effect is begun — never once a
+ * handler has been dispatched — and it travels like {@link Cancelled} and `JournalAppendRejected`:
+ * a workflow's `try` cannot catch it. A program that could catch its host's shutdown could carry on
+ * performing effects after the horizon it was granted, which is the thing the stop exists to end.
+ *
+ * The language raises it; it never accepts it from outside. A caller answers only "should I stop,
+ * and why" — if a driver could throw the class itself it could also throw something catchable, and
+ * the guarantee would be the caller's to keep rather than the language's.
+ */
+export class RunReleased extends Error {
+  readonly code = "L5012";
+
+  constructor(readonly reason: string) {
+    super(`this run was released before its next effect: ${reason}`);
+    this.name = "RunReleased";
+  }
+}
+
+/**
  * Raw outcome to what the program sees, computed from TODAY's source.
  *
  * The same call runs on the live path and after a journal hit, which is the whole point: a resumed

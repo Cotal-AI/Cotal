@@ -1,0 +1,62 @@
+{
+  "command": "pnpm smoke:manager-deregister",
+  "mutations": [
+    {
+      "name": "PREDICTED KILLED (>=2 red) - THE TRAP: the guard stops refusing an instance that ANSWERED, so an operator who mistypes an id deregisters a running manager",
+      "file": "implementations/manager/src/deregister-instance.ts",
+      "find": "  if (probe.state === \"answered\")",
+      "replace": "  if (false)",
+      "expectRed": "deregistering a LIVE manager is REFUSED because it answered"
+    },
+    {
+      "name": "PREDICTED KILLED (>=2 red) - THE SECURITY TRAP: the guard stops refusing an instance the broker did NOT affirm gone, so an operator deregisters a process that is hung rather than dead - it is still running, still holding its rail, and its registration is deleted out from under it",
+      "file": "implementations/manager/src/deregister-instance.ts",
+      "find": "  if (probe.state === \"unknown\")",
+      "replace": "  if (false)",
+      "expectRed": "the verb REFUSES it: silence is not the evidence a record is removed on"
+    },
+    {
+      "name": "PREDICTED KILLED (>=2 red) - the probe classifies every unanswered describe as gone regardless of what the broker said about the rail, which is the pre-review guard: silence, not absence",
+      "file": "implementations/manager/src/deregister-instance.ts",
+      "find": "      return interest === \"gone\"",
+      "replace": "      return true || interest === \"gone\"",
+      "expectRed": "a registration whose rail STILL HAS A SUBSCRIBER probes UNKNOWN, never gone"
+    },
+    {
+      "name": "PREDICTED KILLED (1 red) - a probe that FAILED reads as a probe that went unanswered, so a refused publish or an unreachable broker is treated as a dead instance",
+      "file": "implementations/manager/src/deregister-instance.ts",
+      "find": "      if (!unansweredRequest(e)) return { state: \"unestablishable\", detail: `the probe itself failed: ${(e as Error).message}` };",
+      "replace": "",
+      "expectRed": "a probe whose publishes the broker REFUSES is unestablishable, never silence"
+    },
+    {
+      "name": "PREDICTED KILLED (1 red) - the guard never ASKS: the probe is not run and its verdict is assumed, so a live manager's registration is deleted on no evidence at all",
+      "file": "implementations/manager/src/deregister-instance.ts",
+      "find": "  const probe = await opts.probeInstance();",
+      "replace": "  const probe: InstanceProbe = { state: \"gone\", detail: \"guard skipped\" };",
+      "expectRed": "and the live manager's registration is untouched by the refusal"
+    },
+    {
+      "name": "PREDICTED KILLED (1 red) - a removal that removed nothing reports as a removal, so `absent` stops being distinguishable from a real delete and a repeat run claims a second one",
+      "file": "implementations/manager/src/deregister-instance.ts",
+      "find": "  if (!outcome.removed && outcome.reason === \"absent\")",
+      "replace": "  if (false)",
+      "expectRed": "a repeat is refused as NOT-REGISTERED, a distinct condition from a live instance"
+    },
+    {
+      "name": "PREDICTED KILLED (>=1 red) - a manager's clean stop no longer removes its own registration, which is the route that keeps this from ever happening to anyone again",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (registered) await this.deregisterServiceOnStop();",
+      "replace": "",
+      "expectRed": "after a clean stop its registration is GONE, so no later scatter can freeze it in"
+    },
+    {
+      "name": "PREDICTED KILLED (1 red) - the guard becomes a chain of denials with no fence at its end, so any verdict it does not recognise - a fourth probe state, or one a caller wires itself - falls through to the delete",
+      "file": "implementations/manager/src/deregister-instance.ts",
+      "find": "  if (state !== \"gone\")",
+      "replace": "  if (false)",
+      "expectRed": "an unrecognised probe verdict REFUSES: only a broker-affirmed gone is acted on"
+    }
+  ],
+  "_note": "This suite imports the manager from `../src/*.js` RELATIVELY, so the mutated files ARE the modules under test and no build step belongs in the command. `@cotal-ai/core` still resolves to dist here, which is why no mutation in this fixture touches core: the core-side deletes are proved by packages/core/smoke/fixtures/service-deregistration.mutations.json, whose suite loads core from source."
+}

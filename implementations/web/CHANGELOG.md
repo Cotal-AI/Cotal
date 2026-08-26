@@ -1,5 +1,352 @@
 # @cotal-ai/web
 
+## 0.30.2
+
+## 0.30.1
+
+## 0.30.0
+
+## 0.29.2
+
+## 0.29.1
+
+## 0.29.0
+
+## 0.28.2
+
+## 0.28.1
+
+## 0.28.0
+
+### Minor Changes
+
+- 316f84d: Cap the dashboard delete route's request body at 8 KiB.
+
+  `POST /api/channel/delete` read its body with no size limit and no look at `content-length`, so the
+  ceiling on a request was the process heap: a 30 MB post was read in full, answered with a 70 MB
+  refusal, and cost 1.39 GB of peak RSS before the route formed any opinion.
+
+  The read now refuses at the threshold with a `413` naming the limit and the size that met it, on
+  both the declared length and the bytes as they arrive, so a body with no declared length is capped
+  too. It is never truncated to fit: a shortened channel name is a name the caller did not send, which
+  is the aliasing shape this route's validator already exists to refuse. Bodies under the cap, extra
+  fields included, are untouched.
+
+  The refusal also closes the connection the oversized body arrived on. Without that, a caller asking
+  to keep the connection alive still got to send every byte, because the server reads the rest of a
+  body to get the socket back for reuse: the refusal was early but the work was not bounded. Ordinary
+  within-cap requests keep their connection and their socket stays reusable.
+
+  `@cotal-ai/connector-core` is listed because it ships the docs bundle, which embeds the page this
+  change updates and is regenerated here. Its only diff is that regenerated file.
+
+## 0.27.0
+
+## 0.26.0
+
+## 0.25.0
+
+### Minor Changes
+
+- de4f0ee: Open the graph view's live feed as the page loads, not after it.
+
+  The connection pill is driven by the `/feed` EventSource opening, and the page chained that behind
+  its whole bootstrap. The bootstrap reads the activity and DM backfills, both bounded by the
+  aggregation deadline, so on a slow link the graph's connection pill stayed down for the entire load
+  window and only then went live. Measured in Chrome against a local broker behind an 80ms-each-way
+  link with 40 channels: the pill first said `live` at 8052ms, tracking the slowest bootstrap read at
+  8044ms. With the feed opened first it says `live` at 89ms while that read still runs to 8066ms. An earlier fix stopped the bootstrap from rejecting, which guaranteed the feed
+  would be opened but not that it would be opened soon.
+
+  The feed now opens first and the bootstrap fills in around it, which is what the Monitor page has
+  always done. A page showing stale data is exactly the one that needs its live feed most.
+
+  Opening it first introduces an ordering the chained boot could not produce, so the change carries the
+  rule for it. Every bootstrap read is issued before its value is applied, so a snapshot is at least as
+  old as the moment it was requested, while a live event is newer than that moment. A roster or
+  membership arriving mid-bootstrap was therefore reverted when the older snapshot landed, and the
+  agent the feed had just announced disappeared from the graph. Both channels carry a full snapshot
+  through the same apply, so a live event now replaces the read rather than being overwritten by it.
+
+  What is superseded is the source, not the snapshot. Membership speaks in two sentences, a snapshot
+  and a refusal, and either side can say either one, so the rule covers all four: a live refusal is no
+  longer erased by an older successful read, and a startup read that refuses no longer overrules a
+  newer live snapshot. Both of those ended with the header pill making a claim about the mesh that was
+  really a claim about one read, which is the one thing that pill exists not to do.
+
+- b501ec5: Parse the dashboard's history limit once, and bound the single-channel read.
+
+  Three history routes each re-derived the same limit parse, so a value that was not a whole number
+  took a different wrong path through each of them. `Number("abc")` is `NaN` and every comparison
+  against `NaN` is false, so the endpoint's `limit <= 0` guard never fired and its widening history
+  search could never reach either exit: the read did not return everything, it never returned, and the
+  abandoned request kept consuming CPU long after its caller had gone. `Infinity` reached the same
+  hole from the other end and returned a channel's entire retained history.
+
+  The limit is now parsed in one place and a value that is not a whole number is refused with a 400
+  naming what it received, so a caller's mistake is no longer reported as a server fault. The same
+  holds for the channel name in the URL: an escape that cannot be percent-decoded is a caller's typo
+  and is answered as a bad request rather than as the server having broken.
+
+  For every caller that does not go through those routes, the endpoint now requires a history limit to
+  be a whole number of messages it can count exactly, not merely a finite one. A page is taken with
+  `slice(-limit)` and slice truncates toward zero, so any limit between zero and one became `slice(0)`
+  and returned the subject's entire retained history; a magnitude past exact counting did the same. The
+  check sits above the empty-page check on purpose, since `-Infinity` is less than zero and would
+  otherwise be folded into a silent empty page.
+
+  The single-channel history read now carries the same per-request deadline as the aggregate routes,
+  with a named refusal, because the console view re-reads it on every poll. Zero still means zero,
+  negatives still mean an empty page, and an absent or empty limit still means the route's default.
+
+- 6959679: The dashboard survives a poll that fails, and its aggregation answers instead of failing.
+
+  A failed poll used to clear the peers and the channels. A 500's body is valid JSON and `fetch` does
+  not reject on one, so the refusal arrived as a successful parse and was stored as the snapshot. Reads
+  now refuse a non-200 by name, a refused read leaves the value the page already holds exactly where it
+  is, and the header says which source is stale and why. Recovery is the next successful read.
+
+  `/api/activity` no longer fans out every channel's history at once with no upper bound, where one
+  channel's rejection became the whole route's 500 and a slow link produced a 34-second success.
+  Sources race one shared deadline through a bounded pool, and the page always carries `partial`, the
+  counts, the named missing sources, and the deadline it used, so a short page cannot be mistaken for a
+  complete one. `/api/dms` is one read with no subset to serve, so its bound is a 503 that names the
+  deadline. A channel list that cannot be read is a refusal that says so rather than a page claiming
+  the space is empty.
+
+  The elevated observer/admin credential can now delete consumers on its own presence bucket. A KV
+  watch rebuilds itself when the link stalls and each rebuild deletes its predecessor; without that
+  grant the cleanup was refused, so orphaned consumers accumulated until their inactivity threshold and
+  the broker logged a violation every time.
+
+- 0f16f21: web: a refusal renders the value it names, instead of echoing it back invisibly
+
+  The dashboard quotes a caller's own value in two places: the 400 body and the line the request
+  frame prints for an operator. Both used `JSON.stringify`, which was doing double duty. It is a JSON
+  serializer and it is good at that; it is not a renderer for a human, and it never claimed to be.
+
+  Measured against the shipped server before the change, driving `/api/activity?limit=` with each
+  codepoint percent-encoded and reading the answer as bytes: `ESC` and `LF` came back escaped, because
+  `JSON.stringify` closes all of C0. `DEL`, `U+0085`, `U+009B`, `U+202E`, `U+2028` and `U+2029` came
+  back raw, in the body and in the operator's line alike. The issue named three of those; the class is
+  wider than the sample, and `U+202E` is the sharpest case, since it does not vanish but reverses the
+  rendering of everything after it.
+
+  Values are now quoted through one helper that escapes what `JSON.stringify` leaves: DEL and the C1
+  controls, the soft hyphen, the zero-width and bidi marks, the line and paragraph separators, and the
+  BOM. The escape is `\uXXXX`, so the body stays valid JSON and parses back to exactly what the caller
+  sent. Ordinary text is untouched, accents and non-Latin scripts included, because a quoter that
+  escaped everything over ASCII would make a refusal about a name a human typed unreadable, which is
+  the same defect pointed the other way.
+
+  Review of that fix found the list wrong in the way a hand-written list is always wrong: it was
+  missing U+061C, U+2060, the variation selectors and the tag characters, every one of them exactly
+  the thing the list said it closed. The class is now the Unicode property
+  `Default_Ignorable_Code_Point` plus the four codepoints no property carries: DEL, the C1 range, and
+  the line and paragraph separators. Astral members leave as their surrogate pair, because the
+  five-hex form is not a JSON escape and a body carrying it would stop parsing.
+
+  Review also found a second, older defect at the same boundary, and this fixes it too. The dashboard
+  took a channel name from the caller in the history path and in the delete body and handed it
+  straight to the wire, which rewrites anything outside `[A-Za-z0-9_-]` to `_` rather than refusing
+  it. Two different names were therefore one channel: a history read under a name carrying an
+  invisible character returned another channel's messages, and the delete route purged that other
+  channel while answering with the name the caller typed. Both boundaries now refuse a name the wire
+  would rewrite, using the validator core already had for the same aliasing gap on the ACL side.
+  Rendering the old answer readably would only have made the lie legible.
+
+  A second review pass found the property boundary still short: the interlinear annotation controls
+  U+FFF9 to U+FFFB are format characters and not default-ignorable, so they arrived raw. They are the
+  clearest form of the harm in the issue, since they mark a span as base text plus its gloss and a
+  reader whose terminal does not implement them sees the two runs concatenated into a sentence nobody
+  wrote. The class now carries both properties, which adds 32 codepoints, none of them a letter or a
+  digit. A swept cell puts every codepoint from 0 to 0x10FFFF through the quoter and compares the
+  result against the union the code claims, so a dropped alternative or a mistyped range is caught for
+  every codepoint rather than for the ones a list happens to name.
+
+  Review then pushed on the boundary from the other side, with U+0338 COMBINING LONG SOLIDUS OVERLAY
+  arriving raw, which is a fair question against the harm as it was first stated: it does change what
+  a reader sees. It is excluded, and the exclusion is now asserted rather than described. A combining
+  mark makes a visible mark on a visible base, and the property carrying it also carries the accent
+  in a name written in NFD, the Devanagari vowel signs, the Arabic and Hebrew points and the
+  Vietnamese tones; escaping marks would take about 2280 codepoints of ordinary written language and
+  render an accented name as its escapes, which is the same defect this change refuses to open on the
+  letter side. The stated class is narrowed to say what the code does, characters that produce no
+  glyph of their own or that reorder the text around them, and three cells pin the exclusion,
+  including the strongest case against it, a mark over an equals sign rendering as a not-equals sign.
+  That case is the confusable problem, which needs no combining mark to exist and is not answered by
+  a quoter.
+
+## 0.24.0
+
+## 0.23.0
+
+## 0.22.0
+
+## 0.21.0
+
+## 0.20.1
+
+## 0.20.0
+
+### Minor Changes
+
+- 757e322: Order event frames on the dashboard, and stop listing and backfilling every agent's event channel.
+
+  The dashboard opens its live feed and only then fetches the backfill, so it is the surface that runs
+  the two-phase bootstrap rather than one that can assume an ordered stream. A frame's position in its
+  stream is its sequence number, and that is the only thing that can say a frame is MISSING; message-id
+  dedupe cannot, because two ids are either equal or they are not, which says nothing about what
+  belongs between them. Frames arriving while the fetch is in flight are now held and released in
+  sequence order once the batch settles, the baseline is the settled batch's minimum rather than the
+  first frame observed, and sequence checking is not armed until the boundary passes. Baselining on
+  arrival would read the entire backfill as running backwards, and arming early would read the same
+  backfill as a hole.
+
+  A baseline above the first sequence means the retained prefix has rolled, so the chain is marked
+  incomplete and applied forward. A discontinuity after the baseline is a fault, reported with both
+  ends named. The two are never reported as one thing, because the first is what always happens and the
+  second is what must never pass unnoticed. A detected gap still draws its frame: holding it back until
+  a missing predecessor arrives would hold it forever when that frame is genuinely gone, which turns a
+  visible gap into a silent loss. The retained batch is audited across its whole range and not only at
+  its ends, because a hole inside retained history leaves the baseline and the frontier both correct
+  and every later frame following contiguously, which is the one discontinuity no live arrival can
+  reveal.
+
+  What the bootstrap finds is now DRAWN, above the rows, in the all-activity feed and in a channel
+  view. Four things are said separately rather than as one warning: frames are missing, a start-up hole
+  could not be attributed, a retained prefix had rolled before this reader joined, and history was
+  unavailable. The live tap and the history read are two reads with no shared cut, so the first frame
+  buffered during the fetch can sit above the retained top with nothing lost at all; that one hole is
+  reported as unconfirmed rather than as loss, and a hole between two buffered frames, which arrived
+  through the same subscription, still is a fault. A history read that fails is treated as the empty
+  batch it cannot be distinguished from, and the surface says so, so the ordering degrades in the open
+  rather than quietly.
+
+  The all-activity feed and the selected-channel view now MERGE their backfill with what arrived live
+  during the fetch instead of assigning over it. The assignment discarded every live arrival in that
+  window. Retention hid it, since the backfill re-read the same messages from the broker and they came
+  back, and the filter below is what would have turned it into a real loss.
+
+  The channel list and the all-activity backfill carry chat only. A channel row is derived from every
+  retained concrete subject and the chat stream caps per subject rather than by age, so an unfiltered
+  list grows by one row per agent that has ever run and never shrinks: the sidebar fills with machine
+  streams, the graph page grows a node for each, and the activity route pays one history round trip per
+  event channel to merge results nobody reading chat asked for. The filter runs before the fetch, not
+  on its output, so the round trips are not paid and then discarded, and it uses the shared classifier
+  rather than a local prefix test, because a human channel called `events.standup` is not
+  principal-shaped and must stay where it was being read.
+
+  Two things are deliberately left unfiltered. The live feed still carries frames, marked rather than
+  dropped, since dropping them would delete the only traffic this surface was just taught to draw.
+  History for a channel named explicitly is still served, or the dashboard could render a frame it
+  could never fetch.
+
+## 0.19.0
+
+### Minor Changes
+
+- a1bc784: Display an agent event frame, and separate event channels from chat.
+
+  An `ag-ui.frame` part carries no text part by design, so every surface that renders a message as
+  flat text drew one as `[unrenderable part kind "ag-ui.frame"]`. A renderer now folds a frame's
+  events into readable lines: streamed text and reasoning deltas accumulate into one line rather than
+  one line each, a tool call reports its name, its arguments and its result, and a stream that ended
+  without its terminator is flushed and marked truncated instead of being dropped. An event type this
+  build does not know is named rather than skipped, because a skipped event is a hole in a transcript
+  that still looks complete. It registers through the part-renderer seam, so the standard resolves it
+  by the part's own kind and never learns what the vocabulary means.
+
+  The renderer is loaded by the composition root rather than by a connector. Connectors are removable
+  extensions materialized on demand, and no surface that renders imports one, so a provider that
+  registered only inside a connector would be absent from every process that draws.
+
+  The event channel's name and its classifier move into the standard, beside the frame's identity.
+  Both are things a reader needs in order to recognise an agent's stream without knowing which adapter
+  produced it, and the two surfaces that most need to classify cannot reach an extension package at
+  all. The constructor is re-exported from its former home, so no caller changes.
+
+  The classifier is now a derivation rather than a prefix test, and the two disagree on names a real
+  mesh produces. Nothing reserves the `events.` prefix, so a channel a human created and talks on
+  answered yes to "does this start with `events.`" and was swept out of the chat pane it was sent to.
+  A name that does not resolve to a principal is no longer treated as machine traffic, which returns
+  those channels to the view, and leaves a malformed publisher visible rather than hidden. The
+  collision is narrowed rather than closed: a chat channel whose remainder is itself principal shaped
+  is still indistinguishable from an agent's stream, and closing that means reserving the prefix on
+  the wire.
+
+  The console keeps event channels out of the channel strip and out of the history prefill. The order
+  matters more than the result: the channel list carries one entry per retained subject, so filtering
+  after the fetch would read history for every event channel and discard it, which is unbounded work
+  to display nothing. Live rows are marked rather than dropped, because hiding them would delete the
+  only traffic this change taught the console to draw.
+
+  The dashboard gains the same rendering through a per-kind lookup, so its dispatcher stays ignorant
+  of every kind anyone teaches it. A renderer that throws, returns a non-string, or shares a name with
+  an inherited object method is reported by name instead of blanking the body. The browser cannot
+  import the shared renderer, so the two implementations are held together by an executable
+  equivalence check rather than by intent.
+
+  The example harness records a message through the shared renderer instead of keeping only its text
+  parts, so a message whose content is not text is no longer written to the transcript as an empty
+  string and scored as an agent that said nothing.
+
+  No connector emits a frame yet, and no transcript mirror is removed. Display lands first on purpose:
+  a cutover shipped before a renderer would replace a readable mirror with a part every surface shows
+  as a marker.
+
+- b3295d2: The membership pill said "unreadable" while the layout kept acting on the snapshot it had just
+  disowned: `hide empty` was gated on `feed.available`, which an unreadable feed leaves true, so a hub
+  was still collapsed as empty on the strength of a reading the page could no longer make. Hiding now
+  requires the feed to be authoritative, meaning available and readable. The snapshot itself is kept:
+  `asOf` still records when the feed was last read successfully, which is true and worth showing.
+
+### Patch Changes
+
+- c3dd6a5: fix(web): route on the channel the broker policed, not the one the publisher claimed
+
+  The browser dashboard decided which channel a message belonged to by reading `msg.channel` off the
+  payload. That field is written by the publisher, and the broker polices **subjects**, not payload
+  fields, so a sender could put any channel name in a message body and have the dashboard file it
+  into that channel's transcript, including a channel the sender had no permission to publish to.
+
+  The verified channel was already available and was being discarded: the observer parses the subject
+  to recover the authenticated sender, then dropped the rest of it. Routing now uses the channel
+  derived from the subject the broker actually enforced. Where no authoritative channel exists
+  (direct messages and anycast carry none), the publisher's claim is cleared rather than trusted, so a
+  forged value cannot survive into a transcript, a channel list, or an unread badge.
+
+  Two rendering fixes ride along, because a message whose content vanishes is the same class of defect
+  one surface over. A part kind the surface has no renderer for previously produced an empty body, so
+  a message with content displayed as a blank line; it now renders a marker naming the kind, and a
+  part carrying data keeps that data instead of having it replaced by the marker. A surface that
+  prints a marker while dropping the content looks like successful rendering, which is precisely the
+  failure being removed. The two dashboard surfaces now share one parts renderer so they cannot drift
+  apart on what a part looks like; that drift is how the original defect reached both of them.
+
+  **Limits worth stating.** The new suites drive the served JavaScript directly: they execute the
+  shipped handler and backfill functions and assert message content and destination, but no cell opens
+  a browser or asserts rendered HTML, so this proves the routing and the renderer's return value, not
+  that either survives to the pixels. Rendering of external observer/UI event frames, and the filter
+  that selects them, are separate work and are untouched here. The dashboard's loopback HTTP surface
+  is unauthenticated and this change does not alter that; a failed membership read still renders as a
+  successful empty result, so a viewer cannot distinguish "nobody is subscribed" from "the read
+  failed". Both predate this change and are named so the routing fix is not mistaken for making that
+  surface safe.
+
+- 0e44e37: fix(web): tell the browser a membership read failed instead of serving it as empty
+
+  The dashboard's `/api/membership` route answered a failed read with `{asOf: undefined, members: []}`
+  and a 200. `JSON.stringify` drops a key whose value is `undefined`, so those bytes are
+  `{"members":[]}`, byte-identical to a successful read of a space where nobody is subscribed. The
+  graph then reported the feed as `membership: traffic-only`, which asserts that the mesh publishes no
+  membership feed, when the truth was that the read did not answer.
+
+  A failed read now carries a 503 and names its condition; the two server-sent-event paths emit a
+  named event instead of swallowing the rejection; and the page stops manufacturing an empty snapshot
+  from a failed fetch or a non-200. The freshness pill gains an `unreadable` state, tested before
+  `traffic-only` so a refusal cannot borrow that phrase.
+
 ## 0.18.0
 
 ## 0.17.0

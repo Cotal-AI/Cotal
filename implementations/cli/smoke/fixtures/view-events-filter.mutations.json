@@ -1,0 +1,33 @@
+{
+  "command": "pnpm smoke:view-events-filter",
+  "mutations": [
+    {
+      "name": "V1 the filter moves after the history fetch, so every event channel is enumerated and read and then thrown away: unbounded work to display nothing, and invisible to any assertion about the final snapshot",
+      "file": "implementations/cli/src/view/mesh-view.ts",
+      "find": "    const chat = chans.filter((c) => !isEventChannel(c.channel));",
+      "replace": "    const chat = chans;",
+      "expectRed": "NO event channel was ever asked for history (the filter runs BEFORE the fetch)"
+    },
+    {
+      "name": "V2 the tab filter is dropped, so the strip carries one row per agent that has ever run and buries the channels a human talks on",
+      "file": "implementations/cli/src/view/mesh-view.ts",
+      "find": "      if (!isEventChannel(channel)) this.channelCounts.set(channel, messages);",
+      "replace": "      this.channelCounts.set(channel, messages);",
+      "expectRed": "event channels are not tabs"
+    },
+    {
+      "name": "V3 the live-arrival filter is dropped, so an event channel appears as a tab the moment a frame lands and vanishes at the next poll, which reads as a flickering bug rather than a filter",
+      "file": "implementations/cli/src/view/mesh-view.ts",
+      "find": "    if (e.delivery === \"multicast\" && e.channel && !e.events && !this.channelCounts.has(e.channel))",
+      "replace": "    if (e.delivery === \"multicast\" && e.channel && !this.channelCounts.has(e.channel))",
+      "expectRed": "a live frame on an event channel does not add a tab"
+    },
+    {
+      "name": "V4 the feed row stops being marked, so every surface has to re-derive the classification locally and three copies get three chances to disagree",
+      "file": "implementations/cli/src/view/mesh-view.ts",
+      "find": "      events: kind === \"anycast\" ? undefined : isEventChannel(msg.channel) || undefined,",
+      "replace": "      events: undefined,",
+      "expectRed": "it is MARKED as event traffic"
+    }
+  ]
+}

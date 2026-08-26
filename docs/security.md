@@ -102,6 +102,18 @@ The guarantees, at a glance, each enforced by the broker per
   that bites at the next connect, and live-connection eviction
   ([identity & auth](identity-and-auth.md)). A copied signing *seed* still stays valid until
   rotation on either kind of mesh.
+- **Operator environment capability in a spawned agent:** a managed spawn receives a fixed OS
+  execution allow-list (PATH included, so connector binaries under `~/.local/bin` still resolve),
+  the machine-wide `COTAL_*` operator knobs, connector-declared provider inputs, shared-MCP
+  references, and only names explicitly added through `spawn.env` in the [config file](config.md).
+  It does not receive ambient host-session markers (`CLAUDE_CODE_CHILD_SESSION`, `CLAUDECODE`,
+  `CLAUDE_CODE_ENTRYPOINT`, and the analogous names other hosts use to mark a nested session),
+  temporary credentials, source-control tokens, or unrelated service secrets unless a persona or
+  operator names them. Connector-declared auth vars still cross: a Claude seat receives
+  `CLAUDE_CODE_OAUTH_TOKEN` (and the rest of that connector's documented credential set) so a
+  container with no Keychain can authenticate, which is the forwarding `docs/deploy.md` promises.
+  This boundary does not confine files accessible through HOME or other supplied filesystem roots.
+  Use a sandbox or VM when filesystem containment is required.
 - **Manager compromise:** the operator side is split into narrow, single-purpose profiles (there
   is **no allow-all cred**); the long-lived **supervisor** serves control and touches
   presence/its lease but cannot read a DM, create a consumer, or delete a stream; the destructive
@@ -111,6 +123,15 @@ The guarantees, at a glance, each enforced by the broker per
   can still mint fresh creds); on a per-user-auth mesh it is held by the auth service (the callout
   stage) and by any running manager, which self-mints its supervisor cred and renewals from it
   ([identity & auth](identity-and-auth.md)).
+- **A static mesh's spawn credential is the ACL tier:** a caller that may spawn may also name the
+  child's channel ACL, and on a static-auth mesh nothing attenuates that against the caller's own
+  grant, because there is no ledger to attenuate against. This is the same class as the entry above
+  and is not specific to any channel: the read set a spawn-capable static caller may hand its child
+  covers ordinary channels, and `events.*` alongside them. A per-user-auth mesh does attenuate it:
+  every delegation must sit inside the spawner's own grant, checked by NATS-pattern containment
+  along the whole chain, at the grant write and again at every bearer exchange
+  ([identity & auth](identity-and-auth.md)). Grant `spawn` on a static mesh as ACL authority, not
+  as a narrow "add a teammate" permission.
 - **`spawn` is host-launch authority:** launch options are a raw passthrough (no allow/deny
   list), so a persona holding `capabilities: [spawn]` can drive the connector's full launch
   surface on the manager host (Claude `--mcp-config`, `--add-dir`, permission flags; OpenCode

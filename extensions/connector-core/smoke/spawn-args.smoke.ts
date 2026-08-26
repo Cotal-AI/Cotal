@@ -17,13 +17,14 @@ function check(label: string, cond: boolean, extra?: unknown): void {
 }
 
 const cfg: AgentConfig = {
-  space: "smoke", name: "caller", servers: "nats://127.0.0.1:1",
+  space: "smoke", name: "caller", servers: "nats://127.0.0.1:1", kind: "agent", tls: false,
   subscribe: [], allowSubscribe: [], allowPublish: [],
 };
 const a = new MeshAgent(cfg);
 
 // Record the generic invoke instead of sending it; mark connected so assertConnected() passes.
-let rec: { endpoint: string; command: string; args?: Record<string, unknown>; opts?: { target?: unknown; deadlineMs?: number } } | undefined;
+type Recorded = { endpoint: string; command: string; args?: Record<string, unknown>; opts?: { target?: unknown; deadlineMs?: number } };
+let rec: Recorded | undefined;
 (a as unknown as {
   ep: {
     invokeService: (endpoint: string, command: string, args?: Record<string, unknown>, opts?: { target?: unknown; deadlineMs?: number }) => Promise<unknown>;
@@ -62,7 +63,7 @@ check("name-only: role key absent", !("role" in (rec?.args ?? {})));
 // USER MODE rides the SAME invokeService door (1c.2c: the endpoint's bearer-derived principal +
 // the launcher's lifecycle uid ARE the caller triple; no ctl branch remains in the connector).
 const u = new MeshAgent({ ...cfg, userAuth: { bearerCmd: ["true"], sentinelCreds: "sentinel", owner: "u_x", actor: "cli" } } as AgentConfig);
-rec = undefined;
+let recUser: Recorded | undefined;
 (u as unknown as {
   ep: {
     invokeService: (endpoint: string, command: string, args?: Record<string, unknown>, opts?: { target?: unknown; deadlineMs?: number }) => Promise<unknown>;
@@ -70,7 +71,7 @@ rec = undefined;
   };
 }).ep = {
   invokeService: (endpoint, command, args, opts) => {
-    rec = { endpoint, command, args, opts };
+    recUser = { endpoint, command, args, opts };
     return Promise.resolve({ reply: { ok: true, data: { name: args?.name } }, responder: { endpoint, instanceId: "i", epoch: 0 } });
   },
   principal: { owner: "u_x", actor: "cli" },
@@ -78,8 +79,8 @@ rec = undefined;
 (u as unknown as { _connected: boolean })._connected = true;
 await u.spawn("rev", "reviewer", { agent: "opencode", model: "sonnet" });
 check("user mode: the SAME v0.4 spawn command over invokeService (no ctl branch left)",
-  rec?.endpoint === "manager" && rec?.command === "spawn" && rec?.args?.model === "sonnet", rec);
-check("user mode: request carries the readiness window too", rec?.opts?.deadlineMs === SPAWN_TIMEOUT_MS, rec?.opts?.deadlineMs);
+  recUser?.endpoint === "manager" && recUser?.command === "spawn" && recUser?.args?.model === "sonnet", recUser);
+check("user mode: request carries the readiness window too", recUser?.opts?.deadlineMs === SPAWN_TIMEOUT_MS, recUser?.opts?.deadlineMs);
 
 console.log(`\nSPAWN-ARGS SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);
 process.exit(failures === 0 ? 0 : 1);

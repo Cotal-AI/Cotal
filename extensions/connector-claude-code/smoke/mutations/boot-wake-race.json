@@ -1,0 +1,42 @@
+{
+  "suite": "extensions/connector-claude-code/smoke/boot-wake-race.smoke.ts",
+  "guard": "a wake dropped in the connector's boot window (message already pending before the claude/channel handshake activates) is re-fired without a human turn, so the session is never permanently deaf",
+  "command": "pnpm --filter @cotal-ai/connector-claude-code... build && pnpm smoke:claude-boot-wake",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/boot-wake-race.json",
+  "why": [
+    "The cell asserts a NEGATIVE that is easy to satisfy by accident: 'the session eventually woke'.",
+    "Anything that nudges — a stray hook, a second delivery, an unrelated timer — would make it pass",
+    "while proving nothing about the boot window, so the recovery has to be traced to the one line",
+    "that performs it.",
+    "",
+    "The connector itself has no reconcile and the cell asserts that too: activation only flips the",
+    "flag (hooks.ts setChannelActive), nudge() returns early while inactive, and the retry is",
+    "unreachable in that window because it is armed only from a REJECTED notify, which cannot happen",
+    "when nudge returns before notifying. So the whole recovery rests on ingest re-announcing the",
+    "still-pending item when JetStream redelivers it, and B1 deletes exactly that.",
+    "",
+    "REBUILD IS PART OF THE EXPERIMENT, NOT AN OPTIMIZATION. The suite loads the connector's own",
+    "wake policy by relative source path (../src/hooks.js) but reaches MeshAgent through the package",
+    "name, which resolves to dist/. Editing src/agent.ts alone therefore mutates bytes the run never",
+    "reads: measured here, the first attempt at B1 SURVIVED with the source visibly mutated, purely",
+    "because dist/ still held the pre-mutation build. Hence the build in `command` and the rebuild in",
+    "`afterRestore` — dist/ is gitignored, so putting the source back is not enough to leave the tree",
+    "honest.",
+    "",
+    "One mutation, deliberately: the guard is a single line, and B1 is its exact removal — the state",
+    "of this branch before the re-announce landed. A second contrived mutant would grade nothing the",
+    "first does not."
+  ],
+  "mutations": [
+    {
+      "name": "B1 a durable redelivery of a still-pending item refreshes the ack handle without re-announcing it",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        existing.ack = delivery.ack;\n        this.emit(\"incoming\", existing.item);",
+      "replace": "        existing.ack = delivery.ack;",
+      "expectRed": "a wake lost in the boot window is re-fired without a human turn",
+      "cell": "a wake lost in the boot window is re-fired without a human turn (JetStream redelivery re-announces the still-pending item)",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build",
+      "note": "Restores the swallow this branch had before the re-announce: the redelivery arrives, the ack handle is refreshed, and nothing tells the wake policy the message is still there. The session then sits idle with the DM buffered and un-acked for as long as the cell waits."
+    }
+  ]
+}

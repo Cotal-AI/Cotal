@@ -31,6 +31,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
   // Managed Codex agents are POSIX-only by design (the isolated CODEX_HOME symlinks the
@@ -61,7 +62,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 
-const dir = mkdtempSync(join(tmpdir(), "cotal-codexhost-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const FAKE = fileURLToPath(new URL("./fake-codex.mjs", import.meta.url));
 const BIN = join(dir, "fake-codex");
 writeFileSync(BIN, `#!/bin/sh\nexec "${process.execPath}" "${FAKE}" "$@"\n`);
@@ -77,6 +78,10 @@ interface LogEntry {
   method?: string;
   params?: Record<string, unknown>;
   result?: unknown;
+  error?: string;
+  httpStatus?: number;
+  mcpTokenPresent?: boolean;
+  cotalLeak?: string[];
 }
 function logEntries(): LogEntry[] {
   if (!existsSync(LOG)) return [];
@@ -101,6 +106,7 @@ async function waitFor<T>(name: string, get: () => T | undefined, timeoutMs = 20
 }
 
 const nats = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(nats, dir);
 
 const operator = new CotalEndpoint({
   space,
@@ -847,6 +853,43 @@ try {
     shutLaunchErr.slice(-300),
   );
 
+  // (10b-4) MESH READINESS. A live app-server and MCP tool surface do not make a Cotal peer ready:
+  // its endpoint must have completed every NATS bind and published initial presence too. The old
+  // fire-and-forget `agent.start()` printed ready and opened the interactive TUI immediately, so
+  // the person landed in a healthy-looking Codex whose first cotal_orientation said it was offline.
+  const meshFailLog = join(dir, "meshfail.log.jsonl");
+  const meshFail = spawn(TSX, [HOST_ENTRY], {
+    env: {
+      ...cleanEnv,
+      COTAL_SPACE: space,
+      COTAL_NAME: "meshfailpeer",
+      COTAL_SERVERS: deadServers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_CODEX_BIN: BIN,
+      COTAL_CODEX_HOME: dir,
+      COTAL_CODEX_TUI: "1",
+      FAKE_CODEX_LOG: meshFailLog,
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let meshFailErr = "";
+  meshFail.stderr!.setEncoding("utf8");
+  meshFail.stderr!.on("data", (d: string) => (meshFailErr += d));
+  const meshFailExit = await Promise.race([
+    new Promise<number | null>((r) => meshFail.on("exit", (code) => r(code))),
+    sleep(30_000).then(() => "timeout" as const),
+  ]);
+  const meshFailEntries = !existsSync(meshFailLog)
+    ? []
+    : readFileSync(meshFailLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as LogEntry);
+  check("the startup failure names mesh readiness and the unreachable broker", /mesh did not become ready/.test(meshFailErr) && meshFailErr.includes(deadServers), meshFailErr.slice(-500));
+  check("a Codex host with no mesh fails within the bounded readiness window", typeof meshFailExit === "number" && meshFailExit !== 0, {
+    meshFailExit,
+    err: meshFailErr.slice(-300),
+  });
+  check("an offline Codex host never announces ready", !/^\[cotal-codex\] ready —/m.test(meshFailErr), meshFailErr.slice(-500));
+  check("an offline Codex host never hands the terminal to a TUI", !meshFailEntries.some((entry) => entry.ev === "tui"));
+
   // (10c) the app-server capability token is written FAIL-CLOSED. The agent's home sits under
   // agent-writable workspace, so a sibling (or this agent's own command) can pre-plant
   // `remote-token` as a symlink; a plain write follows it, clobbering the target AND depositing
@@ -1206,5 +1249,6 @@ try {
   nats.kill("SIGKILL");
   await sleep(200);
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 process.exit(0);

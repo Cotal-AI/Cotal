@@ -35,14 +35,18 @@ required by Pi's SDK if they expect proactive delivery into an idle session.
 
 ## Delivery
 
-Inbound traffic is injected as a `cotal-inbox` custom message. Its opaque batch details must appear
+Inbound traffic is injected as a `cotal-inbox` custom message. Visible inbox and send-tool text is
+wrapped by Pi's own ANSI/grapheme-aware TUI wrapper, so emoji, CJK, and styled content obey the exact
+same terminal-column invariant Pi enforces at render time. Its opaque batch details must appear
 in Pi's `message_start` and in the exact provider `context`. A successful `after_provider_response`
 confirms the batch early when the transport exposes an HTTP response; transports such as the Codex
 subscription may omit that hook, so an exact context is confirmed instead by its following clean
   terminal boundary. Acknowledgement waits for that boundary and drains only the confirmed IDs,
   even when pull-only quiet traffic is interleaved ahead of them.
 
-- Crash or quit before a terminal boundary: acknowledge nothing; durable traffic redelivers.
+- Crash or quit before a terminal boundary: acknowledge nothing; durable traffic redelivers. A
+  manager-owned Pi process crash reopens the exact Pi session in place (same Cotal lifecycle); a
+  bounded crash loop retires the seat rather than respawning forever.
 - Non-aborted `stop`, `toolUse`, and non-overflow `length` (positive output) are terminal and may
   commit confirmed work. Error, abort, zero/missing-output `length`, and unknown stop reasons retain
   the association in observable `waiting`; Pi exposes no retry-finality event, so retained work waits

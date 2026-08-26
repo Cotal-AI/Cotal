@@ -23,6 +23,9 @@ importers:
       '@cotal-ai/connector-hermes':
         specifier: workspace:*
         version: link:extensions/connector-hermes
+      '@cotal-ai/connector-jcode':
+        specifier: workspace:*
+        version: link:extensions/connector-jcode
       '@cotal-ai/connector-opencode':
         specifier: workspace:*
         version: link:extensions/connector-opencode
@@ -88,12 +91,18 @@ importers:
       '@cotal-ai/connector-hermes':
         specifier: workspace:*
         version: link:../extensions/connector-hermes
+      '@cotal-ai/connector-jcode':
+        specifier: workspace:*
+        version: link:../extensions/connector-jcode
       '@cotal-ai/connector-opencode':
         specifier: workspace:*
         version: link:../extensions/connector-opencode
       '@cotal-ai/pi':
         specifier: workspace:*
         version: link:../extensions/pi
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../packages/smoke-kit
       '@cotal-ai/web':
         specifier: workspace:*
         version: link:../implementations/web
@@ -103,6 +112,9 @@ importers:
       '@nats-io/transport-node':
         specifier: ^3.4.0
         version: 3.4.0
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
 
   examples/01-lateral-coordination:
     dependencies:
@@ -154,6 +166,16 @@ importers:
         specifier: ^2.9.0
         version: 2.9.0
 
+  examples/05-scale-showcase:
+    dependencies:
+      '@cotal-ai/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+    devDependencies:
+      tsx:
+        specifier: ^4.22.4
+        version: 4.23.0
+
   extensions/cmux:
     devDependencies:
       '@cotal-ai/core':
@@ -171,6 +193,9 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)
@@ -189,6 +214,9 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)
@@ -217,9 +245,18 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@ag-ui/core':
+        specifier: 0.0.57
+        version: 0.0.57
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
+      '@nats-io/transport-node':
+        specifier: ^3.4.0
+        version: 3.4.0
 
   extensions/connector-hermes:
     devDependencies:
@@ -239,6 +276,34 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
 
+  extensions/connector-jcode:
+    dependencies:
+      '@1jehuang/jcode-sdk':
+        specifier: ^1.1.0
+        version: 1.1.0
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@4.4.3)
+    devDependencies:
+      '@cotal-ai/connector-core':
+        specifier: workspace:*
+        version: link:../connector-core
+      '@cotal-ai/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.1
+      tsx:
+        specifier: ^4.22.4
+        version: 4.23.0
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+
   extensions/connector-opencode:
     devDependencies:
       '@cotal-ai/connector-core':
@@ -247,6 +312,9 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
       '@opencode-ai/plugin':
         specifier: ^1.16.2
         version: 1.16.2
@@ -289,6 +357,9 @@ importers:
       '@earendil-works/pi-coding-agent':
         specifier: 0.79.10
         version: 0.79.10(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.21.0)(zod@4.4.3)
+      '@earendil-works/pi-tui':
+        specifier: 0.79.10
+        version: 0.79.10
       esbuild:
         specifier: ^0.28.0
         version: 0.28.1
@@ -332,6 +403,9 @@ importers:
         specifier: ^6.2.3
         version: 6.2.3
     devDependencies:
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
       better-auth:
         specifier: ^1.6.23
         version: 1.6.23(@opentelemetry/api@1.9.0)(react@19.2.7)
@@ -375,6 +449,9 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
       '@types/react':
         specifier: ^19.0.0
         version: 19.2.17
@@ -410,6 +487,9 @@ importers:
         specifier: workspace:*
         version: link:../../packages/workspace
     devDependencies:
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
       '@nats-io/transport-node':
         specifier: ^3.4.0
         version: 3.4.0
@@ -453,6 +533,9 @@ importers:
       '@cotal-ai/connector-core':
         specifier: workspace:*
         version: link:../../extensions/connector-core
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
       '@nats-io/jetstream':
         specifier: ^3.4.0
         version: 3.4.0
@@ -472,11 +555,33 @@ importers:
         specifier: ^0.28.1
         version: 0.28.1
 
+  implementations/runtime:
+    dependencies:
+      '@cotal-ai/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@cotal-ai/lang':
+        specifier: workspace:*
+        version: link:../../packages/lang
+    devDependencies:
+      '@nats-io/jetstream':
+        specifier: ^3.4.0
+        version: 3.4.0
+      '@nats-io/kv':
+        specifier: ^3.4.0
+        version: 3.4.0
+      '@nats-io/transport-node':
+        specifier: ^3.4.0
+        version: 3.4.0
+
   implementations/web:
     devDependencies:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
       '@cotal-ai/workspace':
         specifier: workspace:*
         version: link:../../packages/workspace
@@ -498,6 +603,9 @@ importers:
       '@nats-io/kv':
         specifier: ^3.4.0
         version: 3.4.0
+      '@nats-io/nats-core':
+        specifier: ^3.4.0
+        version: 3.4.0
       '@nats-io/nkeys':
         specifier: ^2.0.3
         version: 2.0.3
@@ -516,6 +624,10 @@ importers:
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
+    devDependencies:
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../smoke-kit
 
   packages/lang:
     dependencies:
@@ -525,6 +637,11 @@ importers:
       json-canonicalize:
         specifier: 2.0.0
         version: 2.0.0
+      ses:
+        specifier: ^2.3.0
+        version: 2.3.0
+
+  packages/smoke-kit: {}
 
   packages/workspace:
     dependencies:
@@ -533,6 +650,43 @@ importers:
         version: link:../core
 
 packages:
+
+  '@1jehuang/jcode-darwin-arm64@1.1.0':
+    resolution: {integrity: sha512-OoVrOeZ79TkKAk3TXnR858WoeaBOn+dFQC3kvN7YMVaq4TjvuwcFfxTO7ud1ciVmpPvXaHzPi8L776aPDAx5Hw==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@1jehuang/jcode-darwin-x64@1.1.0':
+    resolution: {integrity: sha512-wsiE7Qzt5UkJV/v2O+NzKQuipZNvuXzi5vyXCDbJDF0fvojQsjZY2njpXGjxwlzcOp4fTesE4inuH/xqL71rDw==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@1jehuang/jcode-linux-arm64@1.1.0':
+    resolution: {integrity: sha512-5s9VUitbpx4PSgdtNdgsGy2FtSNlJtQpsfb6RWX5E8QXHpnwlfsbXoq1PuU5kwWitJY07OYnB1P4xozObpA68Q==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@1jehuang/jcode-linux-x64@1.1.0':
+    resolution: {integrity: sha512-9w+VpnSZQrpU+lYy/I7a4NsRbPAUSN9DHIX8uoJ1uhlocJ6WPB77AxDp2I5zWUn5H09knlAkw2LgzvhWANzpbQ==}
+    cpu: [x64]
+    os: [linux]
+
+  '@1jehuang/jcode-sdk@1.1.0':
+    resolution: {integrity: sha512-A9QcerzdNb9yXsRaip38doZd/Z8IGGlAsjmdLuRl9IvpitkHwizzjh4+e3U6YEwyLygvOlgkiNdgvf0UMosvPg==}
+    engines: {node: '>=20'}
+
+  '@1jehuang/jcode-win32-arm64@1.1.0':
+    resolution: {integrity: sha512-Gcqvjit05CQH+ELC9G8bBYTciP8o8MzbVLUz8PFWJYmSXzbVlJEbQzr4/D29egPUSUrgAsti8rtqAmGIjIBN6A==}
+    cpu: [arm64]
+    os: [win32]
+
+  '@1jehuang/jcode-win32-x64@1.1.0':
+    resolution: {integrity: sha512-ePRfhzPk6HQ94WZFEmKxztuhhw4ZkzyiCdJKa3v4ERAHAz4APLO16K6H53kDc+x04YvW7nurgcALWWKVF+8JGA==}
+    cpu: [x64]
+    os: [win32]
+
+  '@ag-ui/core@0.0.57':
+    resolution: {integrity: sha512-gho1OWjNE6E3Rl7ZEZ1wr2CEpUHjLFU0FqzCZZk439TicLu+BfLCMkMokB07bMGlRmbJ60hM6LW60iOVauCx+Q==}
 
   '@alcalzone/ansi-tokenize@0.2.5':
     resolution: {integrity: sha512-3NX/MpTdroi0aKz134A6RC2Gb2iXVECN4QaAXnvCIxxIm3C3AVB1mkUe8NaaiyvOpDfsrqWhYtj+Q6a62RrTsw==}
@@ -807,6 +961,15 @@ packages:
   '@earendil-works/pi-tui@0.79.10':
     resolution: {integrity: sha512-FUVOjDn1DVwM1uHD5MNYboXQrXjIDbSt+BQ3py7nQWCY62tKfxgiM1OBMxTcwRWLfSdZHUPpV0hm1loIdUJnPw==}
     engines: {node: '>=22.19.0'}
+
+  '@endo/cache-map@1.1.0':
+    resolution: {integrity: sha512-owFGshs/97PDw9oguZqU/px8Lv1d0KjAUtDUiPwKHNXRVUE/jyettEbRoTbNJR1OaI8biMn6bHr9kVJsOh6dXw==}
+
+  '@endo/env-options@1.1.11':
+    resolution: {integrity: sha512-p9OnAPsdqoX4YJsE98e3NBVhIr2iW9gNZxHhAI2/Ul5TdRfoOViItzHzTqrgUVopw6XxA1u1uS6CykLMDUxarA==}
+
+  '@endo/immutable-arraybuffer@2.0.0':
+    resolution: {integrity: sha512-xvfJvo4CgETh6UjSKwhNsFLZrqrTf2k4ZFpcprEN2UtCQRSOk+CcLP70kFbrOesB2Z/c1z9MaUZDS1JY6IlnUg==}
 
   '@eplightning/nats-server-darwin-arm64@2.14.0':
     resolution: {integrity: sha512-tBCOf4anrlTnbQimh3KSz6C+0IbdJTyfTFLcol2YfGWzfmMgsXqjfrSZvnRnqMK2hWD/TJ6eIhsv3/UlfdTzEg==}
@@ -2509,6 +2672,9 @@ packages:
     resolution: {integrity: sha512-xRXBn0pPqQTVQiC8wyQrKs2MOlX24zQ0POGaj0kultvoOCstBQM5yvOhAVSUwOMjQtTvsPWoNCHfPGwaaQJhTw==}
     engines: {node: '>= 18'}
 
+  ses@2.3.0:
+    resolution: {integrity: sha512-qd3iWzDqGKllI2FmExKsWLrJwt+6COWb8jUdzaCn8Cq5OTeoXdQ62Gn/xLy0GWLORC3du6yBAVe/V0B0dLVKew==}
+
   set-cookie-parser@3.1.1:
     resolution: {integrity: sha512-vM9SUhjsUYs6UeJUmygc5Ofm5eQGe85riob5ju6XCgFGJI5PLV4nrDAQpQjd+LkFBpAkADn5BQQpZ9EUNkyLuA==}
 
@@ -2726,6 +2892,9 @@ packages:
     peerDependencies:
       zod: ^3.25.28 || ^4
 
+  zod@3.25.76:
+    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
+
   zod@4.1.8:
     resolution: {integrity: sha512-5R1P+WwQqmmMIEACyzSvo4JXHY5WiAFHRMg+zBZKgKS+Q1viRa0C1hmUKtHltoIFKtIdki3pRxkmpP74jnNYHQ==}
 
@@ -2733,6 +2902,39 @@ packages:
     resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
 
 snapshots:
+
+  '@1jehuang/jcode-darwin-arm64@1.1.0':
+    optional: true
+
+  '@1jehuang/jcode-darwin-x64@1.1.0':
+    optional: true
+
+  '@1jehuang/jcode-linux-arm64@1.1.0':
+    optional: true
+
+  '@1jehuang/jcode-linux-x64@1.1.0':
+    optional: true
+
+  '@1jehuang/jcode-sdk@1.1.0':
+    dependencies:
+      ajv: 8.20.0
+    optionalDependencies:
+      '@1jehuang/jcode-darwin-arm64': 1.1.0
+      '@1jehuang/jcode-darwin-x64': 1.1.0
+      '@1jehuang/jcode-linux-arm64': 1.1.0
+      '@1jehuang/jcode-linux-x64': 1.1.0
+      '@1jehuang/jcode-win32-arm64': 1.1.0
+      '@1jehuang/jcode-win32-x64': 1.1.0
+
+  '@1jehuang/jcode-win32-arm64@1.1.0':
+    optional: true
+
+  '@1jehuang/jcode-win32-x64@1.1.0':
+    optional: true
+
+  '@ag-ui/core@0.0.57':
+    dependencies:
+      zod: 3.25.76
 
   '@alcalzone/ansi-tokenize@0.2.5':
     dependencies:
@@ -3238,6 +3440,12 @@ snapshots:
     dependencies:
       get-east-asian-width: 1.6.0
       marked: 18.0.5
+
+  '@endo/cache-map@1.1.0': {}
+
+  '@endo/env-options@1.1.11': {}
+
+  '@endo/immutable-arraybuffer@2.0.0': {}
 
   '@eplightning/nats-server-darwin-arm64@2.14.0':
     optional: true
@@ -4719,6 +4927,12 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  ses@2.3.0:
+    dependencies:
+      '@endo/cache-map': 1.1.0
+      '@endo/env-options': 1.1.11
+      '@endo/immutable-arraybuffer': 2.0.0
+
   set-cookie-parser@3.1.1: {}
 
   setprototypeof@1.2.0: {}
@@ -4902,6 +5116,8 @@ snapshots:
   zod-to-json-schema@3.25.2(zod@4.4.3):
     dependencies:
       zod: 4.4.3
+
+  zod@3.25.76: {}
 
   zod@4.1.8: {}
 

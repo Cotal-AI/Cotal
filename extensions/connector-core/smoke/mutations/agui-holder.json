@@ -1,0 +1,40 @@
+{
+  "suite": "extensions/connector-core/smoke/agui-holder.smoke.ts",
+  "guard": "the holder starts at most one emitter for the path it binds, and later callers get the one that already exists rather than a second start",
+  "command": "pnpm smoke:agui-holder",
+  "completionMarker": "agui-holder smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/agui-holder.json",
+  "why": [
+    "START-ONCE IS HELD BY TWO REDUNDANT THINGS AND THAT IS WHY IT WENT UNREGISTERED FOR SO LONG.",
+    "The `boundPath` gate is what actually stops a second `startEmitter`: it is set before the await,",
+    "so a later call for the same path never takes that arm again. The `this.emitter` shortcut and the",
+    "trailing `return this.emitter` answer for each other, so breaking either one alone changes nothing",
+    "this suite can see. Six single-site mutations were measured and all six survived at 33 passed,",
+    "0 failed. The suite header carries that table.",
+    "",
+    "THE CONCLUSION DRAWN FROM THAT TABLE WAS WRONG, AND THIS FILE IS THE CORRECTION. It said no",
+    "registration was possible, because `scripts/mutation-proof.mjs` takes one find and one replace per",
+    "mutation. That reasoning treated `single find/replace` as `single site`, and the two sites here are",
+    "ADJACENT: one contiguous span covers the shortcut and the gate together, which is a legal mutation",
+    "and kills. A reviewer proved it with the shipped tool rather than arguing it. An impossibility",
+    "claimed about a property that DOES have a kill is exactly the defect class this branch exists for,",
+    "so the kill is registered instead of an accepted-gap sentence.",
+    "",
+    "BLAST RADIUS IS TWO AND IT IS STATED. H1 reds both `lazy:` cells, not only the one `expectRed`",
+    "names. A mutant that reddens its named cell plus others is neither a clean pass nor a failure; it",
+    "carries the count so a later reader is not surprised by the second name.",
+    "",
+    "THE ANCHOR IS PURE CODE. It spans no comment, so a rewording of the prose around it cannot turn",
+    "this mutant into a no-op the way an edit to the halt message did to S26 in this same branch."
+  ],
+  "mutations": [
+    {
+      "name": "H1 both start-once guards removed in one contiguous span, because they are adjacent and one find covers them",
+      "file": "extensions/connector-core/src/agui-holder.ts",
+      "find": "    if (this.emitter) return this.emitter;\n\n    if (this.boundPath === undefined) {\n",
+      "replace": "    if (true) {\n",
+      "expectRed": "lazy:a-second-adopt-of-the-SAME-path-does-not-start-a-second",
+      "note": "Removing either guard alone survives, because the other answers for it. Removed together, a second adopt of the SAME path reaches `startEmitter` again. Also reds `lazy:a-flush-after-an-adopt-does-not-start-a-second`."
+    }
+  ]
+}

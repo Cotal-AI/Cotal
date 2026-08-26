@@ -18,8 +18,8 @@
     {
       "name": "the fence drifts below args validation, so another check answers first",
       "file": "packages/core/src/endpoint-serve.ts",
-      "find": "      assertBoundIncarnation(env, identity);\n      assertClassMatches(env, def.class);\n      bindContract(env, def);\n      // §13.2: the command admits only its REGISTERED target modes — before args validation,\n      // so an unadmitted mode learns nothing about the input contract.\n      assertModeAdmitted(parsed, def);\n      // §13.7: args validate against the input schema BEFORE any effect (bad-request).\n      assertArgsValid(def.validate.args, env.args);",
-      "replace": "      assertClassMatches(env, def.class);\n      bindContract(env, def);\n      assertModeAdmitted(parsed, def);\n      assertArgsValid(def.validate.args, env.args);\n      assertBoundIncarnation(env, identity);",
+      "find": "      assertBoundIncarnation(env, identity);\n      assertClassMatches(env, def.class);\n      bindContract(env, def);",
+      "replace": "      assertClassMatches(env, def.class);\n      bindContract(env, def);\n      assertArgsValid(def.validate.args, env.args);\n      assertBoundIncarnation(env, identity);",
       "expectRed": "a bind mismatch with INVALID ARGS answers the bind refusal"
     },
     {
@@ -28,6 +28,13 @@
       "find": "      if (r.instanceId === op.bind.instanceId && r.epoch === op.bind.epoch)",
       "replace": "      if (false as boolean)",
       "expectRed": "a bind refusal from the very incarnation the caller bound is internal"
+    },
+    {
+      "name": "the coherence checks go back to being gated on the outcome, so omitting it skips them",
+      "file": "packages/core/src/endpoint-verbs.ts",
+      "find": "    if (attributed.reply.ok === false && bindRefusalMarked(attributed.reply.error)) {",
+      "replace": "    if (attributed.reply.ok === false && bindRefusalMarked(attributed.reply.error) && attributed.reply.error?.outcome === \"not-executed\") {",
+      "expectRed": "a bind refusal that OMITS the outcome is still checked against its attribution"
     }
   ]
 }

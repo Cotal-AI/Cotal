@@ -17,6 +17,7 @@ import { wsconnect, credsAuthenticator } from "@nats-io/nats-core";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, mintLifecycleUid,
   registry, openSessionRail, encodeTerminalData, decodeTerminalFrame, terminalFrameBytes,
+  type Connector,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
@@ -41,7 +42,8 @@ writeFileSync(join(workspaceRoot, ".cotal", "agents", "echo1.md"), "---\nname: e
 // A portable line-echo pty. `process.execPath` needs no PATH resolution and `launchEnv()` is the OS
 // allow-list a real connector supplies — a ConPTY child inherits nothing but `spec.env`, and on
 // Windows a node child without `SystemRoot` aborts at startup. (This was `cat`, absent on Windows.)
-registry.register({ kind: "connector", name: "echo", requires: [], buildLaunch: () => ({ command: process.execPath, args: ["-e", "process.stdin.pipe(process.stdout)"], env: launchEnv() }) });
+const echoCon: Connector = { kind: "connector", name: "echo", requires: [], buildLaunch: () => ({ command: process.execPath, args: ["-e", "process.stdin.pipe(process.stdout)"], env: launchEnv() }) };
+registry.register(echoCon);
 
 const kids: ChildProcess[] = [];
 let mgr: InstanceType<typeof Manager> | undefined;

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, launchEnv, controlEndpoint, MODEL_PROVIDER_KEYS, transcriptChannel, userAuthEnv } from "@cotal-ai/connector-core";
+import { aclEnv, connectorLaunchOptions, eventChannel, launchEnv, controlEndpoint, materialEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
 
 /** The bundled in-process plugin (esbuild → `dist/plugin.bundle.js`). `opencode serve` loads it by
  *  absolute path from the inline config, so it runs *inside* the server and shares its SDK client.
@@ -105,11 +105,22 @@ function listOpenCodeModels(opts: { refresh?: boolean } = {}): ModelCatalog {
 export const opencodeConnector: Connector = {
   kind: "connector",
   name: "opencode",
-  transcriptChannel, // the shared `tr-<name>` convention (connector-core), exposed via the contract
   requires: ["opencode"],
   supportsModelVariant: true,
   listModels: listOpenCodeModels,
+  // DECLARING THIS IS WHAT MAKES `--events` REACHABLE. Both the CLI and the manager refuse an armed
+  // launch whose connector does not implement it, before anything is provisioned, rather than mint a
+  // grant nothing will ever publish to. A connector that emits and does not say so here is refused
+  // at the door with its emitter complete and untouched.
+  //
+  // It is core's own derivation and is not re-derived here, so the channel the manager mints the
+  // grant for and the subject the session publishes to come from ONE function. A second derivation
+  // would be a second place the subject is decided, and the two would drift the first time either
+  // changed. It takes the PRINCIPAL: a display name is not an identity on this mesh, and a
+  // name-keyed channel would fuse two principals' streams onto one subject.
+  eventChannel,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
+    if (opts.continueSession) throw new Error("opencode connector does not support exact-session continuation");
     // Resuming an existing session isn't wired for opencode: the connector runs `opencode serve` +
     // a plugin that CREATES its own session then attaches a TUI, so a fork must plumb into
     // session-creation (SDK fork / the serve attach), not argv. Throw rather than spawn fresh
@@ -130,24 +141,64 @@ export const opencodeConnector: Connector = {
           "layer; restricting that down to a chosen subset needs an inverse opt-out filter, which " +
           "is a separate feature.",
       );
-    // Identity rides the process env: the plugin runs in the opencode process and inherits it
-    // (unlike the Claude Code MCP server, which gets none of the parent env). The OS allow-list +
-    // the named model-provider key (opencode's hosted models read OPENCODE_API_KEY; other
-    // providers read their own) are forwarded BY NAME — never `...process.env` — so the operator's
-    // unrelated secrets don't reach the child (P3).
+    // Identity rides the process env: the plugin runs in the opencode process and inherits it.
+    // Provider inputs cross only through the connector's declared allow-list; spawn.env adds names.
+    // Minted before the env is built: the token goes into the launch material, the path into the env.
+    const control = controlEndpoint(opts.space, opts.name);
     const env: Record<string, string> = {
-      ...launchEnv({ providerKeys: MODEL_PROVIDER_KEYS }),
+      ...launchEnv({ providerKeys: MODEL_PROVIDER_KEYS, envAllow: opts.envAllow }),
       ...aclEnv(opts),
-      ...userAuthEnv(opts),
+      // Creds, broker URL and the control token ride a 0600 file; only its path is exported.
+      //
+      // The plugin drops even that path once it has read it, and WHERE it does so is the part worth
+      // stating: this connector's seat process is a shim that starts `opencode serve` and a TUI
+      // attached to it, and the plugin runs inside the SERVER. The server is also the process that
+      // executes the session's tool calls, so a shell this seat runs inherits neither the material
+      // nor a reference to it. The shim itself keeps the reference, because the server it starts is
+      // the reader; it runs no tools of its own.
+      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
+    // The AG-UI event plane. `COTAL_EVENTS` ARMS the emitter, and arming is not authorization: a
+    // publish grant on a channel is not a request to publish to it, so an agent file that can write
+    // `allowPublish` cannot turn on a stream of another seat's tool inputs and outputs by doing so.
+    // `COTAL_WORKSPACE_ROOT` rides with it because the emitter's write-ahead log has to live
+    // somewhere a LATER start will look, and there is no safe default: a log written under the
+    // launch cwd is invisible to the next start, which then reads an already-published thread as
+    // virgin and republishes sequences the stream has already seen. Sent only when events are on.
+    //
+    // This is deliberately NOT folded into `COTAL_OPENCODE_HOME` below, which falls back to the
+    // process cwd. That fallback is safe for a SQLite file and a pidfile, which only ever have to be
+    // found by the process that wrote them. It is not safe for the log, which exists to be found by
+    // a process that has not started yet.
+    if (opts.events === true) {
+      env.COTAL_EVENTS = "1";
+      if (!opts.workspaceRoot)
+        throw new Error(
+          "opencode connector: events were requested but the launch carries no workspaceRoot, so the " +
+            "event write-ahead log has nowhere to live that a later start would look. Refusing rather " +
+            "than defaulting to the working directory.",
+        );
+      env.COTAL_WORKSPACE_ROOT = opts.workspaceRoot;
+    }
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
-    if (opts.creds) env.COTAL_CREDS = opts.creds;
-    if (opts.servers) env.COTAL_SERVERS = opts.servers;
-    if (opts.transcript === true) env.COTAL_TRANSCRIPT = "1"; // gate the plugin's transcript mirror (parity with Claude)
+    // The auto-submitted first turn (`cotal spawn --prompt`). It rides the child ENV, the same
+    // carrier codex uses (COTAL_CODEX_PROMPT): the plugin runs inside `opencode serve`, which
+    // inherits this env, so the text reaches the one component that can issue a turn without going
+    // through argv (where the TUI would also see it) or through OPENCODE_CONFIG_CONTENT, which is
+    // opencode's own schema-validated surface and not ours to extend. A prompt with no text in it
+    // cannot be delivered as a turn, so refuse the launch rather than start a seat that ignores it.
+    if (opts.prompt !== undefined) {
+      const prompt = opts.prompt.trim();
+      if (!prompt)
+        throw new Error(
+          "opencode connector: an initial prompt was given but it is empty — there is no first turn to submit",
+        );
+      env.COTAL_OPENCODE_PROMPT = prompt;
+    }
     // Where serve.ts roots this agent's SQLite DB + serve pidfile. Pin it to the manager's
     // workspace root so a per-agent launch cwd (which the manager can point at any repo) doesn't
     // drop `.cotal/opencode/<name>` into the target tree. Standalone `cotal spawn` has no manager
@@ -224,9 +275,7 @@ export const opencodeConnector: Connector = {
     // leaves the mesh cleanly on shutdown. Minted here; passed to the plugin in the child env (the
     // token never on argv/logs) — opencode serve inherits this process env, the attached TUI strips
     // COTAL_*. Returned in the LaunchSpec so the manager holds it in memory to drive the stop.
-    const control = controlEndpoint(opts.space, opts.name);
     env.COTAL_CONTROL_SOCKET = control.path;
-    env.COTAL_CONTROL_TOKEN = control.token;
 
     // Run the shim (node dist/serve.js): `opencode serve` + an attached foreground TUI.
     return {

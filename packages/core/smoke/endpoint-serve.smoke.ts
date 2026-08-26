@@ -40,6 +40,7 @@ import {
 } from "../src/index.js";
 import type { KV } from "@nats-io/kv";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 /** READING THIS SUITE'S OUTPUT — the reporting is INVERTED and the inversion is a trap.
  *
@@ -269,8 +270,9 @@ const freezeErr = async (jsmStub: unknown): Promise<{ code?: string; message: st
 
 // ── live broker ──
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-epserve-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, sd);
 
 try {
   let up = false;
@@ -615,6 +617,10 @@ try {
   const r3b = await send(oneSubj("status"), req({ args: { name: 42 } }));
   c("args violating the input schema are bad-request BEFORE any effect",
     r3b !== undefined && r3b.reply.error?.code === "bad-request");
+  const r3x = await send(oneSubj("status"), req({ args: { name: "x", events: true } }));
+  c("a closed-contract refusal names the offending property over the wire (skew diagnosis starts there)",
+    r3x !== undefined && r3x.reply.error?.code === "bad-request" && (r3x.reply.error?.message ?? "").includes('"events"'),
+    JSON.stringify(r3x?.reply.error));
   const r3n = await send(oneSubj("status"), req({ args: null }));
   c("explicit-null args on an OBJECT-input command are bad-request through the SCHEMA (not the parser)",
     r3n !== undefined && r3n.reply.error?.code === "bad-request", JSON.stringify(r3n?.reply));
@@ -856,10 +862,10 @@ try {
   await nc.flush();
   for (let i = 0; i < 60 && gate === undefined; i++) await wait(25); // the handler is parked once gate is set
   c("the gated handler is in flight", gate !== undefined);
-  let stopped = false;
+  let stopped: boolean | undefined;
   const stopping = srvA.stop().then(() => { stopped = true; });
   await wait(400);
-  c("stop() does NOT report stopped while a handler is in flight", stopped === false);
+  c("stop() does NOT report stopped while a handler is in flight", stopped !== true);
   gate!();
   await stopping;
   c("stop() resolves once the in-flight handler finishes", stopped === true);
@@ -1009,6 +1015,7 @@ try {
   broker.kill("SIGKILL");
   await new Promise<void>((resolve) => { broker.once("exit", () => resolve()); broker.once("error", () => resolve()); });
   rmSync(sd, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(`\nENDPOINT SERVE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${ok} passed, ${fail} failed)`);

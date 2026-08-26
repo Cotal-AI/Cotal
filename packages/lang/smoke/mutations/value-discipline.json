@@ -1,0 +1,38 @@
+{
+  "suite": "packages/lang/smoke/surface.smoke.ts",
+  "guard": "No implicit conversion (L4018), no holes (L4019), and a method is not a value (L4020). (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-surface",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/value-discipline.json",
+  "mutations": [
+    {
+      "name": "containers coerce through the host again",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "function refuseCoercion(where: string, v: unknown): void {\n  if (v !== null && (typeof v === \"object\" || typeof v === \"function\")) {",
+      "replace": "function refuseCoercion(where: string, v: unknown): void {\n  if (false) {",
+      "expectRed": "`+`, comparison, unary minus, and `${...}` refuse a record, an array, or a function with L4018",
+      "completionMarker": "ok a fresh local record and array may be written; a value that crossed an effect boundary may not (L2031)",
+      "cell": "`+`, comparison, unary minus, and `${...}` refuse a record, an array, or a function with L4018",
+      "note": "With the refusal gone `o + 1` reaches the host's ToPrimitive again — the measured pre-fix behavior, up to and including invoking the program's own closures without a frame."
+    },
+    {
+      "name": "index writes past the end make holes again",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "      if (i > obj.length) {",
+      "replace": "      if (false) {",
+      "expectRed": "an array index write past the end is L4019, catchable, and names the index and the length",
+      "completionMarker": "ok a fresh local record and array may be written; a value that crossed an effect boundary may not (L2031)",
+      "cell": "an array index write past the end is L4019, catchable, and names the index and the length",
+      "note": "With the bound gone `xs[5] = 6` builds a sparse array again, whose holes are exactly the value class the language claims not to have."
+    },
+    {
+      "name": "a bare method read hands out a fresh bound function again",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "    if (!asCallee) {",
+      "replace": "    if (false) {",
+      "expectRed": "a bare method read is L4020, catchable, and names the method",
+      "completionMarker": "ok a fresh local record and array may be written; a value that crossed an effect boundary may not (L2031)",
+      "cell": "a bare method read is L4020, catchable, and names the method",
+      "note": "With the refusal gone `xs.map === xs.map` is false again and an extracted `push` writes to its receiver — both meanings JavaScript does not have."
+    }
+  ]
+}

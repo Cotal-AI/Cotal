@@ -3,10 +3,60 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hardenPrivate, loadAgentFile, registry, writeSecretFile, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, controlEndpoint, launchEnv, mcpServerEnvKeys, transcriptChannel, userAuthEnv } from "@cotal-ai/connector-core";
+import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchEnv, materialEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
 const MCP_SERVER_NAME = "cotal";
+
+/** Auth and provider-routing env `claude` actually reads for a headless or container seat.
+ *  Drawn from Anthropic's authentication precedence
+ *  (https://docs.anthropic.com/en/docs/claude-code/iam) and the env-vars page, not from a
+ *  prefix guess. `CLAUDE_CODE_OAUTH_TOKEN` is the load-bearing name: `docs/deploy.md` and
+ *  `deploy/` tell operators a container Claude authenticates with it, and a container has no
+ *  Keychain. Host-session markers (`CLAUDE_CODE_CHILD_SESSION`, `CLAUDECODE`,
+ *  `CLAUDE_CODE_ENTRYPOINT`) are deliberately absent — those are how a nested `claude` decides
+ *  it must not save a transcript. File-backed material (`~/.claude`, `~/.aws`, credential
+ *  files named by `GOOGLE_APPLICATION_CREDENTIALS`) still reaches the child through HOME. */
+export const CLAUDE_PROVIDER_KEYS = [
+  // First-party / subscription (setup-token, Console key, gateway bearer).
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+  "CLAUDE_CODE_OAUTH_SCOPES",
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "CLAUDE_CONFIG_DIR",
+  // Cloud provider selection. Without the matching flag, the credential vars below are inert.
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "CLAUDE_CODE_USE_FOUNDRY",
+  "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+  "CLAUDE_CODE_USE_MANTLE",
+  // Amazon Bedrock / Claude Platform on AWS.
+  "ANTHROPIC_AWS_API_KEY",
+  "ANTHROPIC_AWS_BASE_URL",
+  "ANTHROPIC_AWS_WORKSPACE_ID",
+  "AWS_BEARER_TOKEN_BEDROCK",
+  "ANTHROPIC_BEDROCK_BASE_URL",
+  "ANTHROPIC_BEDROCK_MANTLE_BASE_URL",
+  "ANTHROPIC_BEDROCK_REGION_PREFIX",
+  "ANTHROPIC_BEDROCK_SERVICE_TIER",
+  // Google Cloud's Agent Platform.
+  "ANTHROPIC_VERTEX_BASE_URL",
+  "ANTHROPIC_VERTEX_PROJECT_ID",
+  // Microsoft Foundry.
+  "ANTHROPIC_FOUNDRY_API_KEY",
+  "ANTHROPIC_FOUNDRY_AUTH_TOKEN",
+  "ANTHROPIC_FOUNDRY_BASE_URL",
+  "ANTHROPIC_FOUNDRY_RESOURCE",
+  // Workload Identity Federation / named Anthropic profiles.
+  "ANTHROPIC_PROFILE",
+  "ANTHROPIC_FEDERATION_RULE_ID",
+  "ANTHROPIC_ORGANIZATION_ID",
+  "ANTHROPIC_WORKSPACE_ID",
+  "ANTHROPIC_IDENTITY_TOKEN",
+  "ANTHROPIC_IDENTITY_TOKEN_FILE",
+] as const;
 /** Channel ref for `--dangerously-load-development-channels`, which turns on the cotal MCP server's
  *  `claude/channel` capability so an idle session wakes the instant a peer message arrives. Because
  *  we isolate the session with --strict-mcp-config the plugin's own MCP server is suppressed and
@@ -63,51 +113,83 @@ function assertServableModel(model: string): void {
 export const claudeConnector: Connector = {
   kind: "connector",
   name: "claude",
-  transcriptChannel, // the shared `tr-<name>` convention (connector-core), exposed via the contract
+  // The event channel is core's own derivation, exposed through the contract so the grant the
+  // manager mints and the subject this session publishes to come from ONE function. Re-deriving it
+  // here would be a second place the subject is decided, and the two would drift the first time
+  // either changed.
+  eventChannel,
   pluginRoot: PLUGIN_ROOT,
   requires: ["claude"],
   supportsResume: true, // renders `--resume <id> --fork-session` (fork-from, never hijack) — see buildLaunch
   launchHint: "press Enter at the dev-channels prompt", // Claude Code opens on that one-time gate
 
   buildLaunch(opts: LaunchOpts): LaunchSpec {
+    if (opts.continueSession) throw new Error("claude connector does not support exact-session continuation");
     if (opts.variant) throw new Error("claude connector: model variants are not supported");
     // Operator MCP servers shared with this agent (default none — see the --mcp-config block).
     const shared = opts.mcpServers ?? {};
-    // claude auths via macOS Keychain / an OAuth token, not an env key → forward NO provider key.
-    // The OS allow-list (PATH/HOME/TERM/…) is the only thing inherited from the manager env, plus
-    // — only when a shared server declares them via `${VAR}` — the named secrets it needs (mcpKeys,
-    // by name). The operator's unrelated secrets don't reach the child (P3).
-    // The session's local control endpoint: the in-process MCP server LISTENS on it (auth), and the
-    // lifecycle hooks (child processes of `claude`, which inherit this env) CONNECT to it. Both read
-    // path+token from the env — never recomputed from public identity — and the manager keeps the
-    // pair (returned as `control` below) to drive a cooperative shutdown on Windows.
+    // Auth is CLAUDE_PROVIDER_KEYS: CLAUDE_CODE_OAUTH_TOKEN (the deploy-doc promise, required in
+    // a container with no Keychain), ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN, and the cloud-provider
+    // flags plus their credential vars. Host-session markers stay off that list. mcpKeys still
+    // forward `${VAR}` names a shared MCP server declared. Unrelated operator secrets stay out.
+    // The session's local control endpoint: the MCP server LISTENS on it (auth), and the lifecycle
+    // hooks (child processes of `claude`, which inherit this env) CONNECT to it. Both read the
+    // SOCKET PATH from the env and the TOKEN from the launch-material file the env points at, never
+    // recomputed from public identity, and the manager keeps the pair (returned as `control` below)
+    // to drive a cooperative shutdown on Windows.
+    //
+    // This connector is the one that CANNOT drop the material reference after startup, and that is a
+    // property of the host rather than an oversight: its readers are short-lived children (the MCP
+    // server, one process per hook event) that start after the session is running, so the reference
+    // has to stay reachable in `claude`'s environment for them to find it. A shell `claude` runs
+    // therefore still inherits a path to the material file. Narrowing that further means handing the
+    // MCP server its material through the --mcp-config `env` block and giving the hooks a separate
+    // control-only file, which depends on host behaviour that has to be verified against a live
+    // `claude` first. Tracked separately rather than guessed at here.
     const control = controlEndpoint(opts.space, opts.name);
     const env: Record<string, string> = {
-      ...launchEnv({ mcpKeys: mcpServerEnvKeys(shared) }),
+      ...launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS, mcpKeys: mcpServerEnvKeys(shared), envAllow: opts.envAllow }),
       ...aclEnv(opts),
-      ...userAuthEnv(opts),
+      // Creds, broker URL and the control token ride a 0600 file; only its path is exported, so the
+      // shells, builds and third-party CLIs this session runs no longer inherit live authority.
+      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
       // Force the connector to emit channel wake-nudges: Claude doesn't advertise the
       // `claude/channel` capability back over MCP, so auto-detection would see it "off".
       COTAL_CHANNEL: "1",
       COTAL_CONTROL_SOCKET: control.path,
-      COTAL_CONTROL_TOKEN: control.token, // env only — never argv/logs/persisted (token hygiene)
     };
-    // A session can mirror its own transcript to `tr-<name>` so peers can read what the
-    // agent actually did — OFF by default (transcripts are verbose and may carry sensitive
-    // content); `--transcript` (opts.transcript === true) opts in. Personal sessions never mirror.
-    if (opts.transcript === true) env.COTAL_TRANSCRIPT = "1";
+    // The AG-UI event plane. `COTAL_EVENTS` ARMS the emitter and is what makes a grant meaningful:
+    // holding publish rights on a channel is not a request to publish to it. `COTAL_WORKSPACE_ROOT`
+    // rides with it because the emitter's write-ahead log has to live somewhere a LATER start will
+    // look, and there is no safe default: a WAL written under the launch cwd is invisible to the
+    // next start, which then reads an already-published thread as virgin and republishes sequences
+    // the stream has seen. Sent only when events are on, so a session that never emits carries no
+    // path it has no use for.
+    if (opts.events === true) {
+      env.COTAL_EVENTS = "1";
+      if (!opts.workspaceRoot)
+        throw new Error(
+          "claude connector: events were requested but the launch carries no workspaceRoot, so the " +
+            "event write-ahead log has nowhere to live that a later start would look. Refusing rather " +
+            "than defaulting to the working directory.",
+        );
+      env.COTAL_WORKSPACE_ROOT = opts.workspaceRoot;
+    }
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
-    if (opts.creds) env.COTAL_CREDS = opts.creds;
-    if (opts.servers) env.COTAL_SERVERS = opts.servers;
 
     // A leading positional is claude's first message, auto-submitted on start —
     // so a driving session can greet the operator the moment it joins.
-    const args = opts.prompt
-      ? [opts.prompt, "--dangerously-load-development-channels", CHANNEL_REF]
+    // A prompt with no text in it cannot be submitted as a turn: refuse the launch rather than start
+    // a seat that quietly ignores what the operator passed (same rule as the other connectors).
+    const prompt = opts.prompt === undefined ? undefined : opts.prompt.trim();
+    if (prompt === "")
+      throw new Error("claude connector: an initial prompt was given but it is empty, there is no first turn to submit");
+    const args = prompt
+      ? [prompt, "--dangerously-load-development-channels", CHANNEL_REF]
       : ["--dangerously-load-development-channels", CHANNEL_REF];
 
     // Pre-allow fetching the public Cotal docs so a doc-grounded persona (e.g. david)

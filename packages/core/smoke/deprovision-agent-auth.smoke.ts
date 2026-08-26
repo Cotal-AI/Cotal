@@ -49,6 +49,7 @@ import {
   principalKey,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -73,9 +74,10 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 
 const space = `deprov-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-deprov-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 const localPrincipal = (actor: string) => principalKey(DEV_OWNER, actor).key;
 
 /** Does consumer `name` exist on `stream`? Opens a short-lived provisioner-cred jsm to check. */
@@ -167,7 +169,7 @@ try {
   // ---- THE D15 BARRIERS (SPEC 13.1): a same-name SUCCESSOR is untouchable by the retired
   // lifecycle's teardown — by NAME DISJOINTNESS (the replay names only A's uid) and by the
   // BROKER (A's cred is denied on B's exact names). ----
-  // FRONTIER PROBE setup (SPEC :467 / 13.1): a DM published to the ALIAS while no successor
+  // FRONTIER PROBE setup (SPEC §8 / §13.1): a DM published to the ALIAS while no successor
   // exists (between A's retirement and B's provisioning) must NOT flow to B — B's dm durable
   // starts at the activation frontier captured at ITS provisioning. Publish DM1 now, DM2 after.
   const insp = await (async () => {
@@ -322,4 +324,5 @@ try {
   srv.kill("SIGKILL");
   await awaitExit(srv);
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }

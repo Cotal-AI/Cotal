@@ -42,6 +42,7 @@ import {
   type MessageMeta,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -72,9 +73,12 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 
 const space = `selfjoincov-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-selfjoincov-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 let server = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+// Re-owned on every restart. Owning only the FIRST child would leave the LIVE broker unowned
+// after a respawn while the suite still read as migrated: ownership held on a dead pid.
+let releaseBroker = teardownOnSignal(server, dir);
 
 try {
   let up = false;
@@ -138,7 +142,8 @@ try {
     const raw = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(posterCreds)), inboxPrefix: `_INBOX_${posterIdent.id}` });
     const rjs = jetstream(raw);
     // (a) forged payload `to: <alice>` with a VALID from=poster: must deliver, classified kind=channel by subject.
-    const forged: CotalMessage = {
+    // Deliberately NOT annotated `CotalMessage`: carrying both `channel` and `to` is the forgery.
+    const forged = {
       id: randomUUID(), ts: Date.now(), space, from: poster.ref(), channel: "rev.api",
       to: aId.id, parts: [{ kind: "text", text: "forged-to-probe" }],
     };
@@ -252,7 +257,9 @@ try {
   await wait(300);
   server.kill("SIGKILL");
   await awaitExit(server);
+  releaseBroker();
   server = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+  releaseBroker = teardownOnSignal(server, dir);
   let back = false;
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { back = true; break; } await wait(200); }
   if (!back) throw new Error("broker did not restart");
@@ -292,7 +299,9 @@ try {
   check("manager-present joinChannel(ops.dual) reports durable:true (Plane-3)", dual.joined === true && dual.durable === true, dual);
   server.kill("SIGKILL");
   await awaitExit(server);
+  releaseBroker();
   server = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+  releaseBroker = teardownOnSignal(server, dir);
   let back2 = false;
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { back2 = true; break; } await wait(200); }
   if (!back2) throw new Error("broker did not restart (2)");
@@ -315,6 +324,7 @@ try {
   server.kill("SIGKILL");
   await awaitExit(server);
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(`\nSELF-SERVE-JOIN COVERAGE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

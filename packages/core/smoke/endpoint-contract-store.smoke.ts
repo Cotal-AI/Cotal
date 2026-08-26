@@ -27,6 +27,7 @@ import {
   type ContractStoreContext,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -60,8 +61,9 @@ await rejects("invalid UTF-8 bytes are never an artifact",
   () => assertCanonicalArtifactBytes(new Uint8Array([0x7b, 0xff, 0x7d]), "probe"), "contract-invalid");
 
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-epstore-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, sd);
 try {
   let up = false;
   for (let i = 0; i < 50 && !up; i++) { up = await isReachable(`nats://127.0.0.1:${PORT}`); if (!up) await wait(100); }
@@ -154,7 +156,7 @@ try {
     const appended = await js.publish(epcSubject(SPACE_B, dHexB), enc("SHADOW-GARBAGE"), { headers: hb }).then((r) => r.seq).catch(() => 0);
     c("on an UN-HARDENED stream the raw append SUCCEEDS (seq 2) — the shadow is present", appended === 2, appended);
     const last = await jsm.direct.getMessage(epcStreamName(SPACE_B), { last_by_subj: epcSubject(SPACE_B, dHexB) });
-    c("last_by_subj now returns the SHADOW garbage (the DoS the read must defeat)", dec(last.data) === "SHADOW-GARBAGE");
+    c("last_by_subj now returns the SHADOW garbage (the DoS the read must defeat)", last !== null && dec(last.data) === "SHADOW-GARBAGE");
     const recovered = await fetchContractArtifact(ctxB, dHexB);
     c("fetchContractArtifact still returns the HONEST artifact (create-only-winner fallback defeats the shadow)", recovered !== undefined && dec(recovered) === '{"shadow":"honest-B"}', recovered && dec(recovered));
     // and a subject where BOTH the winner and the shadow are garbage stays loud (genuinely corrupt).
@@ -365,6 +367,7 @@ try {
   broker.kill("SIGKILL");
   await new Promise<void>((resolve) => { broker.once("exit", () => resolve()); broker.once("error", () => resolve()); });
   rmSync(sd, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 function HEXLIKE(s: string): boolean { return /^[0-9a-f]{64}$/.test(s); }

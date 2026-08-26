@@ -43,7 +43,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 
 const cfg: AgentConfig = {
-  space: "smoke", name: "caller", servers: "nats://127.0.0.1:1",
+  space: "smoke", name: "caller", servers: "nats://127.0.0.1:1", kind: "agent", tls: false,
   subscribe: [], allowSubscribe: [], allowPublish: [],
 };
 

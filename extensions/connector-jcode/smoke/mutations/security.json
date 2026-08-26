@@ -1,0 +1,28 @@
+{
+  "command": "pnpm smoke:jcode-security",
+  "progressPattern": "✓",
+  "minTicks": 6,
+  "mutations": [
+    {
+      "name": "Jcode short socket directory refuses foreign owner",
+      "file": "extensions/connector-jcode/src/private-state.ts",
+      "find": "  if (uid !== currentUid)\n    throw new Error(`refusing Jcode short API socket directory owned by uid ${uid}, not effective uid ${currentUid}: ${path}`);",
+      "replace": "  if (false) throw new Error(\"mutant\");",
+      "expectRed": "root connector refuses a foreign-owned deterministic socket directory"
+    },
+    {
+      "name": "Jcode fatal preserves safe startup code",
+      "file": "extensions/connector-jcode/src/host-main.ts",
+      "find": "  return typeof code === \"string\" && STARTUP_FAILURE_CODES.has(code) ? code : \"unknown\";",
+      "replace": "  return \"unknown\";",
+      "expectRed": "host launch failure reports the safe SDK startup code"
+    },
+    {
+      "name": "Jcode fatal excludes captured child stderr",
+      "file": "extensions/connector-jcode/src/host-main.ts",
+      "find": "  process.stderr.write(`[cotal-jcode] fatal: Jcode host startup failed (${startupFailureCode(error)}); inspect the private Jcode logs.\\n`);",
+      "replace": "  process.stderr.write(`[cotal-jcode] fatal: ${String(error)}\\n`);",
+      "expectRed": "host launch failure never prints captured Jcode child stderr canary"
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/connector-opencode",
   "description": "Cotal connector for OpenCode: a native in-process plugin that joins a session to the mesh.",
-  "version": "0.18.0",
+  "version": "0.30.2",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -20,15 +20,16 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle",
-    "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/plugin.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/plugin.bundle.js && esbuild src/serve.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/serve.js",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/plugin.entry.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/plugin.bundle.js && esbuild src/serve.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/serve.js",
     "prepublishOnly": "pnpm run build"
   },
   "peerDependencies": {
     "@cotal-ai/core": ">=0.1.0"
   },
   "devDependencies": {
-    "@cotal-ai/core": "workspace:*",
     "@cotal-ai/connector-core": "workspace:*",
+    "@cotal-ai/core": "workspace:*",
+    "@cotal-ai/smoke-kit": "workspace:*",
     "@opencode-ai/plugin": "^1.16.2",
     "esbuild": "^0.28.0",
     "tsx": "^4.22.4"

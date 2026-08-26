@@ -1,0 +1,57 @@
+{
+  "suite": "packages/lang/smoke/pins.smoke.ts",
+  "guard": "The three documented limits are one number each, published twice: in PIN_DEFAULTS and in the pins table of spec/cotal-lang.md. Both cells anchor on the same literals, so a default may only change by an edit that says so in every place it is published.",
+  "command": "pnpm smoke:lang-pins",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/pin-defaults.json",
+  "mutations": [
+    {
+      "name": "the code's yieldEvery drifts from what is published",
+      "file": "packages/lang/src/pins.ts",
+      "find": "  yieldEvery: 1_024,",
+      "replace": "  yieldEvery: 2_048,",
+      "expectRed": "and those three defaults are these exact numbers, not merely whatever the table happens to say",
+      "cell": "and those three defaults are these exact numbers, not merely whatever the table happens to say",
+      "completionMarker": "the seed defaults from the run id",
+      "note": "THE REALISTIC EDIT, not an absurd one, because the absurd one answers a different question. Measured before these cells existed: 2_048 redded 0 of 15 lang suites, while 7 redded a single cell in lang-scopes about race clocks -- an INCIDENTAL witness that names a different claim and would send a maintainer looking at the scheduler. The realistic number is what someone tuning a yield interval actually writes."
+    },
+    {
+      "name": "the code's stepBudget drifts from what is published",
+      "file": "packages/lang/src/pins.ts",
+      "find": "  stepBudget: 1_000_000,",
+      "replace": "  stepBudget: 2_000_000,",
+      "expectRed": "and those three defaults are these exact numbers, not merely whatever the table happens to say",
+      "cell": "and those three defaults are these exact numbers, not merely whatever the table happens to say",
+      "completionMarker": "the seed defaults from the run id",
+      "note": "The most accidentally-covered of the three at an absurd value -- 7 reds 14 of 18 suites -- and covered by nothing at 2x, which is the value that would really be written. Heavy accidental cover at a value nobody would choose is not cover."
+    },
+    {
+      "name": "the code's effectCeiling drifts from what is published",
+      "file": "packages/lang/src/pins.ts",
+      "find": "  effectCeiling: 10_000,",
+      "replace": "  effectCeiling: 20_000,",
+      "expectRed": "and those three defaults are these exact numbers, not merely whatever the table happens to say",
+      "cell": "and those three defaults are these exact numbers, not merely whatever the table happens to say",
+      "completionMarker": "the seed defaults from the run id",
+      "note": "THE SHARPEST OF THE THREE: no witness at ANY value. 7 is an absurd ceiling and 18 suites ran green through it. That zero had two readings and they are opposite news, so it was probed rather than assumed -- a twelve-effect program on the walker completes at the default, is REFUSED L4009 at a ceiling of 7, and completes again at 20. The ceiling is live; the zero is a fact about the CORPUS, which no lang program pushes past seven effects. So this is the one limit with no accidental cover underneath it at all."
+    },
+    {
+      "name": "THE MIRROR: the language reference drifts from the code",
+      "file": "spec/cotal-lang.md",
+      "find": "| `yieldEvery` | interpreter dispatches between yields to the host's event loop | 1024 |",
+      "replace": "| `yieldEvery` | interpreter dispatches between yields to the host's event loop | 2048 |",
+      "expectRed": "and the language reference prints the same three, so the code and the document cannot drift apart",
+      "cell": "and the language reference prints the same three, so the code and the document cannot drift apart",
+      "completionMarker": "the seed defaults from the run id",
+      "note": "THE DIRECTION A CODE-ONLY CONFIG CANNOT GRADE, and it is graded because the second cell reads the document rather than trusting it. Measured: editing this row redded nothing anywhere, smoke:docs included, so the reference was exactly as free to drift as the constant. A guard that watched only `src` would have left the published half unwatched and would have looked complete."
+    }
+  ],
+  "why": [
+    "BOTH CELLS ANCHOR ON LITERALS, and that is the whole mechanism rather than a style choice. The",
+    "cell above them compares resolvePins' output to PIN_DEFAULTS -- expected and actual drawn from the",
+    "SAME source -- so it cannot see that source move, and a mutation on the table SURVIVES it. That",
+    "survivor is what these mutations exist to convert into a kill. Deriving either expected side from",
+    "`src` would rebuild the pair.",
+    "GRADED FROM pins.smoke.ts, which imports ../src/pins.js relatively. The same mutations aimed",
+    "through implementations/runtime would sit unread: that suite resolves @cotal-ai/lang to `dist`."
+  ]
+}

@@ -37,7 +37,8 @@ const roster: Presence[] = [
   presence(ids.con, "console", "endpoint", "idle"),
 ];
 
-function msg(from: string, fromName: string, target: Partial<CotalMessage>, text: string, id: string): CotalMessage {
+type Routing = { channel: string } | { to: string } | { toService: string };
+function msg(from: string, fromName: string, target: Routing, text: string, id: string): CotalMessage {
   return {
     id,
     ts: Date.now(),
@@ -84,7 +85,7 @@ tap(unicastSubject(space, DEV_OWNER, ids.bob, DEV_OWNER, ids.alice), msg(ids.ali
 tap(unicastSubject(space, DEV_OWNER, ids.carol, DEV_OWNER, ids.alice), msg(ids.alice, "alice", { to: ids.carol }, "ping", "m4"));
 tap(unicastSubject(space, DEV_OWNER, ids.bob, DEV_OWNER, ids.alice), msg(ids.alice, "alice", { to: ids.bob }, "ping", "m5"));
 // a control frame → deliveryOf null → must NOT enter the feed
-tap(`cotal.${space}.ctl.manager.${DEV_OWNER}.${ids.alice}`, msg(ids.alice, "alice", {}, "ignored", "m6"));
+tap(`cotal.${space}.ctl.manager.${DEV_OWNER}.${ids.alice}`, msg(ids.alice, "alice", { to: ids.bob }, "ignored", "m6"));
 
 await wait(550); // let the unicast burst flush
 const s = view.snapshot();

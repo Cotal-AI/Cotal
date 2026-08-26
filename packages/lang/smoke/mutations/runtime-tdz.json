@@ -1,0 +1,18 @@
+{
+  "suite": "packages/lang/smoke/semantics.smoke.ts",
+  "guard": "A closure called before the declaration ran finds the dead zone at run time too, on both runners. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-semantics",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/runtime-tdz.json",
+  "mutations": [
+    {
+      "name": "the interpreter never materializes the dead zone, so an early call reads the outer scope",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "    for (const s of body) {\n      if (s.type !== \"VariableDeclaration\") continue;\n      for (const d of (s.declarations as AnyNode[]) ?? []) {\n        for (const n of declaredNames(d.id as AnyNode)) inner.declare(n, TDZ, s.kind === \"let\");\n      }\n    }",
+      "replace": "",
+      "expectRed": "a closure called BEFORE the declaration ran finds the dead zone on both sides",
+      "completionMarker": "ok a program that logs a literal",
+      "cell": "a closure called BEFORE the declaration ran finds the dead zone on both sides",
+      "note": "Without the pre-pass the early call raises L2001 (name not yet in any env) for a module-level binding — or, for a shadowing block, silently reads the outer value — while node raises ReferenceError; the bothThrow cell requires the interpreter side to throw with the SAME log prefix, and the interpreter completing or logging differently reddens it."
+    }
+  ]
+}

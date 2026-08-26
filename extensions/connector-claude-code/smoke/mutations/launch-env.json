@@ -1,0 +1,28 @@
+{
+  "suite": "extensions/connector-claude-code/smoke/launch-env.smoke.ts",
+  "guard": "a Claude seat must receive CLAUDE_CODE_OAUTH_TOKEN (the deploy-doc credential) and must not receive CLAUDE_CODE_CHILD_SESSION",
+  "command": "pnpm smoke:claude-launch-env",
+  "completionMarker": "SUITE COMPLETE:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/launch-env.json",
+  "why": [
+    "After launchEnv stopped inheriting, this connector called it with no providerKeys, so",
+    "CLAUDE_CODE_OAUTH_TOKEN — the name docs/deploy.md and deploy/ tell operators a container",
+    "Claude authenticates with — was silently absent. A container has no Keychain. Dropping",
+    "providerKeys from the launchEnv call is the measured defect, and the named cell is the",
+    "token the docs promise, not a prefix of CLAUDE_CODE_*.",
+    "",
+    "SPECIFIER BOUNDARY. The suite imports ../src/extension.js and calls buildLaunch directly:",
+    "no dist in the path, no build in the command. The bytes mutated are the bytes graded."
+  ],
+  "mutations": [
+    {
+      "name": "drop Claude providerKeys so CLAUDE_CODE_OAUTH_TOKEN never reaches the child",
+      "file": "extensions/connector-claude-code/src/extension.ts",
+      "find": "...launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS, mcpKeys: mcpServerEnvKeys(shared), envAllow: opts.envAllow }),",
+      "replace": "...launchEnv({ mcpKeys: mcpServerEnvKeys(shared), envAllow: opts.envAllow }),",
+      "expectRed": "CLAUDE_CODE_OAUTH_TOKEN reached the child",
+      "cell": "CLAUDE_CODE_OAUTH_TOKEN reached the child",
+      "note": "The 0.30.1-allowlist regression: an allowlist that silently drops the credential the deploy docs promise. Host-session markers stay withheld either way, so the marker cell stays green and the two cells discriminate."
+    }
+  ]
+}

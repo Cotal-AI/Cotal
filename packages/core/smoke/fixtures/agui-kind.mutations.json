@@ -1,0 +1,40 @@
+{
+  "command": "pnpm smoke:agui-kind",
+  "mutations": [
+    {
+      "name": "K1 the wire kind is renamed. NOTE THE COMMAND HAS NO BUILD STEP: this only kills if the suite reads packages/core/src, which is the gap it was written to close",
+      "file": "packages/core/src/agui-kind.ts",
+      "find": "export const AGUI_FRAME_KIND = \"ag-ui.frame\";",
+      "replace": "export const AGUI_FRAME_KIND = \"ag-ui.renamed\";",
+      "expectRed": "the frame kind is the literal `ag-ui.frame`"
+    },
+    {
+      "name": "K2 one event discriminator drifts from its literal, again with no rebuild",
+      "file": "packages/core/src/agui-kind.ts",
+      "find": "  RUN_STARTED: \"RUN_STARTED\",",
+      "replace": "  RUN_STARTED: \"RUN_STARTED_X\",",
+      "expectRed": "every discriminator matches its spelled-out literal"
+    },
+    {
+      "name": "K3 the table is no longer frozen, so a consumer can rewrite the vocabulary in place",
+      "file": "packages/core/src/agui-kind.ts",
+      "find": "export const AGUI_EVENT_TYPE = Object.freeze({",
+      "replace": "export const AGUI_EVENT_TYPE = ({",
+      "expectRed": "the table is frozen"
+    },
+    {
+      "name": "K4 the guarded property read is removed, so the routing predicate throws on an object whose kind getter throws",
+      "file": "packages/core/src/agui-kind.ts",
+      "find": "  try {\n    return (part as { kind?: unknown }).kind === AGUI_FRAME_KIND;\n  } catch {\n    return false;\n  }",
+      "replace": "  return (part as { kind?: unknown }).kind === AGUI_FRAME_KIND;",
+      "expectRed": "isAguiFramePart does not throw on an object whose `kind` getter throws"
+    },
+    {
+      "name": "K5 the predicate answers true for everything, so the never-throws cells alone would still pass",
+      "file": "packages/core/src/agui-kind.ts",
+      "find": "  if (typeof part !== \"object\" || part === null) return false;",
+      "replace": "  if (typeof part !== \"object\" || part === null) return false;\n  return true;",
+      "expectRed": "CONTROL: a text part is NOT"
+    }
+  ]
+}

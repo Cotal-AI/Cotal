@@ -16,6 +16,18 @@ import { runCli } from "@cotal-ai/cli"; // self-registers the base surface incl.
 import "@cotal-ai/manager"; // self-registers `supervise` — the agent-supervisor daemon
 import "@cotal-ai/delivery"; // self-registers `deliver` — the server-side Plane-3 delivery daemon
 import "@cotal-ai/auth"; // self-registers login / logout — per-user IdP sessions (device-code sign-in)
+// Self-registers the `ag-ui.frame` part renderer, so `cotal console` and `cotal join` draw an event
+// frame instead of `[unrenderable part kind "ag-ui.frame"]`.
+//
+// IMPORTED HERE BECAUSE NOTHING ELSE IN THIS PROCESS WOULD. The four agent connectors are removable
+// ext plugins materialized lazily by `runCli`, and no `implementations/*` package imports
+// connector-core at runtime — measured, not assumed. So a renderer that only registered inside the
+// connector would be absent from every process that RENDERS, which is the one place it is needed.
+// The seam is worth nothing if the provider never loads at the display site.
+//
+// The narrow subpath rather than the package root, deliberately: the root pulls the MCP server
+// runtime and its zod copy into CLI startup, and a renderer needs none of it.
+import "@cotal-ai/connector-core/agui-render";
 import { registry } from "@cotal-ai/core";
 
 // A CLI must exit quietly when its stdout is closed early — piped to `head`, a pager that quits,

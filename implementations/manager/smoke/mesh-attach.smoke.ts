@@ -53,6 +53,7 @@ import {
   type TerminalFrame,
 } from "../src/session/index.js";
 import { launchEnv } from "@cotal-ai/connector-core"; // dev-only smoke import: the OS env allow-list a real connector supplies
+import { meshSessionTransport } from "../../cli/src/lib/attach-client.js"; // dev-only cross-impl smoke import: the real CLI caller consumer
 
 // A portable pty echo child: it pipes stdin straight back to stdout, so a keystroke the caller
 // sends comes back as output — a genuine duplex byte stream over the two eps rails. `process.execPath`
@@ -286,17 +287,13 @@ await ncServing.close();
 handle.stop({ graceful: false });
 
 // ---------------------------------------------------------------------------------------------
-console.log("D. backpressure DROP-NOTICE (bounded window, never silent loss)");
+console.log("D. burst coalescing + overflow recovery (bounded, explicit, canonical repaint)");
 {
   const ncS: NatsConnection = await connect({ servers: `nats://127.0.0.1:${PORT}` });
   const ncC: NatsConnection = await connect({ servers: `nats://127.0.0.1:${PORT}` });
   const g = mintAttachOffer(
-    { space: SPACE, serving: SERVING, holder: HOLDER, target: TARGET, ttlMs: 60_000, signer: { keyId: "sk1", keyPair: mgrSigner }, window: 2 },
+    { space: SPACE, serving: SERVING, holder: HOLDER, target: TARGET, ttlMs: 60_000, signer: { keyId: "sk1", keyPair: mgrSigner }, window: 8 },
   ).grant;
-
-  // A controllable session: the window counts FRAMES, so proving backpressure needs DISCRETE chunks
-  // emitted on demand (real pty output chunking is nondeterministic). Everything else — the rail,
-  // the broker, the framing — is real.
   let onOut: ((c: Buffer) => void) | undefined;
   const fake: AttachSession = {
     cols: 80, rows: 24,
@@ -308,26 +305,65 @@ console.log("D. backpressure DROP-NOTICE (bounded window, never silent loss)");
   };
   const br = serveSessionBridge({ nc: ncS, grant: g, session: fake });
   await ncS.flush();
-  // A caller that NEVER credits (onData drops on the floor, stall/idle timers off): the window fills
-  // after `window` frames and stays full.
-  const notices: number[] = [];
-  const stalledRail = openSessionRail({
-    nc: ncC, grant: g, role: "caller", stallTimeoutMs: 0, idleCreditMs: 0,
-    onData: (data) => { const p = decodeTerminalFrame(data); if (p.k === "drop") notices.push(p.bytes); },
-  });
+  const caller = openSessionRail({ nc: ncC, grant: g, role: "caller", onData: () => {} });
   await ncC.flush();
-  stalledRail.send({ k: "ready" } satisfies TerminalFrame);
+  caller.send({ k: "ready" } satisfies TerminalFrame);
   await until(() => br.stats().live, 4000);
 
-  // Emit more discrete chunks than the window: the first `window` land, the rest are DROPPED and
-  // COUNTED (never buffered unboundedly, never silently lost).
-  for (let i = 0; i < 12; i++) onOut?.(Buffer.from(`chunk-${i};`));
-  const dropped = await until(() => br.stats().droppedBytes > 0, 4000);
-  c("a full window DROPS output and records the byte count (bounded, never buffered unboundedly)", dropped, br.stats());
-  c("nothing is silently lost: the drop is accounted for in droppedBytes", br.stats().droppedBytes > 0);
-  void notices;
+  for (let i = 0; i < 200; i++) onOut?.(Buffer.from("x"));
+  c("a 200-chunk redraw burst coalesces into one bounded output frame", await until(() => br.stats().sent === 1), br.stats());
+  c("coalescing stays below the frame window without dropping bytes", br.stats().droppedBytes === 0 && br.stats().inFlight <= 1, br.stats());
+  c("the coalescer's memory stays bounded after the flush", br.stats().queuedBytes === 0, br.stats());
 
-  stalledRail.close();
+  caller.close();
+  br.end("closed");
+  await ncC.close();
+  await ncS.close();
+}
+{
+  const ncS: NatsConnection = await connect({ servers: `nats://127.0.0.1:${PORT}` });
+  const ncC: NatsConnection = await connect({ servers: `nats://127.0.0.1:${PORT}` });
+  const g = mintAttachOffer(
+    { space: SPACE, serving: SERVING, holder: HOLDER, target: TARGET, ttlMs: 60_000, signer: { keyId: "sk1", keyPair: mgrSigner }, window: 2 },
+  ).grant;
+  let onOut: ((c: Buffer) => void) | undefined;
+  let canonical = "\x1b[?1049h\x1b[2J\x1b[HINITIAL-CANONICAL-SCREEN";
+  let backlogCalls = 0;
+  const fake: AttachSession = {
+    cols: 80, rows: 24,
+    backlog: () => { backlogCalls++; return Buffer.from(canonical, "latin1"); },
+    onData: (fn) => { onOut = fn; return () => { onOut = undefined; }; },
+    onExit: () => () => {},
+    write: () => {},
+    resize: () => {},
+  };
+  // A one-byte test ceiling deliberately disables batching so the two-frame window can be saturated
+  // deterministically. Production keeps the 64-KiB ceiling and 8-ms coalescing above.
+  const br = serveSessionBridge({ nc: ncS, grant: g, session: fake, outputBatchBytes: 1, outputBatchMs: 0 });
+  await ncS.flush();
+  const received: Buffer[] = [];
+  let ready = false;
+  const transport = meshSessionTransport(ncC, g);
+  transport.onReady(() => { ready = true; });
+  transport.onData((bytes) => { received.push(bytes); });
+  transport.onEnd(() => {});
+  c("the real CLI transport opens the overflow-control session", await until(() => ready && backlogCalls >= 1));
+  c("the initial canonical alternate-screen snapshot lands", await until(() => Buffer.concat(received).toString("latin1").includes("INITIAL-CANONICAL-SCREEN")));
+
+  received.length = 0;
+  for (let i = 0; i < 24; i++) onOut?.(Buffer.from(String(i % 10)));
+  canonical = "\x1b[?1049h\x1b[2J\x1b[HFINAL-CANONICAL-SCREEN";
+  const recovered = await until(() => {
+    const text = Buffer.concat(received).toString("latin1");
+    return text.includes("bytes dropped - backpressure") && text.includes("FINAL-CANONICAL-SCREEN") && backlogCalls >= 2;
+  }, 6000);
+  const recoveredText = Buffer.concat(received).toString("latin1");
+  c("overflow is explicit and automatically requests a fresh canonical repaint", recovered, { backlogCalls, stats: br.stats() });
+  c("the drop notice precedes the final repaint", recoveredText.indexOf("bytes dropped - backpressure") < recoveredText.indexOf("FINAL-CANONICAL-SCREEN"));
+  c("the recovered image re-enters and clears the alternate screen", recoveredText.includes("\x1b[?1049h\x1b[2J\x1b[HFINAL-CANONICAL-SCREEN"));
+  c("recovery drains bounded bridge memory and clears the accounted loss", await until(() => br.stats().queuedBytes === 0 && br.stats().droppedBytes === 0), br.stats());
+
+  transport.close();
   br.end("closed");
   await ncC.close();
   await ncS.close();

@@ -1,0 +1,35 @@
+{
+  "suite": "implementations/cli/smoke/seed.smoke.ts",
+  "guard": "an older cotal refuses a seed store stamped at a newer generation, and writes nothing",
+  "command": "pnpm smoke:seed",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/fixtures/seed-downgrade.mutations.json",
+  "why": [
+    "ONE MUTATION, AND IT IS THE GUARD ITSELF. Disabling the version comparison restores exactly the",
+    "behaviour this change removes: the older binary falls through, refreshes nothing, and writes its",
+    "own older generation over the stamp at the commit. So the mutation does not merely make a cell",
+    "fail, it reinstates the defect, which is the only mutation worth having here.",
+    "",
+    "The anchor is CODE-ONLY and two lines wide. The single line `isStrictlyNewer(storeGeneration,",
+    "generation)` would have been unique too, but the guard's meaning lives in the pair: the validity",
+    "check is what keeps a corrupt stamp out of the comparison, and an anchor that spans both cannot",
+    "be half-disarmed by someone rewriting one of them.",
+    "",
+    "WHAT THIS DOES NOT PROVE, stated because the fix has a real limit. The guard ships in this",
+    "version and later. A binary RELEASED BEFORE it does not carry it and never will, so an old",
+    "cotal already on a machine can still downgrade a store it meets. That is why the smoke stamps",
+    "the store at 99.0.0 instead of running an actually-old build: 99.0.0 is newer than any binary",
+    "that will ever run the suite, which tests the comparison from the side the guard can defend.",
+    "Pointing a real v0.16.0 at a newer store reproduces the DEFECT, which is how it was found, and",
+    "proves nothing about the FIX."
+  ],
+  "mutations": [
+    {
+      "name": "the downgrade comparison is disabled, so an older binary writes its generation over a newer store",
+      "file": "implementations/cli/src/seed/reconcile.ts",
+      "find": "    isValidSemver(storeGeneration) &&\n    isStrictlyNewer(storeGeneration, generation)",
+      "replace": "    isValidSemver(storeGeneration) &&\n    false",
+      "expectRed": "✗ FAIL: downgrade: an older binary REFUSES a store stamped newer",
+      "cell": "✗ FAIL: downgrade: an older binary REFUSES a store stamped newer"
+    }
+  ]
+}

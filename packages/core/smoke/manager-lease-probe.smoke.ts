@@ -37,6 +37,7 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { CotalEndpoint, isReachable, managerBucket, managerLeaseKey, MANAGER_LEASE_KEY } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // An OS-assigned port, not a fixed one. A hard-coded port silently hands the suite whatever broker
 // already owns it: the first run of this file bound nothing, talked to a leftover AUTHED server, and
@@ -45,7 +46,7 @@ import { pickFreePort } from "./_free-port.js";
 const PORT = await pickFreePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = "leaseprobe";
-const store = mkdtempSync(join(tmpdir(), "cotal-leaseprobe-"));
+const store = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   assert.ok(cond, `${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
@@ -54,7 +55,11 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 
 const srv = spawn("nats-server", ["-p", String(PORT), "-js", "-sd", store], { stdio: "ignore" });
-process.on("exit", () => { try { srv.kill("SIGKILL"); } catch { /* gone */ } rmSync(store, { recursive: true, force: true }); });
+// This suite's exit handler already kills the broker AND removes the store dir, which is the
+// complete pattern: measured, it leaves zero residue on a long lived box. Ownership adds the
+// case that handler cannot reach, a runner that terminates without running `exit` handlers.
+const releaseBroker = teardownOnSignal(srv, store);
+process.on("exit", () => { try { srv.kill("SIGKILL"); } catch { /* gone */ } rmSync(store, { recursive: true, force: true }); releaseBroker(); });
 
 const enc = (o: unknown) => new TextEncoder().encode(JSON.stringify(o));
 const lease = (instanceId: string) => ({ instanceId, holder: `HOLDER_${instanceId}`, pid: 1, root: "/tmp", runtime: "pty", since: Date.now() });

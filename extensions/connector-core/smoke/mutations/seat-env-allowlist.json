@@ -1,0 +1,49 @@
+{
+  "suite": "implementations/manager/smoke/env-isolate.smoke.ts",
+  "guard": "a manager whose own env carries CLAUDE_CODE_CHILD_SESSION must not hand that marker to a seat, and PATH must still include the entries connector binaries live in",
+  "command": "pnpm --filter @cotal-ai/connector-core build && pnpm smoke:env-isolate",
+  "completionMarker": "ENV-BOUNDARY SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/seat-env-allowlist.json",
+  "why": [
+    "The 0.30.1 defect was inherit-mode launchEnv: envAllow absent copied the manager's ambient",
+    "environment (minus COTAL_*) into every seat. A mesh started from inside Claude Code therefore",
+    "handed CLAUDE_CODE_CHILD_SESSION to every spawned seat, which silently disabled transcript",
+    "saving. The fix is that launchEnv has no inherit branch: it copies OS_ENV_ALLOW, then",
+    "OPERATOR_ENV_KEEP, then the caller-declared extras. Removing the OS allow-list copy restores",
+    "the leak AND drops PATH, so both named cells redden together.",
+    "",
+    "SPECIFIER BOUNDARY. env-isolate imports launchEnv from @cotal-ai/connector-core, which",
+    "resolves to dist/, so the command builds connector-core first. afterRestore rebuilds so the",
+    "tree does not keep a dist compiled from the mutant. The suite itself is source-loaded (tsx",
+    "implementations/manager/smoke/env-isolate.smoke.ts) and drives the real pty runtime.",
+    "",
+    "TWO CELLS, ONE MUTATION. Dropping the OS allow-list copy is the closest revert of the strip:",
+    "without it, launchEnv copies OPERATOR_ENV_KEEP and extras only, so CLAUDE_CODE_* stays out",
+    "(those names are not on the keep list) AND PATH is gone. That is not the 0.30.1 inherit",
+    "revert — a full inherit revert would put the marker BACK. The inherit revert is the second",
+    "mutation: replacing the allow-list body with the old inherit loop. That one kills the marker",
+    "cell and must leave the PATH cell green, proving the two cells discriminate."
+  ],
+  "mutations": [
+    {
+      "name": "strip the OS allow-list copy so PATH (and ~/.local/bin) never reaches the child",
+      "file": "extensions/connector-core/src/launch.ts",
+      "find": "  for (const k of OS_ENV_ALLOW) copy(k);\n  for (const k of OPERATOR_ENV_KEEP) copy(k);",
+      "replace": "  for (const k of OPERATOR_ENV_KEEP) copy(k);",
+      "expectRed": "seat still launches: PATH keeps ~/.local/bin",
+      "cell": "seat still launches: PATH keeps ~/.local/bin",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build",
+      "note": "The load-bearing PATH cell. A manager that cannot resolve connector binaries is a worse defect than the one this change fixes. Named so a revert of the strip cannot ship as a silent PATH loss."
+    },
+    {
+      "name": "restore inherit-mode launchEnv: copy the manager env minus COTAL_* (the 0.30.1 leak)",
+      "file": "extensions/connector-core/src/launch.ts",
+      "find": "  for (const k of OS_ENV_ALLOW) copy(k);\n  for (const k of OPERATOR_ENV_KEEP) copy(k);\n  for (const k of [...(opts.providerKeys ?? []), ...(opts.mcpKeys ?? []), ...(opts.envAllow ?? [])]) copy(k);\n  return env;",
+      "replace": "  const keep = new Set<string>(OPERATOR_ENV_KEEP);\n  for (const [k, v] of Object.entries(process.env)) {\n    if (v === undefined) continue;\n    const canon = k.toUpperCase();\n    if (canon.startsWith(\"COTAL_\") && !keep.has(canon)) continue;\n    env[k] = v;\n  }\n  return env;",
+      "expectRed": "Claude host-session markers were withheld",
+      "cell": "Claude host-session markers were withheld",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build",
+      "note": "The measured defect. Inherit-mode launchEnv is how CLAUDE_CODE_CHILD_SESSION reached every seat on 0.30.1. PATH still crosses under inherit, so the PATH cell stays green and the two cells discriminate."
+    }
+  ]
+}

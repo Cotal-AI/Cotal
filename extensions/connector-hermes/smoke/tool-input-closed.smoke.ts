@@ -159,7 +159,7 @@ try {
 
   sock.destroy();
 } finally {
-  await bridge.stop?.();
+  bridge.close();
   rmSync(dir, { recursive: true, force: true });
 }
 

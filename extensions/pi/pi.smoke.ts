@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { LAUNCH_MATERIAL_ENV, readLaunchMaterial } from "@cotal-ai/core";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import type { ExactDrainResult, InboxItem, InboxScope, MeshAgent } from "@cotal-ai/connector-core";
 import { PiDriver, type CotalBatchDetails, type PiContextLike, type PiHost } from "./src/driver.js";
-import cotalMesh from "./src/extension.js";
+import cotalMesh, { persistSessionId } from "./src/extension.js";
 import { InboxTurn } from "./src/inbox-turn.js";
 import { piConnector } from "./src/connector.js";
+import { wrapped } from "./src/wrap.js";
 
 let checks = 0;
 const ok = (condition: unknown, message: string): void => {
@@ -15,9 +18,25 @@ const ok = (condition: unknown, message: string): void => {
   checks++;
 };
 
+// Regression: this exact Cotal inbox line killed a real Pi seat on david-n7401ze.
+// JS sees 120 characters; the two check marks occupy two terminal cells each, so
+// Pi sees 122 columns. The old `.length` wrapper emitted it unchanged at width 120.
+{
+  const width = 120;
+  const crashLine =
+    "**CI at `84bf0a2e…`: `docs` ✅, both CodeQL ✅; `unit`, `live` and all four smoke shards still running.** The `docs` check";
+  ok(crashLine.length === width, "the live crash fixture exactly fills the old JS-length budget");
+  ok(visibleWidth(crashLine) === 122, "Pi measures the live crash fixture two columns over the terminal");
+  const rendered = wrapped(crashLine).render(width);
+  ok(rendered.length > 1, "the terminal-width wrapper splits the line that the JS-length wrapper missed");
+  ok(rendered.every((line) => visibleWidth(line) <= width), "every rendered Cotal line fits Pi's terminal-width invariant");
+  ok(rendered.join(" ") === crashLine, "wrapping preserves the complete peer message");
+}
+
 function item(id: string, overrides: Partial<InboxItem> = {}): InboxItem {
   return {
     id,
+    recvKey: id,
     ts: new Date().toISOString(),
     fromId: `sender-${id}`,
     fromName: "sender",
@@ -49,14 +68,14 @@ class FakeMesh {
     return drained;
   }
 
-  drainInboxIds(ids: readonly string[]): ExactDrainResult {
-    const wanted = new Set(ids);
-    const drained = this.items.filter((value) => wanted.has(value.id));
-    this.items = this.items.filter((value) => !wanted.has(value.id));
+  drainInboxDeliveries(keys: readonly string[]): ExactDrainResult {
+    const wanted = new Set(keys);
+    const drained = this.items.filter((value) => wanted.has(value.recvKey));
+    this.items = this.items.filter((value) => !wanted.has(value.recvKey));
     this.drained.push(...drained.map((value) => value.id));
     for (const value of drained) this.pullOnly.delete(value.id);
-    const present = new Set(drained.map((value) => value.id));
-    return { items: drained, missingIds: [...wanted].filter((id) => !present.has(id)) };
+    const present = new Set(drained.map((value) => value.recvKey));
+    return { items: drained, missingKeys: [...wanted].filter((key) => !present.has(key)) };
   }
 
   channelMode(channel?: string): "quiet" | "muted" | undefined {
@@ -506,6 +525,42 @@ for (const assistant of [
   );
 }
 
+// The session-state carrier follows in-process /resume: each session_start atomically replaces the
+// current id, so a later process crash reopens the session the user actually switched to.
+{
+  const root = mkdtempSync(join(tmpdir(), "cotal-pi-session-state-"));
+  const state = join(root, "session.json");
+  const previous = process.env.COTAL_PI_SESSION_STATE;
+  process.env.COTAL_PI_SESSION_STATE = state;
+  persistSessionId("01999999-9999-7999-8999-000000000001");
+  ok(JSON.parse(readFileSync(state, "utf8")).sessionId.endsWith("0001"), "session state records the initial Pi session");
+  persistSessionId("01999999-9999-7999-8999-000000000002");
+  ok(JSON.parse(readFileSync(state, "utf8")).sessionId.endsWith("0002"), "session state follows an in-process Pi /resume");
+  persistSessionId("01999999-9999-7999-8999-000000000002", "quit");
+  ok(JSON.parse(readFileSync(state, "utf8")).status === "quit", "a deliberate Pi quit is distinguished from a crash");
+  if (process.platform !== "win32") ok((statSync(state).mode & 0o077) === 0, "session state is owner-only on POSIX");
+  else checks++;
+  if (previous === undefined) delete process.env.COTAL_PI_SESSION_STATE;
+  else process.env.COTAL_PI_SESSION_STATE = previous;
+
+  const project = join(root, "project");
+  const agentDir = join(project, ".cotal", "agents");
+  mkdirSync(agentDir, { recursive: true });
+  const oldAgentFile = process.env.COTAL_AGENT_FILE;
+  const oldName = process.env.COTAL_NAME;
+  const oldUid = process.env.COTAL_LIFECYCLE_UID;
+  process.env.COTAL_AGENT_FILE = join(agentDir, "legacy.md");
+  process.env.COTAL_NAME = "legacy";
+  process.env.COTAL_LIFECYCLE_UID = "12345678901234567890123456";
+  persistSessionId("01999999-9999-7999-8999-000000000003");
+  const derived = join(project, ".cotal", "pi-sessions", "legacy-12345678901234567890123456.json");
+  ok(JSON.parse(readFileSync(derived, "utf8")).sessionId.endsWith("0003"), "an already-running pre-upgrade seat derives its lifecycle-keyed session state path");
+  if (oldAgentFile === undefined) delete process.env.COTAL_AGENT_FILE; else process.env.COTAL_AGENT_FILE = oldAgentFile;
+  if (oldName === undefined) delete process.env.COTAL_NAME; else process.env.COTAL_NAME = oldName;
+  if (oldUid === undefined) delete process.env.COTAL_LIFECYCLE_UID; else process.env.COTAL_LIFECYCLE_UID = oldUid;
+  rmSync(root, { recursive: true, force: true });
+}
+
 // Extension activation: unrelated operator settings are inert; partial managed control fails loud.
 {
   const keys = [
@@ -531,7 +586,7 @@ for (const assistant of [
     registerMessageRenderer(): void {},
     on(): void {},
   } as unknown as ExtensionAPI;
-  await assert.rejects(() => cotalMesh(compatibleApi), /must be provided together/);
+  await assert.rejects(() => cotalMesh(compatibleApi), /COTAL_CONTROL_SOCKET is set but no control token could be resolved/);
   checks++;
   for (const key of keys) {
     const value = saved[key];
@@ -555,25 +610,77 @@ for (const assistant of [
       name: "pi-test",
       model: "flag/model",
       configPath: agentFile,
+      workspaceRoot: root,
       userAuth: { owner: "owner", actor: "actor", sentinelCredsPath: "/tmp/sentinel", bearerCmd: ["token"] },
     });
     ok(launch.args.includes("flag/model") && !launch.args.includes("file/model"), "spawn model overrides the agent file model");
     ok(launch.args.includes("--append-system-prompt"), "the frontmatter-stripped persona is forwarded by file");
-    ok(launch.env.COTAL_OWNER === "owner" && launch.env.COTAL_ACTOR === "actor", "user-mode identity is forwarded");
-    ok(launch.env.GROQ_API_KEY === "groq-test" && !("UNRELATED_SECRET" in launch.env), "only Pi provider keys are forwarded");
+    // `LaunchSpec.env` is optional on the interface; a managed Pi launch always carries one, so
+    // bind it once and assert that, rather than reading through an optional at every cell.
+    const env = launch.env;
+    assert.ok(env, "a managed Pi launch carries a child env");
+    // The user-mode identity is forwarded through the launch material, not the environment: the
+    // sentinel creds path and the bearer command are this mode's credential, and a shell the seat
+    // runs has no more business holding them than it has holding a creds file.
+    ok(
+      env.COTAL_OWNER === undefined && env.COTAL_ACTOR === undefined,
+      "user-mode identity is NOT in the seat environment",
+    );
+    ok(
+      readLaunchMaterial(env[LAUNCH_MATERIAL_ENV]).userAuth?.owner === "owner",
+      "user-mode identity is forwarded through the launch material",
+    );
+    ok(env.GROQ_API_KEY === "groq-test", "the declared provider key reaches Pi");
+    ok(env.UNRELATED_SECRET === undefined, "an unrelated operator variable is withheld");
+    ok(!("COTAL_CREDS" in env) && !("COTAL_LIFECYCLE_UID" in env), "ambient per-session COTAL_* is withheld");
     ok(Boolean(launch.control?.path && launch.control.token), "managed Pi launches expose cooperative control");
+    const freshSessionAt = launch.args.indexOf("--session-id");
+    ok(
+      freshSessionAt >= 0 && /^[0-9a-f-]{36}$/.test(launch.args[freshSessionAt + 1] ?? "") &&
+        env.COTAL_PI_EXPECTED_SESSION === launch.args[freshSessionAt + 1],
+      "a fresh managed Pi seat gets an exact recoverable session id before its first turn",
+    );
+    ok(
+      typeof launch.sessionStatePath === "string" && env.COTAL_PI_SESSION_STATE === launch.sessionStatePath,
+      "managed Pi launch env carries the exact session-state path",
+    );
     ok(launch.args.some((arg) => arg.endsWith("standalone.js")), "managed Pi launches use the standalone bundle");
-    if (launch.env.COTAL_PI_PERSONA_FILE) rmSync(dirname(launch.env.COTAL_PI_PERSONA_FILE), { recursive: true, force: true });
+    if (env.COTAL_PI_PERSONA_FILE) rmSync(dirname(env.COTAL_PI_PERSONA_FILE), { recursive: true, force: true });
 
     assert.throws(
       () => piConnector.buildLaunch({ space: "test", name: "pi", creds: "creds", userAuth: { owner: "o", actor: "a", sentinelCredsPath: "s", bearerCmd: ["b"] } }),
       /mutually exclusive/,
     );
-    assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", resume: "session" }), /resume/);
+    ok(piConnector.supportsResume === true, "Pi declares operator fork-resume support");
+    ok(piConnector.supportsSessionContinuation === true, "Pi declares exact-session crash continuation support");
+    const forked = piConnector.buildLaunch({ space: "test", name: "pi", resume: "session weird;$(nope)" });
+    const forkAt = forked.args.indexOf("--fork");
+    ok(forkAt >= 0 && forked.args[forkAt + 1] === "session weird;$(nope)", "Pi resume renders one opaque --fork argv token");
+    ok(!forked.args.includes("--session-id"), "Pi fork resume never reuses the source session id");
+    const continued = piConnector.buildLaunch({ space: "test", name: "pi", continueSession: "session-current" });
+    const sessionAt = continued.args.indexOf("--session-id");
+    ok(sessionAt >= 0 && continued.args[sessionAt + 1] === "session-current", "Pi crash recovery reopens the exact current session id");
+    ok(!continued.args.includes("--fork"), "Pi crash continuation never forks the session again");
+    assert.throws(
+      () => piConnector.buildLaunch({ space: "test", name: "pi", resume: "source", continueSession: "current" }),
+      /mutually exclusive/,
+    );
+    checks += 6;
     assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", variant: "high" }), /variant/);
     assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", mcpServers: { x: { command: "x" } } }), /MCP/);
     assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", launchOptions: { offline: true } }), /launch options/);
-    checks += 5;
+    // `--prompt` is Pi's positional initial message: delivered as the LAST argument (Pi's parser
+    // takes any bare argument as a message, so it must follow every value-taking flag), and a
+    // prompt Pi would misread (empty, an option, a file reference) refuses the launch.
+    const prompted = piConnector.buildLaunch({ space: "test", name: "pi", model: "flag/model", prompt: "  say hello  " });
+    ok(prompted.args[prompted.args.length - 1] === "say hello", "the initial prompt is Pi's last positional argument, trimmed");
+    ok(prompted.args.indexOf("--model") === prompted.args.length - 3, "the prompt follows the value-taking flags");
+    assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", prompt: "   " }), /empty/);
+    assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", prompt: "-p run" }), /cannot start with/);
+    assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", prompt: "@notes.md summarize" }), /cannot start with/);
+    const unprompted = piConnector.buildLaunch({ space: "test", name: "pi", model: "flag/model" }).args;
+    ok(unprompted[unprompted.length - 1] === "flag/model", "no prompt, no positional argument: the last argument is still the model value");
+    checks += 11;
   } finally {
     if (previousGroq === undefined) delete process.env.GROQ_API_KEY;
     else process.env.GROQ_API_KEY = previousGroq;

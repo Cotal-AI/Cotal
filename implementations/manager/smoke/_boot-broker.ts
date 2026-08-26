@@ -13,6 +13,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { serverConfig, isReachable, type SpaceAuth } from "@cotal-ai/core";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -33,11 +34,14 @@ export async function bootBroker(auth: SpaceAuth, opts?: { monitor?: boolean }):
   const port = await pickFreePort();
   const servers = `nats://127.0.0.1:${port}`;
   const monitorPort = opts?.monitor ? await pickFreePort() : undefined;
-  const dir = mkdtempSync(join(tmpdir(), "cotal-smoke-broker-"));
+  const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
   const conf = serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") })
     + (monitorPort !== undefined ? `http: 127.0.0.1:${monitorPort}\n` : "");
   writeFileSync(join(dir, "server.conf"), conf);
   const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+  // Owned from the moment it exists, so the boot loop below is covered too: a suite killed while
+  // waiting for readiness has spawned a broker and has no `stop` to call yet.
+  const release = teardownOnSignal(srv, dir);
   let up = false;
   for (let i = 0; i < 25; i++) {
     if (srv.exitCode !== null) break; // died (bind failure / bad config)
@@ -47,6 +51,7 @@ export async function bootBroker(auth: SpaceAuth, opts?: { monitor?: boolean }):
   if (!up || srv.exitCode !== null) {
     srv.kill("SIGKILL");
     rmSync(dir, { recursive: true, force: true });
+    release();
     throw new Error(`bootBroker: nats-server did not come up on ${port}`);
   }
   return {
@@ -56,6 +61,7 @@ export async function bootBroker(auth: SpaceAuth, opts?: { monitor?: boolean }):
       srv.kill("SIGTERM");
       await wait(200);
       rmSync(dir, { recursive: true, force: true });
+      release(); // last: ownership is held until this teardown has actually finished
     },
   };
 }
