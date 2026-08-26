@@ -17,6 +17,7 @@ import {
   scatterCommand,
   mintLifecycleUid,
   newIdentity,
+  dialerFor,
   resolveService,
   standaloneConnectOpts,
   type ControlReply,
@@ -26,7 +27,7 @@ import {
   type Profile,
   type SpaceAuth,
 } from "@cotal-ai/core";
-import { PermissionViolationError, connect, type NatsConnection } from "@nats-io/transport-node";
+import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import {
   authDir, endpointAuth, findCotalRoot, isWorkspaceTargetError, loadSpaceAuth, resolveMeshTarget,
@@ -217,7 +218,11 @@ async function askManagerEp(
   // standaloneConnectOpts handles all three auth shapes: static creds, the user bearer + sentinel
   // (client-chosen inbox nonce; the callout scopes the reply inbox on it), or BARE on an open
   // mesh (no credential system; the broker enforces nothing).
-  const nc = await connect({
+  // dialerFor, not the raw TCP connect: a user mesh reached through an HTTPS edge is a
+  // wss:// URL, and the node transport refuses those outright ("use the 'wsconnect'
+  // function instead") - which took `ps`/`stop`/`attach` down against every websocket
+  // broker while send and spawn (already routed through the dialer) worked.
+  const nc = await dialerFor(server)({
     servers: server,
     ...standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true }),
     maxReconnectAttempts: 0,
@@ -436,7 +441,11 @@ export type ScatterReply = { ok: true; instances: ScatterInstanceReply[] } | { o
  *  the scatter's TWO connections cannot drift in their connect options: they differ in credential
  *  and in nothing else. */
 async function withControlConnection<T>(server: string, auth: ControlAuth, fn: (nc: NatsConnection) => Promise<T>): Promise<T> {
-  const nc = await connect({
+  // dialerFor, not the raw TCP connect: a user mesh reached through an HTTPS edge is a
+  // wss:// URL, and the node transport refuses those outright ("use the 'wsconnect'
+  // function instead") - which took `ps`/`stop`/`attach` down against every websocket
+  // broker while send and spawn (already routed through the dialer) worked.
+  const nc = await dialerFor(server)({
     servers: server,
     ...standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true }),
     maxReconnectAttempts: 0,
