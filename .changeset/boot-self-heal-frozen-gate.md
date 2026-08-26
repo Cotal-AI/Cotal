@@ -1,5 +1,6 @@
 ---
 "@cotal-ai/manager": patch
+"@cotal-ai/connector-core": patch
 ---
 
 A manager that died mid-registration left the issuance gate frozen, and the successor refused to
