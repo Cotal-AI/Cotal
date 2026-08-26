@@ -6,8 +6,8 @@
  * this machine could write back — a sleeping laptop silently unregistered a healthy remote mesh.
  * So the load-bearing assertions here are the ones about ORIGIN:
  *
- *  • an `up` record whose broker is dead is pruned; a `manual` one is KEPT and reported `offline`,
- *    on that sweep and on every later one;
+ *  • a legacy `up` record whose broker is dead is pruned; a `manual` or `self-hosted` one is KEPT
+ *    and reported `offline`, on that sweep and on every later one;
  *  • `add` verifies against the real broker before recording, and records nothing when that fails;
  *  • `--force` is the explicit record-without-verifying / replace escape;
  *  • `rm` drops records, releases the `current` pointer, and refuses a mesh running here.
@@ -627,13 +627,15 @@ try {
   recordMesh({ space: "local-dead", server: DEAD, root: localRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   recordMesh({ space: "legacy-dead", server: DEAD, root: localRoot, mode: "open", ts: new Date(0).toISOString() });
   recordMesh({ space: "remote-dead", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  recordMesh({ space: "self-hosted-dead", server: DEAD, root: localRoot, mode: "open", origin: "self-hosted", ts: new Date(0).toISOString() });
   const sweep = await pruneStaleMeshes();
   check("sweep prunes a dead mesh this machine started", findMesh("local-dead") === undefined, loadMeshes());
   check("sweep prunes a dead pre-origin record (absent origin = `up`)", findMesh("legacy-dead") === undefined, loadMeshes());
   check("sweep KEEPS a dead operator-registered mesh", findMesh("remote-dead")?.space === "remote-dead", loadMeshes());
-  check("sweep reports the kept one as offline", sweep.offline.includes("remote-dead") && sweep.pruned.includes("local-dead"), sweep);
+  check("sweep KEEPS a dead self-hosted mesh", findMesh("self-hosted-dead")?.space === "self-hosted-dead", loadMeshes());
+  check("sweep reports the kept ones as offline", sweep.offline.includes("remote-dead") && sweep.offline.includes("self-hosted-dead") && sweep.pruned.includes("local-dead"), sweep);
   const sweep2 = await pruneStaleMeshes();
-  check("a second sweep still keeps it (not a one-time reprieve)", findMesh("remote-dead") !== undefined && sweep2.offline.includes("remote-dead"), sweep2);
+  check("a second sweep still keeps them (not a one-time reprieve)", findMesh("remote-dead") !== undefined && findMesh("self-hosted-dead") !== undefined && sweep2.offline.includes("remote-dead") && sweep2.offline.includes("self-hosted-dead"), sweep2);
 
   // …and the same rule for the paths that delete by ROOT rather than by liveness. `add` defaults
   // --root to the project you run it in, so a hand-registered remote mesh routinely shares a root
@@ -642,9 +644,11 @@ try {
   const shared = projectRoot("shared");
   recordMesh({ space: "here", server: LIVE, root: shared, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   recordMesh({ space: "elsewhere", server: LIVE, root: shared, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  recordMesh({ space: "restartable", server: DEAD, root: shared, mode: "open", origin: "self-hosted", ts: new Date(0).toISOString() });
   const byRoot = removeMeshesByRoot(shared);
   check("a root teardown drops this project's own record", byRoot.includes("here") && findMesh("here") === undefined, byRoot);
   check("a root teardown KEEPS a co-rooted registered mesh", findMesh("elsewhere") !== undefined, loadMeshes());
+  check("a root teardown KEEPS a co-rooted self-hosted mesh", findMesh("restartable") !== undefined, loadMeshes());
   check("…and does not claim it removed it", !byRoot.includes("elsewhere"), byRoot);
   // `clean`'s "is this root's mesh still live" guard asks the same question: a reachable REMOTE
   // broker is not the operator's to stop, so it must not block a local wipe forever.
@@ -674,8 +678,22 @@ try {
   recordMesh({ space: "reclaimable", server: DEAD, root: localRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   await claimSpace("reclaimable", LIVE, root);
   check("a dead `up` holder is still reclaimed (unchanged)", findMesh("reclaimable") === undefined, loadMeshes());
+  recordMesh({ space: "self-hosted-other", server: DEAD, root: localRoot, mode: "open", origin: "self-hosted", ts: new Date(0).toISOString() });
+  let selfHostedClaimError: Error | undefined;
+  await claimSpace("self-hosted-other", LIVE, root).catch((e: Error) => void (selfHostedClaimError = e));
+  check("`up` refuses to steal a self-hosted space from another root", selfHostedClaimError !== undefined, selfHostedClaimError?.message);
+  check("…and the self-hosted record survives the refusal", findMesh("self-hosted-other") !== undefined, loadMeshes());
+  check("…naming the recorded root and `cotal meshes rm` as the way through",
+    selfHostedClaimError?.message.includes(`recorded as self-hosted at ${localRoot}`) === true
+    && selfHostedClaimError.message.includes("cotal meshes rm self-hosted-other") === true,
+    selfHostedClaimError?.message);
+  recordMesh({ space: "self-hosted-same", server: DEAD, root: localRoot, mode: "open", origin: "self-hosted", ts: new Date(0).toISOString() });
+  await claimSpace("self-hosted-same", LIVE, localRoot);
+  check("a same-root self-hosted record is kept (restart, not reclaim)", findMesh("self-hosted-same") !== undefined, loadMeshes());
   removeMesh("claimed");
   removeMesh("claimed-live");
+  removeMesh("self-hosted-other");
+  removeMesh("self-hosted-same");
 
   // PROVENANCE IS NOT DOWNGRADED BY A REFRESH. Several `up` paths re-record a mesh they did not
   // start (the "a broker is already on this port" branch concludes it is up from reachability
@@ -692,9 +710,9 @@ try {
   recordMesh({ space: "started-over", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
   recordOurMeshForTest({ space: "started-over", server: LIVE, root, mode: "open", ts: new Date().toISOString() }, "started");
   check("a launch that STARTED the broker claims the record, even over a manual one",
-    findMesh("started-over")?.origin === "up", findMesh("started-over"));
+    findMesh("started-over")?.origin === "self-hosted", findMesh("started-over"));
   recordOurMeshForTest({ space: "ours-now", server: LIVE, root, mode: "open", ts: new Date().toISOString() }, "started");
-  check("…and still stamps `up` on a record it created", findMesh("ours-now")?.origin === "up", findMesh("ours-now"));
+  check("…and stamps `self-hosted` on a record it created", findMesh("ours-now")?.origin === "self-hosted", findMesh("ours-now"));
   // The overlay ACCEPTANCE is the same class as origin and was not carried, so a no-op refresh
   // silently erased a consent the operator had given. It is asserted beside origin because the two
   // are the same rule: a refresh starts nothing, so it may not overwrite what only the operator
@@ -719,6 +737,7 @@ try {
   const listed = await run([]);
   check("list shows the offline registered mesh", listed.out.includes("remote-dead") && listed.out.includes("offline"), listed.out);
   check("list tags it as registered", listed.out.includes("registered"), listed.out);
+  check("list tags a stopped self-hosted mesh", listed.out.includes("self-hosted-dead") && listed.out.replaceAll("self-hosted-dead", "").includes("self-hosted"), listed.out);
   check("`meshes list` is the same as bare `meshes`", (await run(["list"])).out === listed.out);
 
   // ── rm ────────────────────────────────────────────────────────────────────────────────────────
@@ -731,6 +750,8 @@ try {
   const unknown = await run(["rm", "never-existed"]);
   check("rm of an unknown mesh exits non-zero", unknown.code === 1 && unknown.out.includes("no mesh named"), unknown.out);
 
+  removeMesh("self-hosted-dead");
+  removeMesh("restartable");
   recordMesh({ space: "a1", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
   recordMesh({ space: "a2", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
   const multi = await run(["rm", "a1", "a2"]);
