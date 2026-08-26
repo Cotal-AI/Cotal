@@ -95,6 +95,7 @@ import {
   readBrokerPolicy,
   writeBrokerPolicy,
 } from "@cotal-ai/workspace";
+import { spawnDetached } from "../lib/detached-spawn.js";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { resolveSpace } from "../lib/status.js";
 import { c } from "../ui.js";
@@ -2026,7 +2027,7 @@ export async function startMeshDetached(
   const startOffset = existsSync(logPath) ? statSync(logPath).size : 0;
   const fd = openSync(logPath, "a");
   const listenerStartedAt = new Date().toISOString();
-  const child = spawn(bin, args, { detached: true, windowsHide: true, stdio: ["ignore", fd, fd] });
+  const child = spawnDetached(bin, args, { stdio: ["ignore", fd, fd], windowsLogPath: logPath });
   closeSync(fd);
   if (opts.boundListener) {
     writeFileSync(cotalPath("nats.pid"), String(child.pid));
@@ -2039,7 +2040,6 @@ export async function startMeshDetached(
       throw error;
     }
   }
-  child.unref();
 
   let tailing = Boolean(opts.onLine);
   if (opts.onLine) tailLines(logPath, startOffset, opts.onLine, () => !tailing);

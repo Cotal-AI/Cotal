@@ -18,8 +18,10 @@ operator-only maintenance verbs. Every command's full flag set is in the
   `cotal spawn --detach` and the `cotal_spawn` tool work right after `up`.
 
 The stack is detached by default and does not depend on the invoking shell, SSH connection, agent
-session, or CI runner staying alive. `--foreground` exists only for debugging in the invoking
-terminal.
+session, or CI runner staying alive. On Windows, Cotal probes the current process job and launches
+with `CREATE_BREAKAWAY_FROM_JOB` when required and permitted. If the job forbids breakaway, `up`
+refuses before starting any detached process and names `--foreground`, which remains the debugging
+path in the invoking terminal.
 
 Three modes:
 

@@ -149,7 +149,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--exchange-public-url <https://…>` | none | With `--exchange-public-port`: advertise the reverse proxy's HTTPS URL in discovery |
 | `--exchange-trusted-proxy` | off | With `--exchange-public-port`: attribute public failure buckets to the last `X-Forwarded-For` hop. Enable only when the listener is reachable solely through a trusted proxy; otherwise the socket address is used |
 | `--detach` | on | Deprecated compatibility spelling. It is a no-op because normal `up` is already detached |
-| `--foreground` | off | Debug in the invoking terminal. Normal `up` always detaches the stack so it survives shells, SSH sessions, agents, and CI runners ending |
+| `--foreground` | off | Debug in the invoking terminal. Normal `up` detaches the stack so it survives shells, SSH sessions, agents, and CI runners ending. On Windows, Cotal first proves the current job permits process breakaway; otherwise it refuses before launch and points to this flag |
 | `--tls-cert <path>` | — | PEM certificate to serve TLS with. Must be given together with `--tls-key`. The pair is validated **before** the broker starts — readability, private-key mode, that the two match, the validity window, and that the certificate covers the host clients will dial — because `nats-server` starts happily on an expired certificate and only the client then fails. The decision is recorded, so a later bare `cotal up` after a `cotal down` keeps serving TLS rather than silently reverting to cleartext |
 | `--tls-key <path>` | — | PEM private key for `--tls-cert`. Refused if group- or other-readable (tighten to `600`) |
 | `--file <cotal.yaml>`, `-f` | — | Launch a whole mesh from a manifest |

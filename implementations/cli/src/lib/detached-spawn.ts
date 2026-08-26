@@ -1,58 +1,80 @@
-/**
- * Detached stack launch for `cotal up`.
- *
- * WIP from #880 / rev880: Windows `spawn({ detached: true })` is NOT the Unix contract.
- * libuv (src/win/process.c) sets DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP and
- * explicitly does NOT set CREATE_BREAKAWAY_FROM_JOB, with its own comment that a fully
- * daemonized process may not be creatable under job control. GitHub Actions Windows
- * runners ARE job objects. `windowsHide` only hides a console.
- *
- * Repo rule: no silent degradation. A platform that cannot detach must throw, not
- * return 0 over a stack that dies with the job while the self-hosted record still
- * lists it as running.
- *
- * Intended contract (not fully wired; do not import from up.ts until the Windows
- * probe is real):
- *
- * - POSIX: Node `spawn(..., { detached: true, stdio })` + `unref()`. Proven: nats
- *   and manager reparent to ppid 1 with pid==pgid.
- * - Windows: probe the current job BEFORE spawning.
- *     1. `IsProcessInJob(GetCurrentProcess(), NULL, &inJob)`.
- *     2. Not in a job → DETACHED_PROCESS is enough (no parent job to kill us).
- *     3. In a job → QueryInformationJobObject for BREAKAWAY_OK / SILENT_BREAKAWAY_OK.
- *        If neither: THROW. Name `--foreground` and that this environment (CI job,
- *        service, parent job) cannot host a detached stack.
- *     4. If breakaway is allowed: spawn WITH CREATE_BREAKAWAY_FROM_JOB. Node's
- *        `spawn({detached:true})` cannot set that flag, so the Windows path cannot
- *        be Node spawn. Do not add a koffi/ffi dependency as a silent optional;
- *        load kernel32 fail-loud or refuse.
- * - Never throw on all of win32: a local console is usually not in a kill-on-close
- *   job. Over-refusing is a different lie.
- * - `--foreground` stays the debug hatch on every platform.
- *
- * Call sites that still use the weaker Node spawn (must all go through this helper):
- *   implementations/cli/src/commands/up.ts          nats-server
- *   implementations/cli/src/lib/manager-proc.ts     supervise
- *   implementations/cli/src/lib/delivery-proc.ts    deliver
- *   implementations/cli/src/lib/auth-proc.ts        auth-service
- *
- * Docs that currently overclaim Unix as universal (`docs/cli.md` --foreground row,
- * `docs/run-a-mesh.md` stack section) must match the probe: survive invoker death
- * only when the platform can actually detach.
- */
-import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
 
 export const WINDOWS_JOB_REFUSAL =
-  "this Windows process is in a job that does not allow CREATE_BREAKAWAY_FROM_JOB, so a detached stack would die with the job (GitHub Actions and other CI runners are this case). Run `cotal up --foreground` in this terminal, or start the mesh from a session that is not job-bound";
+  "this Windows process is in a job that does not allow process breakaway, so it cannot host a detached stack. Run `cotal up --foreground` in this terminal, or start the mesh from a session that is not job-bound";
 
-/** POSIX-only today. Windows must not reach Node's detached spawn. */
-export function spawnDetached(command: string, args: readonly string[], opts: SpawnOptions): ChildProcess {
-  if (process.platform === "win32") {
-    // Fail loud until the kernel32 job probe + CREATE_BREAKAWAY_FROM_JOB spawn land.
-    // Wiring this into up.ts before the probe would refuse every Windows `up`, including
-    // a local console that CAN detach. Leave the call sites on Node spawn until then.
-    throw new Error(WINDOWS_JOB_REFUSAL);
-  }
+export interface WindowsJobState {
+  inJob: boolean;
+  breakawayAllowed: boolean;
+}
+
+export interface WindowsDetachedLauncher {
+  jobState(): WindowsJobState;
+  spawn(command: string, args: readonly string[], opts: SpawnOptions): ChildProcess;
+}
+
+export function assertWindowsDetachAllowed(state: WindowsJobState): boolean {
+  if (state.inJob && !state.breakawayAllowed) throw new Error(WINDOWS_JOB_REFUSAL);
+  return state.inJob;
+}
+
+export interface DetachedSpawnOptions extends SpawnOptions {
+  windowsLogPath?: string;
+}
+
+const windowsScript = String.raw`
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class CotalDetachedProcess {
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct STARTUPINFO { public int cb; public string lpReserved; public string lpDesktop; public string lpTitle; public int dwX; public int dwY; public int dwXSize; public int dwYSize; public int dwXCountChars; public int dwYCountChars; public int dwFillAttribute; public int dwFlags; public short wShowWindow; public short cbReserved2; public IntPtr lpReserved2; public IntPtr hStdInput; public IntPtr hStdOutput; public IntPtr hStdError; }
+  [StructLayout(LayoutKind.Sequential)] public struct PROCESS_INFORMATION { public IntPtr hProcess; public IntPtr hThread; public int dwProcessId; public int dwThreadId; }
+  [StructLayout(LayoutKind.Sequential)] public struct JOBOBJECT_BASIC_LIMIT_INFORMATION { public long PerProcessUserTimeLimit; public long PerJobUserTimeLimit; public uint LimitFlags; public UIntPtr MinimumWorkingSetSize; public UIntPtr MaximumWorkingSetSize; public uint ActiveProcessLimit; public UIntPtr Affinity; public uint PriorityClass; public uint SchedulingClass; }
+  [StructLayout(LayoutKind.Sequential)] public struct IO_COUNTERS { public ulong ReadOperationCount; public ulong WriteOperationCount; public ulong OtherOperationCount; public ulong ReadTransferCount; public ulong WriteTransferCount; public ulong OtherTransferCount; }
+  [StructLayout(LayoutKind.Sequential)] public struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION { public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation; public IO_COUNTERS IoInfo; public UIntPtr ProcessMemoryLimit; public UIntPtr JobMemoryLimit; public UIntPtr PeakProcessMemoryUsed; public UIntPtr PeakJobMemoryUsed; }
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool result);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool QueryInformationJobObject(IntPtr job, int infoClass, out JOBOBJECT_EXTENDED_LIMIT_INFORMATION info, uint length, IntPtr returnedLength);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool CreateProcess(string app, string commandLine, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
+  [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+  [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int id);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CreateFile(string name, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+  public static int JobFlags() { bool inside; if (!IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out inside)) throw new Win32Exception(); if (!inside) return 0; JOBOBJECT_EXTENDED_LIMIT_INFORMATION info; if (!QueryInformationJobObject(IntPtr.Zero, 9, out info, (uint)Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)), IntPtr.Zero)) throw new Win32Exception(); return (int)info.BasicLimitInformation.LimitFlags; }
+  public static int Spawn(string app, string line, string cwd, string log, bool breakaway) { var si=new STARTUPINFO(); si.cb=Marshal.SizeOf(si); si.dwFlags=0x100; si.hStdInput=GetStdHandle(-10); IntPtr output=String.IsNullOrEmpty(log)?GetStdHandle(-11):CreateFile(log,0x40000000u,3u,IntPtr.Zero,4u,0x80u,IntPtr.Zero); if(output==new IntPtr(-1)) throw new Win32Exception(); si.hStdOutput=output; si.hStdError=output; PROCESS_INFORMATION pi; uint flags=0x8u|0x200u|(breakaway?0x01000000u:0u); if (!CreateProcess(app,line,IntPtr.Zero,IntPtr.Zero,true,flags,IntPtr.Zero,cwd,ref si,out pi)) throw new Win32Exception(); CloseHandle(pi.hThread); CloseHandle(pi.hProcess); if(!String.IsNullOrEmpty(log)) CloseHandle(output); return pi.dwProcessId; }
+}`;
+
+function ps(command: string, stdio?: SpawnOptions["stdio"]): string {
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], { encoding: "utf8", windowsHide: true, ...(stdio ? { stdio } : {}) });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`Windows detached-process probe failed: ${result.stderr.trim()}`);
+  return result.stdout.trim();
+}
+
+function quoteWindowsArg(value: string): string {
+  if (value.length > 0 && !/[\s"]/u.test(value)) return value;
+  return `"${value.replace(/(\\*)"/gu, "$1$1\\\"").replace(/(\\+)$/u, "$1$1")}"`;
+}
+
+const nativeWindowsLauncher: WindowsDetachedLauncher = {
+  jobState() {
+    const flags = Number(ps(`Add-Type -TypeDefinition @'\n${windowsScript}\n'@; [CotalDetachedProcess]::JobFlags()`));
+    if (!Number.isInteger(flags)) throw new Error("Windows detached-process probe returned an invalid job limit value");
+    return { inJob: flags !== 0, breakawayAllowed: (flags & (0x800 | 0x1000)) !== 0 };
+  },
+  spawn(command, args, opts: DetachedSpawnOptions) {
+    if (opts.stdio !== "ignore" && !opts.windowsLogPath) throw new Error("Windows detached spawn requires a durable log path");
+    const state = this.jobState();
+    const breakaway = assertWindowsDetachAllowed(state);
+    const line = [command, ...args].map(quoteWindowsArg).join(" ");
+    const payload = Buffer.from(JSON.stringify({ command, line, cwd: opts.cwd ?? process.cwd(), breakaway, log: opts.windowsLogPath }), "utf8").toString("base64");
+    const source = `$x=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}'))|ConvertFrom-Json; Add-Type -TypeDefinition @'\n${windowsScript}\n'@; [CotalDetachedProcess]::Spawn($x.command,$x.line,$x.cwd,$x.log,$x.breakaway)`;
+    const pid = Number(ps(source));
+    return { pid, unref() {}, kill() { return false; } } as unknown as ChildProcess;
+  },
+};
+
+export function spawnDetached(command: string, args: readonly string[], opts: DetachedSpawnOptions, windows: WindowsDetachedLauncher = nativeWindowsLauncher): ChildProcess {
+  if (process.platform === "win32") return windows.spawn(command, args, opts);
   const child = spawn(command, [...args], { ...opts, detached: true, windowsHide: true });
   child.unref();
   return child;

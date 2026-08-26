@@ -530,3 +530,6 @@ smoke:claude-boot-wake
 # Control commands resolve ws:// / wss:// meshes too. Exercise the real CLI against one broker's
 # websocket and TCP listeners so raw node-transport regressions name their `wsconnect` refusal.
 smoke:control-transport-dial
+# Windows detached stacks must either escape the invoking job with CREATE_BREAKAWAY_FROM_JOB or
+# fail before launch and point to --foreground. Pure branch coverage runs on every CI platform.
+smoke:windows-detached-spawn

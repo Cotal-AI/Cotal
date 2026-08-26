@@ -1,9 +1,10 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { existsSync, openSync, closeSync, chmodSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { DEFAULT_SERVER } from "@cotal-ai/core";
 import { selfArgv } from "./self-exec.js";
 import { resolveSpace } from "./status.js";
 import { cotalPath } from "./paths.js";
+import { spawnDetached } from "./detached-spawn.js";
 import {
   commandIsCotalSupervisor, parsePid, probeLiveness, readProcessCommand,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, type CommandReader, type LivenessProbe,
@@ -150,9 +151,8 @@ export function startManagerDetached(
   ];
   // This is an INTERNAL child re-exec: the `up`/`spawn` that reached here already ran the first-run
   // connector seed, so the manager skips it on boot (a direct `cotal supervise` still seeds).
-  const child = spawn(node, args, { detached: true, windowsHide: true, stdio: ["ignore", fd, fd], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" } });
+  const child = spawnDetached(node, args, { stdio: ["ignore", fd, fd], windowsLogPath: cotalPath("manager.log"), env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" } });
   closeSync(fd);
-  child.unref();
   writeFileSync(PID_PATH(), String(child.pid));
   // Mark this manager as delivery-aware (non-hosting) so the delivery preflight can tell it apart from
   // an old Plane-3-hosting manager. Written next to the pid, removed together in stopManager / down.
