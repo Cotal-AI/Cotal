@@ -522,6 +522,11 @@ smoke:hermes-empty-id
 # a connectivity fact does not license. Four occurrences on the live space "main" reached the
 # neighbouring branch and survived only because the lease re-read answered.
 smoke:detach-not-teardown
+# Appended at the end per this file's own rule: the cell has no ordering dependency, and appending
+# is what keeps two branches adding suites from conflicting. It is the end-to-end half of a guard
+# whose ingest half runs earlier as `smoke:cross-path-dedup`: that one drives hand-built deliveries
+# into the dedup branch, this one proves the CONNECTOR's boot window recovers over a real broker.
+smoke:claude-boot-wake
 # Control commands resolve ws:// / wss:// meshes too. Exercise the real CLI against one broker's
 # websocket and TCP listeners so raw node-transport regressions name their `wsconnect` refusal.
 smoke:control-transport-dial
