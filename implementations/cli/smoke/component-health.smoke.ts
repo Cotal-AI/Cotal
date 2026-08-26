@@ -39,7 +39,10 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const env = { ...process.env, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1" };
+const env = { ...process.env };
+for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
+env.COTAL_HOME = home;
+env.COTAL_SKIP_CONNECTOR_SEED = "1";
 
 async function freePort(): Promise<number> {
   const server = createServer();

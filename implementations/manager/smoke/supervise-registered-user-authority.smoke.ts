@@ -117,11 +117,12 @@ let idpServer: ReturnType<typeof createServer> | undefined;
 let endpoint: CotalEndpoint | undefined;
 
 function spawnAuthService(): ReturnType<typeof spawn> {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
+  env.COTAL_HOME = participantHome;
   return spawn(process.execPath, [...process.execArgv, self, "auth-service", "--space", space, "--server", server, "--exchange-public-port", String(publicPort)], {
     cwd: hostRoot,
-    // The auth daemon uses hostRoot for its state and does not consume COTAL_HOME. Keep this
-    // explicit anyway so no ambient real registry reaches a child.
-    env: { ...process.env, COTAL_HOME: participantHome },
+    env,
     stdio: "ignore",
   });
 }

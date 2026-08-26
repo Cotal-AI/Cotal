@@ -81,18 +81,56 @@ function processPids(): number[] {
   throw new Error(`jcode connector: cannot prove Jcode process ownership on unsupported platform ${process.platform}`);
 }
 
+interface ProcessIdentityProbe {
+  ps: (pid: number) => string;
+  pidExists: (pid: number) => boolean;
+}
+
+const processIdentityProbe: ProcessIdentityProbe = {
+  ps: (pid) => execFileSync("/bin/ps", ["eww", "-p", String(pid), "-o", "command="], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  }),
+  pidExists: (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ESRCH") return false;
+      if (code === "EPERM") return true;
+      throw error;
+    }
+  },
+};
+
+function processHasLaunchIdentityFromPs(pid: number, identityValue: string, probe: ProcessIdentityProbe): boolean {
+  try {
+    const out = probe.ps(pid);
+    return out.includes(`${LAUNCH_IDENTITY_ENV}=${identityValue}`);
+  } catch (error) {
+    // processPids() and this probe are necessarily separate snapshots. On macOS/BSD, ps reports a
+    // PID that exited between them with status 1 rather than an ESRCH code on the thrown error.
+    // Only an independent ESRCH re-probe proves that race; operational ps failures stay loud.
+    const status = (error as { status?: unknown }).status;
+    if (status === 1 && !probe.pidExists(pid)) return false;
+    throw error;
+  }
+}
+
 function processHasLaunchIdentity(pid: number, identityValue: string): boolean {
   if (process.platform === "linux")
     return readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(`${LAUNCH_IDENTITY_ENV}=${identityValue}`);
-  if (process.platform === "darwin" || process.platform.endsWith("bsd")) {
-    const out = execFileSync("/bin/ps", ["eww", "-p", String(pid), "-o", "command="], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    return out.includes(`${LAUNCH_IDENTITY_ENV}=${identityValue}`);
-  }
+  if (process.platform === "darwin" || process.platform.endsWith("bsd"))
+    return processHasLaunchIdentityFromPs(pid, identityValue, processIdentityProbe);
   throw new Error(`jcode connector: launch-bound process identity is unavailable on ${process.platform}`);
 }
+
+export const processHasLaunchIdentityForTest = (
+  pid: number,
+  identityValue: string,
+  probe: ProcessIdentityProbe,
+): boolean => processHasLaunchIdentityFromPs(pid, identityValue, probe);
 
 function captureLaunchProcesses(identityValue: string): ProcessIdentity[] {
   const owned: ProcessIdentity[] = [];
