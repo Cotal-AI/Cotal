@@ -112,7 +112,7 @@
       "replace": "  try { child.kill(\"SIGTERM\"); } catch {}\n  removePid();\n  throw primary;",
       "expectRed": "a postStart non-ESRCH signal failure keeps the pidfile",
       "cell": "a postStart non-ESRCH signal failure keeps the pidfile",
-      "note": "Restores the pre-fix catch-all that treats EPERM like already-gone and removes actionable ownership state."
+      "note": "Predicted kill set: a postStart non-ESRCH signal failure keeps the pidfile; a postStart signal failure preserves the postStart error and attaches the signal failure. Restores the pre-fix catch-all that treats EPERM like already-gone, removes actionable ownership state, and swallows the cleanup failure."
     },
     {
       "name": "postStart cleanup replaces the postStart failure",
@@ -121,7 +121,7 @@
       "replace": "  return rethrowAfterDetachedCleanup(new Error(\"cleanup replaced primary\"), () => {\n    child.kill(\"SIGTERM\");",
       "expectRed": "a postStart signal failure preserves the postStart error and attaches the signal failure",
       "cell": "a postStart signal failure preserves the postStart error and attaches the signal failure",
-      "note": "Models a non-ESRCH signal failure escaping in place of the original postStart error."
+      "note": "Predicted kill set: a postStart signal failure preserves the postStart error and attaches the signal failure; a postStart non-ESRCH signal failure keeps the pidfile. Models a non-ESRCH signal failure replacing the original postStart error before ownership state can be preserved."
     },
     {
       "name": "postStart already-gone cleanup leaves a stale pidfile",
