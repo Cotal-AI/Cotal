@@ -10,7 +10,7 @@ import { mirrorJcodeCredentials, shortSocketHome } from "./private-state.js";
 import { captureProcessIdentity, launchIdentityEnv, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
 import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
 import { bareModelId, describeRoute } from "./route-identity.js";
-import { classifyReadinessProviderRefusal } from "./startup-diagnostics.js";
+import { classifyReadinessProviderRefusal, jcodeEffortRefusal } from "./startup-diagnostics.js";
 import { ERROR_RETRY_INITIAL_MS, nextRetryDelay, shouldRetry } from "./retry-policy.js";
 import {
   MeshAgent,
@@ -553,6 +553,17 @@ export async function runJcodeHost(): Promise<void> {
         );
     }
     if (config.model) await client.setModel(sessionId, config.model);
+    // The Cotal variant is Jcode's per-session reasoning effort. Apply it after model selection
+    // and before any instructions or readiness turn, so no served turn uses an unrequested tier.
+    // Jcode owns the provider/model ladder and validates the requested tier at this API boundary.
+    if (config.variant) {
+      const model = (await client.getRuntimeInfo(sessionId)).model ?? config.model;
+      try {
+        await client.setReasoningEffort(sessionId, config.variant);
+      } catch (error) {
+        throw jcodeEffortRefusal(error, config.variant, model ?? "(the provider default)");
+      }
+    }
     // On a resume the persona/instructions are already the first thing in this transcript. Re-sending
     // them would replay the whole briefing on every restart and grow the context without adding to it.
     if (!resumed) {
@@ -571,7 +582,9 @@ export async function runJcodeHost(): Promise<void> {
     let readiness;
     try {
       readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });
-      if (!hasOrientation(readiness)) readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });
+      if (!hasOrientation(readiness)) {
+        readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });
+      }
     } catch (error) {
       // A readiness-turn provider refusal is different from arbitrary Harness API failure: Jcode
       // supplied an invalid-request code and a rejected model/effort value the connector can safely
