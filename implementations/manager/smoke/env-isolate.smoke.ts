@@ -31,8 +31,20 @@ function skip(label: string, why: string): void {
   console.log(`• ${label} skipped (${why})`);
 }
 
+/** tmux capture-pane wraps long values (PATH especially) onto the next visual line. Join a
+ *  continuation that does not start a new KEY= so ~/.local/bin is not split off PATH=. */
+function unwrapCapture(out: string): string {
+  const lines = out.split(/\r?\n/);
+  const joined: string[] = [];
+  for (const line of lines) {
+    if (joined.length > 0 && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(line)) joined[joined.length - 1] += line;
+    else joined.push(line);
+  }
+  return joined.join("\n");
+}
+
 function pathEntries(out: string): string[] {
-  const m = out.match(/(?:^|\n)PATH=([^\n]*)/i);
+  const m = unwrapCapture(out).match(/(?:^|\n)PATH=([^\n]*)/i);
   if (!m) return [];
   return m[1].split(PATH_SEP);
 }
@@ -102,6 +114,7 @@ function stripPty(raw: string): string {
 
 /** The assertions every runtime must satisfy, so a backend cannot pass by testing less. */
 function assertBoundary(label: string, out: string, opts: { explicit: boolean }): void {
+  out = unwrapCapture(out);
   console.log(`${label}:`);
   check("ordinary operator variable was withheld", !out.includes(`${OPERATOR_SECRET}=${OPERATOR_VALUE}`));
   if (opts.explicit) check("explicit spawn.env value reached child", out.includes(`${EXPLICIT}=explicit-value`));
@@ -147,9 +160,11 @@ let tmuxOk = false;
 try { execFileSync("tmux", ["-V"], { stdio: "ignore" }); tmuxOk = true; } catch { /* not installed */ }
 if (tmuxOk) {
   const runtime = createRuntime("tmux", "cotal-p3-smoke");
-  // `sh -c 'printenv; sleep 5'` keeps the window alive long enough to capture-pane (printenv alone
-  // exits instantly and the window closes). sh resolves via PATH.
-  const spec: LaunchSpec = { command: "sh", args: ["-c", "printenv; sleep 5"], env: launchEnv({ envAllow: [EXPLICIT] }) };
+  // Dump via node (one KEY=value per line) rather than printenv: a long PATH wraps in a tmux pane
+  // and a line-oriented PATH= match would miss ~/.local/bin on the continuation. sleep keeps the
+  // window alive long enough to capture-pane.
+  const dumpEnv = "for (const [k, v] of Object.entries(process.env)) console.log(`${k}=${v}`);";
+  const spec: LaunchSpec = { command: process.execPath, args: ["-e", `${dumpEnv}; setTimeout(()=>{}, 5000)`], env: launchEnv({ envAllow: [EXPLICIT] }) };
   const h = runtime.spawn("p3-tmux", spec, cwd);
   await new Promise((r) => setTimeout(r, 900)); // let printenv run + render
   let out = "";
