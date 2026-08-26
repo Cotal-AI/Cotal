@@ -24,6 +24,10 @@ export interface DetachedSpawnOptions extends SpawnOptions {
 
 export type SignalProcess = (pid: number, signal?: NodeJS.Signals | number) => boolean;
 
+function isNoSuchProcess(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH";
+}
+
 /** The ChildProcess-shaped handle returned after the native Windows launcher closes its process
  * handle. Kept as a seam because the contract must be testable without spawning or signalling a
  * real process on a Windows host. */
@@ -33,7 +37,15 @@ export function windowsDetachedChild(pid: number, signalProcess: SignalProcess =
     exitCode: null,
     signalCode: null,
     unref() {},
-    kill(signal: NodeJS.Signals | number = "SIGTERM") { return signalProcess(pid, signal); },
+    kill(signal: NodeJS.Signals | number = "SIGTERM") {
+      try { return signalProcess(pid, signal); }
+      catch (error) {
+        // ChildProcess.kill reports an already-gone child as `false`; keep that caller contract even
+        // though the pid-only Windows implementation reaches process.kill, which throws ESRCH.
+        if (isNoSuchProcess(error)) return false;
+        throw error;
+      }
+    },
   } as unknown as ChildProcess;
 }
 
@@ -42,6 +54,21 @@ export function windowsDetachedChild(pid: number, signalProcess: SignalProcess =
 export function assertDetachedChildExitObservable(child: ChildProcess): void {
   if (typeof child.once !== "function" || typeof child.off !== "function")
     throw new Error(`detached child process ${child.pid ?? "unknown"} cannot have its exit observed`);
+}
+
+/** Run detached-process cleanup without letting its failure replace the operation that made cleanup
+ * necessary. The primary Error remains the thrown object; a cleanup failure is attached as `cause`. */
+export async function rethrowAfterDetachedCleanup(primary: unknown, cleanup: () => void | Promise<void>): Promise<never> {
+  try {
+    await cleanup();
+  } catch (cleanupError) {
+    if (primary instanceof Error) {
+      Object.defineProperty(primary, "cause", { value: cleanupError, configurable: true });
+      throw primary;
+    }
+    throw new Error(String(primary), { cause: cleanupError });
+  }
+  throw primary;
 }
 
 const windowsScript = String.raw`

@@ -95,7 +95,7 @@ import {
   readBrokerPolicy,
   writeBrokerPolicy,
 } from "@cotal-ai/workspace";
-import { assertDetachedChildExitObservable, spawnDetached } from "../lib/detached-spawn.js";
+import { assertDetachedChildExitObservable, rethrowAfterDetachedCleanup, spawnDetached } from "../lib/detached-spawn.js";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { resolveSpace } from "../lib/status.js";
 import { c } from "../ui.js";
@@ -937,16 +937,12 @@ export async function up(args: ParsedArgs): Promise<void> {
   if (restored) try {
     bindSpawnedRestoreListener(restored, child.pid ?? 0, listenerStartedAt);
   } catch (error) {
-    await stopUnboundRestoreListener(child);
-    removeMatchingNatsPid(child.pid ?? 0);
-    throw error;
+    await rethrowUnboundListenerFailure(child, error);
   }
   if (ordinaryAttempt) try {
     bindSpawnedOrdinaryResumeListener(ordinaryAttempt, child.pid ?? 0, listenerStartedAt);
   } catch (error) {
-    await stopUnboundRestoreListener(child);
-    removeMatchingNatsPid(child.pid ?? 0);
-    throw error;
+    await rethrowUnboundListenerFailure(child, error);
   }
   releaseStartupLock();
   child.on("error", (err) => {
@@ -1160,6 +1156,32 @@ function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boole
     child.once("exit", onExit);
   });
 }
+
+async function rethrowUnboundListenerFailure(
+  child: ChildProcess,
+  primary: unknown,
+  stop: (child: ChildProcess) => Promise<void> = stopUnboundRestoreListener,
+  removePid: (pid: number) => void = removeMatchingNatsPid,
+): Promise<never> {
+  return rethrowAfterDetachedCleanup(primary, async () => {
+    try { await stop(child); }
+    finally { removePid(child.pid ?? 0); }
+  });
+}
+
+async function rethrowNotReadyListenerFailure(
+  child: ChildProcess,
+  primary: unknown,
+  removePid?: () => void,
+): Promise<never> {
+  return rethrowAfterDetachedCleanup(primary, () => {
+    try { child.kill("SIGTERM"); }
+    finally { removePid?.(); }
+  });
+}
+
+export const rethrowUnboundListenerFailureForTest = rethrowUnboundListenerFailure;
+export const rethrowNotReadyListenerFailureForTest = rethrowNotReadyListenerFailure;
 
 async function stopUnboundRestoreListener(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
@@ -2040,9 +2062,7 @@ export async function startMeshDetached(
     try {
       opts.boundListener.onSpawn(child.pid ?? 0, listenerStartedAt);
     } catch (error) {
-      await stopUnboundRestoreListener(child);
-      removeMatchingNatsPid(child.pid ?? 0);
-      throw error;
+      await rethrowUnboundListenerFailure(child, error);
     }
   }
 
@@ -2052,9 +2072,11 @@ export async function startMeshDetached(
   const ready = await waitReady(server, setup?.creds);
   tailing = false;
   if (!ready) {
-    child.kill("SIGTERM");
-    if (opts.boundListener) rmSync(cotalPath("nats.pid"), { force: true });
-    throw new Error(`nats-server did not become reachable at ${server} - see ${logPath}`);
+    await rethrowNotReadyListenerFailure(
+      child,
+      new Error(`nats-server did not become reachable at ${server} - see ${logPath}`),
+      opts.boundListener ? () => rmSync(cotalPath("nats.pid"), { force: true }) : undefined,
+    );
   }
   if (!opts.boundListener) writeFileSync(cotalPath("nats.pid"), String(child.pid));
   if (opts.boundListener) await opts.boundListener.verify();

@@ -7,7 +7,8 @@
     "The pure decision seam deterministically covers Windows job states on every CI platform; the native branch still runs in the Windows workflow.",
     "The named refusal cell requires both the loud failure and the --foreground remediation.",
     "The child contract is exercised with an injected signalling function, so no real process is spawned or killed on a non-Windows host.",
-    "The exit-observation cell requires an explicit limitation error rather than a silent value that could be read as successful teardown."
+    "The exit-observation cell requires an explicit limitation error rather than a silent value that could be read as successful teardown.",
+    "The residual cells require both cleanup sites to run pid removal in finally and to rethrow the original operation error with any cleanup failure attached as its cause."
   ],
   "mutations": [
     {
@@ -54,6 +55,51 @@
       "expectRed": "Windows detached child exit observation fails loud instead of pretending it exited",
       "cell": "Windows detached child exit observation fails loud instead of pretending it exited",
       "note": "Deletes the explicit limitation so waiting code can silently proceed without any exit observation."
+    },
+    {
+      "name": "already-gone Windows pid leaks process.kill ESRCH",
+      "file": "implementations/cli/src/lib/detached-spawn.ts",
+      "find": "        if (isNoSuchProcess(error)) return false;",
+      "replace": "        if (false) return false;",
+      "expectRed": "Windows detached child reports an already-gone pid as false after attempting the exact signal",
+      "cell": "Windows detached child reports an already-gone pid as false after attempting the exact signal",
+      "note": "Restores the raw process.kill throw instead of the ChildProcess.kill false result callers expect for an already-gone process."
+    },
+    {
+      "name": "unbound listener cleanup skips pid removal when stop fails",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "    try { await stop(child); }\n    finally { removePid(child.pid ?? 0); }",
+      "replace": "    await stop(child);\n    removePid(child.pid ?? 0);",
+      "expectRed": "an unbound-listener teardown failure still removes the matching pid",
+      "cell": "an unbound-listener teardown failure still removes the matching pid",
+      "note": "Restores the catch-block control flow that skips pid cleanup when exit observation fails."
+    },
+    {
+      "name": "unbound listener cleanup replaces the bind failure",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "  return rethrowAfterDetachedCleanup(primary, async () => {\n    try { await stop(child); }",
+      "replace": "  return rethrowAfterDetachedCleanup(new Error(\"cleanup replaced primary\"), async () => {\n    try { await stop(child); }",
+      "expectRed": "an unbound-listener teardown failure preserves the primary error and attaches the cleanup failure",
+      "cell": "an unbound-listener teardown failure preserves the primary error and attaches the cleanup failure",
+      "note": "Models the observation error escaping in place of the original bind failure."
+    },
+    {
+      "name": "not-ready kill skips pid removal when signalling fails",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "    try { child.kill(\"SIGTERM\"); }\n    finally { removePid?.(); }",
+      "replace": "    child.kill(\"SIGTERM\");\n    removePid?.();",
+      "expectRed": "a not-ready kill failure still removes the bound-listener pid",
+      "cell": "a not-ready kill failure still removes the bound-listener pid",
+      "note": "Restores the unguarded kill whose throw skips bound-listener pid cleanup."
+    },
+    {
+      "name": "not-ready cleanup replaces the readiness failure",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "  return rethrowAfterDetachedCleanup(primary, () => {\n    try { child.kill(\"SIGTERM\"); }",
+      "replace": "  return rethrowAfterDetachedCleanup(new Error(\"cleanup replaced primary\"), () => {\n    try { child.kill(\"SIGTERM\"); }",
+      "expectRed": "a not-ready kill failure preserves the readiness error and attaches the signal failure",
+      "cell": "a not-ready kill failure preserves the readiness error and attaches the signal failure",
+      "note": "Models process.kill replacing the log-bearing readiness error instead of being attached to it."
     }
   ]
 }
