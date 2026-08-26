@@ -1180,8 +1180,20 @@ async function rethrowNotReadyListenerFailure(
   });
 }
 
+async function rethrowPostStartListenerFailure(
+  child: ChildProcess,
+  primary: unknown,
+  removePid: () => void,
+): Promise<never> {
+  return rethrowAfterDetachedCleanup(primary, () => {
+    child.kill("SIGTERM");
+    removePid();
+  });
+}
+
 export const rethrowUnboundListenerFailureForTest = rethrowUnboundListenerFailure;
 export const rethrowNotReadyListenerFailureForTest = rethrowNotReadyListenerFailure;
+export const rethrowPostStartListenerFailureForTest = rethrowPostStartListenerFailure;
 
 async function stopUnboundRestoreListener(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
@@ -2099,9 +2111,7 @@ export async function startMeshDetached(
     try {
       await postStart(server, space, setup, seedFile);
     } catch (e) {
-      try { child.kill("SIGTERM"); } catch { /* already gone */ }
-      try { rmSync(cotalPath("nats.pid"), { force: true }); } catch { /* best effort */ }
-      throw e;
+      await rethrowPostStartListenerFailure(child, e, () => rmSync(cotalPath("nats.pid"), { force: true }));
     }
   }
   // USER MODE: the auth service comes up FIRST among the daemons (see the foreground path).

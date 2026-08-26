@@ -8,7 +8,11 @@
     "The named refusal cell requires both the loud failure and the --foreground remediation.",
     "The child contract is exercised with an injected signalling function, so no real process is spawned or killed on a non-Windows host.",
     "The exit-observation cell requires an explicit limitation error rather than a silent value that could be read as successful teardown.",
-    "The residual cells require both cleanup sites to run pid removal in finally and to rethrow the original operation error with any cleanup failure attached as its cause."
+    "The residual cells require both cleanup sites to run pid removal in finally and to rethrow the original operation error with any cleanup failure attached as its cause.",
+    "UNEXERCISED PRODUCTION BOUNDARY: windowsDetachedChild using its default signalProcess = process.kill is not run here. Tests inject signal functions and therefore prove the shaped-handle contract, not the native process signal.",
+    "UNEXERCISED PRODUCTION BOUNDARY: nativeWindowsLauncher.spawn returning windowsDetachedChild after the real PowerShell and CreateProcess path is not run here.",
+    "UNEXERCISED NATIVE DETAILS: Windows argument quoting, environment block construction, durable log handle wiring, job probe, CreateProcess flags, and pid parsing remain covered only by source review and the Windows workflow, not this cross-platform smoke.",
+    "HELD DESIGN BLOCKER: the native launcher closes pi.hProcess and returns a bare pid, so this smoke does not prove process identity remains pinned across pid reuse. That design decision is explicitly outside this fold."
   ],
   "mutations": [
     {
@@ -36,7 +40,7 @@
       "replace": "    kill() { return false; },",
       "expectRed": "Windows detached child kill forwards the exact pid and signal",
       "cell": "Windows detached child kill forwards the exact pid and signal",
-      "note": "Restores the stub whose kill method never signals the native detached pid."
+      "note": "Predicted kill set: Windows detached child kill forwards the exact pid and signal; Windows detached child reports an already-gone pid as false after attempting the exact signal; a not-ready kill failure still removes the bound-listener pid. Restores the stub whose kill method never signals the native detached pid."
     },
     {
       "name": "Windows detached child omits active exit state",
@@ -100,6 +104,33 @@
       "expectRed": "a not-ready kill failure preserves the readiness error and attaches the signal failure",
       "cell": "a not-ready kill failure preserves the readiness error and attaches the signal failure",
       "note": "Models process.kill replacing the log-bearing readiness error instead of being attached to it."
+    },
+    {
+      "name": "postStart cleanup swallows a non-ESRCH signal failure and removes the pidfile",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "  return rethrowAfterDetachedCleanup(primary, () => {\n    child.kill(\"SIGTERM\");\n    removePid();\n  });",
+      "replace": "  try { child.kill(\"SIGTERM\"); } catch {}\n  removePid();\n  throw primary;",
+      "expectRed": "a postStart non-ESRCH signal failure keeps the pidfile",
+      "cell": "a postStart non-ESRCH signal failure keeps the pidfile",
+      "note": "Restores the pre-fix catch-all that treats EPERM like already-gone and removes actionable ownership state."
+    },
+    {
+      "name": "postStart cleanup replaces the postStart failure",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "  return rethrowAfterDetachedCleanup(primary, () => {\n    child.kill(\"SIGTERM\");",
+      "replace": "  return rethrowAfterDetachedCleanup(new Error(\"cleanup replaced primary\"), () => {\n    child.kill(\"SIGTERM\");",
+      "expectRed": "a postStart signal failure preserves the postStart error and attaches the signal failure",
+      "cell": "a postStart signal failure preserves the postStart error and attaches the signal failure",
+      "note": "Models a non-ESRCH signal failure escaping in place of the original postStart error."
+    },
+    {
+      "name": "postStart already-gone cleanup leaves a stale pidfile",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "    child.kill(\"SIGTERM\");\n    removePid();",
+      "replace": "    if (child.kill(\"SIGTERM\")) removePid();",
+      "expectRed": "a postStart ESRCH result removes the stale pidfile and preserves the postStart error",
+      "cell": "a postStart ESRCH result removes the stale pidfile and preserves the postStart error",
+      "note": "Models false from the normalized already-gone signal being misread as a reason to retain a stale pidfile."
     }
   ]
 }

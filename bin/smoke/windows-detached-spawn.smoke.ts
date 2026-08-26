@@ -1,3 +1,4 @@
+import type { ChildProcess } from "node:child_process";
 import {
   assertWindowsDetachAllowed,
   assertDetachedChildExitObservable,
@@ -6,6 +7,7 @@ import {
 } from "../../implementations/cli/src/lib/detached-spawn.js";
 import {
   rethrowNotReadyListenerFailureForTest,
+  rethrowPostStartListenerFailureForTest,
   rethrowUnboundListenerFailureForTest,
 } from "../../implementations/cli/src/commands/up.js";
 
@@ -113,6 +115,42 @@ check(
   "a not-ready kill failure preserves the readiness error and attaches the signal failure",
   readinessCaught === readinessFailure && readinessFailure.cause === signalFailure,
   readinessCaught,
+);
+
+const postStartFailure = new Error("postStart failed");
+const postStartSignalFailure = Object.assign(new Error("not permitted"), { code: "EPERM" });
+const postStartChild = { pid: 4545, kill() { throw postStartSignalFailure; } } as unknown as ChildProcess;
+let postStartPidRemoved = false;
+let postStartCaught: unknown;
+try {
+  await rethrowPostStartListenerFailureForTest(postStartChild, postStartFailure, () => { postStartPidRemoved = true; });
+} catch (error) {
+  postStartCaught = error;
+}
+check(
+  "a postStart non-ESRCH signal failure keeps the pidfile",
+  !postStartPidRemoved,
+  postStartPidRemoved,
+);
+check(
+  "a postStart signal failure preserves the postStart error and attaches the signal failure",
+  postStartCaught === postStartFailure && postStartFailure.cause === postStartSignalFailure,
+  postStartCaught,
+);
+
+const postStartGoneFailure = new Error("postStart failed after exit");
+const postStartGoneChild = { pid: 4646, kill() { return false; } } as unknown as ChildProcess;
+let gonePidRemoved = false;
+let postStartGoneCaught: unknown;
+try {
+  await rethrowPostStartListenerFailureForTest(postStartGoneChild, postStartGoneFailure, () => { gonePidRemoved = true; });
+} catch (error) {
+  postStartGoneCaught = error;
+}
+check(
+  "a postStart ESRCH result removes the stale pidfile and preserves the postStart error",
+  gonePidRemoved && postStartGoneCaught === postStartGoneFailure && postStartGoneFailure.cause === undefined,
+  { gonePidRemoved, postStartGoneCaught },
 );
 
 console.log(`\nWINDOWS DETACHED SPAWN SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);
