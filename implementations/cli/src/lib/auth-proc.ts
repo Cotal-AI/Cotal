@@ -6,7 +6,7 @@
  * command via {@link selfArgv} (argv array — never shell interpolation), and delegates readiness
  * to the provider's `ready()` contract. No `@cotal-ai/auth` import anywhere in this package.
  */
-import { spawn } from "node:child_process";
+import { spawnDetached } from "./detached-spawn.js";
 import { randomBytes } from "node:crypto";
 import { closeSync, existsSync, ftruncateSync, linkSync, openSync, readdirSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { basename, dirname } from "node:path";
@@ -160,13 +160,12 @@ function startAuthServiceDetached(space: string, server: string, command: string
     const [node, ...self] = selfArgv();
     // Internal child re-exec (the `up` that reached here already seeded); the auth service does not
     // launch agents, so it skips the connector seed on boot (a direct `cotal auth-service` still seeds).
-    const child = spawn(node, [...self, command, "--space", space, "--server", server, ...extraArgs], {
-      detached: true,
+    const child = spawnDetached(node, [...self, command, "--space", space, "--server", server, ...extraArgs], {
       stdio: ["ignore", fd, fd],
+      windowsLogPath: LOG_PATH(space),
       env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" },
     });
     closeSync(fd);
-    child.unref();
     // Replace the launcher pid with the daemon child's pid through the exclusively-created fd,
     // never a re-open (truncate first: the fd position sits past the launcher pid).
     ftruncateSync(slot.fd, 0);

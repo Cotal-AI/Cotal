@@ -25,7 +25,7 @@ Task dispatch:
 
 | Task | Page | First command / tool |
 |---|---|---|
-| Install + start a local mesh, non-interactive | [Quickstart](getting-started.md) | `npx cotal-ai setup --yes && npx cotal-ai up --detach` |
+| Install + start a local mesh, non-interactive | [Quickstart](getting-started.md) | `npx cotal-ai setup --yes && npx cotal-ai up` |
 | Put an agent on the mesh | [Quickstart](getting-started.md) | `cotal spawn` |
 | Message peers from inside a session | [MCP tool catalog](mcp-tools.md) | `cotal_send` · `cotal_dm` · `cotal_anycast` |
 | Spawn / define a teammate at runtime | [MCP tool catalog](mcp-tools.md) | `cotal_spawn` · `cotal_persona` |

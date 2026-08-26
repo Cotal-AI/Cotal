@@ -21,7 +21,7 @@ It is two-tier, gated on a machine marker.
 - splash → intro → core **checks** (Node >= 22; **locate** `nats-server`: located, never
   started) → **connector picker** → write the demo personas (david/sven/me) and seed the generic
   `default` → **offer a global install** (`offerGlobalInstall`) → onboarded marker → a finale that
-  lists the commands to start things (`cotal up --detach`, `cotal web`, `cotal spawn …`,
+  lists the commands to start things (`cotal up`, `cotal web`, `cotal spawn …`,
   `cotal console`, `cotal down`). Nothing is running when it returns.
 - The old `--auth` / `--open` flags are **gone**: they set the mesh MODE at launch time, and setup
   no longer launches; mode is now `cotal up [--open]`'s concern (an unknown-option error names
@@ -32,7 +32,7 @@ re-offer the **global install** (`offerGlobalInstall`, same `isNpx()` + PATH-sca
 run — so a repeat `npx cotal-ai setup` on a machine that still lacks a durable `cotal` finally
 installs it), then print the **status card** (`readyCard`). The card is **read-only probes** (`machineStatus`/`meshStatus`/`webUp`/`managerUp` for NATS, the plugin, the mesh, the web
 dashboard, and the manager) and for anything down it prints the exact command to start it
-(`cotal up --detach`, `cotal web`, `cotal supervise`). Displaying state never depends on it; setup
+(`cotal up`, `cotal web`, `cotal supervise`). Displaying state never depends on it; setup
 still launches nothing.
 
 Steps run in-process via `runSteps`
@@ -52,7 +52,7 @@ persona `cotal spawn me` drives.
 **`--yes`** forces non-interactive accept-all even on a TTY: optional plus `confirm` steps run
 (so the demo personas are written), the global install takes its default, and a failure aborts
 with the log path and a non-zero exit. It still launches nothing. The control plane comes up with
-`cotal up --detach`. This is the agent/CI contract; keep it working.
+`cotal up`. This is the agent/CI contract; keep it working.
 
 ## Invariants
 
@@ -83,7 +83,7 @@ fail-loud on collision.
 
 - **Mesh:** `startMeshDetached`
   ([`commands/up.ts`](../implementations/cli/src/commands/up.ts)) is the one place that boots a
-  background nats-server (foreground `up` and `up --detach` both route through it). Writes
+  background nats-server (default detached `up`; `--foreground` is the debug path). Writes
   `.cotal/nats.pid` and tails `.cotal/nats.log`.
 - **Delivery daemon:** `startDeliveryDetached` / `ensureDelivery`
   ([`lib/delivery-proc.ts`](../implementations/cli/src/lib/delivery-proc.ts)) re-execs `cotal

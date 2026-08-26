@@ -1,0 +1,136 @@
+{
+  "suite": "bin/smoke/windows-detached-spawn.smoke.ts",
+  "guard": "Windows detached up requests job breakaway safely, returns a signalable active child contract, and applies one errno-dependent pid ownership rule at every cleanup site",
+  "command": "pnpm smoke:windows-detached-spawn",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/windows-detached-spawn.json",
+  "why": [
+    "The pure decision seam deterministically covers Windows job states on every CI platform; the native branch still runs in the Windows workflow.",
+    "The child contract is exercised with injected signalling functions, so no real process is spawned or killed on a non-Windows host.",
+    "One ownership rule governs every cleanup wrapper: a returned kill result, including normalized ESRCH false, permits stale pid removal; EPERM or any other throw preserves the pidfile because death was not established.",
+    "Cell map used by every mechanical derivation: C01 outside-job detach; C02 allowed-job breakaway; C03 hostile-job refusal; C04 exact pid and signal; C05 already-gone false; C06 active null state; C07 unobservable exit fails loud; C08 unbound EPERM keeps pid; C09 unbound preserves primary and cause; C10 unbound ESRCH removes stale pid; C11 not-ready EPERM keeps pid; C12 not-ready preserves primary and cause; C13 not-ready ESRCH removes stale pid; C14 postStart EPERM keeps pid; C15 postStart preserves primary and cause; C16 postStart ESRCH removes stale pid.",
+    "Each mutation note lists every IN cell that reads the changed behavior and groups every OUT cell with the reason it does not. This derivation is written before the mutation run and is checked against the observed mark delta afterward.",
+    "UNEXERCISED PRODUCTION BOUNDARY: windowsDetachedChild using its default signalProcess = process.kill is not run here. Tests inject signal functions and therefore prove the shaped-handle contract, not the native process signal.",
+    "UNEXERCISED PRODUCTION BOUNDARY: nativeWindowsLauncher.spawn returning windowsDetachedChild after the real PowerShell and CreateProcess path is not run here.",
+    "UNEXERCISED NATIVE DETAILS: Windows argument quoting, environment block construction, durable log handle wiring, job probe, CreateProcess flags, and pid parsing remain covered only by source review and the Windows workflow, not this cross-platform smoke.",
+    "HELD DESIGN BLOCKER: the native launcher closes pi.hProcess and returns a bare pid, so this smoke does not prove process identity remains pinned across pid reuse. That design decision is explicitly outside this fold."
+  ],
+  "mutations": [
+    {
+      "name": "job-bound Windows launch silently proceeds without breakaway",
+      "file": "implementations/cli/src/lib/detached-spawn.ts",
+      "find": "  if (state.inJob && !state.breakawayAllowed) throw new Error(WINDOWS_JOB_REFUSAL);",
+      "replace": "  if (false) throw new Error(WINDOWS_JOB_REFUSAL);",
+      "expectRed": "C03 Windows job without breakaway permission refuses detached up and names --foreground",
+      "cell": "C03 Windows job without breakaway permission refuses detached up and names --foreground",
+      "note": "IN C03: it directly requires the hostile-job throw. OUT C01-C02: their states still return the same booleans. OUT C04-C16: they never call the job-state decision."
+    },
+    {
+      "name": "allowed Windows job omits CREATE_BREAKAWAY_FROM_JOB",
+      "file": "implementations/cli/src/lib/detached-spawn.ts",
+      "find": "  return state.inJob;",
+      "replace": "  return false;",
+      "expectRed": "C02 Windows job with breakaway permission requests CREATE_BREAKAWAY_FROM_JOB",
+      "cell": "C02 Windows job with breakaway permission requests CREATE_BREAKAWAY_FROM_JOB",
+      "note": "IN C02: it reads the true return for an allowed job. OUT C01: false remains correct outside a job. OUT C03: the refusal throws before the return. OUT C04-C16: they never call the job-state decision."
+    },
+    {
+      "name": "Windows detached child kill is inert",
+      "file": "implementations/cli/src/lib/detached-spawn.ts",
+      "find": "    kill(signal: NodeJS.Signals | number = \"SIGTERM\") {\n      try { return signalProcess(pid, signal); }\n      catch (error) {\n        // ChildProcess.kill reports an already-gone child as `false`; keep that caller contract even\n        // though the pid-only Windows implementation reaches process.kill, which throws ESRCH.\n        if (isNoSuchProcess(error)) return false;\n        throw error;\n      }\n    },",
+      "replace": "    kill() { return false; },",
+      "expectRed": "C04 Windows detached child kill forwards the exact pid and signal",
+      "cell": "C04 Windows detached child kill forwards the exact pid and signal",
+      "note": "IN C04: no injected pid or signal is reached. IN C05: the ESRCH injector is never called, so its signal record is absent. IN C08-C09: the EPERM injector is never called, so unbound cleanup removes the pid and has no cleanup cause. IN C11-C12: the same inert return makes not-ready cleanup remove the pid and lose the signal cause. OUT C01-C03: job decisions are separate. OUT C06: exit fields remain null. OUT C07: observation methods remain absent. OUT C10 and C13: false is already the expected already-gone result, so stale pid removal and primary preservation still hold. OUT C14-C16: those cells use independent manual ChildProcess handles, not windowsDetachedChild."
+    },
+    {
+      "name": "Windows detached child omits active exit state",
+      "file": "implementations/cli/src/lib/detached-spawn.ts",
+      "find": "    exitCode: null,\n    signalCode: null,",
+      "replace": "",
+      "expectRed": "C06 Windows detached child is active under the same null-state guard as a real child",
+      "cell": "C06 Windows detached child is active under the same null-state guard as a real child",
+      "note": "IN C06: it directly reads both null fields. IN C08-C09: undefined makes stopUnboundRestoreListener's real-child guard return before signalling, so pid removal occurs and no EPERM cause is attached. OUT C01-C05: they do not read exit state. OUT C07: it reads event methods only. OUT C10: the early return still leads to stale pid removal and primary preservation, which is that cell's expected result. OUT C11-C16: their wrappers do not inspect exitCode or signalCode."
+    },
+    {
+      "name": "unobservable Windows detached child is treated as observable",
+      "file": "implementations/cli/src/lib/detached-spawn.ts",
+      "find": "  if (typeof child.once !== \"function\" || typeof child.off !== \"function\")\n    throw new Error(`detached child process ${child.pid ?? \"unknown\"} cannot have its exit observed`);",
+      "replace": "  return;",
+      "expectRed": "C07 Windows detached child exit observation fails loud instead of pretending it exited",
+      "cell": "C07 Windows detached child exit observation fails loud instead of pretending it exited",
+      "note": "IN C07: it directly requires the limitation throw. OUT C01-C06: they do not call the observation assertion. OUT C08-C09: EPERM throws before waitForChildExit. OUT C10: ESRCH false returns before waitForChildExit. OUT C11-C16: they do not wait for child exit."
+    },
+    {
+      "name": "already-gone Windows pid leaks process.kill ESRCH",
+      "file": "implementations/cli/src/lib/detached-spawn.ts",
+      "find": "        if (isNoSuchProcess(error)) return false;",
+      "replace": "        if (false) return false;",
+      "expectRed": "C05 Windows detached child reports an already-gone pid as false after attempting the exact signal",
+      "cell": "C05 Windows detached child reports an already-gone pid as false after attempting the exact signal",
+      "note": "IN C05: ESRCH escapes instead of returning false. IN C10: unbound cleanup now throws, keeps the pid, and attaches ESRCH instead of removing stale state. IN C13: not-ready cleanup has the same changed ESRCH path. OUT C01-C04 and C06-C07: they do not exercise ESRCH normalization. OUT C08-C09 and C11-C12: their injected error is EPERM. OUT C14-C16: they use manual handles whose kill results are independent of windowsDetachedChild."
+    },
+    {
+      "name": "unbound cleanup removes pid on non-ESRCH stop failure",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "    await stop(child);\n    removePid(child.pid ?? 0);",
+      "replace": "    try { await stop(child); }\n    finally { removePid(child.pid ?? 0); }",
+      "expectRed": "C08 an unbound-listener non-ESRCH teardown failure keeps the pidfile",
+      "cell": "C08 an unbound-listener non-ESRCH teardown failure keeps the pidfile",
+      "note": "IN C08: EPERM now runs pid removal in finally. OUT C09: rethrowAfterDetachedCleanup still attaches EPERM to the original bind error. OUT C10: the ESRCH-normalized stop returns and both forms remove stale pid state. OUT C01-C07 and C11-C16: they do not execute the unbound wrapper's pid-removal ordering."
+    },
+    {
+      "name": "unbound cleanup replaces the bind failure",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "  return rethrowAfterDetachedCleanup(primary, async () => {\n    await stop(child);",
+      "replace": "  return rethrowAfterDetachedCleanup(new Error(\"cleanup replaced primary\"), async () => {\n    await stop(child);",
+      "expectRed": "C09 an unbound-listener teardown failure preserves the primary error and attaches the cleanup failure",
+      "cell": "C09 an unbound-listener teardown failure preserves the primary error and attaches the cleanup failure",
+      "note": "IN C09: EPERM is attached to a replacement error instead of the original bind error. IN C10: the successful ESRCH path throws the replacement error instead of the original bind error. OUT C08: pid retention on EPERM is unchanged. OUT C01-C07 and C11-C16: they do not read the unbound wrapper's primary error."
+    },
+    {
+      "name": "not-ready cleanup removes pid on non-ESRCH signal failure",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "    child.kill(\"SIGTERM\");\n    removePid?.();",
+      "replace": "    try { child.kill(\"SIGTERM\"); }\n    finally { removePid?.(); }",
+      "expectRed": "C11 a not-ready non-ESRCH kill failure keeps the bound-listener pidfile",
+      "cell": "C11 a not-ready non-ESRCH kill failure keeps the bound-listener pidfile",
+      "note": "IN C11: EPERM now runs pid removal in finally. OUT C12: rethrowAfterDetachedCleanup still attaches EPERM to the original readiness error. OUT C13: ESRCH returns normally and both forms remove stale pid state. OUT C01-C10 and C14-C16: they do not execute the not-ready wrapper's pid-removal ordering."
+    },
+    {
+      "name": "not-ready cleanup replaces the readiness failure",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "async function rethrowNotReadyListenerFailure(\n  child: ChildProcess,\n  primary: unknown,\n  removePid?: () => void,\n): Promise<never> {\n  return rethrowAfterDetachedCleanup(primary, () => {",
+      "replace": "async function rethrowNotReadyListenerFailure(\n  child: ChildProcess,\n  primary: unknown,\n  removePid?: () => void,\n): Promise<never> {\n  return rethrowAfterDetachedCleanup(new Error(\"cleanup replaced primary\"), () => {",
+      "expectRed": "C12 a not-ready kill failure preserves the readiness error and attaches the signal failure",
+      "cell": "C12 a not-ready kill failure preserves the readiness error and attaches the signal failure",
+      "note": "IN C12: EPERM is attached to a replacement error instead of the original readiness error. IN C13: the successful ESRCH path throws the replacement error instead of the original readiness error. OUT C11: pid retention on EPERM is unchanged. OUT C01-C10 and C14-C16: they do not read the not-ready wrapper's primary error."
+    },
+    {
+      "name": "postStart cleanup swallows a non-ESRCH signal failure and removes the pidfile",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "  return rethrowAfterDetachedCleanup(primary, () => {\n    child.kill(\"SIGTERM\");\n    removePid();\n  });",
+      "replace": "  try { child.kill(\"SIGTERM\"); } catch {}\n  removePid();\n  throw primary;",
+      "expectRed": "C14 a postStart non-ESRCH signal failure keeps the pidfile",
+      "cell": "C14 a postStart non-ESRCH signal failure keeps the pidfile",
+      "note": "IN C14: EPERM is swallowed and pid removal runs. IN C15: the original postStart error has no attached signal failure. OUT C16: false returns normally, pid removal runs, and the original error is preserved in both forms. OUT C01-C13: they do not execute postStart cleanup."
+    },
+    {
+      "name": "postStart cleanup replaces the postStart failure",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "async function rethrowPostStartListenerFailure(\n  child: ChildProcess,\n  primary: unknown,\n  removePid: () => void,\n): Promise<never> {\n  return rethrowAfterDetachedCleanup(primary, () => {",
+      "replace": "async function rethrowPostStartListenerFailure(\n  child: ChildProcess,\n  primary: unknown,\n  removePid: () => void,\n): Promise<never> {\n  return rethrowAfterDetachedCleanup(new Error(\"cleanup replaced primary\"), () => {",
+      "expectRed": "C15 a postStart signal failure preserves the postStart error and attaches the signal failure",
+      "cell": "C15 a postStart signal failure preserves the postStart error and attaches the signal failure",
+      "note": "IN C15: EPERM is attached to a replacement error instead of the original postStart error. IN C16: the successful false path throws the replacement error instead of the original postStart error. OUT C14: pid retention on EPERM is unchanged. OUT C01-C13: they do not read the postStart wrapper's primary error."
+    },
+    {
+      "name": "postStart already-gone cleanup leaves a stale pidfile",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "    child.kill(\"SIGTERM\");\n    removePid();",
+      "replace": "    if (child.kill(\"SIGTERM\")) removePid();",
+      "expectRed": "C16 a postStart ESRCH result removes the stale pidfile and preserves the postStart error",
+      "cell": "C16 a postStart ESRCH result removes the stale pidfile and preserves the postStart error",
+      "note": "IN C16: false now skips stale pid removal. OUT C14-C15: EPERM throws before the conditional result is read, so pid retention and cause attachment are unchanged. OUT C01-C13: they do not execute postStart cleanup."
+    }
+  ]
+}

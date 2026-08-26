@@ -30,7 +30,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   update: { flags: ["self:boolean"], positionals: false },
   up: {
     flags: [
-      "channels:string", "detach:boolean", "dry-run:boolean", "file:string:f", "host:string",
+      "channels:string", "detach:boolean", "dry-run:boolean", "file:string:f", "foreground:boolean", "host:string",
       "idp:string", "open:boolean", "runtime:string", "server:string", "space:string",
       // The optional PUBLIC remote-exchange face, threaded to the auth-service daemon.
       // `--advertised-server` (2026-08): with --exchange-public-port, the broker address the public

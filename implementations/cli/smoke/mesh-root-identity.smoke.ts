@@ -3,12 +3,13 @@
  *
  * Every `cotal up` decision about an already-running mesh keys on one question: is the broker that
  * is answering THIS project's mesh? The registry answers it by comparing a recorded `root` against
- * the live `cotalRoot()`. Two spellings of that comparison exist in the tree:
+ * the live `cotalRoot()`. Two spellings of that comparison have existed in the tree:
  *
  *   - `meshesForRoot` (`packages/workspace/src/mesh-registry.ts`), which canonicalizes both sides
  *     via realpath, and whose own doc states the rule: "Anything comparing a live root against the
  *     registry must go through here: a raw `===` silently misses";
- *   - a raw `held.root === root`, which several call sites in `up.ts`/`down.ts` still use.
+ *   - the historical raw `held.root === root`, which missed aliases before the `up.ts` guards were
+ *     aligned on the registry's canonical-root rule.
  *
  * This suite measures whether those two spellings can DISAGREE about the same directory on a real
  * filesystem, and pins the direction of the disagreement. It proves the PRECONDITION only — that
@@ -75,7 +76,7 @@ async function main(): Promise<void> {
 
   // ---- the divergence itself, both comparisons run against the SAME live root ----
   const liveRoot = physical; // what `cotalRoot()` returns from inside the project (cwd is physical)
-  const rawCompare = held !== undefined && held.root === liveRoot; // the `up.ts:621` spelling
+  const rawCompare = held !== undefined && held.root === liveRoot; // the unsafe historical spelling
   const canonicalCompare = meshesForRoot(liveRoot).some((m) => m.space === SPACE); // the documented rule
 
   check("the RAW `===` compare MISSES the record for the live root", rawCompare === false, `raw=${rawCompare}`);

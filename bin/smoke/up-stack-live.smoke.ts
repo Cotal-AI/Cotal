@@ -1,9 +1,9 @@
 /**
- * LIVE e2e for `cotal up --detach` — the stage-2b claim the docs make ("start the mesh + delivery
+ * LIVE e2e for detached-by-default `cotal up` — the stage-2b claim the docs make ("start the mesh + delivery
  * daemon + manager") exercised as REAL usage: the actual binary as subprocesses, a real JWT-authed
  * broker on an isolated port, and the control plane answering a real `cotal ps`.
  *
- *  1. `up --detach` (auth default) brings up ALL THREE: nats-server, delivery daemon, manager —
+ *  1. bare `up` (auth default) exits while bringing up ALL THREE: nats-server, delivery daemon, manager —
  *     pid files written, processes alive, the delivery-aware marker bound to the manager pid.
  *  2. a real `cotal ps` is ANSWERED by the detached manager (control plane reachable, creds minted
  *     from this folder's auth — the exact "spawn --detach works right after up" promise).
@@ -15,9 +15,9 @@
  * never pkill, so a co-running broker on :4222 is untouched. Needs `nats-server` on PATH.
  * Run: pnpm smoke:up-stack:live
  */
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createConnection, createServer, type AddressInfo } from "node:net";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { renderDetachedSummary } from "../../implementations/cli/src/lib/up-report.js";
@@ -31,6 +31,7 @@ const freePort = (): Promise<number> =>
   });
 const PORT = await freePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
+const SPACE = "up-stack-live";
 const DEFAULT_SERVER = "nats://127.0.0.1:4222";
 const WT = resolve(import.meta.dirname, "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -68,6 +69,16 @@ const portOpenAt = (port: number) =>
   });
 const portOpen = () => portOpenAt(PORT);
 const cliIn = (cwd: string, ...args: string[]) => spawnSync(TSX, [CLI, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
+const matchingPids = () => {
+  if (process.platform === "win32") {
+    const out = execFileSync("wmic", ["process", "get", "ProcessId,CommandLine", "/format:csv"], { encoding: "utf8" });
+    return out.split(/\r?\n/).filter((line) => line.includes(root) || line.includes(autoRoot) || line.includes(occupantRoot))
+      .map((line) => Number(line.trim().split(",").at(-1))).filter(Number.isFinite);
+  }
+  const out = execFileSync("ps", ["-axo", "pid=,command="], { encoding: "utf8" });
+  return out.split("\n").filter((line) => line.includes(root) || line.includes(autoRoot) || line.includes(occupantRoot))
+    .map((line) => Number(/^\s*(\d+)/.exec(line)?.[1])).filter(Number.isFinite);
+};
 
 const pids: number[] = [];
 let startedOccupant = false;
@@ -85,25 +96,27 @@ try {
     manager: false,
   }) === "✓ running in the background: nats-server (pid 42), delivery daemon - stop with: cotal down");
 
-  // Default-port collision: `up` without an explicit `--server` should allocate a free port and
-  // record it, not fail with "use --server ...:<port>". If the developer already has a real :4222
-  // broker, leave it alone; otherwise start a sandbox occupant and tear it down below.
-  if (!(await portOpenAt(4222))) {
-    const occupant = cliIn(occupantRoot, "up", "--detach", "--open");
-    ok("default-port occupant starts for auto-port regression", occupant.status === 0, occupant.stdout + occupant.stderr);
-    startedOccupant = true;
-  }
-  const auto = cliIn(autoRoot, "up", "--detach", "--open", "--space", "auto");
-  ok("up --detach auto-selects a free port when :4222 is occupied", auto.status === 0, auto.stdout + auto.stderr);
-  const autoEntry = JSON.parse(readFileSync(join(home, "meshes", "space.6175746f.json"), "utf8")) as { server: string };
-  ok("auto-port mesh is not recorded on the default server", autoEntry.server !== DEFAULT_SERVER, autoEntry);
-  ok("auto-port mesh broker is reachable", await portOpenAt(Number(new URL(autoEntry.server).port)), autoEntry);
-  cliIn(autoRoot, "down");
-  if (startedOccupant) cliIn(occupantRoot, "down");
-
+  // Named cells for the #864 mutations must be the FIRST record/detach-dependent checks. An earlier
+  // `readFileSync` of a mesh record throws ENOENT (WRONG-RED) if persist is skipped, and a status-only
+  // detach cell stays green when spawnSync SIGTERM's a foreground `up` whose exit handler still exits 0.
   // 1) the full stack comes up from ONE command, JWT-authed by default.
-  const up = cli("up", "--detach", "--server", SERVER);
-  ok("up --detach exits 0", up.status === 0, up.stdout + up.stderr);
+  const recPath = join(home, "meshes", `space.${Buffer.from(SPACE).toString("hex")}.json`);
+  const up = cli("up", "--space", SPACE, "--server", SERVER);
+  const recorded = existsSync(recPath)
+    ? JSON.parse(readFileSync(recPath, "utf8")) as { origin?: string; root?: string }
+    : undefined;
+  ok(
+    "up persists a self-hosted mesh record at provision time",
+    recorded?.origin === "self-hosted" && recorded.root !== undefined && realpathSync(recorded.root) === realpathSync(root),
+    recorded ?? recPath,
+  );
+  ok(
+    "bare up exits 0 while the stack remains alive (detached by default)",
+    up.status === 0
+      && /running in the background: nats-server \(pid \d+\)/.test(plain(up.stdout))
+      && !/Press Ctrl-C to stop/.test(plain(up.stdout + up.stderr)),
+    up.stdout + up.stderr,
+  );
   ok(
     "auth up reports the exact running component set",
     /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, manager - stop with: cotal down$/m.test(plain(up.stdout)),
@@ -117,6 +130,37 @@ try {
   }
   ok("delivery-aware marker is bound to the manager pid", pidOf("manager.delivery-aware") === pidOf("manager.pid"));
   ok("auth material was provisioned (.cotal/auth)", existsSync(join(root, ".cotal", "auth")));
+  // After spawnSync returns, the invoker is gone. If the stack were still that process's children,
+  // they would be dead. Also pin parentage: a detached nats-server is not a child of this suite.
+  const natsPid = pidOf("nats.pid");
+  if (process.platform === "win32") {
+    const csv = execFileSync("wmic", ["process", "where", `ProcessId=${natsPid}`, "get", "ParentProcessId", "/format:csv"], { encoding: "utf8" });
+    const ppid = Number(csv.trim().split(/\r?\n/).at(-1)?.split(",").at(-1));
+    ok("detached nats-server is not a child of this suite", Number.isFinite(ppid) && ppid !== process.pid, { natsPid, ppid, suite: process.pid });
+  } else {
+    const ppid = Number(execFileSync("ps", ["-o", "ppid=", "-p", String(natsPid)], { encoding: "utf8" }).trim());
+    ok("detached nats-server is not a child of this suite", Number.isFinite(ppid) && ppid !== process.pid, { natsPid, ppid, suite: process.pid });
+  }
+
+  // Default-port collision: `up` without an explicit `--server` should allocate a free port and
+  // record it, not fail with "use --server ...:<port>". After the named persist/detach cells so a
+  // skipped record cannot throw ENOENT here and grade WRONG-RED. If the developer already has a
+  // real :4222 broker, leave it alone; otherwise start a sandbox occupant and tear it down below.
+  if (!(await portOpenAt(4222))) {
+    const occupant = cliIn(occupantRoot, "up", "--detach", "--open");
+    ok("default-port occupant starts for auto-port regression", occupant.status === 0, occupant.stdout + occupant.stderr);
+    startedOccupant = true;
+  }
+  const auto = cliIn(autoRoot, "up", "--detach", "--open", "--space", "auto");
+  ok("up --detach auto-selects a free port when :4222 is occupied", auto.status === 0, auto.stdout + auto.stderr);
+  const autoRecPath = join(home, "meshes", "space.6175746f.json");
+  const autoEntry = existsSync(autoRecPath)
+    ? JSON.parse(readFileSync(autoRecPath, "utf8")) as { server: string }
+    : undefined;
+  ok("auto-port mesh is not recorded on the default server", autoEntry !== undefined && autoEntry.server !== DEFAULT_SERVER, autoEntry ?? autoRecPath);
+  ok("auto-port mesh broker is reachable", autoEntry !== undefined && await portOpenAt(Number(new URL(autoEntry.server).port)), autoEntry);
+  cliIn(autoRoot, "down");
+  if (startedOccupant) cliIn(occupantRoot, "down");
 
   // 2) the manager ANSWERS a real `cotal ps` — no pre-arranged creds, resolved from the folder's
   //    auth + the sandboxed mesh registry, exactly as an operator would run it. Retried while the
@@ -124,7 +168,7 @@ try {
   let answered = false;
   let last = { stdout: "", stderr: "" };
   for (let i = 0; i < 15 && !answered; i++) {
-    const r = cli("ps");
+    const r = cli("ps", "--space", SPACE);
     last = { stdout: r.stdout, stderr: r.stderr };
     answered = r.status === 0 && /no managed agents/.test(r.stdout);
     if (!answered) await sleep(2000);
@@ -141,7 +185,7 @@ try {
   const deliveryPidFile = join(root, ".cotal", "delivery.pid");
   const liveDelivery = readFileSync(deliveryPidFile, "utf8");
   rmSync(deliveryPidFile);
-  const lost = cli("up", "--server", SERVER);
+  const lost = cli("up", "--space", SPACE, "--server", SERVER);
   const lostOut = plain(lost.stdout + lost.stderr);
   ok("a refresh whose delivery launch loses the single-flight lease exits non-zero", lost.status !== 0, lostOut);
   ok("the refresh says the daemon it started exited without becoming ready", /exited without becoming ready/.test(lostOut), lostOut);
@@ -161,12 +205,16 @@ try {
   }
   ok("all pid files removed by down", (["nats.pid", "delivery.pid", "manager.pid"] as const).every((f) => !existsSync(join(root, ".cotal", f))));
   ok("all three processes are dead + broker port closed", dead, pids.filter(alive));
+  const offlineList = cli("meshes");
+  ok("a stopped self-hosted mesh remains listed offline", offlineList.status === 0 && new RegExp(`${SPACE}.*self-hosted.*offline`).test(plain(offlineList.stdout)), offlineList.stdout + offlineList.stderr);
+  const offlineUse = cli("ps", "--space", SPACE);
+  ok("dead self-hosted target names its root and restart command", offlineUse.status !== 0 && plain(offlineUse.stdout + offlineUse.stderr).includes(`mesh "${SPACE}" is recorded at ${realpathSync(root)} but not running - run \`cotal up\` there to restart`), offlineUse.stdout + offlineUse.stderr);
 
   // Open mode in the SAME root retains static-auth files from the prior boot. Reporting follows the
   // effective live mode, not stale on-disk auth material: broker + manager, never delivery/auth-service.
   ok("static auth material remains before the open-mode reporting check", existsSync(join(root, ".cotal", "auth")));
-  const open = cli("up", "--detach", "--open", "--server", SERVER);
-  ok("open up --detach exits 0", open.status === 0, open.stdout + open.stderr);
+  const open = cli("up", "--open", "--space", SPACE, "--server", SERVER);
+  ok("open bare up exits 0", open.status === 0, open.stdout + open.stderr);
   ok(
     "open up reports the exact running component set",
     /^✓ running in the background: nats-server \(pid \d+\), manager - stop with: cotal down$/m.test(plain(open.stdout)),
@@ -182,6 +230,10 @@ try {
   spawnSync(TSX, [CLI, "down"], { cwd: autoRoot, env, encoding: "utf8" });
   if (startedOccupant) spawnSync(TSX, [CLI, "down"], { cwd: occupantRoot, env, encoding: "utf8" });
   for (const p of pids) if (alive(p)) { try { process.kill(p, "SIGTERM"); } catch { /* gone */ } }
+  for (const p of matchingPids()) { try { process.kill(p, "SIGTERM"); } catch { /* gone */ } }
+  await sleep(500);
+  const survivors = matchingPids();
+  if (survivors.length > 0) throw new Error(`FAIL: up-stack teardown left matching processes — ${survivors.join(", ")}`);
   rmSync(home, { recursive: true, force: true });
   for (const d of [root, autoRoot, occupantRoot]) rmSync(d, { recursive: true, force: true });
 }

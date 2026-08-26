@@ -530,6 +530,8 @@ smoke:claude-boot-wake
 # Control commands resolve ws:// / wss:// meshes too. Exercise the real CLI against one broker's
 # websocket and TCP listeners so raw node-transport regressions name their `wsconnect` refusal.
 smoke:control-transport-dial
+# Windows detached stacks must either escape the invoking job with CREATE_BREAKAWAY_FROM_JOB or
+# fail before launch and point to --foreground. Pure branch coverage runs on every CI platform.
 # A manager restart killed mid-barrier left the issuance gate frozen, and the successor refused
 # SPEC 13.8 until an operator ran reconcile-gate (#783 item 3 / #871). Boot now completes that
 # same dead registration when the freeze-holder is gone under a complete CONNZ sweep. Appended
@@ -543,3 +545,4 @@ smoke:web-console-auth
 smoke:no-implicit-general
 smoke:session-channels
 smoke:jcode-private-lifecycle
+smoke:windows-detached-spawn

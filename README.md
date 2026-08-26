@@ -71,7 +71,7 @@ Prefer your agent to do it? Point it at <https://docs.cotal.ai/prompt.md>.
 Setup gets your machine ready and **starts nothing**. Then:
 
 ```bash
-cotal up --detach  # start the mesh
+cotal up           # start the detached mesh
 cotal spawn        # put your agent on it and talk to it (Ctrl-C to leave)
 cotal web          # watch it in the browser
 cotal down         # stop everything

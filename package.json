@@ -88,7 +88,6 @@
     "smoke:jcode-lifecycle": "tsx extensions/connector-jcode/smoke/jcode-lifecycle.smoke.ts",
     "smoke:jcode-private-lifecycle": "tsx extensions/connector-jcode/smoke/private-lifecycle.smoke.ts",
     "smoke:jcode-provider-disconnect": "tsx extensions/connector-jcode/smoke/jcode-provider-disconnect.smoke.ts",
-    "smoke:jcode-retry-policy": "tsx extensions/connector-jcode/smoke/retry-policy.smoke.ts",
     "smoke:jcode-live": "tsx extensions/connector-jcode/smoke/jcode-live.smoke.ts",
     "smoke:view": "tsx implementations/cli/smoke/view.smoke.ts",
     "smoke:members": "tsx packages/core/smoke/members.smoke.ts",
@@ -494,7 +493,8 @@
     "smoke:web-channel-alias": "tsx implementations/web/smoke/channel-alias.smoke.ts",
     "smoke:web-body-cap": "tsx implementations/web/smoke/body-cap.smoke.ts",
     "smoke:core-history-limit": "tsx packages/core/smoke/history-limit.smoke.ts",
-    "smoke:web-graph-boot": "tsx implementations/web/smoke/graph-boot.smoke.ts"
+    "smoke:web-graph-boot": "tsx implementations/web/smoke/graph-boot.smoke.ts",
+    "smoke:windows-detached-spawn": "tsx bin/smoke/windows-detached-spawn.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/auth": "workspace:*",

@@ -23,9 +23,10 @@ for (const needle of ['/prompt.md', '/getting-started.md', '/mcp-tools.md', '/sp
 // The agent setup runbook must ship, keep its commands, and stay in step with
 // the Quickstart (same commands, so neither can drift alone).
 const runbook = readFileSync(join(dist, 'prompt.md'), 'utf8');
-for (const cmd of ['npx cotal-ai setup --yes', 'npx cotal-ai up --detach']) {
+for (const cmd of ['npx cotal-ai setup --yes', 'npx cotal-ai up']) {
   if (!runbook.includes(cmd)) fail(`prompt.md lost its command: ${cmd}`);
 }
+if (runbook.includes('npx cotal-ai up --detach')) fail('prompt.md still documents up --detach as the start command');
 
 // The Quickstart ships the interactive prompt card on the page, and its
 // Markdown twin (plus the llms dumps) must stay clean Markdown: the plain
@@ -35,9 +36,10 @@ if (!quickstartHtml.includes('agent-prompt')) fail('quickstart lost its prompt c
 const quickstartTwin = readFileSync(join(dist, 'getting-started.md'), 'utf8');
 if (!quickstartTwin.includes('prompt.md, then set up Cotal'))
   fail('quickstart twin lost the setup prompt');
-for (const cmd of ['npx cotal-ai setup --yes', 'npx cotal-ai up --detach']) {
+for (const cmd of ['npx cotal-ai setup --yes', 'npx cotal-ai up']) {
   if (!quickstartTwin.includes(cmd)) fail(`quickstart lost the runbook command: ${cmd}`);
 }
+if (quickstartTwin.includes('npx cotal-ai up --detach')) fail('quickstart still documents up --detach as the start command');
 for (const f of ['getting-started.md', 'llms-full.txt', 'llms-small.txt']) {
   if (readFileSync(join(dist, f), 'utf8').includes('AgentPrompt'))
     fail(`AgentPrompt component leaked into ${f}`);
@@ -72,9 +74,10 @@ const setupSkill = readFileSync(
   join(dist, '.well-known', 'agent-skills', 'cotal-setup', 'SKILL.md'),
   'utf8',
 );
-for (const cmd of ['npx cotal-ai setup --yes', 'npx cotal-ai up --detach']) {
+for (const cmd of ['npx cotal-ai setup --yes', 'npx cotal-ai up']) {
   if (!setupSkill.includes(cmd)) fail(`cotal-setup skill lost its command: ${cmd}`);
 }
+if (setupSkill.includes('npx cotal-ai up --detach')) fail('cotal-setup skill still documents up --detach as the start command');
 
 const BAD = /(?:href="|\]\()(?:\.\.\/|docs\/|spec\/|packages\/|extensions\/|implementations\/|examples\/)/;
 function scan(dir) {

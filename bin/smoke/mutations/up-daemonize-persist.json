@@ -1,0 +1,34 @@
+{
+  "suite": "bin/smoke/up-stack-live.smoke.ts",
+  "guard": "bare cotal up persists a durable self-hosted record and launches a process-independent stack",
+  "command": "pnpm build && env -i PATH=$PATH HOME=$HOME TMPDIR=$TMPDIR USER=$USER SHELL=$SHELL pnpm smoke:up-stack:live",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/up-daemonize-persist.json",
+  "why": [
+    "This is a real-broker end-to-end suite through the published CLI composition root. The command rebuilds first because package resolution reaches product code through dist.",
+    "No completionMarker: the suite is fail-fast (ok() throws) and its success banner is the one line a killed run never reaches. Declaring UP-STACK LIVE SMOKE OK would invert every genuine kill into INCONCLUSIVE.",
+    "Mutation 1 removes the provision-time registry write. The named persist cell is the first record-dependent check and uses existsSync, so a missing file reddens that cell instead of throwing ENOENT on a later auto-port read.",
+    "Mutation 2 restores the old opt-in detach decision. Bare up then enters the foreground path, which prints Ctrl-C copy and never emits the detached banner; spawnSync SIGTERM of that path can still exit 0, so the named cell requires the banner and the absence of Ctrl-C. afterRestore rebuilds because dist/ is gitignored."
+  ],
+  "mutations": [
+    {
+      "name": "provisioning skips the durable mesh record",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "  recordOurMesh({\n    space, server, root: cotalRoot(),",
+      "replace": "  if (false) recordOurMesh({\n    space, server, root: cotalRoot(),",
+      "expectRed": "up persists a self-hosted mesh record at provision time",
+      "cell": "up persists a self-hosted mesh record at provision time",
+      "note": "Deletes the effective persistence call while leaving launch intact.",
+      "afterRestore": "pnpm build"
+    },
+    {
+      "name": "detach returns to opt-in instead of being the default",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "  if (!values.foreground) {",
+      "replace": "  if (values.detach) {",
+      "expectRed": "bare up exits 0 while the stack remains alive (detached by default)",
+      "cell": "bare up exits 0 while the stack remains alive (detached by default)",
+      "note": "Restores the old behavior at the ordinary up launch branch.",
+      "afterRestore": "pnpm build"
+    }
+  ]
+}

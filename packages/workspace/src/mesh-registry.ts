@@ -59,9 +59,9 @@ export interface MeshEntry {
    *  will then send its credentials in the clear. The flag is what turns "encrypted if the server
    *  says so" into "encrypted or refuse". */
   tlsRequired?: boolean;
-  /** Who put this record here — and therefore what may take it out. `up` (the default, and what any
-   *  record written without the field is) means THIS machine started the mesh: it is safe to drop
-   *  on a liveness verdict or a local teardown, because `cotal up` writes it straight back.
+  /** Who put this record here — and therefore what may take it out. `self-hosted` means this machine
+   *  provisioned the mesh and this root is its restart authority, so downtime must not erase it.
+   *  Legacy `up` records (including records written without the field) remain pruneable.
    *  `manual` means an operator registered it by hand (`cotal meshes add`) — typically a mesh
    *  running on another machine, whose record nothing here can reconstruct.
    *
@@ -69,12 +69,12 @@ export interface MeshEntry {
    *  demonstrably BECOMES that mesh:
    *   - `cotal meshes rm` (drops it) and `cotal meshes add --force` (replaces it);
    *   - a `cotal up` that actually starts the broker for that same space, server and root — it now
-   *     runs the mesh, so it claims the record and `cotal down` clears it again.
+   *     runs the mesh, so it claims the record as `self-hosted`.
    *  Nothing else infers its way past: not the liveness sweep, not the classified preflight prune,
    *  not `cotal down` / `cotal clean all` sweeping a shared root, and not a `cotal up` REFRESH that
    *  merely found a broker already answering (it starts nothing, so it keeps the origin). A `cotal
    *  up` for that space anywhere else refuses outright rather than reclaim the name. */
-  origin?: "up" | "manual";
+  origin?: "up" | "manual" | "self-hosted";
   /** Present and true when the operator EXPLICITLY accepted registering an overlay address that
    *  this build cannot encrypt (`--allow-unencrypted-overlay`). Recorded rather than inferred: the
    *  address class is re-derivable from `server`, but CONSENT is not, and a dial that happens long
@@ -244,16 +244,17 @@ export function removeMesh(space: string): void {
  *
  * Every automatic deletion goes through here rather than {@link removeMesh}, because the rule is one
  * rule and forgetting it at a single site is the whole failure: a `manual` record (`cotal meshes
- * add`) is NEVER auto-pruned. An `up` record is safe to drop — `cotal up` writes it back — but a
- * manual one usually describes a mesh on ANOTHER machine, and nothing on this machine can
- * reconstruct the server URL, root and mode the operator typed. A sleeping laptop or a VPN blip
- * would otherwise unregister a perfectly healthy remote mesh for good (observed exactly once, and
- * once was enough). An unreachable manual record is a STATE the surfaces report ("offline"), not a
- * deletion; `cotal meshes rm` is how it leaves.
+ * add`) and a `self-hosted` record (`cotal up`) are NEVER auto-pruned. A legacy `up` record is safe
+ * to drop — `cotal up` writes it back as `self-hosted` — but a manual one usually describes a mesh
+ * on ANOTHER machine, and a self-hosted one is the restart authority for THIS root. A sleeping
+ * laptop or a VPN blip would otherwise unregister a perfectly healthy remote mesh for good
+ * (observed exactly once, and once was enough); the same erasure of a stopped local stack is the
+ * existence denial this helper exists to prevent. An unreachable durable record is a STATE the
+ * surfaces report ("offline"), not a deletion; `cotal meshes rm` is how it leaves.
  */
 export function pruneMesh(space: string): boolean {
   const m = findMesh(space);
-  if (!m || m.origin === "manual") return false;
+  if (!m || m.origin === "manual" || m.origin === "self-hosted") return false;
   removeMesh(space);
   return true;
 }
@@ -283,17 +284,16 @@ export function meshesForRoot(root: string): MeshEntry[] {
  * or wiped (`cotal down` / `cotal clean all`), releasing the `current` pointer per removed entry.
  * Returns the removed space names.
  *
- * OPERATOR-REGISTERED entries are skipped. The root is shared, not owned: `cotal meshes add`
- * defaults `--root` to the project you run it in, so registering a mesh that runs elsewhere from
- * inside your own project files both records under one root. Tearing down THIS project's mesh says
- * nothing about the remote one, and deleting its record here is the unrecoverable case (`down` can
- * rewrite what `up` wrote; nothing rewrites a hand-registered record). `cotal meshes rm` is how one
- * of those leaves.
+ * OPERATOR-REGISTERED and SELF-HOSTED entries are skipped. The root is shared, not owned:
+ * `cotal meshes add` defaults `--root` to the project you run it in, so registering a mesh that
+ * runs elsewhere from inside your own project files both records under one root. Tearing down THIS
+ * project's processes says nothing about the remote one, and deleting a self-hosted record would
+ * erase the restart authority `cotal up` just wrote. `cotal meshes rm` is how one of those leaves.
  */
 export function removeMeshesByRoot(root: string): string[] {
   const removed: string[] = [];
   for (const m of meshesForRoot(root)) {
-    if (m.origin === "manual") continue;
+    if (m.origin === "manual" || m.origin === "self-hosted") continue;
     removeMesh(m.space);
     if (getCurrent() === m.space) clearCurrent();
     removed.push(m.space);
@@ -301,10 +301,10 @@ export function removeMeshesByRoot(root: string): string[] {
   return removed;
 }
 
-/** The entries this root actually RUNS — what a local teardown or wipe may act on. The complement
- *  of the skip in {@link removeMeshesByRoot}, exported so a caller that guards on "is this root's
- *  mesh still live" asks about its OWN mesh: a hand-registered record co-rooted here points at a
- *  broker on another machine, which the operator cannot stop and must not be blocked by. */
+/** The entries this root actually RUNS — what a local liveness guard may act on. Hand-registered
+ *  records are excluded (they point at a broker on another machine). Self-hosted records stay:
+ *  this root is their restart authority, so a live one must still block a wipe even though
+ *  {@link removeMeshesByRoot} will not delete the record itself. */
 export function localMeshesForRoot(root: string): MeshEntry[] {
   return meshesForRoot(root).filter((m) => m.origin !== "manual");
 }
