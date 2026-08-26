@@ -344,10 +344,18 @@ try {
   {
     const WEB_PORT = await freePort();
     let log = "";
+    // STRIP `COTAL_` BEFORE THE SPREAD. Whatever runs this suite may be a managed agent session, so
+    // an unfiltered `...process.env` hands the child a live credential and a live broker URL — the
+    // child would then talk to the operator's mesh instead of this suite's throwaway one.
+    // `smoke:suite-ambient-env` is the census that enforces this; it named this file when the
+    // rejection arm was added.
+    const childEnv: NodeJS.ProcessEnv = { ...process.env };
+    for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
+    childEnv.COTAL_WEB_SMOKE_REJECT_HISTORY = "1";
     rejectingWebChild = spawn(process.execPath, [
       "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
       "--server", SERVER, "--space", SPACE, "--port", String(WEB_PORT), "--no-open",
-    ], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, COTAL_WEB_SMOKE_REJECT_HISTORY: "1" } });
+    ], { stdio: ["ignore", "pipe", "pipe"], env: childEnv });
     rejectingWebChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
     rejectingWebChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
 
