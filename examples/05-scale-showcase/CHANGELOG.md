@@ -1,5 +1,11 @@
 # @cotal-ai/example-05-scale-showcase
 
+## 0.0.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.32.0
+
 ## 0.0.4
 
 ### Patch Changes
