@@ -871,10 +871,12 @@ check("…and the LENGTH-MISMATCH branch still does the work before failing, so 
     check("DETACHED OUTPUT FIXTURE: the broker serving the real child started", ready);
     await setupSpaceStreams({ servers: server, space: "consoleauthdetached" });
     let output = "";
+    const childEnv = { ...process.env };
+    for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
     child = spawn(process.execPath, [
       "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
       "--server", server, "--space", "consoleauthdetached", "--port", String(webPort), "--no-open",
-    ], { env: { ...process.env, COTAL_WEB_DETACHED_LOG: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+    ], { env: { ...childEnv, COTAL_WEB_DETACHED_LOG: "1" }, stdio: ["ignore", "pipe", "pipe"] });
     child.stdout?.on("data", (data: Buffer) => { output += data.toString(); });
     child.stderr?.on("data", (data: Buffer) => { output += data.toString(); });
     let served = false;
