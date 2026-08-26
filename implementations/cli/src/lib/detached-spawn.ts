@@ -39,8 +39,8 @@ public static class CotalDetachedProcess {
   [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
   [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int id);
   [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CreateFile(string name, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
-  public static int JobFlags() { bool inside; if (!IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out inside)) throw new Win32Exception(); if (!inside) return 0; JOBOBJECT_EXTENDED_LIMIT_INFORMATION info; if (!QueryInformationJobObject(IntPtr.Zero, 9, out info, (uint)Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)), IntPtr.Zero)) throw new Win32Exception(); return (int)info.BasicLimitInformation.LimitFlags; }
-  public static int Spawn(string app, string line, string cwd, string log, bool breakaway) { var si=new STARTUPINFO(); si.cb=Marshal.SizeOf(si); si.dwFlags=0x100; si.hStdInput=GetStdHandle(-10); IntPtr output=String.IsNullOrEmpty(log)?GetStdHandle(-11):CreateFile(log,0x40000000u,3u,IntPtr.Zero,4u,0x80u,IntPtr.Zero); if(output==new IntPtr(-1)) throw new Win32Exception(); si.hStdOutput=output; si.hStdError=output; PROCESS_INFORMATION pi; uint flags=0x8u|0x200u|(breakaway?0x01000000u:0u); if (!CreateProcess(app,line,IntPtr.Zero,IntPtr.Zero,true,flags,IntPtr.Zero,cwd,ref si,out pi)) throw new Win32Exception(); CloseHandle(pi.hThread); CloseHandle(pi.hProcess); if(!String.IsNullOrEmpty(log)) CloseHandle(output); return pi.dwProcessId; }
+  public static int JobFlags() { bool inside; if (!IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out inside)) throw new Win32Exception(); if (!inside) return 0; JOBOBJECT_EXTENDED_LIMIT_INFORMATION info; if (!QueryInformationJobObject(IntPtr.Zero, 9, out info, (uint)Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)), IntPtr.Zero)) throw new Win32Exception(); return (int)(info.BasicLimitInformation.LimitFlags | 0x40000000u); }
+  public static int Spawn(string app, string line, string cwd, string log, string[] env, bool breakaway) { var si=new STARTUPINFO(); si.cb=Marshal.SizeOf(si); si.dwFlags=0x100; si.hStdInput=GetStdHandle(-10); IntPtr output=String.IsNullOrEmpty(log)?GetStdHandle(-11):CreateFile(log,0x40000000u,3u,IntPtr.Zero,4u,0x80u,IntPtr.Zero); if(output==new IntPtr(-1)) throw new Win32Exception(); si.hStdOutput=output; si.hStdError=output; string block=String.Join("\0",env)+"\0\0"; IntPtr environment=Marshal.StringToHGlobalUni(block); PROCESS_INFORMATION pi; uint flags=0x8u|0x200u|0x400u|(breakaway?0x01000000u:0u); try { if (!CreateProcess(app,line,IntPtr.Zero,IntPtr.Zero,true,flags,environment,cwd,ref si,out pi)) throw new Win32Exception(); } finally { Marshal.FreeHGlobal(environment); } CloseHandle(pi.hThread); CloseHandle(pi.hProcess); if(!String.IsNullOrEmpty(log)) CloseHandle(output); return pi.dwProcessId; }
 }`;
 
 function ps(command: string, stdio?: SpawnOptions["stdio"]): string {
@@ -59,15 +59,19 @@ const nativeWindowsLauncher: WindowsDetachedLauncher = {
   jobState() {
     const flags = Number(ps(`Add-Type -TypeDefinition @'\n${windowsScript}\n'@; [CotalDetachedProcess]::JobFlags()`));
     if (!Number.isInteger(flags)) throw new Error("Windows detached-process probe returned an invalid job limit value");
-    return { inJob: flags !== 0, breakawayAllowed: (flags & (0x800 | 0x1000)) !== 0 };
+    return { inJob: (flags & 0x40000000) !== 0, breakawayAllowed: (flags & (0x800 | 0x1000)) !== 0 };
   },
   spawn(command, args, opts: DetachedSpawnOptions) {
     if (opts.stdio !== "ignore" && !opts.windowsLogPath) throw new Error("Windows detached spawn requires a durable log path");
     const state = this.jobState();
     const breakaway = assertWindowsDetachAllowed(state);
     const line = [command, ...args].map(quoteWindowsArg).join(" ");
-    const payload = Buffer.from(JSON.stringify({ command, line, cwd: opts.cwd ?? process.cwd(), breakaway, log: opts.windowsLogPath }), "utf8").toString("base64");
-    const source = `$x=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}'))|ConvertFrom-Json; Add-Type -TypeDefinition @'\n${windowsScript}\n'@; [CotalDetachedProcess]::Spawn($x.command,$x.line,$x.cwd,$x.log,$x.breakaway)`;
+    const environment = Object.entries(opts.env ?? process.env)
+      .filter((entry): entry is [string, string] => entry[1] !== undefined)
+      .map(([key, value]) => `${key}=${value}`)
+      .sort((a, b) => a.localeCompare(b, "en", { sensitivity: "base" }));
+    const payload = Buffer.from(JSON.stringify({ command, line, cwd: opts.cwd ?? process.cwd(), breakaway, log: opts.windowsLogPath, environment }), "utf8").toString("base64");
+    const source = `$x=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}'))|ConvertFrom-Json; Add-Type -TypeDefinition @'\n${windowsScript}\n'@; [CotalDetachedProcess]::Spawn($x.command,$x.line,$x.cwd,$x.log,[string[]]$x.environment,$x.breakaway)`;
     const pid = Number(ps(source));
     return { pid, unref() {}, kill() { return false; } } as unknown as ChildProcess;
   },
