@@ -3753,8 +3753,9 @@ export class Manager {
       // an optional --share-tools selection (absent → all declared, the pre-merge behavior).
       const cotalConfig = loadCotalConfig(this.workspaceRoot);
       const mcpServers = connectorServers(cotalConfig, agent, parseShareSelection(opts.shareTools));
-      // The operator's spawn-env policy travels the same route: absent means the child inherits
-      // their environment, present means containment. A connector never reads the config itself.
+      // The operator's spawn-env policy travels the same route: absent means no extras (the OS
+      // allow-list + operator knobs + connector-declared inputs), present means those names too.
+      // A connector never reads the config itself.
       const envAllow = spawnEnvAllow(cotalConfig);
       // Per-agent cwd overrides the manager's shared workspace root, so agents can be rooted at
       // arbitrary folders/repos. A relative path resolves against the workspace root; omitted → the

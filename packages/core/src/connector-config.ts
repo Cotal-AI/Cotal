@@ -49,18 +49,10 @@ export interface ConnectorConfig {
   mcpServers?: Record<string, McpServerSpec>;
 }
 
-/** Machine-local policy for what a SPAWNED AGENT's process environment contains.
- *
- *  Absent (the default) means the child inherits the operator's environment, because a harness they
- *  installed and configured should behave under `cotal spawn` the way it behaves when they run it
- *  themselves. Cotal still resets its own `COTAL_*` namespace either way; that is identity, not
- *  preference, and it is not configurable.
- *
- *  `env` PRESENT opts into containment: the child gets a fixed OS allow-list plus exactly these
- *  names. An EMPTY array is a real policy (the OS allow-list alone), which is why the mode turns on
- *  presence and never on length. Use it when secrets live only in the environment and never on
- *  disk - an `aws-vault exec` or `op run` shell, CI-injected values - and know that it does nothing
- *  about `~/.aws` or `~/.ssh`, which a child with a shell reads regardless. */
+/** Deliberate extra environment names for a spawned agent. The default boundary is a fixed OS
+ *  allow-list, the machine-wide `COTAL_*` operator knobs, and connector-declared inputs. `env` adds
+ *  named capability (including a host-session marker a persona has opted into); an empty array adds
+ *  none. There is no inherit mode. */
 export interface SpawnConfig {
   env?: string[];
 }
@@ -170,10 +162,7 @@ export function parseShareSelection(value: string | undefined): readonly string[
     .filter(Boolean);
 }
 
-/** The spawned-agent env allow-list an operator declared, or `undefined` when they declared none
- *  (the inherit default). The caller passes this straight to `LaunchOpts.envAllow`; distinguishing
- *  "declared empty" from "not declared" is the whole point, so this returns the array as written
- *  rather than defaulting it. */
+/** Extra spawned-agent environment names the operator declared. Undefined means no extras. */
 export function spawnEnvAllow(config: CotalConfig): readonly string[] | undefined {
   return config.spawn?.env;
 }

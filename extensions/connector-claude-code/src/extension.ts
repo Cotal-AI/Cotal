@@ -7,6 +7,56 @@ import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchEn
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
 const MCP_SERVER_NAME = "cotal";
+
+/** Auth and provider-routing env `claude` actually reads for a headless or container seat.
+ *  Drawn from Anthropic's authentication precedence
+ *  (https://docs.anthropic.com/en/docs/claude-code/iam) and the env-vars page, not from a
+ *  prefix guess. `CLAUDE_CODE_OAUTH_TOKEN` is the load-bearing name: `docs/deploy.md` and
+ *  `deploy/` tell operators a container Claude authenticates with it, and a container has no
+ *  Keychain. Host-session markers (`CLAUDE_CODE_CHILD_SESSION`, `CLAUDECODE`,
+ *  `CLAUDE_CODE_ENTRYPOINT`) are deliberately absent — those are how a nested `claude` decides
+ *  it must not save a transcript. File-backed material (`~/.claude`, `~/.aws`, credential
+ *  files named by `GOOGLE_APPLICATION_CREDENTIALS`) still reaches the child through HOME. */
+export const CLAUDE_PROVIDER_KEYS = [
+  // First-party / subscription (setup-token, Console key, gateway bearer).
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+  "CLAUDE_CODE_OAUTH_SCOPES",
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "CLAUDE_CONFIG_DIR",
+  // Cloud provider selection. Without the matching flag, the credential vars below are inert.
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "CLAUDE_CODE_USE_FOUNDRY",
+  "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+  "CLAUDE_CODE_USE_MANTLE",
+  // Amazon Bedrock / Claude Platform on AWS.
+  "ANTHROPIC_AWS_API_KEY",
+  "ANTHROPIC_AWS_BASE_URL",
+  "ANTHROPIC_AWS_WORKSPACE_ID",
+  "AWS_BEARER_TOKEN_BEDROCK",
+  "ANTHROPIC_BEDROCK_BASE_URL",
+  "ANTHROPIC_BEDROCK_MANTLE_BASE_URL",
+  "ANTHROPIC_BEDROCK_REGION_PREFIX",
+  "ANTHROPIC_BEDROCK_SERVICE_TIER",
+  // Google Cloud's Agent Platform.
+  "ANTHROPIC_VERTEX_BASE_URL",
+  "ANTHROPIC_VERTEX_PROJECT_ID",
+  // Microsoft Foundry.
+  "ANTHROPIC_FOUNDRY_API_KEY",
+  "ANTHROPIC_FOUNDRY_AUTH_TOKEN",
+  "ANTHROPIC_FOUNDRY_BASE_URL",
+  "ANTHROPIC_FOUNDRY_RESOURCE",
+  // Workload Identity Federation / named Anthropic profiles.
+  "ANTHROPIC_PROFILE",
+  "ANTHROPIC_FEDERATION_RULE_ID",
+  "ANTHROPIC_ORGANIZATION_ID",
+  "ANTHROPIC_WORKSPACE_ID",
+  "ANTHROPIC_IDENTITY_TOKEN",
+  "ANTHROPIC_IDENTITY_TOKEN_FILE",
+] as const;
 /** Channel ref for `--dangerously-load-development-channels`, which turns on the cotal MCP server's
  *  `claude/channel` capability so an idle session wakes the instant a peer message arrives. Because
  *  we isolate the session with --strict-mcp-config the plugin's own MCP server is suppressed and
@@ -78,10 +128,10 @@ export const claudeConnector: Connector = {
     if (opts.variant) throw new Error("claude connector: model variants are not supported");
     // Operator MCP servers shared with this agent (default none — see the --mcp-config block).
     const shared = opts.mcpServers ?? {};
-    // claude auths via macOS Keychain / an OAuth token, not an env key → forward NO provider key.
-    // The OS allow-list (PATH/HOME/TERM/…) is the only thing inherited from the manager env, plus
-    // — only when a shared server declares them via `${VAR}` — the named secrets it needs (mcpKeys,
-    // by name). The operator's unrelated secrets don't reach the child (P3).
+    // Auth is CLAUDE_PROVIDER_KEYS: CLAUDE_CODE_OAUTH_TOKEN (the deploy-doc promise, required in
+    // a container with no Keychain), ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN, and the cloud-provider
+    // flags plus their credential vars. Host-session markers stay off that list. mcpKeys still
+    // forward `${VAR}` names a shared MCP server declared. Unrelated operator secrets stay out.
     // The session's local control endpoint: the MCP server LISTENS on it (auth), and the lifecycle
     // hooks (child processes of `claude`, which inherit this env) CONNECT to it. Both read the
     // SOCKET PATH from the env and the TOKEN from the launch-material file the env points at, never
@@ -98,7 +148,7 @@ export const claudeConnector: Connector = {
     // `claude` first. Tracked separately rather than guessed at here.
     const control = controlEndpoint(opts.space, opts.name);
     const env: Record<string, string> = {
-      ...launchEnv({ mcpKeys: mcpServerEnvKeys(shared), envAllow: opts.envAllow }),
+      ...launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS, mcpKeys: mcpServerEnvKeys(shared), envAllow: opts.envAllow }),
       ...aclEnv(opts),
       // Creds, broker URL and the control token ride a 0600 file; only its path is exported, so the
       // shells, builds and third-party CLIs this session runs no longer inherit live authority.

@@ -630,13 +630,9 @@ for (const assistant of [
       readLaunchMaterial(env[LAUNCH_MATERIAL_ENV]).userAuth?.owner === "owner",
       "user-mode identity is forwarded through the launch material",
     );
-    // Flipped with the env default: the child inherits the operator's environment, so the provider
-    // key and the unrelated variable arrive alike. Pi's own key list is gone; which providers the
-    // operator has credentials for is Pi's business and theirs, never a list this connector keeps.
-    // The per-session assertions above are what still contains this launch, and they got stronger.
-    ok(env.GROQ_API_KEY === "groq-test", "the provider key reaches Pi because the environment is inherited");
-    ok(env.UNRELATED_SECRET === "must-not-forward", "an unrelated operator variable is inherited like any other");
-    ok(!("COTAL_CREDS" in env) && !("COTAL_LIFECYCLE_UID" in env), "no per-session COTAL_* is inherited from this process");
+    ok(env.GROQ_API_KEY === "groq-test", "the declared provider key reaches Pi");
+    ok(env.UNRELATED_SECRET === undefined, "an unrelated operator variable is withheld");
+    ok(!("COTAL_CREDS" in env) && !("COTAL_LIFECYCLE_UID" in env), "ambient per-session COTAL_* is withheld");
     ok(Boolean(launch.control?.path && launch.control.token), "managed Pi launches expose cooperative control");
     const freshSessionAt = launch.args.indexOf("--session-id");
     ok(
