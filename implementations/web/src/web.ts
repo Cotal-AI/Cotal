@@ -61,25 +61,27 @@ const READINESS_PATH = "/api/meta";
 function pathOf(req: IncomingMessage): string {
   return (req.url ?? "/").split("?")[0];
 }
-/** Keep request diagnostics useful without copying the launch credential into the operator log.
- *  Parse the query so encoded spellings of `k` are redacted too, rather than searching only for the
- *  literal bytes `k=` and leaving `%6b=` behind. */
+/** Keep request diagnostics useful without copying a contiguous live launch credential into the
+ *  operator log, wherever it appears in the target. Match each ASCII token byte in raw or percent-
+ *  encoded form so paths, unrelated query fields, mixed encodings, and hex case are covered. */
 function requestTargetForLog(req: IncomingMessage, launchToken: string): string {
   const target = req.url ?? "/";
-  const q = target.indexOf("?");
-  if (q === -1) return target;
-  const query = new URLSearchParams(target.slice(q + 1));
-  let redacted = false;
+  // A substring search cannot be constant-time; unlike authentication, this does not expose a
+  // boolean oracle to the caller. `secretEquals` remains the comparison at the credential boundary.
+  const tokenPattern = [...launchToken]
+    .map((ch) => `(?:${ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}|%${ch.charCodeAt(0).toString(16).padStart(2, "0")})`)
+    .join("");
+  let safeTarget = target.replace(new RegExp(tokenPattern, "gi"), "[redacted]");
+  const q = safeTarget.indexOf("?");
+  if (q === -1) return safeTarget;
+  const query = new URLSearchParams(safeTarget.slice(q + 1));
   const safe = new URLSearchParams();
   for (const [name, value] of query) {
-    // `k` is the expected credential field and remains a belt even for an invalid/replayed value.
-    // The confidentiality invariant is value-based too: the live token is secret wherever a caller
-    // places it, including an unrelated or differently-cased parameter name.
-    const secret = name === "k" || secretEquals(value, launchToken);
-    safe.append(name, secret ? "[redacted]" : value);
-    redacted ||= secret;
+    // `k` remains a belt for invalid, replayed, or otherwise non-live credential-shaped values.
+    safe.append(name, name === "k" ? "[redacted]" : value);
   }
-  return redacted ? `${target.slice(0, q)}?${safe.toString()}` : target;
+  safeTarget = `${safeTarget.slice(0, q)}?${safe.toString()}`;
+  return safeTarget;
 }
 /** Where a detached parent (and an operator who lost the printed link) finds the launch URL. Written
  *  0600 beside the pidfile — the same place and the same trust boundary as the rest of this mesh's

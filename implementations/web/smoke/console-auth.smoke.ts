@@ -805,7 +805,7 @@ check("…and the LENGTH-MISMATCH branch still does the work before failing, so 
     });
     await refused.text();
     await wait(150);
-    check("a malformed real route keeps its diagnostic query but never logs the launch token, raw or URL-encoded",
+    check("a malformed real route keeps its diagnostic query but logs no contiguous live token, raw or URL-encoded, in its target",
       refused.status === 400 && output.includes("limit=bad") && !output.includes(token) && !output.toLowerCase().includes(encodedToken.toLowerCase()),
       { status: refused.status, log: output });
 
@@ -821,6 +821,17 @@ check("…and the LENGTH-MISMATCH branch still does the work before failing, so 
           && !output.includes(token) && !output.toLowerCase().includes(encodedToken.toLowerCase()),
         { name, status: adversarial.status, log: output });
     }
+
+    output = "";
+    const pathAttack = await fetch(`http://127.0.0.1:${webPort}/api/channels/${encodedToken}/history?limit=bad`, {
+      headers: { cookie },
+    });
+    await pathAttack.text();
+    await wait(150);
+    check("a contiguous live launch token in a request PATH is redacted from the real malformed-route diagnostic",
+      pathAttack.status === 400 && output.includes("limit=bad")
+        && !output.includes(token) && !output.toLowerCase().includes(encodedToken.toLowerCase()),
+      { status: pathAttack.status, log: output });
   } finally {
     child?.kill("SIGTERM");
     broker.kill("SIGTERM");
