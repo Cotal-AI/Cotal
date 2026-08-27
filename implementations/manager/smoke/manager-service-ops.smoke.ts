@@ -35,6 +35,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { connect } from "@nats-io/transport-node";
+import { firstFreeName } from "@cotal-ai/core";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, standaloneConnectOpts, principalKey, DEV_OWNER,
@@ -352,8 +353,10 @@ try {
       // FIXTURES. Both arms run against the SAME live occupant and the SAME base name, so they are
       // coupled through the real allocator rather than each asserting a constant, and neither can
       // pass by accident while the other is broken. Proven, not assumed: mutating the
-      // implementation so the manifest arm stops refusing makes it CONSUME `m6pin-2`, which pushes
-      // the persona-derived control to `m6pin-3` and fails that check too. Two interfering tests
+      // implementation so the manifest arm stops refusing makes it CONSUME the first numbered name,
+      // which pushes the persona-derived control to the second and fails that check too. The names
+      // are DERIVED from the shipped allocator below rather than spelled: writing the separator out
+      // here is what made a numbering change surface as a mystery failure. Two interfering tests
       // look like a smell and isolating them reads as tidying — but isolation would convert a
       // coupled proof into two independent constants that can both drift green.
       const { acc: held } = await spawnLive(A.call, { name: "m6pin", agent: "e2e-stub", cwd: repoRoot });
@@ -370,15 +373,21 @@ try {
         }],
       }));
       const rPinned = await A.call("launch", { runId: m6Run, name: "m6pin" });
-      check("M6 manifest-declared: a launch onto a LIVE name REFUSES, never a silent -2 (breaking vs shipped main, and the arm nothing covered)",
+      check("M6 manifest-declared: a launch onto a LIVE name REFUSES, never a silent auto-number (breaking vs shipped main, and the arm nothing covered)",
         rPinned.reply.ok === false && /hard-pinned \(manifest-declared\)/.test(rPinned.reply.error?.message ?? ""), rPinned.reply);
 
       // THE CONTROL, so the refusal above is not just "launch is broken": a PERSONA-DERIVED spawn of
       // the same base name still numbers. Same live occupant, same base name, opposite outcome —
       // that contrast is the whole content of M6.
       const { acc: numbered } = await spawnLive(A.call, { name: "m6pin", agent: "e2e-stub", cwd: repoRoot });
+      // DERIVED from the shipped allocator, not spelled: this assertion previously hard-coded the
+      // numbering separator, so changing the scheme failed here as a mystery rather than as a
+      // deliberate update — and the literal was invisible to a search for the scheme itself.
+      const expectNumbered = firstFreeName("m6pin", (n) => n === "m6pin");
+      check(`M6 control: the derived numbered name differs from the base (${expectNumbered})`,
+        expectNumbered !== "m6pin" && expectNumbered.startsWith("m6pin"), expectNumbered);
       check("M6 persona-derived: the SAME base name against the SAME live occupant still NUMBERS",
-        numbered.name === "m6pin-2", numbered);
+        numbered.name === expectNumbered, { got: numbered.name, expected: expectNumbered });
     }
     const rRes = await A.call("resume-preserved", { attemptId: "nope", inventory: { version: "cotal-manager-resume/v1", space, createdAt: "x", agents: [] } });
     check("resumePreserved refuses with the EXACT ctl core message (no --resume-attempt manager)",

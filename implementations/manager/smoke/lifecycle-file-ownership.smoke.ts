@@ -31,6 +31,7 @@ import { join, basename } from "node:path";
 import { Manager } from "../src/manager.js";
 import {
   createSpaceAuth,
+  firstFreeName,
   registry,
   mintCreds,
   newIdentity,
@@ -165,7 +166,11 @@ try {
   releaseSnapshot();
   const spawnLive = await spawnLivePromise;
   snapshotGate = Promise.resolve();
-  check("spawn against a LIVE unmanaged same-name peer auto-numbers (solo -> solo-2)", spawnLive.ok && (spawnLive.data as { name: string }).name === "solo-2", spawnLive.ok ? (spawnLive.data as { name: string }).name : spawnLive);
+  // DERIVED from the shipped allocator, not spelled — a hard-coded suffix here pins the numbering
+  // scheme in a place no search for that scheme will look.
+  const expectSolo = firstFreeName("solo", (n) => n === "solo");
+  check(`control: the derived numbered name differs from the base (${expectSolo})`, expectSolo !== "solo" && expectSolo.startsWith("solo"), expectSolo);
+  check(`spawn against a LIVE unmanaged same-name peer auto-numbers (solo -> ${expectSolo})`, spawnLive.ok && (spawnLive.data as { name: string }).name === expectSolo, spawnLive.ok ? (spawnLive.data as { name: string }).name : spawnLive);
 
   // An OFFLINE row never occupies — a retired name stays reusable.
   writeFileSync(join(agentsDir, "reuse.md"), "---\nname: reuse\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\nallowPublish: [general]\n---\nbody\n");
