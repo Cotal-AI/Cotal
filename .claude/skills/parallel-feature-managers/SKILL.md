@@ -13,8 +13,9 @@ Use the live Cotal mesh as a hierarchy:
   complete plan -> implementation -> review -> test -> commit loop.
 - Each manager spawns three or more **read/review-only peers** in one dedicated channel: engineer,
   security, and critic at minimum.
-- Near the final gate, each manager uses one **independent cold reviewer** over DM only. It never
-  joins or reads the feature channel, so panel consensus cannot anchor its second opinion.
+- Near the final gate, each manager uses one **independent cold reviewer** over DM only, run under
+  the **`cold-review` skill**. It never joins or reads the feature channel, so panel consensus cannot
+  anchor its second opinion. That skill is the single source for how the seat is briefed and graded.
 
 ## Models: cross-vendor panels are a correctness rule, not a preference
 
@@ -180,9 +181,11 @@ the short commit it is sitting on, and check the raw output. A handshake that st
 answer ("confirm you are at <path> on <sha>") is leading: an echo-compatible reply proves something
 can mirror text, not that a shell ran.
 
-The independent reviewer is intentionally absent during initial staffing. The feature manager
-spawns it only at the cold-review gate. Confirm it remains off the feature channel; communicate by
-DM only. Auto-numbering applies to `review-freelance` too, so track the returned identity.
+The independent reviewer is intentionally absent during initial staffing. The feature manager spawns
+it only at the cold-review gate, and runs it under the **`cold-review` skill**, which owns that
+seat's isolation, briefing, and verdict rules. Do not restate them here: one source for the rule, or
+the two copies drift and the stale one is invisible to whoever is editing the other.
+Auto-numbering applies to `review-freelance` too, so track the returned identity.
 
 ## 5. Monitor without taking over
 
@@ -215,8 +218,11 @@ A feature is complete only when:
 
 - The manager has folded or reasoned against every concrete finding.
 - Every panel reviewer gives final approval, and the panel spans more than one vendor.
-- The DM-only independent reviewer gives final approval without having joined the panel channel and
-  without having been shown the panel's findings.
+- The DM-only independent reviewer gives final approval under the `cold-review` skill, posted
+  first-hand and naming the exact sha, without having joined the panel channel and without having
+  been shown the panel's findings.
+- Every approval names the head it graded, and that head is re-resolved at merge time. A verdict is
+  never carried across a sha.
 - Required focused and integration tests pass.
 - The feature is committed on its own branch.
 - `git status` is clean except an explicitly acknowledged local `.internal` pointer mismatch.
