@@ -63,6 +63,13 @@ const SCRIPT_RE = /(smoke:[A-Za-z0-9:_-]+)/g;
 const BROKEN = "BROKEN:";
 
 const UNGATED: Record<string, string> = {
+  // Ready to gate, blocked only by a freeze. `bin/smoke/ci-suites.txt` is frozen BY POSITION until
+  // PR #880 lands: the shard walk is round-robin by INDEX, so inserting a line mid-file re-shards
+  // every later suite across CI runners and makes a shard-to-shard comparison across the change
+  // meaningless. Gating it inside `smoke:ci` would edit that same file, so it is the same problem
+  // wearing different clothes. The suite runs by hand today and gets its chain line when the
+  // freeze lifts; this entry is the one-line reversal, with its reason already written.
+  "smoke:ps-provenance": "ci-suites.txt is frozen by position until PR #880; gate when the freeze lifts",
   // Need external tooling no CI runner has.
   "smoke:orca:live": "drives the public orca CLI",
   "smoke:orca-e2e:live": "drives the public orca CLI", "smoke:pi": "needs a pi install", "smoke:codex-live": "needs a logged-in codex CLI",
