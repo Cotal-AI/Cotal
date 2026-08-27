@@ -107,11 +107,18 @@ async function callJcodeMcpRaw(
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
-  // An unread stderr pipe fills (64 KiB on Linux, smaller on macOS) and the child blocks on
-  // write, so it never answers the JSON-RPC frame. Drain and discard; do not interpret it.
+  // An unread stderr pipe fills (64 KiB on Linux, smaller on macOS) and the child
+  // blocks on write, so it never answers the JSON-RPC frame. Bridge stderr is
+  // diagnostic only: the suite asserts on stdout frames and exit codes, so
+  // discarding it here is acceptable; leaving it unread is not.
   bridge.stderr?.resume();
   let pending = "";
+  const garbage: string[] = [];
   const frames = new Map<number, (frame: Record<string, unknown>) => void>();
+  const describeGarbage = (): string =>
+    garbage.length === 0
+      ? ""
+      : `; child also wrote ${garbage.length} unparseable line(s), first: ${garbage[0]}`;
   bridge.stdout?.setEncoding("utf8");
   bridge.stdout?.on("data", (chunk: string) => {
     pending += chunk;
@@ -124,6 +131,7 @@ async function callJcodeMcpRaw(
       try {
         frame = JSON.parse(line) as Record<string, unknown>;
       } catch {
+        if (garbage.length < 8) garbage.push(line.slice(0, 200));
         continue;
       }
       if (typeof frame.id === "number") frames.get(frame.id)?.(frame);
@@ -138,14 +146,17 @@ async function callJcodeMcpRaw(
         clearTimeout(timer);
         fn();
       };
+      // A healthy initialize or tools/call returns in milliseconds here. 10s is three
+      // orders of magnitude of headroom so a wedged child becomes a named failure
+      // rather than a tolerated slow one.
       const timer = setTimeout(
-        () => settle(() => reject(new Error(`callJcodeMcpRaw timed out waiting for frame id ${id} (${frameName(id)})`))),
+        () => settle(() => reject(new Error(`callJcodeMcpRaw timed out waiting for frame id ${id} (${frameName(id)})${describeGarbage()}`))),
         10_000,
       );
       frames.set(id, (frame) => settle(() => resolve(frame)));
       bridge.once("exit", (code, signal) =>
         settle(() =>
-          reject(new Error(`callJcodeMcpRaw child exited (code=${code} signal=${signal}) before frame id ${id} (${frameName(id)})`)),
+          reject(new Error(`callJcodeMcpRaw child exited (code=${code} signal=${signal}) before frame id ${id} (${frameName(id)})${describeGarbage()}`)),
         ),
       );
       bridge.stdin?.write(json + "\n");
