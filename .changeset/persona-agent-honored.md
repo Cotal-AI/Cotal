@@ -10,7 +10,7 @@ launch paths resolved the connector before the persona file was loaded, so `COTA
 silently beat a deliberate per-persona pin (a `jcode` persona ran `claude` with no complaint).
 
 The harness now resolves once, on every spawn path, as: explicit `--agent` flag > persona `agent:` >
-`COTAL_DEFAULT_AGENT` > the product default — the same precedence `model:` and `variant:` already
+`COTAL_DEFAULT_AGENT` > the product default. That is the precedence `model:` and `variant:` already
 have, keeping the env var a *default* rather than an override. On `--detach` the CLI now threads
 only an explicit flag across the control plane (flag and env used to collapse into one field, which
 made file precedence structurally unreachable manager-side); the manager loads the persona file
