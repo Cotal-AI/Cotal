@@ -215,7 +215,7 @@ Unsubscribe from a channel mid-session; you stop receiving its messages. Leaving
 
 *spawn a new teammate*
 
-Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer (and, when the manager runs the cmux runtime, appears in its own tab). Use this, rather than your harness's own subagent/Task tool, whenever you need to spawn a teammate: a Cotal peer is a real, addressable mesh agent the user can watch and you can DM, roster, and coordinate with, not a black-box subagent. When you first bring a team online, if the live web dashboard isn't already up, suggest the user run `cotal web` to watch the mesh in real time.
+Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer (and, when the manager runs the cmux runtime, appears in its own tab). Use this, rather than your harness's own subagent/Task tool, whenever you need to spawn a teammate: a Cotal peer is a real, addressable mesh agent the user can watch and you can DM, roster, and coordinate with, not a black-box subagent. Pass `prompt` when it should begin work immediately; that prompt is auto-submitted as its first turn. When you first bring a team online, if the live web dashboard isn't already up, suggest the user run `cotal web` to watch the mesh in real time.
 
 - **Side-effect:** starts a new agent process via the manager.
 - **Available:** capability-gated: injected only for personas declaring `capabilities: [spawn]` (auth mode); open mode is permissive.
@@ -230,6 +230,7 @@ Ask the manager to start a new peer endpoint in your space. It joins the mesh as
 | `variant` | string | no | Optional model variant override (connector-defined; for OpenCode, a model variant such as high/max/low). |
 | `launchOptions` | record | no | Optional connector-specific launch options: an opaque key→value map the chosen connector forwards raw to its own host form (claude CLI flags, OpenCode agent config); a connector with no option surface (Hermes) rejects any, and malformed keys are refused. |
 | `cwd` | string | no | Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace. |
+| `prompt` | string | no | Optional kickoff message auto-submitted as the new peer's first turn. Pass it when the peer should begin work immediately; omitted means no first model turn is submitted. |
 
 ## `cotal_feedback`
 
