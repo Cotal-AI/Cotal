@@ -23,6 +23,10 @@
  * behaviour on two independent data points. A model agreeing with itself proves nothing.
  *
  * USAGE:  pnpm check:shard-stability <base-sha> <head-sha>   (shard count read from ci.yml)
+ *   The shard count is READ FROM ci.yml. A third argument is accepted only so a
+ *   disagreement can be caught and refused; DO NOT PASS IT from a gate. Hardcoding it at
+ *   the call site restores the coincidence-coupling this tool exists to remove, and
+ *   permanently silences the mismatch abort below.
  * Run from inside a worktree of the repo. Exits 1 if any pre-existing suite changes shard.
  *
  * CONTROLS BUILT IN, because a bare zero is not evidence. Exactly two, and both run on
@@ -61,16 +65,19 @@ console.log("shard-stability.check v1 starting");
 /**
  * The only way out. Prints a terminal marker so a crash cannot impersonate a decision.
  *
- * THE TOKEN IS PRINTED LAST, IMMEDIATELY BEFORE `process.exit`, AND THE TOKEN CARRIES ITS
- * OWN EXIT CODE. pr-review's MUTANT E threw between the token and the exit and produced
- * `token=STABLE exit=1` — a marker asserting one verdict while the status said another.
- * Any statement between the two is a forgery window, so there is none: nothing can run
- * after the token except the exit itself. The message goes first; if it throws, no token
- * is printed at all and the run reads as a crash, which is what it is.
+ * THE TOKEN CARRIES ITS OWN EXIT CODE, AND THAT — NOT THE ORDERING — IS THE DEFENCE.
+ * pr-review's MUTANT E threw between the token and the exit and produced `token=STABLE=0`
+ * with exit 1. Printing the message first removed one window; `console.log(token)` and
+ * `process.exit(code)` are still two statements, so a window remains and MUTANT E2 still
+ * forges a contradiction. An earlier version of this comment claimed "nothing can run
+ * after the token except the exit itself" — that was intent, not an enforced property,
+ * and default_agent caught the overstatement.
  *
- * The token embeds the code (`STABLE=0`) so a reader compares one string instead of
- * correlating two signals — a gate that must remember to cross-check is a gate that
- * eventually does not.
+ * What actually holds: the code travels INSIDE the claim, so a forged or truncated run is
+ * DETECTABLE by comparing one string against `$?`. It is not detected unless the caller
+ * compares them — see MUTANT F in the README, where a swallowed exit code ships a
+ * 263-suite re-shard past any gate reading only `$?`. Embedding makes the comparison
+ * cheap; it does not perform it. THE GATE MUST STILL CHECK AGREEMENT.
  */
 const verdict = (token: "RESHARD" | "STABLE" | "ABORT", message: string, code: 0 | 1 | 2): never => {
   (code === 0 ? console.log : console.error)(message);
