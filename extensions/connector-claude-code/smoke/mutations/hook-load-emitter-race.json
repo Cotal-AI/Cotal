@@ -35,6 +35,15 @@
   ],
   "mutations": [
     {
+      "name": "E0 VACUITY PROOF \u2014 the manifest declares no hooks at all",
+      "file": "extensions/connector-claude-code/hooks/hooks.json",
+      "find": "\"hooks\": {\n    \"SessionStart\"",
+      "replace": "\"hooks\": {},\n  \"_disabled\": {\n    \"SessionStart\"",
+      "expectRed": "the manifest declares hooks at all",
+      "cell": "the manifest declares hooks at all (found N)",
+      "note": "The manifest stays VALID JSON and simply declares zero hooks. Every other manifest cell in this suite is a universal claim over the entries \u2014 'no entry carries args', 'every command is a string', 'every root is quoted' \u2014 and all of them pass vacuously over an empty set. Without this control the suite would report a clean green for a plugin that registers nothing, which is byte-for-byte the outcome the whole change exists to prevent. Read the kill list: if ONLY the count control reddens here, that is the vacuity being demonstrated, not a gap."
+    },
+    {
       "name": "E1 every hook entry reverts to the split-argv form",
       "file": "extensions/connector-claude-code/hooks/hooks.json",
       "find": "\"command\": \"node \\\"${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs\\\"\"",
