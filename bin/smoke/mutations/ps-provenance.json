@@ -41,6 +41,14 @@
       "replace": "  const facts: string[] = [\"model duplicated (variant duplicated)\"];",
       "expectRed": "wide facts do not repeat model or requested variant from the identity row",
       "cell": "wide facts do not repeat model or requested variant from the identity row"
+    },
+    {
+      "name": "the human model catalog drops the inline declared-tier caveat",
+      "file": "implementations/cli/src/commands/models.ts",
+      "find": "  const label = declared ? \"variants (declared, not provider-verified)\" : \"variants\";",
+      "replace": "  const label = \"variants\";",
+      "expectRed": "declared Jcode caveat appears where variants print",
+      "cell": "declared Jcode caveat appears where variants print"
     }
   ]
 }

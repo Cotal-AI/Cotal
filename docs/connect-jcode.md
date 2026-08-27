@@ -125,10 +125,11 @@ and any declared `reasoning_efforts`. This is the same config Jcode copies into 
 instance. The command fails loud when the file is unreadable, malformed, or enables a catalog
 without model entries.
 
-The listed effort tiers are declarations, not provider-verified capabilities. Providers can reject
-a tier the file names, so launch remains the authority: Jcode applies the requested value and a
-provider rejection ends the launch. `--refresh` does not turn this local declaration into a live
-probe.
+The listed effort tiers are declarations, not provider-verified capabilities. `cotal models` prints
+that caveat inline as `variants (declared, not provider-verified)` beside each configured tier list,
+so it cannot be missed by reading only the model rows. Providers can reject a tier the file names,
+so launch remains the authority: Jcode applies the requested value and a provider rejection ends the
+launch. `--refresh` does not turn this local declaration into a live probe.
 
 The Harness API can set a requested effort but cannot read an effective effort back. Its runtime
 identity reports provider, model, and routes only; no reply or event carries the applied tier. Cotal

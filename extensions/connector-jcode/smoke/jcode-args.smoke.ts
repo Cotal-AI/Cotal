@@ -85,7 +85,7 @@ try {
     check("exposes Jcode's declared config catalog", catalog.models.map((m) => m.id).join(",") === "opus-5,plain", catalog);
     check("attributes every model to its declared provider", catalog.models.every((m) => m.provider === "cliproxy"), catalog);
     check("labels declared reasoning efforts as non-authoritative", catalog.models[0]?.variants?.map((v) => `${v.name}:${v.options?.authoritative}`).join(",") === "low:false,max:false", catalog.models[0]);
-    check("names the declared config source and its limitation", catalog.source?.includes("declared Jcode config") === true && catalog.source.includes("not provider-verified"), catalog.source);
+    check("names the declared config source without duplicating the per-tier caveat", catalog.source === "declared Jcode config", catalog.source);
 
     writeFileSync(join(catalogHome, "config.toml"), `[providers.cliproxy]\nmodel_catalog = false\n`);
     catalogRefusesWithoutHome("no enabled provider failure hides the Jcode home", catalogHome, () => listJcodeModels(), /no provider with model_catalog = true/);

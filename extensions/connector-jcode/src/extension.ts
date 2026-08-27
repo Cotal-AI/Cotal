@@ -91,7 +91,7 @@ export function listJcodeModels(): ModelCatalog {
     throw new Error("jcode model catalog has no provider with model_catalog = true in Jcode config");
   if (!models.length)
     throw new Error(`jcode model catalog enabled ${enabledProviders} provider(s) in Jcode config but declared no models`);
-  return { source: "declared Jcode config (effort tiers are not provider-verified)", models };
+  return { source: "declared Jcode config", models };
 }
 
 /**
