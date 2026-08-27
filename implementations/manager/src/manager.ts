@@ -229,6 +229,48 @@ function sameStrings(a: readonly string[] | undefined, b: readonly string[] | un
   return JSON.stringify([...(a ?? [])].sort()) === JSON.stringify([...(b ?? [])].sort());
 }
 
+/** How the persona catalog is shared between the callers of ONE manager. `shared` (the default)
+ *  is the historical behaviour exactly: any caller may spawn any persona in the catalog. `owner`
+ *  applies {@link personaOwnerDenial} at the SPAWN door too, confining each caller to the personas
+ *  it owns. Default-allow on purpose: a manager whose callers are one operator (the overwhelmingly
+ *  common case) must not start refusing its own catalog on upgrade. */
+export type PersonaIsolation = "shared" | "owner";
+
+/** THE persona-ownership predicate — one definition, deliberately shared by BOTH persona doors.
+ *
+ *  It already existed, inline, on the WRITE door (`opDefinePersona`): a peer may redefine a persona
+ *  only if it owns it, and an OWNERLESS file (legacy, or hand-written by the operator) is
+ *  admin-only — fail-closed, because an ownerless file is the operator's until proven otherwise.
+ *
+ *  The SPAWN door applied nothing at all. So the write door carefully refused to let a peer EDIT
+ *  `deploy_runner`, while the spawn door handed the same file to any caller that asked for it by
+ *  name — and the fail-closed stance on ownerless files was exactly inverted, since operator-written
+ *  personas are precisely the ones with no `owner:`. Extracted rather than copied: two copies of an
+ *  authorization rule drift, and the drift is silent on the door nobody is looking at. */
+export function personaOwnerDenial(
+  def: { owner?: string | undefined },
+  caller: string,
+  admin: boolean,
+): "not-owner" | "ownerless" | undefined {
+  if (admin) return undefined;
+  if (!def.owner) return "ownerless";
+  if (def.owner !== caller) return "not-owner";
+  return undefined;
+}
+
+/** The human half of {@link personaOwnerDenial}: names WHOSE it is, in the vocabulary of the door
+ *  that refused. Kept beside the predicate so a new door cannot invent a different word for the
+ *  same denial. */
+export function personaDenialMessage(
+  denial: "not-owner" | "ownerless",
+  verb: string,
+  name: string,
+  owner?: string,
+): string {
+  const whose = denial === "ownerless" ? "operator-owned (legacy file - no agent owner)" : `owned by ${owner}`;
+  return `not authorized to ${verb} ${name}: ${whose}; only its owner or an operator can`;
+}
+
 export interface ManagerOptions {
   space: string;
   servers?: string;
@@ -236,6 +278,9 @@ export interface ManagerOptions {
   /** Spawn backend. `auto` (default) → pty; external runtimes are explicit-only. */
   runtime?: RuntimeMode;
   workspaceRoot?: string;
+  /** Confine each caller to the personas it owns at the SPAWN door (see {@link PersonaIsolation}).
+   *  Defaults to `shared` — the historical behaviour, byte-for-byte. */
+  personaIsolation?: PersonaIsolation;
   /** Port for the console + attach HTTP/WS endpoint. 0 → ephemeral. */
   consolePort?: number;
   /** P2 item 6: the broker's WebSocket listener port (loopback), allocated by `cotal up`. When set,
@@ -418,6 +463,9 @@ export interface ManagerResumeResult {
 /** A spawn request, typed. The control-plane `start` op parses one of these out of an
  *  untyped request; roster boot constructs them directly. Both funnel into {@link Manager.startAgent}. */
 export interface StartAgentOpts {
+  /** The ctl caller's tier, for the persona-ownership check under `owner` isolation. Absent/false
+   *  means "not an operator", which is the safe reading for every non-ctl caller (CLI, manifest). */
+  adminTier?: boolean;
   /** The persona REF to spawn — a filename in `.cotal/agents` (the unique spawn key), discovered as
    *  `.cotal/agents/<name>.md`. NOT the mesh identity: the spawned peer presents under the file's
    *  own `name:` (auto-numbered on collision). The file must exist (no silent default-ACL fallback). */
@@ -683,6 +731,7 @@ export class Manager {
   private readonly wsPort?: number;
   private readonly name: string;
   private readonly workspaceRoot: string;
+  private readonly personaIsolation: PersonaIsolation;
   /** P2 item 6: the operator-set global live-session ceiling (see {@link ManagerOptions.maxSessions}). */
   private readonly maxSessions?: number;
   /** The ONE secret store for every kind this manager touches (daemon-cred remint + agent kinds).
@@ -867,6 +916,9 @@ export class Manager {
     this.servers = opts.servers;
     this.name = opts.name ?? "manager";
     this.workspaceRoot = opts.workspaceRoot ?? findCotalRoot();
+    // Default `shared`: a manager whose callers are one operator must not begin refusing its own
+    // catalog on upgrade. `owner` is the multi-tenant setting, opted into by the deployment.
+    this.personaIsolation = opts.personaIsolation ?? "shared";
     this.maxSessions = opts.maxSessions;
     this.remoteAuthority = opts.remoteAuthority;
     if (opts.remoteAuthority) this.managerLifecycleUid = opts.remoteAuthority.lifecycleUid;
@@ -2210,7 +2262,7 @@ export class Manager {
       }),
       // P2 item 2: `spawn` is an ACTION - accept a goal + reply the acceptance floor payload, drive
       // progress + terminal off-handler (no ~30s block). The blocking reply path is gone (pin 8).
-      spawn: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(ctx, (h) => this.opStart(args(ctx), callerOf(ctx), h))),
+      spawn: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(ctx, async (h) => this.opStart(args(ctx), callerOf(ctx), h, await this.epAnyModeAdmin(ctx)))),
       despawn: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
@@ -3164,7 +3216,7 @@ export class Manager {
   }
 
   /** Parse an untyped control-plane `start` request into {@link StartAgentOpts}. */
-  private opStart(args: Record<string, unknown>, caller: string, hooks?: SpawnHooks): Promise<ControlReply> {
+  private opStart(args: Record<string, unknown>, caller: string, hooks?: SpawnHooks, admin = false): Promise<ControlReply> {
     // `resume`, when present, must be a non-empty session id. An empty/whitespace value is a
     // malformed request, not an implicit "spawn fresh" (no fallbacks). The CLI surfaces reject it,
     // but a raw control message could otherwise slip an empty value through and silently start fresh.
@@ -3194,6 +3246,9 @@ export class Manager {
     }
     return this.startAgent(
       {
+        // The ctl caller's tier, resolved at the door (the same `epAnyModeAdmin` every other
+        // targeted op uses). Carried in opts so the persona check downstream never has to guess.
+        adminTier: admin,
         name: String(args.name ?? "").trim(),
         agent: args.agent ? String(args.agent) : undefined,
         role: args.role ? String(args.role) : undefined,
@@ -3495,6 +3550,14 @@ export class Manager {
         def = loadAgentFile(configPath);
       } catch (e) {
         return { ok: false, error: (e as Error).message };
+      }
+      // The SAME predicate the write door applies (personaOwnerDenial) — under `owner` isolation
+      // this door stops handing one caller's persona, or an operator's ownerless one, to whoever
+      // names it. Checked on the LOADED def, not the path, so `--config <elsewhere>` cannot walk
+      // around the catalog. Inert under the default `shared`, which is what every existing mesh runs.
+      if (this.personaIsolation === "owner") {
+        const denial = personaOwnerDenial(def, spawner ?? "", opts.adminTier ?? false);
+        if (denial) return { ok: false, error: personaDenialMessage(denial, "spawn", ref, def.owner) };
       }
       // Identity: the `--name` override wins over the file's `name:` — foreground parity (there,
       // `requested = values.name ?? def.name`). The override is minted into the creds and rides
@@ -5984,10 +6047,8 @@ export class Manager {
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }
-      if (!admin && def.owner !== caller) {
-        const owner = def.owner ? `owned by ${def.owner}` : "operator-owned (legacy file - no agent owner)";
-        return { ok: false, error: `not authorized to redefine ${name}: ${owner}; only its owner or an operator can` };
-      }
+      const denial = personaOwnerDenial(def, caller, admin);
+      if (denial) return { ok: false, error: personaDenialMessage(denial, "redefine", name, def.owner) };
       // PATCH content: overwrite model only when provided, so a persona-only redefine can't wipe an existing model.
       if (model !== undefined) def.model = model;
       def.persona = persona;

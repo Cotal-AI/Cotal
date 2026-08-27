@@ -138,6 +138,7 @@ smoke:deprovision
 smoke:channels:auth
 smoke:e2e:acl
 smoke:cross-owner:auth
+smoke:persona-ownership
 smoke:plane3:auth
 smoke:delivery-lease:auth
 smoke:delivery-leave-tombstone:auth

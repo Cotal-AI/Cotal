@@ -1,0 +1,82 @@
+{
+  "suite": "implementations/manager/smoke/persona-ownership.smoke.ts",
+  "guard": "one persona-ownership predicate governs BOTH manager persona doors, fail-closed on ownerless files, with the spawn-door narrowing opt-in so an existing single-operator mesh is unaffected",
+  "command": "pnpm smoke:persona-ownership",
+  "completionMarker": "PERSONA-OWNERSHIP SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/persona-ownership.json",
+  "why": [
+    "The manager has two persona doors and only one of them was authorized. The WRITE door refused",
+    "to let a peer redefine a persona it did not own, and was fail-closed on ownerless files. The",
+    "SPAWN door checked nothing, so the same operator-written `deploy_runner` the write door",
+    "protected was launchable by any caller that named it — and ownerless, the write door's most",
+    "conservative case, was the spawn door's most permissive one.",
+    "",
+    "E1 and E2 are the two halves of the rule. E1 makes ownerless files permissive, which is the",
+    "exact original inversion and the one a reader is most likely to call a cleanup ('no owner, no",
+    "restriction'). E2 drops the cross-owner check while leaving ownerless fail-closed, so the",
+    "headline case still refuses and only a peer-vs-peer cell can see it.",
+    "",
+    "E3 removes the admin escape hatch. It is the mutation that makes the suite prove the rule has a",
+    "deliberate operator path rather than merely refusing a lot.",
+    "",
+    "E4 flips the DEFAULT to the narrow setting. Every ownership cell stays green under it — the rule",
+    "is untouched — and it would still break every existing single-operator mesh on upgrade by",
+    "refusing its own catalog. That is the same default-allow trap as the DM work, and it is",
+    "invisible to any cell that only tests the predicate.",
+    "",
+    "E5 attacks the anti-drift cell itself: it re-inlines the comparison at the spawn door while",
+    "leaving the predicate in place, which is precisely how the two copies would diverge later. If",
+    "that cell cannot see a second copy appear, it is decoration.",
+    "",
+    "SPECIFIER BOUNDARY. The suite imports the manager by relative source path (../src/manager.js)",
+    "and runs under tsx, so the mutated file is the file that executes; the source-structure cells",
+    "read that same file from disk. No build stands between the mutation and the assertion."
+  ],
+  "mutations": [
+    {
+      "name": "E1 an ownerless (operator) persona becomes permissive",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "  if (!def.owner) return \"ownerless\";",
+      "replace": "  if (!def.owner) return undefined;",
+      "expectRed": "an OWNERLESS (operator/legacy) file is refused, named 'ownerless'",
+      "cell": "an OWNERLESS (operator/legacy) file is refused, named 'ownerless'",
+      "note": "The exact inversion the spawn door shipped with. Reads as a tidy-up ('no owner means no restriction'), and re-opens deploy_runner to every participant."
+    },
+    {
+      "name": "E2 the cross-owner check is dropped, ownerless left fail-closed",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "  if (def.owner !== caller) return \"not-owner\";",
+      "replace": "  return undefined;",
+      "expectRed": "ANOTHER owner is refused, named 'not-owner'",
+      "cell": "ANOTHER owner is refused, named 'not-owner'",
+      "note": "Leaves the headline ownerless case still refusing, so only a peer-vs-peer cell can catch it. E1 cannot stand in for this and vice versa."
+    },
+    {
+      "name": "E3 the operator escape hatch is removed",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "  if (admin) return undefined;",
+      "replace": "  if (false) return undefined;",
+      "expectRed": "an ADMIN may act on another's persona",
+      "cell": "an ADMIN may act on another's persona",
+      "note": "Proves the rule has a deliberate operator path, rather than the suite merely rewarding refusal."
+    },
+    {
+      "name": "E4 the DEFAULT flips to the narrow setting",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    this.personaIsolation = opts.personaIsolation ?? \"shared\";",
+      "replace": "    this.personaIsolation = opts.personaIsolation ?? \"owner\";",
+      "expectRed": "the default is the historical `shared`",
+      "cell": "the default is the historical `shared`",
+      "note": "Every predicate cell stays green — the rule is untouched. This is the upgrade-path trap: a single-operator mesh would start refusing its own catalog, and only a cell that asserts the DEFAULT can see it."
+    },
+    {
+      "name": "E5 the spawn door re-inlines the rule beside the predicate",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        const denial = personaOwnerDenial(def, spawner ?? \"\", opts.adminTier ?? false);",
+      "replace": "        const denial = def.owner !== spawner ? \"not-owner\" as const : undefined;",
+      "expectRed": "the predicate is CALLED at exactly two doors (write + spawn)",
+      "cell": "the predicate is CALLED at exactly two doors (write + spawn)",
+      "note": "The predicate still exists and the write door still calls it, so every behavioural cell about the RULE stays green. Only the structural cells see the second copy appear — which is the whole point of having them."
+    }
+  ]
+}
