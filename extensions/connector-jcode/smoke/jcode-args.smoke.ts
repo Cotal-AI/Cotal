@@ -29,6 +29,15 @@ const throws = (name: string, fn: () => unknown, match: RegExp): void => {
     console.error(`  ✗ ${name}: ${(error as Error).message}`);
   }
 };
+const catalogRefusesWithoutHome = (name: string, home: string, fn: () => unknown, match: RegExp): void => {
+  let message = "";
+  try {
+    fn();
+  } catch (error) {
+    message = (error as Error).message;
+  }
+  check(name, match.test(message) && !message.includes(home), message);
+};
 
 const dir = mkdtempSync(join(tmpdir(), "cotal-jcodeargs-"));
 process.env.UNRELATED_JCODE_ENV_CANARY = "inherited";
@@ -63,7 +72,11 @@ try {
   process.env.JCODE_HOME = catalogHome;
   try {
     rmSync(join(catalogHome, "config.toml"));
-    throws("fails loud when the Jcode config is unreadable", () => listJcodeModels(), /could not read/);
+    catalogRefusesWithoutHome("unreadable catalog failure hides the Jcode home", catalogHome, () => listJcodeModels(), /could not read Jcode config: unreadable \(ENOENT\)/);
+    writeFileSync(join(catalogHome, "config.toml"), `this = [is not valid TOML`);
+    catalogRefusesWithoutHome("malformed TOML failure hides the Jcode home", catalogHome, () => listJcodeModels(), /could not parse Jcode config: malformed TOML/);
+    writeFileSync(join(catalogHome, "config.toml"), `unrelated = true\n`);
+    catalogRefusesWithoutHome("missing providers failure hides the Jcode home", catalogHome, () => listJcodeModels(), /has no \[providers\] table/);
     writeFileSync(
       join(catalogHome, "config.toml"),
       `[providers.cliproxy]\nmodel_catalog = true\n\n[[providers.cliproxy.models]]\nid = "opus-5"\nreasoning_efforts = ["low", "max"]\n\n[[providers.cliproxy.models]]\nid = "plain"\n`,
@@ -75,9 +88,11 @@ try {
     check("names the declared config source and its limitation", catalog.source?.includes("declared Jcode config") === true && catalog.source.includes("not provider-verified"), catalog.source);
 
     writeFileSync(join(catalogHome, "config.toml"), `[providers.cliproxy]\nmodel_catalog = false\n`);
-    throws("fails loud when no provider exposes a declared catalog", () => listJcodeModels(), /no provider with model_catalog = true/);
+    catalogRefusesWithoutHome("no enabled provider failure hides the Jcode home", catalogHome, () => listJcodeModels(), /no provider with model_catalog = true/);
     writeFileSync(join(catalogHome, "config.toml"), `[providers.cliproxy]\nmodel_catalog = true\n`);
     throws("fails loud when an enabled provider declares no model entries", () => listJcodeModels(), /has no \[\[providers\.cliproxy\.models\]\] entries/);
+    writeFileSync(join(catalogHome, "config.toml"), `[providers.cliproxy]\nmodel_catalog = true\nmodels = []\n`);
+    catalogRefusesWithoutHome("empty enabled catalog failure hides the Jcode home", catalogHome, () => listJcodeModels(), /enabled 1 provider\(s\).*declared no models/);
     writeFileSync(join(catalogHome, "config.toml"), `[providers.cliproxy]\nmodel_catalog = true\n[[providers.cliproxy.models]]\nid = "broken"\nreasoning_efforts = "high"\n`);
     throws("fails loud on malformed declared effort metadata", () => listJcodeModels(), /reasoning_efforts must be an array/);
   } finally {

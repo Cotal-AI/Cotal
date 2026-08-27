@@ -45,10 +45,50 @@
     {
       "name": "an unreadable Jcode config silently becomes an empty catalog",
       "file": "extensions/connector-jcode/src/extension.ts",
-      "find": "  } catch (error) {\n    throw new Error(`jcode model catalog could not read ${path}: ${(error as Error).message}`);\n  }",
-      "replace": "  } catch (error) {\n    void error;\n    return { source: \"declared Jcode config\", models: [] };\n  }",
-      "expectRed": "fails loud when the Jcode config is unreadable",
-      "cell": "fails loud when the Jcode config is unreadable"
+      "find": "    throw new Error(`jcode model catalog could not read Jcode config: unreadable${code ? ` (${code})` : \"\"}`);",
+      "replace": "    return { source: \"declared Jcode config\", models: [] };",
+      "expectRed": "unreadable catalog failure hides the Jcode home",
+      "cell": "unreadable catalog failure hides the Jcode home"
+    },
+    {
+      "name": "the unreadable-config failure discloses the absolute Jcode home",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "    throw new Error(`jcode model catalog could not read Jcode config: unreadable${code ? ` (${code})` : \"\"}`);",
+      "replace": "    throw new Error(`jcode model catalog could not read ${path}: unreadable${code ? ` (${code})` : \"\"}`);",
+      "expectRed": "unreadable catalog failure hides the Jcode home",
+      "cell": "unreadable catalog failure hides the Jcode home"
+    },
+    {
+      "name": "the malformed-TOML failure discloses the absolute Jcode home",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "    throw new Error(\"jcode model catalog could not parse Jcode config: malformed TOML\");",
+      "replace": "    throw new Error(`jcode model catalog could not parse ${path}: malformed TOML`);",
+      "expectRed": "malformed TOML failure hides the Jcode home",
+      "cell": "malformed TOML failure hides the Jcode home"
+    },
+    {
+      "name": "the missing-providers failure discloses the absolute Jcode home",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "    throw new Error(\"jcode model catalog has no [providers] table in Jcode config\");",
+      "replace": "    throw new Error(`jcode model catalog at ${path} has no [providers] table`);",
+      "expectRed": "missing providers failure hides the Jcode home",
+      "cell": "missing providers failure hides the Jcode home"
+    },
+    {
+      "name": "the no-enabled-provider failure discloses the absolute Jcode home",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "    throw new Error(\"jcode model catalog has no provider with model_catalog = true in Jcode config\");",
+      "replace": "    throw new Error(`jcode model catalog at ${path} has no provider with model_catalog = true`);",
+      "expectRed": "no enabled provider failure hides the Jcode home",
+      "cell": "no enabled provider failure hides the Jcode home"
+    },
+    {
+      "name": "the empty-enabled-catalog failure discloses the absolute Jcode home",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "    throw new Error(`jcode model catalog enabled ${enabledProviders} provider(s) in Jcode config but declared no models`);",
+      "replace": "    throw new Error(`jcode model catalog at ${path} enabled ${enabledProviders} provider(s) but declared no models`);",
+      "expectRed": "empty enabled catalog failure hides the Jcode home",
+      "cell": "empty enabled catalog failure hides the Jcode home"
     }
   ]
 }

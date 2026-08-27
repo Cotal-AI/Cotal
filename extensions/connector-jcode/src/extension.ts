@@ -31,16 +31,24 @@ function stringList(value: unknown): string[] | undefined {
  *  declared here, so the metadata marks that distinction instead of presenting it as authority. */
 export function listJcodeModels(): ModelCatalog {
   const path = join(userJcodeHome(), "config.toml");
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    throw new Error(`jcode model catalog could not read Jcode config: unreadable${code ? ` (${code})` : ""}`);
+  }
+
   let raw: JcodeCatalogConfig;
   try {
-    raw = parseToml(readFileSync(path, "utf8")) as JcodeCatalogConfig;
-  } catch (error) {
-    throw new Error(`jcode model catalog could not read ${path}: ${(error as Error).message}`);
+    raw = parseToml(text) as JcodeCatalogConfig;
+  } catch {
+    throw new Error("jcode model catalog could not parse Jcode config: malformed TOML");
   }
 
   const providers = raw.providers;
   if (!providers || typeof providers !== "object")
-    throw new Error(`jcode model catalog at ${path} has no [providers] table`);
+    throw new Error("jcode model catalog has no [providers] table in Jcode config");
 
   const models: ModelInfo[] = [];
   const seen = new Set<string>();
@@ -80,9 +88,9 @@ export function listJcodeModels(): ModelCatalog {
   }
 
   if (!enabledProviders)
-    throw new Error(`jcode model catalog at ${path} has no provider with model_catalog = true`);
+    throw new Error("jcode model catalog has no provider with model_catalog = true in Jcode config");
   if (!models.length)
-    throw new Error(`jcode model catalog at ${path} enabled ${enabledProviders} provider(s) but declared no models`);
+    throw new Error(`jcode model catalog enabled ${enabledProviders} provider(s) in Jcode config but declared no models`);
   return { source: "declared Jcode config (effort tiers are not provider-verified)", models };
 }
 

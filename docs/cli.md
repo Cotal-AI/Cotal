@@ -623,6 +623,9 @@ cotal attach --name <n> [--on <instance>] [--no-reconnect] [--space <s>]
 | `--json` (`ps`) | off | Machine-readable: one JSON object per seat per line, exactly the row the manager sent. Instance headers and errors go to stderr, so stdout is pure rows. Mutually exclusive with `--wide` |
 | `--no-reconnect` (`attach`) | off | End the attach when its session ends, instead of re-establishing it. For scripts that want one run and one exit code |
 
+The human `ps` row is presentation text and is not a stable parsing target. Scripts use `--json`,
+which is the machine-readable row contract.
+
 These are operator clients over the running manager's control plane. The default row includes the
 connector, model pin, optional requested variant, and runtime because those identify the seat that
 produced its work. An omitted variant means no override was requested; Cotal does not invent an
