@@ -188,9 +188,20 @@ export const claudeConnector: Connector = {
     const prompt = opts.prompt === undefined ? undefined : opts.prompt.trim();
     if (prompt === "")
       throw new Error("claude connector: an initial prompt was given but it is empty, there is no first turn to submit");
+    // BOTH loaders, deliberately. The dev-channels ref binds the wake CHANNEL, but on current
+    // claude (measured on 2.1.246) it no longer loads the plugin's HOOKS — the MCP server came up
+    // and every lifecycle hook was simply never invoked. That silence took out everything the
+    // hooks carry: presence never left "idle" during a running turn, queued peer messages were
+    // never surfaced into the model's context, and the AG-UI emitter — which lazy-starts on the
+    // first hook that hands over a transcript path — never started, so `--events` published
+    // nothing at all. `--plugin-dir` is the host's supported way to load a plugin (hooks
+    // included) for one session; verified live that it fires SessionStart/UserPromptSubmit/
+    // Stop/SessionEnd with this exact hooks.json. The plugin's own .mcp.json riding along is
+    // harmless: --strict-mcp-config scopes servers to --mcp-config, where `cotal` is already
+    // named.
     const args = prompt
-      ? [prompt, "--dangerously-load-development-channels", CHANNEL_REF]
-      : ["--dangerously-load-development-channels", CHANNEL_REF];
+      ? [prompt, "--dangerously-load-development-channels", CHANNEL_REF, "--plugin-dir", PLUGIN_ROOT]
+      : ["--dangerously-load-development-channels", CHANNEL_REF, "--plugin-dir", PLUGIN_ROOT];
 
     // Pre-allow fetching the public Cotal docs so a doc-grounded persona (e.g. david)
     // can look something up under `npx` (no repo on disk) without prompting the operator
