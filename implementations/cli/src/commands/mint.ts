@@ -18,7 +18,7 @@ import {
   type Profile,
   type SpaceAuth,
 } from "@cotal-ai/core";
-import { agentCredsKey, agentSecretFilePaths, authDir, getSoleSpaceAuth, hasUserAuthState, materializeSecretToFile, preflightOrExit, resolveTargetOrExit, workspaceSecretStore, type MeshTarget } from "@cotal-ai/workspace";
+import { agentCredsKey, agentSecretFilePaths, authDir, getSoleSpaceAuth, hasUserAuthState, isWorkspaceTargetError, materializeSecretToFile, preflightOrExit, renderWorkspaceError, resolveMeshTarget, resolveTargetOrExit, workspaceSecretStore, type MeshTarget } from "@cotal-ai/workspace";
 import { cotalRoot } from "../lib/paths.js";
 import { c } from "../ui.js";
 
@@ -149,7 +149,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
   // flag) would let a caller collide with a live agent's broker footprint by passing its uid.
   let lifecycleUid: string | undefined;
   if (profile === "agent") {
-    const f = agentFilePath(cotalRoot(), name);
+    const f = agentFilePath(personaRootFor(values), name);
     const def = existsSync(f) ? loadAgentFile(f) : undefined;
     allowSubscribe = splitList(values["allow-subscribe"]) ?? def?.allowSubscribe ?? def?.subscribe;
     allowPublish = splitList(values["allow-publish"]) ?? def?.allowPublish;
@@ -201,6 +201,45 @@ export async function mint(args: ParsedArgs): Promise<void> {
  * always taken from the folder it runs in (measured: a mint from root A signed by root B's key).
  * Every refusal here fires before anything is minted or connected.
  */
+/**
+ * The root whose `.cotal/agents` holds the persona card this mint reads its ACLs from: the
+ * RESOLVED MESH's, honouring `--space`/`--server`, the same root `cotal spawn` and `cotal personas`
+ * resolve.
+ *
+ * It used to be `cotalRoot()`, the cwd walk-up. That was survivable only while every persona
+ * surface made the same mistake: before the catalog readers were fixed, `cotal personas` WROTE to
+ * the cwd root and `cotal mint` READ from it, so the two agreed and an operator editing a card saw
+ * mint honour the edit. Once `personas` began writing to the mesh's root, this line kept reading
+ * the cwd's - so the card the operator edits and the card mint reads became DIFFERENT FILES, and
+ * the divergence is silent.
+ *
+ * Both directions are wrong and only one is loud. With no card at the cwd root the ACL fields fall
+ * through to `permissionsFor`'s default-deny (`opts.allowSubscribe ?? []`), minting a credential
+ * with no channel grants. With a STALE card there, `loadAgentFile` returns it and mint issues that
+ * card's grants - so narrowing a persona's ACLs through `cotal personas` leaves the wider,
+ * superseded grants in force. That is a present-but-wrong input rather than a missing default,
+ * which is why the fix is the ROOT and not a guard on the defaults.
+ *
+ * Resolution is offline and pure (registry + `current` + the cwd project, no broker), so `mint`
+ * stays usable without a live mesh. It fails LOUD rather than falling back: silently choosing a
+ * different directory to read a security-relevant card from is the defect itself.
+ *
+ * Exported as the seam the persona-root smoke drives. Reverting the body to `cotalRoot()` reddened
+ * no committed suite in the repo before that cell existed - mint appears in none of them - so a
+ * regression on this credential surface would have shipped silently.
+ */
+export function personaRootFor(values: { space?: string; server?: string }): string {
+  try {
+    return resolveMeshTarget(process.cwd(), { space: values.space, server: values.server }).root;
+  } catch (e) {
+    if (isWorkspaceTargetError(e)) {
+      console.error(c.red(renderWorkspaceError({ kind: "target", error: e })));
+      process.exit(1);
+    }
+    throw e;
+  }
+}
+
 async function provisionTarget(auth: SpaceAuth | undefined, flags: { space?: string; server?: string }): Promise<MeshTarget> {
   const target = await resolveTargetOrExit({ space: flags.space ?? auth?.space, server: flags.server });
   if (auth && target.space !== auth.space) {

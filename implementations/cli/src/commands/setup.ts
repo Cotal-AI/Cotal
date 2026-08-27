@@ -3,7 +3,18 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, r
 import { join, resolve } from "node:path";
 import * as p from "@clack/prompts";
 import { type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { homeCotalDir, installedExtensionVersion, loadExtensionsManifest, manifestExtensionNames, provenance } from "@cotal-ai/workspace";
+import {
+  findCotalRoot,
+  homeCotalDir,
+  installedExtensionVersion,
+  isWorkspaceTargetError,
+  loadExtensionsManifest,
+  manifestExtensionNames,
+  personaDir,
+  provenance,
+  resolveMeshTarget,
+  type MeshTarget,
+} from "@cotal-ai/workspace";
 import { materializeExtension } from "../ext-loader.js";
 import { agentSkillsHome, canonicalSkillNames, installAgentSkills, type AgentSkillsResult } from "../lib/agent-skills.js";
 import { cliVersion } from "../lib/version.js";
@@ -16,7 +27,6 @@ import { isOnboarded, markOnboarded } from "../lib/onboard.js";
 import { machineStatus, meshStatus, onPath, webUp, WEB_URL } from "../lib/status.js";
 import { managerUp } from "../lib/manager-proc.js";
 import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
-import { cotalPath } from "../lib/paths.js";
 
 const ONBOARD_VERSION = "2";
 const README_URL = "https://github.com/Cotal-AI/Cotal/blob/main/README.md";
@@ -110,12 +120,18 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
 
   // Your agent: the generic `default` persona a bare `cotal spawn` launches — one agent, yours to
   // shape. This is the whole first-run default; the guided expert team is opt-in right below.
-  seedDefaultAgent();
-  p.log.success("Seeded your agent (.cotal/agents/default.md) - spawn it with `cotal spawn` once your mesh is up");
-  log.line("default-agent: wrote default.md");
+  //
+  // The destination is resolved ONCE, the way `spawn` resolves it, and announced BEFORE the write:
+  // the persona has to land in the catalog spawn reads, and when that is not this folder the user
+  // has to be told so by the output rather than discover it from a refusal an hour later.
+  const dest = seedDestination();
+  announceSeedDestination(dest);
+  seedDefaultAgent(dest);
+  p.log.success(`Seeded your agent (${join(dest.dir, "default.md")}) - spawn it with \`${displayCmd()} spawn\` once your mesh is up`);
+  log.line(`default-agent: wrote ${join(dest.dir, "default.md")} (${dest.source === "mesh" ? `mesh ${dest.target!.space}` : "cwd fallback"})`);
   // The guided expert team (david the engineer + sven the guide + me, your session) is opt-in:
   // `cotal setup --demo` (or `--full`). Keeps the default first run to one agent, not a crowd.
-  if (demo) seedDemoTeam(log);
+  if (demo) seedDemoTeam(dest, log);
 
   // Cotal's own skills, for the non-Claude harnesses, via the cross-vendor `.agents/skills` convention.
   const skills = seedAgentSkills(log);
@@ -291,8 +307,13 @@ export function skillsPluginStep(): Step {
  *  missing (announced). Nothing is launched — the card tells you what's down and how to start it.
  *  `--demo` here adds the guided team to an already-configured machine (no need to re-narrate). */
 async function runEnsure(demo: boolean): Promise<void> {
-  seedDefaultAgent(); // ensure `cotal spawn` (no name) always has a default to launch
-  if (demo) seedDemoTeam(); // `cotal setup --demo` on a configured machine: add the team, then card
+  // Same destination question as the first run, same disclosure: a repeat `cotal setup` is exactly
+  // what the old refusal told the user to run, so it above all must seed where `spawn` reads.
+  const dest = seedDestination();
+  announceSeedDestination(dest);
+  seedDefaultAgent(dest); // ensure `cotal spawn` (no name) always has a default to launch
+  p.log.success(`Your agent: ${join(dest.dir, "default.md")}`);
+  if (demo) seedDemoTeam(dest); // `cotal setup --demo` on a configured machine: add the team, then card
   ensureSkillsPlugin(); // fail-loud: close the upgrade gap so an onboarded machine re-running setup gets/refreshes (not silently stale) the Claude skills plugin
   seedAgentSkills(); // reconcile the cross-vendor `.agents/skills` drop so an upgrade + re-run isn't stale
   // A repeat `npx cotal-ai setup` on an onboarded machine that still lacks a durable `cotal` must
@@ -339,7 +360,11 @@ async function readyCard(cwd: string): Promise<void> {
   const web = await webUp();
   const mgr = managerUp();
   const cmd = displayCmd();
-  const hasDemo = existsSync(cotalPath("agents", "david.md")); // the guided team is present ⇒ richer hint
+  // Read the demo marker out of the catalog the card's own `spawn` hints will resolve — the same
+  // seed destination, not a second cwd-derived guess. Hinting `cotal spawn me` off a `david.md` in
+  // a directory spawn never opens is the identical defect, one line further down the output.
+  const personas = seedDestination();
+  const hasDemo = existsSync(join(personas.dir, "david.md")); // the guided team is present ⇒ richer hint
   const line = (on: boolean, text: string) => `${on ? ok("✓") : dim("○")} ${text}`;
   note(
     [
@@ -608,12 +633,132 @@ coordinate as peers rather than working in silos. Use the Cotal tools available 
 your peers and work with them. Edit this file to give yourself a name, role, and purpose.
 `;
 
-/** Seed the default persona if it's missing (idempotent, seed-if-absent). Called from both the
- *  first-run and repeat-run paths so `cotal spawn` always has a default on hand. */
-function seedDefaultAgent(): void {
-  const path = cotalPath("agents", "default.md");
+/**
+ * WHERE a seeded persona has to land: the catalog `cotal spawn` will actually READ.
+ *
+ * Setup used to derive this from the cwd (`cotalPath("agents", …)`, a `findCotalRoot` walk up from
+ * `process.cwd()`), while `spawn` reads the RESOLVED MESH's root (`resolveMeshTarget(...).root`,
+ * see spawn.ts's `agentFilePath(target.root, ref)`). On any machine where those two disagree —
+ * a cwd outside every project, so the walk lands on `~`, plus a mesh registered against some
+ * other root — setup dutifully wrote a file spawn would never open, and `cotal spawn` went on
+ * saying "no default persona yet - run `cotal setup` to seed one" after you ran exactly that.
+ * The remedy the error named did not fix the error.
+ *
+ * So resolve the destination the way spawn does, and report which question it answered:
+ *
+ *  - `mesh`   — a mesh resolved; `dir` is ITS `.cotal/agents`, the catalog spawn reads.
+ *  - `cwd`    — no mesh resolved at all (a fresh machine, before the first `cotal up`, which is
+ *               the ordinary first-run case). Setup must still work there, so it falls back to
+ *               the cwd walk — the OLD behavior, now reached deliberately and named in the
+ *               output rather than taken silently.
+ *
+ * `reason` carries the resolver's own sentence for the cwd case, so the fallback can say WHY it
+ * had no mesh to seed into instead of asserting one.
+ */
+interface SeedDestination {
+  /** The `.cotal/agents` directory to write into — absolute. */
+  dir: string;
+  source: "mesh" | "cwd";
+  /** The resolved mesh, when one resolved. */
+  target?: MeshTarget;
+  /** Why no mesh resolved, for `source: "cwd"`. */
+  reason?: string;
+}
+
+/**
+ * Resolve the persona catalog to seed into, offline. `cwd` is a parameter so the smoke can drive
+ * this without chdir'ing a shared process; production always passes `process.cwd()`.
+ *
+ * Deliberately NOT `resolveTargetOrExit`: that prunes the registry and exits the process on an
+ * unresolved mesh. Setup is the command you run BEFORE a mesh exists, and on a fresh machine it
+ * must still seed a persona rather than refuse.
+ *
+ * The fallback is narrow ON PURPOSE — `no-meshes` and nothing else. "No mesh is running" has one
+ * honest answer (this folder), so seeding there and saying so is right. But `ambiguous-target`
+ * (several meshes up, none selected) is a case where the OPERATOR has a real choice, and quietly
+ * seeding the cwd would be this very defect wearing a different hat: a root chosen for them,
+ * without being asked, that the spawn they run next may not read. Every other resolution failure
+ * — unreadable trust, a stale auth root, an unrecorded user-auth space — is a fault to repair, not
+ * a licence to guess a directory. Those RETHROW, and `command.ts` renders them with their own
+ * recovery copy.
+ */
+export function seedDestinationFor(cwd: string): SeedDestination {
+  try {
+    const target = resolveMeshTarget(cwd, {});
+    // `personaRoot` is the target's own `<root>/.cotal/agents` — the exact string spawn resolves
+    // its persona file under. Taken from the target rather than recomputed, so the two cannot drift.
+    return { dir: target.personaRoot, source: "mesh", target };
+  } catch (e) {
+    // ONLY "there is no mesh at all" falls back. Anything else is a decision that is not setup's
+    // to make, or a fault that wants fixing; either way the cwd is not the answer.
+    if (isWorkspaceTargetError(e) && e.code === "no-meshes")
+      return { dir: personaDir(findCotalRoot(cwd)), source: "cwd", reason: e.message };
+    throw e;
+  }
+}
+
+function seedDestination(): SeedDestination {
+  return seedDestinationFor(process.cwd());
+}
+
+/**
+ * Say where the personas are going, ABSOLUTE, before anything is written.
+ *
+ * The rule is NOT "never use the cwd" — it is "never use a root SILENTLY". The whole defect was a
+ * cwd-derived root substituted for the mesh's without the output disclosing it, so the user read
+ * `Seeded your agent (.cotal/agents/default.md)` and reasonably assumed the folder they were
+ * standing in. Every path through this function therefore names the destination in full:
+ *
+ *  - mesh root == cwd root : the ordinary single-project case. Still printed, just without the
+ *                            comparison, because there is no divergence to explain.
+ *  - mesh root != cwd root : the case that bit. Prints BOTH roots, so the difference is visible
+ *                            in the output rather than discoverable only from a later refusal.
+ *  - no mesh at all        : the fresh-machine fallback, where the cwd IS the honest answer. Says
+ *                            it fell back, why, and where it is writing.
+ */
+function announceSeedDestination(dest: SeedDestination): void {
+  if (dest.source === "cwd") {
+    p.log.info(
+      `No mesh resolved yet (${dest.reason}) - seeding into this folder's catalog:\n` +
+        `  ${dest.dir}\n` +
+        `Once a mesh is running, \`${displayCmd()} setup\` seeds into THAT mesh's root instead.`,
+    );
+    return;
+  }
+  const t = dest.target!;
+  // The cwd's own answer, for comparison only — never to choose with.
+  const cwdRoot = findCotalRoot();
+  if (resolve(cwdRoot) === resolve(t.root)) {
+    p.log.info(`Seeding personas for mesh "${t.space}" into:\n  ${dest.dir}`);
+    return;
+  }
+  p.log.info(
+    `Seeding into mesh "${t.space}"'s personas, not this folder's:\n` +
+      `  writing to                   ${dest.dir}\n` +
+      `  mesh "${t.space}" (${t.server}) root  ${t.root}\n` +
+      `  this folder would have used  ${cwdRoot}\n` +
+      `\`${displayCmd()} spawn\` reads the mesh's catalog, so that is where the persona has to live.`,
+  );
+}
+
+/** Seed the default persona if it's missing (idempotent, seed-if-absent), into the catalog `cotal
+ *  spawn` actually reads. Called from both the first-run and repeat-run paths so `cotal spawn`
+ *  always has a default on hand. Returns the destination so the caller can report the ABSOLUTE
+ *  path it wrote — a relative `.cotal/agents/default.md` is precisely what let a seed into the
+ *  wrong root pass for a seed into the right one. */
+function seedDefaultAgent(dest: SeedDestination = seedDestination()): SeedDestination {
+  seedDefaultAgentInto(dest.dir);
+  return dest;
+}
+
+/** The write itself, seam-exported for the smoke: seed-if-absent into an explicit catalog dir. */
+export function seedDefaultAgentInto(dir: string): void {
+  const path = join(dir, "default.md");
   if (existsSync(path)) return;
-  mkdirSync(cotalPath("agents"), { recursive: true });
+  // The mesh may have been registered against a brand-new, EMPTY root — no `.cotal` under it, let
+  // alone a `.cotal/agents`. `recursive` builds the whole chain, so "the resolved root has no
+  // agents dir at all" seeds exactly like an established one rather than throwing ENOENT.
+  mkdirSync(dir, { recursive: true }); // dir is the mesh's `.cotal/agents` catalog
   writeFileSync(path, DEFAULT_AGENT);
   provenance.wrote("default persona", path);
 }
@@ -622,14 +767,18 @@ function seedDefaultAgent(): void {
  *  opt-in richer first experience (`cotal setup --demo` / `--full`). These are setup-managed, unlike
  *  the seed-once default: refreshed when a DEMO_AGENTS body changes so persona edits actually land,
  *  but a file you've taken ownership of is backed up first, never silently lost (see writeDemoAgent).
- *  Every write is announced; `log` (present only in the narrated first run) also records it. */
-function seedDemoTeam(log?: { line(msg: string): void }): void {
-  mkdirSync(cotalPath("agents"), { recursive: true });
+ *  Every write is announced; `log` (present only in the narrated first run) also records it.
+ *
+ *  Takes the SAME destination the default persona used, so the team can never land in a different
+ *  catalog than the default — one `cotal spawn david` reading a root that `cotal spawn` does not is
+ *  the same defect wearing a different name. */
+function seedDemoTeam(dest: SeedDestination, log?: { line(msg: string): void }): void {
+  mkdirSync(dest.dir, { recursive: true });
   for (const [name, body] of Object.entries(DEMO_AGENTS)) {
-    writeDemoAgent(cotalPath("agents", `${name}.md`), body);
+    writeDemoAgent(join(dest.dir, `${name}.md`), body);
   }
-  p.log.success("Added the guided team - david (the engineer), sven (the guide), and your session (me); spawn them when your mesh is up");
-  log?.line("demo-agents: wrote david + sven + me");
+  p.log.success(`Added the guided team - david (the engineer), sven (the guide), and your session (me) in ${dest.dir}; spawn them when your mesh is up`);
+  log?.line(`demo-agents: wrote david + sven + me into ${dest.dir}`);
 }
 
 const DEMO_AGENTS: Record<string, string> = {
