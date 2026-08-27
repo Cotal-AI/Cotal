@@ -1,0 +1,40 @@
+{
+  "suite": "extensions/connector-core/smoke/spawn-args.smoke.ts",
+  "guard": "the peer-facing cotal_spawn tool exposes a kickoff prompt and carries it through MeshAgent.spawn into the manager's spawn command",
+  "command": "pnpm smoke:spawn-args",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/spawn-kickoff-prompt.json",
+  "completionMarker": "SPAWN-ARGS SMOKE",
+  "why": [
+    "The live defect crossed two forwarding seams and one published schema. A new session joined",
+    "the roster and received a claude/channel notification, but no first model turn began because",
+    "cotal_spawn had no prompt field even though the manager already accepted one.",
+    "",
+    "A1 drops the connector-core to manager handoff. A2 leaves MeshAgent correct but drops the",
+    "peer-facing tool's handoff. A3 leaves both implementations intact while hiding the argument",
+    "from every MCP host. Each is independently the same user-visible failure, so each has its own",
+    "named cell rather than relying on one end-state assertion to guess which seam disappeared."
+  ],
+  "mutations": [
+    {
+      "name": "A1 drop the kickoff prompt at the manager command boundary",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    const args = { name, role, agent: opts?.agent, model: opts?.model, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt };",
+      "replace": "    const args = { name, role, agent: opts?.agent, model: opts?.model, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd };",
+      "expectRed": "kickoff prompt forwarded"
+    },
+    {
+      "name": "A2 the MCP tool accepts prompt but silently omits it from MeshAgent.spawn",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt });",
+      "replace": "          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd });",
+      "expectRed": "cotal_spawn tool forwards the kickoff prompt"
+    },
+    {
+      "name": "A3 hide prompt from the published MCP schema",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "        prompt: z\n          .string()\n          .min(1)\n          .optional()\n          .describe(\n            \"Optional kickoff message auto-submitted as the new peer's first turn. Pass it when the peer should begin work immediately; omitted means no first model turn is submitted.\",\n          ),\n",
+      "replace": "",
+      "expectRed": "cotal_spawn schema exposes the kickoff prompt"
+    }
+  ]
+}
