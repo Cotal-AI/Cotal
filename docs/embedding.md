@@ -157,9 +157,9 @@ into it, and the daemon adopts each generation on a preflight-proven 75% timer. 
 returns per-file results (`skipped: "no-auth"` when the store holds no signer records),
 so the caller must check them or the cred still rides to expiry. A composition whose signer lives in
 KMS/Vault simply injects that store; no bespoke renewal is needed. A `--creds` file path must be
-replaced atomically before the 75% read. The remaining hosted gap is no
-longer signer custody (the signer IS injectable behind the store seam); it is signer **isolation**,
-the seed is still decrypted in-process at the manager's uid (an OS-sandbox / remote-signer concern).
+replaced atomically before the 75% read. The signer can now be injected behind the store seam, which
+resolves custody. The remaining hosted gap is signer **isolation**. The seed is still decrypted
+in-process at the manager's uid, so it needs an OS sandbox or remote signer.
 
 ### Supervisor signing authority
 
