@@ -109,13 +109,13 @@
       "note": "The pre-fix state: with --prompt the first hook beats the first bind, the holder fails terminally, and the plane is dead for the whole session behind one stderr line."
     },
     {
-      "name": "E5 the wait survives but moves AFTER what it guards",
+      "name": "E5 a SECOND cell must also depend on the wait (ordering is not carried by the presence cell alone)",
       "file": "extensions/connector-claude-code/src/mcp.ts",
-      "find": "        await agent.whenConnected(20_000);\n        // The events state root.",
-      "replace": "        // The events state root.",
+      "find": "        await agent.whenConnected(20_000);",
+      "replace": "",
       "expectRed": "\u2026and the wait comes BEFORE the emitter is set up (the ordering IS the fix)",
       "cell": "\u2026and the wait comes BEFORE the emitter is set up (the ordering IS the fix)",
-      "note": "Deletes it from before the guarded setup; the presence cell is what would keep this alive if ordering were not asserted separately. Ordering is the entire fix, so it needs its own cell."
+      "note": "Same edit as E4, graded against a DIFFERENT cell: deleting the statement must redden the ordering cell too, not only the presence cell. A true relocation mutant (move the wait after what it guards) is NOT expressible here without spanning prose - the comment block sits between the two points - so the ordering claim rests on the structural cell rather than on a behavioural move. Said plainly because the previous anchor reached for that comment to look like a move and was not one."
     },
     {
       "name": "E6 the bounded wait resolves on timeout instead of failing",
