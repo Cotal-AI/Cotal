@@ -22,7 +22,7 @@
  * NOTE THE EVIDENCE CLASS: this static computation predicted a remote runner's observed
  * behaviour on two independent data points. A model agreeing with itself proves nothing.
  *
- * USAGE:  pnpm check:shard-stability <base-sha> <head-sha> [shardCount=4]
+ * USAGE:  pnpm check:shard-stability <base-sha> <head-sha>   (shard count read from ci.yml)
  * Run from inside a worktree of the repo. Exits 1 if any pre-existing suite changes shard.
  *
  * CONTROLS BUILT IN, because a bare zero is not evidence. Exactly two, and both run on
@@ -58,16 +58,29 @@ import { execFileSync } from "node:child_process";
 // Either alone is fakeable by a failure mode CI will actually produce.
 console.log("shard-stability.check v1 starting");
 
-/** The only way out. Prints a terminal marker so a crash cannot impersonate a decision. */
+/**
+ * The only way out. Prints a terminal marker so a crash cannot impersonate a decision.
+ *
+ * THE TOKEN IS PRINTED LAST, IMMEDIATELY BEFORE `process.exit`, AND THE TOKEN CARRIES ITS
+ * OWN EXIT CODE. pr-review's MUTANT E threw between the token and the exit and produced
+ * `token=STABLE exit=1` — a marker asserting one verdict while the status said another.
+ * Any statement between the two is a forgery window, so there is none: nothing can run
+ * after the token except the exit itself. The message goes first; if it throws, no token
+ * is printed at all and the run reads as a crash, which is what it is.
+ *
+ * The token embeds the code (`STABLE=0`) so a reader compares one string instead of
+ * correlating two signals — a gate that must remember to cross-check is a gate that
+ * eventually does not.
+ */
 const verdict = (token: "RESHARD" | "STABLE" | "ABORT", message: string, code: 0 | 1 | 2): never => {
-  console.log(`shard-stability: ${token}`);
   (code === 0 ? console.log : console.error)(message);
+  console.log(`shard-stability: ${token}=${code}`);
   process.exit(code);
 };
 
 const [, , base, head, countArg] = process.argv;
 if (!base || !head) {
-  verdict("ABORT", "usage: check:shard-stability <base-sha> <head-sha> [shardCount=4]", 2);
+  verdict("ABORT", "usage: check:shard-stability <base-sha> <head-sha>", 2);
 }
 // THE SHARD COUNT IS READ FROM ci.yml, NOT DEFAULTED TO A LITERAL.
 // Found by pr-review: the tool used to default to 4 while `.github/workflows/ci.yml`
