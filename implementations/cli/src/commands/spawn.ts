@@ -39,10 +39,10 @@ import {
   agentSentinelCredsKey,
   authDir,
   credsFlag,
-  defaultAgentOverride,
   defaultAgentType,
   defaultPersonaOverride,
   defaultPersonaRef,
+  findCotalRoot,
   launchFlags,
   loadMeshes,
   getSpaceAuth,
@@ -209,11 +209,28 @@ export const spawnFlags = [
  *  the published binary nothing static-imports connectors, so declare the resolved one as a required
  *  extension and `runCli` materializes it first (seeded or `ext add`ed), failing loud if absent. The
  *  `-f` manifest launch preflights every type via `preflightConnectors`, and `--detach` resolves the
- *  connector manager-side, so both skip this. */
+ *  connector manager-side, so both skip this.
+ *
+ *  #869: the persona file's `agent:` pin participates — flag > file > COTAL_DEFAULT_AGENT > default.
+ *  The file lives under the TARGET mesh's root (its `.cotal/agents`), which is not resolvable before
+ *  argv is parsed into a target, so consult the workspace root found by walking up from cwd
+ *  (`findCotalRoot`) — the same directory every other persona lookup in the CLI uses when no explicit
+ *  target is named. A BEST-EFFORT read: an unreadable file (missing / malformed) contributes no pin,
+ *  because the real load below still fails loud at the exact same boundary it always did; the pin
+ *  only ever ADDS precision to which extension is pre-materialized. */
 export function spawnRequiredExtensions(args: ParsedArgs): readonly ExtensionRef[] {
   const v = args.values as FlagValues<typeof spawnFlags>;
   if (v.file || v.detach) return [];
-  return [{ kind: "connector", name: v.agent ?? defaultAgentType("claude") }];
+  let personaAgent: string | undefined;
+  if (!v.agent) {
+    const ref = spawnPersonaRef(v.config, args.positionals);
+    try {
+      personaAgent = loadAgentFile(agentFilePath(findCotalRoot(), ref)).agent;
+    } catch {
+      /* the spawn body's own loadAgentFile throws the precise error at the same boundary */
+    }
+  }
+  return [{ kind: "connector", name: v.agent ?? personaAgent ?? defaultAgentType("claude") }];
 }
 
 /** Comma-list flag → string[] (shared by both spawn modes). */
@@ -247,7 +264,12 @@ async function spawnDetached(
     name: ref,
     identity: values.name,
     role: values.role,
-    agent: values.agent ?? defaultAgentOverride(),
+    // #869: send ONLY an explicit `--agent` flag. The old `values.agent ?? defaultAgentOverride()`
+    // collapsed flag and COTAL_DEFAULT_AGENT into one field before the wire, so the manager could not
+    // tell them apart: the env var arrived indistinguishable from an operator flag and beat the
+    // persona file's own `agent:` pin. The manager now applies the full precedence itself
+    // (flag > file > COTAL_DEFAULT_AGENT > default) against its workspace's copy of the file.
+    agent: values.agent,
     config: managerConfigRef,
     model: values.model,
     variant: values.variant,
@@ -401,7 +423,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   if (target.source === "registry" || target.source === "current")
     console.error(c.dim(`→ joining mesh ${space} (${server}) as ${name}`));
 
-  const agentType = values.agent ?? defaultAgentType("claude");
+  const agentType = values.agent ?? def.agent ?? defaultAgentType("claude");
   let connector: Connector;
   try {
     connector = registry.resolve<Connector>("connector", agentType);

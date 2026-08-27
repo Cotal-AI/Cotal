@@ -38,3 +38,10 @@ creates one session, and calls its documented stdio MCP configuration from a pri
 Each guide covers spawn forms, model selection, and the exact limits: [Claude
 Code](connect-claude.md) · [OpenCode](connect-opencode.md) · [Codex](connect-codex.md) ·
 [Hermes](connect-hermes.md) · [Jcode](connect-jcode.md) · [pi](connect-pi.md).
+
+**Picking the harness at spawn.** Which connector runs a persona resolves once, everywhere:
+explicit `--agent` flag > the persona file's `agent:` frontmatter > `COTAL_DEFAULT_AGENT` > the
+product default (Claude). `COTAL_DEFAULT_AGENT` is a *default*, never an override — a persona that
+pins its harness runs on it even when the operator's environment names another. A pin naming an
+unregistered connector fails the spawn loudly rather than silently falling back (see
+[agent files](agent-files.md)).

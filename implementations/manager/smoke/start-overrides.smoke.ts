@@ -185,5 +185,46 @@ const j = (v: unknown) => JSON.stringify(v);
   }
 }
 
+// 9 — #869: the persona file's `agent:` pin picks the harness. The defect this issue names: the
+// connector was resolved BEFORE loadAgentFile on this exact path, so the file's pin could never
+// participate, and a pinned persona silently ran whatever the env/default chose.
+{
+  writeFileSync(
+    join(agentsDir, "pinned.md"),
+    "---\nname: pinned\nagent: smoke-ov\nsubscribe: []\n---\npinned persona\n",
+  );
+  const recOther: Connector = {
+    kind: "connector",
+    name: "smoke-other",
+    requires: ["node"],
+    buildLaunch: (o) => { lastOpts = o; return { command: "true", args: [], env: {} }; },
+  };
+  registry.register(recOther);
+  const prev = process.env.COTAL_DEFAULT_AGENT;
+  process.env.COTAL_DEFAULT_AGENT = "smoke-other";
+  try {
+    resetOpts();
+    const r = await mgr.startAgent({ name: "pinned" }); // no --agent, env points elsewhere
+    check("file pin spawn succeeds", r.ok === true, r);
+    check("persona agent: pin picks the harness (file beats env)", (r.data as { agent?: string })?.agent === "smoke-ov", r.data);
+    check("the pinned connector built the launch", lastOpts !== undefined && /^pinned(-\d+)?$/.test(lastOpts.name ?? ""), lastOpts?.name);
+    resetOpts();
+    const f = await mgr.startAgent({ name: "pinned", agent: "smoke-other" }); // explicit flag wins
+    check("flag spawn succeeds", f.ok === true, f);
+    check("explicit --agent wins over the file pin", (f.data as { agent?: string })?.agent === "smoke-other", f.data);
+  } finally {
+    if (prev === undefined) delete process.env.COTAL_DEFAULT_AGENT;
+    else process.env.COTAL_DEFAULT_AGENT = prev;
+  }
+  // The loud guard: a pin naming an unregistered connector fails the spawn (no silent default).
+  writeFileSync(join(agentsDir, "typo.md"), "---\nname: typo\nagent: no-such-connector\nsubscribe: []\n---\nx\n");
+  const t = await mgr.startAgent({ name: "typo" });
+  check("a pin naming an unregistered connector fails loud", t.ok === false && /no-such-connector/.test(t.error ?? ""), t);
+  // An UNPINNED persona with an explicit flag is unaffected by any of the above (pin must not leak).
+  delete process.env.COTAL_DEFAULT_AGENT;
+  const d = await mgr.startAgent({ name: "plain", agent: "smoke-other" });
+  check("unpinned persona still honors the flag", (d.data as { agent?: string })?.agent === "smoke-other", d.data);
+}
+
 console.log(failures ? `\nSTART-OVERRIDES SMOKE FAILED ❌ (${failures} failed)` : "\nstart-overrides smoke: all checks passed");
 process.exit(failures ? 1 : 0);

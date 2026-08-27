@@ -480,6 +480,7 @@ export { runCli } from "./command.js";
 export { c, statusBadge } from "./ui.js";
 // The full spawn grammar, for the composition root's launch-parity smoke (grammar ⊆ start-op ⊆ MCP).
 export { spawnFlags } from "./commands/spawn.js";
+export { spawnRequiredExtensions } from "./commands/spawn.js";
 export { updateFlags } from "./commands/update.js";
 // The launch-client timeout + the manifest launch client, for the same smoke: every launch door
 // must outlive the manager's readiness wait (#159 B1).
