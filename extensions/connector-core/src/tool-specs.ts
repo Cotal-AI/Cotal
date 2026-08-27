@@ -990,7 +990,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_spawn",
       title: "Cotal: spawn a new teammate",
       description:
-        "Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer (and, when the manager runs the cmux runtime, appears in its own tab). Use this, rather than your harness's own subagent/Task tool, whenever you need to spawn a teammate: a Cotal peer is a real, addressable mesh agent the user can watch and you can DM, roster, and coordinate with, not a black-box subagent. When you first bring a team online, if the live web dashboard isn't already up, suggest the user run `cotal web` to watch the mesh in real time.",
+        "Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer (and, when the manager runs the cmux runtime, appears in its own tab). Use this, rather than your harness's own subagent/Task tool, whenever you need to spawn a teammate: a Cotal peer is a real, addressable mesh agent the user can watch and you can DM, roster, and coordinate with, not a black-box subagent. Pass `prompt` when it should begin work immediately; that prompt is auto-submitted as its first turn. When you first bring a team online, if the live web dashboard isn't already up, suggest the user run `cotal web` to watch the mesh in real time.",
       schema: {
         name: z.string().describe("Which persona to spawn: the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md. The new peer joins under the persona's own `name:` (auto-numbered with an underscore, e.g. socrates_2, if that's taken). Fails if no such persona file exists; spawn an existing persona, don't invent a name."),
         role: z
@@ -1019,15 +1019,22 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           .describe(
             "Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace.",
           ),
+        prompt: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            "Optional kickoff message auto-submitted as the new peer's first turn. Pass it when the peer should begin work immediately; omitted means no first model turn is submitted.",
+          ),
         // NOTE: session `resume` is deliberately NOT exposed here. Forking a host-local `~/.claude`
         // transcript is an operator-local intent; letting a spawn-capable mesh PEER name a host
         // session id would expand `spawn` into host-transcript disclosure with no broker-enforced
         // boundary. Resume lives only on the operator CLI (`cotal spawn --resume`, foreground or
         // --detach); a peer-facing, capability-gated resume is deferred (see #159).
       },
-      async run(agent, _config, { name, role, agent: agentType, model, variant, launchOptions, cwd }: { name: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string }) {
+      async run(agent, _config, { name, role, agent: agentType, model, variant, launchOptions, cwd, prompt }: { name: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string }) {
         try {
-          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd });
+          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt });
           if (!reply.ok) return err(`Couldn't spawn ${name}: ${reply.error ?? "manager refused"}`);
           const d = reply.data as { name?: string; mode?: string } | undefined;
           const actual = d?.name ?? name; // the manager auto-numbers on a collision — report what it spawned
