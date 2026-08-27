@@ -10,9 +10,8 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { loadMeshes, targetFlags } from "@cotal-ai/workspace";
-import { cotalRoot } from "../lib/paths.js";
-import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
+import { isWorkspaceTargetError, loadMeshes, renderWorkspaceError, resolveMeshTarget, targetFlags } from "@cotal-ai/workspace";
+import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listPersonas, listPersonaNames, personasDir } from "../lib/personas.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
 import { c } from "../ui.js";
@@ -28,6 +27,18 @@ import { c } from "../ui.js";
  *   cotal personas edit <name>
  *   cotal personas new <name> (--prompt <text> | --from <file|->) [--role <r>] [--model <m>] [--force]
  *   cotal personas rm <name> --force
+ *
+ * WHICH CATALOG IT ACTS ON. Every subcommand resolves the MESH's root through
+ * {@link resolveMeshTarget} — the same resolution `cotal spawn` uses — and never the cwd.
+ * "Local" above means "files on this machine, not a wire call"; it does not mean "whatever
+ * directory you are standing in". Those two readings came apart badly: until this was fixed the
+ * listing took `listPersonas()`'s silent cwd default while `spawn` passed the resolved mesh root,
+ * so from one cwd `personas` listed a set `spawn` could not launch a single member of.
+ *
+ * That also makes `--space`/`--server` real HERE, not just for the `--running` overlay: naming a
+ * mesh now moves the catalog the command reads and writes, so two spaces give two answers from
+ * one cwd. Mesh resolution is offline and pure (registry + `current` + the cwd project, no
+ * broker), so the offline subcommands stay offline.
  */
 
 /** Persona names are also filenames and spawn names — mirror the `cotal_persona` tool's pattern. */
@@ -41,15 +52,38 @@ export async function personas(args: ParsedArgs): Promise<void> {
     case "list":
       return list(values.verbose === true, values.running === true, values);
     case "show":
-      return show(positionals[1]);
+      return show(positionals[1], values);
     case "edit":
-      return edit(positionals[1]);
+      return edit(positionals[1], values);
     case "new":
       return create(positionals[1], values);
     case "rm":
-      return remove(positionals[1], values.force === true);
+      return remove(positionals[1], values.force === true, values);
     default:
       return usage();
+  }
+}
+
+/**
+ * The root whose `.cotal/agents` this command acts on: the RESOLVED MESH's, honouring
+ * `--space`/`--server`, exactly as `cotal spawn` resolves it.
+ *
+ * Resolution is offline and pure (registry + `current` + the cwd project) so `show`/`edit`/`new`/
+ * `rm` and the plain listing still work with no broker. It is deliberately NOT wrapped in a cwd
+ * fallback: when the target cannot be resolved the command says so and exits, because the only
+ * alternative is to silently act on some other directory's catalog — the exact defect this
+ * command is being fixed for. `--creds` is auth material, not a location, so it plays no part
+ * here; it stays what it always was, an input to the live `--running` overlay.
+ */
+function targetRoot(values: { space?: string; server?: string }): string {
+  try {
+    return resolveMeshTarget(process.cwd(), { space: values.space, server: values.server }).root;
+  } catch (e) {
+    if (isWorkspaceTargetError(e)) {
+      console.error(c.red(renderWorkspaceError({ kind: "target", error: e })));
+      process.exit(1);
+    }
+    throw e;
   }
 }
 
@@ -82,16 +116,30 @@ export function personasComplete(argv: string[]): CompletionResult {
     directive: "nofiles",
   };
   if (positionals.length <= 1) return subs; // completing the subcommand
-  if (positionals[0] === "show" || positionals[0] === "edit" || positionals[0] === "rm")
-    return { items: listPersonaNames().map((value) => ({ value })), directive: "nofiles" };
+  if (positionals[0] === "show" || positionals[0] === "edit" || positionals[0] === "rm") {
+    // Complete from the TARGET mesh's catalog, matching what the subcommand will actually open —
+    // a <TAB> that offers a name the command then reports as missing is worse than no completion.
+    // Resolved offline (no probe), and FAIL CLOSED: with no single target, offer nothing rather
+    // than throw into the operator's shell (the same posture as `spawnComplete`).
+    try {
+      const root = resolveMeshTarget(process.cwd(), {
+        space: completedFlagValue(argv, flags, "space"),
+        server: completedFlagValue(argv, flags, "server"),
+      }).root;
+      return { items: listPersonaNames(root).map((value) => ({ value })), directive: "nofiles" };
+    } catch {
+      return { items: [], directive: "nofiles" };
+    }
+  }
   return { items: [], directive: "nofiles" };
 }
 
 async function list(verbose: boolean, running: boolean, values: ConnectValues): Promise<void> {
-  const entries = listPersonas();
+  const root = targetRoot(values);
+  const entries = listPersonas(root);
   if (!entries.length) {
     console.log(
-      c.dim(`no personas in ${personasDir()}\n`) +
+      c.dim(`no personas in ${personasDir(root)}\n`) +
         c.dim('create one:  cotal personas new <name> --prompt "<who they are>"'),
     );
     return;
@@ -138,9 +186,9 @@ async function presentNames(values: ConnectValues): Promise<Set<string>> {
   }
 }
 
-function show(name?: string): void {
+function show(name: string | undefined, values: { space?: string; server?: string }): void {
   if (!name) return usage();
-  const path = agentFilePath(cotalRoot(), name);
+  const path = agentFilePath(targetRoot(values), name);
   if (!existsSync(path)) return notFound(name, path);
   // Print the file verbatim — the canonical card (frontmatter + persona body).
   console.log(c.dim(path));
@@ -149,9 +197,9 @@ function show(name?: string): void {
 
 /** `cotal personas edit <name>` — open the card in $EDITOR (or $VISUAL), then re-validate on exit
  *  so a save that breaks the frontmatter fails loud instead of silently shipping a bad card. */
-function edit(name?: string): void {
+function edit(name: string | undefined, values: { space?: string; server?: string }): void {
   if (!name) return usage();
-  const path = agentFilePath(cotalRoot(), name);
+  const path = agentFilePath(targetRoot(values), name);
   if (!existsSync(path)) return notFound(name, path);
   const editor = process.env.VISUAL || process.env.EDITOR;
   if (!editor) {
@@ -180,7 +228,7 @@ function edit(name?: string): void {
   console.log(c.green(`✓ saved "${name}"`));
 }
 
-function create(name: string | undefined, v: { role?: string; model?: string; prompt?: string; from?: string; subscribe?: string; force?: boolean }): void {
+function create(name: string | undefined, v: { role?: string; model?: string; prompt?: string; from?: string; subscribe?: string; force?: boolean; space?: string; server?: string }): void {
   if (!name) return usage();
   if (!NAME_RE.test(name)) {
     console.error(c.red(`invalid persona name "${name}": use letters, digits, "_" or "-"`));
@@ -188,7 +236,7 @@ function create(name: string | undefined, v: { role?: string; model?: string; pr
   }
   assertValidName(name); // shared reserved-character guard (also rejects "/")
 
-  const path = agentFilePath(cotalRoot(), name);
+  const path = agentFilePath(targetRoot(v), name);
   if (existsSync(path) && !v.force) {
     console.error(c.red(`persona "${name}" already exists - pass --force to overwrite`));
     console.error(c.dim(path));
@@ -225,9 +273,9 @@ function create(name: string | undefined, v: { role?: string; model?: string; pr
   console.log(c.dim(`${path}\nspawn it:  cotal spawn ${name}${v.role ? ` --role ${v.role}` : ""}`));
 }
 
-function remove(name: string | undefined, force: boolean): void {
+function remove(name: string | undefined, force: boolean, values: { space?: string; server?: string }): void {
   if (!name) return usage();
-  const path = agentFilePath(cotalRoot(), name);
+  const path = agentFilePath(targetRoot(values), name);
   if (!existsSync(path)) return notFound(name, path);
   if (!force) {
     console.error(c.red(`refusing to delete "${name}" without --force`));
