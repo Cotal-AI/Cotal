@@ -44,12 +44,14 @@ function directoryIdentity(name: string, path: string): RecordedDirectory {
   return Object.freeze({ path, physicalPath, dev: stat.dev, ino: stat.ino });
 }
 
-function sameDirectory(expected: RecordedDirectory, observedPath: string): boolean {
+function sameDirectory(expected: RecordedDirectory, observedPath: string): "same" | "foreign" | "missing" {
   try {
     const observed = directoryIdentity("observed directory", observedPath);
-    return observed.physicalPath === expected.physicalPath && observed.dev === expected.dev && observed.ino === expected.ino;
+    return observed.physicalPath === expected.physicalPath && observed.dev === expected.dev && observed.ino === expected.ino
+      ? "same"
+      : "foreign";
   } catch {
-    return false;
+    return "missing";
   }
 }
 
@@ -99,10 +101,14 @@ export function assertSmokeSandboxDown(
   const observedRoot = options.cwd;
   const cotalHome = options.env?.COTAL_HOME;
   const xdgConfigHome = options.env?.XDG_CONFIG_HOME;
-  const rootMatches = typeof observedRoot === "string" && sameDirectory(expected.root, observedRoot);
-  const markerHeld = sameDirectory(expected.marker, expected.marker.path);
-  const homeMatches = cotalHome === expected.cotalHome.path && sameDirectory(expected.cotalHome, cotalHome);
-  const configMatches = xdgConfigHome === expected.xdgConfigHome.path && sameDirectory(expected.xdgConfigHome, xdgConfigHome);
+  const rootIdentity = typeof observedRoot === "string" ? sameDirectory(expected.root, observedRoot) : "missing";
+  const markerIdentity = sameDirectory(expected.marker, expected.marker.path);
+  const homeIdentity = cotalHome === expected.cotalHome.path ? sameDirectory(expected.cotalHome, cotalHome) : "foreign";
+  const configIdentity = xdgConfigHome === expected.xdgConfigHome.path ? sameDirectory(expected.xdgConfigHome, xdgConfigHome) : "foreign";
+  const rootMatches = rootIdentity === "same";
+  const markerHeld = markerIdentity === "same";
+  const homeMatches = homeIdentity === "same";
+  const configMatches = configIdentity === "same";
   if (rootMatches && markerHeld && homeMatches && configMatches) return;
 
   throw new Error(
@@ -110,7 +116,8 @@ export function assertSmokeSandboxDown(
       `expected root ${JSON.stringify(expected.root.path)}; ` +
       `COTAL_HOME ${JSON.stringify(cotalHome ?? "<missing>")}, expected ${JSON.stringify(expected.cotalHome.path)}; ` +
       `XDG_CONFIG_HOME ${JSON.stringify(xdgConfigHome ?? "<missing>")}, expected ${JSON.stringify(expected.xdgConfigHome.path)}; ` +
-      `root ownership marker ${markerHeld ? "held" : "missing or replaced"}`,
+      `identity verdicts root=${rootIdentity}, COTAL_HOME=${homeIdentity}, XDG_CONFIG_HOME=${configIdentity}, ` +
+      `marker=${markerHeld ? "held" : markerIdentity}`,
   );
 }
 
@@ -142,7 +149,7 @@ export function assertSmokeSandboxTargetDown(
   } catch (error) {
     throw new Error(`cannot establish smoke sandbox target identity from ${JSON.stringify(recordPath)}`, { cause: error });
   }
-  if (typeof observedRoot === "string" && sameDirectory(expected.root, observedRoot)) return;
+  if (typeof observedRoot === "string" && sameDirectory(expected.root, observedRoot) === "same") return;
   throw new Error(
     `smoke sandbox refused target-addressed cotal down: observed root ${JSON.stringify(observedRoot ?? "<missing>")}, ` +
       `expected root ${JSON.stringify(expected.root.path)}`,

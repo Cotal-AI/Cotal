@@ -13,9 +13,23 @@ const env = { COTAL_HOME: cotalHome, XDG_CONFIG_HOME: xdgConfigHome };
 
 try {
   assert.doesNotThrow(() => assertSmokeSandboxDown(anchor, ["down"], { cwd: root, env }));
+  const foreign = join(base, "operator-checkout");
+  const foreignHome = join(base, "operator-home");
+  const foreignConfig = join(base, "operator-config");
+  mkdirSync(join(foreign, ".cotal"), { recursive: true });
+  mkdirSync(foreignHome, { recursive: true });
+  mkdirSync(foreignConfig, { recursive: true });
   assert.throws(
-    () => assertSmokeSandboxDown(anchor, ["down"], { cwd: join(base, "foreign"), env }),
-    /observed root.*foreign.*expected root.*root/,
+    () => assertSmokeSandboxDown(anchor, ["down"], { cwd: foreign, env }),
+    /observed root.*operator-checkout.*expected root.*root.*identity verdicts root=foreign/,
+  );
+  assert.throws(
+    () => assertSmokeSandboxDown(anchor, ["down"], { cwd: root, env: { ...env, COTAL_HOME: foreignHome } }),
+    /COTAL_HOME.*operator-home.*identity verdicts root=same, COTAL_HOME=foreign/,
+  );
+  assert.throws(
+    () => assertSmokeSandboxDown(anchor, ["down"], { cwd: root, env: { ...env, XDG_CONFIG_HOME: foreignConfig } }),
+    /XDG_CONFIG_HOME.*operator-config.*identity verdicts root=same, COTAL_HOME=same, XDG_CONFIG_HOME=foreign/,
   );
   assert.throws(
     () => assertSmokeSandboxDown(undefined, ["down"], { cwd: root, env }),
@@ -34,7 +48,8 @@ try {
   symlinkSync(root, alias, "dir");
   assert.doesNotThrow(() => assertSmokeSandboxDown(anchor, ["down"], { cwd: alias, env }));
   assert.doesNotThrow(() => assertSmokeSandboxDown(anchor, ["down"], { cwd: root + sep, env }));
-  assert.doesNotThrow(() => assertSmokeSandboxDown(anchor, ["status"], { cwd: join(base, "foreign") }));
+  // Scoped to issue 884's destructive `down` verb only. This is not a general blessing of foreign cwd.
+  assert.doesNotThrow(() => assertSmokeSandboxDown(anchor, ["status"], { cwd: foreign }));
 
   const space = "target";
   const meshes = join(cotalHome, "meshes");
@@ -43,10 +58,10 @@ try {
   writeFileSync(meshFile, JSON.stringify({ space, root }));
   assert.doesNotThrow(() =>
     assertSmokeSandboxTargetDown(anchor, ["down", "web", "--space", space], { cwd: root, env }, space));
-  writeFileSync(meshFile, JSON.stringify({ space, root: join(base, "foreign") }));
+  writeFileSync(meshFile, JSON.stringify({ space, root: foreign }));
   assert.throws(
     () => assertSmokeSandboxTargetDown(anchor, ["down", "web", "--space", space], { cwd: root, env }, space),
-    /target-addressed cotal down: observed root.*foreign.*expected root.*root/,
+    /target-addressed cotal down: observed root.*operator-checkout.*expected root.*root/,
   );
   assert.throws(
     () => assertSmokeSandboxTargetDown(anchor, ["down", "web"], { cwd: root, env }, space),
