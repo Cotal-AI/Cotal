@@ -37,12 +37,26 @@
     "`/` and `.` anyway, so user mode stays safe and only the static/open half of each path-hostile",
     "cell reddens \u2014 which is exactly the half that still has to hold.",
     "",
+    "V0 is the vacuity control and it mutates the SUITE rather than the source. It exists because the",
+    "first version of this suite compared its count to the loop variable that produced it, which is",
+    "satisfied at zero: 19 of 20 cells passed against an empty series. The floors are asserted against",
+    "a literal now. A count is only evidence when it cannot be met by measuring nothing.",
+    "",
     "SPECIFIER BOUNDARY. These cells drive the two exported functions directly, not a live manager.",
     "The manager reaches them by delegation (`nameError` returns `spawnNameError(...)`) and by using",
     "`firstFreeName` for its funnel; that wiring is one call each and is typechecked, but a live",
     "spawn being refused end to end is NOT proven here and is named as a residual."
   ],
   "mutations": [
+    {
+      "name": "V0 VACUITY PROOF \u2014 the collision series is empty",
+      "file": "packages/core/smoke/spawn-name-actor-token.smoke.ts",
+      "find": "const SERIES = 12;",
+      "replace": "const SERIES = 0;",
+      "expectRed": "instrument control: the collision series is NON-EMPTY",
+      "cell": "instrument control: the collision series is NON-EMPTY (N names)",
+      "note": "Mutates the SUITE, not the implementation \u2014 the question is whether these cells can be satisfied by measuring nothing. Every claim over `produced` is universal ('every name is mintable', 'all distinct', 'the door accepts every one') and a universal claim over an empty set is true. MEASURED, before the floors were added: 19 of 20 cells still passed with the series emptied, because the count was compared to SERIES itself \u2014 the same variable that produced it, which is satisfied at zero. Floors against a literal now redden 5 cells. Raised by the review lane, not by me; my own count assertion looked rigorous and was not."
+    },
     {
       "name": "M1 the numbering separator reverts to the reserved character",
       "file": "packages/core/src/agent-file.ts",

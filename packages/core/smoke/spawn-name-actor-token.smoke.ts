@@ -63,12 +63,21 @@ for (let i = 0; i < SERIES; i++) {
   taken.add(next);
 }
 const unmintable = produced.filter((n) => !mintable(n));
+
+// VACUITY CONTROL, and it is load-bearing rather than decorative. Every claim below is UNIVERSAL
+// over `produced` — "every name is mintable", "all distinct", "the door accepts every one" — and a
+// universal claim over an empty set is true. Measured: with the series emptied, 19 of these 20
+// cells still passed. So the floor is asserted against a literal, not against SERIES: comparing a
+// count to the same variable that produced it is satisfied at zero and proves nothing.
+check(`instrument control: the collision series is NON-EMPTY (${produced.length} names)`,
+  produced.length >= 10 && produced.length === SERIES, { produced });
 check(
   `every name the numbering produces is a mintable actor (checked ${produced.length})`,
-  produced.length === SERIES && unmintable.length === 0,
+  produced.length >= 10 && produced.length === SERIES && unmintable.length === 0,
   { produced, unmintable },
 );
-check("…and they are all distinct, so the series still resolves collisions", new Set(produced).size === SERIES);
+check("…and they are all distinct, so the series still resolves collisions",
+  produced.length >= 10 && new Set(produced).size === SERIES);
 check("…and the second instance is the one that used to be unmintable", produced[0] === "reviewer_2", {
   second: produced[0],
 });
@@ -77,7 +86,7 @@ check("…and the second instance is the one that used to be unmintable", produc
 const producedRejected = produced.filter((n) => spawnNameError(n, { userMode: true }) !== undefined);
 check(
   `the user-mode name door ACCEPTS every name the numbering produces (checked ${produced.length})`,
-  producedRejected.length === 0,
+  produced.length >= 10 && producedRejected.length === 0,
   { producedRejected },
 );
 
