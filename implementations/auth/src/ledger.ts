@@ -87,6 +87,14 @@ export interface ActorRow {
    *  same caveat as {@link ActorRow.allowSubscribe}: `cotal actor grant` supplies `>` for an
    *  omitted `--allow-publish`. */
   allowPublish: string[];
+  /** DM ACL: recipient OWNER tokens this actor may unicast to. **Absent ⇒ anyone** (the
+   *  historical `inst.*.*` grant), so an existing row keeps its DM plane on upgrade; an
+   *  explicitly empty list means no DM send at all.
+   *
+   *  Unlike {@link ActorRow.allowPublish} this cannot be expressed as channels — a channel name
+   *  does not name an owner — so a deployment that isolates teams by channel isolated nothing on
+   *  the DM plane until this existed. */
+  allowDmOwners?: string[];
   /** Role (scopes the TASK-queue consumer), when the actor serves one. */
   role?: string;
   /** The spawning principal (`<owner>.<actor>` dot-form) when the ledger records one (audit link). */
@@ -458,6 +466,11 @@ export function ledgerAuthorizeGrant(dir: string): (owner: string, actor: string
       scope: row.scope,
       allowSubscribe: row.allowSubscribe,
       allowPublish: row.allowPublish,
+      // Spread only when the row HAS one. Passing `allowDmOwners: undefined` explicitly is
+      // indistinguishable from omission at the mint TODAY, but relying on that would let a
+      // later validation/exactOptionalPropertyTypes change silently narrow every row to no
+      // DM at all. Absent must stay absent, because absent means "DM anyone".
+      ...(row.allowDmOwners ? { allowDmOwners: row.allowDmOwners } : {}),
       ...(row.role ? { role: row.role } : {}),
       ...(row.label ? { label: row.label } : {}),
       ...(row.parent ? { parent: row.parent } : {}),
@@ -518,6 +531,11 @@ export function ledgerAclResolver(dir: string): AclResolver {
     return {
       allowSubscribe: row.allowSubscribe,
       allowPublish: row.allowPublish,
+      // Spread only when the row HAS one. Passing `allowDmOwners: undefined` explicitly is
+      // indistinguishable from omission at the mint TODAY, but relying on that would let a
+      // later validation/exactOptionalPropertyTypes change silently narrow every row to no
+      // DM at all. Absent must stay absent, because absent means "DM anyone".
+      ...(row.allowDmOwners ? { allowDmOwners: row.allowDmOwners } : {}),
       ...(row.role ? { role: row.role } : {}),
       lifecycleUid: t.act.lifecycleUid,
       // The CURRENT grant's capabilities, so the mint re-contains the bearer against the row
@@ -603,6 +621,11 @@ export function ledgerAuthorizeAgentExchange(
     scope: row.scope,
     allowSubscribe: row.allowSubscribe,
     allowPublish: row.allowPublish,
+    // Spread only when the row HAS one. Passing `allowDmOwners: undefined` explicitly is
+    // indistinguishable from omission at the mint TODAY, but relying on that would let a
+    // later validation/exactOptionalPropertyTypes change silently narrow every row to no
+    // DM at all. Absent must stay absent, because absent means "DM anyone".
+    ...(row.allowDmOwners ? { allowDmOwners: row.allowDmOwners } : {}),
     ...(row.role ? { role: row.role } : {}),
     ...(row.parent ? { parent: row.parent } : {}),
     ...(row.lifecycleUid ? { lifecycleUid: row.lifecycleUid } : {}),

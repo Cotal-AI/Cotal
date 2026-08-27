@@ -1,0 +1,74 @@
+{
+  "suite": "packages/core/smoke/dm-scope-auth.smoke.ts",
+  "guard": "an agent's DM send ACL is exactly the owners named in allowDmOwners, with omitted meaning the historical wildcard and empty meaning no DM at all, and narrowing it moves no other grant",
+  "command": "pnpm smoke:dm-scope:auth",
+  "completionMarker": "DM-SCOPE SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/dm-owner-scoping.json",
+  "why": [
+    "The DM grant was a hardcoded `inst.*.*.<owner>.<actor>`: every agent on a space could DM every",
+    "other agent, and no deployment could confine one tenant's agents to its own people. The option",
+    "that narrows it is DEFAULT-ALLOW, which is the opposite reflex to the post ACL two lines above,",
+    "so the two mistakes that matter pull in opposite directions and neither is visible in a diff.",
+    "",
+    "E1 flips the default to deny. That is the change a default-deny reflex makes, it reads as a",
+    "hardening, and it would cut the DM plane of every existing space on upgrade — the one outcome",
+    "this option exists to avoid. E4 is the same collapse from the other side and is the likelier of",
+    "the two to be written by hand: `?.length ? … : [\"*\"]` is the ordinary empty-guard idiom, it",
+    "leaves the omitted case correct so most cells stay green, and it silently converts an explicit",
+    "'this agent sends no DMs' into 'this agent DMs anyone'. E1 and E4 are both needed because each",
+    "one alone is survivable by a suite that only tests the other direction.",
+    "",
+    "E2 restores the historical hardcode with the option still parsed and unused, which is what a",
+    "revert or a bad merge produces. E3 keeps the narrowing but pins the recipient ACTOR slot, which",
+    "over-narrows: the DM would reach only a recipient whose actor name happened to equal the",
+    "sender's, so an in-policy DM to a real teammate silently stops arriving.",
+    "",
+    "SPECIFIER BOUNDARY. The suite imports core by relative source path (../src/index.js) and runs",
+    "under tsx, so the mutated file is the file that executes and no build step stands between them.",
+    "The cells that grade the mutants are broker verdicts from a real nats-server auth callout, not a",
+    "restatement of the rule in the test: a mutation that changes the emitted grant changes what the",
+    "broker answers, which is the only thing the cells read.",
+    "",
+    "NOT COVERED HERE, deliberately: the auth ledger's resolver, which carries allowDmOwners from a",
+    "stored row into this mint. This suite calls mintCreds directly, so a resolver that drops the",
+    "field leaves every cell below green. That seam is graded where it lives, not here."
+  ],
+  "mutations": [
+    {
+      "name": "E1 omitted collapses to DENY (the default-deny reflex)",
+      "file": "packages/core/src/provision.ts",
+      "find": "  const dmOwners = opts.allowDmOwners ?? [\"*\"];",
+      "replace": "  const dmOwners = opts.allowDmOwners ?? [];",
+      "expectRed": "ABSENT ⇒ the historical wildcard: DM owner C ALLOWED TOO (no narrowing on upgrade)",
+      "cell": "ABSENT ⇒ the historical wildcard: DM owner C ALLOWED TOO (no narrowing on upgrade)",
+      "note": "Mutates the default only. Every explicitly-scoped cell above stays green, so the kill can come from nothing but the upgrade-path cell this option exists to protect."
+    },
+    {
+      "name": "E2 the historical hardcode returns; the option is parsed and ignored",
+      "file": "packages/core/src/provision.ts",
+      "find": "    ...dmOwners.map((recip) => unicastSubject(space, recip, \"*\", pr.owner, pr.actor)),",
+      "replace": "    unicastSubject(space, \"*\", \"*\", pr.owner, pr.actor),",
+      "expectRed": "DM an OUT-OF-POLICY owner DENIED (the whole point)",
+      "cell": "DM an OUT-OF-POLICY owner DENIED (the whole point)",
+      "note": "`dmOwners` stays declared and stays type-correct, so neither the compiler nor a reader of the surrounding lines sees anything missing — the shape a revert or a bad three-way merge leaves behind."
+    },
+    {
+      "name": "E3 the recipient ACTOR slot is pinned instead of wildcard (over-narrowing)",
+      "file": "packages/core/src/provision.ts",
+      "find": "    ...dmOwners.map((recip) => unicastSubject(space, recip, \"*\", pr.owner, pr.actor)),",
+      "replace": "    ...dmOwners.map((recip) => unicastSubject(space, recip, pr.actor, pr.owner, pr.actor)),",
+      "expectRed": "the recipient ACTOR slot stays a WILDCARD — a SECOND actor of the same owner is ALLOWED",
+      "cell": "the recipient ACTOR slot stays a WILDCARD — a SECOND actor of the same owner is ALLOWED",
+      "note": "The out-of-policy cell still passes under this mutant, so it cannot be what kills it: over-narrowing is a distinct defect from under-narrowing and needs its own cell to be visible at all."
+    },
+    {
+      "name": "E4 EMPTY silently re-widens to the wildcard (the empty-guard idiom)",
+      "file": "packages/core/src/provision.ts",
+      "find": "  const dmOwners = opts.allowDmOwners ?? [\"*\"];",
+      "replace": "  const dmOwners = opts.allowDmOwners?.length ? opts.allowDmOwners : [\"*\"];",
+      "expectRed": "EMPTY ⇒ no DM send at all: owner C DENIED",
+      "cell": "EMPTY ⇒ no DM send at all: owner C DENIED",
+      "note": "The omitted case stays correct under this mutant and E1's cell stays green, which is exactly why E1 cannot stand in for it: this is the collapse that survives a suite testing only the upgrade direction."
+    }
+  ]
+}

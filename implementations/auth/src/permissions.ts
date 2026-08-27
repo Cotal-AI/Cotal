@@ -15,7 +15,7 @@ import type { ValidatedUserToken } from "./token.js";
  *  callout (`cotal up`), so this package stays free of any ledger/persona storage concern. */
 export type AclResolver = (
   t: ValidatedUserToken,
-) => Pick<MintOpts, "allowSubscribe" | "allowPublish" | "role" | "lifecycleUid"> & {
+) => Pick<MintOpts, "allowSubscribe" | "allowPublish" | "allowDmOwners" | "role" | "lifecycleUid"> & {
   /** The actor's CURRENT capability grant (the row's scope), so the mint can re-contain the
    *  bearer's capabilities against the row AS OF THE MINT, not only as of the connect gate. */
   scope: string[];

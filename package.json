@@ -353,6 +353,7 @@
     "smoke:serverconfig-shapes": "tsx packages/core/smoke/serverconfig-shapes.smoke.ts",
     "smoke:tls-intent": "tsx packages/workspace/smoke/tls-intent.smoke.ts",
     "smoke:cross-owner:auth": "tsx packages/core/smoke/cross-owner-auth.smoke.ts",
+    "smoke:dm-scope:auth": "tsx packages/core/smoke/dm-scope-auth.smoke.ts",
     "smoke:auth-owner-token": "tsx implementations/auth/smoke/owner-token.smoke.ts",
     "smoke:auth-issuer": "tsx implementations/auth/smoke/issuer.smoke.ts",
     "smoke:auth-idp-bridge": "tsx implementations/auth/smoke/idp-bridge.smoke.ts",

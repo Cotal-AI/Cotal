@@ -501,6 +501,19 @@ export interface MintOpts {
    *  resolved by the caller). Each becomes a `chat.<id>.<ch>` publish grant. **Default-deny**:
    *  omitted/empty ⇒ no chat publish grant at all — publishing must be declared. */
   allowPublish?: string[];
+  /** DM ACL — the recipient OWNER tokens this principal may unicast to, as itself.
+   *
+   *  **Omitted means `["*"]` — DM anyone — which is the historical behaviour and stays the
+   *  default.** The send grant is `inst.<recipOwner>.*.<myOwner>.<myActor>` per entry: the
+   *  recipient's ACTOR slot stays a wildcard (any of that owner's agents), and the sender slots
+   *  remain forge-locked to this principal, so nothing here lets anyone send AS someone else.
+   *
+   *  Why it exists: the post ACL above is default-deny and policy-derived, while the DM grant
+   *  beside it was an unconditional `inst.*.*`. A deployment that isolates teams by channel
+   *  therefore isolated nothing on the DM plane — two users who share no channel could still
+   *  message each other and each other's agents. Channels cannot express this, because a
+   *  channel name does not name an owner; only the caller knows who is a teammate. */
+  allowDmOwners?: string[];
   /** The agent's role — scopes its TASK-queue consumer to svc_<role>. */
   role?: string;
   /** Capabilities declared in the agent file (e.g. `"spawn"`). A capability gates the
@@ -1138,6 +1151,10 @@ export function permissionsFor(
   if (profile !== "agent")
     throw new Error(`permissionsFor: unhandled profile "${profile}" - add an explicit arm, do not fall through to agent`);
   const allowPublish = opts.allowPublish ?? []; // post ACL — DEFAULT-DENY (publish must be declared)
+  // DM ACL — DEFAULT-ALLOW, unlike the post ACL above. Flipping this default would silently cut
+  // every existing deployment's DM plane on upgrade, so the narrowing is opt-in by the caller.
+  // An explicitly EMPTY list is honoured as "no DM send at all" and is not the same as omitted.
+  const dmOwners = opts.allowDmOwners ?? ["*"];
   // Read ACL — DEFAULT-DENY for channels, exactly like allowPublish above. Omitted or empty mints
   // NO channel row: no per-channel history-consumer create grant and no `chat.*.<ch>` sub.allow.
   // The DM/presence/anycast/control rows below are unconditional, so a channel-less agent is still
@@ -1156,7 +1173,9 @@ export function permissionsFor(
     // peer publish — owner+actor identity + channel scope, built from the real builders. Default-deny:
     // ONLY the declared allowPublish channels (none by default) get a chat-publish grant.
     ...allowPublish.map((ch) => chatSubject(space, pr.owner, pr.actor, ch)),
-    unicastSubject(space, "*", "*", pr.owner, pr.actor), // inst.*.*.<o>.<a> — DM any instance, as me
+    // DM send. One grant per permitted recipient owner; `["*"]` (the default) is the historical
+    // inst.*.*.<o>.<a> — DM any instance, as me. The sender slots stay forge-locked either way.
+    ...dmOwners.map((recip) => unicastSubject(space, recip, "*", pr.owner, pr.actor)),
     anycastSubject(space, "*", pr.owner, pr.actor), //  svc.*.<o>.<a>   — anycast any role, as me
     // Self stop/despawn rides the v0.4 ep baseline (`stop` self-mode) — the manager `ctl` rail is
     // deleted (1d). The delivery-daemon rail below is a separate service (Plane-3), kept.
