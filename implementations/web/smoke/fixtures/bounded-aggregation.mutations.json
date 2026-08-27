@@ -39,9 +39,9 @@
     {
       "name": "B6 the dms route's deadline is dropped: the one read that has no partial to serve answers long after the reader gave up instead of refusing, and the browser has nothing to hold its last good list against",
       "file": "implementations/web/src/web.ts",
-      "find": "        const dms = await within(ep.dmHistory({ limit }), clock.until);\n        if (dms === LATE)\n          return json(res, { error: `direct messages: the read did not finish within ${AGGREGATION_DEADLINE_MS}ms` }, 503);\n",
-      "replace": "        const dms = await ep.dmHistory({ limit });\n",
-      "expectRed": "5.6 `/api/dms` REFUSES at its deadline"
+      "find": "        const dms = await within(\n          ep.dmHistory({ limit }).catch((e: unknown) => {\n            throw new Error(`direct messages: the read failed: ${e instanceof Error ? e.message : String(e)}`);\n          }),\n          clock.until,\n        );\n        if (dms === LATE)\n          return json(res, { error: `direct messages: the read did not finish within ${AGGREGATION_DEADLINE_MS}ms` }, 503);\n",
+      "replace": "        const dms = await ep.dmHistory({ limit }).catch((e: unknown) => {\n          throw new Error(`direct messages: the read failed: ${e instanceof Error ? e.message : String(e)}`);\n        });\n",
+      "expectRed": "6.6 `/api/dms` REFUSES at its deadline"
     },
     {
       "name": "B7 the refusal stops naming what it exceeded, so the page can say only that something returned a status - the same illegibility as the `{\"error\":\"timeout\"}` this change exists to replace",

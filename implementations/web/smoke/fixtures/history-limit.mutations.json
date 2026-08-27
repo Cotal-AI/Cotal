@@ -32,8 +32,8 @@
     {
       "name": "H8 the single-channel read loses the deadline it was given, so on a slow link it runs to completion however long that takes while the console page re-reads it every poll",
       "file": "implementations/web/src/web.ts",
-      "find": "        const page = await within(ep.channelHistory(name, { limit }), clock.until);\n        if (page === LATE)",
-      "replace": "        const page = await ep.channelHistory(name, { limit });\n        if (false)",
+      "find": "        const page = await within(\n          ep.channelHistory(name, { limit }).catch((e: unknown) => {\n            throw new Error(`#${name}: the read failed: ${e instanceof Error ? e.message : String(e)}`);\n          }),\n          clock.until,\n        );\n        if (page === LATE)",
+      "replace": "        const page = await ep.channelHistory(name, { limit }).catch((e: unknown) => {\n          throw new Error(`#${name}: the read failed: ${e instanceof Error ? e.message : String(e)}`);\n        });\n        if (false)",
       "expectRed": "3.2 THE DEADLINE FIRED: a read that cannot finish in time refuses instead of running on"
     },
     {
