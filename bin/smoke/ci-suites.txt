@@ -566,3 +566,8 @@ smoke:setup-destination
 # `index % count`, so inserting mid-file re-shards every suite after it. Measured when this line
 # sat at 191: 225 of 387 suites changed shard at the 4-shard config CI actually runs.
 smoke:persona-root
+# `status` names the root each persona row describes, and marks the case where the folder's catalog
+# is NOT the one a bare `spawn` would load. Those two roots diverge silently, and the green row for
+# a `default` that cannot launch is a capability claim the operator has no way to check.
+# Appended at the end: no ordering dependency, and appending keeps two branches from conflicting.
+smoke:status-persona-root
