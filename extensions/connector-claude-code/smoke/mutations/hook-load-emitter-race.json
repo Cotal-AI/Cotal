@@ -143,6 +143,24 @@
       "expectRed": "an unbound endpoint REJECTS past the window",
       "cell": "an unbound endpoint REJECTS past the window (the guard does not fail open)",
       "note": "THE ONE THAT MATTERS, found by the review lane. A genuinely dead broker is reported to the emitter as connected: the holder starts against an unbound endpoint, fails terminally, and the plane is silent for the whole session \u2014 the exact outcome this change exists to prevent. Every SOURCE cell stays green because the `throw` is still there; E6 only passes because it happens to delete the matched text, while this keeps the text and removes the behaviour. A regex cannot witness a behavioural fix. Killed only by executing the shipped method against a faked endpoint."
+    },
+    {
+      "name": "E9 the await is guarded into unreachability",
+      "file": "extensions/connector-claude-code/src/mcp.ts",
+      "find": "        await agent.whenConnected(20_000);",
+      "replace": "        if (false) await agent.whenConnected(20_000);",
+      "expectRed": "as a BARE statement, not guarded into unreachability",
+      "cell": "\u2026as a BARE statement, not guarded into unreachability",
+      "note": "Found by the review lane. Typechecks, keeps every character the presence and ordering cells look for, and RESTORES the original race. The lesson is one I had already learned elsewhere and did not apply here: driving a method does not witness the CALL PATH that uses it, because the mutation removes the call. NAMED RESIDUAL \u2014 this is killed structurally, not by a call-path witness, so a subtler guard would still evade it."
+    },
+    {
+      "name": "E10 the promised grace window is clamped",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "  private awaitConnection(timeoutMs: number): Promise<boolean> {",
+      "replace": "  private awaitConnection(timeoutMs: number): Promise<boolean> {\n    timeoutMs = Math.min(timeoutMs, 50);",
+      "expectRed": "resolves on a signal arriving well after any clamp",
+      "cell": "\u2026and resolves on a signal arriving well after any clamp (the WINDOW is preserved, not just the wait)",
+      "note": "Found by the review lane. A guard advertising a 20s grace, tested by a control that resolves in 20ms, is not tested for the property it advertises \u2014 every cell stayed green while the window became practically terminal. The signal now lands at 150ms against a 5s window, outside any plausible clamp."
     }
   ]
 }

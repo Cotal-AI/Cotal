@@ -81,6 +81,17 @@ const iWait = mcp.indexOf("await agent.whenConnected(");
 const iRoot = mcp.indexOf("resolveEventsStateRoot(");
 console.log("\nthe emitter — it must not start against an unbound endpoint:");
 check("the emitter path AWAITS the mesh link", iWait !== -1);
+// REACHABILITY, not just presence. `if (false) await agent.whenConnected(20_000)` keeps every
+// character the cell above looks for and restores the original race — found by a review lane on
+// this branch. Requiring the await to be a BARE STATEMENT (line starts with `await`) rejects the
+// guarded form. NAMED RESIDUAL, because this is still source and not a call-path witness: a more
+// elaborate guard (a variable that is always false, an early return above it) would evade this.
+// The real fix is to drive the emitter factory and observe that it reaches the wait; the call site
+// is a nested closure inside the tool registration, so that needs a harness this suite does not
+// have. Recorded as open rather than papered over.
+check("…as a BARE statement, not guarded into unreachability",
+  mcp.split("\n").some((l) => /^\s*await agent\.whenConnected\(/.test(l)),
+  mcp.split("\n").filter((l) => l.includes("agent.whenConnected(")));
 check("instrument control: the emitter setup this guards is in this file", iRoot !== -1);
 check("…and the wait comes BEFORE the emitter is set up (the ordering IS the fix)",
   iWait !== -1 && iRoot !== -1 && iWait < iRoot, { iWait, iRoot });
@@ -131,16 +142,21 @@ check("control: an ALREADY-connected agent resolves (the guard is not simply alw
   (await settle(fakeAgent(true).whenConnected(60))) === "resolved");
 // And it resolves on the real signal, so the wait is bound to the endpoint's own connection event
 // rather than to a timer that happens to expire the right way.
+// The signal lands at 150ms against a 5s window. It used to land at 20ms, which a review lane
+// showed cannot witness the WINDOW: clamping the wait to 50ms internally kept every cell green
+// while turning the promised 20s grace into something practically terminal. A control that
+// resolves faster than the clamp cannot distinguish a preserved window from a destroyed one, so
+// the signal has to arrive later than any clamp a regression would plausibly introduce.
 const late = fakeAgent(false);
 const latePromise = settle(late.whenConnected(5_000));
-setTimeout(() => late.ep.emit("connection", { connected: true }), 20);
-check("…and resolves on the endpoint's OWN connection signal, not on a timer",
+setTimeout(() => late.ep.emit("connection", { connected: true }), 150);
+check("…and resolves on a signal arriving well after any clamp (the WINDOW is preserved, not just the wait)",
   (await latePromise) === "resolved");
 // The refusal has to be actionable: a bare failure sends someone to repair the wrong thing.
 const msg = await fakeAgent(false).whenConnected(60).then(() => "", (e: Error) => e.message);
 check("…and the refusal names the broker it could not reach", msg.includes("59999"), msg);
 
 console.log(`\nHOOK-LOAD/EMITTER-RACE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
-const EXPECTED = 18;
+const EXPECTED = 19;
 if (pass + fail !== EXPECTED) { console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail}`); process.exitCode = 1; }
 if (fail) process.exitCode = 1;
