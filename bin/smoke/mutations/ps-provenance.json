@@ -33,6 +33,14 @@
       "replace": "  else if (r.variant) void r.variant;",
       "expectRed": "default ps identity preserves a requested variant without a model",
       "cell": "default ps identity preserves a requested variant without a model"
+    },
+    {
+      "name": "wide output repeats provenance already shown in the compact identity",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "  const facts: string[] = [];",
+      "replace": "  const facts: string[] = [\"model duplicated (variant duplicated)\"];",
+      "expectRed": "wide facts do not repeat model or requested variant from the identity row",
+      "cell": "wide facts do not repeat model or requested variant from the identity row"
     }
   ]
 }

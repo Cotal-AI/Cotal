@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { agentIdentity } from "../src/commands/agents.js";
+import { agentIdentity, agentWideFacts } from "../src/commands/agents.js";
 
 let pass = 0;
 let fail = 0;
@@ -33,6 +33,18 @@ check(
   "default ps identity still supports rows with no model provenance",
   agentIdentity({ agent: "claude", mode: "tmux" }),
   "claude · tmux",
+);
+check(
+  "wide facts do not repeat model or requested variant from the identity row",
+  agentWideFacts({
+    cwd: "/workspace",
+    pid: 42,
+    spawner: "owner",
+    lifecycleUid: "life",
+    instanceId: "instance",
+    host: "host",
+  }).join(" | "),
+  "cwd /workspace | pid 42 | spawner owner | uid life | instance instance | host host",
 );
 
 console.log(`\nPS PROVENANCE SMOKE PASSED (${pass} checks, ${fail} failed)`);

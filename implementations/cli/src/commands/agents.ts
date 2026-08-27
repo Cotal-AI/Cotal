@@ -24,7 +24,7 @@ const onFlag = { name: "on", type: "string", value: "<instance>", description: "
 // #651: the same rows, two richer presentations. `--wide` stays human (one dim facts line per
 // seat); `--json` is the machine form (one JSON object per line, exactly the row the manager
 // sent). Mutually exclusive because they are two answers to "how should I read this".
-const wideFlag = { name: "wide", type: "boolean", description: "also print the per-seat facts the manager already records: model pin, cwd, pid, spawner, lifecycle uid, host/instance" } as const;
+const wideFlag = { name: "wide", type: "boolean", description: "also print the per-seat facts the manager already records: cwd, pid, spawner, lifecycle uid, host/instance" } as const;
 const jsonFlag = { name: "json", type: "boolean", description: "machine-readable: one JSON object per seat per line (instance headers go to stderr)" } as const;
 export const stopFlags = [...targetFlags, nameFlag("managed agent to stop (required)"), onFlag] as const satisfies readonly FlagSpec[];
 export const psFlags = [...targetFlags, onFlag, wideFlag, jsonFlag] as const satisfies readonly FlagSpec[];
@@ -262,24 +262,22 @@ function printAgentRow(r: AgentRow, indent = ""): void {
   if (r.authHealth && r.authReason) console.log(authColor(`${indent}    ${r.authReason}`));
 }
 
-/** The #651 wide facts for one seat, as one dim continuation line. Only fields the row actually
- *  carries print: an absent fact (no model pin, a runtime with no owned pid) is real state and
- *  prints nothing, never a fabricated placeholder. The lifecycle uid always prints (it is
- *  required on the row); host/instance attribute the seat in a multi-manager scatter view. */
-function printWideFacts(r: AgentRow, indent = ""): void {
+/** Extra operational facts for `--wide`. Model and requested variant are already in the compact
+ *  identity row, so repeating them here would make wide output noisier without adding provenance.
+ *  Only fields the manager actually recorded print; lifecycle uid is required on every row. */
+export function agentWideFacts(r: Pick<AgentRow, "cwd" | "pid" | "spawner" | "lifecycleUid" | "instanceId" | "host">): string[] {
   const facts: string[] = [];
-  // #651: render variant INDEPENDENTLY of model. Nesting it inside `if (r.model)` dropped a
-  // recorded variant-without-model from --wide while --json still carried it - a fact silently
-  // lost. Show it under the model when both are present, standalone when only the variant is.
-  if (r.model) facts.push(`model ${r.model}${r.variant ? ` (${r.variant})` : ""}`);
-  else if (r.variant) facts.push(`variant ${r.variant}`);
   if (r.cwd) facts.push(`cwd ${r.cwd}`);
   if (r.pid !== undefined) facts.push(`pid ${r.pid}`);
   if (r.spawner) facts.push(`spawner ${r.spawner}`);
   facts.push(`uid ${r.lifecycleUid}`);
   if (r.instanceId) facts.push(`instance ${r.instanceId}`);
   if (r.host) facts.push(`host ${r.host}`);
-  console.log(c.dim(`${indent}    ${facts.join("  ·  ")}`));
+  return facts;
+}
+
+function printWideFacts(r: AgentRow, indent = ""): void {
+  console.log(c.dim(`${indent}    ${agentWideFacts(r).join("  ·  ")}`));
 }
 
 /** How one seat renders in the chosen presentation. `--json` prints the manager's row EXACTLY as

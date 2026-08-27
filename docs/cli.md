@@ -619,7 +619,7 @@ cotal attach --name <n> [--on <instance>] [--no-reconnect] [--space <s>]
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
 | `--name <n>` | — | Managed agent to stop / attach (required) |
 | `--on <instance>` | class anycast (`ps`: class scatter) | Pin to one manager instance id (multi-manager space); takes the whole id as `ps` prints it, not a prefix. An empty value (`--on ""`, an unset shell variable) is refused, never treated as absent |
-| `--wide` (`ps`) | off | After each seat's compact row, print the per-seat facts the manager already records: model pin (and requested variant), `cwd`, `pid`, spawner, lifecycle uid, and the owning manager's instance id and host. A fact the manager did not record (no model pinned, no variant override requested, or a runtime that owns no real process) prints nothing, never a placeholder |
+| `--wide` (`ps`) | off | After each seat's compact row, print extra operational facts the manager records: `cwd`, `pid`, spawner, lifecycle uid, and the owning manager's instance id and host. Model and requested variant stay in the identity row rather than printing twice. A fact the manager did not record (for example a runtime with no real process) prints nothing, never a placeholder |
 | `--json` (`ps`) | off | Machine-readable: one JSON object per seat per line, exactly the row the manager sent. Instance headers and errors go to stderr, so stdout is pure rows. Mutually exclusive with `--wide` |
 | `--no-reconnect` (`attach`) | off | End the attach when its session ends, instead of re-establishing it. For scripts that want one run and one exit code |
 

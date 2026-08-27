@@ -130,6 +130,10 @@ a tier the file names, so launch remains the authority: Jcode applies the reques
 provider rejection ends the launch. `--refresh` does not turn this local declaration into a live
 probe.
 
+The Harness API can set a requested effort but cannot read an effective effort back. Its runtime
+identity reports provider, model, and routes only; no reply or event carries the applied tier. Cotal
+therefore records the accepted request and does not relabel it as an observed effect.
+
 `--variant` is the session's **reasoning effort**, applied after the model and before the seat's
 first turn — so a seat never serves a turn at an effort nobody chose. A persona's `variant:` is the
 default and `--variant` overrides it, the same way `model:` and `--model` work:
