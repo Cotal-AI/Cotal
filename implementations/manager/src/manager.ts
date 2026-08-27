@@ -1748,8 +1748,8 @@ export class Manager {
   }
 
   /** Stop the v0.4 service-endpoint serve loop (drain subscriptions, await in-flight handlers)
-   *  and drop its dedicated connection. Best-effort by design — both exit paths (graceful stop,
-   *  lease-loss fail-close) must complete their remaining teardown even if the broker is gone. */
+   *  and drop its dedicated connection. Best-effort so a graceful stop completes its remaining
+   *  teardown even when the broker is gone. */
   private async stopServiceServe(): Promise<void> {
     const s = this.serviceServe;
     if (!s) return;

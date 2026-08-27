@@ -49,8 +49,8 @@
     {
       "name": "the rebuild keeps the manager-lease KV handle bound to the drained connection",
       "file": "packages/core/src/endpoint.ts",
-      "find": "      this.managerLeaseKv = undefined;\n      this.emit(\"connection\", { connected: false }); // null window opened",
-      "replace": "      this.emit(\"connection\", { connected: false }); // null window opened",
+      "find": "      this.managerLeaseKv = undefined;\n",
+      "replace": "",
       "expectRed": "the manager lease renews after reconnect",
       "cell": "the manager lease renews after reconnect (managerLeaseKv reopened on the fresh connection)",
       "note": "The shipped rebuild, restored: every other Plane-3 handle is dropped and this one is not. The renew CASes through a JetStream client whose connection was drained."
