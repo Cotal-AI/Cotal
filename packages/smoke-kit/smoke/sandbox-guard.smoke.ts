@@ -5,6 +5,7 @@ import { join, sep } from "node:path";
 import { assertSmokeSandboxDown, assertSmokeSandboxTargetDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 const base = mkdtempSync(join(tmpdir(), "cotal-sandbox-guard-"));
+const repo = join(import.meta.dirname, "..", "..", "..");
 const root = join(base, "root");
 const cotalHome = join(base, "home");
 const xdgConfigHome = join(base, "config");
@@ -72,7 +73,18 @@ try {
     /requires assertSmokeSandboxTargetDown/,
   );
 
-  const repo = join(import.meta.dirname, "..", "..", "..");
+  const rootPackage = JSON.parse(readFileSync(join(repo, "package.json"), "utf8")) as {
+    scripts?: { check?: string };
+  };
+  const checkSteps = (rootPackage.scripts?.check ?? "").split("&&").map((step) => step.trim());
+  const guardStep = checkSteps.indexOf("pnpm smoke:sandbox-guard");
+  const firstLiveStep = checkSteps.findIndex((step) => /pnpm smoke:[^ ]*(?::live|-live)(?:\s|$)/.test(step));
+  assert.notEqual(guardStep, -1, "check reaches smoke:sandbox-guard");
+  assert.ok(
+    firstLiveStep === -1 || guardStep < firstLiveStep,
+    "check reaches smoke:sandbox-guard before its first environment-dependent live suite",
+  );
+
   const semanticDownOnly = new Set([
     "implementations/runtime/smoke/mesh-wait.smoke.ts",
     "packages/lang/smoke/engine.smoke.ts",
