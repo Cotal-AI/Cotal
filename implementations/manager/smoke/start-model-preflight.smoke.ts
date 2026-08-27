@@ -30,8 +30,8 @@
  *      stops the child + clears the map), not just the lease/endpoints, so a manager shutdown doesn't
  *      orphan their footprints. (The broker-side deprovision is a no-op in open mode — proven under auth in
  *      deprovision-agent-auth.smoke — so this covers the stop() wiring.)
- *  10. LEASE-LOSS TEARDOWN (issue #159 B2, review re-check) — the fail-closed lease-loss exit reaps agents
- *      through the SAME shared teardownManagedAgents() helper as stop(), so it can't exit leaving footprints.
+ *  10. BEST-EFFORT TEARDOWN (issue #159 B2, review re-check) — teardownManagedAgents() attempts every
+ *      child and empties the map even when one hard-stop throws, so stop() can't exit leaving footprints.
  *  11. BEST-EFFORT STOP ON REAP (issue #159 B2, review round 5) — stopHandle() (the single stop chokepoint)
  *      never throws, so a throwing runtime hard-stop on despawn/self-stop/reap can't abort the freeSlot that
  *      follows; reapChildrenOf continues over every sibling even when one child's stop throws.
@@ -422,10 +422,9 @@ registry.register(recNoResumeCon);
   check("shutdown: stop() empties the managed-agents map (no orphaned footprint)", agentCount() === 0, agentCount());
 }
 
-// 10 — LEASE-LOSS TEARDOWN (#159 B2, review re-check): the fail-closed lease-loss exit (renewLease's catch)
-// reaps managed agents through the SAME `teardownManagedAgents()` helper as stop(), so it can't process.exit
-// while leaving footprints. renewLease's catch calls process.exit(1) (untestable inline), so assert the
-// shared helper directly: it hard-stops every child + empties the map, touching no lease/endpoint.
+// 10 — BEST-EFFORT TEARDOWN (#159 B2, review re-check): `teardownManagedAgents()` is the helper stop()
+// reaps through. Assert it directly: it hard-stops every child + empties the map even when one stop
+// throws, touching no lease/endpoint.
 {
   // First child's hard-stop THROWS (the tmux `closeWindow` / cmux `closeWorkspace` failure the panel
   // named) — the teardown must be best-effort per agent: still stop + free + deprovision the rest and
@@ -442,8 +441,8 @@ registry.register(recNoResumeCon);
   await mgr.startAgent({ name: "lease1", agent: "smoke-rec" });
   await mgr.startAgent({ name: "lease2", agent: "smoke-rec" });
   await (mgr as unknown as { teardownManagedAgents: () => Promise<void> }).teardownManagedAgents();
-  check("lease-loss: a throwing hard-stop doesn't abort teardown (every child attempted)", stopped.includes("lease1") && stopped.includes("lease2"), stopped);
-  check("lease-loss: shared teardown empties the map despite a throwing stop", agentCount() === 0, agentCount());
+  check("teardown: a throwing hard-stop doesn't abort teardown (every child attempted)", stopped.includes("lease1") && stopped.includes("lease2"), stopped);
+  check("teardown: shared teardown empties the map despite a throwing stop", agentCount() === 0, agentCount());
 }
 
 // 11 — AUTHORITATIVE REAP: a throwing runtime hard-stop must not abort later siblings, but a recursive

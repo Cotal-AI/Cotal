@@ -6,7 +6,8 @@
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/membership-feed-reconnect.json",
   "why": [
     "The live pre-fix reproduction proves the stale membership-feed cache fails after reconnect; the pinned client aborts that path after the named read failure, so it is not misreported as a mutation kill.",
-    "Four isolated mutations cleanly grade watch rearm, early consumer-identity ownership, closed-epoch cleanup deferral, and permanent-shutdown termination. Direct real-broker cells separately exercise quiet caller stop, predecessor cleanup after terminal self-heal, endpoint ownership during asynchronous cancellation, and rejected-chain recovery; their attempted mutations were removed because they hung, failed before the named cell, or were behaviorally redundant rather than clean named kills."
+    "Four isolated mutations cleanly grade watch rearm, early consumer-identity ownership, closed-epoch cleanup deferral, and permanent-shutdown termination. Direct real-broker cells separately exercise quiet caller stop, predecessor cleanup after terminal self-heal, endpoint ownership during asynchronous cancellation, and rejected-chain recovery; their attempted mutations were removed because they hung, failed before the named cell, or were behaviorally redundant rather than clean named kills.",
+    "The manager-lease mutation restores the rebuild that kept `managerLeaseKv` bound to the drained connection: every renew and re-read after a reconnect then times out, and under the old fail-close that alone ended the manager ten seconds after any reconnect. The two lease cells are the only ones that see it."
   ],
   "mutations": [
     {
@@ -44,6 +45,15 @@
       "expectRed": "endpoint shutdown while broker is down settles the public membership stop",
       "cell": "endpoint shutdown while broker is down settles the public membership stop",
       "note": "Permanent endpoint shutdown has no possible fresh cleanup epoch; it must terminate a pending public stop rather than hanging the process."
+    },
+    {
+      "name": "the rebuild keeps the manager-lease KV handle bound to the drained connection",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      this.managerLeaseKv = undefined;\n      this.emit(\"connection\", { connected: false }); // null window opened",
+      "replace": "      this.emit(\"connection\", { connected: false }); // null window opened",
+      "expectRed": "the manager lease renews after reconnect",
+      "cell": "the manager lease renews after reconnect (managerLeaseKv reopened on the fresh connection)",
+      "note": "The shipped rebuild, restored: every other Plane-3 handle is dropped and this one is not. The renew CASes through a JetStream client whose connection was drained."
     }
   ]
 }

@@ -8,7 +8,6 @@ import {
   CotalEndpoint,
   DEFAULT_SERVER,
   DEV_OWNER,
-  MANAGER_LEASE_TTL_MS,
   MANAGER_LEASE_RENEW_MS,
   STANDING_RENEWABLE_TTL_SEC,
   agentFilePath,
@@ -676,6 +675,8 @@ function foreignEventChannels(channels: readonly string[], owner: string, actor:
   });
 }
 
+type LeaseState = "held" | "held-unrenewed" | "gone" | "taken" | "unknown";
+
 export class Manager {
   private readonly space: string;
   private readonly servers: string | undefined;
@@ -820,19 +821,9 @@ export class Manager {
   private leaseInfo?: Omit<ManagerLeaseInfo, "since">;
   private leaseRevision?: number;
   private leaseTimer?: ReturnType<typeof setInterval>;
-  /** When this instance last knew the key's TTL had been REFRESHED: a successful acquire or renew, or
-   *  a re-read showing the revision moved past the one we held (our write landed, only its ack was
-   *  lost). The gap since then is the only thing bounding how long we may keep serving with no answer
-   *  at all, so it must track the last TTL-refreshing WRITE and not the last successful observation.
-   *  A re-read at the same revision is deliberately NOT a refresh: it proves the key exists at that
-   *  instant, while the key still expires when the last landed write said it would.
-   *
-   *  MONOTONIC (`performance.now`), not wall clock, because it is only ever read as an ELAPSED time.
-   *  `Date.now` steps on an NTP correction or a suspend/resume, and a backward step would shorten the
-   *  measured gap and let this instance serve past the TTL with no proof it still holds the key. The
-   *  initial value is `-Infinity` so "never refreshed" reads as an infinite gap and fails closed,
-   *  rather than as a small one at process start when a monotonic clock is still near zero. */
-  private leaseConfirmedAt = Number.NEGATIVE_INFINITY;
+  /** What the last renew tick learned about this instance's key. Only a CHANGE of state is printed
+   *  (see {@link noteLease}), so an outage of hours is one line going in and one line coming out. */
+  private leaseState: LeaseState = "held";
   /** A renew is in flight. The tick must not start a second one: both would read the same cached
    *  revision, so whichever lands second CASes against a sequence the first already moved. */
   private leaseRenewInFlight = false;
@@ -1054,11 +1045,11 @@ export class Manager {
     // second workspace root) has a distinct id ⇒ a distinct key ⇒ it coexists; the create THROWS only
     // when the SAME instance id is already live (a same-root double-start, or a restart racing the
     // crashed predecessor's not-yet-expired key), and we REFUSE loud. A crashed holder's key auto-expires
-    // (bucket TTL). Losing this key later stops THIS instance only, never the space (security pin 6).
+    // (bucket TTL). Losing the key LATER never ends this process: the renew loop puts it back or keeps
+    // retrying ({@link renewLease}).
     this.leaseInfo = { holder: this.ep.ref().id, instanceId: this.managerInstanceId, runtime: this.runtime.kind, root: resolve(this.workspaceRoot), pid: process.pid };
     try {
       this.leaseRevision = await this.ep.acquireManagerLease(this.leaseInfo);
-      this.leaseConfirmedAt = performance.now();
     } catch (e) {
       // Our OWN instance id already holds a live key ⇒ refuse. Anything else (e.g. a KV/JS error) is a
       // real failure to surface, not a silent "held" — keep the cause so it isn't misread as a conflict.
@@ -1650,15 +1641,13 @@ export class Manager {
     };
   }
 
-  /** Tear down every managed agent's footprint — the shared teardown for EVERY manager-exit path (#159
-   *  B2): graceful {@link stop} AND the fail-closed lease-loss exit ({@link renewLease}). A manager exit is
+  /** Tear down every managed agent's footprint on a graceful {@link stop} (#159 B2). A manager exit is
    *  a mass agent-exit, and without this its agents' footprints (creds files + `dm_`/`dlv_` durables + ACL
    *  rows) would orphan exactly as the per-agent exit path prevents. Hard-stop each child (an exit has no
    *  time for the graceful grace window) and AWAIT its deprovision — bounded per agent (`withTimeout`) and
    *  best-effort (`allSettled` + a loud log), so one slow/failed teardown can neither hang nor abort exit.
    *  The creds file is dropped even if the broker teardown fails (see {@link deprovision}). Deliberately
-   *  touches NEITHER the lease NOR the endpoints — the caller owns those (and lease loss must NOT release
-   *  the key, which may now belong to a replacement holder). */
+   *  touches NEITHER the lease NOR the endpoints — the caller owns those. */
   private async teardownManagedAgents(): Promise<void> {
     const managed = [...this.agents.values()];
     for (const a of managed) {
@@ -1729,11 +1718,8 @@ export class Manager {
    * deadline — on every `cotal ps`, `stop` and `attach` in that space, for good. A manager that is
    * shutting down is the one participant that KNOWS it is going away, so it says so.
    *
-   * ONLY THE GRACEFUL PATH. `failClosedOnLeaseLoss` deliberately does not come here: a lost lease
-   * means this instance may already have been superseded, and the successor persists the SAME
-   * instanceId, so deregistering there could delete a live successor's registration. The delete is
-   * additionally revision-pinned inside {@link deregisterServiceInstance}, so even that race removes
-   * nothing — this is the second fence, not the only one.
+   * The delete is revision-pinned inside {@link deregisterServiceInstance}, so a successor that
+   * persists the SAME instanceId and has already re-registered loses nothing to a slow stop here.
    *
    * Best-effort and LOUD, matching every other teardown step: a broker that is already gone must not
    * turn a stop into a failure, but a registration that survives a stop is the exact defect this
@@ -1772,85 +1758,86 @@ export class Manager {
     try { await s.nc.drain(); } catch { try { s.nc.close(); } catch { /* best effort */ } }
   }
 
-  /** Refresh THIS instance's liveness lease before the bucket TTL expires it.
+  /** Keep this instance's liveness key fresh, and NEVER end the process over it.
    *
-   *  A FAILED RENEW IS NOT A LOST LEASE, and the difference is the whole shape of this method. The CAS
-   *  renew throws for reasons that prove entirely different things, and one of them proves nothing at
-   *  all: a request that gets NO ANSWER within its deadline does not establish that the write failed,
-   *  that the key expired, or that anyone else took it. It may even have LANDED, with only the
-   *  acknowledgement lost. Terminating on it kills a healthy manager and takes its agents with it.
+   *  A renew that throws is a question, not a verdict: the request may have timed out with the write
+   *  landed and only its acknowledgement lost, the key may have expired during a stall, or a same-id
+   *  process may hold it. The verdict comes from RE-READING the key ({@link reconcileLease}), and each
+   *  answer has one response, none of which is exiting:
+   *  - `held`: adopt the broker's revision and carry on.
+   *  - `gone`: the key expired or was released while this process was still here, so put it back. The
+   *    create is atomic, so a same-id process that got there first shows up as `taken` next tick.
+   *  - `taken`: a different process holds this instance's key. Say so, once, and keep serving. The
+   *    registration takeover is what fences a superseded serve family at the broker, and which of the
+   *    two processes goes is the operator's call, not this one's.
+   *  - `unknown`: the broker could not be asked. Keep serving and ask again next tick, for as long as it
+   *    takes. A manager that cannot reach its broker gains nothing by ending itself, and the seats it
+   *    holds lose everything (a pty child dies with its parent).
    *
-   *  So the renew failing is a question, not a verdict, and the verdict comes from RE-READING the key
-   *  ({@link CotalEndpoint.readOwnManagerLease}, which separates "it is gone" from "I could not find
-   *  out"). We fail closed on PROOF — the key is absent, or it is present and holds someone else — and
-   *  otherwise keep serving, adopting whatever revision the broker actually has.
-   *
-   *  WHEN NO ANSWER IS AVAILABLE AT ALL, the bound is time, not attempts: past one whole TTL with no
-   *  renew that LANDED, the key may have expired and been re-acquired, so this instance can no longer
-   *  claim to hold it and fails closed on that ground, said plainly. A re-read answering "still yours,
-   *  same revision" IS an answer and we keep serving on it, but it did not touch the key, so it buys
-   *  no time — reading a key is not refreshing it. Inside the TTL the budget affords another
-   *  renew-and-re-read pair ({@link MANAGER_LEASE_RENEW_MS}), which is what makes waiting safe.
-   *
-   *  FAILING CLOSED IS FOR THIS INSTANCE ONLY: stop serving + tear down OUR managed agents + exit, so a
-   *  stalled instance can't keep double-processing under a key a same-id restart may re-acquire. Keyed
-   *  per instance, so it NEVER frees or touches a sibling manager's key and NEVER freezes the space
-   *  (security pin 6) — the sibling keeps serving. We do NOT re-acquire (a same-id restart may already
-   *  be live) and do NOT release the key (it may be the restart's). */
+   *  This replaces a fail-close that ended the process one tick past the lease TTL with no answer, which
+   *  on a live mesh turned a ten-second broker or KV outage into a manager outage that lasted until an
+   *  operator noticed. */
   private async renewLease(): Promise<void> {
     // A renew that runs long must not be overlapped by the next tick: both would CAS against the same
     // cached revision, so whichever lands second is refused over a sequence the first legitimately
-    // moved — a conflict this instance manufactured itself.
+    // moved, a conflict this instance manufactured itself.
     if (this.leaseRenewInFlight) return;
     this.leaseRenewInFlight = true;
     try {
       if (!this.leaseInfo || this.leaseRevision === undefined) return;
       try {
         this.leaseRevision = await this.ep.renewManagerLease(this.leaseInfo, this.leaseRevision);
-        this.leaseConfirmedAt = performance.now();
+        this.noteLease("held", `renews its liveness lease again (revision ${this.leaseRevision})`);
         return;
       } catch (renewError) {
         const why = (renewError as Error).message;
         const verdict = await this.reconcileLease();
-        if (verdict.kind === "held") {
-          // WHETHER THIS REFILLS THE BUDGET TURNS ON ONE THING: did our write land? It did, with only
-          // its acknowledgement lost, exactly when the stored revision has moved past the one we hold.
-          // That write is what restarted the key's TTL, so only it may reset the clock below.
-          //
-          // A re-read at the SAME revision proves the key exists AT THAT INSTANT and nothing more. Our
-          // write did not land, the TTL was not restarted, and the key still expires when the last
-          // landed write said it would. Resetting the clock here would measure the budget from the last
-          // OBSERVATION rather than from the last TTL-refreshing write, and the budget would then
-          // outlive the key: a streak of same-revision re-reads keeps refilling it, and if reads then
-          // stop answering too, this instance goes on serving for a further whole TTL after the key has
-          // actually expired and a same-id restart has taken it. Serving on a key we can still SEE is
-          // right; buying more time to serve on a key we cannot see is not.
-          const landed = verdict.revision > this.leaseRevision;
-          this.leaseRevision = verdict.revision;
-          if (landed) this.leaseConfirmedAt = performance.now();
-          console.error(`! manager instance ${this.managerInstanceId} could not renew its liveness lease for space "${this.space}" (${why}) - the key is still ours at revision ${verdict.revision}${landed ? ", and that renew had in fact landed" : ", though this renew did not land, so the key's TTL was not restarted"}, so this instance keeps serving`);
-          return;
-        }
-        if (verdict.kind === "unknown") {
-          const since = performance.now() - this.leaseConfirmedAt;
-          if (since < MANAGER_LEASE_TTL_MS) {
-            console.error(`! manager instance ${this.managerInstanceId} could not renew its liveness lease for space "${this.space}" (${why}) and could not re-read it either (${verdict.why}) - that proves nothing about the key, and its lease was last refreshed ${Math.round(since)}ms ago, so this instance keeps serving and will retry`);
+        switch (verdict.kind) {
+          case "held":
+            // The re-read is the broker's truth about the revision: adopt it, whether our write landed
+            // with its acknowledgement lost (revision moved) or never landed (revision unchanged).
+            this.leaseRevision = verdict.revision;
+            this.noteLease("held-unrenewed", `could not renew its liveness lease (${why}) but the key is still its own at revision ${verdict.revision}; serving, retrying`);
+            return;
+          case "gone": {
+            // The key being gone is a fact before the re-acquire is attempted, so a successful
+            // re-acquire is a change of state (gone to held) and prints, every time it happens.
+            const before = this.leaseState;
+            this.leaseState = "gone";
+            try {
+              this.leaseRevision = await this.ep.acquireManagerLease(this.leaseInfo);
+              this.noteLease("held", `found its liveness lease key gone (renew: ${why}) and re-acquired it at revision ${this.leaseRevision}`);
+            } catch (e) {
+              this.leaseState = before;
+              this.noteLease("gone", `found its liveness lease key gone (renew: ${why}) and could not re-acquire it yet (${(e as Error).message}); serving, retrying`);
+            }
             return;
           }
-          return await this.failClosedOnLeaseLoss(`its lease key ${Number.isFinite(since) ? `has not been refreshed for ${Math.round(since)}ms, longer than the ${MANAGER_LEASE_TTL_MS}ms lease TTL` : "was never refreshed"}, so this instance can no longer prove it holds it (renew: ${why}; re-read: ${verdict.why})`);
+          case "taken":
+            this.noteLease("taken", `finds its liveness lease key held by ${verdict.by}, not by this process (renew: ${why}); serving, retrying. Two processes claim manager instance ${this.managerInstanceId}: stop one of them`);
+            return;
+          case "unknown":
+            this.noteLease("unknown", `could not renew its liveness lease (${why}) or re-read it (${verdict.why}); serving, retrying until the broker answers`);
+            return;
         }
-        return await this.failClosedOnLeaseLoss(verdict.kind === "gone"
-          ? `its lease key is GONE from the bucket - expired or released (renew: ${why})`
-          : `its lease key is now held by ${verdict.by} and not by this process (renew: ${why})`);
       }
     } finally {
       this.leaseRenewInFlight = false;
     }
   }
 
+  /** Print `what` only when the lease state CHANGES. The renew ticks every few seconds, so a long
+   *  outage would otherwise print the same line thousands of times; an operator needs the line going
+   *  in and the line coming out, with the instance and the space on both. */
+  private noteLease(state: LeaseState, what: string): void {
+    if (state === this.leaseState) return;
+    this.leaseState = state;
+    console.error(`${state === "held" ? "✓" : "!"} manager instance ${this.managerInstanceId} ${what} (space "${this.space}")`);
+  }
+
   /** What the broker actually says about THIS instance's lease key, right now. `unknown` is a first-class
    *  answer and never collapses into `gone`: not being able to look is not the same fact as looking and
-   *  finding nothing, and only the latter may end a manager. */
+   *  finding nothing. */
   private async reconcileLease(): Promise<
     | { kind: "held"; revision: number }
     | { kind: "gone" }
@@ -1868,67 +1855,6 @@ export class Manager {
     // identity both PERSIST across restart by design, so neither can tell the two processes apart.
     if (current.info.pid !== process.pid) return { kind: "taken", by: `pid ${current.info.pid} (${current.info.runtime}, root ${current.info.root})` };
     return { kind: "held", revision: current.revision };
-  }
-
-  /**
-   * Release ownership of every managed agent WITHOUT stopping it and WITHOUT deprovisioning its
-   * footprint — the child disposition for an exit this instance did not choose.
-   *
-   * WHY THIS IS NOT {@link teardownManagedAgents}. Losing the argument about who may SERVE a space
-   * is not a finding about whether these agents should die. The two were one act on the lease-loss
-   * path, so a supervisor that could not reach the broker for a lease TTL killed every seat it held
-   * and revoked their credentials. That is the wrong conclusion drawn from a connectivity fact, and
-   * on a live mesh it is reached over a timeout the very next retry would have cleared.
-   *
-   * WHAT IT LEAVES BEHIND, AND WHY THAT IS SAFE. Each agent is marked `suppressCleanup` before it
-   * leaves the map, so no later call site in this process can select it for deprovision, and its
-   * credential, durables and broker footprint outlive us. That is EXACTLY the state an abrupt death
-   * leaves (SIGKILL, OOM, power loss), which the next manager's static reconcile sweep already
-   * recovers by terminalizing an active slot with no live managed owner. The difference is that
-   * this one is announced.
-   *
-   * WHAT IT DOES NOT CLAIM. Detaching does not make a child outlive the process. A `node-pty` child
-   * dies when its spawning process exits, measured, and no manager-side policy changes that; only a
-   * runtime whose child is owned elsewhere (tmux/herdr/cmux) actually survives. This method removes
-   * the manager's DELIBERATE kill and revoke, which is the half the manager controls.
-   */
-  private detachManagedAgents(reason: string): void {
-    const managed = [...this.agents.values()];
-    for (const a of managed) {
-      // Set BEFORE the map delete: the flag is what every deprovision call site filters on, and an
-      // agent that left the map without it is one a concurrent path could still select.
-      a.suppressCleanup = true;
-      this.agents.delete(a.name);
-    }
-    if (managed.length === 0) return;
-    const seats = managed.map((a) => `${a.name} (${a.id}${a.handle.pid !== undefined ? `, pid ${a.handle.pid}` : ""})`).join(", ");
-    console.error(
-      `! manager instance ${this.managerInstanceId} detached ${managed.length} managed agent(s) - ${reason}\n` +
-        `  Left running and NOT stopped by this manager; their credentials and durables are RETAINED, not revoked: ${seats}\n` +
-        `  A child owned by this process (the pty runtime) still dies with it; a child owned elsewhere (tmux/herdr/cmux) keeps running.\n` +
-        `  NEXT: start a manager for space "${this.space}" - its reconcile sweep recovers any seat whose child did not survive.`,
-    );
-  }
-
-  /** Stop serving and end this process, naming what was PROVED rather than what merely failed. */
-  private async failClosedOnLeaseLoss(proof: string): Promise<never> {
-    console.error(`! manager instance ${this.managerInstanceId} lost its liveness lease for space "${this.space}": ${proof} - shutting down THIS instance (its serving only; siblings keep the space)`);
-    if (this.leaseTimer) clearInterval(this.leaseTimer);
-    // DETACH rather than tear down — but ONLY from the active state. A cut that has committed and
-    // not finalized still has an inventory the successor will replay, and children left running
-    // would be spawned a SECOND time under the same identities; that window keeps the retained stop
-    // (which stops the child but does not deprovision it). Do NOT release the lease key (it may
-    // belong to the replacement holder). Best-effort, like ep/attach.
-    try {
-      if (this.maintenanceState === "active" && !this.resumeRequired) this.detachManagedAgents(`lease loss: ${proof}`);
-      else await this.stopRetainedAgentsOnExit();
-    } catch { /* best effort */ }
-    await this.stopServiceServe();
-    await this.stopGoalWriter();
-    await this.stopSessionPlane();
-    try { await this.ep.stop(); } catch { /* best effort */ }
-    try { await this.attach.stop(); } catch { /* best effort */ }
-    process.exit(1);
   }
 
   private async opFinalizeResume(rawArgs: unknown): Promise<ControlReply> {
