@@ -41,7 +41,8 @@
       "replace": "throw new Error(\"LOAD PROBE: ledger.ts was imported\");\nexport interface ActorRow {",
       "expectRed": "LOAD PROBE: ledger.ts was imported",
       "cell": "(instrument control — not a behavioural cell)",
-      "note": "If this does NOT kill the suite, every other verdict in this file is meaningless: the mutated file was never loaded. This is the exact check that reclassified the core suite's E5 from 'survived' to 'unreachable'."
+      "note": "If this does NOT kill the suite, every other verdict in this file is meaningless: the mutated file was never loaded. This is the exact check that reclassified the core suite's E5 from 'survived' to 'unreachable'. Carries its own completionMarker because a load proof necessarily dies BEFORE the suite's normal end marker — grading it against that marker would score the proof as unfinished rather than as the control it is.",
+      "completionMarker": "LOAD PROBE: ledger.ts was imported"
     },
     {
       "name": "E1 the carry drops the field entirely",
