@@ -569,8 +569,11 @@ cotal models [--agent <connector>] [--refresh]
 | `--refresh` | off | Ask the connector to refresh its provider cache |
 
 Asks the running manager for each connector's model catalog (model ids plus their variants)
-for connectors that expose one (OpenCode today; a connector without a catalog says so). Pick a
-result with `cotal spawn --model <provider/model> --variant <v>`.
+for connectors that expose one. OpenCode and Codex query harness/provider surfaces; Jcode reads
+providers that enable `model_catalog = true` in the operator Jcode `config.toml`. Jcode's listed
+effort tiers are declared config, not provider-verified acceptance, and launch can still refuse one.
+A connector without a catalog says so. Pick a result with
+`cotal spawn --model <provider/model> --variant <v>`.
 
 ## endpoints
 
