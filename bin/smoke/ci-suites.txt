@@ -197,6 +197,10 @@ smoke:ledger
 smoke:down-lease-tombstone
 smoke:spawn-from-anywhere
 smoke:spawn-from-anywhere:live
+# `status` names the root each persona row describes, and marks the case where the folder's catalog
+# is NOT the one a bare `spawn` would load. Those two roots diverge silently, and the green row for
+# a `default` that cannot launch is a capability claim the operator has no way to check.
+smoke:status-persona-root
 smoke:cross-path-dedup
 smoke:inbox-window
 smoke:backup-cli
