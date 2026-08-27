@@ -59,22 +59,40 @@ try {
   mkdirSync(meshes, { recursive: true });
   writeFileSync(meshFile, JSON.stringify({ space, root }));
   assert.doesNotThrow(() =>
-    assertSmokeSandboxTargetDown(anchor, ["down", "web", "--space", space], { cwd: root, env }, space));
-  assert.doesNotThrow(() =>
-    assertSmokeSandboxTargetDown(anchor, ["down", "--space", space, "web"], { cwd: root, env }, space));
+    assertSmokeSandboxTargetDown(anchor, ["down", "web", "--space", space], { cwd: root, env }));
+  assert.doesNotThrow(
+    () => assertSmokeSandboxTargetDown(anchor, ["down", "--space", space, "web"], { cwd: root, env }),
+    "target guard resolves a flag before the target",
+  );
+  assert.doesNotThrow(
+    () => assertSmokeSandboxTargetDown(anchor, ["down", "web", `--space=${space}`], { cwd: root, env }),
+    "target guard resolves equals-form space",
+  );
+  const operatorSpace = "operator";
+  const operatorMeshFile = join(meshes, `space.${Buffer.from(operatorSpace).toString("hex")}.json`);
+  writeFileSync(meshFile, JSON.stringify({ space, root: foreign }));
+  writeFileSync(operatorMeshFile, JSON.stringify({ space: operatorSpace, root }));
+  assert.doesNotThrow(
+    () => assertSmokeSandboxTargetDown(
+      anchor,
+      ["down", "web", "--space", space, "--space", operatorSpace],
+      { cwd: root, env },
+    ),
+    "target guard uses the CLI parser's last space value",
+  );
   writeFileSync(meshFile, JSON.stringify({ space, root: foreign }));
   assert.throws(
-    () => assertSmokeSandboxTargetDown(anchor, ["down", "web", "--space", space], { cwd: root, env }, space),
+    () => assertSmokeSandboxTargetDown(anchor, ["down", "web", "--space", space], { cwd: root, env }),
     /target-addressed cotal down: observed root.*operator-checkout.*expected root.*root/,
   );
   assert.throws(
-    () => assertSmokeSandboxTargetDown(anchor, ["down", "web"], { cwd: root, env }, space),
-    /must name --space "target" explicitly/,
+    () => assertSmokeSandboxTargetDown(anchor, ["down", "web"], { cwd: root, env }),
+    /must name --space explicitly/,
   );
   assert.throws(
-    () => assertSmokeSandboxDown(anchor, ["down", "web", "--space", space], { cwd: root, env }),
+    () => assertSmokeSandboxDown(anchor, ["down", "web"], { cwd: root, env }),
     /requires assertSmokeSandboxTargetDown/,
-    "generic guard refuses target-addressed down web",
+    "bare down web still requires the target guard",
   );
   assert.throws(
     () => assertSmokeSandboxDown(anchor, ["down", "--space", space, "web"], { cwd: root, env }),

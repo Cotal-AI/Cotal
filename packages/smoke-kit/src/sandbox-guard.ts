@@ -43,6 +43,9 @@ interface ParsedSmokeDown {
 function parseSmokeDown(args: readonly string[]): ParsedSmokeDown | undefined {
   if (args[0] !== "down") return undefined;
   try {
+    // Call the same Node parser the CLI's parseCommandArgs uses. Do not replace this with argv
+    // scanning: flag order, `--space=value`, and repeated non-multiple flags are all valid forms,
+    // and parseArgs deterministically applies the CLI's last-wins semantics to the latter.
     const { positionals, values } = parseArgs({
       args: args.slice(1),
       options: downOptions,
@@ -178,7 +181,6 @@ export function assertSmokeSandboxTargetDown(
   anchor: SmokeSandboxAnchor | undefined,
   args: readonly string[],
   options: SmokeCommandOptions,
-  space: string,
 ): void {
   const parsed = parseSmokeDown(args);
   if (!parsed) return;
@@ -187,8 +189,9 @@ export function assertSmokeSandboxTargetDown(
   if (requested.length !== 1 || requested[0] !== "web")
     throw new Error("smoke sandbox target guard requires exactly the target-addressed component `down web`");
   if (!anchor) throw new Error("smoke sandbox target guard requires a recorded anchor");
-  if (parsed.values.space !== space)
-    throw new Error(`smoke sandbox target down must name --space ${JSON.stringify(space)} explicitly`);
+  const space = parsed.values.space;
+  if (typeof space !== "string")
+    throw new Error("smoke sandbox target down must name --space explicitly");
 
   const expected = anchor[smokeSandboxAnchor];
   const key = Buffer.from(space, "utf8").toString("hex");

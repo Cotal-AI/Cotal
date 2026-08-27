@@ -56,7 +56,7 @@ const binCotal = join(REPO, "bin", "cotal.ts");
 const cotalAt = (cwd: string, args: string[], timeout = 180_000) => {
   const options = { encoding: "utf8" as const, env, cwd, timeout };
   if (args[0] === "down" && args[1] === "web")
-    assertSmokeSandboxTargetDown(sandboxAnchor, args, options, SPACE);
+    assertSmokeSandboxTargetDown(sandboxAnchor, args, options);
   else assertSmokeSandboxDown(sandboxAnchor, args, options);
   return spawnSync(realNode, [tsxCli, binCotal, ...args], options);
 };
