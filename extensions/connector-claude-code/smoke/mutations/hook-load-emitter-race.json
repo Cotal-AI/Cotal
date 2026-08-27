@@ -7,7 +7,7 @@
   "why": [
     "Both defects this pins produced the SAME observable: an event plane with zero frames ever, for",
     "every agent. That is why eliminating one did not move the symptom, and why a broker-based suite",
-    "would have reported green for either — the arm flag was set, the publish ACL was right, and the",
+    "would have reported green for either \u2014 the arm flag was set, the publish ACL was right, and the",
     "CHAT stream was healthy, all measured true on the live mesh while nothing published.",
     "",
     "E1 and E2 are the manifest. E1 restores the `args` split-argv form, which is the shape that",
@@ -17,8 +17,8 @@
     "",
     "E3 is the mutant that justifies checking BOTH launch shapes rather than 'any'. It removes",
     "--plugin-dir from the with-prompt shape ONLY. The no-prompt shape still carries it, so an",
-    "existence check stays green while every `spawn --prompt` agent — which is how hosted agents",
-    "launch — silently loads no hooks.",
+    "existence check stays green while every `spawn --prompt` agent \u2014 which is how hosted agents",
+    "launch \u2014 silently loads no hooks.",
     "",
     "E4/E5 are the race. E4 deletes the wait outright. E5 is the important one: it keeps the wait but",
     "moves it AFTER the emitter setup it exists to protect, so the call is still present, still",
@@ -29,28 +29,48 @@
     "cell stays green, and a genuinely dead broker is then reported to the emitter as connected.",
     "",
     "SPECIFIER BOUNDARY. These cells read the shipped manifest and the shipped sources from disk,",
-    "which is where both defects live and are decided — before any process starts. The suite asserts",
+    "which is where both defects live and are decided \u2014 before any process starts. The suite asserts",
     "its own instrument controls first (a manifest with no hooks, and the presence of the emitter",
     "setup the ordering cell compares against), so a cell cannot pass by measuring an empty set."
   ],
   "mutations": [
     {
-      "name": "E1 the split-argv hook form returns",
+      "name": "E1 every hook entry reverts to the split-argv form",
       "file": "extensions/connector-claude-code/hooks/hooks.json",
       "find": "\"command\": \"node \\\"${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs\\\"\"",
       "replace": "\"command\": \"node\", \"args\": [\"${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs\"]",
+      "allowMultiple": true,
       "expectRed": "NO hook entry carries an `args` key",
-      "cell": "NO hook entry carries an `args` key — the host schema has none, and it ran `node` bare",
-      "note": "The exact shape that shipped. Every hook silently never fired, which took out presence, peer-message surfacing, and the emitter's lazy start at once."
+      "cell": "NO hook entry carries an `args` key \u2014 the host schema has none, and it ran `node` bare",
+      "note": "The exact shape that shipped, in all seven entries. Every hook silently never fired, which took out presence, peer-message surfacing and the emitter's lazy start at once."
     },
     {
-      "name": "E2 the interpolated plugin root loses its quotes",
+      "name": "E1b ONLY the last hook entry reverts to split-argv",
+      "file": "extensions/connector-claude-code/hooks/hooks.json",
+      "find": "    \"SessionEnd\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"node \\\"${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs\\\"\"",
+      "replace": "    \"SessionEnd\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"node\", \"args\": [\"${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs\"]",
+      "expectRed": "NO hook entry carries an `args` key",
+      "cell": "NO hook entry carries an `args` key \u2014 the host schema has none, and it ran `node` bare",
+      "note": "Six entries stay correct and only SessionEnd regresses. A cell that inspects the first entry, or spot-checks one, stays green here while session teardown never reports. This is what makes the cell an ALL-entries claim rather than an existence check."
+    },
+    {
+      "name": "E2 every interpolated plugin root loses its quotes",
       "file": "extensions/connector-claude-code/hooks/hooks.json",
       "find": "\"command\": \"node \\\"${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs\\\"\"",
       "replace": "\"command\": \"node ${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs\"",
+      "allowMultiple": true,
       "expectRed": "the interpolated plugin root is QUOTED inside the command",
       "cell": "the interpolated plugin root is QUOTED inside the command",
-      "note": "Still a single string, still names the right script, still passes every other manifest cell. Breaks only where the install path contains a space — which is most consumer machines."
+      "note": "Still a single string, still names the right script, still passes every other manifest cell. Breaks only where the install path contains a space \u2014 which is most consumer machines."
+    },
+    {
+      "name": "E2b ONLY the middle hook entry loses its quotes",
+      "file": "extensions/connector-claude-code/hooks/hooks.json",
+      "find": "\"matcher\": \"permission_prompt|elicitation_dialog\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"node \\\"${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs\\\"\"",
+      "replace": "\"matcher\": \"permission_prompt|elicitation_dialog\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"node ${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs\"",
+      "expectRed": "the interpolated plugin root is QUOTED inside the command",
+      "cell": "the interpolated plugin root is QUOTED inside the command",
+      "note": "The one entry carrying a matcher, in the middle of the file, unquoted alone. Kills any cell that checks only the first or only the last entry \u2014 and the permission-prompt hook is the one whose failure a participant feels as a dialog that never resolves."
     },
     {
       "name": "E3 --plugin-dir dropped from the WITH-PROMPT shape only",
@@ -75,8 +95,8 @@
       "file": "extensions/connector-claude-code/src/mcp.ts",
       "find": "        await agent.whenConnected(20_000);\n        // The events state root.",
       "replace": "        // The events state root.",
-      "expectRed": "…and the wait comes BEFORE the emitter is set up (the ordering IS the fix)",
-      "cell": "…and the wait comes BEFORE the emitter is set up (the ordering IS the fix)",
+      "expectRed": "\u2026and the wait comes BEFORE the emitter is set up (the ordering IS the fix)",
+      "cell": "\u2026and the wait comes BEFORE the emitter is set up (the ordering IS the fix)",
       "note": "Deletes it from before the guarded setup; the presence cell is what would keep this alive if ordering were not asserted separately. Ordering is the entire fix, so it needs its own cell."
     },
     {
@@ -84,8 +104,8 @@
       "file": "extensions/connector-core/src/agent.ts",
       "find": "    if (!(await this.awaitConnection(timeoutMs))) throw new Error(this.notConnectedMessage());",
       "replace": "    await this.awaitConnection(timeoutMs);",
-      "expectRed": "…and FAILS past the window rather than resolving as if connected",
-      "cell": "…and FAILS past the window rather than resolving as if connected",
+      "expectRed": "\u2026and FAILS past the window rather than resolving as if connected",
+      "cell": "\u2026and FAILS past the window rather than resolving as if connected",
       "note": "Every presence and ordering cell stays green. A genuinely dead broker is then reported to the emitter as connected, converting a loud failure into the same silence this whole suite exists to prevent."
     }
   ]
