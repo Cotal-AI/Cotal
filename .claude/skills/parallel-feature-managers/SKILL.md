@@ -1,6 +1,6 @@
 ---
 name: parallel-feature-managers
-description: Run several independent Cotal features concurrently by creating one Git worktree and one spawn-capable mesh manager per feature; each manager staffs a cross-vendor review panel in a dedicated channel plus one DM-only independent cold reviewer that never joins it, owns plan-to-commit delivery, and escalates unresolved product decisions by DM to the coordinator for relay to the user. Use when the user asks to split multiple features across managers/worktrees, run parallel feature teams on Cotal, or have managers create their own review panels.
+description: Run several independent Cotal features concurrently by creating one Git worktree and one spawn-capable mesh manager per feature; each manager staffs a review panel in a dedicated channel, adds one independent cold reviewer briefed under the cold-review skill, owns plan-to-commit delivery, and escalates unresolved product decisions by DM to the coordinator for relay to the user. Use when the user asks to split multiple features across managers/worktrees, run parallel feature teams on Cotal, or have managers create their own review panels.
 ---
 
 # Parallel feature managers
@@ -13,16 +13,22 @@ Use the live Cotal mesh as a hierarchy:
   complete plan -> implementation -> review -> test -> commit loop.
 - Each manager spawns three or more **read/review-only peers** in one dedicated channel: engineer,
   security, and critic at minimum.
-- Near the final gate, each manager uses one **independent cold reviewer** over DM only, run under
-  the **`cold-review` skill**. It never joins or reads the feature channel, so panel consensus cannot
-  anchor its second opinion. That skill is the single source for how the seat is briefed and graded.
+- Near the final gate, each manager adds one **independent cold reviewer**, briefed under the
+  **`cold-review` skill**, which is the single source for how that seat is briefed, isolated and
+  graded. It is a control on the panel rather than a fourth panelist.
 
 ## Models: cross-vendor panels are a correctness rule, not a preference
 
-**Every reviewer on a panel must be a different vendor.** A finding confirmed by a seat of the same
-family as the one that made it is an echo, not a confirmation. A panel of three same-model reviewers
-has approved a head carrying a defect that all three missed, and what surfaced it was a differently
-framed read rather than a fourth verifier.
+**No two seats whose agreement is load-bearing may share a model family.** A finding confirmed by a
+seat of the same family as the one that made it is an echo, not a confirmation. A panel of three
+same-model reviewers has approved a head carrying a defect that all three missed, and what surfaced
+it was a differently framed read rather than a fourth verifier.
+
+State it that way rather than as a headcount. **Availability is a property of the moment, not of the
+vendor**: the same model has joined and delivered one hour and failed to join the next, on the same
+host with the same tooling. A rule phrased as "N distinct vendors" is unsatisfiable on a degraded
+fleet and silently so, and a rule that can be broken by the clock gets quietly ignored rather than
+obeyed. `cold-review` carries the degradation order and the floor.
 
 Pin the model explicitly at spawn AND in the persona, because unrecorded capability is
 ungraded-in-effect: a reviewer whose effort or model nobody recorded produces a verdict nobody can
@@ -44,8 +50,8 @@ can declare tiers the provider refuses, and a refused tier kills the seat at lau
   findings with file/line references.
 - Each feature uses one channel: `review.<feature-slug>`. Keep acknowledgements and status chatter
   off it; use it for plans, findings, reasoned dispositions, code-review requests, and final results.
-- The independent reviewer is never invited to that channel and never receives its transcript,
-  panel findings, or consensus. It reports privately to the feature manager.
+- The independent cold reviewer is not on that channel. Its isolation, briefing and reporting are
+  owned by `cold-review`; enforce them there rather than restating them per lane.
 - Product/design decisions travel by DM: manager -> coordinator -> user -> coordinator -> manager.
   A manager must not guess through an unresolved consequential choice.
 - Never merge, push, open a PR, or remove worktrees unless the user asks.
@@ -128,15 +134,15 @@ The manager prompt must include all of the following:
 - DM each returned reviewer identity to join the channel and remain read/review-only.
 - Run plan review before editing, code/test review after implementation, fold valid findings, and ask
   all three for a final disposition.
-- After the panel and implementation converge, spawn exactly one `review-freelance`, **on a vendor
-  that wrote nothing during the panel round**, in its own detached worktree. Keep it DM-only and
-  read/review-only. Give it the original feature contract, the actual diff or commit, test results,
-  and the review question, and **nothing else**: no findings, no panel discussion, no summary of what
-  the panel concluded, and no invitation to the channel. Anchoring is the failure this seat exists to
-  avoid, and a seat that has read the panel's transcript is no longer independent of it. Ask for an
-  independent `APPROVE` or concrete findings.
-- Fold or reason against the independent findings. If a fold changes code, return the result to the
-  channel panel for another final pass and ask the independent reviewer to recheck its finding.
+- After the panel and implementation converge, spawn exactly one `review-freelance` in its own
+  detached worktree and brief it under the **`cold-review` skill**, which owns what that seat is
+  given, where its verdict goes, what the verdict binds, and how the rules degrade when the vendor
+  set is short. Do not restate any of it here.
+- Fold or reason against the cold findings. **You may override a cold verdict only by publishing a
+  refutation you verified yourself, and never by telling that seat to reconsider.** If you authored
+  the change, you may not override it at all: fold, or escalate to a party who wrote nothing. If a
+  fold changes code, return the result to the channel panel for another final pass and re-pin the
+  cold seat to the new sha with its delivery limit explicitly reset in writing.
 - Run the relevant tests itself. Reviewers do not edit source.
 - Escalate only unresolved consequential choices with this exact structure:
 
@@ -217,12 +223,17 @@ dependency, or mesh-access issues directly when safe.
 A feature is complete only when:
 
 - The manager has folded or reasoned against every concrete finding.
-- Every panel reviewer gives final approval, and the panel spans more than one vendor.
-- The DM-only independent reviewer gives final approval under the `cold-review` skill, posted
-  first-hand and naming the exact sha, without having joined the panel channel and without having
-  been shown the panel's findings.
+- Every panel reviewer gives final approval, and **no two reviewers whose agreement is load-bearing
+  share a model family**. "Spans more than one vendor" is NOT this condition: a panel staffed A, B, A
+  satisfies it and violates the rule, and an A-A pair is the same-family echo the rule exists to
+  reject. Where the vendor set is too short, name the collision mechanically and the failure class it
+  leaves uncovered, per `cold-review`.
+- The independent cold reviewer gives final approval, posted **by that seat itself** to the
+  destination its brief named, naming the exact sha, without having joined the panel channel and
+  without having been shown the panel's findings. A verdict relayed by the manager does not satisfy
+  this, and the manager verifies it landed by re-fetching the destination.
 - Every approval names the head it graded, and that head is re-resolved at merge time. A verdict is
-  never carried across a sha.
+  never carried across a sha. Both are steps in the loop above, not assertions made here.
 - Required focused and integration tests pass.
 - The feature is committed on its own branch.
 - `git status` is clean except an explicitly acknowledged local `.internal` pointer mismatch.
