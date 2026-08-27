@@ -21,6 +21,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 // Ephemeral OS-assigned ports: no fixed-port collision across back-to-back / concurrent runs.
 const freePort = (): Promise<number> =>
@@ -39,6 +40,7 @@ const configDir = join(sandbox, "xdg");
 const home = join(sandbox, "home");
 const root = join(sandbox, "proj");
 for (const d of [configDir, home, root]) mkdirSync(d, { recursive: true });
+const sandboxAnchor = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -51,8 +53,11 @@ const env = { ...process.env, XDG_CONFIG_HOME: configDir, COTAL_HOME: home };
 const realNode = spawnSync("which", ["node"], { encoding: "utf8" }).stdout.trim();
 const tsxCli = join(REPO, "node_modules", "tsx", "dist", "cli.mjs");
 const binCotal = join(REPO, "bin", "cotal.ts");
-const cotalAt = (cwd: string, args: string[], timeout = 180_000) =>
-  spawnSync(realNode, [tsxCli, binCotal, ...args], { encoding: "utf8", env, cwd, timeout });
+const cotalAt = (cwd: string, args: string[], timeout = 180_000) => {
+  const options = { encoding: "utf8" as const, env, cwd, timeout };
+  assertSmokeSandboxDown(sandboxAnchor, args, options);
+  return spawnSync(realNode, [tsxCli, binCotal, ...args], options);
+};
 const cotal = (args: string[], timeout = 180_000) => cotalAt(root, args, timeout);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const alive = (pid: number) => {
@@ -199,7 +204,7 @@ try {
   console.log(`\nDOGFOOD LIVE SMOKE OK ✅ (${pass} checks)`);
 } finally {
   webChild?.kill("SIGKILL");
-  spawnSync(realNode, [tsxCli, binCotal, "down"], { encoding: "utf8", env, cwd: root });
+  cotal(["down"]);
   for (const p of ownPids) if (alive(p)) { try { process.kill(p, "SIGTERM"); } catch { /* gone */ } }
   rmSync(sandbox, { recursive: true, force: true });
 }

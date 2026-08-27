@@ -14,4 +14,10 @@
  * can disagree with this one.
  */
 export { SMOKE_BROKER_PREFIX, SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "./broker-teardown.js";
+export {
+  assertSmokeSandboxDown,
+  recordSmokeSandbox,
+  type SmokeCommandOptions,
+  type SmokeSandboxAnchor,
+} from "./sandbox-guard.js";
 export { memorySubjectFrontier, type MemorySubjectFrontier } from "./subject-frontier.js";
