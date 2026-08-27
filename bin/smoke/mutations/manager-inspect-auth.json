@@ -23,10 +23,10 @@
   ],
   "mutations": [
     {
-      "name": "epCall stops watching the status stream, so a broker refusal becomes a false unanswered deadline again",
+      "name": "epCall ignores the matching publish violation, so a broker refusal becomes a false unanswered deadline again",
       "file": "packages/core/src/endpoint-verbs.ts",
-      "find": "    const msg = await Promise.race([outcome, timeout, denied]);",
-      "replace": "    const msg = await Promise.race([outcome, timeout]);",
+      "find": "            && s.error.subject === req.subject) {",
+      "replace": "            && s.error.subject === `${req.subject}.wrong`) {",
       "expectRed": "a broker-denied inspect reports permission-denied, not a false unanswered deadline",
       "cell": "a broker-denied inspect reports permission-denied, not a false unanswered deadline",
       "note": "The shipped failure shape from #904: nc.publish returned, the asynchronous publish violation was ignored, and the caller waited to deadline with EP_UNANSWERED. The real broker cell turns that exact regression red.",
