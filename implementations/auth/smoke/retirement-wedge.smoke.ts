@@ -183,7 +183,6 @@ try {
   const bootLines: string[] = [];
   const bootEvicted: string[] = [];
   const plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: (l) => bootLines.push(l), probeEvictor: okEvictor(bootEvicted) });
-  await plane.close();
 
   const headAfter = await readLifecycleHeadForOperation(wreg, OWNER, ACTOR);
   check("THE FIX: the second boot RESUMED the intent and completed the head terminal (retired)",
@@ -194,10 +193,15 @@ try {
     const gate = await observeGate(wreg, uid);
     check("THE FIX: the gate stays terminal `retired` by the op (a retirement never reopens)",
       gate?.row.state === "retired" && gate.row.op?.opId === op, gate?.row);
-    const respawnMsg = await rejects(() => activateLifecycleAtUid(wreg, { owner: OWNER, actor: ACTOR, lifecycleUid: mintLifecycleUid(), managerInstance: "smoke" }));
-    check("THE FIX: the alias is replaceable now (the respawn that the wedge refused now SUCCEEDS)",
-      respawnMsg === "", respawnMsg.slice(0, 200));
+    // THE PUBLIC SEAM: the plane's production issuance surface (mintConnectCredential, what a
+    // successor's exchange calls to mint its root credential) now mints the same-name successor.
+    // On the gate-only predicate this is where the wedge is visible to an operator: the respawn
+    // is refused at the exact interface a real spawn would hit, on this boot and every future one.
+    const successorCred = await rejects(() => plane.mintConnectCredential({ owner: OWNER, actor: ACTOR, lifecycleUid: mintLifecycleUid() }));
+    check("THE FIX: a same-name respawn through the plane's mintConnectCredential seam SUCCEEDS",
+      successorCred === "", successorCred.slice(0, 200));
   }
+  await plane.close();
 
   // ---- THE COMPLETED CELL IS STILL SKIPPED: a third boot must NOT re-run a completed op ----
   {
