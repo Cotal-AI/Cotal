@@ -66,6 +66,14 @@ try {
     () => assertSmokeSandboxDown(anchor, ["down"], { cwd: root, env: process.env }),
     /COTAL_HOME .* expected .*XDG_CONFIG_HOME .* expected/,
   );
+  const marker = join(root, ".cotal");
+  rmSync(marker, { recursive: true });
+  refuses(
+    "missing sandbox ownership marker is refused by identity",
+    () => assertSmokeSandboxDown(anchor, ["down"], { cwd: root, env }),
+    /identity verdicts root=same, COTAL_HOME=same, XDG_CONFIG_HOME=same, marker=missing/,
+  );
+  mkdirSync(marker);
 
   const alias = join(base, "root-alias");
   symlinkSync(root, alias, "dir");
