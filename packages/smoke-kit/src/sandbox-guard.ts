@@ -1,4 +1,4 @@
-import { mkdirSync, realpathSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
 const smokeSandboxAnchor: unique symbol = Symbol("smokeSandboxAnchor");
@@ -111,5 +111,40 @@ export function assertSmokeSandboxDown(
       `COTAL_HOME ${JSON.stringify(cotalHome ?? "<missing>")}, expected ${JSON.stringify(expected.cotalHome.path)}; ` +
       `XDG_CONFIG_HOME ${JSON.stringify(xdgConfigHome ?? "<missing>")}, expected ${JSON.stringify(expected.xdgConfigHome.path)}; ` +
       `root ownership marker ${markerHeld ? "held" : "missing or replaced"}`,
+  );
+}
+
+/**
+ * Guard a target-addressed component such as `down web`. The call must name its space explicitly so
+ * the CLI cannot select a different `current` entry. The guard reads that ONE canonical record from
+ * the already-anchored COTAL_HOME and compares its concrete root with the root recorded at sandbox
+ * construction. It never runs the mesh resolver, searches the registry, or consults ambient state.
+ */
+export function assertSmokeSandboxTargetDown(
+  anchor: SmokeSandboxAnchor | undefined,
+  args: readonly string[],
+  options: SmokeCommandOptions,
+  space: string,
+): void {
+  assertSmokeSandboxDown(anchor, args, options);
+  if (args[0] !== "down") return;
+  if (!anchor) throw new Error("smoke sandbox target guard requires a recorded anchor");
+  const flag = args.indexOf("--space");
+  if (flag < 0 || args[flag + 1] !== space)
+    throw new Error(`smoke sandbox target down must name --space ${JSON.stringify(space)} explicitly`);
+
+  const expected = anchor[smokeSandboxAnchor];
+  const key = Buffer.from(space, "utf8").toString("hex");
+  const recordPath = join(expected.cotalHome.path, "meshes", `space.${key}.json`);
+  let observedRoot: unknown;
+  try {
+    observedRoot = (JSON.parse(readFileSync(recordPath, "utf8")) as { root?: unknown }).root;
+  } catch (error) {
+    throw new Error(`cannot establish smoke sandbox target identity from ${JSON.stringify(recordPath)}`, { cause: error });
+  }
+  if (typeof observedRoot === "string" && sameDirectory(expected.root, observedRoot)) return;
+  throw new Error(
+    `smoke sandbox refused target-addressed cotal down: observed root ${JSON.stringify(observedRoot ?? "<missing>")}, ` +
+      `expected root ${JSON.stringify(expected.root.path)}`,
   );
 }

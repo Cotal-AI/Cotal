@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
-import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, assertSmokeSandboxTargetDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 const base = mkdtempSync(join(tmpdir(), "cotal-sandbox-guard-"));
 const root = join(base, "root");
@@ -35,6 +35,23 @@ try {
   assert.doesNotThrow(() => assertSmokeSandboxDown(anchor, ["down"], { cwd: alias, env }));
   assert.doesNotThrow(() => assertSmokeSandboxDown(anchor, ["down"], { cwd: root + sep, env }));
   assert.doesNotThrow(() => assertSmokeSandboxDown(anchor, ["status"], { cwd: join(base, "foreign") }));
+
+  const space = "target";
+  const meshes = join(cotalHome, "meshes");
+  const meshFile = join(meshes, `space.${Buffer.from(space).toString("hex")}.json`);
+  mkdirSync(meshes, { recursive: true });
+  writeFileSync(meshFile, JSON.stringify({ space, root }));
+  assert.doesNotThrow(() =>
+    assertSmokeSandboxTargetDown(anchor, ["down", "web", "--space", space], { cwd: root, env }, space));
+  writeFileSync(meshFile, JSON.stringify({ space, root: join(base, "foreign") }));
+  assert.throws(
+    () => assertSmokeSandboxTargetDown(anchor, ["down", "web", "--space", space], { cwd: root, env }, space),
+    /target-addressed cotal down: observed root.*foreign.*expected root.*root/,
+  );
+  assert.throws(
+    () => assertSmokeSandboxTargetDown(anchor, ["down", "web"], { cwd: root, env }, space),
+    /must name --space "target" explicitly/,
+  );
 
   const repo = join(import.meta.dirname, "..", "..", "..");
   const semanticDownOnly = new Set([

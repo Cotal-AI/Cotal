@@ -21,7 +21,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, assertSmokeSandboxTargetDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 // Ephemeral OS-assigned ports: no fixed-port collision across back-to-back / concurrent runs.
 const freePort = (): Promise<number> =>
@@ -55,7 +55,9 @@ const tsxCli = join(REPO, "node_modules", "tsx", "dist", "cli.mjs");
 const binCotal = join(REPO, "bin", "cotal.ts");
 const cotalAt = (cwd: string, args: string[], timeout = 180_000) => {
   const options = { encoding: "utf8" as const, env, cwd, timeout };
-  assertSmokeSandboxDown(sandboxAnchor, args, options);
+  if (args[0] === "down" && args[1] === "web")
+    assertSmokeSandboxTargetDown(sandboxAnchor, args, options, SPACE);
+  else assertSmokeSandboxDown(sandboxAnchor, args, options);
   return spawnSync(realNode, [tsxCli, binCotal, ...args], options);
 };
 const cotal = (args: string[], timeout = 180_000) => cotalAt(root, args, timeout);
@@ -145,7 +147,7 @@ try {
     ok("live /api/meta answers with the mesh's space and serving pid", meta.space === SPACE && meta.pid === foregroundPid && alive(foregroundPid), meta);
     const removeLive = cotal(["ext", "remove", "@cotal-ai/web"]);
     ok("ext remove refuses to orphan a running web process", removeLive.status === 1 && /cotal down web/.test(removeLive.stderr), removeLive.stderr.slice(-400));
-    const webDown = cotal(["down", "web"]);
+    const webDown = cotal(["down", "web", "--space", SPACE]);
     if (webChild.exitCode === null)
       await Promise.race([new Promise<void>((resolve) => webChild!.once("exit", () => resolve())), sleep(2_000)]);
     ok("down web stops the extension-owned process only", webDown.status === 0 && webChild.exitCode !== null, webDown.stdout + webDown.stderr);

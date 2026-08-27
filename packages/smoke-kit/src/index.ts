@@ -16,6 +16,7 @@
 export { SMOKE_BROKER_PREFIX, SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "./broker-teardown.js";
 export {
   assertSmokeSandboxDown,
+  assertSmokeSandboxTargetDown,
   recordSmokeSandbox,
   type SmokeCommandOptions,
   type SmokeSandboxAnchor,
