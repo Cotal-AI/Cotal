@@ -1,6 +1,6 @@
 ---
 name: parallel-feature-managers
-description: Run several independent Cotal features concurrently by creating one Git worktree and one spawn-capable mesh manager per feature; each manager staffs exactly three OpenCode gpt-5.6-sol high reviewers in a dedicated channel plus one DM-only independent cold reviewer, owns plan-to-commit delivery, and escalates unresolved product decisions by DM to the coordinator for relay to the user. Use when the user asks to split multiple features across managers/worktrees, run parallel feature teams on Cotal, or have managers create their own review panels.
+description: Run several independent Cotal features concurrently by creating one Git worktree and one spawn-capable mesh manager per feature; each manager staffs a cross-vendor review panel in a dedicated channel plus one DM-only independent cold reviewer that never joins it, owns plan-to-commit delivery, and escalates unresolved product decisions by DM to the coordinator for relay to the user. Use when the user asks to split multiple features across managers/worktrees, run parallel feature teams on Cotal, or have managers create their own review panels.
 ---
 
 # Parallel feature managers
@@ -11,13 +11,28 @@ Use the live Cotal mesh as a hierarchy:
   and relays decisions. It does not duplicate implementation or panel review.
 - Each feature gets one **manager** rooted in its own Git worktree and branch. The manager owns the
   complete plan -> implementation -> review -> test -> commit loop.
-- Each manager spawns exactly three **read/review-only peers** in one dedicated channel: engineer,
-  security, and critic.
+- Each manager spawns three or more **read/review-only peers** in one dedicated channel: engineer,
+  security, and critic at minimum.
 - Near the final gate, each manager uses one **independent cold reviewer** over DM only. It never
   joins or reads the feature channel, so panel consensus cannot anchor its second opinion.
 
-The default runtime for every manager and reviewer is OpenCode, model `openai/gpt-5.6-sol`, variant
-`high`. Change that only when the user explicitly asks.
+## Models: cross-vendor panels are a correctness rule, not a preference
+
+**Every reviewer on a panel must be a different vendor.** A finding confirmed by a seat of the same
+family as the one that made it is an echo, not a confirmation. A panel of three same-model reviewers
+has approved a head carrying a defect that all three missed, and what surfaced it was a differently
+framed read rather than a fourth verifier.
+
+Pin the model explicitly at spawn AND in the persona, because unrecorded capability is
+ungraded-in-effect: a reviewer whose effort or model nobody recorded produces a verdict nobody can
+weigh afterwards.
+
+Managers may run a stronger model than their reviewers. Reviewers should not run the same model as
+the coordinator, so that the panel cannot inherit the coordinator's blind spots.
+
+Verify the exact model identifiers against the connector's own catalog before spawning, and treat a
+declared reasoning-effort tier as unverified until a seat has actually launched with it: a catalog
+can declare tiers the provider refuses, and a refused tier kills the seat at launch.
 
 ## Hard rules
 
@@ -89,13 +104,12 @@ so author `.cotal/agents/mgr-<slug>.md` before spawning. These files are local/i
 ---
 name: mgr-<slug>
 role: feature-manager
-model: openai/gpt-5.6-sol
-variant: high
+model: <pinned manager model>
 description: Owns <feature> and its review panel.
 tags: [manager, <slug>]
-subscribe: [general, review.<slug>]
-allowSubscribe: [general, review.<slug>]
-allowPublish: [general, review.<slug>]
+subscribe: [review.<slug>]
+allowSubscribe: [review.<slug>]
+allowPublish: [review.<slug>]
 capabilities: [spawn]
 ---
 ```
@@ -106,15 +120,20 @@ The manager prompt must include all of the following:
 - Own the feature end to end and commit only intended feature files.
 - Read repo instructions, current docs, and `.internal` before editing.
 - Join `review.<slug>` first.
-- Spawn exactly `review-engineer`, `review-security`, and `review-critic` with:
-  `agent=opencode`, `model=openai/gpt-5.6-sol`, `variant=high`, and its feature worktree as `cwd`.
+- Spawn `review-engineer`, `review-security` and `review-critic`, **each on a different vendor's
+  model**, each with its own detached worktree as `cwd`. A reviewer grades in its own tree, never in
+  the tree it is grading, and "read-only" must name the git write verbs explicitly (`checkout`,
+  `switch`, `stash`, `reset`, `clean`, `restore`) rather than only saying "do not edit source".
 - DM each returned reviewer identity to join the channel and remain read/review-only.
 - Run plan review before editing, code/test review after implementation, fold valid findings, and ask
   all three for a final disposition.
-- After the panel and implementation converge, spawn exactly one `review-freelance` with the same
-  OpenCode model, variant, and worktree. Keep it DM-only and read/review-only. Give it the original
-  feature contract, actual diff/commit, test results, and review question, but do not summarize or
-  forward panel discussion. Ask for an independent `APPROVE` or concrete findings.
+- After the panel and implementation converge, spawn exactly one `review-freelance`, **on a vendor
+  that wrote nothing during the panel round**, in its own detached worktree. Keep it DM-only and
+  read/review-only. Give it the original feature contract, the actual diff or commit, test results,
+  and the review question, and **nothing else**: no findings, no panel discussion, no summary of what
+  the panel concluded, and no invitation to the channel. Anchoring is the failure this seat exists to
+  avoid, and a seat that has read the panel's transcript is no longer independent of it. Ask for an
+  independent `APPROVE` or concrete findings.
 - Fold or reason against the independent findings. If a fold changes code, return the result to the
   channel panel for another final pass and ask the independent reviewer to recheck its finding.
 - Run the relevant tests itself. Reviewers do not edit source.
@@ -139,9 +158,8 @@ Then spawn each manager through `cotal_spawn`:
 ```text
 name: mgr-<slug>
 role: feature-manager
-agent: opencode
-model: openai/gpt-5.6-sol
-variant: high
+agent: <connector>
+model: <pinned manager model>
 cwd: /absolute/path/to/feature-worktree
 ```
 
@@ -149,8 +167,18 @@ Launch managers in parallel only after all worktrees, personas, and channels exi
 auto-number repeated reviewer persona identities (`review-engineer-2`, etc.); track the returned
 identity, not an assumed name.
 
-Verify with `cotal_roster` that every manager appears and each has exactly three reviewer peers.
-Do not spawn missing-looking duplicates prematurely; allow startup time and recheck first.
+Verify with `cotal_roster` that every manager appears and holds its full panel. Do not spawn
+missing-looking duplicates prematurely; allow startup time and recheck first.
+
+**A spawn that reports a timeout is not evidence the spawn failed.** It may already have succeeded,
+and retrying submits a second goal that duplicates the effect. Read the outcome from the process
+listing before acting, and never retry on a timeout alone.
+
+**Verify a seat by REPLY, never by presence.** A seat can report as running and be silently
+unreachable. Ask for a nonce artifact it must produce, such as an `echo` of a random token joined to
+the short commit it is sitting on, and check the raw output. A handshake that states the expected
+answer ("confirm you are at <path> on <sha>") is leading: an echo-compatible reply proves something
+can mirror text, not that a shell ran.
 
 The independent reviewer is intentionally absent during initial staffing. The feature manager
 spawns it only at the cold-review gate. Confirm it remains off the feature channel; communicate by
@@ -186,8 +214,9 @@ dependency, or mesh-access issues directly when safe.
 A feature is complete only when:
 
 - The manager has folded or reasoned against every concrete finding.
-- Engineer, security, and critic all give final approval.
-- The DM-only independent reviewer gives final approval without having joined the panel channel.
+- Every panel reviewer gives final approval, and the panel spans more than one vendor.
+- The DM-only independent reviewer gives final approval without having joined the panel channel and
+  without having been shown the panel's findings.
 - Required focused and integration tests pass.
 - The feature is committed on its own branch.
 - `git status` is clean except an explicitly acknowledged local `.internal` pointer mismatch.
