@@ -139,10 +139,11 @@ keys `auth/broker.json` + `auth/account.<key>.json`; the pre-split `auth/auth.js
 migration input and the container signer mount only) and re-signs the daemon creds (`delivery.creds` and the membership feed's
 `membership-rw.creds`) back into that store. The injected `store` is both the signer source and the
 credential destination, never a split. `space` is **required** and validated against the store's signer, so a
-store swapped to a different space cannot re-sign over the wrong broker's creds. `preflight` is
-a "does the broker accept this cred" proof the caller owns (the reference `Manager` passes a `probeConnect` over
-its `servers`), gates **every** candidate before it overwrites the last-good, whether the signer is a
-full bundle or a stripped projection: a bundle's JWT chain proves only that it is self-consistent and
+store swapped to a different space cannot re-sign over the wrong broker's creds. `preflight` is a
+caller-supplied proof that the broker accepts the credential. The reference `Manager` passes a
+`probeConnect` over its `servers`. It gates **every** candidate before overwriting the last-good,
+whether the signer is a full bundle or a stripped projection: a bundle's JWT chain proves only that
+it is self-consistent and
 named the space, NOT that its account is the broker's *current* account for that space (two
 `createSpaceAuth(space)` calls yield same-named, different-account chains), so a same-label alternate
 signer would otherwise mint a broker-dead cred and clobber the good one. The offline local repair (`doctor auth --fix`) has no preflight. It permits the overwrite only
@@ -188,10 +189,9 @@ injects the one `SecretStore` the manager uses for **the signer itself (the spli
 records)**, daemon-credential renewal (`remintDaemonCreds`), and per-agent secrets,
 defaulting to the workspace filesystem store; pass the delivery daemon the *same* store for end-to-end
 hosted renewal. The signer IS now injectable: a hosted composition injects a KMS/Vault store and no
-signing seed lands on the hosted disk. What remains is signer **isolation** (the seed is decrypted
-in-process at the manager's uid. That remaining issue needs an OS sandbox or remote signer; it
-is no longer a custody problem. The other
-knobs are `workspaceRoot` and the process-global `COTAL_HOME`.
+signing seed lands on the hosted disk. What remains is signer **isolation**. The seed is decrypted
+in-process at the manager's uid. That issue needs an OS sandbox or remote signer; it is no longer a
+custody problem. The other knobs are `workspaceRoot` and the process-global `COTAL_HOME`.
 
 > Scope note: the **static-auth** operator paths (`cotal spawn`/`join`/`status`/`web`, via
 > `mesh-target` → `connect`/`preflight`) still read the signer from the local split records (sync

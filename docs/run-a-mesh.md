@@ -232,7 +232,7 @@ acceptance. This is the "the flag disappears once the broker can be served over 
 has now arrived.
 
 This gate is on **registration**. `cotal join --creds --server <url>` deliberately takes an
-explicit connection at face value and does not consult the registry, so it is not covered, join
+explicit connection at face value and does not consult the registry, so it is not covered. Join
 that way only to an address you would have registered.
 
 Records added this way are removed only by something that names them. A mesh this machine started
@@ -316,7 +316,8 @@ that dead op on boot, using the same guard as [`cotal reconcile-gate`](cli.md#re
 acts only when the freeze-holder is affirmatively gone under a complete CONNZ sweep (`gone` and
 `sweepComplete=true`), abort-reopens the gate (generation+1, processEpoch unchanged), and continues
 the normal takeover. A live holder, an incomplete sweep, or an unreachable delivery daemon still
-refuses, silence is never death, and there is no TTL. Use `cotal reconcile-gate` when the boot
+refuses. Silence is never evidence of death, and there is no TTL. Use `cotal reconcile-gate` when the
+boot
 path cannot run (daemon down, a non-manager endpoint, or you want to lift the freeze without
 starting a manager).
 

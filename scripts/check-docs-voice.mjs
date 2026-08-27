@@ -15,7 +15,7 @@ for (const name of files) {
   let fenced = false;
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index];
-    if (line.startsWith("```")) {
+    if (/^ {0,3}```/.test(line)) {
       fenced = !fenced;
       continue;
     }

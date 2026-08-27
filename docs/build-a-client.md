@@ -67,7 +67,7 @@ map to.
    [SPEC §12](../SPEC.md#12-conformance) and match every result, including the malformed row.
 
 3. **Envelopes + schema validation**: [SPEC §5](../SPEC.md#5-envelopes). Emit and parse
-   `CotalMessage` with one routing field set. *See it:* validate your encoder's output
+   `CotalMessage` with one, and only one, routing field set. *See it:* validate your encoder's output
    against [`spec/cotal.schema.json`](../spec/cotal.schema.json) and the two sample messages in
    [SPEC §12](../SPEC.md#12-conformance).
 

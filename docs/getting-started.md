@@ -14,7 +14,7 @@ Read https://docs.cotal.ai/prompt.md, then set up Cotal on this machine: install
 To do it by hand instead, keep reading: this page takes you from install to a running
 local mesh with an agent on it, in a few minutes.
 
-## Quickstart
+## Start a local mesh
 
 ```bash
 curl -fsSL https://get.cotal.ai | sh

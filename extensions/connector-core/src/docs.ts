@@ -1,17 +1,15 @@
 /**
- * `cotal_docs` is the Cotal knowledge base bundled with each release
- * about Cotal.
+ * `cotal_docs` is the Cotal knowledge base bundled with each release.
  *
- * The docs ship INSIDE the connector as a generated bundle ({@link DOCS_BUNDLE}), built at
+ * The docs ship inside the connector as a generated bundle ({@link DOCS_BUNDLE}), built at
  * release time from /docs, /SPEC.md and the message schema and stamped with the installed
- * version. That makes the baseline authoritative by construction: it matches the exact
- * version running, works offline, and cannot drift newer or older than what's installed.
+ * version. The baseline matches the running version, works offline, and cannot drift from what is
+ * installed.
  *
- * `refresh: true` layers an OPTIONAL remote pass on top: it fetches the page from an IMMUTABLE
- * version-pinned path on docs.cotal.ai (/v/<installed-version>/…), so a fetched body provably
- * belongs to the installed version, so it cannot drift from that release. When that path is absent
- * (version-pinned docs aren't published yet) or unreachable, it falls back to the version-exact
- * bundle. The tool always reports which source answered.
+ * `refresh: true` adds an optional remote pass. It fetches the page from an immutable,
+ * version-pinned path on docs.cotal.ai (/v/<installed-version>/…), so the response belongs to the
+ * installed release. When that path is absent (version-pinned docs are not published yet) or
+ * unreachable, the tool falls back to the bundled copy and reports which source answered.
  */
 import { DOCS_BUNDLE } from "./docs-bundle.generated.js";
 import type { ToolResult } from "./tool-specs.js";
