@@ -106,6 +106,18 @@ type AgentRow = {
   id: string;
 };
 
+/** A seat's compact runtime identity. Model is provenance, not a debugging detail, so it belongs
+ *  beside the connector in the default row. `variant` is the requested override the manager
+ *  recorded: when no override was requested it stays absent rather than inventing an effective
+ *  provider default Cotal cannot observe. */
+export function agentIdentity(r: Pick<AgentRow, "agent" | "model" | "variant" | "mode">): string {
+  const parts = [r.agent];
+  if (r.model) parts.push(`${r.model}${r.variant ? ` (${r.variant})` : ""}`);
+  else if (r.variant) parts.push(`variant ${r.variant}`);
+  parts.push(r.mode);
+  return parts.join(" · ");
+}
+
 /** Compact process age for a row: `12s`, `47m`, `3.5h`, `2d 7h`. */
 function fmtUptime(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -242,7 +254,7 @@ function printAgentRow(r: AgentRow, indent = ""): void {
   const authColor = r.authHealth === "auth-renewal-failed" ? c.red : c.yellow;
   console.log(
     `${indent}${c.bold(r.name)}${r.role ? c.dim("/" + r.role) : ""}  ${c.dim(
-      r.agent + " · " + r.mode,
+      agentIdentity(r),
     )}  ${proc}  ${mesh}${r.authHealth ? "  " + authColor(r.authHealth) : ""}`,
   );
   // The detached agent's ONLY operator window into a failing bearer refresh: the provider command's
@@ -271,8 +283,7 @@ function printWideFacts(r: AgentRow, indent = ""): void {
 }
 
 /** How one seat renders in the chosen presentation. `--json` prints the manager's row EXACTLY as
- *  received (one JSON object per line); `--wide` adds the facts line under the unchanged compact
- *  row; bare stays exactly today's output. */
+ *  received; `--wide` adds the facts line under the compact row. */
 function printSeat(r: AgentRow, opts: { wide: boolean; json: boolean }, indent = ""): void {
   if (opts.json) {
     console.log(JSON.stringify(r));
@@ -284,8 +295,8 @@ function printSeat(r: AgentRow, opts: { wide: boolean; json: boolean }, indent =
 
 export async function ps(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof psFlags>;
-  // #651 presentations: bare output is UNCHANGED by this change - only the flags enrich. The two
-  // forms are mutually exclusive because they answer "how do I read this" two different ways;
+  // #651 presentations: the two forms are mutually exclusive because they answer "how do I read
+  // this" two different ways;
   // inventing a precedence would be a silent fallback, so refuse instead.
   const opts = { wide: v.wide === true, json: v.json === true };
   if (opts.wide && opts.json) {
