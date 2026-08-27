@@ -2,10 +2,16 @@ import assert from "node:assert/strict";
 import { agentIdentity } from "../src/commands/agents.js";
 
 let pass = 0;
+let fail = 0;
 const check = (name: string, actual: string, expected: string): void => {
-  assert.equal(actual, expected, `${name}: ${JSON.stringify(actual)}`);
-  pass++;
-  console.log(`  ✓ ${name}`);
+  try {
+    assert.equal(actual, expected, `${name}: ${JSON.stringify(actual)}`);
+    pass++;
+    console.log(`  ✓ ${name}`);
+  } catch (error) {
+    fail++;
+    console.error(`  ✗ ${name}: ${(error as Error).message}`);
+  }
 };
 
 check(
@@ -29,4 +35,5 @@ check(
   "claude · tmux",
 );
 
-console.log(`\nPS PROVENANCE SMOKE PASSED (${pass} checks)`);
+console.log(`\nPS PROVENANCE SMOKE PASSED (${pass} checks, ${fail} failed)`);
+if (fail) process.exitCode = 1;
