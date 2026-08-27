@@ -98,7 +98,13 @@ async function callJcodeMcpRaw(
   const entry = jcodeMcpEntry(home);
   const bridge = spawn(entry.command, entry.args, {
     cwd: root,
-    env: { ...entry.env, COTAL_JCODE_MCP_SOCKET: socket, COTAL_JCODE_MCP_TOKEN: token },
+    // PATH only: the tsx shim needs `node`, matching StdioClientTransport. Do not copy COTAL_*.
+    env: {
+      ...(process.env.PATH !== undefined ? { PATH: process.env.PATH } : {}),
+      ...entry.env,
+      COTAL_JCODE_MCP_SOCKET: socket,
+      COTAL_JCODE_MCP_TOKEN: token,
+    },
     stdio: ["pipe", "pipe", "pipe"],
   });
   // An unread stderr pipe fills (64 KiB on Linux, smaller on macOS) and the child blocks on
@@ -603,8 +609,16 @@ try {
 } finally {
   if (child && child.exitCode === null) child.kill("SIGKILL");
   if (outage && outage.exitCode === null) outage.kill("SIGKILL");
-  await operator?.stop().catch(() => {});
-  await outageOperator?.stop().catch(() => {});
+  const stopOrThrow = async (name: string, endpoint?: CotalEndpoint): Promise<void> => {
+    if (!endpoint) return;
+    const result = await Promise.race([
+      endpoint.stop().then(() => "ok" as const, () => "ok" as const),
+      sleep(5_000).then(() => "timeout" as const),
+    ]);
+    if (result === "timeout") throw new Error(`${name}.stop() timed out`);
+  };
+  await stopOrThrow("operator", operator);
+  await stopOrThrow("outageOperator", outageOperator);
   nats.kill("SIGKILL");
   outageNats?.kill("SIGKILL");
   await sleep(100);
