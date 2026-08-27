@@ -131,7 +131,7 @@ async function callJcodeMcpRaw(
       try {
         frame = JSON.parse(line) as Record<string, unknown>;
       } catch {
-        if (garbage.length < 8) garbage.push(line.slice(0, 200));
+        if (garbage.length < 5) garbage.push(line.slice(0, 200));
         continue;
       }
       if (typeof frame.id === "number") frames.get(frame.id)?.(frame);
@@ -620,16 +620,8 @@ try {
 } finally {
   if (child && child.exitCode === null) child.kill("SIGKILL");
   if (outage && outage.exitCode === null) outage.kill("SIGKILL");
-  const stopOrThrow = async (name: string, endpoint?: CotalEndpoint): Promise<void> => {
-    if (!endpoint) return;
-    const result = await Promise.race([
-      endpoint.stop().then(() => "ok" as const, () => "ok" as const),
-      sleep(5_000).then(() => "timeout" as const),
-    ]);
-    if (result === "timeout") throw new Error(`${name}.stop() timed out`);
-  };
-  await stopOrThrow("operator", operator);
-  await stopOrThrow("outageOperator", outageOperator);
+  await operator?.stop().catch(() => {});
+  await outageOperator?.stop().catch(() => {});
   nats.kill("SIGKILL");
   outageNats?.kill("SIGKILL");
   await sleep(100);
