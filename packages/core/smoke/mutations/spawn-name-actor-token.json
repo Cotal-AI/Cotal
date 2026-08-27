@@ -1,0 +1,95 @@
+{
+  "suite": "packages/core/smoke/spawn-name-actor-token.smoke.ts",
+  "guard": "every name the spawn auto-numbering can produce is a mintable mesh actor, and the name door refuses an unmintable name where it is chosen rather than at mint",
+  "command": "pnpm smoke:spawn-name-actor",
+  "completionMarker": "SPAWN-NAME/ACTOR-TOKEN SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/spawn-name-actor-token.json",
+  "why": [
+    "The bug this pins was a COMPOSITION bug: both halves were individually correct. The numbering",
+    "produced a perfectly good display name, and the validator correctly refused a token containing",
+    "the separator it reserves. Nothing was wrong until one fed the other, which is why reading",
+    "either function alone finds nothing. So the cells compose the two SHIPPED functions in the same",
+    "order the manager composes them and hand the numbering's own output to the real validator —",
+    "rather than asserting a remembered alphabet, which would stay green if either side drifted.",
+    "",
+    "M1 is the regression itself. M2 is the one that matters more for the long run: it changes the",
+    "separator to something ELSE that is still illegal in a token. A cell that merely asserted the",
+    "name is not the old `<base>-2` string would stay green; only handing it to the validator fails.",
+    "",
+    "M3 severs the delegation — the door restates the alphabet as its own regex instead of calling",
+    "the validator. It is written to be CORRECT TODAY, so every behavioural cell stays green and only",
+    "the composition cell can see it. This is the drift the single-predicate design exists to",
+    "prevent, and the only honest way to pin it is a mutant that is currently harmless.",
+    "",
+    "M4 and M5 guard the two rules that must NOT move. M4 makes user mode accept a hyphen again",
+    "(the defect, at the door rather than in the numbering). M5 applies the narrow rule in static/open",
+    "mode too, which is the plausible over-correction: it looks stricter and safer, and it would break",
+    "every existing `my-agent` persona on upgrade for a constraint that does not apply there, since",
+    "that mode keys the actor on the minted nkey and never on the name.",
+    "",
+    "M6 drops the traversal guard while keeping the token rule. The token alphabet happens to exclude",
+    "`/` and `.` anyway, so user mode stays safe and only the static/open half of each path-hostile",
+    "cell reddens — which is exactly the half that still has to hold.",
+    "",
+    "SPECIFIER BOUNDARY. These cells drive the two exported functions directly, not a live manager.",
+    "The manager reaches them by delegation (`nameError` returns `spawnNameError(...)`) and by using",
+    "`firstFreeName` for its funnel; that wiring is one call each and is typechecked, but a live",
+    "spawn being refused end to end is NOT proven here and is named as a residual."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the numbering separator reverts to the reserved character",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "const NUMBER_SEPARATOR = \"_\";",
+      "replace": "const NUMBER_SEPARATOR = \"-\";",
+      "expectRed": "every name the numbering produces is a mintable actor",
+      "cell": "every name the numbering produces is a mintable actor (checked 12)",
+      "note": "The shipped defect exactly. Spawn any persona twice and the second peer cannot be granted; the first always works, so it reads as a problem with that persona's name."
+    },
+    {
+      "name": "M2 the separator becomes a DIFFERENT illegal character",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "const NUMBER_SEPARATOR = \"_\";",
+      "replace": "const NUMBER_SEPARATOR = \".\";",
+      "expectRed": "every name the numbering produces is a mintable actor",
+      "cell": "every name the numbering produces is a mintable actor (checked 12)",
+      "note": "Not the old string, still unmintable — and a dot is lane breakout rather than merely a bad name. Kills any cell that pattern-matched the previous bug instead of asking the validator."
+    },
+    {
+      "name": "M3 the name door restates the alphabet instead of delegating",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "  try {\n    assertValidOwnerToken(name);\n  } catch {",
+      "replace": "  try {\n    if (!/^[A-Za-z0-9_]+$/.test(name)) throw new Error(\"bad\");\n  } catch {",
+      "expectRed": "the user-mode name door ACCEPTS every name the numbering produces",
+      "cell": "the user-mode name door ACCEPTS every name the numbering produces (checked 12)",
+      "note": "CORRECT TODAY — it reproduces the validator's current alphabet exactly, so every behavioural cell stays green. It is the silent-drift shape: the day the token grammar moves, this copy does not, and the door that stops agreeing is the one nobody reads."
+    },
+    {
+      "name": "M4 user mode accepts the reserved character again",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "  if (!opts.userMode) return undefined;",
+      "replace": "  return undefined;\n  // eslint-disable-next-line no-unreachable",
+      "expectRed": "user mode REFUSES a hyphenated name",
+      "cell": "user mode REFUSES a hyphenated name",
+      "note": "The defect relocated to the door: an author can still choose a name that can never be minted, and finds out at spawn instead of at save."
+    },
+    {
+      "name": "M5 the narrow rule is applied in static/open mode too",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "  if (!opts.userMode) return undefined;",
+      "replace": "",
+      "expectRed": "static/open mode still ACCEPTS a hyphenated name",
+      "cell": "static/open mode still ACCEPTS a hyphenated name",
+      "note": "The plausible over-correction — it looks stricter and safer. It would refuse every existing hyphenated persona on upgrade, for a constraint that does not apply in a mode that keys the actor on the minted nkey and never on the name."
+    },
+    {
+      "name": "M6 the traversal guard is dropped, keeping only the token rule",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "  if (!/^[A-Za-z0-9_-]+$/.test(name))\n    return `unsafe name ${JSON.stringify(name)} (allowed: letters, digits, _ -)`;",
+      "replace": "",
+      "expectRed": "path-hostile name",
+      "cell": "path-hostile name \"…\" is refused in BOTH modes",
+      "note": "The token alphabet already excludes `/` and `.`, so user mode stays safe and only the static/open half of each path-hostile cell reddens. That is the half still carrying the traversal guard, and it is unconditional by design."
+    }
+  ]
+}
