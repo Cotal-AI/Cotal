@@ -127,8 +127,10 @@ The manager prompt must include all of the following:
 - Own the feature end to end and commit only intended feature files.
 - Read repo instructions, current docs, and `.internal` before editing.
 - Join `review.<slug>` first.
-- Spawn `review-engineer`, `review-security` and `review-critic`, **each on a different vendor's
-  model**, each with its own detached worktree as `cwd`. A reviewer grades in its own tree, never in
+- Spawn `review-engineer`, `review-security` and `review-critic`, seated so that **no two of them
+  whose agreement is load-bearing share a model family**. That is the ordinal rule above and not a
+  headcount: where the vendor set is short, degrade and name the collision mechanically rather than
+  refusing to staff. Give each its own detached worktree as `cwd`. A reviewer grades in its own tree, never in
   the tree it is grading, and "read-only" must name the git write verbs explicitly (`checkout`,
   `switch`, `stash`, `reset`, `clean`, `restore`) rather than only saying "do not edit source".
 - DM each returned reviewer identity to join the channel and remain read/review-only.
@@ -140,7 +142,8 @@ The manager prompt must include all of the following:
   set is short. Do not restate any of it here.
 - Fold or reason against the cold findings. **You may override a cold verdict only by publishing a
   refutation you verified yourself, and never by telling that seat to reconsider.** If you authored
-  the change, you may not override it at all: fold, or escalate to a party who wrote nothing. If a
+  the change, you may not override it at all: fold, or escalate to a **permitted stand-in** as
+  `cold-review` defines one, which is an independence test rather than a second signature. If a
   fold changes code, return the result to the channel panel for another final pass and re-pin the
   cold seat to the new sha with its delivery limit explicitly reset in writing.
 - Run the relevant tests itself. Reviewers do not edit source.
@@ -188,9 +191,10 @@ answer ("confirm you are at <path> on <sha>") is leading: an echo-compatible rep
 can mirror text, not that a shell ran.
 
 The independent reviewer is intentionally absent during initial staffing. The feature manager spawns
-it only at the cold-review gate, and runs it under the **`cold-review` skill**, which owns that
-seat's isolation, briefing, and verdict rules. Do not restate them here: one source for the rule, or
-the two copies drift and the stale one is invisible to whoever is editing the other.
+it only at the cold-review gate, and **briefs it by applying the `cold-review` skill itself**: that
+file addresses the briefer, and the graded seat never loads it. It owns that seat's isolation,
+briefing, and verdict rules. Do not restate them here: one source for the rule, or the two copies
+drift and the stale one is invisible to whoever is editing the other.
 Auto-numbering applies to `review-freelance` too, so track the returned identity.
 
 ## 5. Monitor without taking over
@@ -228,10 +232,22 @@ A feature is complete only when:
   satisfies it and violates the rule, and an A-A pair is the same-family echo the rule exists to
   reject. Where the vendor set is too short, name the collision mechanically and the failure class it
   leaves uncovered, per `cold-review`.
-- The independent cold reviewer gives final approval, posted **by that seat itself** to the
-  destination its brief named, naming the exact sha, without having joined the panel channel and
-  without having been shown the panel's findings. A verdict relayed by the manager does not satisfy
-  this, and the manager verifies it landed by re-fetching the destination.
+- **Every cold finding is closed**, by one of exactly two routes and no third: the cold seat itself
+  posted an APPROVE at the exact sha, to the destination its brief named, without having joined the
+  panel channel; **or** each blocker was answered by a public refutation from a permitted party under
+  `cold-review`'s override rule, left standing in the record beside the finding. **An unanswered cold
+  blocker is neither, and is not completion.**
+  Requiring the seat's own approval *alone* would deadlock the override the first time it was used
+  correctly: the seat is one-delivery and may never be told to reconsider, so a refuted blocker could
+  be cleared only by changing code to satisfy a finding just publicly refuted, or by a zero-delta
+  re-pin to manufacture an approval, which is laundering. The override answered the question and the
+  gate has to let the answer count.
+- A verdict relayed by the manager satisfies nothing, and the manager confirms the seat's own post
+  landed by re-fetching the destination. Note which parts of that are checkable: the sha, the
+  destination, the poster and the channel membership are **controls** a later stranger can verify.
+  That the brief carried no findings is a **norm** resting on the briefer, so it is deliberately not a
+  gate condition here; listing it as one would state a norm in the grammar of a control, which is the
+  false assurance `cold-review` exists to prevent.
 - Every approval names the head it graded, and that head is re-resolved at merge time. A verdict is
   never carried across a sha. Both are steps in the loop above, not assertions made here.
 - Required focused and integration tests pass.

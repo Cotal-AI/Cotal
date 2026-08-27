@@ -123,9 +123,20 @@ The resolution never required talking to the seat:
   standing in the record beside it. Nothing flows back to the seat, so isolation holds; the override
   is auditable, so the control survives. **The forbidden act is a PRIVATE override, not an override.**
 - **An author may not override a cold verdict on their own change.** They may fold it, or escalate to
-  a party who wrote nothing, who overrides publicly under their own name. Publication separates
-  override from launder only when the publisher and the accused are different parties: an author
-  refuting a finding about their own work has produced a document, not a check.
+  a permitted stand-in, who overrides publicly under their own name. Publication separates override
+  from launder only when the publisher and the accused are different parties: an author refuting a
+  finding about their own work has produced a document, not a check.
+- **A permitted stand-in is an independence test, not a signature.** It verifies the claim at the
+  artifact **without the author's account of it as input**, exactly as the manager rule requires, and
+  it has no stake in the outcome. **"Wrote nothing" is not "has no stake":** the coordinator who
+  staffed the panel, holds the seats and wants the round to close wrote nothing in the diff and is
+  still the wrong reader. A stand-in that publishes the author's reasoning under a clean byline is the
+  original hole with a different name on it.
+- **A cold blocker is closed by the seat's own APPROVE or by a permitted public refutation, and by
+  nothing else.** Any completion gate must accept both. A gate that demands the seat's approval alone
+  deadlocks the override the first time it is used correctly, because the seat is one-delivery and may
+  never be told to reconsider: the only exits left are satisfying a finding that was just publicly
+  refuted, or a zero-delta re-pin to manufacture an approval, which is laundering.
 
 ## When the vendor set is short
 
