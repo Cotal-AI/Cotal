@@ -106,6 +106,7 @@
     "smoke:no-implicit-general": "tsx packages/core/smoke/no-implicit-general.smoke.ts",
     "smoke:session-channels": "tsx extensions/connector-core/smoke/session-channels.smoke.ts",
     "smoke:read-acl:auth": "tsx packages/core/smoke/read-acl-auth.smoke.ts",
+    "smoke:board-stream-info": "tsx packages/core/smoke/board-stream-info.smoke.ts",
     "smoke:sub-acl:auth": "tsx packages/core/smoke/sub-acl-auth.smoke.ts",
     "smoke:owner-token": "tsx packages/core/smoke/owner-token.smoke.ts",
     "smoke:self-serve-join:auth": "tsx packages/core/smoke/self-serve-join-auth.smoke.ts",
