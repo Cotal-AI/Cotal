@@ -16,6 +16,9 @@
  * functions in the same order the manager composes them, and hand the numbering's own output to
  * the real validator. If either side's alphabet changes, this reddens without being edited.
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { firstFreeName, spawnNameError } from "../src/agent-file.js";
 import { assertValidOwnerToken } from "../src/subjects.js";
 
@@ -95,6 +98,30 @@ for (const bad of ["../escape", "a/b", "a\\b", "with space", "dot.name", ""]) {
   check(`path-hostile name ${JSON.stringify(bad)} is refused in BOTH modes`,
     spawnNameError(bad, { userMode: true }) !== undefined && spawnNameError(bad, { userMode: false }) !== undefined);
 }
+
+// THE DELEGATION, asserted structurally because it cannot be asserted behaviourally. The narrow
+// half must CALL the shipped validator rather than restate its alphabet. A restatement that is
+// correct today is behaviourally identical today — that is precisely what makes the drift silent,
+// and why every cell above stays green when the call is replaced by an equivalent regex. The only
+// moment the two disagree is after someone changes the token grammar, which is exactly the moment
+// nobody is looking at this door. So the cell reads the shipped source.
+//
+// Comments are STRIPPED first: the docstring above `spawnNameError` names `assertValidOwnerToken`
+// twice, and a cell that counted its own documentation would pass with the call deleted.
+const SRC = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "src", "agent-file.ts"), "utf8")
+  .replace(/\/\*[\s\S]*?\*\//g, "")
+  .replace(/\/\/[^\n]*/g, "");
+const body = SRC.slice(SRC.indexOf("export function spawnNameError"));
+const fnBody = body.slice(0, body.indexOf("\n}") + 2);
+
+check("instrument control: the predicate's source was located, comments stripped",
+  fnBody.includes("export function spawnNameError") && fnBody.length > 100 && !fnBody.includes("DELEGATES"),
+  { len: fnBody.length });
+check("the narrow half CALLS the shipped validator (delegation, not a restatement)",
+  fnBody.includes("assertValidOwnerToken("));
+check("…and carries no second copy of the token alphabet",
+  !/\[A-Za-z0-9_\]\+/.test(fnBody),
+  { fnBody: fnBody.slice(0, 400) });
 
 // A good name is accepted in both modes — so the guard above is not just always-refusing.
 check("a plain name is accepted in BOTH modes",
