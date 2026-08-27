@@ -11,6 +11,27 @@ const cotalHome = join(base, "home");
 const xdgConfigHome = join(base, "config");
 const anchor = recordSmokeSandbox({ root, cotalHome, xdgConfigHome });
 const env = { COTAL_HOME: cotalHome, XDG_CONFIG_HOME: xdgConfigHome };
+const failures: string[] = [];
+
+function refuses(name: string, run: () => void, expected: RegExp): void {
+  try {
+    assert.throws(run, expected);
+    console.log(`✓ ${name}`);
+  } catch (error) {
+    failures.push(name);
+    console.error(`✗ ${name}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function permits(name: string, run: () => void): void {
+  try {
+    assert.doesNotThrow(run);
+    console.log(`✓ ${name}`);
+  } catch (error) {
+    failures.push(name);
+    console.error(`✗ ${name}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
 
 try {
   assert.doesNotThrow(() => assertSmokeSandboxDown(anchor, ["down"], { cwd: root, env }));
@@ -20,10 +41,10 @@ try {
   mkdirSync(join(foreign, ".cotal"), { recursive: true });
   mkdirSync(foreignHome, { recursive: true });
   mkdirSync(foreignConfig, { recursive: true });
-  assert.throws(
+  refuses(
+    "foreign sandbox root is refused by identity",
     () => assertSmokeSandboxDown(anchor, ["down"], { cwd: foreign, env }),
     /observed root.*operator-checkout.*expected root.*root.*identity verdicts root=foreign/,
-    "foreign sandbox root is refused by identity",
   );
   assert.throws(
     () => assertSmokeSandboxDown(anchor, ["down"], { cwd: root, env: { ...env, COTAL_HOME: foreignHome } }),
@@ -60,25 +81,25 @@ try {
   writeFileSync(meshFile, JSON.stringify({ space, root }));
   assert.doesNotThrow(() =>
     assertSmokeSandboxTargetDown(anchor, ["down", "web", "--space", space], { cwd: root, env }));
-  assert.doesNotThrow(
-    () => assertSmokeSandboxTargetDown(anchor, ["down", "--space", space, "web"], { cwd: root, env }),
+  permits(
     "target guard resolves a flag before the target",
+    () => assertSmokeSandboxTargetDown(anchor, ["down", "--space", space, "web"], { cwd: root, env }),
   );
-  assert.doesNotThrow(
-    () => assertSmokeSandboxTargetDown(anchor, ["down", "web", `--space=${space}`], { cwd: root, env }),
+  permits(
     "target guard resolves equals-form space",
+    () => assertSmokeSandboxTargetDown(anchor, ["down", "web", `--space=${space}`], { cwd: root, env }),
   );
   const operatorSpace = "operator";
   const operatorMeshFile = join(meshes, `space.${Buffer.from(operatorSpace).toString("hex")}.json`);
   writeFileSync(meshFile, JSON.stringify({ space, root: foreign }));
   writeFileSync(operatorMeshFile, JSON.stringify({ space: operatorSpace, root }));
-  assert.doesNotThrow(
+  permits(
+    "target guard uses the CLI parser's last space value",
     () => assertSmokeSandboxTargetDown(
       anchor,
       ["down", "web", "--space", space, "--space", operatorSpace],
       { cwd: root, env },
     ),
-    "target guard uses the CLI parser's last space value",
   );
   writeFileSync(meshFile, JSON.stringify({ space, root: foreign }));
   assert.throws(
@@ -87,8 +108,31 @@ try {
   );
   assert.throws(
     () => assertSmokeSandboxTargetDown(anchor, ["down", "web"], { cwd: root, env }),
-    /must name --space explicitly/,
+    /must name a non-empty --space explicitly/,
   );
+  const emptySpaceMeshFile = join(meshes, "space..json");
+  writeFileSync(emptySpaceMeshFile, JSON.stringify({ space: "", root }));
+  refuses(
+    "target guard refuses a separate empty --space value",
+    () => assertSmokeSandboxTargetDown(anchor, ["down", "web", "--space", ""], { cwd: root, env }),
+    /must name a non-empty --space explicitly/,
+  );
+  refuses(
+    "target guard refuses a repeated flag whose last space value is empty",
+    () => assertSmokeSandboxTargetDown(anchor, ["down", "web", "--space=operator", "--space="], { cwd: root, env }),
+    /must name a non-empty --space explicitly/,
+  );
+  const emptySpaceCells = [
+    "target guard refuses a separate empty --space value",
+    "target guard refuses a repeated flag whose last space value is empty",
+  ];
+  const emptySpaceFailures = emptySpaceCells.filter((name) => failures.includes(name));
+  if (emptySpaceFailures.length === 0)
+    console.log("✓ target guard refuses both empty-space argv forms");
+  else {
+    failures.push("target guard refuses both empty-space argv forms");
+    console.error(`✗ target guard refuses both empty-space argv forms: ${emptySpaceFailures.join(", ")}`);
+  }
   assert.throws(
     () => assertSmokeSandboxDown(anchor, ["down", "web"], { cwd: root, env }),
     /requires assertSmokeSandboxTargetDown/,
@@ -146,6 +190,7 @@ try {
     }
   }
   assert.deepEqual(unguarded, [], `unguarded smoke cotal down call sites:\n${unguarded.join("\n")}`);
+  assert.deepEqual(failures, [], `sandbox guard failed named cells:\n${failures.join("\n")}`);
 
   console.log("sandbox guard smoke: PASS");
 } finally {
