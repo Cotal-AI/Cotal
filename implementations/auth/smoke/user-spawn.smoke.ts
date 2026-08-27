@@ -488,7 +488,13 @@ try {
   // but not which claim failed. A mutation that crashes a suite instead of reddening a named cell
   // is an illegible kill, indistinguishable from no coverage. Measured: reverting the separator
   // did exactly that, and this ordering is what turns it into a named failure.
-  const second: ControlReply = await manager.startAgent({ name: "alpha", agent: "e2e", owner: OWNER });
+  // The call itself can REJECT rather than return { ok:false }: on a tree whose allocator emits a
+  // name the grammar refuses, the mint throws out of startAgent. Gating on `second.ok` is not
+  // enough — the await has to survive first, or the section aborts before any cell runs and the
+  // kill is illegible again. Measured twice: 10 marks, no completion marker, both times.
+  const second: ControlReply = await manager
+    .startAgent({ name: "alpha", agent: "e2e", owner: OWNER })
+    .catch((e: unknown) => ({ ok: false, error: `startAgent threw: ${(e as Error)?.message ?? String(e)}` }) as ControlReply);
   // EVERY step below is gated on `accepted` and nothing in this section throws. A section that
   // aborts when its subject regresses produces an ILLEGIBLE kill: the run dies, the completion
   // marker never prints, and "something broke" is indistinguishable from "this is not covered".
