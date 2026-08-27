@@ -67,7 +67,7 @@ map to.
    [SPEC §12](../SPEC.md#12-conformance) and match every result, including the malformed row.
 
 3. **Envelopes + schema validation**: [SPEC §5](../SPEC.md#5-envelopes). Emit and parse
-   `CotalMessage` with exactly one routing field set. *See it:* validate your encoder's output
+   `CotalMessage` with one routing field set. *See it:* validate your encoder's output
    against [`spec/cotal.schema.json`](../spec/cotal.schema.json) and the two sample messages in
    [SPEC §12](../SPEC.md#12-conformance).
 
@@ -89,7 +89,7 @@ map to.
 
 6. **DM + anycast**: [SPEC §8](../SPEC.md#8-nats--jetstream-binding). Bind (do not create) your
    `dm_<owner>-<actor>-<lifecycleUid>` and, if you hold a role, `svc_<role>` durable, and ack consumed copies. *See it:*
-   a reference peer unicasts to you and anycasts to your role; exactly one anycast consumer wins.
+   a reference peer unicasts to you and anycasts to your role; one anycast consumer wins.
 
 7. **Receive-side checks**: [SPEC §4](../SPEC.md#4-delivery-modes),
    [§5](../SPEC.md#5-envelopes), [§8](../SPEC.md#8-nats--jetstream-binding). Reject any message

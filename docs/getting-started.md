@@ -14,7 +14,7 @@ Read https://docs.cotal.ai/prompt.md, then set up Cotal on this machine: install
 To do it by hand instead, keep reading: this page takes you from install to a running
 local mesh with an agent on it, in a few minutes.
 
-## Install and run
+## Quickstart
 
 ```bash
 curl -fsSL https://get.cotal.ai | sh
@@ -182,7 +182,7 @@ team** (your own channels, agents, and who may read and post where), describe it
 **[Define a team](define-a-team.md)**; the file format is the
 [manifest reference](manifest.md).
 
-## For agents and CI
+## Non-interactive setup
 
 A coding agent can set Cotal up for you with two non-interactive commands:
 

@@ -1,5 +1,5 @@
 /**
- * `cotal_docs` — the version-exact Cotal knowledge base an agent reads so it is never wrong
+ * `cotal_docs` is the Cotal knowledge base bundled with each release
  * about Cotal.
  *
  * The docs ship INSIDE the connector as a generated bundle ({@link DOCS_BUNDLE}), built at
@@ -9,7 +9,7 @@
  *
  * `refresh: true` layers an OPTIONAL remote pass on top: it fetches the page from an IMMUTABLE
  * version-pinned path on docs.cotal.ai (/v/<installed-version>/…), so a fetched body provably
- * belongs to the installed version — there is nothing to skew against. When that path is absent
+ * belongs to the installed version, so it cannot drift from that release. When that path is absent
  * (version-pinned docs aren't published yet) or unreachable, it falls back to the version-exact
  * bundle. The tool always reports which source answered.
  */
@@ -69,13 +69,13 @@ function remoteUrl(slug: string): string {
  *  go deeper. Cheap orientation an agent reads before answering anything about Cotal. */
 export function renderDocsIndex(): string {
   const rows = DOCS_BUNDLE.pages.map((p) => {
-    const kind = p.kind ? ` — ${p.kind}` : "";
+    const kind = p.kind ? `: ${p.kind}` : "";
     return `- \`${p.slug}\`${kind}\n  ${p.summary}`;
   });
   return [
-    `# Cotal v${DOCS_BUNDLE.version} — documentation`,
+    `# Cotal v${DOCS_BUNDLE.version} documentation`,
     "",
-    "The authoritative docs for the exact version installed here. This is the index — it lists what",
+    "The authoritative docs bundled with this installed version. This index lists what",
     "exists; it holds no answers itself. Your next call:",
     '- Know the page? Read it in full: `cotal_docs(page: "<slug>")` (e.g. "spec", "architecture").',
     '- Not sure which page? Search: `cotal_docs(query: "…")` returns the most relevant sections.',
@@ -84,9 +84,9 @@ export function renderDocsIndex(): string {
     "published to docs.cotal.ai for this same version.",
     "",
     "## The normative sources",
-    `- \`spec\` — ${DOCS_BUNDLE.spec.title} (the wire contract; where a page disagrees, the spec wins)`,
-    `- \`lang\` — ${DOCS_BUNDLE.lang.title} (the workflow language a durable run executes; spec §14)`,
-    `- \`schema\` — ${DOCS_BUNDLE.schema.title} (authoritative for message shapes)`,
+    `- \`spec\`: ${DOCS_BUNDLE.spec.title} (the wire contract; where a page disagrees, the spec wins)`,
+    `- \`lang\`: ${DOCS_BUNDLE.lang.title} (the workflow language a durable run executes; spec §14)`,
+    `- \`schema\`: ${DOCS_BUNDLE.schema.title} (authoritative for message shapes)`,
     "",
     "## Pages",
     ...rows,
@@ -251,7 +251,7 @@ export function searchDocs(query: string, limit = 5): DocHit[] {
 function capSection(text: string, maxLines = 48): string {
   const lines = text.split("\n");
   if (lines.length <= maxLines) return text.trim();
-  return lines.slice(0, maxLines).join("\n").trimEnd() + "\n\n… (section continues — read the full page)";
+  return lines.slice(0, maxLines).join("\n").trimEnd() + "\n\n… (section continues; read the full page)";
 }
 
 function renderSearch(query: string, hits: DocHit[]): string {
@@ -262,7 +262,7 @@ function renderSearch(query: string, hits: DocHit[]): string {
     (h) => `## ${h.heading}\n${capSection(h.text)}\n\n→ read the full page: cotal_docs(page: "${h.slug}")`,
   );
   return [
-    `# Cotal v${DOCS_BUNDLE.version} docs — top matches for "${query}"`,
+    `# Cotal v${DOCS_BUNDLE.version} docs: top matches for "${query}"`,
     "The most relevant sections are below. Read the full page before writing code or wire frames.",
     ...blocks,
   ].join("\n\n");
@@ -284,17 +284,17 @@ async function remoteBody(slug: string): Promise<string | null> {
  * (docs.cotal.ai/v/<installed-version>/…): a 200 body provably belongs to the installed
  * version, so there is no separate version check to race or skew against. When that path is
  * absent (version-pinned docs aren't published yet) or unreachable, it returns null and the
- * caller serves the version-exact bundle. Fail-closed — an unverifiable remote is never served.
+ * caller serves the version-exact bundle. Fail-closed: an unverifiable remote is never served.
  */
 async function refreshPage(slug: string): Promise<{ body: string | null; note: string }> {
   const body = await remoteBody(slug);
   if (body === null) {
     return {
       body: null,
-      note: `(bundled v${DOCS_BUNDLE.version}; no version-pinned copy at docs.cotal.ai/v/${DOCS_BUNDLE.version} — showing bundled docs)`,
+      note: `(bundled v${DOCS_BUNDLE.version}; no version-pinned copy at docs.cotal.ai/v/${DOCS_BUNDLE.version}; showing bundled docs)`,
     };
   }
-  return { body, note: `(refreshed from docs.cotal.ai — version-pinned copy for v${DOCS_BUNDLE.version})` };
+  return { body, note: `(refreshed from docs.cotal.ai; version-pinned copy for v${DOCS_BUNDLE.version})` };
 }
 
 export interface DocsArgs {

@@ -15,7 +15,7 @@ by default, a supervising manager with pluggable runtimes, connectors for Claude
 OpenCode, Hermes, and pi, the mesh manifest (`cotal.yaml`), and the console + web observers.
 The [Quickstart](getting-started.md) is the fastest proof.
 
-## Deferred, designed-for
+## Deferred work
 
 These have a reserved shape in the spec or the architecture, and are intentionally not
 built yet.

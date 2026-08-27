@@ -41,7 +41,7 @@ Each adversary, what it can attempt, and what stops it (or why it is out of scop
   check is therefore normative: receivers MUST reject on mismatch
   ([SPEC §5](../SPEC.md#5-envelopes), [§12](../SPEC.md#12-conformance)).
 - **On-path network attacker** (between an agent and the broker): defeated only when the join
-  link uses `cotals://` (TLS **required** — client refuses if the broker is not TLS). Plain
+  link uses `cotals://` (TLS **required**, client refuses if the broker is not TLS). Plain
   `cotal://` does **not** require TLS: a NATS client may still auto-upgrade against an honest
   TLS broker, but a forged plaintext `INFO` can strip the upgrade and harvest credentials. Use
   plain `cotal://` only on trusted networks and in dev.
@@ -94,7 +94,7 @@ The guarantees, at a glance, each enforced by the broker per
   nonce or idempotency key. It cannot replay as another agent (subject binding still holds).
 - **Static agent credential revocation:** on a static-auth mesh, a *manager-spawned* agent cred
   is now bounded (24h TTL, renewed by the manager for live agents only) and lifecycle-registered:
-  despawn drives the full §13.1 retirement — its ledger rows are revoked and the manager's
+  despawn drives the full §13.1 retirement, its ledger rows are revoked and the manager's
   control surface refuses the retired incarnation's credential outright. What remains: within
   the TTL window a *copied* cred keeps its inline data-plane grants (static has no auth callout,
   so nothing re-checks at reconnect), and an out-of-band `cotal mint` cred is still long-lived

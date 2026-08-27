@@ -4,7 +4,7 @@
 
 A **connector** teaches Cotal how to launch one agent harness (Claude Code, OpenCode, your own) as a
 mesh node. Connectors are ordinary [extensions](cli.md#ext): you publish an npm package, the operator
-runs `cotal ext add <your-package>`, and it plugs in exactly like the first-party connectors,
+runs `cotal ext add <your-package>`, and it plugs in the same way as the first-party connectors,
 which are themselves just connectors seeded on first run. There is no special-casing for built-ins,
 so anything the built-ins can do, yours can too.
 
@@ -30,7 +30,7 @@ const myConnector: Connector = {
   // supportsSessionContinuation, eventChannel, pluginRoot
 };
 
-registry.register(myConnector);          // runs on import — that's what makes it "plug in"
+registry.register(myConnector);          // registration runs on import, making the connector available
 ```
 
 `buildLaunch(opts)` is the whole job: given a `LaunchOpts` (space, name, role, creds, channels,
@@ -52,8 +52,8 @@ the `Connector` interface in
 sharing the binary's single `@cotal-ai/core` registry instance:
 
 - **`@cotal-ai/core` is a `peerDependency`, never a regular dependency.** A regular dep vendors a
-  second copy of core, whose separate registry would swallow your `registry.register` call — the add
-  would import your package cleanly but see zero contributions and refuse it. Any other `@cotal-ai/*`
+  second copy of core. Its separate registry would swallow your `registry.register` call. The add
+  would import your package cleanly, see zero contributions, and refuse it. Any other `@cotal-ai/*`
   you use is a peer too. `ext add` junction-links each `@cotal-ai/*` peer to the binary's own copy;
   lazy materialization verifies and rebinds those links for the registry-facing entry's initial import,
   so global installs and source worktrees can share the machine extension prefix. Import every host peer
@@ -79,7 +79,7 @@ A minimal `package.json`:
 }
 ```
 
-## Install, use, remove
+## Connector lifecycle
 
 ```bash
 cotal ext add @you/cotal-connector-myagent   # installs + verifies + caches its contribution
