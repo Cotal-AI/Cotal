@@ -385,11 +385,15 @@ export async function enumerateAgentFamily(reg: LifecycleRegistry, lifecycleUid:
 }
 
 /** A durable operation intent under `stage.<opId>` (SINGLE segment: the session release pins
- *  live at `stage.session.<sid>.<c|s>` and are not operations). */
+ *  live at `stage.session.<sid>.<c|s>` and are not operations). `owner`/`actor` are the alias the
+ *  op belongs to: the boot resume reads the lifecycle head under them to decide owed-ness
+ *  across the cross-object invariant (SPEC 13.1). */
 export interface OperationIntentRef {
   opId: string;
   kind: "takeover" | "retirement";
   lifecycleUid: string;
+  owner: string;
+  actor: string;
 }
 
 /**
@@ -419,13 +423,17 @@ export async function enumerateOperationIntents(reg: LifecycleRegistry): Promise
       throw new EpEnvelopeError("internal", `the operation intent ${e.key} carries an unknown kind ${isRec(o) ? JSON.stringify(o.kind ?? null) : "(not an object)"} (closed set, SPEC 13.1)`);
     if (typeof o.lifecycleUid !== "string")
       throw new EpEnvelopeError("internal", `the operation intent ${e.key} carries no lifecycleUid (SPEC 13.1)`);
+    // The alias the op belongs to: both intent kinds (takeover/retirement) carry it; a boot
+    // resume cannot decide owed-ness without it (SPEC 13.1: the head is keyed by alias).
+    if (typeof o.owner !== "string" || o.owner.length === 0 || typeof o.actor !== "string" || o.actor.length === 0)
+      throw new EpEnvelopeError("internal", `the operation intent ${e.key} carries no owner/actor (SPEC 13.1)`);
     let uid: string;
     try {
       uid = assertLifecycleToken(o.lifecycleUid);
     } catch {
       throw new EpEnvelopeError("internal", `the operation intent ${e.key} carries a malformed lifecycleUid (SPEC 13.1)`);
     }
-    out.push({ opId, kind: o.kind, lifecycleUid: uid });
+    out.push({ opId, kind: o.kind, lifecycleUid: uid, owner: o.owner, actor: o.actor });
   }
   return out;
 }

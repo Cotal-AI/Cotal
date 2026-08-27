@@ -69,7 +69,7 @@ import { reconstructRemoteManagerServeGrant } from "./manager-contract.js";
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, remoteManagerIssuerGrants, remoteManagerRegistrationProof, type AuthorityClient } from "./authority-client.js";
 import { authorizeConnectCredential } from "./connect-reader.js";
 import { ensureRootCredential } from "./root-credential.js";
-import { observeGate, openLifecycleRegistry, type LifecycleRegistry } from "./lifecycle-registry.js";
+import { observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
 import { openAuthLedgerScannerCandidate, type AuthLedgerScanner, type LedgerScannerCandidate } from "./ledger-scanner.js";
 import { openRecordsScannerCandidate, type RecordsScanner, type RecordsScannerCandidate } from "./records-scanner.js";
 import { acquirePlaneClaim, makeDeliveryAdminPlaneOracle, scannerDeathCopy, type PlaneClaimHold, type PlaneLivenessOracle } from "./plane-claim.js";
@@ -499,17 +499,45 @@ export async function openAuthAuthorityPlane(opts: {
 
 /**
  * Boot crash-resume (SPEC 13.1): enumerate the durable operation intents and finish every
- * barrier this executor OWES — an intent is owed exactly when its gate is still FROZEN by that
- * opId (completed and lost operations leave their intent behind by design and are skipped).
- * A frozen TAKEOVER resumes through {@link resumeAgentTakeover}; session-derived descendants
- * fail loud inside the barrier until the session reconciler is wired (the #29 trigger slice).
- * A frozen RETIREMENT resumes through {@link resumeAgentRetirement} with the plane's assembled
- * {@link RetirementDeps} (#29 piece 4); its failure is equally loud and non-fatal.
+ * barrier this executor OWES: owed-ness is the CROSS-OBJECT invariant spanning the gate AND the
+ * lifecycle alias head, not the gate alone. Completed and lost operations leave their intent
+ * behind by design and are skipped:
+ *  - a TAKEOVER is complete when its gate reopened (the head epoch advanced in the same op);
+ *  - a RETIREMENT is complete when BOTH its gate terminal AND its head terminal landed.
+ * A retirement whose gate terminal landed but whose head is still `retiring` (a crash between
+ * the barrier's last two steps) is NOT complete: the head is non-current and NOT replaceable
+ * (SPEC 13.1), no surface ever advances it, and the gate-only predicate skipped it on this boot
+ * and every future boot, so the boot resumes the SAME intent through
+ * {@link resumeAgentRetirement}, whose gate-retired branch finishes the head terminal from the
+ * durable coordinates (and refuses loud on a state no real crash produces). A foreign op's
+ * containment or a successor that already replaced the retired head is never touched (the
+ * barrier's own op-pinned rules). A frozen TAKEOVER resumes through
+ * {@link resumeAgentTakeover}; session-derived descendants fail loud inside the barrier until
+ * the session reconciler is wired (the #29 trigger slice). A frozen RETIREMENT resumes through
+ * {@link resumeAgentRetirement} with the plane's assembled {@link RetirementDeps} (#29 piece 4);
+ * its failure is equally loud and non-fatal.
  */
 async function resumeOpenOperations(reg: LifecycleRegistry, evictPrincipal: EvictPrincipal, retirement: RetirementDeps, log: (line: string) => void): Promise<void> {
   for (const it of await enumerateOperationIntents(reg)) {
     const gate = await observeGate(reg, it.lifecycleUid);
-    if (gate === undefined || gate.row.state !== "frozen" || gate.row.op?.opId !== it.opId) continue;
+    // Owed by the gate: a freeze by THIS op is the barrier's live claim (the bar of every
+    // barrier). A takeover completed under this predicate reopens the gate, so its completed
+    // intent stays skipped exactly as before.
+    let owed = gate !== undefined && gate.row.state === "frozen" && gate.row.op?.opId === it.opId;
+    // #878: a retirement whose gate terminal landed by THIS op but whose head terminal did not.
+    // The head decides the completed cell: `retired` means the barrier's last step ran. A head
+    // still `retiring` under THIS op is the wedged crash window (resume: the barrier finishes
+    // the tail); a head `active` at the SAME uid (a head never goes backward: impossible state)
+    // or an absent head (a head is never deleted: impossible state) are corruption the barrier
+    // refuses loud; a foreign op's `retiring`, or a successor's `active` head at another uid,
+    // means the op completed and is never this op's touch.
+    if (!owed && it.kind === "retirement" && gate !== undefined && gate.row.state === "retired" && gate.row.op?.opId === it.opId) {
+      const head = await readLifecycleHeadForOperation(reg, it.owner, it.actor);
+      owed = head === undefined
+        || (head.mapping.state === "retiring" && head.mapping.op?.opId === it.opId)
+        || (head.mapping.state === "active" && head.mapping.lifecycleUid === it.lifecycleUid);
+    }
+    if (!owed) continue;
     if (it.kind === "retirement") {
       try {
         const r = await resumeAgentRetirement(reg, it.opId, retirement);

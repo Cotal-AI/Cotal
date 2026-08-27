@@ -370,6 +370,7 @@
     "smoke:connect-reader-acl:auth": "tsx implementations/auth/smoke/connect-reader-acl.smoke.ts",
     "smoke:shape-supervisor:auth": "tsx implementations/auth/smoke/shape-supervisor.smoke.ts",
     "smoke:barrier-plane:auth": "tsx implementations/auth/smoke/barrier-plane.smoke.ts",
+    "smoke:retirement-wedge:auth": "tsx implementations/auth/smoke/retirement-wedge.smoke.ts",
     "smoke:plane-claim:auth": "tsx implementations/auth/smoke/plane-claim.smoke.ts",
     "smoke:drain-repair:auth": "tsx implementations/auth/smoke/drain-repair.smoke.ts",
     "smoke:auth-admin:auth": "tsx implementations/auth/smoke/auth-admin.smoke.ts",

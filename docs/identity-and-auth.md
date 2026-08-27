@@ -176,6 +176,11 @@ name; **a same-name `cotal spawn` re-drives the whole teardown** and finishes it
 does not — the agent is already stopped), and the operator copy tells you to recover the stack
 (`cotal supervise`) rather than reusing the name over an unretired predecessor.
 
+An auth-service crash *inside* that retirement (after the lifecycle's gate terminal but before
+the alias head is freed) does not wedge the name: the service's next boot finishes the
+retirement from its durable operation intent before answering anything, and a retirement that
+still cannot finish stays loud in the service log with the name held.
+
 **Delegation only narrows (the envelope rule).** A user's grant is their envelope:
 everything under their owner (their CLI, every agent they spawn, every agent those
 spawn) stays within its channel lists and its capability scope. Handing a role to a

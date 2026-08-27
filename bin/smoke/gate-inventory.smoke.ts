@@ -106,6 +106,12 @@ const UNGATED: Record<string, string> = {
   // subject. It is ungated because it needs a real user-auth broker plus a real callout, not because
   // it is obsolete. Deleting it would drop a security proof for shipped code.
   "smoke:ctl-trust:live": "needs a real user-auth broker + callout; pins the LIVE ctl.delivery rail",
+  // #878's regression suite is REGISTERED but not chained: bin/smoke/ci-suites.txt is frozen by
+  // position until PR #880 lands (the shard walk is round-robin by INDEX, so an insert mid-file
+  // re-shards every later suite). Gating it here would be a wrong entry for the same reason, since
+  // it would still touch the frozen file. Gate it in smoke:ci when the freeze lifts; until then it
+  // runs by hand (`pnpm smoke:retirement-wedge:auth`) and the freeze reason is the entry.
+  "smoke:retirement-wedge:auth": "ci-suites.txt is frozen by position until PR #880; gate when the freeze lifts",
   // The bare `smoke` script — `tsx packages/core/smoke.ts`, documented in AGENTS.md as the core
   // smoke entry point, and reached by nothing. Invisible to this file until the audited set stopped
   // filtering on `smoke:`, and found by a second independent derivation rather than by this check.
