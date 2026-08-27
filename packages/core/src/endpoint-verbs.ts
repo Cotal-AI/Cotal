@@ -351,6 +351,8 @@ function parseAttributedReply(space: string, subject: string, data: Uint8Array, 
  * `bad-request`; an unparseable/mis-echoed/mis-attributed reply `internal` (a raw decode error never
  * escapes); a throwing `currentEpoch` hook `internal` and a garbled (non-integer/negative) currency
  * value `failed-precondition` (the read's own failure, never mislabeled staleness); a stale reply `expired`;
+ * a broker-refused request publish `permission-denied` (observed on the subject-scoped connection
+ * status stream, distinct from an admitted request that nobody serves);
  * NO responder `unavailable` (SPEC 13.5, the broker no-responders answer — the broker's no-responders 503 lands on a reply-to that
  * sits on THIS caller's own rail, so a manual, fully-disposed probe distinguishes it from a slow
  * responder without leaving a lingering request); a failed reply subscription `unavailable`; the
