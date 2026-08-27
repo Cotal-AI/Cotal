@@ -41,7 +41,7 @@ Code](connect-claude.md) · [OpenCode](connect-opencode.md) · [Codex](connect-c
 
 **Picking the harness at spawn.** Which connector runs a persona resolves once, everywhere:
 explicit `--agent` flag > the persona file's `agent:` frontmatter > `COTAL_DEFAULT_AGENT` > the
-product default (Claude). `COTAL_DEFAULT_AGENT` is a *default*, never an override — a persona that
+product default (Claude). `COTAL_DEFAULT_AGENT` is a *default*, never an override: a persona that
 pins its harness runs on it even when the operator's environment names another. A pin naming an
 unregistered connector fails the spawn loudly rather than silently falling back (see
 [agent files](agent-files.md)).
