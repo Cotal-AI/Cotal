@@ -31,6 +31,7 @@ import {
   inboxStream,
   taskStream,
 } from "./subjects.js";
+import { endpointSpaceStreams } from "./endpoint-binding.js";
 
 const DEFAULT_TRANSFER_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_SINK_TIMEOUT_MS = 1_000;
@@ -398,7 +399,7 @@ export function validatePersistentConsumer(space: string, stream: string, info: 
   }
 }
 
-/** Validate the complete consumer inventory for all eight streams and extract conservative checkpoints. */
+/** Validate the complete consumer inventory for every backed-up stream and extract conservative checkpoints. */
 export function validatePersistentConsumerInventory(
   space: string,
   consumersByStream: Readonly<Record<string, readonly ConsumerInfo[]>>,
@@ -407,10 +408,21 @@ export function validatePersistentConsumerInventory(
   const expectedStreams = spaceBackupInventory(space).full;
   const supplied = Object.keys(consumersByStream).sort();
   if (JSON.stringify(supplied) !== JSON.stringify([...expectedStreams].sort()))
-    throw new Error("consumer inventory must contain exactly the eight backed-up streams");
+    throw new Error("consumer inventory must contain exactly the backed-up streams");
   const suppliedStates = Object.keys(statesByStream).sort();
   if (JSON.stringify(suppliedStates) !== JSON.stringify([...expectedStreams].sort()))
-    throw new Error("stream state inventory must contain exactly the eight backed-up streams");
+    throw new Error("stream state inventory must contain exactly the backed-up streams");
+
+  // Endpoint/runtime durables need an explicit restore policy. Recreating their ACK floors could
+  // silently repeat or skip accepted work; treating them as boot-recreated infrastructure is a
+  // different product decision. Refuse the unsupported case by name instead of sending these
+  // consumers through the five message-stream shapes below or silently dropping them.
+  const endpointStreams = new Set(endpointSpaceStreams(space).all);
+  for (const stream of expectedStreams) {
+    const names = (consumersByStream[stream] ?? []).map((consumer) => consumer.name);
+    if (endpointStreams.has(stream) && names.length > 0)
+      throw new Error(`backup does not yet define restore semantics for endpoint-plane consumers on ${stream}: ${names.join(", ")}`);
+  }
 
   const checkpoints: PersistentConsumerCheckpoint[] = [];
   for (const stream of expectedStreams) {

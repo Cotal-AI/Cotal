@@ -16,6 +16,7 @@ import {
   objectStoreStream,
 } from "./subjects.js";
 import { idFromCreds } from "./identity.js";
+import { endpointSpaceStreams } from "./endpoint-binding.js";
 
 /** Connect opts for a possibly-scoped cred: an authenticator plus the per-id `inboxPrefix` a scoped
  *  cred needs (its `sub.allow` is `_INBOX_<id>.>`, so JS API replies must land there, not the default
@@ -131,6 +132,7 @@ export async function deleteSpace(opts: { servers?: string; creds?: string; spac
       // sweep of the space never sees it. Teardown is the sole STREAM.DELETE holder, so a stream
       // missing from this list is not merely un-deleted - nothing in the system can ever reap it.
       objectStoreStream(artifactBucket(opts.space)),
+      ...endpointSpaceStreams(opts.space).all,
     ];
     for (const s of streams) await jsm.streams.delete(s).catch(() => {});
   } finally {

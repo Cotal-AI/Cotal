@@ -23,9 +23,14 @@ import {
   artifactBucket,
   objectStoreStream,
 } from "./subjects.js";
+import {
+  EP_AUTH_MARKER_TTL_MS,
+  endpointSpaceStreams,
+  endpointStreamConfigs,
+} from "./endpoint-binding.js";
 
 export type SpaceBackupSelection = "full" | "registry";
-export type SpaceBackupStreamClass = "messages" | "registry" | "authorization";
+export type SpaceBackupStreamClass = "messages" | "registry" | "authorization" | "control" | "workflow";
 /** Why a stream is outside the backup artifact. `artifact` is its own class deliberately: object
  *  bytes are neither transient (they outlive a session), derived (nothing can recompute them),
  *  nor a lease. Excluding them is a RETENTION decision — pin extends lifetime, not durability —
@@ -49,13 +54,14 @@ export interface SpaceBackupInventory {
   registry: readonly string[];
 }
 
-/** The complete Cotal stream inventory at a stable backup cut. Only the eight `backedUp` streams
- * enter a full artifact; the five excluded streams are transient, derived, leases, or the artifact
+/** The complete Cotal stream inventory at a stable backup cut. Every authoritative stream enters a
+ * full artifact; excluded streams are transient, derived, leases, or the artifact
  * object store. EVERY stream a space owns must appear in one list or the other:
  * {@link validateSpaceBackupInventory} is exact set-equality, so an unenumerated stream fails
  * validation for the WHOLE space, and a missing one fails it the same way. */
 export function spaceBackupInventory(space: string): SpaceBackupInventory {
   const registry = `KV_${channelBucket(space)}`;
+  const ep = endpointSpaceStreams(space);
   const backedUp: SpaceBackupStream[] = [
     { name: registry, class: "registry" },
     { name: chatStream(space), class: "messages" },
@@ -65,6 +71,19 @@ export function spaceBackupInventory(space: string): SpaceBackupInventory {
     { name: dlvStream(space), class: "messages" },
     { name: `KV_${aclBucket(space)}`, class: "authorization" },
     { name: `KV_${membersBucket(space)}`, class: "authorization" },
+    // Endpoint authority, not merely retained traffic: these hold permanent contracts, accepted
+    // work that has no canonical successor yet, canonical facts, timers, and queued effects.
+    { name: ep.epc, class: "control" },
+    { name: ep.epj, class: "control" },
+    { name: ep.epf, class: "control" },
+    { name: ep.eptReq, class: "control" },
+    { name: ep.ept, class: "control" },
+    { name: ep.epr, class: "control" },
+    { name: ep.epw, class: "control" },
+    // NO max_age by design: the journal is the whole replay state of a durable workflow run.
+    { name: ep.wfj, class: "workflow" },
+    // Dedicated one-use/finalize/revocation authority for session credential pairs.
+    { name: ep.sessions, class: "authorization" },
   ];
   const excluded: SpaceBackupExcludedStream[] = [
     { name: `KV_${presenceBucket(space)}`, class: "transient" },
@@ -72,6 +91,9 @@ export function spaceBackupInventory(space: string): SpaceBackupInventory {
     { name: `KV_${deliveryBucket(space)}`, class: "lease" },
     { name: `KV_${managerBucket(space)}`, class: "lease" },
     { name: objectStoreStream(artifactBucket(space)), class: "artifact" },
+    // EPE classification is a deliberate durability decision still under owner review. It remains
+    // visible to exact set-equality and teardown, but is not silently assigned backup semantics here.
+    { name: ep.epe, class: "transient" },
   ];
   return {
     backedUp,
@@ -139,6 +161,9 @@ export type CanonicalBackupStreamConfig = Pick<
   | "deny_purge"
   | "sealed"
   | "consumer_limits"
+  | "allow_msg_ttl"
+  | "subject_delete_marker_ttl"
+  | "allow_msg_schedules"
 > & {
   no_ack: boolean;
   compression: typeof StoreCompression.None;
@@ -177,10 +202,11 @@ function baseConfig(name: string, subjects: string[]): CanonicalBackupStreamConf
   };
 }
 
-/** Current canonical config for one of the eight backed-up streams. Restore callers must use this
+/** Current canonical config for one backed-up stream. Restore callers must use this
  * config, not the config embedded in untrusted snapshot bytes. */
 export function canonicalBackupStreamConfig(space: string, stream: string): CanonicalBackupStreamConfig {
   const p = spacePrefix(space);
+  const ep = endpointSpaceStreams(space);
   if (stream === chatStream(space)) {
     return {
       ...baseConfig(stream, [`${p}.chat.>`]),
@@ -216,6 +242,34 @@ export function canonicalBackupStreamConfig(space: string, stream: string): Cano
         allow_rollup_hdrs: true,
       };
     }
+  }
+  const endpoint = endpointStreamConfigs(space).find((config) => config.name === stream);
+  if (endpoint && stream !== ep.epe) {
+    const config = { ...baseConfig(stream, endpoint.subjects), ...endpoint } as CanonicalBackupStreamConfig;
+    config.compression = StoreCompression.None;
+    return config;
+  }
+  if (stream === ep.epc) {
+    return {
+      ...baseConfig(stream, [`${p}.epc.>`]),
+      max_msgs_per_subject: 1,
+      discard: DiscardPolicy.New,
+      allow_direct: true,
+      discard_new_per_subject: true,
+      deny_delete: true,
+      deny_purge: true,
+    };
+  }
+  if (stream === ep.sessions) {
+    const bucket = ep.sessions.slice("KV_".length);
+    return {
+      ...baseConfig(stream, [`$KV.${bucket}.>`]),
+      max_msgs_per_subject: 1,
+      discard: DiscardPolicy.New,
+      allow_msg_ttl: true,
+      subject_delete_marker_ttl: nanos(EP_AUTH_MARKER_TTL_MS),
+      allow_rollup_hdrs: true,
+    };
   }
   throw new Error(`stream ${JSON.stringify(stream)} is not a backed-up stream for space ${JSON.stringify(space)}`);
 }
@@ -267,6 +321,7 @@ export function validateCanonicalBackupStreamConfig(
   for (const [key, expectedValue] of Object.entries(expected))
     comparable[key] = actual[key] === undefined ? expectedValue : actual[key];
   for (const [key, expectedValue] of Object.entries(INERT_CONFIG_DEFAULTS)) {
+    if (key in expected) continue;
     const actualValue = actual[key];
     comparable[key] = actualValue === undefined || actualValue === null ? expectedValue : actualValue;
   }
@@ -279,7 +334,7 @@ export function validateCanonicalBackupStreamConfig(
     Object.entries(comparable.metadata as Record<string, unknown>)
       .every(([key, value]) => key.startsWith("_nats.") && typeof value === "string")
   ) comparable.metadata = {};
-  const target: Record<string, unknown> = { ...expected, ...INERT_CONFIG_DEFAULTS };
+  const target: Record<string, unknown> = { ...INERT_CONFIG_DEFAULTS, ...expected };
   if (JSON.stringify(normalize(comparable)) !== JSON.stringify(normalize(target))) {
     const drift = Object.keys(target).filter(
       (key) => JSON.stringify(normalize(comparable[key])) !== JSON.stringify(normalize(target[key])),

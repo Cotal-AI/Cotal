@@ -333,10 +333,12 @@ not restarted implicitly. Artifact destinations must not overlap the preserved s
 attempt tree. Restore artifacts and targets likewise cannot nest inside or contain each other, the
 preserved source, or the maintenance attempt tree.
 
-`full` is the default and indivisible: channel registry, CHAT/DM/TASK/INBOX/DLV, ACL, MEMBERS, and
-validated durable checkpoints. `registry` is the sole partial artifact. Presence, derived membership
-feed, leases, native ephemeral/history consumers, credentials, keys, tokens, owner secrets, and actor
-ledger files are excluded. Artifacts are exclusively created `0700`; snapshot/checkpoint files and
+`full` is the default and indivisible: channel registry, CHAT/DM/TASK/INBOX/DLV, ACL, MEMBERS,
+endpoint contracts, submissions, canonical facts, timer requests/schedules, record-write ingress,
+queued endpoint work, workflow step journals, session-ledger authority, and validated durable
+checkpoints. `registry` is the sole partial artifact. Presence, derived membership feed, endpoint
+progress telemetry, leases, native ephemeral/history consumers, credentials, keys, tokens, owner
+secrets, and actor ledger files are excluded. Artifacts are exclusively created `0700`; snapshot/checkpoint files and
 the manifest are `0600`; `manifest.json` is written last with exact sizes and SHA-256 values. The
 directory is trusted operator input: hashes detect corruption, not malicious rewriting.
 

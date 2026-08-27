@@ -25,6 +25,7 @@ import {
   principalKey,
   restoreProfilePermissions,
   spaceBackupInventory,
+  endpointSpaceStreams,
   taskDurableConfig,
   taskStream,
   validateCanonicalBackupStreamConfig,
@@ -37,11 +38,20 @@ const space = "backup_smoke";
 const connId = "UAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const inventory = spaceBackupInventory(space);
 
-assert.equal(inventory.full.length, 8);
-// 5 excluded, not 4: the artifact object store joined them. It is excluded because pin extends
+assert.equal(inventory.full.length, 17);
+// 6 excluded, not 5: EPE is accounted for while its backup durability classification is under
+// owner review. The artifact object store is excluded because pin extends
 // LIFETIME, not durability - artifact bytes are transferable, not records. Its own `artifact`
 // class exists so this line cannot be read as "derived, therefore recomputable".
-assert.equal(inventory.excluded.length, 5);
+assert.equal(inventory.excluded.length, 6);
+const endpoint = endpointSpaceStreams(space);
+assert.deepEqual(
+  inventory.backedUp.filter((stream) => stream.class === "control").map((stream) => stream.name),
+  [endpoint.epc, endpoint.epj, endpoint.epf, endpoint.eptReq, endpoint.ept, endpoint.epr, endpoint.epw],
+);
+assert.ok(inventory.backedUp.some((stream) => stream.name === endpoint.wfj && stream.class === "workflow"));
+assert.ok(inventory.backedUp.some((stream) => stream.name === endpoint.sessions && stream.class === "authorization"));
+assert.ok(inventory.excluded.some((stream) => stream.name === endpoint.epe && stream.class === "transient"));
 // Comparator mechanics ONLY: the list below is synthesized from the inventory itself, so this line
 // can never fail for a family the inventory lost or never knew. That is the #643 circularity; the claim
 // it used to carry (that the inventory agrees with a real broker) is proved by the GATED live
@@ -119,6 +129,18 @@ const statesByStream = Object.fromEntries(inventory.full.map((stream) => [stream
   last_seq: 20,
   consumer_count: byStream[stream].length,
 }]));
+const endpointConsumer = consumer(endpoint.epj, "canon_manager", {
+  ack_policy: "explicit" as ConsumerConfig["ack_policy"],
+  filter_subject: `cotal.${space}.epj.manager.>`,
+});
+assert.throws(
+  () => validatePersistentConsumerInventory(
+    space,
+    { ...byStream, [endpoint.epj]: [endpointConsumer] },
+    { ...statesByStream, [endpoint.epj]: { ...statesByStream[endpoint.epj], consumer_count: 1 } },
+  ),
+  new RegExp(`restore semantics for endpoint-plane consumers on ${endpoint.epj}.*canon_manager`),
+);
 const checkpoints = validatePersistentConsumerInventory(space, byStream, statesByStream);
 assert.equal(checkpoints.length, 5);
 const dmCheckpoint = checkpoints.find((checkpoint) => checkpoint.name.startsWith("dm_"))!;

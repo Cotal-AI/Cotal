@@ -77,7 +77,7 @@ import {
   type EpCapability,
 } from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
-import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, epjStreamName, epfStreamName, epeStreamName, eptReqStreamName, eprStreamName, eptStreamName, epwStreamName, wfjStreamName } from "./endpoint-binding.js";
+import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, epcStreamName, endpointSpaceStreams } from "./endpoint-binding.js";
 import { epsSubject, epCallerReplyFilter, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE } from "./endpoint-subjects.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix } from "./lifecycle-state.js";
@@ -1545,7 +1545,7 @@ function channelPurgerPermissions(space: string, pr: MintPrincipal): Record<stri
  *  face-b tamper verb). `down -f` is multi-step: `connectProbe` (presence-watch + channel-registry read)
  *  → invoke the manager's `ps` + any-mode `despawn` over the ep rails to politely stop the managed
  *  agents → `deleteChannels`
- *  (channel-registry key delete + CHAT purge) → `deleteSpace` (STREAM.DELETE all 13 space streams/buckets).
+ *  (channel-registry key delete + CHAT purge) → `deleteSpace` (STREAM.DELETE every enumerated space stream/bucket).
  *  So it reads state, CALLS admin control, deletes channels, and deletes streams — but NEVER reads a
  *  DM/DLV body, posts chat, or forges. Isolated here so no standing operator/provisioner/supervisor cred
  *  can delete a stream; a leaked teardown can wipe a space you own + stop its agents (that IS its job),
@@ -1557,8 +1557,9 @@ function teardownPermissions(space: string, pr: MintPrincipal): Record<string, u
   const ep = instrumentEpRows(space, pr, "admin");
   const CHAT = chatStream(space);
   const PKV = `KV_${presenceBucket(space)}`, CHKV = `KV_${channelBucket(space)}`;
-  // deleteSpace() deletes EVERY stream + KV bucket setup creates (5 streams + 7 KV buckets + the
-  // artifact object store = 13); each needs INFO (jsm existence) + DELETE. This is the ONLY cred that
+  const endpointStreams = endpointSpaceStreams(space).all;
+  // deleteSpace() deletes EVERY enumerated stream + KV bucket setup creates; each needs INFO
+  // (jsm existence) + DELETE. This is the ONLY cred that
   // holds STREAM.DELETE (face-b isolated here). This list and deleteSpace()'s own array must agree:
   // a stream in one and not the other is either an undeletable leak or a grant for nothing.
   const del = [
@@ -1566,6 +1567,7 @@ function teardownPermissions(space: string, pr: MintPrincipal): Record<string, u
     PKV, CHKV, `KV_${membersBucket(space)}`, `KV_${aclBucket(space)}`,
     `KV_${membershipBucket(space)}`, `KV_${deliveryBucket(space)}`, `KV_${managerBucket(space)}`,
     objectStoreStream(artifactBucket(space)),
+    ...endpointStreams,
   ].flatMap((s) => [`$JS.API.STREAM.INFO.${s}`, `$JS.API.STREAM.DELETE.${s}`]);
   return {
     pub: {
@@ -1870,7 +1872,7 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // scoped `session-ledger` cred).
   const buckets = [
     presenceBucket, channelBucket, membersBucket, aclBucket, membershipBucket, deliveryBucket, managerBucket,
-    recordsBucket, epAuthBucket, sessionsBucket,
+    recordsBucket, epAuthBucket,
   ].map((b) => `KV_${b(space)}`);
   // STREAM.CREATE + INFO for each (idempotent setup at `cotal up`; CREATE is create-if-matching, INFO covers
   // the client's existence checks). NO DELETE/PURGE — provisioning never tears a stream down.
@@ -1887,7 +1889,7 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // for exactly one reason — `createEndpointStreams` creates it, so a provisioner without its
   // CREATE/INFO rows fails the ensure. Create-or-verify only; the provisioner appends nothing (a
   // run's entries ride the per-run driver grant, which is minted per run and never space-wide).
-  const endpointStreams = [epjStreamName, epfStreamName, epeStreamName, eptReqStreamName, eprStreamName, eptStreamName, epwStreamName, wfjStreamName].map((f) => f(space));
+  const endpointStreams = endpointSpaceStreams(space).all;
   // The artifact Object Store joins the list: `setupSpaceStreams` creates it, and under auth mode the
   // provisioner is the cred doing that creating. Its backing stream is `OBJ_<bucket>` - named
   // explicitly, because `$O.<bucket>.>` is outside the `cotal.<space>.>` grammar and no space-prefix
@@ -1896,7 +1898,7 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // object-store client reads by creating an ephemeral PUSH consumer with a caller-chosen
   // `deliver_subject`, so a CONSUMER.CREATE here would be an exporter of every artifact in the space.
   const OBJ = objectStoreStream(artifactBucket(space));
-  const streamSetup = [CHAT, DM, TASK, INBOX, DLV, epcStreamName(space), OBJ, ...endpointStreams, ...buckets].flatMap((s) => [
+  const streamSetup = [CHAT, DM, TASK, INBOX, DLV, OBJ, ...endpointStreams, ...buckets].flatMap((s) => [
     `$JS.API.STREAM.CREATE.${s}`,
     `$JS.API.STREAM.INFO.${s}`,
   ]);

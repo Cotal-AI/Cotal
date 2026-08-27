@@ -29,6 +29,8 @@ import {
   dlvStream,
   isReachable,
   setupSpaceStreams,
+  spaceBackupInventory,
+  validateCanonicalBackupStreamConfig,
   validateSpaceBackupInventory,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
@@ -93,6 +95,22 @@ try {
   // broker's list still names it, so the validator throws `unexpected` here.
   const equality = await validateAgainstBroker();
   check("the broker's own stream set equals the backup inventory exactly", equality === "", equality);
+
+  // A name in `backedUp` is not enough: restore rebuilds each stream from the CURRENT canonical
+  // config rather than trusting snapshot metadata. Grade every backed-up config against the stream
+  // setup actually created, so a newly enumerated stream cannot produce an artifact that restore
+  // later refuses or recreates with a different authority shape.
+  let configError = "";
+  const configNc = await connect({ servers });
+  try {
+    const configJsm = await jetstreamManager(configNc);
+    for (const stream of spaceBackupInventory(SPACE).full) {
+      const actual = (await configJsm.streams.info(stream)).config;
+      try { validateCanonicalBackupStreamConfig(SPACE, stream, actual); }
+      catch (e) { configError = `${stream}: ${(e as Error).message}`; break; }
+    }
+  } finally { await configNc.close(); }
+  check("every backed-up stream has the canonical config restore will require", configError === "", configError);
 
   // The named pair is the ONLY tolerance: prove the subtraction subtracts exactly the gap and
   // nothing more, so the equality above cannot be quietly widened by a rename or a fourth store.

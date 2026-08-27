@@ -54,6 +54,27 @@ export function epcStreamName(space: string): string { return `EPC_${token(space
  *  fact. It sits beside the §13 decision-fact journal, never on top of it. */
 export function wfjStreamName(space: string): string { return `WFJ_${token(space)}`; }
 
+/** Every stream owned by the endpoint + workflow/session planes that
+ * {@link createEndpointStreams} creates or ensures. This is the shared name inventory for setup,
+ * grants, backup classification, and teardown. Authority records/auth remain outside it until the
+ * separately tracked inventory/reap gap is resolved. */
+export function endpointSpaceStreams(space: string) {
+  const epj = epjStreamName(space);
+  const epf = epfStreamName(space);
+  const epe = epeStreamName(space);
+  const eptReq = eptReqStreamName(space);
+  const epr = eprStreamName(space);
+  const ept = eptStreamName(space);
+  const epw = epwStreamName(space);
+  const wfj = wfjStreamName(space);
+  const epc = epcStreamName(space);
+  const sessions = `KV_${sessionsBucket(space)}`;
+  return {
+    epj, epf, epe, eptReq, epr, ept, epw, wfj, epc, sessions,
+    all: [epj, epf, epe, eptReq, epr, ept, epw, wfj, epc, sessions] as const,
+  } as const;
+}
+
 /**
  * The ONE subject a run's journal entries append to.
  *
@@ -164,6 +185,84 @@ export interface EndpointStreamOptions {
   timerMaxAgeMs?: number;
 }
 
+/** Canonical configs for the eight ordinary endpoint/runtime streams. Setup and backup restore both
+ * consume these definitions; EPC and the sessions KV keep their specialized create/verify paths. */
+export type EndpointStreamConfig = Partial<StreamConfig> & Pick<StreamConfig, "name" | "subjects">;
+
+export function endpointStreamConfigs(space: string, opts: EndpointStreamOptions = {}): EndpointStreamConfig[] {
+  assertFactRetentionFloor(opts.factMaxAgeMs, {
+    horizonMs: opts.idempotencyHorizonMs ?? IDEMPOTENCY_HORIZON_MS_DEFAULT,
+    ...(opts.resultRetentionMs !== undefined ? { resultRetentionMs: opts.resultRetentionMs } : {}),
+    ...(opts.receiptRetentionMs !== undefined ? { receiptRetentionMs: opts.receiptRetentionMs } : {}),
+  });
+  const p = spacePrefix(space);
+  const streams = endpointSpaceStreams(space);
+  return [
+    {
+      name: streams.epj,
+      subjects: [`${p}.epj.>`],
+      retention: RetentionPolicy.Limits,
+      storage: StorageType.File,
+      max_age: nanos(opts.submissionMaxAgeMs ?? EP_SUBMISSION_MAX_AGE_MS),
+      duplicate_window: nanos(EPJ_DUPLICATE_WINDOW_MS),
+    },
+    {
+      name: streams.epf,
+      subjects: [`${p}.epf.>`],
+      retention: RetentionPolicy.Limits,
+      storage: StorageType.File,
+      allow_direct: true,
+      ...(opts.factMaxAgeMs ? { max_age: nanos(opts.factMaxAgeMs) } : {}),
+    },
+    {
+      name: streams.epe,
+      subjects: [`${p}.epe.>`],
+      retention: RetentionPolicy.Limits,
+      storage: StorageType.File,
+      max_age: nanos(opts.eventMaxAgeMs ?? EP_EVENT_MAX_AGE_MS),
+    },
+    {
+      name: streams.eptReq,
+      subjects: [`${p}.ept.*.*.*.*.schedule`],
+      retention: RetentionPolicy.Limits,
+      storage: StorageType.File,
+      max_age: nanos(opts.ingressMaxAgeMs ?? EP_INGRESS_MAX_AGE_MS),
+    },
+    {
+      name: streams.epr,
+      subjects: [`${p}.epr.>`],
+      retention: RetentionPolicy.Limits,
+      storage: StorageType.File,
+      max_age: nanos(opts.ingressMaxAgeMs ?? EP_INGRESS_MAX_AGE_MS),
+    },
+    {
+      name: streams.ept,
+      subjects: [`${p}.ept.*.*.*.*.armed`, `${p}.ept.*.*.*.*.fire`],
+      retention: RetentionPolicy.Limits,
+      storage: StorageType.File,
+      allow_msg_schedules: true,
+      // NATS enables rollup headers for scheduled-message replacement; make that active shape
+      // explicit so backup restore recreates the same authoritative timer semantics.
+      allow_rollup_hdrs: true,
+      max_age: nanos(opts.timerMaxAgeMs ?? EP_TIMER_MAX_AGE_MS),
+    },
+    {
+      name: streams.epw,
+      subjects: [`${p}.epw.>`],
+      retention: RetentionPolicy.Workqueue,
+      storage: StorageType.File,
+      allow_direct: false,
+    },
+    {
+      name: streams.wfj,
+      subjects: [`${p}.wfj.*`],
+      retention: RetentionPolicy.Limits,
+      storage: StorageType.File,
+      allow_direct: false,
+    },
+  ];
+}
+
 /**
  * The §13.12 RETENTION FLOOR on decision facts, enforced at the only site that exists.
  *
@@ -233,83 +332,33 @@ export async function createEndpointStreams(
   space: string,
   opts: EndpointStreamOptions = {},
 ): Promise<void> {
-  const p = spacePrefix(space);
   // Refused BEFORE the first stream exists, so a breaching config never leaves a half-built space.
-  assertFactRetentionFloor(opts.factMaxAgeMs, {
-    horizonMs: opts.idempotencyHorizonMs ?? IDEMPOTENCY_HORIZON_MS_DEFAULT,
-    ...(opts.resultRetentionMs !== undefined ? { resultRetentionMs: opts.resultRetentionMs } : {}),
-    ...(opts.receiptRetentionMs !== undefined ? { receiptRetentionMs: opts.receiptRetentionMs } : {}),
-  });
+  const configs = endpointStreamConfigs(space, opts);
   // EPJ — raw submissions, untrusted, at-least-once. NO allow_direct (nothing reads it but the
   // canonicalizer's durable and harness MSG.GET); duplicate window pinned to the server minimum.
-  await jsm.streams.add({
-    name: epjStreamName(space),
-    subjects: [`${p}.epj.>`],
-    retention: RetentionPolicy.Limits,
-    storage: StorageType.File,
-    max_age: nanos(opts.submissionMaxAgeMs ?? EP_SUBMISSION_MAX_AGE_MS),
-    duplicate_window: nanos(EPJ_DUPLICATE_WINDOW_MS),
-  });
+  await jsm.streams.add(configs[0]);
   // EPF — canonical facts; acceptance is create-only CAS; allow_direct serves the §13.9
   // last-by-subject fact reads (trusted principals only; callers read via the mediator).
-  await jsm.streams.add({
-    name: epfStreamName(space),
-    subjects: [`${p}.epf.>`],
-    retention: RetentionPolicy.Limits,
-    storage: StorageType.File,
-    allow_direct: true,
-    ...(opts.factMaxAgeMs ? { max_age: nanos(opts.factMaxAgeMs) } : {}),
-  });
+  await jsm.streams.add(configs[1]);
   // EPE — events/progress.
-  await jsm.streams.add({
-    name: epeStreamName(space),
-    subjects: [`${p}.epe.>`],
-    retention: RetentionPolicy.Limits,
-    storage: StorageType.File,
-    max_age: nanos(opts.eventMaxAgeMs ?? EP_EVENT_MAX_AGE_MS),
-  });
+  await jsm.streams.add(configs[2]);
   // EPT_REQ — schedule REQUESTS. Message schedules DISABLED (the default; asserted by the
   // smoke): a client-set scheduling header here cannot arm anything, which is what closes the
   // ADR-51 confused deputy — only the timer writer's `.armed` publish (on EPT) schedules.
-  await jsm.streams.add({
-    name: eptReqStreamName(space),
-    subjects: [`${p}.ept.*.*.*.*.schedule`],
-    retention: RetentionPolicy.Limits,
-    storage: StorageType.File,
-    max_age: nanos(opts.ingressMaxAgeMs ?? EP_INGRESS_MAX_AGE_MS),
-  });
+  await jsm.streams.add(configs[3]);
   // EPR — record-write ingress, consumed only by the per-kind record writers.
-  await jsm.streams.add({
-    name: eprStreamName(space),
-    subjects: [`${p}.epr.>`],
-    retention: RetentionPolicy.Limits,
-    storage: StorageType.File,
-    max_age: nanos(opts.ingressMaxAgeMs ?? EP_INGRESS_MAX_AGE_MS),
-  });
+  await jsm.streams.add(configs[4]);
   // EPT — authoritative schedules (.armed) + fires (.fire). AllowMsgSchedules; each schedule
   // targets its sibling `.fire` (ADR-51 forbids target = publish subject), and both patterns
   // live on THIS stream because ADR-51 requires the target be captured by the same stream.
-  await jsm.streams.add({
-    name: eptStreamName(space),
-    subjects: [`${p}.ept.*.*.*.*.armed`, `${p}.ept.*.*.*.*.fire`],
-    retention: RetentionPolicy.Limits,
-    storage: StorageType.File,
-    allow_msg_schedules: true,
-    max_age: nanos(opts.timerMaxAgeMs ?? EP_TIMER_MAX_AGE_MS),
-  });
+  await jsm.streams.add(configs[5]);
   // EPW — work pools, one item per subject. NO allow_direct: the §13.6 reconciliation probe
   // (an acked item leaves the WorkQueue, an in-flight one remains readable — exactly the
   // predicate) is a FENCING read that gates the re-enqueue decision, so it goes leader-served
   // STREAM.MSG.GET (§13.9 "Work-pool reconciliation probe"), never a follower-servable Direct Get whose stale miss
   // would re-arm settled work. Nothing else reads EPW: the pool workers drain it via the
   // WorkQueue consumer (CONSUMER.MSG.NEXT), not by subject read.
-  await jsm.streams.add({
-    name: epwStreamName(space),
-    subjects: [`${p}.epw.>`],
-    retention: RetentionPolicy.Workqueue,
-    storage: StorageType.File,
-    allow_direct: false,
-  });
+  await jsm.streams.add(configs[6]);
   // WFJ — the workflow step journal, one subject per run (see wfjSubject: the activation barrier
   // is per-subject, so the subject is the run). NO max_age: a run's journal must outlive any
   // retention window a control-surface plane wants, because a run that sleeps for a month resumes
@@ -317,13 +366,7 @@ export async function createEndpointStreams(
   // re-perform effects it already performed. Retirement is by subject purge, deliberately.
   // NO allow_direct: a resume must read its own predecessor's last appends, and Direct Get is
   // follower-servable — a stale miss there reads as "this step never ran".
-  await jsm.streams.add({
-    name: wfjStreamName(space),
-    subjects: [`${p}.wfj.*`],
-    retention: RetentionPolicy.Limits,
-    storage: StorageType.File,
-    allow_direct: false,
-  });
+  await jsm.streams.add(configs[7]);
   await ensureContractStore(jsm, space);
   await ensureAuthorityStores(jsm, kvm, space);
   // P2 item 6: the DEDICATED §13.6 session ledger bucket. The eps byte SUBJECTS stay core-only and
