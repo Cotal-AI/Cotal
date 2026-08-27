@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
 
 const smokeSandboxAnchor: unique symbol = Symbol("smokeSandboxAnchor");
 
@@ -23,6 +24,38 @@ export interface SmokeSandboxAnchor {
 export interface SmokeCommandOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+}
+
+const downOptions: ParseArgsOptionsConfig = {
+  file: { type: "string", short: "f" },
+  run: { type: "string" },
+  space: { type: "string" },
+  "dry-run": { type: "boolean" },
+  "preserve-state": { type: "boolean" },
+  "store-dir": { type: "string" },
+};
+
+interface ParsedSmokeDown {
+  readonly positionals: string[];
+  readonly values: Record<string, string | boolean | undefined>;
+}
+
+function parseSmokeDown(args: readonly string[]): ParsedSmokeDown | undefined {
+  if (args[0] !== "down") return undefined;
+  try {
+    const { positionals, values } = parseArgs({
+      args: args.slice(1),
+      options: downOptions,
+      allowPositionals: true,
+      strict: true,
+    });
+    return { positionals, values: values as ParsedSmokeDown["values"] };
+  } catch (error) {
+    throw new Error(
+      `smoke sandbox refused cotal down: cannot classify arguments ${JSON.stringify(args)} with the strict down parser`,
+      { cause: error },
+    );
+  }
 }
 
 function exactAbsolute(name: string, value: string | undefined): string {
@@ -87,8 +120,9 @@ function assertRecordedSandboxDown(
   anchor: SmokeSandboxAnchor | undefined,
   args: readonly string[],
   options: SmokeCommandOptions,
+  parsed = parseSmokeDown(args),
 ): void {
-  if (args[0] !== "down") return;
+  if (!parsed) return;
   if (!anchor) {
     throw new Error(
       `smoke sandbox refused cotal down: observed root ${JSON.stringify(options.cwd ?? "<missing>")}, ` +
@@ -126,9 +160,12 @@ export function assertSmokeSandboxDown(
   args: readonly string[],
   options: SmokeCommandOptions,
 ): void {
-  if (args[0] === "down" && args[1] === "web")
+  const parsed = parseSmokeDown(args);
+  if (!parsed) return;
+  const requested = [...new Set(parsed.positionals)];
+  if (requested.includes("web"))
     throw new Error("target-addressed `down web` requires assertSmokeSandboxTargetDown");
-  assertRecordedSandboxDown(anchor, args, options);
+  assertRecordedSandboxDown(anchor, args, options, parsed);
 }
 
 /**
@@ -143,11 +180,14 @@ export function assertSmokeSandboxTargetDown(
   options: SmokeCommandOptions,
   space: string,
 ): void {
-  assertRecordedSandboxDown(anchor, args, options);
-  if (args[0] !== "down") return;
+  const parsed = parseSmokeDown(args);
+  if (!parsed) return;
+  assertRecordedSandboxDown(anchor, args, options, parsed);
+  const requested = [...new Set(parsed.positionals)];
+  if (requested.length !== 1 || requested[0] !== "web")
+    throw new Error("smoke sandbox target guard requires exactly the target-addressed component `down web`");
   if (!anchor) throw new Error("smoke sandbox target guard requires a recorded anchor");
-  const flag = args.indexOf("--space");
-  if (flag < 0 || args[flag + 1] !== space)
+  if (parsed.values.space !== space)
     throw new Error(`smoke sandbox target down must name --space ${JSON.stringify(space)} explicitly`);
 
   const expected = anchor[smokeSandboxAnchor];

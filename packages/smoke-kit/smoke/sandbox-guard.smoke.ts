@@ -23,6 +23,7 @@ try {
   assert.throws(
     () => assertSmokeSandboxDown(anchor, ["down"], { cwd: foreign, env }),
     /observed root.*operator-checkout.*expected root.*root.*identity verdicts root=foreign/,
+    "foreign sandbox root is refused by identity",
   );
   assert.throws(
     () => assertSmokeSandboxDown(anchor, ["down"], { cwd: root, env: { ...env, COTAL_HOME: foreignHome } }),
@@ -59,6 +60,8 @@ try {
   writeFileSync(meshFile, JSON.stringify({ space, root }));
   assert.doesNotThrow(() =>
     assertSmokeSandboxTargetDown(anchor, ["down", "web", "--space", space], { cwd: root, env }, space));
+  assert.doesNotThrow(() =>
+    assertSmokeSandboxTargetDown(anchor, ["down", "--space", space, "web"], { cwd: root, env }, space));
   writeFileSync(meshFile, JSON.stringify({ space, root: foreign }));
   assert.throws(
     () => assertSmokeSandboxTargetDown(anchor, ["down", "web", "--space", space], { cwd: root, env }, space),
@@ -71,6 +74,17 @@ try {
   assert.throws(
     () => assertSmokeSandboxDown(anchor, ["down", "web", "--space", space], { cwd: root, env }),
     /requires assertSmokeSandboxTargetDown/,
+    "generic guard refuses target-addressed down web",
+  );
+  assert.throws(
+    () => assertSmokeSandboxDown(anchor, ["down", "--space", space, "web"], { cwd: root, env }),
+    /requires assertSmokeSandboxTargetDown/,
+    "generic guard refuses flag-before-target down web",
+  );
+  assert.throws(
+    () => assertSmokeSandboxDown(anchor, ["down", "--unrecognized", "web"], { cwd: root, env }),
+    /cannot classify arguments.*strict down parser/,
+    "generic guard fails closed when down arguments cannot be classified",
   );
 
   const rootPackage = JSON.parse(readFileSync(join(repo, "package.json"), "utf8")) as {
