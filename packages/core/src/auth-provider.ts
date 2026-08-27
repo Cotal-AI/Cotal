@@ -112,6 +112,12 @@ export interface AuthProvider extends Extension {
     scope: string[];
     allowSubscribe: string[];
     allowPublish: string[];
+    /** Recipient owners this agent may DM. OMITTED means `["*"]` — the historical wildcard — so a
+     *  caller that does not know about this field grants exactly what it always did. An explicitly
+     *  EMPTY list means no DM send at all and is a DIFFERENT value from omitting it. Attenuated
+     *  against the spawner's own list at both managed-row boundaries, absent-defaulted on both
+     *  sides, so a child cannot widen its DM reach by simply not naming one. */
+    allowDmOwners?: string[];
     role?: string;
     /** The spawning principal (`<owner>.<actor>` dot-form) — the grant's audit link. */
     parent?: string;

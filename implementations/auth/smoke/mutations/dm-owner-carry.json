@@ -1,0 +1,92 @@
+{
+  "suite": "implementations/auth/smoke/dm-owner-carry.smoke.ts",
+  "guard": "a stored row's allowDmOwners survives the resolver into the mint, absent stays absent and empty stays empty, and no child may out-reach its spawner's DM list while an unscoped spawner constrains nothing",
+  "command": "pnpm smoke:dm-owner-carry",
+  "completionMarker": "DM-OWNER-CARRY SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/dm-owner-carry.json",
+  "why": [
+    "This config exists because the CORE suite for this feature could not see any of the code below.",
+    "Measured, not argued: an unconditional throw at the top of implementations/auth/src/ledger.ts",
+    "left `pnpm smoke:dm-scope:auth` reporting 12 passed, 0 failed, rc=0. It imports core and never",
+    "loads the auth package at all. So a mutant aimed at the carry there was UNREACHABLE, not",
+    "survived — and an unreachable mutant is not a weak test, it is no test. E0 below makes that",
+    "check permanent for THIS suite, because a coverage claim that was true when written is exactly",
+    "the kind that rots silently: the day someone refactors the imports, E0 goes green and says so.",
+    "",
+    "E0 IS THE INSTRUMENT CONTROL AND MUST RUN FIRST. Every verdict under it is void if it fails:",
+    "a mutation proves the suite depends on the code only once the file is known to be loaded.",
+    "",
+    "E1/E2 are the carry. `allowDmOwners` is the NEWEST of the three ACL fields, so its failure mode",
+    "was never a wrong line but a MISSING one — a resolver carrying read and post and omitting DM",
+    "reverts that principal to the historical wildcard, turning a stored 'no DM at all' into 'DM",
+    "anyone' with core byte-unchanged. E2 is the ordinary `?.length` empty-guard idiom, which is the",
+    "shape a hand-written carry actually acquires and which leaves the ABSENT case correct.",
+    "",
+    "E3/E4/E5 are delegation. E3 deletes the envelope check entirely. E4 is subtler and is the one a",
+    "reviewer would wave through: it drops only the ABSENT-child default, so a child that OMITS the",
+    "field slips past while every explicit widening is still caught — and omission is the widest ask",
+    "there is. E5 goes the other way and breaks upgrade safety, refusing children of an unscoped",
+    "parent; every security cell stays green under it and only the upgrade-direction cells object.",
+    "",
+    "SPECIFIER BOUNDARY. The suite imports ../src/ledger.js directly and CALLS those functions, so a",
+    "mutation to that file is a mutation to the code under test. Its structural cells additionally",
+    "read the same file from disk; those alone could pass without loading it, which is precisely why",
+    "the behavioural cells and E0 carry the weight."
+  ],
+  "mutations": [
+    {
+      "name": "E0 LOAD PROOF — the suite must actually load ledger.ts",
+      "file": "implementations/auth/src/ledger.ts",
+      "find": "export interface ActorRow {",
+      "replace": "throw new Error(\"LOAD PROBE: ledger.ts was imported\");\nexport interface ActorRow {",
+      "expectRed": "LOAD PROBE: ledger.ts was imported",
+      "cell": "(instrument control — not a behavioural cell)",
+      "note": "If this does NOT kill the suite, every other verdict in this file is meaningless: the mutated file was never loaded. This is the exact check that reclassified the core suite's E5 from 'survived' to 'unreachable'."
+    },
+    {
+      "name": "E1 the carry drops the field entirely",
+      "file": "implementations/auth/src/ledger.ts",
+      "find": "    ...(row.allowDmOwners ? { allowDmOwners: row.allowDmOwners } : {}),",
+      "replace": "",
+      "expectRed": "a SCOPED row's list reaches the mint opts",
+      "cell": "a SCOPED row's list reaches the mint opts",
+      "note": "The whole-feature revert: every principal silently returns to the historical wildcard. Core is byte-unchanged, so no core cell moves."
+    },
+    {
+      "name": "E2 the `?.length` empty-guard idiom in the carry",
+      "file": "implementations/auth/src/ledger.ts",
+      "find": "    ...(row.allowDmOwners ? { allowDmOwners: row.allowDmOwners } : {}),",
+      "replace": "    ...(row.allowDmOwners?.length ? { allowDmOwners: row.allowDmOwners } : {}),",
+      "expectRed": "an EMPTY row carries [] through — it is NOT dropped as falsy",
+      "cell": "an EMPTY row carries [] through — it is NOT dropped as falsy",
+      "note": "Leaves ABSENT correct, so the upgrade-path cells stay green; only a stored EMPTY row is silently re-widened to DM-anyone. The likeliest hand-written regression on this line."
+    },
+    {
+      "name": "E3 delegation forgets the field exists",
+      "file": "implementations/auth/src/ledger.ts",
+      "find": "    const overDm = parentDm.includes(\"*\") ? [] : childDm.filter((o) => !parentDm.includes(o));",
+      "replace": "    const overDm: string[] = [];",
+      "expectRed": "a child adding an owner the parent lacks is REFUSED",
+      "cell": "a child adding an owner the parent lacks is REFUSED",
+      "note": "The pre-fix state: any agent holding `spawn` escapes its own DM policy in one hop."
+    },
+    {
+      "name": "E4 the ABSENT-CHILD default is dropped",
+      "file": "implementations/auth/src/ledger.ts",
+      "find": "    const childDm = child.allowDmOwners ?? [\"*\"];",
+      "replace": "    const childDm = child.allowDmOwners ?? [];",
+      "expectRed": "a child that OMITS the field under a scoped parent is REFUSED (absent means \"*\")",
+      "cell": "a child that OMITS the field under a scoped parent is REFUSED (absent means \"*\")",
+      "note": "Every EXPLICIT widening is still caught, so E3's cell stays green. Only omission slips through — and omission is the widest ask there is, while reading in a diff as though it asks for nothing."
+    },
+    {
+      "name": "E5 the ABSENT-PARENT default is dropped (upgrade safety)",
+      "file": "implementations/auth/src/ledger.ts",
+      "find": "    const parentDm = parent.allowDmOwners ?? [\"*\"];",
+      "replace": "    const parentDm = parent.allowDmOwners ?? [];",
+      "expectRed": "a child of an ABSENT-list parent may hold any list",
+      "cell": "a child of an ABSENT-list parent may hold any list",
+      "note": "Every security cell stays green — this mutant only REFUSES more. It would break every existing deployment's spawns on upgrade, which is the exact failure the default-allow design exists to prevent, and only an upgrade-direction cell can see it."
+    }
+  ]
+}

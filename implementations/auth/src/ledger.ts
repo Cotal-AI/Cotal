@@ -303,6 +303,29 @@ export function grantActor(dir: string, row: Omit<ActorRow, "grantedAt">): Actor
   return full;
 }
 
+/** THE row→mint ACL carry. All THREE access fields travel together, as one value, deliberately.
+ *
+ *  They were three sibling lines repeated at each resolver site, and `allowDmOwners` was the newest
+ *  of them — so the failure mode was not a wrong line but a MISSING one: a resolver that carried
+ *  read and post and simply omitted DM reverted that principal to the historical wildcard, turning
+ *  a stored "no DM at all" into "DM anyone" with core byte-unchanged and every core-level cell
+ *  still green. Bound into one carry, DM is no longer a line to forget; a site that wants the ACLs
+ *  calls this, and a site that BYPASSES it has to re-write `allowPublish: row.allowPublish` by
+ *  hand, which is a visible act rather than a silent omission — and is asserted against.
+ *
+ *  Absent stays ABSENT here, never `allowDmOwners: undefined`: the two are indistinguishable at the
+ *  mint today, but relying on that would let a later validation or `exactOptionalPropertyTypes`
+ *  change silently narrow every legacy row to no-DM. Absent means "DM anyone"; `[]` means none. */
+function aclFromRow(
+  row: Pick<ActorRow, "allowSubscribe" | "allowPublish" | "allowDmOwners">,
+): { allowSubscribe: string[]; allowPublish: string[]; allowDmOwners?: string[] } {
+  return {
+    allowSubscribe: row.allowSubscribe,
+    allowPublish: row.allowPublish,
+    ...(row.allowDmOwners ? { allowDmOwners: row.allowDmOwners } : {}),
+  };
+}
+
 /** Delegation attenuation — the ENVELOPE rule: everything under an owner stays within the
  *  spawner's own grant. A spawn-scoped actor can delegate only a SUBSET of what it holds — channel
  *  ACLs by NATS-pattern containment ({@link patternInAllow}), capability scope by set inclusion —
@@ -313,7 +336,7 @@ export function grantActor(dir: string, row: Omit<ActorRow, "grantedAt">): Actor
  *  their next refresh (≤ {@link AGENT_BEARER_TTL_SEC}s), instead of leaving them orphaned. */
 function assertWithinSpawnerGrant(
   dir: string,
-  row: Pick<ActorRow, "owner" | "actor" | "scope" | "allowSubscribe" | "allowPublish" | "parent" | "role">,
+  row: Pick<ActorRow, "owner" | "actor" | "scope" | "allowSubscribe" | "allowPublish" | "parent" | "role" | "allowDmOwners">,
   boundary: "spawn" | "exchange",
 ): void {
   // Walk the WHOLE delegation chain, not just the immediate link: per-link containment composes
@@ -353,16 +376,26 @@ function assertWithinSpawnerGrant(
     const overScope = child.scope.filter((s) => !parent.scope.includes(s));
     const overSub = child.allowSubscribe.filter((ch) => !patternInAllow(parent.allowSubscribe, ch));
     const overPub = child.allowPublish.filter((ch) => !patternInAllow(parent.allowPublish, ch));
+    // DM reach attenuates like every other grant. The trap is that ABSENT means ["*"] here, not
+    // "nothing": so a child row that simply OMITS the field under a scoped parent is the widest
+    // possible widening, and reads in a diff as though it asks for nothing at all. Both sides are
+    // therefore defaulted before comparison, and an explicit ["*"] is over unless the parent holds
+    // "*" too. Without this an agent holding `spawn` escapes its own DM policy in one hop, which
+    // is the whole of what the policy is for.
+    const parentDm = parent.allowDmOwners ?? ["*"];
+    const childDm = child.allowDmOwners ?? ["*"];
+    const overDm = parentDm.includes("*") ? [] : childDm.filter((o) => !parentDm.includes(o));
     // A role is RECEIVE reach (bind/consume the shared `svc_<role>` task queue), so it is a
     // delegated capability like any other: the spawner's scope must carry `role:<r>` to hand it
     // down. Rides the scope list — no extra row field, and scope's own per-link inclusion makes
     // role delegation transitive for free.
     const needRole = child.role && !parent.scope.includes(`role:${child.role}`) ? `role:${child.role}` : undefined;
-    if (overScope.length || overSub.length || overPub.length || needRole) {
+    if (overScope.length || overSub.length || overPub.length || overDm.length || needRole) {
       const wrongs = [
         overScope.length ? `scope [${overScope.join(", ")}] beyond [${parent.scope.join(", ") || "none"}]` : "",
         overSub.length ? `read [${overSub.join(", ")}] beyond [${parent.allowSubscribe.join(", ") || "none"}]` : "",
         overPub.length ? `post [${overPub.join(", ")}] beyond [${parent.allowPublish.join(", ") || "none"}]` : "",
+        overDm.length ? `dm [${overDm.join(", ")}] beyond [${parentDm.join(", ")}]${child.allowDmOwners ? "" : " (the child names no dm list, which means \"*\" - state one to narrow it)"}` : "",
         needRole ? `role "${child.role}" beyond scope [${parent.scope.join(", ") || "none"}] (a role is delegated with the \`${needRole}\` capability)` : "",
       ].filter(Boolean);
       const widen = widenGrantCommand(pOwner, pActor, parent, [...overScope, ...(needRole ? [needRole] : [])], overSub, overPub);
@@ -464,13 +497,7 @@ export function ledgerAuthorizeGrant(dir: string): (owner: string, actor: string
     // successful recovery is to delete the flag, and a deleted flag is the wide default.
     return {
       scope: row.scope,
-      allowSubscribe: row.allowSubscribe,
-      allowPublish: row.allowPublish,
-      // Spread only when the row HAS one. Passing `allowDmOwners: undefined` explicitly is
-      // indistinguishable from omission at the mint TODAY, but relying on that would let a
-      // later validation/exactOptionalPropertyTypes change silently narrow every row to no
-      // DM at all. Absent must stay absent, because absent means "DM anyone".
-      ...(row.allowDmOwners ? { allowDmOwners: row.allowDmOwners } : {}),
+      ...aclFromRow(row),
       ...(row.role ? { role: row.role } : {}),
       ...(row.label ? { label: row.label } : {}),
       ...(row.parent ? { parent: row.parent } : {}),
@@ -529,13 +556,7 @@ export function ledgerAclResolver(dir: string): AclResolver {
     if (t.act.lifecycleUid !== row.lifecycleUid)
       throw new Error(`bearer lifecycle ${t.act.lifecycleUid} is not the actor's current incarnation - re-exchange for a fresh bearer`);
     return {
-      allowSubscribe: row.allowSubscribe,
-      allowPublish: row.allowPublish,
-      // Spread only when the row HAS one. Passing `allowDmOwners: undefined` explicitly is
-      // indistinguishable from omission at the mint TODAY, but relying on that would let a
-      // later validation/exactOptionalPropertyTypes change silently narrow every row to no
-      // DM at all. Absent must stay absent, because absent means "DM anyone".
-      ...(row.allowDmOwners ? { allowDmOwners: row.allowDmOwners } : {}),
+      ...aclFromRow(row),
       ...(row.role ? { role: row.role } : {}),
       lifecycleUid: t.act.lifecycleUid,
       // The CURRENT grant's capabilities, so the mint re-contains the bearer against the row
@@ -619,13 +640,7 @@ export function ledgerAuthorizeAgentExchange(
     owner: row.owner,
     actor: row.actor,
     scope: row.scope,
-    allowSubscribe: row.allowSubscribe,
-    allowPublish: row.allowPublish,
-    // Spread only when the row HAS one. Passing `allowDmOwners: undefined` explicitly is
-    // indistinguishable from omission at the mint TODAY, but relying on that would let a
-    // later validation/exactOptionalPropertyTypes change silently narrow every row to no
-    // DM at all. Absent must stay absent, because absent means "DM anyone".
-    ...(row.allowDmOwners ? { allowDmOwners: row.allowDmOwners } : {}),
+    ...aclFromRow(row),
     ...(row.role ? { role: row.role } : {}),
     ...(row.parent ? { parent: row.parent } : {}),
     ...(row.lifecycleUid ? { lifecycleUid: row.lifecycleUid } : {}),

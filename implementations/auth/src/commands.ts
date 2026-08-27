@@ -182,7 +182,7 @@ async function runActor(args: ParsedArgs): Promise<void> {
   const [sub, actor] = args.positionals;
   const values = args.values as {
     space?: string; sub?: string; owner?: string; scope?: string; "allow-subscribe"?: string;
-    "allow-publish"?: string; role?: string; label?: string; parent?: string;
+    "allow-publish"?: string; "allow-dm-owners"?: string; role?: string; label?: string; parent?: string;
   };
   const st = actorState(values.space);
   const { dir, space } = st;
@@ -195,12 +195,12 @@ async function runActor(args: ParsedArgs): Promise<void> {
       }
       for (const r of rows.sort((a, b) => (a.owner + a.actor).localeCompare(b.owner + b.actor)))
         console.log(
-          `${r.owner}.${r.actor}${r.label ? `  (${r.label})` : ""}  kind=${r.kind}  role=${r.role ?? "-"}  scope=[${r.scope.join(",")}]  read=[${r.allowSubscribe.join(",")}]  post=[${r.allowPublish.join(",")}]`,
+          `${r.owner}.${r.actor}${r.label ? `  (${r.label})` : ""}  kind=${r.kind}  role=${r.role ?? "-"}  scope=[${r.scope.join(",")}]  read=[${r.allowSubscribe.join(",")}]  post=[${r.allowPublish.join(",")}]  dm=[${(r.allowDmOwners ?? ["*"]).join(",")}]`,
         );
       return;
     }
     if (sub === "grant") {
-      if (!actor) throw new Error("usage: cotal actor grant <actor> --sub <IdP subject> [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--role r] [--label l]   (an upsert of the WHOLE row: an omitted flag is the WIDE default - scope spawn,role:default, read '>', post '>' - so narrowing means naming every field, e.g. --scope '' --allow-subscribe general --allow-publish '')");
+      if (!actor) throw new Error("usage: cotal actor grant <actor> --sub <IdP subject> [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--allow-dm-owners u_a,u_b] [--role r] [--label l]   (an upsert of the WHOLE row: an omitted flag is the WIDE default - scope spawn,role:default, read '>', post '>' - so narrowing means naming every field, e.g. --scope '' --allow-subscribe general --allow-publish '')");
       const owner = await resolveGrantOwner(st, values);
       // Default = the FULL grant (all channels, spawn + the stock role): `actor grant` is an
       // operator act of letting a user in, so omitting flags means "fully", and narrowing is the
@@ -212,6 +212,12 @@ async function runActor(args: ParsedArgs): Promise<void> {
         scope: csv(values.scope, ["spawn", "role:default"]),
         allowSubscribe: csv(values["allow-subscribe"], [">"]),
         allowPublish: csv(values["allow-publish"], [">"]),
+        // Three distinct states, deliberately. Flag OMITTED leaves the field absent, which the mint
+        // reads as ["*"] — so an operator who has never heard of this flag grants exactly what they
+        // always did, and the row stays byte-identical. `--allow-dm-owners ''` is the EMPTY list,
+        // meaning no DM send at all. Anything else is the literal set. Writing ["*"] on omission
+        // would be equivalent but would churn every existing row for nothing.
+        ...(values["allow-dm-owners"] !== undefined ? { allowDmOwners: csv(values["allow-dm-owners"], []) } : {}),
         ...(values.role ? { role: values.role } : {}),
         ...(values.label ? { label: values.label } : {}),
         ...(values.parent ? { parent: values.parent } : {}),
@@ -370,6 +376,7 @@ const authCommands: Command[] = [
       { name: "scope", type: "string", value: "<a,b>", description: "capability scope for the bearer (default: spawn,role:default; '' = none; spawn = may run agents, role:<r> = may delegate role r)" },
       { name: "allow-subscribe", type: "string", value: "<a,b>", description: "channel read ACL (default: > = all channels) - the user's envelope: their agents can never read beyond it" },
       { name: "allow-publish", type: "string", value: "<a,b>", description: "channel post ACL (default: > = all channels) - also the envelope for their agents' posting" },
+      { name: "allow-dm-owners", type: "string", value: "<u_a,u_b>", description: "recipient owners this actor may DM (default: unset = * = anyone; '' = no DM at all) - also the envelope for their agents' DMs" },
       { name: "role", type: "string", value: "<r>", description: "role (scopes the task-queue consumer)" },
       { name: "label", type: "string", value: "<l>", description: "display label for `actor list` (never the IdP subject)" },
       { name: "parent", type: "string", value: "<owner.actor>", description: "spawning principal audit link (operator grants are authority - this does not attenuate)" },

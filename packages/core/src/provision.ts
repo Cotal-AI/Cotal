@@ -1154,6 +1154,13 @@ export function permissionsFor(
   // DM ACL — DEFAULT-ALLOW, unlike the post ACL above. Flipping this default would silently cut
   // every existing deployment's DM plane on upgrade, so the narrowing is opt-in by the caller.
   // An explicitly EMPTY list is honoured as "no DM send at all" and is not the same as omitted.
+  //
+  // SCOPE OF THIS GRANT, stated so nothing downstream has to infer it: it narrows DM SEND and
+  // nothing else. Anycast (`svc.*`) and history-at-rest are untouched, so two principals confined
+  // to disjoint DM sets can still reach each other by role and can still read whatever the shared
+  // streams' read grants allow. A useful containment of ONE lane, NOT a general tenant boundary —
+  // do not describe it as one in docs or UI. A boundary that stops at one plane reads as complete
+  // to everyone who did not write it, which is how a partial control becomes a claimed guarantee.
   const dmOwners = opts.allowDmOwners ?? ["*"];
   // Read ACL — DEFAULT-DENY for channels, exactly like allowPublish above. Omitted or empty mints
   // NO channel row: no per-channel history-consumer create grant and no `chat.*.<ch>` sub.allow.
