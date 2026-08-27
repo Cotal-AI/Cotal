@@ -101,6 +101,9 @@ async function callJcodeMcpRaw(
     env: { ...entry.env, COTAL_JCODE_MCP_SOCKET: socket, COTAL_JCODE_MCP_TOKEN: token },
     stdio: ["pipe", "pipe", "pipe"],
   });
+  // An unread stderr pipe fills (64 KiB on Linux, smaller on macOS) and the child blocks on
+  // write, so it never answers the JSON-RPC frame. Drain and discard; do not interpret it.
+  bridge.stderr?.resume();
   let pending = "";
   const frames = new Map<number, (frame: Record<string, unknown>) => void>();
   bridge.stdout?.setEncoding("utf8");
@@ -111,16 +114,34 @@ async function callJcodeMcpRaw(
       if (newline < 0) return;
       const line = pending.slice(0, newline);
       pending = pending.slice(newline + 1);
-      const frame = JSON.parse(line) as Record<string, unknown>;
+      let frame: Record<string, unknown>;
+      try {
+        frame = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
       if (typeof frame.id === "number") frames.get(frame.id)?.(frame);
     }
   });
+  const frameName = (id: number): string => (id === 1 ? "initialize" : id === 2 ? "tools/call" : `id ${id}`);
   const request = (id: number, json: string): Promise<Record<string, unknown>> =>
-    new Promise((resolve) => {
-      frames.set(id, (frame) => {
+    new Promise((resolve, reject) => {
+      const settle = (fn: () => void): void => {
+        if (!frames.has(id)) return;
         frames.delete(id);
-        resolve(frame);
-      });
+        clearTimeout(timer);
+        fn();
+      };
+      const timer = setTimeout(
+        () => settle(() => reject(new Error(`callJcodeMcpRaw timed out waiting for frame id ${id} (${frameName(id)})`))),
+        10_000,
+      );
+      frames.set(id, (frame) => settle(() => resolve(frame)));
+      bridge.once("exit", (code, signal) =>
+        settle(() =>
+          reject(new Error(`callJcodeMcpRaw child exited (code=${code} signal=${signal}) before frame id ${id} (${frameName(id)})`)),
+        ),
+      );
       bridge.stdin?.write(json + "\n");
     });
 
