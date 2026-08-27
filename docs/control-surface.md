@@ -138,16 +138,19 @@ deadline. That is the correct result, not a gap in the probe.
 ### Deregistration
 
 A probe makes a dead registration cheap to skip; it does not remove it. Removal is the
-registration's own exit, and there are exactly two routes to it, both explicit
+registration's own exit, and there are two explicit routes to it
 ([SPEC §13.5](../SPEC.md#135-verbs): a deleted `svc` spec *is* the deregistration).
 
-A manager that stops cleanly deletes its own two records keys as part of stopping, so an instance
-that was shut down leaves no row behind. This is a **graceful stop** only. A manager that loses
-its lease tears down fail-closed and deliberately does not deregister: it is not the authority on
-its own record at that point, and the incarnation that took the lease from it is. A restart that
-died *mid-registration* is a different residue: the issuance gate stays frozen under that op. The
-successor completes the dead registration on boot when the freeze-holder is affirmatively gone
-under a complete CONNZ sweep (the same composition as [`cotal reconcile-gate`](cli.md#reconcile-gate)),
+A manager that stops cleanly removes its own registration if it still owns the recorded revision,
+so an ordinary shutdown leaves no stale row. Lease trouble is not an exit path. A manager that
+cannot renew or read its lease keeps serving, stays registered, and retries. If another process
+holds the same instance key, it logs the conflict and keeps serving until an operator stops one of
+them. The revision-pinned deregistration leaves a successor's registration alone.
+
+A restart that died *mid-registration* is a different residue: the issuance gate stays frozen under
+that op. The successor completes the dead registration on boot when the freeze-holder is
+affirmatively gone under a complete CONNZ sweep (the same composition as
+[`cotal reconcile-gate`](cli.md#reconcile-gate)),
 then runs its normal takeover. It does not invent a TTL and it does not start a new freeze over a
 still-held one.
 
