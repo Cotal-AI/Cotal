@@ -26,7 +26,7 @@
  * which is itself part of the claim. Run: pnpm smoke:persona-root
  */
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { makeScratch } from "../../../bin/smoke/_scratch.js";
 
@@ -51,17 +51,28 @@ process.env.COTAL_HOME = home;
 let recordMesh!: typeof import("@cotal-ai/workspace").recordMesh;
 let setCurrent!: typeof import("@cotal-ai/workspace").setCurrent;
 let resolveMeshTarget!: typeof import("@cotal-ai/workspace").resolveMeshTarget;
+let agentFilePath!: typeof import("@cotal-ai/core").agentFilePath;
+let loadAgentFile!: typeof import("@cotal-ai/core").loadAgentFile;
 let listPersonas!: typeof import("../src/lib/personas.js").listPersonas;
 let personas!: typeof import("../src/commands/personas.js").personas;
 let personasComplete!: typeof import("../src/commands/personas.js").personasComplete;
 let spawnComplete!: typeof import("../src/commands/spawn.js").spawnComplete;
 let sendComplete!: typeof import("../src/commands/send.js").sendComplete;
+let personaRootFor!: typeof import("../src/commands/mint.js").personaRootFor;
+let mint!: typeof import("../src/commands/mint.js").mint;
+let createSpaceAuth!: typeof import("@cotal-ai/core").createSpaceAuth;
+let saveSpaceAuth!: typeof import("@cotal-ai/workspace").saveSpaceAuth;
+let authDir!: typeof import("@cotal-ai/workspace").authDir;
 try {
   ({ recordMesh, setCurrent, resolveMeshTarget } = await import("@cotal-ai/workspace"));
+  ({ agentFilePath, loadAgentFile } = await import("@cotal-ai/core"));
   ({ listPersonas } = await import("../src/lib/personas.js"));
   ({ personas, personasComplete } = await import("../src/commands/personas.js"));
   ({ spawnComplete } = await import("../src/commands/spawn.js"));
   ({ sendComplete } = await import("../src/commands/send.js"));
+  ({ personaRootFor, mint } = await import("../src/commands/mint.js"));
+  ({ createSpaceAuth } = await import("@cotal-ai/core"));
+  ({ saveSpaceAuth, authDir } = await import("@cotal-ai/workspace"));
 } catch (e) { cleanScratch(e); }
 
 let pass = 0;
@@ -106,11 +117,62 @@ async function captureList(values: { space?: string; server?: string }): Promise
   return lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
 }
 
+/** Run `cotal mint` for real and return everything it wrote. Same disposition as captureCmd. */
+async function captureMint(positionals: string[], values: Record<string, unknown>): Promise<string> {
+  const lines: string[] = [];
+  const realLog = console.log, realErr = console.error, realExit = process.exit;
+  console.log = (...a: unknown[]) => void lines.push(a.map(String).join(" "));
+  console.error = (...a: unknown[]) => void lines.push(a.map(String).join(" "));
+  process.exit = ((code?: number) => { throw new Error(`__exit__${code ?? 0}`); }) as typeof process.exit;
+  try {
+    await mint({ values: values as never, positionals, raw: [] });
+  } catch (e) {
+    if (!/^__exit__/.test((e as Error).message)) lines.push(`THREW: ${(e as Error).message}`);
+  } finally {
+    console.log = realLog; console.error = realErr; process.exit = realExit;
+  }
+  return lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+}
+
 /** Persona names out of a captured listing: printed flush-left, descriptions indented under them. */
 function personaNamesFrom(out: string): string[] {
   return [...new Set(
     out.split("\n").filter((l) => /^[A-Za-z0-9_-]+(\s|$)/.test(l)).map((l) => l.split(/\s/)[0]),
   )].sort();
+}
+
+/** Run any `cotal personas` subcommand for real and return everything it wrote.
+ *
+ *  Drives the exported `personas()` entry point — the same function the CLI dispatches to — rather
+ *  than the private helpers behind it, because a cell that calls an extracted seam witnesses the
+ *  seam and not the shipped call path. Captures stdout AND stderr (refusals print to stderr) and
+ *  traps `process.exit`, which several of these subcommands call on the refusal paths. */
+async function captureCmd(
+  positionals: string[],
+  values: Record<string, unknown>,
+  env: Record<string, string> = {},
+): Promise<string> {
+  const lines: string[] = [];
+  const realLog = console.log;
+  const realErr = console.error;
+  const realExit = process.exit;
+  const restoreEnv: Record<string, string | undefined> = {};
+  for (const [k, v] of Object.entries(env)) { restoreEnv[k] = process.env[k]; process.env[k] = v; }
+  console.log = (...a: unknown[]) => void lines.push(a.map(String).join(" "));
+  console.error = (...a: unknown[]) => void lines.push(a.map(String).join(" "));
+  // A refusal path calls process.exit; let it unwind this call instead of killing the suite.
+  process.exit = ((code?: number) => { throw new Error(`__exit__${code ?? 0}`); }) as typeof process.exit;
+  try {
+    await personas({ values: values as never, positionals, raw: [] });
+  } catch (e) {
+    if (!/^__exit__/.test((e as Error).message)) throw e;
+  } finally {
+    console.log = realLog;
+    console.error = realErr;
+    process.exit = realExit;
+    for (const [k, v] of Object.entries(restoreEnv)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+  return lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
 }
 
 // MESH and CWD are disjoint in every dimension — persona names, roles, and channels — so a wrong
@@ -190,6 +252,95 @@ try {
   // And the listing PARSER can see cwd names when they are genuinely printed — otherwise a parser
   // that matched nothing would also satisfy "the cwd's personas are NOT listed".
   check("control: the listing parser CAN see cwd names when they are present", personaNamesFrom("cwd-one  role\n  desc\ncwd-two  role").join(",") === "cwd-one,cwd-two");
+
+  // 4. THE MUTATING/READING SUBCOMMANDS — show, edit, new, rm.
+  //
+  // These were fixed in the same commit as `list` and were NOT witnessed by it. Measured: reverting
+  // all four to the cwd root left this suite, persona-templates and spawn-from-anywhere GREEN,
+  // while reverting `list` alone turned this suite RED — so the harness could kill and simply was
+  // not looking here. Each cell below therefore drives the REAL `personas()` entry point and dies
+  // on its OWN site, because four cells that only collectively redden would let one exclusion carry
+  // four names.
+  //
+  // `rm` is the one that matters most: resolving the wrong root deletes a file from a directory the
+  // operator never named, and nothing in the repo reddened.
+
+  // show — prints the resolved path as its first line, so the path itself is the observation.
+  const shownPath = (await captureCmd(["show", "mesh-lead"], {})).split("\n").find((l) => l.trim())?.trim();
+  check("show: opens the card under the MESH root", shownPath === join(MESH, ".cotal", "agents", "mesh-lead.md"), shownPath);
+  // …and refuses a name that exists ONLY in the cwd, rather than silently opening the cwd's copy.
+  const shownCwdOnly = await captureCmd(["show", "cwd-one"], {});
+  check("show: a cwd-only persona is NOT found (it is not in the mesh's catalog)", /no persona "cwd-one"/.test(shownCwdOnly), shownCwdOnly.slice(0, 120));
+
+  // new — the file must appear under the MESH root and NOT under the cwd.
+  await captureCmd(["new", "fresh-one"], { prompt: "made by the smoke", subscribe: "mesh-alpha" });
+  check("new: writes the card into the MESH's catalog", existsSync(join(MESH, ".cotal", "agents", "fresh-one.md")));
+  check("new: does NOT write into the cwd's catalog", !existsSync(join(CWD, ".cotal", "agents", "fresh-one.md")));
+
+  // rm — must delete from the MESH root. The cwd holds a same-named decoy that must SURVIVE, which
+  // is what makes this a discrimination rather than "a file went away".
+  //
+  // ANTI-VACUITY CONTROL FIRST. "the mesh's file is gone" also passes when the file was never
+  // there, and "the cwd's file survives" also passes when nothing ever deleted anything — so both
+  // rm cells are satisfiable by a fixture that did nothing at all. Measured: with the `new` step
+  // and its two cells removed, both rm cells still reported ✓. Asserting BOTH files exist before
+  // the delete is what makes the two assertions afterwards mean something.
+  writeFileSync(join(CWD, ".cotal", "agents", "fresh-one.md"), `---\nname: fresh-one\nsubscribe: []\n---\n\ndecoy\n`);
+  check("control: BOTH copies exist before rm (else the two cells below pass vacuously)",
+    existsSync(join(MESH, ".cotal", "agents", "fresh-one.md")) && existsSync(join(CWD, ".cotal", "agents", "fresh-one.md")));
+  await captureCmd(["rm", "fresh-one"], { force: true });
+  check("rm: deletes from the MESH's catalog", !existsSync(join(MESH, ".cotal", "agents", "fresh-one.md")));
+  check("rm: leaves the cwd's same-named card untouched", existsSync(join(CWD, ".cotal", "agents", "fresh-one.md")));
+
+  // edit — shares `show`'s resolution and is not driven here (it hands the terminal to $EDITOR).
+  // Witnessed instead by pointing EDITOR at a no-op and checking which path it was handed.
+  const edited = await captureCmd(["edit", "mesh-default"], {}, { EDITOR: "true" });
+  check("edit: re-validates the card under the MESH root", /✓ saved "mesh-default"/.test(edited), edited.slice(0, 120));
+
+  // 5. `cotal mint --profile agent` READS ITS ACLs FROM THE SAME ROOT.
+  //
+  // The credential surface, and the one that was fixed with no detector: reverting mint's root left
+  // every committed suite in the repo green, because none of them mentions mint at all. An
+  // undetected regression here does not print a wrong list, it issues a credential carrying grants
+  // the operator did not authorise.
+  //
+  // Both roots hold a card of the SAME NAME with DIFFERENT ACLs, so this DISCRIMINATES rather than
+  // observes: a witness that only checks "a card was read" passes when the wrong card was read.
+  // The cwd's copy is the wider one, which is the direction that matters — reading it would issue
+  // grants the operator had already narrowed away.
+  writeFileSync(join(MESH, ".cotal", "agents", "minted.md"), `---\nname: minted\nsubscribe: [mesh-alpha]\n---\n\nmesh copy\n`);
+  writeFileSync(join(CWD, ".cotal", "agents", "minted.md"), `---\nname: minted\nsubscribe: [cwd-one, cwd-two]\n---\n\ncwd copy\n`);
+  // Control first: the two copies really do differ, or "mint read the mesh's" proves nothing.
+  const meshCard = loadAgentFile(agentFilePath(MESH, "minted"));
+  const cwdCard = loadAgentFile(agentFilePath(CWD, "minted"));
+  check("control: the two `minted` cards carry DIFFERENT ACLs (else the mint cell cannot discriminate)",
+    (meshCard.subscribe ?? []).join(",") !== (cwdCard.subscribe ?? []).join(","),
+    { mesh: meshCard.subscribe, cwd: cwdCard.subscribe });
+  // DRIVE THE REAL `mint()`, not its seam. An earlier version of this cell called `personaRootFor`
+  // directly and SURVIVED reverting mint.ts:152 to `cotalRoot()` — because that mutation removes
+  // the CALL to personaRootFor rather than changing the function, so a cell invoking the seam still
+  // got the right answer while the shipped path read the wrong card. That is pr-review's
+  // unwitnessed-wrapper finding reproduced inside the cell written to close it. Driving `mint()`
+  // is what makes the mutation observable.
+  //
+  // mint refuses before the card read without on-disk space auth, so the cwd root gets real trust
+  // material; everything stays offline (no --provision, so no broker is contacted).
+  saveSpaceAuth(authDir(CWD), await createSpaceAuth("meshspace"));
+  const credsPath = join(scratch, "minted.creds");
+  await captureMint(["minted"], { profile: "agent", out: credsPath });
+  // The ACLs are not echoed on stdout - they are baked into the minted credential, which is the
+  // artifact that actually carries them to the broker. Read the file mint wrote.
+  const credsText = existsSync(credsPath) ? readFileSync(credsPath, "utf8") : "";
+  // The grants live in the JWT's base64 payload, not in the surrounding armour, so DECODE it -
+  // a substring search over the raw file finds neither channel and would pass for the wrong reason.
+  const jwt = /-----BEGIN NATS USER JWT-----\s*([A-Za-z0-9_.-]+)/.exec(credsText)?.[1] ?? "";
+  const claims = jwt ? Buffer.from(jwt.split(".")[1] ?? "", "base64url").toString("utf8") : "";
+  check("control: mint wrote a credential whose claims decode (else the ACL check is vacuous)",
+    credsText.length > 0 && /"sub"/.test(claims), claims.slice(0, 120));
+  check("mint: the credential carries the MESH card's channel, not the cwd card's",
+    claims.includes("mesh-alpha") && !claims.includes("cwd-one"), claims.slice(0, 400));
+
+
 
   // FAIL CLOSED. A completer must never throw into the operator's interactive shell, and must not
   // guess a root when none resolves. With `--space` naming a mesh that is not registered there is
