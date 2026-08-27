@@ -666,7 +666,8 @@ interface SeedDestination {
 }
 
 /**
- * Resolve the persona catalog to seed into, offline.
+ * Resolve the persona catalog to seed into, offline. `cwd` is a parameter so the smoke can drive
+ * this without chdir'ing a shared process; production always passes `process.cwd()`.
  *
  * Deliberately NOT `resolveTargetOrExit`: that prunes the registry and exits the process on an
  * unresolved mesh. Setup is the command you run BEFORE a mesh exists, and on a fresh machine it
@@ -678,11 +679,12 @@ interface SeedDestination {
  * seeding the cwd would be this very defect wearing a different hat: a root chosen for them,
  * without being asked, that the spawn they run next may not read. Every other resolution failure
  * — unreadable trust, a stale auth root, an unrecorded user-auth space — is a fault to repair, not
- * a licence to guess a directory. Those RETHROW, so the caller reports them.
+ * a licence to guess a directory. Those RETHROW, and `command.ts` renders them with their own
+ * recovery copy.
  */
-function seedDestination(): SeedDestination {
+export function seedDestinationFor(cwd: string): SeedDestination {
   try {
-    const target = resolveMeshTarget(process.cwd(), {});
+    const target = resolveMeshTarget(cwd, {});
     // `personaRoot` is the target's own `<root>/.cotal/agents` — the exact string spawn resolves
     // its persona file under. Taken from the target rather than recomputed, so the two cannot drift.
     return { dir: target.personaRoot, source: "mesh", target };
@@ -690,9 +692,13 @@ function seedDestination(): SeedDestination {
     // ONLY "there is no mesh at all" falls back. Anything else is a decision that is not setup's
     // to make, or a fault that wants fixing; either way the cwd is not the answer.
     if (isWorkspaceTargetError(e) && e.code === "no-meshes")
-      return { dir: personaDir(findCotalRoot()), source: "cwd", reason: e.message };
+      return { dir: personaDir(findCotalRoot(cwd)), source: "cwd", reason: e.message };
     throw e;
   }
+}
+
+function seedDestination(): SeedDestination {
+  return seedDestinationFor(process.cwd());
 }
 
 /**
@@ -741,15 +747,20 @@ function announceSeedDestination(dest: SeedDestination): void {
  *  path it wrote — a relative `.cotal/agents/default.md` is precisely what let a seed into the
  *  wrong root pass for a seed into the right one. */
 function seedDefaultAgent(dest: SeedDestination = seedDestination()): SeedDestination {
-  const path = join(dest.dir, "default.md");
-  if (existsSync(path)) return dest;
+  seedDefaultAgentInto(dest.dir);
+  return dest;
+}
+
+/** The write itself, seam-exported for the smoke: seed-if-absent into an explicit catalog dir. */
+export function seedDefaultAgentInto(dir: string): void {
+  const path = join(dir, "default.md");
+  if (existsSync(path)) return;
   // The mesh may have been registered against a brand-new, EMPTY root — no `.cotal` under it, let
   // alone a `.cotal/agents`. `recursive` builds the whole chain, so "the resolved root has no
   // agents dir at all" seeds exactly like an established one rather than throwing ENOENT.
-  mkdirSync(dest.dir, { recursive: true }); // dest.dir is the mesh's `.cotal/agents` catalog
+  mkdirSync(dir, { recursive: true }); // dir is the mesh's `.cotal/agents` catalog
   writeFileSync(path, DEFAULT_AGENT);
   provenance.wrote("default persona", path);
-  return dest;
 }
 
 /** Seed the guided expert team — david (the engineer), sven (the guide), me (your session) — the

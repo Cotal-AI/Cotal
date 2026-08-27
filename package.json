@@ -113,6 +113,7 @@
     "smoke:e2e:acl": "tsx packages/core/smoke/e2e-acl.smoke.ts",
     "smoke:agent-file": "tsx packages/core/smoke/agent-file.smoke.ts",
     "smoke:persona-templates": "tsx implementations/cli/smoke/persona-templates.smoke.ts",
+    "smoke:setup-destination": "pnpm --filter @cotal-ai/workspace... build && tsx implementations/cli/smoke/setup-destination.smoke.ts",
     "smoke:persona-root": "tsx implementations/cli/smoke/persona-root.smoke.ts",
     "smoke:control-auth": "tsx packages/core/smoke/control-auth.smoke.ts",
     "smoke:manager-split": "tsx packages/core/smoke/manager-split-auth.smoke.ts",

@@ -552,3 +552,14 @@ smoke:web-console-auth
 smoke:no-implicit-general
 smoke:session-channels
 smoke:jcode-private-lifecycle
+
+# `cotal setup` seeds into the catalog `cotal spawn` READS, and names that directory absolutely.
+# setup wrote through a cwd-derived root while spawn loads from the resolved mesh's, so where those
+# differ setup wrote a file spawn would never open and the "no default persona yet - run `cotal
+# setup`" refusal survived running exactly the command it named. Completes the catalog trio:
+# persona-templates guards what is WRITTEN, persona-root which catalog is READ, this one WHERE a
+# write lands. Also pins the fallback narrow: no mesh at all seeds the cwd and SAYS so, but several
+# meshes with none selected must refuse rather than pick a root for the operator.
+# APPENDED AT THE END deliberately: shard.mjs is round-robin on `index % count`, so inserting
+# mid-file re-shards every suite below it (225 of them, from the persona-root neighbourhood).
+smoke:setup-destination
