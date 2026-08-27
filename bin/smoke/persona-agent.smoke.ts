@@ -205,6 +205,14 @@ try {
     // instead of no-op'ing (the library default). The abort shape the block traced lives behind
     // this flag, so the cell must run with it on.
     const { setInstalledExtensionsEnabled } = await import("@cotal-ai/cli");
+    // CONTAINMENT: installed-mode manifest resolution reads globalConfigDir(), which follows
+    // XDG_CONFIG_HOME (NOT COTAL_HOME), so sandbox it to a scratch dir with an EMPTY manifest.
+    // Without this the cell would read the operator's real extensions.json; with it, an unknown
+    // connector throws from a scratch manifest and nothing live is ever consulted.
+    const prevXdg = process.env.XDG_CONFIG_HOME;
+    process.env.XDG_CONFIG_HOME = join(foreignRoot, "xdg");
+    mkdirSync(join(foreignRoot, "xdg", "cotal", "extensions"), { recursive: true });
+    writeFileSync(join(foreignRoot, "xdg", "cotal", "extensions", "extensions.json"), JSON.stringify({ extensions: [] }));
     setInstalledExtensionsEnabled(true);
     try {
       process.env.COTAL_DEFAULT_AGENT = "other"; // env names the OTHER connector too
@@ -214,6 +222,8 @@ try {
       ok("E: no 'no connector registered' abort for the pinned harness", !/no connector registered for "pin"/.test(eOut), eOut);
     } finally {
       setInstalledExtensionsEnabled(false);
+      if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = prevXdg;
       delete process.env.COTAL_DEFAULT_AGENT;
       process.chdir(cwd);
     }
