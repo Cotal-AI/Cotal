@@ -1,0 +1,166 @@
+{
+  "suite": "extensions/connector-claude-code/smoke/hook-load-and-emitter-race.smoke.ts",
+  "guard": "every lifecycle hook is actually loaded and runnable by the host, and the AG-UI emitter never starts against an unbound endpoint",
+  "command": "pnpm smoke:hook-load-emitter-race",
+  "completionMarker": "HOOK-LOAD/EMITTER-RACE SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/hook-load-emitter-race.json",
+  "why": [
+    "Both defects this pins produced the SAME observable: an event plane with zero frames ever, for",
+    "every agent. That is why eliminating one did not move the symptom, and why a broker-based suite",
+    "would have reported green for either \u2014 the arm flag was set, the publish ACL was right, and the",
+    "CHAT stream was healthy, all measured true on the live mesh while nothing published.",
+    "",
+    "E1 and E2 are the manifest. E1 restores the `args` split-argv form, which is the shape that",
+    "shipped and which runs `node` bare with the JSON payload as a program. E2 is subtler and is the",
+    "one review would wave through: it only drops the quotes around the interpolated plugin root, so",
+    "the command still looks correct and only breaks where the path contains a space.",
+    "",
+    "E3 is the mutant that justifies checking BOTH launch shapes rather than 'any'. It removes",
+    "--plugin-dir from the with-prompt shape ONLY. The no-prompt shape still carries it, so an",
+    "existence check stays green while every `spawn --prompt` agent \u2014 which is how hosted agents",
+    "launch \u2014 silently loads no hooks.",
+    "",
+    "E4/E5 are the race. E4 deletes the wait outright. E5 is the important one: it keeps the wait but",
+    "moves it AFTER the emitter setup it exists to protect, so the call is still present, still",
+    "awaited, and still does nothing for the thing it guards. Only an ORDERING cell can see that, and",
+    "ordering is the entire fix.",
+    "",
+    "E6 makes the bounded wait resolve on timeout instead of failing. Every ordering and presence",
+    "cell stays green, and a genuinely dead broker is then reported to the emitter as connected.",
+    "",
+    "E7 AND E8 CAME FROM THE REVIEW LANE AND THEY CHANGED THIS SUITE'S SHAPE. As first written every",
+    "cell here was readFileSync + regex over source text. That is the right instrument for defect (1),",
+    "which is decided in a JSON manifest before any process exists \u2014 but it is the WRONG instrument for",
+    "defect (2), whose whole failure mode is silence. A regex matches a `throw` whether or not it is",
+    "reachable, so `if (false) throw` kept every source cell green while the guard failed open. The",
+    "suite now EXECUTES the shipped `whenConnected` against a faked endpoint, which is the only way a",
+    "behavioural fix can be witnessed. Stated plainly because it is the lesson: a suite guarding",
+    "against silence must be able to hear.",
+    "",
+    "SPECIFIER BOUNDARY. These cells read the shipped manifest and the shipped sources from disk,",
+    "which is where both defects live and are decided \u2014 before any process starts. The suite asserts",
+    "its own instrument controls first (a manifest with no hooks, and the presence of the emitter",
+    "setup the ordering cell compares against), so a cell cannot pass by measuring an empty set."
+  ],
+  "mutations": [
+    {
+      "name": "E0 VACUITY PROOF \u2014 the manifest declares no hooks at all",
+      "file": "extensions/connector-claude-code/hooks/hooks.json",
+      "find": "\"hooks\": {\n    \"SessionStart\"",
+      "replace": "\"hooks\": {},\n  \"_disabled\": {\n    \"SessionStart\"",
+      "expectRed": "the manifest declares hooks at all",
+      "cell": "the manifest declares hooks at all (found N)",
+      "note": "The manifest stays VALID JSON and simply declares zero hooks. Every other manifest cell in this suite is a universal claim over the entries \u2014 'no entry carries args', 'every command is a string', 'every root is quoted' \u2014 and all of them pass vacuously over an empty set. Without this control the suite would report a clean green for a plugin that registers nothing, which is byte-for-byte the outcome the whole change exists to prevent. Read the kill list: if ONLY the count control reddens here, that is the vacuity being demonstrated, not a gap."
+    },
+    {
+      "name": "E1 every hook entry reverts to the split-argv form",
+      "file": "extensions/connector-claude-code/hooks/hooks.json",
+      "find": "\"command\": \"node \\\"${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs\\\"\"",
+      "replace": "\"command\": \"node\", \"args\": [\"${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs\"]",
+      "allowMultiple": true,
+      "expectRed": "NO hook entry carries an `args` key",
+      "cell": "NO hook entry carries an `args` key \u2014 the host schema has none, and it ran `node` bare",
+      "note": "The exact shape that shipped, in all seven entries. Every hook silently never fired, which took out presence, peer-message surfacing and the emitter's lazy start at once."
+    },
+    {
+      "name": "E1b ONLY the last hook entry reverts to split-argv",
+      "file": "extensions/connector-claude-code/hooks/hooks.json",
+      "find": "    \"SessionEnd\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"node \\\"${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs\\\"\"",
+      "replace": "    \"SessionEnd\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"node\", \"args\": [\"${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs\"]",
+      "expectRed": "NO hook entry carries an `args` key",
+      "cell": "NO hook entry carries an `args` key \u2014 the host schema has none, and it ran `node` bare",
+      "note": "Six entries stay correct and only SessionEnd regresses. A cell that inspects the first entry, or spot-checks one, stays green here while session teardown never reports. This is what makes the cell an ALL-entries claim rather than an existence check."
+    },
+    {
+      "name": "E2 every interpolated plugin root loses its quotes",
+      "file": "extensions/connector-claude-code/hooks/hooks.json",
+      "find": "\"command\": \"node \\\"${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs\\\"\"",
+      "replace": "\"command\": \"node ${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs\"",
+      "allowMultiple": true,
+      "expectRed": "the interpolated plugin root is QUOTED inside the command",
+      "cell": "the interpolated plugin root is QUOTED inside the command",
+      "note": "Still a single string, still names the right script, still passes every other manifest cell. Breaks only where the install path contains a space \u2014 which is most consumer machines."
+    },
+    {
+      "name": "E2b ONLY the middle hook entry loses its quotes",
+      "file": "extensions/connector-claude-code/hooks/hooks.json",
+      "find": "\"matcher\": \"permission_prompt|elicitation_dialog\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"node \\\"${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs\\\"\"",
+      "replace": "\"matcher\": \"permission_prompt|elicitation_dialog\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"node ${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs\"",
+      "expectRed": "the interpolated plugin root is QUOTED inside the command",
+      "cell": "the interpolated plugin root is QUOTED inside the command",
+      "note": "The one entry carrying a matcher, in the middle of the file, unquoted alone. Kills any cell that checks only the first or only the last entry \u2014 and the permission-prompt hook is the one whose failure a participant feels as a dialog that never resolves."
+    },
+    {
+      "name": "E3 --plugin-dir dropped from the WITH-PROMPT shape only",
+      "file": "extensions/connector-claude-code/src/extension.ts",
+      "find": "      ? [prompt, \"--dangerously-load-development-channels\", CHANNEL_REF, \"--plugin-dir\", PLUGIN_ROOT]",
+      "replace": "      ? [prompt, \"--dangerously-load-development-channels\", CHANNEL_REF]",
+      "expectRed": "BOTH pass --plugin-dir, so the plugin's hooks are actually loaded",
+      "cell": "BOTH pass --plugin-dir, so the plugin's hooks are actually loaded",
+      "note": "An existence check would stay green here. `spawn --prompt` is how hosted agents launch, so this silently returns exactly the population that was reported broken."
+    },
+    {
+      "name": "E4 the emitter stops waiting for the mesh",
+      "file": "extensions/connector-claude-code/src/mcp.ts",
+      "find": "        await agent.whenConnected(20_000);",
+      "replace": "",
+      "expectRed": "the emitter path AWAITS the mesh link",
+      "cell": "the emitter path AWAITS the mesh link",
+      "note": "The pre-fix state: with --prompt the first hook beats the first bind, the holder fails terminally, and the plane is dead for the whole session behind one stderr line."
+    },
+    {
+      "name": "E5 the wait survives but moves AFTER what it guards",
+      "file": "extensions/connector-claude-code/src/mcp.ts",
+      "find": "        await agent.whenConnected(20_000);\n        // The events state root.",
+      "replace": "        // The events state root.",
+      "expectRed": "\u2026and the wait comes BEFORE the emitter is set up (the ordering IS the fix)",
+      "cell": "\u2026and the wait comes BEFORE the emitter is set up (the ordering IS the fix)",
+      "note": "Deletes it from before the guarded setup; the presence cell is what would keep this alive if ordering were not asserted separately. Ordering is the entire fix, so it needs its own cell."
+    },
+    {
+      "name": "E6 the bounded wait resolves on timeout instead of failing",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (!(await this.awaitConnection(timeoutMs))) throw new Error(this.notConnectedMessage());",
+      "replace": "    await this.awaitConnection(timeoutMs);",
+      "expectRed": "\u2026and FAILS past the window rather than resolving as if connected",
+      "cell": "\u2026and FAILS past the window rather than resolving as if connected",
+      "note": "Every presence and ordering cell stays green. A genuinely dead broker is then reported to the emitter as connected, converting a loud failure into the same silence this whole suite exists to prevent."
+    },
+    {
+      "name": "E7 the wait is COMMENTED OUT, leaving the text in place",
+      "file": "extensions/connector-claude-code/src/mcp.ts",
+      "find": "        await agent.whenConnected(20_000);",
+      "replace": "        // await agent.whenConnected(20_000);",
+      "expectRed": "the emitter path AWAITS the mesh link",
+      "cell": "the emitter path AWAITS the mesh link",
+      "note": "Found by the review lane, not by me. The guard is GONE and every character a source scan looks for is still on disk. This is the hazard I identified for extension.ts, wrote a comment explaining, and then did not apply to mcp.ts or agent.ts ten lines later \u2014 so the defence now lives in one `strip` helper every source-reading cell uses, rather than in one cell's discipline."
+    },
+    {
+      "name": "E8 the connect guard FAILS OPEN (text intact, behaviour gone)",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (!(await this.awaitConnection(timeoutMs))) throw new Error(this.notConnectedMessage());",
+      "replace": "    if (false) throw new Error(this.notConnectedMessage());",
+      "expectRed": "an unbound endpoint REJECTS past the window",
+      "cell": "an unbound endpoint REJECTS past the window (the guard does not fail open)",
+      "note": "THE ONE THAT MATTERS, found by the review lane. A genuinely dead broker is reported to the emitter as connected: the holder starts against an unbound endpoint, fails terminally, and the plane is silent for the whole session \u2014 the exact outcome this change exists to prevent. Every SOURCE cell stays green because the `throw` is still there; E6 only passes because it happens to delete the matched text, while this keeps the text and removes the behaviour. A regex cannot witness a behavioural fix. Killed only by executing the shipped method against a faked endpoint."
+    },
+    {
+      "name": "E9 the await is guarded into unreachability",
+      "file": "extensions/connector-claude-code/src/mcp.ts",
+      "find": "        await agent.whenConnected(20_000);",
+      "replace": "        if (false) await agent.whenConnected(20_000);",
+      "expectRed": "as a BARE statement, not guarded into unreachability",
+      "cell": "\u2026as a BARE statement, not guarded into unreachability",
+      "note": "Found by the review lane. Typechecks, keeps every character the presence and ordering cells look for, and RESTORES the original race. The lesson is one I had already learned elsewhere and did not apply here: driving a method does not witness the CALL PATH that uses it, because the mutation removes the call. NAMED RESIDUAL \u2014 this is killed structurally, not by a call-path witness, so a subtler guard would still evade it."
+    },
+    {
+      "name": "E10 the promised grace window is clamped",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "  private awaitConnection(timeoutMs: number): Promise<boolean> {",
+      "replace": "  private awaitConnection(timeoutMs: number): Promise<boolean> {\n    timeoutMs = Math.min(timeoutMs, 50);",
+      "expectRed": "resolves on a signal arriving well after any clamp",
+      "cell": "\u2026and resolves on a signal arriving well after any clamp (the WINDOW is preserved, not just the wait)",
+      "note": "Found by the review lane. A guard advertising a 20s grace, tested by a control that resolves in 20ms, is not tested for the property it advertises \u2014 every cell stayed green while the window became practically terminal. The signal now lands at 150ms against a 5s window, outside any plausible clamp."
+    }
+  ]
+}

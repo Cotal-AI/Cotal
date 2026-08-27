@@ -460,6 +460,75 @@ try {
   await observer.start();
   const seen = await until(() => observer!.getRoster().some((p) => p.card.id === alphaPrincipal && p.card.name === "alpha"));
   check("observer (operator user bearer) sees alpha join as the owner.actor principal", seen, observer.getRoster().map((p) => p.card.id));
+
+  // ---- B1b. THE SECOND SPAWN OF THE SAME NAME (the arm nothing covered) ----------------------
+  // Every other spawn in this suite uses a DISTINCT name — alpha, iota, kappa. That is exactly why
+  // a defect on this path survived a suite that otherwise drives the whole authed spawn end to end:
+  // the gap was never depth, it was that nobody ever spawned the same name twice.
+  //
+  // In user mode the ALLOCATED name becomes the actor token (`agentTriple.actor = name`), and
+  // `assertValidOwnerToken` rejects `-` because it is the sole separator of principalKey's
+  // JetStream-name form. The auto-numbering scheme appended its counter with that character, so the
+  // second live instance of any persona was named `<base>-2` and could never be granted at all —
+  // one teammate worked, two did not. Invisible in static/open mode, which keys the actor on the
+  // freshly minted nkey rather than on the name, so every non-auth mesh numbered up happily.
+  //
+  // Nothing below restates that rule. The name is allocated by the real manager, the row is minted
+  // by the real auth service, and the child must actually JOIN as the resulting principal — so this
+  // reddens on a regression in the allocator, in the grammar, or in the mint, without naming any of
+  // them.
+  console.log("B1b) a SECOND spawn of the same name → auto-numbered, minted, joined");
+  const { firstFreeName } = await import("@cotal-ai/core");
+  const secondName = firstFreeName("alpha", (n) => n === "alpha");
+  check(`control: the allocator numbers a collision away from the base (${secondName})`,
+    secondName !== "alpha" && secondName.startsWith("alpha"), secondName);
+  // The SPAWN runs before the principal is derived, and the derivation is GUARDED. Order matters:
+  // `principalKey` validates the actor token, so on a tree where the allocator emits a name the
+  // grammar refuses, deriving it first throws and the suite DIES — reporting that something broke
+  // but not which claim failed. A mutation that crashes a suite instead of reddening a named cell
+  // is an illegible kill, indistinguishable from no coverage. Measured: reverting the separator
+  // did exactly that, and this ordering is what turns it into a named failure.
+  // The call itself can REJECT rather than return { ok:false }: on a tree whose allocator emits a
+  // name the grammar refuses, the mint throws out of startAgent. Gating on `second.ok` is not
+  // enough — the await has to survive first, or the section aborts before any cell runs and the
+  // kill is illegible again. Measured twice: 10 marks, no completion marker, both times.
+  const second: ControlReply = await manager
+    .startAgent({ name: "alpha", agent: "e2e", owner: OWNER })
+    .catch((e: unknown) => ({ ok: false, error: `startAgent threw: ${(e as Error)?.message ?? String(e)}` }) as ControlReply);
+  // EVERY step below is gated on `accepted` and nothing in this section throws. A section that
+  // aborts when its subject regresses produces an ILLEGIBLE kill: the run dies, the completion
+  // marker never prints, and "something broke" is indistinguishable from "this is not covered".
+  // Measured — reverting the separator reddened the right cell and then killed the suite anyway,
+  // which the harness correctly refused to count.
+  const accepted = second.ok === true;
+  check("the SECOND spawn of a LIVE name is accepted (the `-` separator made this impossible)",
+    accepted, second);
+  check(`...and allocated the auto-numbered name (${secondName})`,
+    accepted && (second.data as { name?: string } | undefined)?.name === secondName,
+    { got: (second.data as { name?: string } | undefined)?.name, expected: secondName });
+  // THE HALF THAT USED TO BE IMPOSSIBLE. A `-` in an actor is refused by the grammar before any row
+  // is written, so a managed row for the numbered name could not exist. Its presence is the mint
+  // having actually happened, not a name having been formatted.
+  check("...and the auth service MINTED a managed-actors row for the numbered actor",
+    accepted && existsSync(rowFile("managed", OWNER, secondName)), rowFile("managed", OWNER, secondName));
+  const secondPrincipal = (() => {
+    try { return principalKey(OWNER, secondName).key; } catch { return "<ungrammatical actor: the allocator emitted a name the mesh cannot mint>"; }
+  })();
+  check("...and the child JOINED presence as owner.<numbered> (end to end, not a string check)",
+    accepted && await until(() => observer!.getRoster().some((r) => r.card.id === secondPrincipal && r.card.name === secondName), 20000),
+    observer.getRoster().map((r) => r.card.id));
+  // RESTORE. The sections below assert over the managed-row set and the live roster, so the extra
+  // seat is torn down and its teardown is WAITED FOR rather than assumed — a stop that had not
+  // landed yet would silently widen every set those sections measure.
+  const mAny = manager as unknown as {
+    opStop: (a: Record<string, unknown>, caller: string, admin: boolean) => Promise<ControlReply>;
+    ep: { ref: () => { id: string } };
+  };
+  if (accepted) await mAny.opStop({ name: secondName, graceful: false }, mAny.ep.ref().id, true).catch(() => undefined);
+  check("...and the numbered seat leaves no trace, so the sections below see the state they expect",
+    await until(() => !existsSync(rowFile("managed", OWNER, secondName))
+      && !observer!.getRoster().some((r) => r.card.name === secondName && r.status !== "offline"), 20000),
+    { row: existsSync(rowFile("managed", OWNER, secondName)), roster: observer.getRoster().map((r) => `${r.card.name}:${r.status}`) });
   // `mesh !== "absent"` accepted ANY other string, so a row carrying a value no roster can produce
   // read as live. The reach is a cast through `unknown`, which severs the local view from the real
   // return type, so no width declared above can catch that: the closed set has to be asserted here.

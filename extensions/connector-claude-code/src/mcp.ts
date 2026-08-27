@@ -71,6 +71,17 @@ async function main(): Promise<void> {
     // publishes to are computed from the identity the connection authenticates as.
     events = new AguiEmitterHolder<ClaudeEntry>(
       async (transcriptPath: string) => {
+        // WAIT FOR THE MESH FIRST. This factory runs off the FIRST lifecycle hook, and with
+        // `--prompt` that hook lands within a second of launch — several seconds before the
+        // endpoint's first bind. Starting the emitter against the unbound endpoint answered
+        // "endpoint not started", and the holder is terminal on error BY DESIGN (a retry would
+        // re-run WAL recovery on a stream it already failed to establish) — so losing this race
+        // once silenced the event plane for the entire session, with one stderr line nothing
+        // surfaces as the only record. Measured live: the emitter died before the "connected to"
+        // log line every time. The wait is generous because it happens once, off the hot path,
+        // and a session that outlives it gets its whole plane; the timeout still fails into the
+        // holder's terminal error rather than hanging the hook.
+        await agent.whenConnected(20_000);
         // The events state root. Throws rather than defaulting to the working directory, because a
         // write-ahead log written somewhere no later start looks is a silent loss.
         const workspaceRoot = resolveEventsStateRoot(process.env);

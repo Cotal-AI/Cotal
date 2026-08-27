@@ -543,3 +543,5 @@ smoke:web-console-auth
 smoke:no-implicit-general
 smoke:session-channels
 smoke:jcode-private-lifecycle
+smoke:hook-load-emitter-race
+smoke:spawn-name-actor

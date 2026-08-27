@@ -354,6 +354,8 @@
     "smoke:serverconfig-shapes": "tsx packages/core/smoke/serverconfig-shapes.smoke.ts",
     "smoke:tls-intent": "tsx packages/workspace/smoke/tls-intent.smoke.ts",
     "smoke:cross-owner:auth": "tsx packages/core/smoke/cross-owner-auth.smoke.ts",
+    "smoke:hook-load-emitter-race": "tsx extensions/connector-claude-code/smoke/hook-load-and-emitter-race.smoke.ts",
+    "smoke:spawn-name-actor": "tsx packages/core/smoke/spawn-name-actor-token.smoke.ts",
     "smoke:auth-owner-token": "tsx implementations/auth/smoke/owner-token.smoke.ts",
     "smoke:auth-issuer": "tsx implementations/auth/smoke/issuer.smoke.ts",
     "smoke:auth-idp-bridge": "tsx implementations/auth/smoke/idp-bridge.smoke.ts",
