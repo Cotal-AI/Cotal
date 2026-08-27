@@ -106,12 +106,17 @@ const UNGATED: Record<string, string> = {
   // subject. It is ungated because it needs a real user-auth broker plus a real callout, not because
   // it is obsolete. Deleting it would drop a security proof for shipped code.
   "smoke:ctl-trust:live": "needs a real user-auth broker + callout; pins the LIVE ctl.delivery rail",
-  // #878's regression suite is REGISTERED but not chained: bin/smoke/ci-suites.txt is frozen by
-  // position until PR #880 lands (the shard walk is round-robin by INDEX, so an insert mid-file
-  // re-shards every later suite). Gating it here would be a wrong entry for the same reason, since
-  // it would still touch the frozen file. Gate it in smoke:ci when the freeze lifts; until then it
-  // runs by hand (`pnpm smoke:retirement-wedge:auth`) and the freeze reason is the entry.
-  "smoke:retirement-wedge:auth": "ci-suites.txt is frozen by position until PR #880; gate when the freeze lifts",
+  // #878's regression suite is REGISTERED but reached by NO gate today, and that is a different
+  // debt from every other entry on this list. The rest are ungated because they cannot run in CI at
+  // all: they need a real broker, a real IdP, an installed binary, or a live stack. This one needs
+  // nothing except for a freeze to lift. bin/smoke/ci-suites.txt is frozen BY POSITION until PR
+  // #880 lands (the shard walk is round-robin by INDEX, so an insert mid-file re-shards every later
+  // suite), and `check` is the wrong home for an `:auth` suite that needs a real stack. So it waits
+  // here, and its reason names its own expiry: an exclusion that cannot say when it ends is
+  // indistinguishable from a permanent one, and this one ends the day the freeze does.
+  // Until then it runs by hand: `pnpm smoke:retirement-wedge:auth`.
+  "smoke:retirement-wedge:auth":
+    "RUN BY NO GATE TODAY. Not an environmental requirement: ci-suites.txt is frozen by position until PR #880. Move it into ci-suites.txt the moment that freeze lifts, then delete this entry",
   // The bare `smoke` script — `tsx packages/core/smoke.ts`, documented in AGENTS.md as the core
   // smoke entry point, and reached by nothing. Invisible to this file until the audited set stopped
   // filtering on `smoke:`, and found by a second independent derivation rather than by this check.
