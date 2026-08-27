@@ -377,11 +377,18 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     if (code === "ENOENT") {
+      // A refusal that names no root is why this bug cost an hour. The old text asserted an absence
+      // ("no default persona yet") and prescribed a remedy (`cotal setup`) without saying WHERE it
+      // had looked — so when setup seeded a cwd-derived root and spawn read the resolved mesh's,
+      // the message survived running the exact command it named and pointed at nothing to check.
+      // Name the absolute directory checked and the mesh that root came from: the two facts that
+      // make the disagreement visible in one read.
+      const where = `${target.personaRoot} (mesh "${target.space}" at ${target.server}${target.source === "current" ? ", your current mesh" : target.source === "registry" ? ", the only mesh running" : ""})`;
       console.error(
         c.red(
           ref === "default" && !defaultPersona
-            ? "✗ no default persona yet - run `cotal setup` to seed one, or name a persona: `cotal spawn <name>`"
-            : `✗ no persona "${ref}"${!values.config && !positionals[0] && defaultPersona ? " from COTAL_DEFAULT_PERSONA" : ""} in ${target.space}'s ${target.personaRoot} - pass a catalog name, or use \`--config <path>\` for a file elsewhere`,
+            ? `✗ no default persona in ${where} - run \`cotal setup\` here to seed one into that directory, or name a persona: \`cotal spawn <name>\``
+            : `✗ no persona "${ref}"${!values.config && !positionals[0] && defaultPersona ? " from COTAL_DEFAULT_PERSONA" : ""} in ${where} - pass a catalog name, or use \`--config <path>\` for a file elsewhere`,
         ),
       );
     } else {
