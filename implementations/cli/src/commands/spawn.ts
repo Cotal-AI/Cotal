@@ -77,7 +77,7 @@ export function spawnComplete(argv: string[]): CompletionResult {
   if (flag?.name === "agent")
     return { items: registry.all<Connector>("connector").map((c) => ({ value: c.name })), directive: "nofiles" };
   if (flag?.name === "role")
-    return { items: listDeclaredRoles().map((value) => ({ value, description: "declared role" })), directive: "nofiles" };
+    return { items: declaredFrom(argv, listDeclaredRoles).map((value) => ({ value, description: "declared role" })), directive: "nofiles" };
   if (flag?.name === "config") {
     const current = argv[argv.length - 1] ?? "";
     if (current.includes("/") || current.includes("\\") || current.endsWith(".md")) return { items: [], directive: "default" };
@@ -88,7 +88,7 @@ export function spawnComplete(argv: string[]): CompletionResult {
     }
   }
   if (flag && ["subscribe", "allow-subscribe", "allow-publish"].includes(flag.name))
-    return { items: listDeclaredChannels().map((value) => ({ value, description: "declared channel" })), directive: "nofiles" };
+    return { items: declaredFrom(argv, listDeclaredChannels).map((value) => ({ value, description: "declared channel" })), directive: "nofiles" };
   if (flag && ["cwd", "file", "creds"].includes(flag.name)) return { items: [], directive: "default" };
   if (flag?.name === "runtime")
     return { items: ["pty", ...extensionNames("runtime")].filter((value, i, all) => all.indexOf(value) === i).map((value) => ({ value })), directive: "nofiles" };
@@ -113,6 +113,24 @@ function personaItems(argv: string[]) {
     server: completedFlagValue(argv, spawnFlags, "server"),
   });
   return listPersonas(target.root).map((p) => ({ value: p.name }));
+}
+
+/** Channels/roles declared by the TARGET mesh's personas — the same root {@link personaItems}
+ *  uses, so `--role`/`--subscribe` complete from the personas this spawn would actually launch
+ *  rather than from whatever project the operator is standing in. Offline (no probe) and FAIL
+ *  CLOSED: with no single resolvable target, or a malformed persona file (see `declaredValues`),
+ *  offer nothing rather than throw into the operator's shell. */
+function declaredFrom(argv: string[], list: (root: string) => string[]): string[] {
+  try {
+    return list(
+      resolveMeshTarget(process.cwd(), {
+        space: completedFlagValue(argv, spawnFlags, "space"),
+        server: completedFlagValue(argv, spawnFlags, "server"),
+      }).root,
+    );
+  } catch {
+    return [];
+  }
 }
 
 /** Persona selection precedence shared by foreground and detached spawn. */
