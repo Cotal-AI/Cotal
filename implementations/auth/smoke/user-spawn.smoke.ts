@@ -489,21 +489,27 @@ try {
   // is an illegible kill, indistinguishable from no coverage. Measured: reverting the separator
   // did exactly that, and this ordering is what turns it into a named failure.
   const second: ControlReply = await manager.startAgent({ name: "alpha", agent: "e2e", owner: OWNER });
+  // EVERY step below is gated on `accepted` and nothing in this section throws. A section that
+  // aborts when its subject regresses produces an ILLEGIBLE kill: the run dies, the completion
+  // marker never prints, and "something broke" is indistinguishable from "this is not covered".
+  // Measured — reverting the separator reddened the right cell and then killed the suite anyway,
+  // which the harness correctly refused to count.
+  const accepted = second.ok === true;
   check("the SECOND spawn of a LIVE name is accepted (the `-` separator made this impossible)",
-    second.ok === true, second);
+    accepted, second);
   check(`...and allocated the auto-numbered name (${secondName})`,
-    (second.data as { name?: string } | undefined)?.name === secondName,
+    accepted && (second.data as { name?: string } | undefined)?.name === secondName,
     { got: (second.data as { name?: string } | undefined)?.name, expected: secondName });
   // THE HALF THAT USED TO BE IMPOSSIBLE. A `-` in an actor is refused by the grammar before any row
   // is written, so a managed row for the numbered name could not exist. Its presence is the mint
   // having actually happened, not a name having been formatted.
   check("...and the auth service MINTED a managed-actors row for the numbered actor",
-    existsSync(rowFile("managed", OWNER, secondName)), rowFile("managed", OWNER, secondName));
+    accepted && existsSync(rowFile("managed", OWNER, secondName)), rowFile("managed", OWNER, secondName));
   const secondPrincipal = (() => {
     try { return principalKey(OWNER, secondName).key; } catch { return "<ungrammatical actor: the allocator emitted a name the mesh cannot mint>"; }
   })();
   check("...and the child JOINED presence as owner.<numbered> (end to end, not a string check)",
-    await until(() => observer!.getRoster().some((r) => r.card.id === secondPrincipal && r.card.name === secondName), 20000),
+    accepted && await until(() => observer!.getRoster().some((r) => r.card.id === secondPrincipal && r.card.name === secondName), 20000),
     observer.getRoster().map((r) => r.card.id));
   // RESTORE. The sections below assert over the managed-row set and the live roster, so the extra
   // seat is torn down and its teardown is WAITED FOR rather than assumed — a stop that had not
@@ -512,8 +518,8 @@ try {
     opStop: (a: Record<string, unknown>, caller: string, admin: boolean) => Promise<ControlReply>;
     ep: { ref: () => { id: string } };
   };
-  await mAny.opStop({ name: secondName, graceful: false }, mAny.ep.ref().id, true);
-  check("...and the numbered seat is fully torn down, so the sections below see the state they expect",
+  if (accepted) await mAny.opStop({ name: secondName, graceful: false }, mAny.ep.ref().id, true).catch(() => undefined);
+  check("...and the numbered seat leaves no trace, so the sections below see the state they expect",
     await until(() => !existsSync(rowFile("managed", OWNER, secondName))
       && !observer!.getRoster().some((r) => r.card.name === secondName && r.status !== "offline"), 20000),
     { row: existsSync(rowFile("managed", OWNER, secondName)), roster: observer.getRoster().map((r) => `${r.card.name}:${r.status}`) });
