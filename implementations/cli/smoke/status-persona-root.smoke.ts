@@ -13,7 +13,7 @@
  * Run: pnpm smoke:status-persona-root
  */
 import { strict as assert } from "node:assert";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeScratch } from "../../../bin/smoke/_scratch.js";
@@ -159,6 +159,44 @@ try {
   clearCurrent();
   const unresolved = thisFolder(await runStatus(mkdtempSync(join(tmpdir(), "cotal-neutral-"))));
   check("unresolved target: does not throw, and refuses to imply launchability", /spawn root\s+unresolved/.test(strip(unresolved)), strip(unresolved));
+
+  // Two SPELLINGS of one directory are one directory. `sameDir` compares through `canonicalRoot`
+  // so a symlinked root is not read as a divergence; a raw `===` would FABRICATE a split and send
+  // the operator chasing a difference that does not exist — the mirror image of the bug this file
+  // guards, and worse than silence because it invents a diagnosis.
+  //
+  // Getting a REACHABLE fixture for this took three wrong attempts, and the wrong ones all PASSED
+  // with the guard removed, i.e. they were checks that could not fail. Recorded so the next editor
+  // does not repeat them:
+  //   1. symlink under `os.tmpdir()` -> tmpdir is ITSELF a symlink on this host, so both sides
+  //      canonicalized to one string and nothing differed.
+  //   2. standing in the link via `process.chdir(link)` -> `process.cwd()` returns the KERNEL's
+  //      canonical path, so the link spelling never survives into `status` at all. The folder side
+  //      can therefore never be non-canonical: it is `findCotalRoot(process.cwd())`.
+  //   3. recording the realpath -> both sides canonical, nothing to collapse.
+  // The one reachable asymmetry: the folder side is always kernel-canonical, so the SPAWN side must
+  // be the non-canonical one — a registry entry whose root was recorded through a symlink (exactly
+  // what `cotal meshes add --root <symlinked path>` writes). `canonicalRoot` must collapse them.
+  clearCurrent();
+  const linkRoot = join(scratch, "link-to-folder");
+  symlinkSync(realpathSync.native(folderRoot), linkRoot, "dir");
+  recordMesh({ space: "canon", server: "nats://127.0.0.1:4224", root: linkRoot, mode: "open", ts: "2026-06-22T00:00:00.000Z" });
+  setCurrent("canon");
+  // Premise: the two catalog paths really are different STRINGS naming the SAME directory. If this
+  // ever stops holding, the cell below is vacuous and must not be read as evidence.
+  const folderSide = join(realpathSync.native(folderRoot), ".cotal", "agents");
+  const spawnSide = join(linkRoot, ".cotal", "agents");
+  check(
+    "premise: recorded root is a different SPELLING of the same directory",
+    folderSide !== spawnSide && realpathSync.native(folderSide) === realpathSync.native(spawnSide),
+    { folderSide, spawnSide },
+  );
+  const spelled = thisFolder(await runStatus(folderRoot));
+  check(
+    "two spellings of ONE root collapse (canonicalRoot), no fabricated divergence",
+    !/spawn root/.test(strip(spelled)) && !/→ launches/.test(strip(spelled)),
+    strip(spelled),
+  );
 
   assert.equal(failures.length, 0, `\n  ${failures.join("\n  ")}\n${failures.length} check(s) failed`);
   console.log(`\nstatus-persona-root smoke: ${pass} checks passed`);
