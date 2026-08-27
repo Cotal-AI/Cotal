@@ -37,6 +37,12 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p: string) => readFileSync(join(root, p), "utf8");
+/** Source with comments removed. EVERY source-reading cell below uses this. The `extension.ts`
+ *  cells stripped comments and said why — prose that MENTIONS a flag would otherwise be counted as
+ *  a launch shape — and then the `mcp.ts` and `agent.ts` cells read raw source ten lines later, so
+ *  a comment naming `whenConnected` satisfied them with the call deleted. A review found that; the
+ *  defence now lives in one helper instead of in one cell's discipline. */
+const strip = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 
 // ---- 1. the hook manifest ----
 const hooksRaw = read("hooks/hooks.json");
@@ -70,7 +76,7 @@ check("BOTH pass --plugin-dir, so the plugin's hooks are actually loaded",
   { missing: argvLines.filter((l) => !l.includes("--plugin-dir")) });
 
 // ---- 3. the emitter race ----
-const mcp = read("src/mcp.ts");
+const mcp = strip(read("src/mcp.ts"));
 const iWait = mcp.indexOf("await agent.whenConnected(");
 const iRoot = mcp.indexOf("resolveEventsStateRoot(");
 console.log("\nthe emitter — it must not start against an unbound endpoint:");
@@ -79,7 +85,7 @@ check("instrument control: the emitter setup this guards is in this file", iRoot
 check("…and the wait comes BEFORE the emitter is set up (the ordering IS the fix)",
   iWait !== -1 && iRoot !== -1 && iWait < iRoot, { iWait, iRoot });
 
-const agent = readFileSync(join(root, "..", "connector-core", "src", "agent.ts"), "utf8");
+const agent = strip(readFileSync(join(root, "..", "connector-core", "src", "agent.ts"), "utf8"));
 check("connector-core exposes a PUBLIC bounded wait for callers outside the op methods",
   /async whenConnected\(timeoutMs: number = CONNECT_GRACE_MS\): Promise<void>/.test(agent));
 check("…which returns immediately when already connected (no cost on the hot path)",
@@ -87,7 +93,54 @@ check("…which returns immediately when already connected (no cost on the hot p
 check("…and FAILS past the window rather than resolving as if connected",
   /whenConnected[\s\S]{0,300}?throw new Error\(this\.notConnectedMessage\(\)\)/.test(agent));
 
+// ---- 4. the connect guard, EXECUTED ------------------------------------------------------------
+// Every cell above is a regex over source text, and a regex cannot witness behaviour: `if (false)
+// throw new Error(this.notConnectedMessage())` keeps the matched text and removes the guard, so the
+// source cells stay green while the wait resolves as if connected — a dead broker reported as live,
+// the plane silent for the session, which is the exact outcome this change exists to prevent. A
+// review found that by mutation; it is the reason this section exists.
+//
+// The SHIPPED method runs here. Only its collaborators are faked: `whenConnected` reads `_connected`,
+// `ep` (for the connection event) and `config` (for the remedy text), so an object on the real
+// prototype with those three fields executes the real body — including any mutation to it. Faking
+// the collaborators is the point; faking the component under test would prove nothing.
+// SOURCE, not the package. `@cotal-ai/connector-core` resolves to the BUILT dist, so a mutation to
+// `src/agent.ts` would not be in the code this cell executes — measured: the fail-open mutant
+// SURVIVED with a positive control proving the file was reached, because the running body was the
+// previous build. Importing the source keeps the mutation and the execution over the same bytes.
+const { MeshAgent } = await import("../../connector-core/src/agent.js");
+const { EventEmitter } = await import("node:events");
+const fakeAgent = (connected: boolean): { whenConnected(ms?: number): Promise<void>; ep: InstanceType<typeof EventEmitter> } => {
+  const ep = new EventEmitter();
+  const a = Object.create(MeshAgent.prototype) as Record<string, unknown>;
+  a._connected = connected;
+  a.ep = ep;
+  a.config = { servers: "nats://127.0.0.1:59999" };
+  return a as unknown as { whenConnected(ms?: number): Promise<void>; ep: InstanceType<typeof EventEmitter> };
+};
+const settle = async (p: Promise<unknown>): Promise<"resolved" | "rejected"> =>
+  p.then(() => "resolved" as const, () => "rejected" as const);
+
+console.log("\nthe connect guard, executed (not read):");
+// THE KILL for a fail-open guard: nothing ever emits `connection`, so the window must close INTO a
+// throw. A guard that resolves here is the silent-plane regression.
+check("an unbound endpoint REJECTS past the window (the guard does not fail open)",
+  (await settle(fakeAgent(false).whenConnected(60))) === "rejected");
+// POSITIVE CONTROL, so the cell above is not passing because the method always throws.
+check("control: an ALREADY-connected agent resolves (the guard is not simply always-throwing)",
+  (await settle(fakeAgent(true).whenConnected(60))) === "resolved");
+// And it resolves on the real signal, so the wait is bound to the endpoint's own connection event
+// rather than to a timer that happens to expire the right way.
+const late = fakeAgent(false);
+const latePromise = settle(late.whenConnected(5_000));
+setTimeout(() => late.ep.emit("connection", { connected: true }), 20);
+check("…and resolves on the endpoint's OWN connection signal, not on a timer",
+  (await latePromise) === "resolved");
+// The refusal has to be actionable: a bare failure sends someone to repair the wrong thing.
+const msg = await fakeAgent(false).whenConnected(60).then(() => "", (e: Error) => e.message);
+check("…and the refusal names the broker it could not reach", msg.includes("59999"), msg);
+
 console.log(`\nHOOK-LOAD/EMITTER-RACE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
-const EXPECTED = 14;
+const EXPECTED = 18;
 if (pass + fail !== EXPECTED) { console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail}`); process.exitCode = 1; }
 if (fail) process.exitCode = 1;

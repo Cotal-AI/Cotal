@@ -28,6 +28,15 @@
     "E6 makes the bounded wait resolve on timeout instead of failing. Every ordering and presence",
     "cell stays green, and a genuinely dead broker is then reported to the emitter as connected.",
     "",
+    "E7 AND E8 CAME FROM THE REVIEW LANE AND THEY CHANGED THIS SUITE'S SHAPE. As first written every",
+    "cell here was readFileSync + regex over source text. That is the right instrument for defect (1),",
+    "which is decided in a JSON manifest before any process exists \u2014 but it is the WRONG instrument for",
+    "defect (2), whose whole failure mode is silence. A regex matches a `throw` whether or not it is",
+    "reachable, so `if (false) throw` kept every source cell green while the guard failed open. The",
+    "suite now EXECUTES the shipped `whenConnected` against a faked endpoint, which is the only way a",
+    "behavioural fix can be witnessed. Stated plainly because it is the lesson: a suite guarding",
+    "against silence must be able to hear.",
+    "",
     "SPECIFIER BOUNDARY. These cells read the shipped manifest and the shipped sources from disk,",
     "which is where both defects live and are decided \u2014 before any process starts. The suite asserts",
     "its own instrument controls first (a manifest with no hooks, and the presence of the emitter",
@@ -116,6 +125,24 @@
       "expectRed": "\u2026and FAILS past the window rather than resolving as if connected",
       "cell": "\u2026and FAILS past the window rather than resolving as if connected",
       "note": "Every presence and ordering cell stays green. A genuinely dead broker is then reported to the emitter as connected, converting a loud failure into the same silence this whole suite exists to prevent."
+    },
+    {
+      "name": "E7 the wait is COMMENTED OUT, leaving the text in place",
+      "file": "extensions/connector-claude-code/src/mcp.ts",
+      "find": "        await agent.whenConnected(20_000);",
+      "replace": "        // await agent.whenConnected(20_000);",
+      "expectRed": "the emitter path AWAITS the mesh link",
+      "cell": "the emitter path AWAITS the mesh link",
+      "note": "Found by the review lane, not by me. The guard is GONE and every character a source scan looks for is still on disk. This is the hazard I identified for extension.ts, wrote a comment explaining, and then did not apply to mcp.ts or agent.ts ten lines later \u2014 so the defence now lives in one `strip` helper every source-reading cell uses, rather than in one cell's discipline."
+    },
+    {
+      "name": "E8 the connect guard FAILS OPEN (text intact, behaviour gone)",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (!(await this.awaitConnection(timeoutMs))) throw new Error(this.notConnectedMessage());",
+      "replace": "    if (false) throw new Error(this.notConnectedMessage());",
+      "expectRed": "an unbound endpoint REJECTS past the window",
+      "cell": "an unbound endpoint REJECTS past the window (the guard does not fail open)",
+      "note": "THE ONE THAT MATTERS, found by the review lane. A genuinely dead broker is reported to the emitter as connected: the holder starts against an unbound endpoint, fails terminally, and the plane is silent for the whole session \u2014 the exact outcome this change exists to prevent. Every SOURCE cell stays green because the `throw` is still there; E6 only passes because it happens to delete the matched text, while this keeps the text and removes the behaviour. A regex cannot witness a behavioural fix. Killed only by executing the shipped method against a faked endpoint."
     }
   ]
 }
