@@ -69,11 +69,33 @@
     },
     {
       "cell": "a hand-written agent: parses as the modelled harness pin (agent-file smoke)",
-      "name": "loader sweeps agent: back into the unmodelled meta bag",
+      "name": "loader stops parsing agent: into the modelled field (full unmodelled restore)",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "    tags: list(\"tags\"),\n    agent: str(\"agent\"),\n    subscribe,",
+      "replace": "    tags: list(\"tags\"),\n    subscribe,",
+      "expectRed": "✗ FAIL: a hand-written agent: parses as the modelled harness pin",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:agent-file",
+      "completionMarker": "agent-file yaml smoke:",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "cell": "a hand-written agent: parses as the modelled harness pin (agent-file smoke)",
+      "name": "loader drops agent: from the known-set, double-capturing it into meta",
       "file": "packages/core/src/agent-file.ts",
       "find": "  const known = new Set([\"name\", \"role\", \"kind\", \"description\", \"tags\", \"subscribe\", \"allowSubscribe\", \"allowPublish\", \"quiet\", \"muted\", \"agent\", \"model\", \"variant\", \"launchOptions\", \"capabilities\", \"owner\"]);",
       "replace": "  const known = new Set([\"name\", \"role\", \"kind\", \"description\", \"tags\", \"subscribe\", \"allowSubscribe\", \"allowPublish\", \"quiet\", \"muted\", \"model\", \"variant\", \"launchOptions\", \"capabilities\", \"owner\"]);",
       "expectRed": "✗ FAIL: a modelled agent: no longer lands in meta",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:agent-file",
+      "completionMarker": "agent-file yaml smoke:",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "cell": "round-trips the agent harness pin (#869)",
+      "name": "writer stops emitting the pin, so a redefine silently drops it",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "  if (def.agent) fm.agent = def.agent;\n  if (def.model) fm.model = def.model;",
+      "replace": "  if (def.model) fm.model = def.model;",
+      "expectRed": "✗ FAIL: round-trips the agent harness pin",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:agent-file",
       "completionMarker": "agent-file yaml smoke:",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
