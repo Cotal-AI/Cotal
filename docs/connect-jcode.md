@@ -117,8 +117,18 @@ quiet ambient from that host-owned queue; its shared optional `peek` argument is
 `--model` is passed to Jcode's session-level Harness API model selector. Jcode validates the model
 against the active provider, then the connector reads runtime identity back and refuses startup if
 it is not the requested model; a seat is never allowed to join under a model label it did not
-receive. The connector does not currently offer a Cotal model catalog because the Harness API's
-`listModels()` is session-scoped and provider-specific.
+receive.
+
+`cotal models --agent jcode` reads the declared catalog from the operator Jcode home's
+`config.toml`: each provider with `model_catalog = true`, its `[[providers.<name>.models]]` ids,
+and any declared `reasoning_efforts`. This is the same config Jcode copies into a private managed
+instance. The command fails loud when the file is unreadable, malformed, or enables a catalog
+without model entries.
+
+The listed effort tiers are declarations, not provider-verified capabilities. Providers can reject
+a tier the file names, so launch remains the authority: Jcode applies the requested value and a
+provider rejection ends the launch. `--refresh` does not turn this local declaration into a live
+probe.
 
 `--variant` is the session's **reasoning effort**, applied after the model and before the seat's
 first turn — so a seat never serves a turn at an effort nobody chose. A persona's `variant:` is the
