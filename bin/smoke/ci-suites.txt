@@ -180,6 +180,15 @@ smoke:agent-file
 # and never reaches it, so a template that forgot the field would ship an agent whose read set is
 # whatever the current default happens to be.
 smoke:persona-templates
+
+# The persona catalog answers for the RESOLVED MESH, not for the cwd. `personasDir(root =
+# cotalRoot())` defaulted to the directory the cwd walks up to, so `cotal personas` described one
+# project while `cotal spawn` — the only caller passing the resolved root — launched from another,
+# and the two sets could be disjoint with neither surface saying so. Runs next to persona-templates
+# because both guard the catalog: that one guards what gets WRITTEN into it, this one guards which
+# catalog is READ. Includes the four <TAB> completers, which a typecheck cannot cover — passing
+# `cotalRoot()` there silences the compiler and keeps the bug.
+smoke:persona-root
 smoke:card-host
 smoke:attach-auth
 smoke:attach-host-persistence
