@@ -138,8 +138,6 @@ smoke:deprovision
 smoke:channels:auth
 smoke:e2e:acl
 smoke:cross-owner:auth
-smoke:hook-load-emitter-race
-smoke:spawn-name-actor
 smoke:plane3:auth
 smoke:delivery-lease:auth
 smoke:delivery-leave-tombstone:auth
@@ -545,3 +543,5 @@ smoke:web-console-auth
 smoke:no-implicit-general
 smoke:session-channels
 smoke:jcode-private-lifecycle
+smoke:hook-load-emitter-race
+smoke:spawn-name-actor
