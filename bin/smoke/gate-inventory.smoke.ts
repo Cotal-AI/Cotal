@@ -63,6 +63,10 @@ const SCRIPT_RE = /(smoke:[A-Za-z0-9:_-]+)/g;
 const BROKEN = "BROKEN:";
 
 const UNGATED: Record<string, string> = {
+  // ci-suites.txt is frozen by POSITION until PR #880 lands. The shard walk is round-robin by
+  // index, so inserting this suite there would silently move every later suite to another runner.
+  // Keep the real broker regression runnable by name and make the temporary exclusion explicit.
+  "smoke:manager-inspect-auth": "ci-suites.txt is frozen by position until PR #880; gate when the freeze lifts",
   // Need external tooling no CI runner has.
   "smoke:orca:live": "drives the public orca CLI",
   "smoke:orca-e2e:live": "drives the public orca CLI", "smoke:pi": "needs a pi install", "smoke:codex-live": "needs a logged-in codex CLI",

@@ -1,0 +1,48 @@
+{
+  "suite": "packages/core/smoke/manager-inspect-auth.smoke.ts + extensions/connector-core/smoke/manager-invoke-verdict.smoke.ts",
+  "guard": "a broker-refused endpoint publish is surfaced immediately as permission-denied, while an admitted request with no responder remains an unanswered availability failure",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:manager-inspect-auth",
+  "completionMarker": "caller verdict boundary:",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/manager-inspect-auth.json",
+  "why": [
+    "THE DEFECT LIVES BETWEEN THE GRANT ARRAY AND THE BROKER. The first suite signs the historical",
+    "spawn profile through the ordinary account chain and publishes the exact manager.inspect subject",
+    "to a self-owned JWT broker. It also mints the current spawn profile and a capability-less profile",
+    "as the positive and negative controls.",
+    "",
+    "THE SURFACING HALF IS SEPARATE. The transport reports a refused core publish asynchronously on",
+    "nc.status(); without the subject-scoped watch epCall waits out the reply budget and stamps",
+    "EP_UNANSWERED. Mutation 1 removes that watch and must fail on the named permission-denied cell.",
+    "",
+    "THE CONNECTOR MUST NOT RE-COLLAPSE THE DISTINCTION. Mutation 2 restores the old two-cause sentence",
+    "for actual silence. The verdict smoke requires a no-responder call to name manager availability",
+    "only, while a typed publish refusal names the capability only.",
+    "",
+    "BUILD FIRST, REBUILD ON RESTORE: connector-core imports @cotal-ai/core through dist, so source",
+    "mutations are invisible there until core is rebuilt."
+  ],
+  "mutations": [
+    {
+      "name": "epCall stops watching the status stream, so a broker refusal becomes a false unanswered deadline again",
+      "file": "packages/core/src/endpoint-verbs.ts",
+      "find": "    const msg = await Promise.race([outcome, timeout, denied]);",
+      "replace": "    const msg = await Promise.race([outcome, timeout]);",
+      "expectRed": "a broker-denied inspect reports permission-denied, not a false unanswered deadline",
+      "cell": "a broker-denied inspect reports permission-denied, not a false unanswered deadline",
+      "note": "The shipped failure shape from #904: nc.publish returned, the asynchronous publish violation was ignored, and the caller waited to deadline with EP_UNANSWERED. The real broker cell turns that exact regression red.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "the connector again tells an unanswered caller that a capability denial may have happened",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "            ? `${e.message} (no responder answered - the manager may be down or unreachable)`",
+      "replace": "            ? `${e.message} (no responder answered - a manager may be down, or this credential holds no \"${command}\" capability and the broker denied the request)`",
+      "expectRed": "names manager availability only, never a broker refusal",
+      "cell": "...and names manager availability only, never a broker refusal the caller can distinguish",
+      "note": "Once core distinguishes the transport facts, retaining the old ambiguous sentence is confidently wrong. This mutation restores the exact collapsed guidance and the rendering assertion catches it.",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:manager-invoke-verdict",
+      "completionMarker": "the verdict comes from the marker, not the code:",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    }
+  ]
+}

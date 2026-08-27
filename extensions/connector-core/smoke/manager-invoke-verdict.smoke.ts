@@ -8,8 +8,8 @@
  * The code is not evidence of silence, and keying on it was wrong in BOTH directions:
  *
  *   - The broker's no-responders 503 is raised as `unavailable`, WITH the marker (endpoint-verbs
- *     `epCall`). That is the case where the capability-denial explanation is most certain, and the
- *     code-keyed branch was the one case that withheld it.
+ *     `epCall`). That means the publish was admitted and no service answered. A publish refusal is
+ *     observed separately from the connection status stream.
  *   - An answered `ok:false` describe is ALSO `unavailable`, WITHOUT the marker, and deliberately so.
  *     A manager answered. Telling an agent nobody did invites the retry that duplicates a spawn.
  *
@@ -28,6 +28,7 @@
  * one that throws. Run: pnpm smoke:manager-invoke-verdict
  */
 import { EpEnvelopeError, EP_UNANSWERED, EP_UNBOUND_RESPONDER } from "@cotal-ai/core";
+import { PermissionViolationError } from "@nats-io/transport-node";
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 
@@ -69,8 +70,8 @@ console.log("the verdict comes from the marker, not the code:");
 //    code-keyed branch printed the bare code and dropped the one explanation that was certain.
 const noResponders = await render(new EpEnvelopeError("unavailable", "no responder for manager.purge (SPEC 13.5)", [unanswered]));
 check("no-responders 503 (`unavailable`, MARKED) says nobody answered", SILENCE.test(noResponders), noResponders);
-check("...and names the capability as a cause, which is what the code-keyed branch withheld",
-  /capability and the broker denied/.test(noResponders), noResponders);
+check("...and names manager availability only, never a broker refusal the caller can distinguish",
+  /manager may be down or unreachable/.test(noResponders) && !/credential holds no/.test(noResponders), noResponders);
 
 // 2. Unchanged: a describe that drew no reply at all.
 const deadline = await render(new EpEnvelopeError("deadline-exceeded", "no describe reply from manager within 10000ms", [unanswered]));
@@ -94,7 +95,18 @@ check("...and core's account survives intact", split.includes("SAYS NOTHING ABOU
 const plain = await render(new Error("connection closed"));
 check("a non-envelope failure states no verdict at all", !SILENCE.test(plain) && plain === "connection closed", plain);
 
-const EXPECTED_CELLS = 8;
+// 6. A publish denial is transport-proven, not ambiguous silence. Core preserves the typed NATS
+//    cause on its structured refusal, so the connector names the ONE remedy and never suggests
+//    starting a manager could repair an ACL failure.
+const deniedSubject = "cotal.smoke.ep.one.manager.purge.local.caller.uid.nonce";
+const publishError = new PermissionViolationError(`Permissions Violation for Publish to "${deniedSubject}"`, "publish", deniedSubject);
+const brokerRefused = new EpEnvelopeError("permission-denied", "the manager.purge request was REFUSED BY THE BROKER, not unanswered");
+(brokerRefused as Error & { cause?: unknown }).cause = publishError;
+const denied = await render(brokerRefused);
+check("a broker-denied publish says one thing: grant the capability", /Grant the "purge" capability/.test(denied), denied);
+check("...and does not suggest starting or waiting for a manager as an alternative", !SILENCE.test(denied) && !/manager may be down/.test(denied), denied);
+
+const EXPECTED_CELLS = 10;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

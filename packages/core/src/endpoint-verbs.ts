@@ -13,7 +13,7 @@
  * verbs pin `class: "ephemeral"`; submissions go through the `epj` journal machinery (§13.4).
  */
 import { randomBytes } from "node:crypto";
-import type { Msg, NatsConnection, Subscription } from "@nats-io/transport-node";
+import { PermissionViolationError, type Msg, type NatsConnection, type Subscription } from "@nats-io/transport-node";
 import { spacePrefix } from "./subjects.js";
 import {
   epRequestSubject, parseEpSubject, callerTokens, assertLifecycleToken, assertBoundedOwner,
@@ -376,7 +376,18 @@ export async function epCall(
   const started = Date.now();
   let sub: Subscription | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let statusStream: (AsyncIterable<{ type: string; error?: Error }> & { stop(): void }) | undefined;
+  let statusIter: AsyncIterator<{ type: string; error?: Error }> | undefined;
   try {
+    // A core NATS publish is fire-and-forget: a broker ACL refusal arrives asynchronously on the
+    // connection status stream, not from `nc.publish`. Without this subject-scoped watch the call
+    // waits out its whole reply budget and reports EP_UNANSWERED, collapsing "the broker refused
+    // this credential" into "no service answered" even though the transport told us which occurred.
+    // The remedies are opposite, so keep the distinction at the verb boundary that owns the publish.
+    statusStream = nc.status() as typeof statusStream;
+    if (typeof statusStream?.stop !== "function")
+      throw new EpEnvelopeError("unavailable", `the NATS connection's status() stream does not expose stop(); the ${op.endpoint}.${op.command} permission watch cannot be released and would leak a listener per call`);
+    statusIter = statusStream[Symbol.asyncIterator]();
     const outcome = new Promise<{ subject: string; data: Uint8Array }>((resolve, reject) => {
       sub = nc.subscribe(replySubjectFor(space, op.caller, req.n), {
         callback: (err, msg) => {
@@ -397,7 +408,29 @@ export async function epCall(
     });
     nc.publish(req.subject, req.body, { reply: noRespReplyTo });
     const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no reply to ${op.endpoint}.${op.command} within the ${deadlineMs}ms budget (SPEC 13.5)`, [unansweredDetail(op)])), deadlineMs); });
-    const msg = await Promise.race([outcome, timeout]);
+    const denied = new Promise<never>((_, reject) => {
+      void (async () => {
+        const it = statusIter!;
+        for (;;) {
+          const { value: s, done } = await it.next();
+          if (done === true || s === undefined) return;
+          if (s.type !== "error") continue;
+          if (s.error instanceof PermissionViolationError
+            && s.error.operation === "publish"
+            && s.error.subject === req.subject) {
+            const refused = new EpEnvelopeError("permission-denied",
+              `the ${op.endpoint}.${op.command} request was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${req.subject}". The responder may be perfectly healthy; the grant is what is missing (SPEC 13.2)`);
+            // Preserve the transport's typed operation proof. Callers that need to distinguish a
+            // publish refusal from a responder's ordinary `permission-denied` can then use the same
+            // isPublishPermissionDenied helper as every other NATS-facing surface.
+            (refused as Error & { cause?: unknown }).cause = s.error;
+            reject(refused);
+            return;
+          }
+        }
+      })().catch(() => { /* a status stream ending is not a call failure; the reply deadline still governs */ });
+    });
+    const msg = await Promise.race([outcome, timeout, denied]);
     const attributed = parseAttributedReply(space, msg.subject, msg.data, req.requestId, op, expect);
     // Taken BEFORE the currency check below, because a responder that fenced on the bind settled
     // the same question better: it knows it did not run the command, where the check can only
@@ -464,6 +497,8 @@ export async function epCall(
   } finally {
     sub?.unsubscribe();
     if (timer !== undefined) clearTimeout(timer);
+    statusStream?.stop();
+    void statusIter?.return?.(undefined);
   }
 }
 

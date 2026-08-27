@@ -12,6 +12,11 @@ like any other; no subject, envelope, or grant in this surface knows it speciall
 manager is a service on the mesh, not an authority over it: it holds only the capability
 rows its callers grant it, and serves over a scoped credential.
 
+A request publish rejected by the broker is reported as `permission-denied` immediately and
+names the missing grant. It is not reported as an unanswered endpoint timeout: the NATS status
+stream distinguishes a refused publish from an admitted request that no service answered, and
+the two require opposite repairs.
+
 ## The `ep` rails
 
 One kind, `ep`, carries every request under a mode token that says where the request

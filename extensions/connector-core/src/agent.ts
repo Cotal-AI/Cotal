@@ -1079,9 +1079,7 @@ export class MeshAgent extends EventEmitter {
    *  path (describe → §13.7 store fetch → digest-verified recompile → typed command), adapted back to
    *  the {@link ControlReply} shape every tool above consumes. `undefined` args are stripped BEFORE the
    *  compiled input contract validates (closed schemas reject present-but-undefined keys; the ctl path
-   *  shed them in JSON serialization). A broker-denied publish (a capability the caller's credential
-   *  does not hold, e.g. a capability-less purge) has NO responder and surfaces as the deadline —
-   *  named here so the refusal reads as the tier boundary it is. */
+   *  shed them in JSON serialization). */
   private async managerInvoke(
     command: string,
     args: Record<string, unknown> | undefined,
@@ -1094,8 +1092,8 @@ export class MeshAgent extends EventEmitter {
     } catch (e) {
       // The verdict "nobody answered" comes from core's answer-provenance marker, NEVER from the
       // catalog code. `deadline-exceeded` has two producers that call for opposite responses: the
-      // describe drew no reply at all (nothing ran, and the likely causes are a manager down or a
-      // capability this credential does not hold), or a goal was ACCEPTED and its terminal did not
+      // request drew no reply at all (nothing ran, and the manager is unavailable), or a goal was
+      // ACCEPTED and its terminal did not
       // arrive in time - where a responder took the request and the effect may already have landed.
       // Keying on the code told every caller the first story for both, which is the peer-side twin
       // of the blanket "no manager reachable" the CLI used to print, and it is the more dangerous
@@ -1105,8 +1103,10 @@ export class MeshAgent extends EventEmitter {
       if (e instanceof EpEnvelopeError)
         return {
           ok: false,
-          error: unansweredRequest(e)
-            ? `${e.message} (no responder answered - a manager may be down, or this credential holds no "${command}" capability and the broker denied the request)`
+          error: isPublishPermissionDenied(e)
+            ? `${e.message} Grant the "${command}" capability to this credential; starting or waiting for a manager cannot repair a broker refusal.`
+            : unansweredRequest(e)
+            ? `${e.message} (no responder answered - the manager may be down or unreachable)`
             : `${e.code}: ${e.message}`,
         };
       return { ok: false, error: (e as Error).message };
