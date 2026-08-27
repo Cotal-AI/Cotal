@@ -63,9 +63,6 @@ const SCRIPT_RE = /(smoke:[A-Za-z0-9:_-]+)/g;
 const BROKEN = "BROKEN:";
 
 const UNGATED: Record<string, string> = {
-  // ci-suites.txt is frozen by position until PR #880. Inserting here would re-shard every later
-  // suite, so this is a one-line reversal when that freeze lifts.
-  "smoke:sandbox-guard": "ci-suites.txt is frozen by position until PR #880; gate when the freeze lifts",
   // Need external tooling no CI runner has.
   "smoke:orca:live": "drives the public orca CLI",
   "smoke:orca-e2e:live": "drives the public orca CLI", "smoke:pi": "needs a pi install", "smoke:codex-live": "needs a logged-in codex CLI",

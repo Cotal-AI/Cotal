@@ -83,8 +83,7 @@ export function recordSmokeSandbox(input: {
   });
 }
 
-/** Refuse a destructive CLI call unless its actual spawn options retain the recorded sandbox. */
-export function assertSmokeSandboxDown(
+function assertRecordedSandboxDown(
   anchor: SmokeSandboxAnchor | undefined,
   args: readonly string[],
   options: SmokeCommandOptions,
@@ -121,6 +120,17 @@ export function assertSmokeSandboxDown(
   );
 }
 
+/** Refuse a folder-rooted destructive call unless its actual spawn options retain the sandbox. */
+export function assertSmokeSandboxDown(
+  anchor: SmokeSandboxAnchor | undefined,
+  args: readonly string[],
+  options: SmokeCommandOptions,
+): void {
+  if (args[0] === "down" && args[1] === "web")
+    throw new Error("target-addressed `down web` requires assertSmokeSandboxTargetDown");
+  assertRecordedSandboxDown(anchor, args, options);
+}
+
 /**
  * Guard a target-addressed component such as `down web`. The call must name its space explicitly so
  * the CLI cannot select a different `current` entry. The guard reads that ONE canonical record from
@@ -133,7 +143,7 @@ export function assertSmokeSandboxTargetDown(
   options: SmokeCommandOptions,
   space: string,
 ): void {
-  assertSmokeSandboxDown(anchor, args, options);
+  assertRecordedSandboxDown(anchor, args, options);
   if (args[0] !== "down") return;
   if (!anchor) throw new Error("smoke sandbox target guard requires a recorded anchor");
   const flag = args.indexOf("--space");

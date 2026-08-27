@@ -67,6 +67,10 @@ try {
     () => assertSmokeSandboxTargetDown(anchor, ["down", "web"], { cwd: root, env }, space),
     /must name --space "target" explicitly/,
   );
+  assert.throws(
+    () => assertSmokeSandboxDown(anchor, ["down", "web", "--space", space], { cwd: root, env }),
+    /requires assertSmokeSandboxTargetDown/,
+  );
 
   const repo = join(import.meta.dirname, "..", "..", "..");
   const semanticDownOnly = new Set([
