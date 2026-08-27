@@ -477,6 +477,7 @@ const baseProcesses: LocalProcess[] = [
 registry.register(...baseCommands, ...baseProcesses);
 
 export { runCli } from "./command.js";
+export { setInstalledExtensionsEnabled } from "./ext-loader.js";
 export { c, statusBadge } from "./ui.js";
 // The full spawn grammar, for the composition root's launch-parity smoke (grammar ⊆ start-op ⊆ MCP).
 export { spawnFlags } from "./commands/spawn.js";

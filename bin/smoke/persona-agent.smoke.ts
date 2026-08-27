@@ -66,6 +66,7 @@ const freePort = (): Promise<number> =>
 const PORT = await freePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = "persona-agent-869";
+const SPACE_E = "persona-agent-869e";
 
 // Scratch workspace: the pinned persona. The pin names `pin` and the env names `other`, so the two
 // connectors are distinguishable by NAME and by which buildLaunch ran.
@@ -169,21 +170,51 @@ try {
   ok("C: foreground spawn of the pinned persona ran to completion", /spawning fgpin/.test(cOut), cOut);
   ok("C: foreground honored the persona's agent: pin", builds.pin.length === 1 && builds.other.length === 0, { pin: builds.pin.length, other: builds.other.length, out: cOut });
 
-  // D — the preflight cell: requiredExtensions declares the PINNED connector for this argv. On the
-  // published binary this runs BEFORE the command body and materializes the named extension; a
-  // wrong declaration pre-materializes the wrong connector and the launch fails or silently
-  // changes harness where the unit tests cannot see it. The pre-materialize read resolves the
-  // persona from the CWD WALK (the target mesh is not yet parsed), so run it from the workspace
-  // root — exactly where a real operator would invoke `cotal spawn pinned`.
+  // D — the hook contract after the deferral fix: `spawnRequiredExtensions` is ROOT-FREE (it was
+  // root-free before #869 and must stay that way; a pre-parse persona read via the cwd walk made a
+  // spawn from outside the target pre-materialize the WRONG connector and hard-abort the command).
+  // Materialization now happens in the spawn body after the authoritative load, so the hook
+  // contributes nothing for any argv — file, detach, or foreground.
   {
+    const refs = spawnRequiredExtensions(parseCommandArgs(cmd("spawn"), ["pinned"]));
+    ok("D: requiredExtensions is root-free (no connector declared pre-parse)", refs.length === 0, refs);
+    const refsFlag = spawnRequiredExtensions(parseCommandArgs(cmd("spawn"), ["pinned", "--agent", "other"]));
+    ok("D: root-free for an explicit --agent too", refsFlag.length === 0, refsFlag);
+  }
+
+  // E — THE DIVERGENCE CELL (the cold-read block): cwd-root and target-root ACTUALLY DIFFER. The
+  // registry holds space E pointing at workspaceRoot (persona pins `pin`), while the process cwd is
+  // a DIFFERENT scratch root whose walk (were the hook to read one) would find a persona pinning
+  // `other`. Foreground spawn of the target persona from the foreign cwd: the pinned connector
+  // must build the launch. Before the deferral fix the hook read the cwd persona, pre-materialized
+  // `other`, and (with connectors absent from the registry until materialized) the body's
+  // registry.resolve threw "no connector registered" FOR `pin` — the confusing abort the block
+  // named. After the fix there is no pre-parse read at all and the body materializes `pin`.
+  {
+    builds.pin = [];
+    builds.other = [];
+    const foreignRoot = mkdtempSync(join(tmpdir(), "cotal-869-foreign-"));
+    mkdirSync(join(foreignRoot, ".cotal", "agents"), { recursive: true });
+    writeFileSync(join(foreignRoot, ".cotal", "agents", "pinned.md"), "---\nname: pinned\nagent: other\nsubscribe: []\n---\nforeign persona\n");
+    // Registry entry makes resolveTargetOrExit pick workspaceRoot BY NAME, outranking the cwd walk.
+    recordMesh({ space: SPACE_E, server: SERVER, root: workspaceRoot, mode: "open", ts: new Date().toISOString() });
     const cwd = process.cwd();
-    process.chdir(workspaceRoot);
+    process.chdir(foreignRoot);
+    // PUBLISHED-BINARY MODE for this cell: `runCli` sets this on the real binary before any
+    // command runs, and it is what makes materializeExtension throw on an uninstalled extension
+    // instead of no-op'ing (the library default). The abort shape the block traced lives behind
+    // this flag, so the cell must run with it on.
+    const { setInstalledExtensionsEnabled } = await import("@cotal-ai/cli");
+    setInstalledExtensionsEnabled(true);
     try {
-      const refs = spawnRequiredExtensions(parseCommandArgs(cmd("spawn"), ["pinned"]));
-      ok("D: requiredExtensions names the pinned connector", refs.length === 1 && refs[0].name === "pin", refs);
-      const refsFlag = spawnRequiredExtensions(parseCommandArgs(cmd("spawn"), ["pinned", "--agent", "other"]));
-      ok("D: an explicit --agent still drives requiredExtensions", refsFlag.length === 1 && refsFlag[0].name === "other", refsFlag);
+      process.env.COTAL_DEFAULT_AGENT = "other"; // env names the OTHER connector too
+      const eOut = await capture(() => run("spawn", ["pinned", "--space", SPACE_E, "--name", "fgdiv"]));
+      ok("E: divergence spawn ran to completion from the foreign cwd", /spawning fgdiv/.test(eOut), eOut);
+      ok("E: the TARGET persona's pin built the launch, not the cwd persona's", builds.pin.length === 1 && builds.other.length === 0, { pin: builds.pin.length, other: builds.other.length, out: eOut });
+      ok("E: no 'no connector registered' abort for the pinned harness", !/no connector registered for "pin"/.test(eOut), eOut);
     } finally {
+      setInstalledExtensionsEnabled(false);
+      delete process.env.COTAL_DEFAULT_AGENT;
       process.chdir(cwd);
     }
   }
