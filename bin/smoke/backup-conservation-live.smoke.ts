@@ -149,7 +149,7 @@ interface Sampler {
 }
 
 /** A read-only view of the live space through the exact credential `backup create` inspects with:
- *  STREAM.INFO + CONSUMER.LIST over every backed-up stream and nothing else — no body read, no
+ *  STREAM.INFO + CONSUMER.LIST over every backed-up stream and nothing else: no body read, no
  *  mutation verb, no consumer of its own to perturb what it measures. */
 async function openSampler(mesh: Mesh, auth: SpaceAuth): Promise<Sampler> {
   const creds = await mintCreds(auth, newIdentity(), "backup", {
