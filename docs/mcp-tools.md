@@ -223,7 +223,7 @@ Ask the manager to start a new peer endpoint in your space. It joins the mesh as
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
-| `name` | string | yes | Which persona to spawn: the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md. The new peer joins under the persona's own `name:` (auto-numbered, e.g. socrates-2, if that's taken). Fails if no such persona file exists; spawn an existing persona, don't invent a name. |
+| `name` | string | yes | Which persona to spawn: the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md. The new peer joins under the persona's own `name:` (auto-numbered with an underscore, e.g. socrates_2, if that's taken). Fails if no such persona file exists; spawn an existing persona, don't invent a name. |
 | `role` | string | no | Optional role for the new peer (e.g. worker, reviewer); overrides the persona file's role. |
 | `agent` | string | no | Optional harness the new peer runs on: the agent/connector type (claude, opencode, hermes), NOT the persona to spawn (that's `name`). Defaults to the manager's COTAL_DEFAULT_AGENT, else Claude. |
 | `model` | string | no | Optional model override (e.g. opus, sonnet); it wins over the persona file's model:. |

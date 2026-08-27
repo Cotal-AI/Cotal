@@ -17,6 +17,7 @@ import {
   spawnEnvAllow,
   deprovisionAgent,
   firstFreeName,
+  spawnNameError,
   idFromCreds,
   inspectCredHealth,
   loadAgentFile,
@@ -3102,11 +3103,11 @@ export class Manager {
   }
 
   /** Agent names become `.cotal/agents/<name>.md` paths and mesh identities, so they must be bare
-   *  tokens, never a path — blocks traversal / arbitrary writes from a model-supplied name. */
+   *  tokens, never a path — blocks traversal / arbitrary writes from a model-supplied name. In user
+   *  mode the name is ALSO the actor, which is a narrower alphabet still; {@link spawnNameError}
+   *  holds both halves so this door and the auto-numbering that feeds it cannot disagree. */
   private nameError(name: string): string | undefined {
-    return /^[A-Za-z0-9_-]+$/.test(name)
-      ? undefined
-      : `unsafe name ${JSON.stringify(name)} (allowed: letters, digits, _ -)`;
+    return spawnNameError(name, { userMode: this.userMode });
   }
 
   /** The roster's LIVE occupant names (status !== offline) — occupants this manager may NOT manage
