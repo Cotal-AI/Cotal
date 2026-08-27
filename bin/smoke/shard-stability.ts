@@ -25,16 +25,49 @@
  * USAGE:  pnpm check:shard-stability <base-sha> <head-sha> [shardCount=4]
  * Run from inside a worktree of the repo. Exits 1 if any pre-existing suite changes shard.
  *
- * CONTROLS BUILT IN, because a bare zero is not evidence:
- *   - a forced mid-file insert must report non-zero (instrument responds at all)
+ * CONTROLS BUILT IN, because a bare zero is not evidence. Exactly two, and both run on
+ * every invocation — this list is the code, not a wish:
+ *   - a forced mid-file insert must report non-zero (the instrument responds at all)
  *   - identity (base vs base) must report 0
+ * Either failing ABORTS with exit 2 rather than emitting a verdict.
+ *
+ * A third line once sat here claiming "the known production re-shard 7837b64c->d1aeafc3
+ * reports 263 when both shas exist". THAT CONTROL DOES NOT EXIST IN THIS CODE. It was a
+ * true fact about the repo listed under CONTROLS BUILT IN, where a reader takes it as
+ * something the program enforces. default_agent caught it while placing this file — the
+ * same class as the exit-2 a previous README promised and the code never emitted, and as
+ * `dist-freshness` naming a guarantee its mtime comparison cannot provide. Removed rather
+ * than implemented: a control that only applies when two specific shas are present is
+ * worse than none, because it reads as coverage on every other run.
  */
 import { execFileSync } from "node:child_process";
 
+// FIRST LINE OF OUTPUT, BEFORE ANY WORK: a gate can grep for this to prove the detector
+// actually ran. `npx tsx <missing-file>` exits 1, which is indistinguishable from
+// RE-SHARD DETECTED, so a typo'd script path would otherwise report a defect that does
+// not exist. An exit code is not an observation of what a program decided.
+//
+// THE BANNER ALONE IS NOT ENOUGH, and pr-review proved it with MUTANT D: a crash AFTER
+// startup (git failure, bad worktree, OOM — the likely ones in CI) prints the banner,
+// exits 1, and is indistinguishable from a real finding on both signals. It proves the
+// process LAUNCHED, not that it REACHED A DECISION. So every exit path below goes through
+// `verdict()`, which prints a TERMINAL marker on the decision path itself:
+//
+//   gate on:  banner present  AND  exactly one `shard-stability: <TOKEN>` line
+//
+// Either alone is fakeable by a failure mode CI will actually produce.
+console.log("shard-stability.check v1 starting");
+
+/** The only way out. Prints a terminal marker so a crash cannot impersonate a decision. */
+const verdict = (token: "RESHARD" | "STABLE" | "ABORT", message: string, code: 0 | 1 | 2): never => {
+  console.log(`shard-stability: ${token}`);
+  (code === 0 ? console.log : console.error)(message);
+  process.exit(code);
+};
+
 const [, , base, head, countArg] = process.argv;
 if (!base || !head) {
-  console.error("usage: check:shard-stability <base-sha> <head-sha> [shardCount=4]");
-  process.exit(2);
+  verdict("ABORT", "usage: check:shard-stability <base-sha> <head-sha> [shardCount=4]", 2);
 }
 // THE SHARD COUNT IS READ FROM ci.yml, NOT DEFAULTED TO A LITERAL.
 // Found by pr-review: the tool used to default to 4 while `.github/workflows/ci.yml`
@@ -61,17 +94,13 @@ const ciShardCount = (sha: string): number | null => {
 const declared = ciShardCount(head);
 const COUNT = countArg !== undefined ? Number(countArg) : (declared ?? 4);
 if (!Number.isInteger(COUNT) || COUNT < 1) {
-  console.error(`ABORT: shard count must be a positive integer, got '${countArg}'`);
-  process.exit(2);
+  verdict("ABORT", `shard count must be a positive integer, got '${countArg}'`, 2);
 }
 if (declared === null) {
-  console.error(`ABORT: cannot read the shard matrix from .github/workflows/ci.yml at '${head}'; refusing to guess the topology`);
-  process.exit(2);
+  verdict("ABORT", `cannot read the shard matrix from .github/workflows/ci.yml at '${head}'; refusing to guess the topology`, 2);
 }
 if (COUNT !== declared) {
-  console.error(`ABORT: shard count ${COUNT} disagrees with ci.yml's matrix of ${declared} at '${head}'.`);
-  console.error(`       A verdict for a topology CI does not run is worse than no verdict.`);
-  process.exit(2);
+  verdict("ABORT", `shard count ${COUNT} disagrees with ci.yml's matrix of ${declared} at '${head}'. A verdict for a topology CI does not run is worse than no verdict.`, 2);
 }
 console.log(`shard count ${COUNT}, read from ci.yml at ${head.slice(0, 8)}`);
 
@@ -87,16 +116,14 @@ const read = (sha: string): string[] => {
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch {
-    console.error(`ABORT: cannot read bin/smoke/ci-suites.txt at '${sha}' (bad sha, or not a worktree of this repo)`);
-    process.exit(2);
+    verdict("ABORT", `cannot read bin/smoke/ci-suites.txt at '${sha}' (bad sha, or not a worktree of this repo)`, 2);
   }
   const list = raw
     .split("\n")
     .map((l) => l.trim())
     .filter((l) => l.length > 0 && !l.startsWith("#"));
   if (list.length === 0) {
-    console.error(`ABORT: chain at '${sha}' parsed to 0 suites; refusing to compare an empty chain`);
-    process.exit(2);
+    verdict("ABORT", `chain at '${sha}' parsed to 0 suites; refusing to compare an empty chain`, 2);
   }
   return list;
 };
@@ -121,8 +148,7 @@ const identity = moved(A, A);
 console.log(`CONTROL forced mid-file insert -> ${forced.length} moved  (must be > 0)`);
 console.log(`CONTROL identity               -> ${identity.length} moved  (must be 0)`);
 if (forced.length === 0 || identity.length !== 0) {
-  console.error("ABORT: controls failed, this run cannot be trusted");
-  process.exit(2);
+  verdict("ABORT", "controls failed, this run cannot be trusted", 2);
 }
 
 const added = B.filter((s) => !A.includes(s));
@@ -132,7 +158,6 @@ console.log(`  suites: ${A.length} -> ${B.length} · added ${added.length} · re
 console.log(`  pre-existing suites CHANGING SHARD: ${changed.length} of ${A.length}`);
 if (changed.length > 0) {
   console.log(`  first few: ${changed.slice(0, 5).join(", ")}`);
-  console.error(`\nRE-SHARD DETECTED. Append new suites at the END of ci-suites.txt.`);
-  process.exit(1);
+  verdict("RESHARD", `RE-SHARD DETECTED. Append new suites at the END of ci-suites.txt.`, 1);
 }
-console.log(`\nSTABLE — no pre-existing suite changes runner.`);
+verdict("STABLE", `STABLE - no pre-existing suite changes runner.`, 0);
