@@ -1,5 +1,20 @@
 # @cotal-ai/delivery
 
+## 0.33.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.3
+- @cotal-ai/workspace@0.33.3
+
+## 0.33.2
+
+### Patch Changes
+
+- Updated dependencies [ffdde4d]
+  - @cotal-ai/core@0.33.2
+  - @cotal-ai/workspace@0.33.2
+
 ## 0.33.1
 
 ### Patch Changes
