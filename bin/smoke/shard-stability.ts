@@ -30,7 +30,7 @@
  *   to remove and permanently silences the mismatch abort below.
  * Run from inside a worktree of the repo. Exits 1 if any pre-existing suite changes shard.
  *
- * CONTROLS BUILT IN, because a bare zero is not evidence. All fourteen run on every invocation:
+ * CONTROLS BUILT IN, because a bare zero is not evidence. All fifteen run on every invocation:
  *   - a forced mid-file insert must report non-zero (the instrument responds at all)
  *   - identity (base vs base) must report 0
  *   - an unchanged 20-item registry under 4 -> 5 shards must move 16 items
@@ -45,6 +45,7 @@
  *   - the shard runner must compare execution inputs directly with committed blobs
  *   - duplicate step IDs declared after another step key must be refused
  *   - duplicate step IDs declared as the first step key must also be refused
+ *   - the complete head workflow must parse under the next shard count and still refuse both duplicates
  * Any failed control ABORTS with exit 2 rather than emitting a verdict.
  *
  * A third line once sat here claiming "the known production re-shard 7837b64c->d1aeafc3
@@ -436,40 +437,101 @@ const unguardedRunnerCount = shardCountFromWorkflow(`jobs:
       - name: Run shard
         run: node bin/smoke/shard.mjs \${{ matrix.shard }} 4
 `);
-const gradeDuplicateStepId = (duplicate: string) => {
+const guardedInvocationPrefix = '        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- ';
+const duplicateMappedStep = `      - name: Re-capture smoke toolchain
+        id: smoke-tools
+        run: echo "pnpm_sha=forged" >> "$GITHUB_OUTPUT"
+`;
+const duplicateLeadingStep = `      - id: smoke-tools
+        name: Re-capture smoke toolchain
+        run: echo "pnpm_sha=forged" >> "$GITHUB_OUTPUT"
+`;
+const headWorkflowForControls = (() => {
   try {
-    const yml = execFileSync("git", ["show", `${head}:.github/workflows/ci.yml`], {
+    return execFileSync("git", ["show", `${head}:.github/workflows/ci.yml`], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
-    const lines = yml.split("\n");
-    const invocationPrefix = '        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- ';
-    const invocations = lines
-      .map((line, index) => line.startsWith(invocationPrefix) ? index : -1)
-      .filter((index) => index >= 0);
-    if (invocations.length !== 1 || !duplicate.endsWith("\n")) {
-      return { injected: false, count: null };
-    }
-    let stepStart = invocations[0];
-    while (stepStart >= 0 && !/^      - \S/.test(lines[stepStart])) stepStart -= 1;
-    if (stepStart < 0) return { injected: false, count: null };
-    lines.splice(stepStart, 0, ...duplicate.slice(0, -1).split("\n"));
-    return {
-      injected: true,
-      count: shardCountFromWorkflow(lines.join("\n"), true, true),
-    };
   } catch {
-    return { injected: false, count: null };
+    return null;
   }
+})();
+const smokeJobBounds = (lines: string[]): [number, number] | null => {
+  const start = lines.findIndex((line) => /^  smoke:\s*(?:#.*)?$/.test(line));
+  if (start < 0) return null;
+  const next = lines.findIndex((line, index) => index > start && /^  \S/.test(line));
+  return [start, next < 0 ? lines.length : next];
 };
-const duplicateMappedIdControl = gradeDuplicateStepId(`      - name: Re-capture smoke toolchain
-        id: smoke-tools
-        run: echo "pnpm_sha=forged" >> "$GITHUB_OUTPUT"
-`);
-const duplicateLeadingIdControl = gradeDuplicateStepId(`      - id: smoke-tools
-        name: Re-capture smoke toolchain
-        run: echo "pnpm_sha=forged" >> "$GITHUB_OUTPUT"
-`);
+const guardedInvocationIndex = (lines: string[]): number | null => {
+  const bounds = smokeJobBounds(lines);
+  if (!bounds) return null;
+  const [start, end] = bounds;
+  const invocations = lines
+    .map((line, index) => index > start && index < end && line.startsWith(guardedInvocationPrefix) ? index : -1)
+    .filter((index) => index >= 0);
+  return invocations.length === 1 ? invocations[0] : null;
+};
+const gradeDuplicateStepId = (yml: string | null, duplicate: string) => {
+  if (yml === null || !duplicate.endsWith("\n")) return { injected: false, count: null };
+  const lines = yml.split("\n");
+  const invocation = guardedInvocationIndex(lines);
+  if (invocation === null) return { injected: false, count: null };
+  let stepStart = invocation;
+  while (stepStart >= 0 && !/^      - \S/.test(lines[stepStart])) stepStart -= 1;
+  if (stepStart < 0) return { injected: false, count: null };
+  lines.splice(stepStart, 0, ...duplicate.slice(0, -1).split("\n"));
+  return {
+    injected: true,
+    count: shardCountFromWorkflow(lines.join("\n"), true, true),
+  };
+};
+const bumpWorkflowTopology = (yml: string, count: number): string | null => {
+  const lines = yml.split("\n");
+  const bounds = smokeJobBounds(lines);
+  if (!bounds) return null;
+  const [start, end] = bounds;
+  const matrixRows: Array<{ index: number; match: RegExpExecArray }> = [];
+  for (let index = start + 1; index < end; index += 1) {
+    const match = /^(        shard:\s*\[)([0-9,\s]+)(\]\s*(?:#.*)?)$/.exec(lines[index]);
+    if (!match) continue;
+    const indices = match[2].split(",").map((value) => value.trim()).map(Number);
+    if (indices.length === count && indices.every((value, position) => value === position)) {
+      matrixRows.push({ index, match });
+    }
+  }
+  if (matrixRows.length !== 1) return null;
+  const nextCount = count + 1;
+  const row = matrixRows[0];
+  const nextIndices = Array.from({ length: nextCount }, (_, index) => index).join(", ");
+  lines[row.index] = `${row.match[1]}${nextIndices}${row.match[3]}`;
+  const invocation = guardedInvocationIndex(lines);
+  if (invocation === null) return null;
+  const countToken = ' ${{ matrix.shard }} ' + count + ' ci ';
+  if (lines[invocation].split(countToken).length !== 2) return null;
+  lines[invocation] = lines[invocation].replace(
+    countToken,
+    ' ${{ matrix.shard }} ' + nextCount + ' ci ',
+  );
+  const oldLabel = '(shard ${{ matrix.shard }}/' + count + ')';
+  const nextLabel = '(shard ${{ matrix.shard }}/' + nextCount + ')';
+  for (let index = start + 1; index < end; index += 1) {
+    lines[index] = lines[index].replace(oldLabel, nextLabel);
+  }
+  return lines.join("\n");
+};
+const duplicateMappedIdControl = gradeDuplicateStepId(headWorkflowForControls, duplicateMappedStep);
+const duplicateLeadingIdControl = gradeDuplicateStepId(headWorkflowForControls, duplicateLeadingStep);
+const completeTopologyWorkflow = headWorkflowForControls === null
+  ? null
+  : bumpWorkflowTopology(headWorkflowForControls, headCount);
+const completeTopologyCount = completeTopologyWorkflow === null
+  ? null
+  : shardCountFromWorkflow(completeTopologyWorkflow, true, true);
+const completeTopologyMappedId = gradeDuplicateStepId(completeTopologyWorkflow, duplicateMappedStep);
+const completeTopologyLeadingId = gradeDuplicateStepId(completeTopologyWorkflow, duplicateLeadingStep);
+const completeTopologyDuplicatesRefused =
+  completeTopologyMappedId.injected && completeTopologyMappedId.count === null &&
+  completeTopologyLeadingId.injected && completeTopologyLeadingId.count === null;
 console.log(`CONTROL forced mid-file insert -> ${forced.length} moved  (must be > 0)`);
 console.log(`CONTROL identity               -> ${identity.length} moved  (must be 0)`);
 console.log(`CONTROL shard count 4 -> 5     -> ${countIncrease.length} moved  (must be 16)`);
@@ -484,13 +546,15 @@ console.log(`CONTROL conditional shard step -> ${conditionalStepCount ?? "refuse
 console.log(`CONTROL unguarded shard runner  -> ${unguardedRunnerCount ?? "refused"}       (must be refused)`);
 console.log(`CONTROL duplicate mapped step id -> ${duplicateMappedIdControl.injected ? duplicateMappedIdControl.count ?? "refused" : "unreadable"}       (must be refused)`);
 console.log(`CONTROL duplicate leading step id -> ${duplicateLeadingIdControl.injected ? duplicateLeadingIdControl.count ?? "refused" : "unreadable"}       (must be refused)`);
+console.log(`CONTROL complete workflow ${headCount} -> ${headCount + 1} -> ${completeTopologyCount ?? "unreadable"} shards, duplicate ids ${completeTopologyDuplicatesRefused ? "refused" : "accepted"}       (must be ${headCount + 1}, refused)`);
 if (
   forced.length === 0 || identity.length !== 0 || countIncrease.length !== 16 ||
   countDecrease.length !== 16 || commentShadowCount !== 4 ||
   commandMismatchCount !== null || duplicateMatrixCount !== null || emptyMatrixCount !== null || excludedMatrixCount !== null ||
   conditionalJobCount !== null || conditionalStepCount !== null || unguardedRunnerCount !== null ||
   !duplicateMappedIdControl.injected || duplicateMappedIdControl.count !== null ||
-  !duplicateLeadingIdControl.injected || duplicateLeadingIdControl.count !== null
+  !duplicateLeadingIdControl.injected || duplicateLeadingIdControl.count !== null ||
+  completeTopologyCount !== headCount + 1 || !completeTopologyDuplicatesRefused
 ) {
   verdict("ABORT", "controls failed, this run cannot be trusted", 2);
 }
