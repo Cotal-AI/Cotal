@@ -599,10 +599,6 @@ smoke:ctl-trust:live
 # through the operator profile, then proves its pre-minted channel-purger can purge while admin
 # cannot. Appended to preserve every existing shard assignment.
 smoke:web-seed:live
-# The published manager entrypoint directly loads three NATS packages. Derive that runtime import
-# closure from built dist and require every external package in it to be installed by a production
-# dependency field. Appended so every existing shard assignment remains unchanged.
-smoke:manager-runtime-deps
 # The persona harness reachability proof drives foreground and detached spawn through a throwaway
 # broker, including a caller-only COTAL_DEFAULT_AGENT crossing into an already-running manager.
 # Appended to preserve every existing shard assignment.
@@ -615,3 +611,7 @@ smoke:web-probe-target
 # loopback default when no host is supplied. Appended so every existing shard assignment remains
 # unchanged.
 smoke:web-remote-bind
+# The published manager entrypoint directly loads three NATS packages. Derive that runtime import
+# closure from built dist and require every external package in it to be installed by a production
+# dependency field. Appended so every existing shard assignment remains unchanged.
+smoke:manager-runtime-deps
