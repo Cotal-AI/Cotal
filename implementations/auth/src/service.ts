@@ -50,12 +50,12 @@
  * subscription is FLUSHED to the broker and the HTTP listener is bound — its existence (plus a
  * /health probe) IS the readiness signal the provider's `ready()` polls.
  */
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { admissionMediatorGrants, authorizeTrustedServeSnapshot, commitSiblingIssuance, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, mintPublicUserJwt, rawDigest, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAuthorityRequest, type SecretStore } from "@cotal-ai/core";
+import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, mintPublicUserJwt, rawDigest, retirementFrontierStreams, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAuthorityRequest, type SecretStore } from "@cotal-ai/core";
 import { findCotalRoot, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject } from "./derive.js";
@@ -69,19 +69,20 @@ import { reconstructRemoteManagerServeGrant } from "./manager-contract.js";
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, remoteManagerIssuerGrants, remoteManagerRegistrationProof, type AuthorityClient } from "./authority-client.js";
 import { authorizeConnectCredential } from "./connect-reader.js";
 import { ensureRootCredential } from "./root-credential.js";
-import { observeGate, openLifecycleRegistry, type LifecycleRegistry } from "./lifecycle-registry.js";
+import { observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
 import { openAuthLedgerScannerCandidate, type AuthLedgerScanner, type LedgerScannerCandidate } from "./ledger-scanner.js";
 import { openRecordsScannerCandidate, type RecordsScanner, type RecordsScannerCandidate } from "./records-scanner.js";
 import { acquirePlaneClaim, makeDeliveryAdminPlaneOracle, scannerDeathCopy, type PlaneClaimHold, type PlaneLivenessOracle } from "./plane-claim.js";
 import { enumerateOperationIntents, resumeAgentTakeover, type EvictPrincipal } from "./credential-ledger.js";
 import { makeDeliveryAdminEvictor } from "./barrier-evict.js";
-import { resumeAgentRetirement, type RetirementDeps } from "./retirement-barrier.js";
+import { resumeAgentRetirement, runAgentRetirementBarrier, type RetirementDeps } from "./retirement-barrier.js";
 import { makeRetirementCleaners } from "./retirement-cleaner.js";
 import { makeDrainRepairers } from "./drain-repair.js";
 import { openAuthAdminListener, type AuthAdminListener } from "./auth-admin.js";
 import { drainTargetForEndpoint, openAdmissionMediator } from "./admission-mediator.js";
 import {
   AGENT_BEARER_TTL_SEC,
+  findInteractiveActor,
   ledgerAclResolver,
   ledgerAuthorizeAgentExchange,
   ledgerAuthorizeConnect,
@@ -102,6 +103,9 @@ import {
 /** JWKS max-age seconds — the cache contract's knob. Exported so a rotation tool can compute the
  *  retire floor (max-age + max bearer TTL) from it. */
 export const JWKS_MAX_AGE_SEC = 300;
+
+/** Loopback-only operator route used by `cotal actor grant/revoke` before rotating or deleting an interactive lifecycle. */
+export const INTERACTIVE_RETIRE_PATH = "/interactive-lifecycle/retire";
 
 /** Failed-exchange rate limit: at most this many REFUSED exchanges per rolling minute; further
  *  attempts get 429 until the window drains. Successes are unthrottled (the CLI's normal path). */
@@ -129,6 +133,12 @@ type Values = Record<string, string | undefined>;
 export interface AuthAuthorityPlane {
   authorizeConnect: (t: ValidatedUserToken) => Promise<void>;
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
+  retireInteractiveLifecycle: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<{
+    retired: boolean;
+    lifecycleUid: string;
+    notStarted?: boolean;
+    alreadyRetired?: boolean;
+  }>;
   issueManagerServiceAuthority: (args: { owner: string; scope: string[]; request: RemoteManagerAuthorityRequest }) => Promise<import("@cotal-ai/core").RemoteManagerAuthorityMaterial>;
   /** Resolves with the state-3 copy when a mid-life scanner death FENCES the plane (SPEC 13.13):
    *  the plane is no longer whole, `authorizeConnect`/`mintConnectCredential` refuse from that
@@ -376,6 +386,34 @@ export async function openAuthAuthorityPlane(opts: {
     mintConnectCredential: (args) => {
       refuseIfFenced();
       return ensureRootCredential(registry, { ...args, managerInstance: `auth-service:${space}` });
+    },
+    retireInteractiveLifecycle: async (args) => {
+      refuseIfFenced();
+      const owner = assertDerivedOwnerToken(args.owner);
+      const actor = assertValidOwnerToken(args.actor);
+      const lifecycleUid = assertLifecycleToken(args.lifecycleUid);
+      const head = await readLifecycleHeadForOperation(barrierReg, owner, actor);
+      if (head === undefined)
+        return { retired: false, lifecycleUid, notStarted: true };
+      if (head.mapping.lifecycleUid !== lifecycleUid) {
+        // A row can rotate again before its fresh uid is ever used. In that state the authority
+        // still points at the RETIRED predecessor; there is no live head to retire for this row.
+        // An active/retiring foreign uid is different: the ledger and authority disagree, so fail.
+        if (head.mapping.state === "retired")
+          return { retired: false, lifecycleUid, notStarted: true };
+        throw new EpEnvelopeError("conflict", `interactive lifecycle retirement for "${owner}/${actor}" names ${lifecycleUid}, but the authority head is ${head.mapping.state} at ${head.mapping.lifecycleUid}`);
+      }
+      if (head.mapping.state === "retired")
+        return { retired: true, lifecycleUid, alreadyRetired: true };
+      const opId = createHash("sha256").update(`interactive-retire:${lifecycleUid}`).digest("hex").slice(0, 26);
+      await runAgentRetirementBarrier(barrierReg, {
+        owner,
+        actor,
+        lifecycleUid,
+        opId,
+        frontierStreams: retirementFrontierStreams(space),
+      }, retirement);
+      return { retired: true, lifecycleUid };
     },
     issueManagerServiceAuthority: async ({ owner, scope, request }) => {
       refuseIfFenced();
@@ -650,7 +688,20 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
   const cap = randomBytes(32).toString("hex"); // per-start exchange capability (rotates with the daemon)
   const failures: number[] = []; // rolling-window timestamps of REFUSED exchanges
   const badCaps: number[] = []; // rolling-window timestamps of invalid-capability attempts
-  const ctx: HandlerCtx = { issuer, bridge, bridgeIdp, ownerSecret, managerServiceAuthority: plane.issueManagerServiceAuthority, cap, failures, badCaps, space, dir, mintConnectCredential: plane.mintConnectCredential };
+  const ctx: HandlerCtx = {
+    issuer,
+    bridge,
+    bridgeIdp,
+    ownerSecret,
+    managerServiceAuthority: plane.issueManagerServiceAuthority,
+    retireInteractiveLifecycle: plane.retireInteractiveLifecycle,
+    cap,
+    failures,
+    badCaps,
+    space,
+    dir,
+    mintConnectCredential: plane.mintConnectCredential,
+  };
   const http = createServer((req, res) => void handle(req, res, ctx));
   await new Promise<void>((resolvePort, reject) => {
     http.once("error", reject);
@@ -735,6 +786,7 @@ interface HandlerCtx {
   bridgeIdp: { issuer: string; audience: string; key: ReturnType<typeof pinnedJwksResolver> };
   ownerSecret: string | Uint8Array;
   managerServiceAuthority: AuthAuthorityPlane["issueManagerServiceAuthority"];
+  retireInteractiveLifecycle: AuthAuthorityPlane["retireInteractiveLifecycle"];
   cap: string;
   failures: number[];
   badCaps: number[];
@@ -863,17 +915,51 @@ const ROUTES = new Map<string, RouteHandler>([
   ],
   ["/exchange", (req, res, ctx) => handleExchange(req, res, ctx, LOOPBACK_POLICY)],
   ["/manager-service-authority", (req, res, ctx) => handleManagerServiceAuthority(req, res, ctx, LOOPBACK_POLICY)],
+  [INTERACTIVE_RETIRE_PATH, handleInteractiveLifecycleRetirement],
 ]);
 
 /** Route one HTTP request against the loopback route table. Errors are JSON `{ error }`. */
 async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx): Promise<void> {
   try {
     const route = ROUTES.get(req.url ?? "");
-    if (!route) return send(res, 404, { error: "unknown path - /health, /jwks, /exchange, /manager-service-authority" });
+    if (!route) return send(res, 404, { error: "unknown path - /health, /jwks, /exchange, /manager-service-authority, /interactive-lifecycle/retire" });
     await route(req, res, ctx);
   } catch (e) {
     sendRequestError(res, e);
   }
+}
+
+const INTERACTIVE_RETIRE_KEYS = new Set(["owner", "actor", "lifecycleUid"]);
+
+async function handleInteractiveLifecycleRetirement(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: HandlerCtx,
+): Promise<void> {
+  if (req.method !== "POST") return send(res, 405, { error: "POST only" });
+  if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here" });
+  if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
+    return send(res, 415, { error: "content-type must be application/json" });
+  if (req.headers.authorization !== `Bearer ${ctx.cap}`)
+    return send(res, 401, { error: "missing/invalid exchange capability - interactive lifecycle retirement is a loopback operator action" });
+  const body = await readJsonBody(req);
+  if (body === null || typeof body !== "object" || Array.isArray(body))
+    return send(res, 400, { error: "interactive lifecycle retirement needs { owner, actor, lifecycleUid }" });
+  for (const key of Object.keys(body))
+    if (!INTERACTIVE_RETIRE_KEYS.has(key))
+      return send(res, 400, { error: `interactive lifecycle retirement carries the unknown field "${key}"` });
+  const raw = body as { owner?: unknown; actor?: unknown; lifecycleUid?: unknown };
+  if (typeof raw.owner !== "string" || typeof raw.actor !== "string" || typeof raw.lifecycleUid !== "string")
+    return send(res, 400, { error: "interactive lifecycle retirement needs string { owner, actor, lifecycleUid }" });
+  const owner = assertDerivedOwnerToken(raw.owner);
+  const actor = assertValidOwnerToken(raw.actor);
+  const lifecycleUid = assertLifecycleToken(raw.lifecycleUid);
+  const row = findInteractiveActor(ctx.dir, owner, actor);
+  if (!row) return send(res, 404, { error: `interactive actor "${owner}/${actor}" is not granted` });
+  if (row.lifecycleUid !== lifecycleUid)
+    return send(res, 409, { error: `interactive actor "${owner}/${actor}" is current at lifecycle ${row.lifecycleUid ?? "<missing>"}, not ${lifecycleUid}` });
+  const result = await ctx.retireInteractiveLifecycle({ owner, actor, lifecycleUid });
+  return send(res, 200, result);
 }
 
 /** The exchange body, shared by every face; `policy` says how this face proves and attributes the

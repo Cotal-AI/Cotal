@@ -16,8 +16,8 @@ import {
   revokeIdpSession,
 } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
-import { findManagedActor, grantActor, loadActorLedger, revokeActor } from "./ledger.js";
-import { runAuthService } from "./service.js";
+import { findInteractiveActor, findManagedActor, grantActor, loadActorLedger, revokeActor, type ActorRow } from "./ledger.js";
+import { INTERACTIVE_RETIRE_PATH, runAuthService } from "./service.js";
 import { loadAuthServiceInfo, loadOwnerSecret, loadPinnedIdp } from "./store.js";
 
 const DEFAULT_CLIENT_ID = "cotal-cli";
@@ -32,6 +32,34 @@ async function legibly(fn: () => Promise<void>): Promise<void> {
     console.error(e instanceof Error ? e.message : String(e));
     process.exit(1);
   }
+}
+
+async function retireInteractiveActorLifecycle(
+  dir: string,
+  row: ActorRow,
+  operation: "re-grant" | "revoke",
+): Promise<void> {
+  if (!row.lifecycleUid) return;
+  const service = loadAuthServiceInfo(dir);
+  if (!service)
+    throw new Error(`cannot ${operation} "${row.owner}/${row.actor}": the auth service is not running, so its current lifecycle cannot be retired safely. Restart the stack with \`cotal up\`, then retry; the actor row was not changed.`);
+  let response: Response;
+  try {
+    response = await fetch(`${service.url}${INTERACTIVE_RETIRE_PATH}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${service.cap}`,
+      },
+      body: JSON.stringify({ owner: row.owner, actor: row.actor, lifecycleUid: row.lifecycleUid }),
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch (error) {
+    throw new Error(`cannot ${operation} "${row.owner}/${row.actor}": its lifecycle retirement could not reach the auth service (${error instanceof Error ? error.message : String(error)}). The actor row was not changed; recover with \`cotal up\`, then retry.`);
+  }
+  const body = await response.json().catch(() => ({})) as { error?: string };
+  if (!response.ok)
+    throw new Error(`cannot ${operation} "${row.owner}/${row.actor}": the auth service refused lifecycle retirement (${body.error ?? `HTTP ${response.status}`}). The actor row was not changed; repair the stack, then retry.`);
 }
 
 async function runLogin(args: ParsedArgs): Promise<void> {
@@ -206,6 +234,17 @@ async function runActor(args: ParsedArgs): Promise<void> {
       // operator act of letting a user in, so omitting flags means "fully", and narrowing is the
       // explicit choice (`--allow-subscribe general --scope ''`). The user's agents are still
       // attenuated from whatever this row says (the envelope rule).
+      //
+      // A re-grant rotates the lifecycle so a copied bearer cannot cross the authorization update.
+      // Retire the predecessor through the auth plane first; issuance is not allowed to perform a
+      // takeover as a side effect, and writing the successor first would strand the alias on failure.
+      const current = findInteractiveActor(dir, owner, actor);
+      if (current?.lifecycleUid) {
+        await retireInteractiveActorLifecycle(dir, current, "re-grant");
+        const refreshed = findInteractiveActor(dir, owner, actor);
+        if (refreshed?.lifecycleUid !== current.lifecycleUid)
+          throw new Error(`cannot re-grant "${owner}/${actor}": the actor row changed while its predecessor retired. Nothing was overwritten; re-read \`cotal actor list\` and retry.`);
+      }
       const row = grantActor(dir, {
         owner,
         actor,
@@ -222,12 +261,19 @@ async function runActor(args: ParsedArgs): Promise<void> {
     if (sub === "revoke") {
       if (!actor) throw new Error("usage: cotal actor revoke <actor> --sub <IdP subject>|--owner <u_…>");
       const owner = await resolveGrantOwner(st, values);
-      if (!revokeActor(dir, owner, actor)) {
+      const current = findInteractiveActor(dir, owner, actor);
+      if (!current) {
         if (findManagedActor(dir, owner, actor))
           throw new Error(`${owner}.${actor} is a managed agent - its grant lives with its process: stop it if manager-owned (\`cotal stop --name ${actor}\`), or if it was a killed foreground spawn, respawn the same name (\`cotal spawn\`) to rotate the grant`);
         console.log(`no grant for ${owner}.${actor} - nothing to revoke`);
         return;
       }
+      await retireInteractiveActorLifecycle(dir, current, "revoke");
+      const refreshed = findInteractiveActor(dir, owner, actor);
+      if (refreshed?.lifecycleUid !== current.lifecycleUid)
+        throw new Error(`cannot revoke "${owner}/${actor}": the actor row changed while its lifecycle retired. Nothing was deleted; re-read \`cotal actor list\` and retry.`);
+      if (!revokeActor(dir, owner, actor))
+        throw new Error(`cannot revoke "${owner}/${actor}": the actor row disappeared after retirement. Re-read \`cotal actor list\`; nothing else was changed.`);
       // Deny-new is immediate at both boundaries (exchange + connect). The LIVE window no longer
       // rides the bearer's expiry by default: the flip wires revoke → the delivery daemon's
       // evictPrincipal (scan→KICK→verify on the privileged rail), best-effort with honest copy —
