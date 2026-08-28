@@ -23,7 +23,6 @@ import {
   AguiEmitterHolder,
   EventWal,
   FileSubjectFrontier,
-  JsonlFileSource,
   ensureEventWalDir,
   resolveEventsStateRoot,
   controlFromEnv,
@@ -33,6 +32,7 @@ import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import { createClaudeHandle, createWakePolicy, type WakePolicy } from "./hooks.js";
 import { createClaudeMapper, type ClaudeEntry, type ClaudeMapper } from "./agui-map.js";
+import { createClaudeTranscriptSource } from "./agui-source.js";
 
 /** Publishes this session's activity as AG-UI events on `events.<owner>.<actor>` — set in main()
  *  iff COTAL_EVENTS is on (buildLaunch sets it for managed sessions; a personal session never
@@ -69,8 +69,8 @@ async function main(): Promise<void> {
     // The channel is derived inside the emitter from the endpoint's OWN principal, never from
     // `config.name`, so the subject the broker enforces a grant against and the subject this
     // publishes to are computed from the identity the connection authenticates as.
-    events = new AguiEmitterHolder<ClaudeEntry>(
-      async (transcriptPath: string) => {
+    events = new AguiEmitterHolder<ClaudeEntry, unknown>(
+      async (transcriptPath: string, sessionSource: unknown) => {
         // WAIT FOR THE MESH FIRST. This factory runs off the FIRST lifecycle hook, and with
         // `--prompt` that hook lands within a second of launch — several seconds before the
         // endpoint's first bind. Starting the emitter against the unbound endpoint answered
@@ -116,7 +116,7 @@ async function main(): Promise<void> {
           endpoint: agent.ep,
           wal,
           subjectFrontier,
-          source: new JsonlFileSource<ClaudeEntry>(transcriptPath),
+          source: createClaudeTranscriptSource(transcriptPath, sessionSource),
           map: mapper.map,
         });
       },

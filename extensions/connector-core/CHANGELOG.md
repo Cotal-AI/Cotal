@@ -1,5 +1,14 @@
 # @cotal-ai/connector-core
 
+## 0.33.5
+
+## 0.33.4
+
+### Patch Changes
+
+- 2151b4a: Preserve the first Claude event run when a startup prompt is written before `SessionStart`, while resumed, forked, cleared, compacted, and recovered sessions keep their no-history-replay cursor behavior.
+- 5aa8a56: Rewrite the Cotal documentation in a direct, human voice. The pass removes em dashes, filler words, list-style headings, and slogan-shaped contrasts; updates links after the heading changes; and applies the same voice to the generated MCP tool catalog and the bundled `cotal_docs` index. A docs voice check now protects the mechanical rules.
+
 ## 0.33.3
 
 ### Patch Changes

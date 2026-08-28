@@ -74,7 +74,7 @@ function stopFailure(ev: HookEvent): { message: string; code?: string } | undefi
 
 export interface ClaudeHandleDeps {
   /** The session's AG-UI emitter, read lazily — `mcp.ts` assigns it after the handler exists. */
-  events?: () => AguiEmitterHolder<ClaudeEntry> | undefined;
+  events?: () => AguiEmitterHolder<ClaudeEntry, unknown> | undefined;
 }
 
 /** Prefixed to a batch containing anything whose previous delivery went unconfirmed. */
@@ -124,7 +124,62 @@ export interface ClaudeHooks {
  * `drive()` OWNS delivery; this connector only hands a reply off, so the ack binds to the handoff.
  */
 export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
-  const events = (): AguiEmitterHolder<ClaudeEntry> | undefined => deps.events?.();
+  const events = (): AguiEmitterHolder<ClaudeEntry, unknown> | undefined => deps.events?.();
+
+  /**
+   * Claude runs each hook in a separate process. Their control-socket relays can therefore arrive
+   * out of lifecycle order even though the hooks themselves fired in order: measured live on a
+   * positional prompt, `UserPromptSubmit` reached this handler before `SessionStart`. Letting that
+   * first flush start the holder passes `undefined` as its immutable start context; the later adopt
+   * cannot replace it, and the source correctly fails loud because it cannot decide new vs retained.
+   *
+   * Before the first SessionStart, collapse flushes into one cumulative source read and retain the
+   * one terminal if it already arrived. SessionStart then enqueues adopt → flush → close on the
+   * holder's own serialized chain. No record is lost by collapsing: a source read is from its durable
+   * cursor through every complete record available at pump time.
+   */
+  let adoptedTranscript: string | undefined;
+  let deferredFlush: { path: unknown } | undefined;
+  let deferredClose: { timestamp: number; error?: { message: string; code?: string } } | undefined;
+
+  const adoptEvents = (path: unknown, source: unknown): void => {
+    const holder = events();
+    if (!holder) return;
+    holder.adopt(path, source);
+    if (typeof path !== "string" || path.length === 0) return;
+    adoptedTranscript ??= path;
+    if (deferredFlush) {
+      holder.flush(deferredFlush.path);
+      deferredFlush = undefined;
+    }
+    if (deferredClose) {
+      holder.closeRun(deferredClose.timestamp, deferredClose.error);
+      deferredClose = undefined;
+    }
+  };
+
+  const flushEvents = (path: unknown): void => {
+    const holder = events();
+    if (!holder) return;
+    if (adoptedTranscript === undefined) {
+      deferredFlush ??= { path };
+      return;
+    }
+    holder.flush(path);
+  };
+
+  const closeEvents = (timestamp: number, error?: { message: string; code?: string }): void => {
+    const holder = events();
+    if (!holder) return;
+    if (adoptedTranscript === undefined) {
+      // Exactly one terminal should exist. If a malformed host sends two before SessionStart, the
+      // first is the only one that can describe how that run ended; never turn an earlier error into
+      // a later success by overwriting it.
+      deferredClose ??= { timestamp, ...(error ? { error } : {}) };
+      return;
+    }
+    holder.closeRun(timestamp, error);
+  };
   /**
    * Last tool Claude tried to use, captured on PreToolUse. When a permission Notification
    * fires moments later, this is *what* it's blocked on — so the dashboard shows the actual
@@ -189,7 +244,11 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     try {
       switch (event) {
         case "SessionStart": {
-          events()?.adopt(ev.transcript_path); // read from HERE — a resumed session never republishes history
+          // `source` is the runtime's explicit new-vs-retained discriminator. A startup prompt may
+          // already be in the file before this hook; resume/fork/clear/compact must still adopt at the
+          // current boundary and never republish history. The holder carries the value opaquely to
+          // the connector-owned source factory.
+          adoptEvents(ev.transcript_path, ev.source);
           // Claude Code reports the session's actual model here (the ONLY hook that carries it; absent
           // after /clear or conversation recovery, so guard on string). Surface it in presence when the
           // operator didn't pin one. A mid-session /model switch fires no hook, so this holds until the
@@ -210,14 +269,14 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
         }
         case "UserPromptSubmit":
           pendingTool = undefined; // new turn — the previous block (if any) is resolved
-          events()?.flush(ev.transcript_path);
+          flushEvents(ev.transcript_path);
           await safeStatus(agent, "working");
           return withContext(surfaceAutomatic(agent, ev));
         case "PreToolUse":
           // Remember what Claude is about to do; if it needs permission, the Notification
           // below turns this into the "blocked on" detail. Auto-approved tools just overwrite it.
           pendingTool = toolDetail(ev.tool_name, ev.tool_input);
-          events()?.flush(ev.transcript_path); // near-live: each tool boundary ships the turn so far
+          flushEvents(ev.transcript_path); // near-live: each tool boundary ships the turn so far
           return {};
         case "Notification": {
           // Claude Code's Notification carries the human-readable reason the session is
@@ -235,7 +294,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
         case "Stop":
         case "StopFailure": // turn died on an API error — Stop won't fire, so reset here too
           pendingTool = undefined; // turn ended — don't let a stale tool attach to an idle-wait notification
-          events()?.flush(ev.transcript_path);
+          flushEvents(ev.transcript_path);
           // THE TURN TERMINAL, and it has to be a second call rather than part of the flush. The
           // records this hook fires after do not say the turn ended: the harness knows, and the
           // file does not. So the run is closed from HERE, after the flush has consumed every
@@ -249,7 +308,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // killed by a rate limit or a billing error had simply finished. See {@link stopFailure}
           // for which signals count and why. `RUN_ERROR` closes the run on its own, so there is no
           // second terminal to follow it.
-          events()?.closeRun(Date.now(), stopFailure(ev));
+          closeEvents(Date.now(), stopFailure(ev));
           await safeStatus(agent, "idle");
           // Now idle: if ambient channel chatter was held while we were busy, ask the channel to
           // wake one turn so its UserPromptSubmit surfaces the batch. (Ack sites are two: the
@@ -262,7 +321,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           if (agent.pendingWake() > 0) agent.requestWake();
           return {};
         case "SessionEnd":
-          events()?.flush(ev.transcript_path); // best-effort — the process may exit before it lands
+          flushEvents(ev.transcript_path); // best-effort — the process may exit before it lands
           await safeStatus(agent, "offline");
           return {};
         default:

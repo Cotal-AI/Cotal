@@ -150,6 +150,7 @@
     "smoke:claude-launch-env": "tsx extensions/connector-claude-code/smoke/launch-env.smoke.ts",
     "smoke:claude-events-arm": "tsx extensions/connector-claude-code/smoke/events-arm.smoke.ts",
     "smoke:claude-run-error": "tsx extensions/connector-claude-code/smoke/agui-run-error.smoke.ts",
+    "smoke:claude-start-source": "tsx extensions/connector-claude-code/smoke/agui-start-source.smoke.ts",
     "smoke:agui-authorship": "tsx extensions/connector-claude-code/smoke/agui-authorship.smoke.ts",
     "smoke:agui-map": "COTAL_AGUI_SESSION=extensions/connector-claude-code/smoke/fixtures/session-shape.jsonl tsx extensions/connector-claude-code/smoke/agui-map.smoke.ts",
     "smoke:agui-map:real": "tsx extensions/connector-claude-code/smoke/agui-map.smoke.ts",

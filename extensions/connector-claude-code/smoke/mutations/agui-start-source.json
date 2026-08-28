@@ -1,0 +1,51 @@
+{
+  "suite": "extensions/connector-claude-code/smoke/agui-start-source.smoke.ts plus the real-broker hook/emitter arm in agui-run-error.smoke.ts",
+  "guard": "only a genuinely new Claude startup reads an already-written first prompt from byte zero; retained-history starts never replay, a recovered cursor wins, and SessionStart.source reaches the source factory",
+  "command": "pnpm smoke:claude-start-source",
+  "completionMarker": "claude-start-source smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/agui-start-source.json",
+  "why": [
+    "The live failure is an ordering defect: Claude writes a positional prompt before SessionStart,",
+    "then the generic adopt-at-end contract skips the only run opener. The repair cannot change the",
+    "generic contract or replay resumed/forked history; it opens one explicit from-zero door only for",
+    "Claude's documented `source: startup` value.",
+    "",
+    "The pure source suite grades startup, promptless startup, every retained-history source, partial",
+    "records, crash recovery and unsupported source values. The hook-context mutation uses the real",
+    "broker suite because source policy alone cannot prove the runtime's SessionStart value reaches it."
+  ],
+  "mutations": [
+    {
+      "name": "S1 treat startup like a generic adopt, recreating the live skipped-run-opener defect",
+      "file": "extensions/connector-claude-code/src/agui-source.ts",
+      "find": "    case \"startup\":\n      return new StartupClaudeTranscriptSource(file);",
+      "replace": "    case \"startup\":\n      return file;",
+      "expectRed": "startup:a-virgin-source-reads-the-complete-records-already-written-before-SessionStart"
+    },
+    {
+      "name": "S2 replay retained history by treating resume/fork/clear/compact as startup",
+      "file": "extensions/connector-claude-code/src/agui-source.ts",
+      "find": "    case \"resume\":\n    case \"fork\":\n    case \"clear\":\n    case \"compact\":\n      return file;",
+      "replace": "    case \"resume\":\n    case \"fork\":\n    case \"clear\":\n    case \"compact\":\n      return new StartupClaudeTranscriptSource(file);",
+      "expectRed": "resume:retained-history-is-not-replayed-and-the-next-record-is-still-readable",
+      "note": "Also reds the fork, clear and compact cells; the blast radius is four named retained-history checks."
+    },
+    {
+      "name": "S3 make the startup wrapper use generic adopt-at-end on a virgin cursor",
+      "file": "extensions/connector-claude-code/src/agui-source.ts",
+      "find": "return cursor === undefined ? this.file.readFromBeginning() : this.file.read(cursor);",
+      "replace": "return this.file.read(cursor);",
+      "expectRed": "startup:a-virgin-source-reads-the-complete-records-already-written-before-SessionStart"
+    },
+    {
+      "name": "S4 make the explicit core from-zero door silently adopt at the current end",
+      "file": "extensions/connector-core/src/durable-source.ts",
+      "find": "    return this.read(cursor);\n  }\n\n  async read(cursor: string | undefined)",
+      "replace": "    return this.read(undefined);\n  }\n\n  async read(cursor: string | undefined)",
+      "expectRed": "startup:a-virgin-source-reads-the-complete-records-already-written-before-SessionStart",
+      "command": "pnpm --filter @cotal-ai/connector-core build && pnpm smoke:claude-start-source",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build",
+      "note": "The smoke resolves @cotal-ai/connector-core through dist, so this mutation builds the changed source before grading and rebuilds the restored source afterwards; otherwise a green measures stale dist, not this method."
+    }
+  ]
+}
