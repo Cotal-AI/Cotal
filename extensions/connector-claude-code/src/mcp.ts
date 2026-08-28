@@ -71,6 +71,46 @@ async function main(): Promise<void> {
     // publishes to are computed from the identity the connection authenticates as.
     events = new AguiEmitterHolder<ClaudeEntry, unknown>(
       async (transcriptPath: string, sessionSource: unknown) => {
+        const startEmitter = async () => {
+          // The events state root throws rather than defaulting to the working directory: a WAL
+          // written somewhere no later start looks is a silent loss.
+          const workspaceRoot = resolveEventsStateRoot(process.env);
+
+          // The native session IS the AG-UI thread, and Claude Code names the transcript after it.
+          // Taken from the path rather than from any env: the hook's path is what the emitter
+          // actually reads, so deriving the thread from anything else could key a log to one session
+          // while consuming another's bytes.
+          const threadId = basename(transcriptPath, ".jsonl");
+          const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
+
+          // The directory chain is made durable BEFORE the first transition, so a crash cannot lose
+          // the thread directory's own link and let a published thread reboot as virgin.
+          const { walPath, subjectPath } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
+
+          // The subject is per PRINCIPAL and the log is per thread, so the expectation a publish
+          // carries lives beside the thread directories rather than inside one of them. Without it a
+          // second session of this agent opens virgin, expects an empty subject its own first session
+          // filled, and halts for good.
+          const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
+
+          // `subjectMayExist: false` is an honest claim rather than a convenient default: this is a
+          // native session id, so nothing published under this (principal, thread) pair before this
+          // log existed, and a same-session connector restart finds the log on disk and never
+          // consults the flag. The case it would be wrong for, a session that published and then
+          // lost its log, does not fail silently: the first frame goes out expecting sequence 0 on a
+          // subject that already has one, the broker refuses it, and the emitter halts.
+          const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
+
+          mapper = createClaudeMapper({ threadId, mintRunId: () => randomUUID() });
+          return AguiEmitter.start<ClaudeEntry>({
+            endpoint: agent.ep,
+            wal,
+            subjectFrontier,
+            source: createClaudeTranscriptSource(transcriptPath, sessionSource),
+            map: mapper.map,
+          });
+        };
+
         // WAIT FOR THE MESH FIRST. This factory runs off the FIRST lifecycle hook, and with
         // `--prompt` that hook lands within a second of launch — several seconds before the
         // endpoint's first bind. Starting the emitter against the unbound endpoint answered
@@ -82,43 +122,7 @@ async function main(): Promise<void> {
         // and a session that outlives it gets its whole plane; the timeout still fails into the
         // holder's terminal error rather than hanging the hook.
         await agent.whenConnected(20_000);
-        // The events state root. Throws rather than defaulting to the working directory, because a
-        // write-ahead log written somewhere no later start looks is a silent loss.
-        const workspaceRoot = resolveEventsStateRoot(process.env);
-
-        // The native session IS the AG-UI thread, and Claude Code names the transcript after it.
-        // Taken from the path rather than from any env: the hook's path is what the emitter
-        // actually reads, so deriving the thread from anything else could key a log to one session
-        // while consuming another's bytes.
-        const threadId = basename(transcriptPath, ".jsonl");
-        const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
-
-        // The directory chain is made durable BEFORE the first transition, so a crash cannot lose
-        // the thread directory's own link and let a published thread reboot as virgin.
-        const { walPath, subjectPath } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
-
-        // The subject is per PRINCIPAL and the log is per thread, so the expectation a publish
-        // carries lives beside the thread directories rather than inside one of them. Without it a
-        // second session of this agent opens virgin, expects an empty subject its own first session
-        // filled, and halts for good.
-        const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
-
-        // `subjectMayExist: false` is an honest claim rather than a convenient default: this is a
-        // native session id, so nothing published under this (principal, thread) pair before this
-        // log existed, and a same-session connector restart finds the log on disk and never
-        // consults the flag. The case it would be wrong for, a session that published and then
-        // lost its log, does not fail silently: the first frame goes out expecting sequence 0 on a
-        // subject that already has one, the broker refuses it, and the emitter halts.
-        const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
-
-        mapper = createClaudeMapper({ threadId, mintRunId: () => randomUUID() });
-        return AguiEmitter.start<ClaudeEntry>({
-          endpoint: agent.ep,
-          wal,
-          subjectFrontier,
-          source: createClaudeTranscriptSource(transcriptPath, sessionSource),
-          map: mapper.map,
-        });
+        return startEmitter();
       },
       // Required, and not defaulted to a swallow: this runs behind a hook that must not throw, so
       // a failure reaches a human only if it is written somewhere. The holder is terminal on

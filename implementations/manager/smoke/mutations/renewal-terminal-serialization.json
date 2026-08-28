@@ -61,8 +61,8 @@
     {
       "name": "natural process exit no longer closes the terminal latch in freeSlot",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    a.terminalizing = true; // F5 latch (Unit B): also covers exit/reap paths that never rode stopHandle",
-      "replace": "    void a.terminalizing;",
+      "find": "    this.logSeatReaped(a, cause);\n    a.terminalizing = true;\n    this.agents.delete(a.name);",
+      "replace": "    this.logSeatReaped(a, cause);\n    void a.terminalizing;\n    this.agents.delete(a.name);",
       "expectRed": "racer_exit: the terminal latch closes synchronously",
       "cell": "racer_exit: the terminal latch closes synchronously"
     },

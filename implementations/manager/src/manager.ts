@@ -2544,8 +2544,9 @@ export class Manager {
 
   private freeSlot(a: ManagedAgent, floor: boolean, cause: FreeSlotCause, acceptedBeforeFence = false): void {
     if (this.agents.get(a.name) !== a) return; // already freed (exit raced despawn, etc.)
+    // F5 latch (Unit B): also covers exit/reap paths that never rode stopHandle.
     this.logSeatReaped(a, cause);
-    a.terminalizing = true; // F5 latch (Unit B): also covers exit/reap paths that never rode stopHandle
+    a.terminalizing = true;
     this.agents.delete(a.name);
     if (a.restart?.sessionStatePath) rmSync(a.restart.sessionStatePath, { force: true });
     // P2 item 6 (pin 4): end any live §13.6 attach session bound to THIS incarnation with the honest
