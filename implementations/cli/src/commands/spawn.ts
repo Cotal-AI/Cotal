@@ -64,7 +64,7 @@ import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
 import { askManager, failIfNotOk, onInstanceOrExit, resolveControlTarget, START_TIMEOUT_MS } from "../lib/control.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonas } from "../lib/personas.js";
 import { spawnManifest } from "./spawn-manifest.js";
-import { extensionNames } from "../ext-loader.js";
+import { extensionNames, materializeExtension } from "../ext-loader.js";
 
 /** Completion for `cotal spawn` — `--space <TAB>` lists the running meshes, and the first positional
  *  is a persona from the mesh this spawn would target. Resolved OFFLINE (registry + `current`, no
@@ -206,14 +206,22 @@ export const spawnFlags = [
 ] as const satisfies readonly FlagSpec[];
 
 /** Foreground `cotal spawn` resolves its `--agent` connector from the registry (spawn.ts below); on
- *  the published binary nothing static-imports connectors, so declare the resolved one as a required
- *  extension and `runCli` materializes it first (seeded or `ext add`ed), failing loud if absent. The
- *  `-f` manifest launch preflights every type via `preflightConnectors`, and `--detach` resolves the
- *  connector manager-side, so both skip this. */
-export function spawnRequiredExtensions(args: ParsedArgs): readonly ExtensionRef[] {
-  const v = args.values as FlagValues<typeof spawnFlags>;
-  if (v.file || v.detach) return [];
-  return [{ kind: "connector", name: v.agent ?? defaultAgentType("claude") }];
+ *  the published binary nothing static-imports connectors, so the resolved one is materialized as a
+ *  required extension (seeded or `ext add`ed), failing loud if absent. The `-f` manifest launch
+ *  preflights every type via `preflightConnectors`, and `--detach` resolves the connector
+ *  manager-side, so both skip this.
+ *
+ *  #869: the persona file's `agent:` pin participates — flag > file > COTAL_DEFAULT_AGENT > default
+ *  — but the pin is only knowable from the TARGET mesh's root, which `resolveTargetOrExit` owns and
+ *  this pre-parse hook cannot reach without duplicating the five-tier target precedence. An earlier
+ *  revision read the persona from the cwd walk here; that made a spawn from a cwd outside the
+ *  target pre-materialize the WRONG connector, and a wrong pre-materialization hard-aborts the
+ *  command (materializeExtension throws on an uninstalled extension) before the body ever loads
+ *  the correct persona. The materialization is therefore DEFERRED into the spawn body, immediately
+ *  after the authoritative persona load and before registry.resolve — one resolver, one root, and
+ *  the hook stays root-free exactly as it was before #869. */
+export function spawnRequiredExtensions(_args: ParsedArgs): readonly ExtensionRef[] {
+  return [];
 }
 
 /** Comma-list flag → string[] (shared by both spawn modes). */
@@ -247,7 +255,12 @@ async function spawnDetached(
     name: ref,
     identity: values.name,
     role: values.role,
-    agent: values.agent ?? defaultAgentOverride(),
+    // #869: keep an explicit `--agent` and the invoking operator's COTAL_DEFAULT_AGENT in separate
+    // fields. Collapsing them made the env default indistinguishable from a flag, so it beat the
+    // persona pin; dropping the env instead changed detached semantics whenever the manager's own
+    // environment differed. The manager applies flag > file > caller default > manager default.
+    agent: values.agent,
+    defaultAgent: defaultAgentOverride(),
     config: managerConfigRef,
     model: values.model,
     variant: values.variant,
@@ -401,7 +414,20 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   if (target.source === "registry" || target.source === "current")
     console.error(c.dim(`→ joining mesh ${space} (${server}) as ${name}`));
 
-  const agentType = values.agent ?? defaultAgentType("claude");
+  const agentType = values.agent ?? def.agent ?? defaultAgentType("claude");
+  // Materialize the connector HERE, after the authoritative persona load (#869): the harness choice
+  // (flag > persona pin > env > default) is only final once the target root has supplied the file.
+  // On the published binary nothing static-imports connectors, so this import-from-manifest is what
+  // puts the chosen one in the registry before the resolve below; an uninstalled connector fails
+  // loud with its install hint. Doing this in `spawnRequiredExtensions` (pre-parse, pre-target)
+  // instead would need a SECOND root resolution that can disagree with this one — the regression a
+  // cold read of this PR caught — so the hook stays root-free and the materialization lives here.
+  try {
+    await materializeExtension({ kind: "connector", name: agentType });
+  } catch (e) {
+    console.error(c.red(`✗ ${(e as Error).message}`));
+    process.exit(1);
+  }
   let connector: Connector;
   try {
     connector = registry.resolve<Connector>("connector", agentType);
