@@ -1,5 +1,11 @@
 # @cotal-ai/connector-claude-code
 
+## 0.33.5
+
+### Patch Changes
+
+- 75e890d: Preserve Claude event startup when `UserPromptSubmit` or a turn terminal reaches the connector before the separate `SessionStart` hook process supplies its source context.
+
 ## 0.33.4
 
 ### Patch Changes
