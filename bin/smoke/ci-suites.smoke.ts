@@ -103,8 +103,18 @@ try {
 check("a MISSING chain file throws at the reader rather than yielding an empty chain", missingThrew);
 
 // ---- The real file is parsed by this same parser ------------------------------------------------
-const real = readCiSuites() as string[];
-check("the real chain file parses, and holds more than one suite", Array.isArray(real) && real.length > 1, real.length);
+let real: string[] | undefined;
+let realError = "";
+try {
+  real = readCiSuites() as string[];
+} catch (error) {
+  realError = (error as Error).message;
+}
+check(
+  "the real chain file parses, and holds more than one suite",
+  realError === "" && Array.isArray(real) && real.length > 1,
+  realError || real?.length,
+);
 
 const EXPECTED = 19;
 check(
