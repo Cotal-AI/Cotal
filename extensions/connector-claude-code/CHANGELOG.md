@@ -1,5 +1,11 @@
 # @cotal-ai/connector-claude-code
 
+## 0.33.4
+
+### Patch Changes
+
+- 2151b4a: Preserve the first Claude event run when a startup prompt is written before `SessionStart`, while resumed, forked, cleared, compacted, and recovered sessions keep their no-history-replay cursor behavior.
+
 ## 0.33.3
 
 ## 0.33.2
