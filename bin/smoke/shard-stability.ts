@@ -30,7 +30,7 @@
  *   to remove and permanently silences the mismatch abort below.
  * Run from inside a worktree of the repo. Exits 1 if any pre-existing suite changes shard.
  *
- * CONTROLS BUILT IN, because a bare zero is not evidence. All eleven run on every invocation:
+ * CONTROLS BUILT IN, because a bare zero is not evidence. All twelve run on every invocation:
  *   - a forced mid-file insert must report non-zero (the instrument responds at all)
  *   - identity (base vs base) must report 0
  *   - an unchanged 20-item registry under 4 -> 5 shards must move 16 items
@@ -42,6 +42,7 @@
  *   - extra matrix content must not remove or duplicate jobs
  *   - the smoke job must not carry an execution condition
  *   - the shard step must not carry an execution condition
+ *   - the shard runner must refuse tracked files changed after checkout
  * Any failed control ABORTS with exit 2 rather than emitting a verdict.
  *
  * A third line once sat here claiming "the known production re-shard 7837b64c->d1aeafc3
@@ -105,9 +106,10 @@ if (!base || !head) {
 // A count change is itself a runner reassignment: comparing both registries under the
 // head count hides every move. The matrix and the shard runner's modulo count are two
 // independent facts, so both must describe the complete index set 0..N-1. The smoke job
-// and shard step must also keep the execution shape this parser models. Comments and
+// and shard step must also keep the execution shape this parser models, including a
+// clean-tree guard that binds the runner to the committed inputs graded here. Comments and
 // other jobs are not topology either. Any unsupported shape aborts instead of guessing.
-const shardCountFromWorkflow = (yml: string): number | null => {
+const shardCountFromWorkflow = (yml: string, requireCommittedInputs = true): number | null => {
   const lines = yml.split("\n");
   const smokeStart = lines.findIndex((line) => /^  smoke:\s*(?:#.*)?$/.test(line));
   if (smokeStart < 0) return null;
@@ -166,12 +168,18 @@ const shardCountFromWorkflow = (yml: string): number | null => {
   const stepBlocks = stepStarts.map((start, index) =>
     steps.slice(start, stepStarts[index + 1] ?? steps.length)
   );
-  const invocationPattern = /^        run:\s*node bin\/smoke\/shard\.mjs \$\{\{ matrix\.shard \}\} ([1-9][0-9]*)\s*(?:#.*)?$/;
-  const shardSteps = stepBlocks.filter((block) => block.some((line) => invocationPattern.test(line)));
+  const guardedInvocationPattern = /^        run:\s*git diff --exit-code "\$GITHUB_SHA" -- \. && node bin\/smoke\/shard\.mjs \$\{\{ matrix\.shard \}\} ([1-9][0-9]*)\s*(?:#.*)?$/;
+  const legacyInvocationPattern = /^        run:\s*node bin\/smoke\/shard\.mjs \$\{\{ matrix\.shard \}\} ([1-9][0-9]*)\s*(?:#.*)?$/;
+  const invocationPatterns = requireCommittedInputs
+    ? [guardedInvocationPattern]
+    : [guardedInvocationPattern, legacyInvocationPattern];
+  const invocationOf = (line: string): RegExpExecArray | null =>
+    invocationPatterns.map((pattern) => pattern.exec(line)).find((match) => match !== null) ?? null;
+  const shardSteps = stepBlocks.filter((block) => block.some((line) => invocationOf(line) !== null));
   if (shardSteps.length !== 1) return null;
   const activeShardStep = shardSteps[0].filter((line) => !/^\s*(?:#.*)?$/.test(line));
   const invocations = activeShardStep
-    .map((line) => invocationPattern.exec(line))
+    .map(invocationOf)
     .filter((match): match is RegExpExecArray => match !== null);
   if (
     activeShardStep.length !== 2 ||
@@ -182,20 +190,20 @@ const shardCountFromWorkflow = (yml: string): number | null => {
   return commandCount === indices.length ? commandCount : null;
 };
 
-const ciShardCount = (sha: string): number | null => {
+const ciShardCount = (sha: string, requireCommittedInputs: boolean): number | null => {
   try {
     const yml = execFileSync("git", ["show", `${sha}:.github/workflows/ci.yml`], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
-    return shardCountFromWorkflow(yml);
+    return shardCountFromWorkflow(yml, requireCommittedInputs);
   } catch {
     return null;
   }
 };
 
-const baseCount = ciShardCount(base);
-const declaredHeadCount = ciShardCount(head);
+const baseCount = ciShardCount(base, false);
+const declaredHeadCount = ciShardCount(head, true);
 if (baseCount === null) {
   verdict("ABORT", `cannot read a complete smoke shard topology from .github/workflows/ci.yml at '${base}'`, 2);
 }
@@ -263,7 +271,7 @@ const commentShadowCount = shardCountFromWorkflow(`jobs:
         shard: [0, 1, 2, 3]
     steps:
       - name: Run shard
-        run: node bin/smoke/shard.mjs \${{ matrix.shard }} 4
+        run: git diff --exit-code "$GITHUB_SHA" -- . && node bin/smoke/shard.mjs \${{ matrix.shard }} 4
   other:
     runs-on: ubuntu-latest
 `);
@@ -274,7 +282,7 @@ const commandMismatchCount = shardCountFromWorkflow(`jobs:
         shard: [0, 1, 2, 3]
     steps:
       - name: Run shard
-        run: node bin/smoke/shard.mjs \${{ matrix.shard }} 5
+        run: git diff --exit-code "$GITHUB_SHA" -- . && node bin/smoke/shard.mjs \${{ matrix.shard }} 5
 `);
 const duplicateMatrixCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -283,7 +291,7 @@ const duplicateMatrixCount = shardCountFromWorkflow(`jobs:
         shard: [0, 1, 2, 2]
     steps:
       - name: Run shard
-        run: node bin/smoke/shard.mjs \${{ matrix.shard }} 4
+        run: git diff --exit-code "$GITHUB_SHA" -- . && node bin/smoke/shard.mjs \${{ matrix.shard }} 4
 `);
 const emptyMatrixCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -292,7 +300,7 @@ const emptyMatrixCount = shardCountFromWorkflow(`jobs:
         shard: [ ]
     steps:
       - name: Run shard
-        run: node bin/smoke/shard.mjs \${{ matrix.shard }} 1
+        run: git diff --exit-code "$GITHUB_SHA" -- . && node bin/smoke/shard.mjs \${{ matrix.shard }} 1
 `);
 const excludedMatrixCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -303,7 +311,7 @@ const excludedMatrixCount = shardCountFromWorkflow(`jobs:
           - shard: 3
     steps:
       - name: Run shard
-        run: node bin/smoke/shard.mjs \${{ matrix.shard }} 4
+        run: git diff --exit-code "$GITHUB_SHA" -- . && node bin/smoke/shard.mjs \${{ matrix.shard }} 4
 `);
 const conditionalJobCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -313,7 +321,7 @@ const conditionalJobCount = shardCountFromWorkflow(`jobs:
         shard: [0, 1, 2, 3]
     steps:
       - name: Run shard
-        run: node bin/smoke/shard.mjs \${{ matrix.shard }} 4
+        run: git diff --exit-code "$GITHUB_SHA" -- . && node bin/smoke/shard.mjs \${{ matrix.shard }} 4
 `);
 const conditionalStepCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -323,6 +331,15 @@ const conditionalStepCount = shardCountFromWorkflow(`jobs:
     steps:
       - name: Run shard
         if: \${{ false }}
+        run: git diff --exit-code "$GITHUB_SHA" -- . && node bin/smoke/shard.mjs \${{ matrix.shard }} 4
+`);
+const unguardedRunnerCount = shardCountFromWorkflow(`jobs:
+  smoke:
+    strategy:
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - name: Run shard
         run: node bin/smoke/shard.mjs \${{ matrix.shard }} 4
 `);
 console.log(`CONTROL forced mid-file insert -> ${forced.length} moved  (must be > 0)`);
@@ -336,11 +353,12 @@ console.log(`CONTROL empty matrix           -> ${emptyMatrixCount ?? "refused"} 
 console.log(`CONTROL excluded matrix shard  -> ${excludedMatrixCount ?? "refused"}       (must be refused)`);
 console.log(`CONTROL conditional smoke job  -> ${conditionalJobCount ?? "refused"}       (must be refused)`);
 console.log(`CONTROL conditional shard step -> ${conditionalStepCount ?? "refused"}       (must be refused)`);
+console.log(`CONTROL unguarded shard runner  -> ${unguardedRunnerCount ?? "refused"}       (must be refused)`);
 if (
   forced.length === 0 || identity.length !== 0 || countIncrease.length !== 16 ||
   countDecrease.length !== 16 || commentShadowCount !== 4 ||
   commandMismatchCount !== null || duplicateMatrixCount !== null || emptyMatrixCount !== null || excludedMatrixCount !== null ||
-  conditionalJobCount !== null || conditionalStepCount !== null
+  conditionalJobCount !== null || conditionalStepCount !== null || unguardedRunnerCount !== null
 ) {
   verdict("ABORT", "controls failed, this run cannot be trusted", 2);
 }

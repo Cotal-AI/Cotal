@@ -124,7 +124,8 @@ jobs:
       - name: Build
         run: pnpm build
       - name: Protocol & security smoke tests (shard ${{ matrix.shard }}/4)
-        run: node bin/smoke/shard.mjs ${{ matrix.shard }} 4
+        # The detector grades committed blobs. Earlier steps must not change tracked inputs.
+        run: git diff --exit-code "$GITHUB_SHA" -- . && node bin/smoke/shard.mjs ${{ matrix.shard }} 4
 
   live:
     timeout-minutes: 25
