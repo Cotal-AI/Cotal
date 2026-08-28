@@ -18,9 +18,9 @@
  * Run: pnpm smoke:seed
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, posix, win32 } from "node:path";
+import { delimiter, dirname, join, posix, win32 } from "node:path";
 import { defaultAgentType } from "@cotal-ai/workspace";
 import { isPathSpec } from "../src/commands/ext.js";
 
@@ -54,6 +54,11 @@ function cotal(cfg: string, args: string[], extraEnv: Record<string, string> = {
     env: { ...process.env, XDG_CONFIG_HOME: cfg, ...extraEnv },
   });
   return { status: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+}
+function fakeCotal(path: string, version: string): void {
+  mkdirSync(join(path, ".."), { recursive: true });
+  writeFileSync(path, `#!/bin/sh\nprintf '%s\\n' 'cotal-ai ${version}'\n`);
+  chmodSync(path, 0o755);
 }
 const freshCfg = (): string => mkdtempSync(join(tmpdir(), "cotal-seed-smoke-"));
 const seedDir = (cfg: string) => join(cfg, "cotal", "seed");
@@ -465,6 +470,28 @@ if (process.platform !== "win32") {
   check("downgrade: `ext seed --reset` recovers the store", reset.status === 0, reset.stderr.slice(0, 300));
   check("downgrade: the stamp is this binary's generation again", readJson(stamp).generation === readJson(join(REPO, "bin", "package.json")).version);
   check("downgrade: ordinary commands work after the reset", listNames(cfg).length === 6);
+}
+
+// ── downgrade recovery names a concrete executable only after proving its version ───────────────
+if (process.platform !== "win32") {
+  const cfg = track(freshCfg());
+  cotal(cfg, ["ext", "list"]);
+  const stamp = join(seedDir(cfg), "stamp.json");
+  writeJson(stamp, { generation: "99.0.0" });
+
+  const home = track(freshCfg());
+  const candidate = join(home, ".local", "bin", "cotal");
+  const reducedPath = [dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter);
+  fakeCotal(candidate, "99.0.0");
+  const sufficient = cotal(cfg, ["ext", "list"], { HOME: home, PATH: reducedPath });
+  const sufficientOut = `${sufficient.stdout}${sufficient.stderr}`;
+  check("downgrade hint: finds the installer cotal even when reduced PATH omits ~/.local/bin", sufficientOut.includes(candidate), sufficientOut.slice(0, 400));
+  check("downgrade hint: names the version the executable proved", sufficientOut.includes("cotal-ai 99.0.0"), sufficientOut.slice(0, 400));
+
+  fakeCotal(candidate, "98.0.0");
+  const stale = cotal(cfg, ["ext", "list"], { HOME: home, PATH: reducedPath });
+  const staleOut = `${stale.stdout}${stale.stderr}`;
+  check("downgrade hint: never names a candidate below the store generation", !staleOut.includes(candidate) && /run the newer cotal/.test(staleOut), staleOut.slice(0, 400));
 }
 
 for (const c of cleanup) rmSync(c, { recursive: true, force: true });

@@ -1,5 +1,8 @@
-import { accessSync, constants } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { accessSync, constants, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
+import { cmdSpawnSpec, resolveOnPath } from "@cotal-ai/workspace";
 
 /** This CLI's own invocation as argv: `[node, ...loaderFlags, entryScript]`. The loader flags carry
  *  tsx in dev (so a re-exec can run the `.ts` entry) and are empty in prod (entry = compiled JS).
@@ -35,6 +38,62 @@ export function cotalOnPath(): boolean {
     }
   }
   return false;
+}
+
+export interface CotalExecutable {
+  readonly path: string;
+  readonly version: string;
+}
+
+/**
+ * Concrete durable `cotal` executables this host can prove exist and identify. This is deliberately
+ * NOT part of ordinary startup: it executes each candidate's side-effect-free `--version` surface,
+ * with a short timeout, only when a recovery path needs an executable rather than another bare
+ * `cotal` command that may resolve straight back to the failing binary.
+ *
+ * PATH entries are checked in order, then the POSIX installer's default `~/.local/bin/cotal` is
+ * checked even when a service supplied a reduced PATH. Candidates are deduped by real path. A file
+ * counts only when it exits cleanly and its first line is exactly `cotal-ai <numeric semver>`.
+ */
+export function verifiedCotalExecutables(env: NodeJS.ProcessEnv = process.env): CotalExecutable[] {
+  const candidates: string[] = [];
+  const pathDirs = (env.PATH ?? "").split(delimiter).filter(Boolean);
+  for (const dir of pathDirs) {
+    const hit = resolveOnPath(join(dir, "cotal"), env);
+    if (hit) candidates.push(hit);
+  }
+  if (process.platform !== "win32") candidates.push(join(env.HOME || homedir(), ".local", "bin", "cotal"));
+
+  const seen = new Set<string>();
+  const verified: CotalExecutable[] = [];
+  for (const path of candidates) {
+    let identity: string;
+    try {
+      accessSync(path, constants.X_OK);
+      identity = realpathSync(path);
+    } catch {
+      continue;
+    }
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+
+    try {
+      const spec = cmdSpawnSpec(path, ["--version"], env);
+      const result = spawnSync(spec.file, spec.args, {
+        encoding: "utf8",
+        env,
+        timeout: 2000,
+        windowsVerbatimArguments: spec.windowsVerbatimArguments,
+      });
+      if (result.status !== 0 || result.error) continue;
+      const firstLine = `${result.stdout ?? ""}`.split(/\r?\n/, 1)[0];
+      const match = /^cotal-ai ([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$/.exec(firstLine);
+      if (match) verified.push({ path, version: match[1] });
+    } catch {
+      // A recovery hint is optional. An unlaunchable candidate is not evidence and is omitted.
+    }
+  }
+  return verified;
 }
 
 /** A PATH entry npx (`npm exec`) injected for the current run only — its `_npx` cache

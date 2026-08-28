@@ -1254,6 +1254,12 @@ command of each boot, so you rarely call it):
 | `--reset` | Discard the record and re-seed all seven built-ins (the six connectors plus the web dashboard). **Resurrects any you removed.** Rebuilds cleanly over corrupt seed state. |
 | `--force` | Re-seed the built-ins even when the version stamp is current or a downgrade. |
 
+An older `cotal` refuses a seed store written by a newer version. When it can verify a sufficient
+`cotal` executable on PATH or at the installer's `~/.local/bin/cotal` location, the refusal names
+that absolute path so a reduced service PATH does not select the older binary again. Otherwise it
+keeps the generic newer-version instruction. `--reset` remains the explicit way to rebuild the store
+for the running older version.
+
 The default connector for a bare `cotal spawn` (no `--agent`) is `claude`; set `COTAL_DEFAULT_AGENT`
 (e.g. `opencode`) to change it. An `--agent` naming a removed connector fails loud with the exact
 `cotal ext add` to restore it. Set `COTAL_SKIP_CONNECTOR_SEED=1` to turn off the automatic first-run

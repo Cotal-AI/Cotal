@@ -9,7 +9,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { isNpx, cotalOnPath } from "../src/lib/self-exec.js";
+import { isNpx, cotalOnPath, verifiedCotalExecutables } from "../src/lib/self-exec.js";
 import { offerGlobalInstall } from "../src/commands/setup.js";
 
 let failures = 0;
@@ -79,6 +79,23 @@ process.env.PATH = [npxBin, realBin].join(delimiter); // ephemeral shim + a dura
 check("a durable `cotal` alongside the npx shim ⇒ cotalOnPath() true", cotalOnPath() === true);
 
 process.env.PATH = prefix; // restore the deterministic no-cotal PATH
+
+// 4) A reduced non-interactive PATH can omit the installer's default ~/.local/bin while a stale
+// system cotal remains reachable. The recovery probe must still find the installer candidate, and
+// must accept only a clean first-line version proof.
+if (process.platform !== "win32") {
+  const home = mkdtempSync(join(tmpdir(), "cotal-install-home-"));
+  const userBin = seedCotal(join(home, ".local", "bin"));
+  const userCotal = join(userBin, cotalExe());
+  writeFileSync(userCotal, "#!/bin/sh\nprintf '%s\\n' 'cotal-ai 9.8.7'\n");
+  chmodSync(userCotal, 0o755);
+  const found = verifiedCotalExecutables({ ...process.env, HOME: home, PATH: prefix });
+  check("recovery probe: reduced PATH still finds ~/.local/bin/cotal", found.some((c) => c.path === userCotal && c.version === "9.8.7"));
+
+  writeFileSync(userCotal, "#!/bin/sh\nprintf '%s\\n' 'wrapper noise' 'cotal-ai 9.8.7'\n");
+  chmodSync(userCotal, 0o755);
+  check("recovery probe: version proof must be the first output line", verifiedCotalExecutables({ ...process.env, HOME: home, PATH: prefix }).length === 0);
+}
 
 process.argv[1] = realArgv1;
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
