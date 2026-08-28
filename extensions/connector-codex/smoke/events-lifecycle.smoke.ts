@@ -50,7 +50,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, eventChannel, isAguiFramePart, seedChannelRegistry, isReachable } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
   // Managed Codex agents are POSIX-only by design (the isolated CODEX_HOME symlinks the operator's
@@ -585,69 +585,68 @@ try {
     frames: cDead.length,
   });
 
-  // ---- (6) the broker that was not there yet --------------------------------------------------
-  // The emitter publishes THROUGH the mesh endpoint and refuses to start without a connection, the
-  // holder makes that error TERMINAL, and the agent connects in the background with retry. So an
-  // armed seat whose broker happened to be down at launch killed its own plane, then watched the
-  // mesh recover around it and published nothing for the rest of its life, with one line inside its
-  // own process as the entire trace. This is the campaign's defect class exactly: it fails toward
-  // silence, and the silence is indistinguishable from an agent with nothing to say.
+  // ---- (6) the broker drops after an honest launch ---------------------------------------------
+  // Initial mesh absence is intentionally terminal: Codex does not advertise a ready/offline-looking
+  // TUI and fails its startup gate within 15 seconds. Recovery belongs to a seat that was already
+  // ready when the broker dropped. Its event holder then fails on a real publish, while the endpoint
+  // reconnects in the background; the next turn boundary rebinds that dead holder.
   const PORT2 = await freePort();
   const servers2 = `nats://127.0.0.1:${PORT2}`;
   const js2 = join(dir, "js2");
-  // UP, SEEDED, THEN DOWN. Seeding before the outage removes the only race this case could have
-  // had (the seat reconnecting before the channel registry existed), and the JetStream store dir
-  // survives the restart, so what was seeded is still there when the seat recovers.
   nats2 = spawn("nats-server", ["-js", "-p", String(PORT2), "-sd", js2], { stdio: "ignore" });
   releaseBroker2 = teardownOnSignal(nats2, dir);
+  let broker2Ready = false;
   for (let i = 0; i < 50; i++) {
-    if (await isReachable(servers2)) break;
+    if (nats2.exitCode !== null || nats2.signalCode !== null) break;
+    if (await isReachable(servers2)) {
+      broker2Ready = true;
+      break;
+    }
     await sleep(200);
   }
+  check("broker-outage:setup:the owned broker is up before the seat launches", broker2Ready);
   await seedChannelRegistry({ servers: servers2, space, file: { defaults: { replay: false }, channels: { team: { replay: false } } } });
-  nats2.kill("SIGKILL");
+  operator2 = makeOperator2(servers2);
+  await operator2.start();
+
+  const D = "brokerlatepeer";
+  const homeD = join(dir, "d");
+  // The auto-submitted prompt waits on `goD`, so the host reaches honest mesh readiness and binds the
+  // emitter before any outage content is written. Once the broker is down, releasing the marker puts
+  // one full assistant/tool turn through the already-bound plane and makes the holder fail for the
+  // outage we actually mean to recover from.
+  const goD = join(dir, "d.go");
+  hostD = startHost(D, homeD, "1", join(dir, "d.log.jsonl"), (chunk) => (errD += chunk), servers2, {
+    prompt: "TOOLREC the turn that runs while the mesh is unreachable",
+    goMark: goD,
+  });
+  check("broker-outage:setup:seat D came online before the outage", await settle("D:online before outage", () => online2.has(D), 60_000), margin("D:online before outage"));
+  await joinEventsOf(D, operator2);
+  const launchBound = await settle("D:the launch bind announced its boundary", () => publishedThreads(errD).length >= 1, 60_000);
+  check("broker-outage:setup:the launch bind took its boundary BEFORE the outage turn wrote anything", launchBound, {
+    ...margin("D:the launch bind announced its boundary"),
+    tail: errD.slice(-400),
+  });
+
+  // The first observer is deliberately stopped before the outage; after restart a FRESH observer
+  // must see D publish presence again, rather than a retained roster cache satisfying recovery.
+  await operator2.stop();
+  operator2 = undefined;
+  online2.delete(D);
+  await killAndAwaitExit(nats2, "SIGKILL", 3_000);
+  releaseBroker2?.();
+  releaseBroker2 = undefined;
+  nats2 = undefined;
   let brokerDown = false;
   for (let i = 0; i < 50; i++) {
     if (!(await isReachable(servers2))) {
       brokerDown = true;
       break;
     }
-    await sleep(200);
+    await sleep(100);
   }
-  check("broker-late:setup:the seat's broker is down before it launches", brokerDown);
-  const D = "brokerlatepeer";
-  const homeD = join(dir, "d");
-  // THE OUTAGE TURN, and why it is the seat's own boot prompt that runs it. What this arm has to
-  // test the plane against is content the thread wrote WHILE THE MESH WAS UNREACHABLE, and a mesh
-  // DM cannot reach a seat whose broker is down. The connector's auto-submitted first prompt is
-  // the route its own source names as the window where a real turn opens against a still
-  // connecting endpoint, so it is the honest one rather than a harness convenience. The turn
-  // leaves all three shapes this plane can carry: assistant text, a tool call's arguments, and
-  // that tool's output.
-  const goD = join(dir, "d.go");
-  hostD = startHost(D, homeD, "1", join(dir, "d.log.jsonl"), (chunk) => (errD += chunk), servers2, {
-    prompt: "TOOLREC the turn that runs while the mesh is unreachable",
-    goMark: goD,
-  });
-  // THE POSITIVE CONTROL, and the reason this case is a test rather than a seat that simply started
-  // late: the emitter has to actually DIE first. Without this cell, a bind that quietly succeeded
-  // would make every assertion below pass while proving nothing about recovery.
-  const emitterDied = await settle("D:the emitter dies at launch", () => errD.includes("AG-UI emitter stopped"), 60_000);
-  check("broker-late:an armed seat whose broker is unreachable LOSES its emitter at launch", emitterDied, { tail: errD.slice(-400) });
-  // ORDERED ON THE SEAT'S OWN OUTPUT, NOT ON A SLEEP. The bind captures its boundary and then
-  // announces it, so the announcement is proof the boundary is already taken, and the death above
-  // is proof the start it was taken for threw. Only then is the outage turn released. LOST ONLY
-  // SOMETIMES IS WORSE THAN LOST ALWAYS: released first, the turn's records would sit BEHIND that
-  // boundary, nothing could leak, and the graded cell at the end of this arm would pass in both
-  // worlds while discriminating nothing.
-  const launchBound = await settle("D:the launch bind announced its boundary", () => publishedThreads(errD).length >= 1, 60_000);
-  check("broker-late:setup:the launch bind took its boundary BEFORE the outage turn wrote anything", launchBound, {
-    ...margin("D:the launch bind announced its boundary"),
-    tail: errD.slice(-400),
-  });
-  // RELEASED WHETHER THAT WAIT SUCCEEDED OR EXPIRED. The fake blocks on this file without a bound
-  // by design, so releasing it unconditionally keeps a failed cell above reported as a failed cell
-  // rather than as a suite that hangs somewhere else.
+  check("broker-outage:setup:the seat's broker drops after launch", brokerDown);
+
   writeFileSync(goD, "go");
   const rolloutD = /publishing thread \S+ from (\S+)/.exec(errD)?.[1] ?? "";
   const outageDone = await settle(
@@ -655,81 +654,83 @@ try {
     () => rolloutD !== "" && existsSync(rolloutD) && readFileSync(rolloutD, "utf8").includes("task_complete"),
     60_000,
   );
-  check("broker-late:setup:the outage turn RAN and completed while the mesh was unreachable", outageDone, {
+  check("broker-outage:setup:the outage turn RAN and completed while the mesh was unreachable", outageDone, {
     ...margin("D:the outage turn is complete on disk"),
     path: rolloutD,
   });
+  const emitterDied = await settle("D:the emitter dies during the outage", () => errD.includes("AG-UI emitter stopped"), 60_000);
+  check("broker-outage:the armed seat LOSES its emitter when the broker drops", emitterDied, { tail: errD.slice(-400) });
+
   nats2 = spawn("nats-server", ["-js", "-p", String(PORT2), "-sd", js2], { stdio: "ignore" });
   releaseBroker2 = teardownOnSignal(nats2, dir);
+  let broker2Restarted = false;
   for (let i = 0; i < 50; i++) {
-    if (await isReachable(servers2)) break;
+    if (nats2.exitCode !== null || nats2.signalCode !== null) break;
+    if (await isReachable(servers2)) {
+      broker2Restarted = true;
+      break;
+    }
     await sleep(200);
   }
+  check("broker-outage:setup:the owned broker restarts", broker2Restarted);
   operator2 = makeOperator2(servers2);
   await operator2.start();
-  check("broker-late:the seat recovers its mesh connection on its own", await settle("D:reconnects", () => online2.has(D), 60_000), margin("D:reconnects"));
+  check("broker-outage:the seat recovers its mesh connection on its own", await settle("D:reconnects", () => online2.has(D), 60_000), margin("D:reconnects"));
   await joinEventsOf(D, operator2);
-  // COUNTED FROM A MARK, both of them, because the outage turn's own boundary already retried the
-  // dead plane: the rebind line and an announcement are BOTH in this seat's log before the broker
-  // came back, so asking whether either string is PRESENT answers yes about a rebind that failed
-  // rather than about the one that recovered.
+
+  // COUNTED FROM A MARK, both of them: the outage turn's boundary may already have retried the dead
+  // plane, so a presence check would answer yes about a rebind that failed rather than this recovery.
   const bindsBefore = publishedThreads(errD).length;
   const rebindsBefore = rebindsAnnounced(errD);
   await dm(D, "the turn whose boundary rebinds", operator2);
   const rebound = await settle("D:rebinds once the broker is back", () => publishedThreads(errD).length > bindsBefore, 60_000);
-  check("broker-late:the next turn boundary REBINDS the dead plane", rebound, {
+  check("broker-outage:the next turn boundary REBINDS the dead plane", rebound, {
     ...margin("D:rebinds once the broker is back"),
     before: bindsBefore,
     now: publishedThreads(errD).length,
     tail: errD.slice(-400),
   });
-  check("broker-late:and it said so rather than recovering silently", rebindsAnnounced(errD) > rebindsBefore, {
+  check("broker-outage:and it said so rather than recovering silently", rebindsAnnounced(errD) > rebindsBefore, {
     before: rebindsBefore,
     now: rebindsAnnounced(errD),
     tail: errD.slice(-400),
   });
-  // THE TURN THAT TRIGGERS A REBIND IS NOT THE TURN THAT GETS PUBLISHED, and that is protocol
-  // rather than timing. Codex writes a turn's first record to the rollout BEFORE it announces that
-  // the turn started, and that announcement is the only thing a rebind can run on, so any boundary
-  // a rebind takes is already at or past that record. A run is never opened from the middle of a
-  // turn, so what is left of it is declined rather than published as a run with no beginning. The
-  // NEXT turn is the first one wholly ahead of the boundary, and it is the one this arm grades.
+
+  // The boundary-triggering turn is already partly behind the new cursor. The NEXT turn is the first
+  // one wholly ahead of it and therefore the first one that may publish after recovery.
   const framesBeforeD = frames2.length;
   await dm(D, "the first turn wholly after the rebind", operator2);
   const publishedAfterRebind = await settle("D:the first turn after the rebind is published", () => frames2.length > framesBeforeD, 60_000);
-  check("broker-late:the seat PUBLISHES again once a turn starts after the rebind", publishedAfterRebind, {
+  check("broker-outage:the seat PUBLISHES again once a turn starts after the rebind", publishedAfterRebind, {
     ...margin("D:the first turn after the rebind is published"),
     before: framesBeforeD,
     after: frames2.length,
     tail: errD.slice(-400),
   });
-  // ONE OBSERVABLE, AND IT IS THE WHOLE CLAIM OF THIS ARM. `events.<owner>.<actor>` carries a read
-  // ACL that is not the input channel's, so republishing what the seat did while it was cut off
-  // widens who can read it. The counts are EXACT rather than "at least one", which is also what
-  // makes a frame published twice a failure here rather than a curiosity.
+
   const evD = frames2.flatMap((f) => f.events as unknown as Record<string, unknown>[]);
   const deltas = evD.filter((e) => e.type === "TEXT_MESSAGE_CONTENT").map((e) => String(e.delta ?? ""));
   const wire = JSON.stringify(evD);
   const starts = evD.filter((e) => e.type === "RUN_STARTED").length;
   const finishes = evD.filter((e) => e.type === "RUN_FINISHED").length;
   const toolEvents = evD.filter((e) => String(e.type).startsWith("TOOL_CALL")).map((e) => String(e.type));
+  const occurrences = (needle: string): number => wire.split(needle).length - 1;
   check(
-    "broker-late:the recovered stream carries ONE turn, the first one after the rebind, and nothing the seat did before it",
-    starts === 1 &&
-      finishes === 1 &&
-      toolEvents.length === 0 &&
-      !deltas.includes("ok:1") &&
-      !deltas.includes("ok:2") &&
-      !wire.includes("toolargs:1") &&
-      !wire.includes("tooloutput:1") &&
-      deltas.includes("ok:3"),
+    "broker-outage:the recovered stream catches up the outage and boundary turns exactly once, then carries the post-rebind turn",
+    starts === 3 &&
+      finishes === 3 &&
+      deltas.filter((delta) => delta === "ok:1").length === 1 &&
+      deltas.filter((delta) => delta === "ok:2").length === 1 &&
+      deltas.filter((delta) => delta === "ok:3").length === 1 &&
+      occurrences("toolargs:1") === 1 &&
+      occurrences("tooloutput:1") === 1,
     {
       starts,
       finishes,
       toolEvents,
       deltas,
-      leakedArgs: wire.includes("toolargs:1"),
-      leakedOutput: wire.includes("tooloutput:1"),
+      args: occurrences("toolargs:1"),
+      outputs: occurrences("tooloutput:1"),
     },
   );
 
@@ -881,14 +882,12 @@ try {
     } catch {
       /* leaving anyway */
     }
+  await killAndAwaitExit(nats, "SIGKILL", 3_000);
   releaseBroker();
-  releaseBroker2?.();
-  for (const b of [nats, nats2])
-    try {
-      b?.kill("SIGKILL");
-    } catch {
-      /* leaving anyway */
-    }
+  if (nats2) {
+    await killAndAwaitExit(nats2, "SIGKILL", 3_000);
+    releaseBroker2?.();
+  }
   if (process.env.CODEX_EVENTS_KEEP !== "1") rmSync(dir, { recursive: true, force: true });
   else console.log(`KEEP ${dir}`);
 }

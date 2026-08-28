@@ -181,11 +181,12 @@ Eight things are specific to Codex and worth knowing before you read a stream:
   thread, and the developer instructions the persona supplies are all withheld. The events channel
   carries a different read ACL from the channel you typed into, so republishing your own words there
   would widen who can read them. Assistant text, reasoning and tool activity are unaffected.
-- **The seat waits out a broker outage at startup.** The plane publishes
-  through the seat's mesh connection, so a seat armed while its broker was unreachable cannot start
-  its emitter. It says so in its log, and rebuilds the emitter at the first turn boundary once the
-  broker is there. A rebind DECLINES to publish two things, and they are one rule rather than two
-  exceptions. It declines what the thread wrote while the seat was cut off. It also declines the
+- **A broker outage after readiness costs the outage, not the seat.** Initial mesh absence still
+  fails the host's readiness gate within 15 seconds, so it never opens an offline-looking TUI. Once
+  ready, the plane publishes through the seat's reconnecting mesh endpoint: an outage can stop an
+  emitter, and the first turn boundary after reconnect rebuilds it. A rebind DECLINES to publish two
+  things, and they are one rule rather than two exceptions. It declines what the thread wrote while
+  the seat was cut off. It also declines the
   turn whose own boundary triggered it: Codex writes a turn's first record before it announces that
   the turn started, and that announcement is what a rebind runs on, so the record is always behind
   whatever boundary the rebind takes, and a run is never opened from the middle of a turn. The first

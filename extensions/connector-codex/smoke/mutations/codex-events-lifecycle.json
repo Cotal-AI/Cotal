@@ -37,11 +37,11 @@
       "expectRed": "an armed seat PUBLISHES its thread's activity"
     },
     {
-      "name": "L6 a dead emitter stays bound, so a seat whose broker was down at launch publishes nothing for the rest of its life",
+      "name": "L6 a dead emitter stays bound after a post-start broker outage, so the recovered seat never publishes again",
       "file": "extensions/connector-codex/src/host.ts",
       "find": "    if (events?.failure !== undefined) {",
       "replace": "    if (events !== undefined && events.failure !== undefined && false) {",
-      "expectRed": "broker-late:the next turn boundary REBINDS the dead plane"
+      "expectRed": "broker-outage:the next turn boundary REBINDS the dead plane"
     },
     {
       "name": "L8 giving up on a successor stops draining the predecessor at all, so a run whose process is gone is left open on the wire",
@@ -62,21 +62,21 @@
       "file": "extensions/connector-codex/src/host.ts",
       "find": "        const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });",
       "replace": "        const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });\n        if (wal.frontier.sourceCursor === undefined) await wal.advanceCursorOnly(startCursor);",
-      "expectRed": "the recovered stream carries ONE turn, the first one after the rebind, and nothing the seat did before it"
+      "expectRed": "broker-outage:the recovered stream catches up the outage and boundary turns exactly once, then carries the post-rebind turn"
     },
     {
       "name": "L10 the bind's boundary is substituted on EVERY read rather than only on a log with no cursor, so the stream restarts from it and republishes what it has already sent",
       "file": "extensions/connector-codex/src/host.ts",
       "find": "    return this.inner.read(cursor ?? this.start);",
       "replace": "    return this.inner.read(this.start);",
-      "expectRed": "the recovered stream carries ONE turn, the first one after the rebind, and nothing the seat did before it"
+      "expectRed": "broker-outage:the recovered stream catches up the outage and boundary turns exactly once, then carries the post-rebind turn"
     },
     {
       "name": "L11 a seat that recovers its plane says nothing about it, so a reader watching the log cannot tell a recovery from a plane that was never down",
       "file": "extensions/connector-codex/src/host.ts",
       "find": "      log(`AG-UI: the emitter stopped (${events.failure.message}), rebinding at this boundary`);",
       "replace": "      log(`AG-UI: the emitter stopped (${events.failure.message})`);",
-      "expectRed": "broker-late:and it said so rather than recovering silently"
+      "expectRed": "broker-outage:and it said so rather than recovering silently"
     },
     {
       "name": "L12 the bind's boundary is not substituted, so the emitter positions itself wherever the file ends when its own setup has finished",
