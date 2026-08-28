@@ -93,10 +93,6 @@ const UNGATED: Record<string, string> = {
   // subject. It is ungated because it needs a real user-auth broker plus a real callout, not because
   // it is obsolete. Deleting it would drop a security proof for shipped code.
   "smoke:ctl-trust:live": "needs a real user-auth broker + callout; pins the LIVE ctl.delivery rail",
-  // The bare `smoke` script — `tsx packages/core/smoke.ts`, documented in AGENTS.md as the core
-  // smoke entry point, and reached by nothing. Invisible to this file until the audited set stopped
-  // filtering on `smoke:`, and found by a second independent derivation rather than by this check.
-  "smoke": "UNTRIAGED",
   // Untriaged debt. These are the ones that should shrink.
   "smoke:attention": "UNTRIAGED",
   "smoke:attention:auth": "UNTRIAGED",

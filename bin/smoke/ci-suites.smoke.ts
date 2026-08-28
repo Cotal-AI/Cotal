@@ -61,6 +61,11 @@ check("an indented comment is still a comment", same(parse("   # note\nsmoke:a")
 check("a trailing space on an entry is trimmed, not carried into the script name", same(parse("smoke:a  "), ["smoke:a"]));
 check("a leading space on an entry is trimmed", same(parse("  smoke:a"), ["smoke:a"]));
 check("a carriage return does not survive into the name", same(parse("smoke:a\r\nsmoke:b"), ["smoke:a", "smoke:b"]));
+check(
+  "the bare root smoke script is a valid chain entry",
+  same(parse("smoke\nsmoke:a"), ["smoke", "smoke:a"]),
+  parse("smoke\nsmoke:a"),
+);
 
 // ---- A `pnpm ` prefix REFUSES: every line of the old chain looked like this ---------------------
 const pnpmPrefixed = parse("smoke:a\npnpm smoke:b");
@@ -101,7 +106,7 @@ check("a MISSING chain file throws at the reader rather than yielding an empty c
 const real = readCiSuites() as string[];
 check("the real chain file parses, and holds more than one suite", Array.isArray(real) && real.length > 1, real.length);
 
-const EXPECTED = 18;
+const EXPECTED = 19;
 check(
   `every cell ran - ${EXPECTED} expected, so a cell that stops existing is not mistaken for one that passed`,
   pass + fail === EXPECTED,
