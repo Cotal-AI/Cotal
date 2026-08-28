@@ -29,7 +29,7 @@ It is two-tier, gated on a machine marker.
 
 **Later runs** run `runEnsure`: re-seed the `default` persona if it's missing (announced),
 re-offer the **global install** (`offerGlobalInstall`, same `isNpx()` + PATH-scan gate as first
-run — so a repeat `npx cotal-ai setup` on a machine that still lacks a durable `cotal` finally
+run, so a repeat `npx cotal-ai setup` on a machine that still lacks a durable `cotal` finally
 installs it), then print the **status card** (`readyCard`). The card is **read-only probes** (`machineStatus`/`meshStatus`/`webUp`/`managerUp` for NATS, the plugin, the mesh, the web
 dashboard, and the manager) and for anything down it prints the exact command to start it
 (`cotal up --detach`, `cotal web`, `cotal supervise`). Displaying state never depends on it; setup
@@ -96,11 +96,11 @@ fail-loud on collision.
   `managerUp()` checks the pid record for setup's status card. The **manager itself** writes
   `.cotal/manager.pid`, so a supervisor started by a container entrypoint, by cron, or by hand is
   recorded the same way a detached `cotal up` is. Readers verify the recorded pid is alive and is a
-  supervisor before trusting it ([Config](config.md#project-cotal)).
+  supervisor before trusting it ([Config](config.md#project-files)).
 
 The **web dashboard** is *not* part of `cotal up`. It ships inside `cotal-ai` as the `@cotal-ai/web`
-extension and is seeded automatically by the boot reconcile — the same durable, version-locked path as
-the built-in connectors (`SEEDED_EXTENSIONS`) — so it always matches the CLI version and needs no
+extension and is seeded automatically by the boot reconcile, the same durable, version-locked path as
+the built-in connectors (`SEEDED_EXTENSIONS`), so it always matches the CLI version and needs no
 separate install. Start it with `cotal web`; it records
 `.cotal/web.pid`, self-registers that process with `down`, and is addressed as
 `http://cotal.localhost:7799` (binds loopback; `*.localhost` resolves in Chrome/Firefox/Edge,
@@ -137,8 +137,9 @@ the entry is `reconcileSeededConnectors()`, gated in `runCli` before the manifes
 **What ships where.** The connectors are `devDependencies` of `cotal-ai` (not runtime deps), and a
 `prepack` step ([`bin/scripts/copy-seeded-connectors.mjs`](../bin/scripts/copy-seeded-connectors.mjs))
 `npm pack`s each into `bin/seeded-connectors/<name>/` (honoring each connector's own `files`), added to
-the package `files`. `SEEDED_EXTENSIONS` (`@cotal-ai/workspace`) is the shared list — the connectors plus
-`web` — and the prepack asserts every bundled payload's `name` and `version` match the umbrella (the
+the package `files`. `SEEDED_EXTENSIONS` (`@cotal-ai/workspace`) is the shared list: the
+connectors plus `web`. The prepack asserts that every bundled payload's `name` and `version` match
+the umbrella (the
 `fixed` changeset group keeps them lockstep), so a version-skewed payload can never be published; `web`
 also emits `dist/web/vendor/vendor-manifest.json` (name/version/license/sha512) as the auditable
 inventory of its vendored browser libs (marked/DOMPurify ship as opaque `dist` bytes, not runtime deps).
@@ -158,9 +159,9 @@ compare) or under `--force`; an operator-managed official entry (a manual `ext a
 version, no seeded marker) is left untouched on upgrade; a deliberately-removed one stays removed. The
 `ever-seeded` **authority** (`seed/authority.json`, mirrored to a monotonic `.bak`) is the sole arbiter
 of removed-vs-never-seeded and is unioned with its backup on read, so a truncated authority never
-resurrects a removal. Every (re)install is verified before the generation stamp is written — recorded in
-the manifest, present on disk with its entry file resolvable, and at the generation version — so a
-version-skewed payload fails loud (`ext seed --repair`) rather than being stamped as current. A cotal
+resurrects a removal. Before writing the generation stamp, setup verifies that every
+(re)installed extension is recorded in the manifest, present on disk with a resolvable entry file,
+and at the generation version. A version-skewed payload fails loud (`ext seed --repair`) rather than being stamped as current. A cotal
 **older** than the store's stamped generation refuses before writing anything, rather than stamping the
 store back down to its own version while refreshing nothing: run the newer cotal, or `ext seed --reset`
 to rebuild the store for the version you are running.

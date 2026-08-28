@@ -1,4 +1,4 @@
-# Identity & auth
+# Identity
 
 > **Concept** (informative) · **For:** operators and implementers · **Normative:** [SPEC §2](../SPEC.md#2-identity), [§9](../SPEC.md#9-nats--jetstream-security-and-authorization), [§10](../SPEC.md#10-connection-and-onboarding), [Appendix B](../SPEC.md#appendix-b-profile-acls)
 
@@ -17,7 +17,7 @@ independently, so "network-reachable" never silently means "unauthenticated". Op
 is for quick local experiments and sits outside every security claim
 ([SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization)).
 
-## One identity, used everywhere
+## Shared identity
 
 An agent's wire identity is a **principal**: an `owner.actor` pair, where the owner is
 the account (a human, or an organization) the agent acts on behalf of, and the actor is
@@ -40,7 +40,7 @@ mismatches; sender authenticity is broker-enforced end to end
 isolation boundary. An operator signs the account; an account **signing key** mints
 per-agent user JWTs.
 
-## The provisioner: a capability, not a role
+## Provisioner
 
 The **provisioner** is whoever holds the account signing key. It mints profile-scoped
 credentials and pre-creates the durables agents may only *bind* (their DM inbox, their
@@ -51,7 +51,7 @@ the same library ([CLI](cli.md)). Minting static creds is a **static-auth** surf
 per-user-auth space refuses it, because agents there join under a logged-in user, never
 via a handed-out file (see *Per-user auth* below).
 
-## Profiles: default-deny allow-lists
+## Profiles
 
 Every credential is a profile: an explicit allow-list built from the same
 subject/stream/durable builders as the wire layout, so ACLs cannot drift from it. The
@@ -74,7 +74,7 @@ inbox prefixes, and the DM/task consumers are provisioner-pre-created and bind-o
 agent cannot create a consumer filtered to someone else's inbox
 ([SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization) items 1–5).
 
-## Capabilities: spawn is granted, not assumed
+## Spawn capability
 
 Control-plane power is a **declared capability**, not a default. An agent file carrying
 `capabilities: [spawn]` gets the privileged control subject minted into its cred: spawn,
@@ -85,7 +85,7 @@ operator ops (history purge, cross-agent stop) live on a third tier no agent cre
 reaches. Persona redefinition separates content from policy; the write path takes only
 `model`/`persona`, so a peer cannot grant itself a capability by redefining a file.
 
-## Per-user auth: people sign in
+## Per-user authentication
 
 `cotal up --user-auth --idp <auth base URL>` (or manifest `broker.auth: "user"`) puts a
 **human identity plane** above the per-agent one: people sign in to an external IdP once,
@@ -120,7 +120,7 @@ match a fresh managed-ledger row. Elevated `view` exchanges stay loopback-only.
 
 The well-known response contains the IdP pins and the actual deny-all sentinel credential remote
 agents need before the bearer-driven auth callout. The pins ride a `userAuth` arm that names the
-auth provider, and that name is the same one the local arm registers under — a document naming a
+auth provider, and that name is the same one the local arm registers under. A document naming a
 different provider than the one serving it would register an entry nothing can resolve, so both read
 one constant. Treat it as bootstrap material: the sentinel cannot publish or subscribe, but
 consumers must still take the bundle only from the intended HTTPS origin and must verify TLS.
@@ -145,7 +145,7 @@ with the new values; a refresh adopts an already-running auth service rather tha
 its listener policy. "One per space" is enforced, not assumed (SPEC §13.13): at boot the
 service takes a broker-backed ownership claim, so a second same-space auth process refuses
 with instructions instead of silently splitting the plane, and a crashed one's claim is
-reclaimed only once the broker confirms its connections are gone — a verdict trusted only
+reclaimed only once the broker confirms its connections are gone. That verdict is trusted only
 on a standalone broker (a clustered one refuses the reclaim, since a partitioned member
 could still hold them). If the claim's connections die mid-run, the service downs itself
 loudly instead of serving from a half-dead plane.
@@ -163,17 +163,17 @@ drives the *full* teardown of that lifecycle: it shreds the local credential fil
 agent's standing mint authority (its ledger row, so a copied token can no longer mint a fresh
 credential), deletes its broker footprint (the lifecycle-keyed durables + read-ACL row), and asks
 the auth service to *retire* the lifecycle (settle in-flight work, evict the departed credentials,
-record it retired). The name is held *reserved pending retirement* until **all** of that completes —
+record it retired). The name is held *reserved pending retirement* until **all** of that completes,
 the broker-footprint cleanup, the standing-authority revoke, **and** the lifecycle retirement, not the
-retirement alone — so a same-name respawn in the gap is refused with
+retirement alone, so a same-name respawn in the gap is refused with
 a plain reason and a retry hint rather than quietly handing the alias to a new agent while
 the old lifecycle's teardown is still running. Only once the broker footprint is gone, the standing
 authority is revoked, and the retirement is confirmed does the name free, and `cotal spawn <same-name>`
 gives you a fresh agent cleanly. This is what makes reusing an agent's name safe: the old lifecycle is
-fully torn down before the new one takes the alias. If a step cannot complete — the auth service is
-unreachable, or the standing-authority revoke fails — the despawn still stops the agent and *holds* the
-name; **a same-name `cotal spawn` re-drives the whole teardown** and finishes it (retrying the despawn
-does not — the agent is already stopped), and the operator copy tells you to recover the stack
+fully torn down before the new one takes the alias. If the auth service is unreachable or the
+standing-authority revoke fails, the despawn still stops the agent and *holds* the name. **A
+same-name `cotal spawn` re-drives the whole teardown** and finishes it. Retrying the despawn has no
+effect because the agent is already stopped. The operator copy tells you to recover the stack
 (`cotal supervise`) rather than reusing the name over an unretired predecessor.
 
 **Delegation only narrows (the envelope rule).** A user's grant is their envelope:
@@ -236,7 +236,7 @@ degraded state and refuses new agents, restarts, or replacement credentials rath
 substituting local/static authority. Existing live agents remain running only while their own
 valid authority permits it; recovery requires the host service and a fresh successful renewal.
 
-**A hard branch, not a fallback.** On a user-auth space, commands never fall back to
+**User authentication has one path.** On a user-auth space, commands never fall back to
 static minting or credless connects: a missing login or a down auth service is one
 sentence naming the exact recovery, and static agent/observer/admin minting is refused
 outright. The refusal is deny-new: a static cred signed before the space flipped stays
@@ -322,7 +322,7 @@ still sets `COTAL_CREDS` itself.
   running manager, which loads the trust bundle and self-mints its supervisor cred and
   renewals from it; a copied signing *seed* still stays valid for its identity until the
   signing key is rotated. Rotation remains the revocation lever for trust material.
-- **The two `$SYS` creds are renewed by rotation, not in place.** `membership-observer` and
+- **The two `$SYS` creds renew through rotation.** `membership-observer` and
   `connection-evictor` are signed by the system-account seed, which is never persisted, so no
   running process re-signs them: they carry a 30-day expiry and are renewed by issuing a new
   system account (`cotal down` then `cotal up --rotate-sys`), which leaves the data account,

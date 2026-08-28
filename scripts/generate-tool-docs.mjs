@@ -44,7 +44,7 @@ const ANNOTATIONS = {
       "Serves the version-exact docs bundled with this release (offline); `refresh: true` adds an opt-in pull from docs.cotal.ai that is version-gated, so it can never return docs for a different version.",
   },
   cotal_inbox: {
-    effect: "clears exactly the messages it returns, never more (nothing at all when peek is true)",
+    effect: "clears only the messages it returns (nothing at all when peek is true)",
     availability: "always",
     notes:
       "One call carries at most a receivable window; what does not fit stays buffered, is named in the reply, and comes back on the next call. OpenCode, Codex, Hermes, and Pi expose no arguments: automatic traffic remains connector-owned, while buffered quiet ambient is what this call returns and clears. In focus mode, normal channel recall is also shown read-only (replay-gated) and is never cleared by the read.",
@@ -101,7 +101,7 @@ const ANNOTATIONS = {
     availability: "capability-gated like cotal_spawn",
     notes:
       "Content only (`prompt`, `model`): role, ACLs, capabilities, and ownership have no slot here; they are policy. " +
-      "Defining is silent by default — `announce` is the only way it emits, and then only to the channel you name.",
+      "Defining is silent by default. `announce` is the only way it emits, and then only to the channel you name.",
   },
   cotal_reconnect: {
     effect: "tears down and rebuilds your own mesh connection",
@@ -171,7 +171,7 @@ lines.push(
 );
 lines.push("");
 lines.push(
-  "**Arguments are closed.** Every tool accepts exactly the arguments listed for it and REFUSES any other key, including tools that take no arguments at all. A key that is not in the table is an error, not something to be quietly dropped — so a call that names an identity (`owner`, `actor`, `caller`) is turned away rather than run as if it had never named one. The identity a tool acts under comes from the connector's own credential and can never be supplied as an argument. Every refusal names the offending keys, but its shape depends on who refuses: where the host validates the published schema (Claude Code, Codex, pi) you get that host's own schema error, and where it does not (OpenCode, Hermes) the connector refuses at its own dispatch and additionally lists the arguments the tool does accept, or says it takes none. In both cases the call did not run.",
+  "**Arguments are closed.** Every tool accepts only the arguments listed for it and REFUSES any other key, including tools that take no arguments at all. An unlisted key is an error. A call that supplies an identity (`owner`, `actor`, `caller`) is turned away before anything runs. The identity a tool acts under comes from the connector's own credential and can never be supplied as an argument. Every refusal names the offending keys, but its shape depends on who refuses: where the host validates the published schema (Claude Code, Codex, pi) you get that host's own schema error, and where it does not (OpenCode, Hermes) the connector refuses at its own dispatch and additionally lists the arguments the tool does accept, or says it takes none. In both cases the call did not run.",
 );
 lines.push("");
 lines.push("| Tool | Does | Side-effect |");

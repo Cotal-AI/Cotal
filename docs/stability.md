@@ -34,7 +34,7 @@ The packages are **pre-1.0**. Under semver, a pre-1.0 line makes no compatibilit
 minor bumps: a `0.13.x` to `0.14.0` change may break an API. So a product that embeds these packages
 must **pin exact versions** and upgrade deliberately, reading the changelog and the diff, not float a
 caret range. The support and deprecation policy for the embedding surface is
-[below](#support-and-versioning-policy).
+[below](#compatibility-policy).
 
 ## The wire compatibility signal
 
@@ -62,7 +62,7 @@ deliberate pre-1.0 breaking hard cut (no dual-serving, no translation shims); ol
 envelopes, handlers, and credential grants are removed after the cut, and `protocolVersion` targets
 `0.4` at completion.
 
-**This is a projected break-family list, not a final inventory.** The control-surface campaign is
+**Projected break families.** The control-surface campaign is
 mid-flight (its later phases are not complete), so the exact set of deleted subjects and changed
 signatures is generated from the integrated diff at cutover, not knowable precisely today. The
 families that are in scope to break:
@@ -91,7 +91,7 @@ grammar. What breaks alongside the control grammar is the presence/membership an
 - **Do not ship a public API on v0.3 shapes that v0.4 deletes** until the control surface reaches its
   consolidation phase and the final v0.4 inventory exists.
 
-## Support and versioning policy
+## Compatibility policy
 
 The substrate packages stay **pre-1.0 (0.x)** for now. The project does **not** declare a 1.0 line
 for them yet, because a known breaking change is still ahead (the [v0.4 cut](#the-coming-v04-cut)),

@@ -45,7 +45,7 @@ One-line definitions of the terms used across these docs and the spec. The base 
   fan-out writer, trusted reader, and membership registry. [delivery-daemon.md](delivery-daemon.md)
 
 - **Delivery modes**, the three addressing axes: multicast (channel), unicast (instance), and
-  anycast (role). Exactly one per message. [SPEC §4](../SPEC.md#4-delivery-modes)
+  anycast (role). One per message. [SPEC §4](../SPEC.md#4-delivery-modes)
 
 - **Direct message / unicast**: a message addressed to one named instance's inbox.
   [SPEC §4](../SPEC.md#4-delivery-modes)

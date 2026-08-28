@@ -81,7 +81,7 @@ bounded decision record, not prose.
 
 Full rules, with every code: [`spec/cotal-lang.md`](../spec/cotal-lang.md).
 
-## Resume, migrate, fork
+## Continuing a run
 
 **Resume** is re-execution: the driver replays the journal, the program runs from the top, recorded
 steps return instantly, and the first unrecorded step is performed live. It refuses a journal that
@@ -110,7 +110,7 @@ The run's wire footprint is [SPEC §14](../SPEC.md#14-workflow-runs-v05):
 | a notice | `notice.<endpoint>.<runId>.<addresseeId>.<noticeId>` | one bounded decision told to one agent, rendered ahead of its next turn |
 | a migration | `migration.<endpoint>.<runId>.<migrationId>` | the report and who applied it, keyed by the report's own digest |
 
-A run's **driver** holds publish on exactly its own run's subject and its own replay durable, never
+A run's **driver** holds publish on only its own run's subject and its own replay durable, never
 a space-wide grant.
 
 ## What ships today
@@ -135,9 +135,9 @@ when they change.
 **Two engines, and which one runs your program.** The tree-walker is language version `1` and the
 compiled engine is version `2`, two languages rather than two speeds of one (`spec/cotal-lang.md`
 §8.4 lists what differs). The driver hosts both: **every run a driver starts is stamped `2` and
-executed by the compiled engine** — the program runs in its own locked-down worker thread with
+executed by the compiled engine**. The program runs in its own locked-down worker thread with
 nothing in its global scope, while the effects and the durable journal stay in the driver's process,
-bridged over a message port so no socket or credential enters the isolate holding the program —
+bridged over a message port. No socket or credential enters the isolate holding the program,
 and **every version-`1` record keeps replaying on the walker**, which is the walker's job. The
 driver serves a declared set of versions, and a record whose version it does not serve is refused
 by name (**L5023**) with the run left untouched, instead of being replayed by whichever engine

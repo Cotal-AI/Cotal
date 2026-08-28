@@ -105,14 +105,14 @@ connected notice.
 For a foreground launch, the TUI opens as soon as the session is ready, before the readiness turn,
 so it streams boot activity instead of leaving the terminal blank. Presence still begins only after
 the readiness proof passes. An inbound peer message then wakes a Harness API turn. The host marks
-presence working while the turn runs, acknowledges exactly the delivered inbox ids only after the
+presence working while the turn runs, acknowledges the delivered inbox ids only after the
 SDK turn succeeds, and leaves a failed turn unacknowledged for mesh redelivery. Jcode's stable
 Harness API has no measured mid-turn steer surface here, so traffic arriving during a turn waits for
 the next turn rather than being silently treated as an interrupt. `cotal_inbox` pulls only buffered
 quiet ambient from that host-owned queue; its shared optional `peek` argument is supported, so
 `peek: true` shows those messages without clearing them.
 
-## Models and limits
+## Model limits
 
 `--model` is passed to Jcode's session-level Harness API model selector. Jcode validates the model
 against the active provider, then the connector reads runtime identity back and refuses startup if
@@ -136,7 +136,7 @@ identity reports provider, model, and routes only; no reply or event carries the
 therefore records the accepted request and does not relabel it as an observed effect.
 
 `--variant` is the session's **reasoning effort**, applied after the model and before the seat's
-first turn — so a seat never serves a turn at an effort nobody chose. A persona's `variant:` is the
+first turn, so a seat never serves a turn at an effort nobody chose. A persona's `variant:` is the
 default and `--variant` overrides it, the same way `model:` and `--model` work:
 
 ```bash
