@@ -9,7 +9,7 @@ blocks. Identity, transport, storage, and discovery compose from proven pieces (
 JetStream, JWT/nkeys) rather than being reinvented. Adapters stay thin and swappable, and
 nothing adapter-specific leaks into the core.
 
-## Influences: A2A
+## A2A influence
 
 Cotal reuses A2A's vocabulary and shapes so it stays interoperable rather than siloed, and
 implements them over NATS/JetStream.
@@ -28,7 +28,7 @@ presence a bare pub/sub layer leaves to the app.
 Identity is an A2A `AgentCard` whose instance id is shaped to later become a **DID**
 (`did:key`) so authenticity can survive an untrusted relay ([roadmap](roadmap.md)).
 
-## One wire, mapped onto NATS
+## NATS mapping
 
 The messaging plane rides three subject kinds, with the sender encoded in the subject
 itself, where the server can police it, rather than in a self-asserted payload field
@@ -62,7 +62,7 @@ Whether any of this *requires* NATS is answered in
 [transport vs protocol](transport.md): the contract is transport-agnostic; NATS/JetStream
 is the reference binding.
 
-## Package layout: one-way tiers
+## Package layout
 
 ```
 examples ──→ implementations ──→ workspace ──→ core ←(peer)── extensions
@@ -108,10 +108,10 @@ extension removal reserves that same path so startup cannot cross uninstall.
 
 Beyond the app-bound connectors, `@cotal-ai/pi` is a **host-native plugin**: a pi extension
 loaded into the user's own pi (CLI or SDK-embedded), placing a Cotal endpoint inside the
-session's process and driving its run loop off the inbox — see
+session's process and driving its run loop off the inbox. See
 [connect-pi](connect-pi.md).
 
-## Connectors: four surfaces, one runtime
+## Connector runtime
 
 Every coding-agent integration exposes the same four surfaces:
 
@@ -138,7 +138,7 @@ supervisor rebuilds it (rebuilds are serialized and coalesced), and unacked in-f
 messages redeliver on the rebound durables, so nothing is lost across the gap. A manual
 `/reconnect` is the human-invoked counterpart.
 
-## Manager: a supervisor, not an orchestrator
+## Manager supervision
 
 The CLI does not spawn agents itself; a long-lived **manager** owns their lifecycle,
 asked over the mesh. The manager is not a privileged control plane: it is an ordinary
@@ -203,8 +203,8 @@ laterally; the manager only births and configures them.
   (presence, `ps`). `cotal attach` no longer hands back a `127.0.0.1` URL: it redeems a
   one-use, holder-bound session offer, and the terminal bytes stream over the mesh on
   core-NATS session subjects scoped to the two parties, with backpressure surfaced as an
-  explicit drop notice rather than silent loss. That is also how attach reaches a manager on
-  another machine — through the broker, not by dialing the manager's own socket. A late
+  explicit drop notice rather than silent loss. Attach reaches managers on other machines through
+  the broker. The manager's own socket stays private. A late
   attach still repaints the full screen from a replayed snapshot of a headless terminal
   mirror (including alternate-screen TUIs). If the manager restarts, its successor refuses
   the old session and the client surfaces "manager restarted; re-attach".
@@ -233,7 +233,7 @@ presence (invisible to peers) while watching everyone else's. All three surfaces
 shared render-agnostic model, so no surface re-implements wire semantics. The guide is
 [watch a mesh](watch-a-mesh.md); the model is [MeshView](mesh-view.md).
 
-## Names, roles, instances
+## Addressing
 
 Three identity layers, in increasing permanence
 ([SPEC §2](../SPEC.md#2-identity), [§6](../SPEC.md#6-presence-and-discovery)):

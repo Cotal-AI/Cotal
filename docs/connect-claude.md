@@ -90,7 +90,7 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{…}}}' \
 ```
 
 - **Model auth.** Locally, `claude` still reads macOS Keychain / `~/.claude`. In a container or
-  CI there is no Keychain, so the connector forwards the documented credential set —
+  CI there is no Keychain, so the connector forwards the documented credential set:
   `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`), `ANTHROPIC_API_KEY` /
   `ANTHROPIC_AUTH_TOKEN`, and the cloud-provider flags plus their credential vars. Host-session
   markers (`CLAUDE_CODE_CHILD_SESSION`, `CLAUDECODE`) stay out so a nested seat still saves a
@@ -99,7 +99,7 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   `--strict-mcp-config` ignores every other MCP source, crucially the operator's personal
   `~/.claude.json` servers (several spawns each booting a heavy helper would starve
   memory). Share your own servers deliberately (see below).
-- **Installed, not `--plugin-dir`.** The plugin is installed once (`claude plugin install
+- **Installed plugin.** The plugin is installed once (`claude plugin install
   cotal@cotal-mesh --scope local`) because its hooks bind only to an *installed* plugin.
   In a clone the marketplace is the repo's `.claude-plugin/marketplace.json`; `cotal setup`
   (npx, no clone) materializes the same marketplace under `~/.cotal/claude-plugin/` (each plugin dir is
@@ -166,7 +166,7 @@ The same channel also relays **tool-permission requests** onto the mesh, so a pe
 human at the CLI, a policy node) can approve or deny an agent's pending tool call through
 Cotal rather than a per-terminal prompt.
 
-### Attention: how much traffic wakes you
+### Attention
 
 An agent picks how aggressively peer traffic reaches it with
 `cotal_status({ attention })` (three modes, orthogonal to presence):
@@ -249,7 +249,7 @@ half is depends on the mesh, and the difference matters when you go looking for 
 it is a key the manager allocated, never the display name, so two live agents sharing a display name
 do not share a stream; on a user-auth mesh it is the agent's own name, because that is what the
 ledger row is keyed on. Spelled out again with both halves below. The launch grants publish rights
-on exactly that one channel. A spawn
+on that channel alone. A spawn
 that asks for a *different* agent's event channel is refused at the door rather than granted, since
 that channel carries the session's tool inputs and outputs. The same rule runs on restart: a manager
 resume document that names another agent's event channel is refused rather than adopted, because the
@@ -289,7 +289,7 @@ whole chat plane, which is the opposite of what a scoped watcher is for. The age
 reader needs, since an authed consuming endpoint refuses to start without one.
 
 Two things a reader has to do that are not obvious, both on `CotalEndpoint`. It must pass the event
-channel in `channels`: an endpoint reads exactly the channels it lists, so one constructed without
+channel in `channels`: an endpoint reads the channels it lists, so one constructed without
 the event channel joins nothing and the frames never arrive. And it reads history with `readHistory(channel)`, the delivery daemon's mediated read, not
 `channelHistory(channel)`: a scoped credential is denied the ad-hoc consumer the direct read
 creates, by design. `cotal console` and the web console already do both.
@@ -306,12 +306,12 @@ The rule governs the manager's doors, which are the ones a caller other than you
 foreground `cotal spawn` on your own machine mints from your own signing material, so it can still
 grant any channel you name: that is the out-of-band grant, not a way around the rule.
 
-**A failed turn is published as a run error, not as a finished run.** Claude Code decides for itself
+**Failed turns publish run errors.** Claude Code decides for itself
 whether a turn finished or died and fires one of two hooks accordingly, so the connector relays that
 decision rather than making one of its own: a turn that ended on an API error ends its run with
 `RUN_ERROR` carrying the harness's own error kind (`rate_limit`, `billing_error`, `server_error`,
 `max_output_tokens` and the rest) as the code, and whatever detail it reported as the message. If that
-detail cannot fit in the one closing frame, the shared close still publishes exactly one `RUN_ERROR`
+detail cannot fit in the one closing frame, the shared close still publishes one `RUN_ERROR`
 that does fit: it keeps the code and says the original detail was omitted or shortened because of the
 bound, so a reader is never shown a truncated message as complete. A turn that ended normally still
 ends with a run-finished event carrying no outcome, which says the turn ended and does not claim it
@@ -357,7 +357,7 @@ spawning identity's own grant already covers the child's event channel. The refu
 exact `cotal actor grant` command that widens it. An operator launch, whose chain reaches an
 admin-scoped or roster row, is unaffected.
 
-## Resume an existing session (fork, never hijack)
+## Resume a session
 
 `--resume <session-id>` pulls an existing Claude session, its context and transcript,
 into the mesh. It **forks**: Claude mints a *new* session id from that transcript
