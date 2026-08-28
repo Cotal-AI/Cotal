@@ -599,3 +599,7 @@ smoke:ctl-trust:live
 # through the operator profile, then proves its pre-minted channel-purger can purge while admin
 # cannot. Appended to preserve every existing shard assignment.
 smoke:web-seed:live
+# The published manager entrypoint directly loads three NATS packages. Derive that runtime import
+# closure from built dist and require every external package in it to be installed by a production
+# dependency field. Appended so every existing shard assignment remains unchanged.
+smoke:manager-runtime-deps
