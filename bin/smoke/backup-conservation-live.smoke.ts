@@ -53,6 +53,7 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { authDir, loadSoleSpaceAuth } from "@cotal-ai/workspace";
+import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 const freePort = () => new Promise<number>((resolvePort, reject) => {
   const server = createServer();
@@ -106,10 +107,15 @@ interface Mesh {
 async function openMesh(label: string, space: string): Promise<Mesh> {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), `cotal-${label}-root-`)));
   const home = realpathSync.native(mkdtempSync(join(tmpdir(), `cotal-${label}-home-`)));
+  const configDir = join(home, "xdg");
+  const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
   const server = `nats://127.0.0.1:${await freePort()}`;
-  const env = { ...process.env, COTAL_HOME: home };
-  const run = (...args: string[]) =>
-    spawnSync(tsx, [cliPath, ...args], { cwd: root, env, encoding: "utf8", timeout: 240_000 });
+  const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
+  const run = (...args: string[]) => {
+    const options = { cwd: root, env, encoding: "utf8" as const, timeout: 240_000 };
+    assertSmokeSandboxDown(sandbox, args, options);
+    return spawnSync(tsx, [cliPath, ...args], options);
+  };
   return {
     root, home, server, space, run,
     must: (name, result) => {

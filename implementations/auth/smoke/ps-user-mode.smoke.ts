@@ -32,6 +32,7 @@ import { bearer } from "better-auth/plugins/bearer";
 import { toNodeHandler } from "better-auth/node";
 import { pickFreePort } from "./_free-port.js";
 import { assertScratchHeld, foreignRootFor, killManagerAtRoot, makeScratch } from "../../../bin/smoke/_scratch.js";
+import { assertSmokeSandboxDown, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 
 // Sandbox the temp root BEFORE minting the fixture. `findCotalRoot` walks to `/` unbounded, so a
 // `.cotal` above `tmpdir()` makes `cotal up` write `manager.pid` into that ancestor. Step 4 then
@@ -47,6 +48,8 @@ const scratch = makeScratch("cotal-psuser-");
 // otherwise. One transaction or none.
 let home!: string;
 let root!: string;
+let configDir!: string;
+let sandbox!: SmokeSandboxAnchor;
 let establishIdpSession!: typeof import("../src/index.js").establishIdpSession;
 
 // Was `cotal up` ever INVOKED? Not "did it succeed" — a failed, timed-out or signalled `up` can still
@@ -95,9 +98,11 @@ type Run = {
 };
 function cotal(args: string[], timeoutMs = 120_000): Promise<Run> {
   return new Promise((res) => {
-    const child = spawn(TSX, [BIN, ...args], {
-      cwd: root, env: { ...process.env, COTAL_HOME: home }, stdio: ["ignore", "pipe", "pipe"],
-    });
+    const options = {
+      cwd: root, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir }, stdio: ["ignore", "pipe", "pipe"] as const,
+    };
+    assertSmokeSandboxDown(sandbox, args, options);
+    const child = spawn(TSX, [BIN, ...args], options);
     let out = "";
     let timedOut = false;
     let settled = false;
@@ -187,14 +192,16 @@ const buildIdpAuth = (idpOrigin: string) => betterAuth({
 let ba!: ReturnType<typeof buildIdpAuth>;
 try {
   home = mkdtempSync(join(scratch, "home-"));
+  configDir = join(home, "xdg");
   process.env.COTAL_HOME = home;
+  process.env.XDG_CONFIG_HOME = configDir;
   root = mkdtempSync(join(scratch, "root-"));
   // ANCHOR THE ROOT BEFORE ANY PRODUCT COMMAND RUNS. `findCotalRoot` stops at the first `.cotal`
   // starting from the directory itself, so owning one here makes every later resolution from this
   // root land on this root - during `up`, during `ps`, and during `down` - no matter what appears
   // above it in between. Ownership then does not depend on the timing of any check, which is the
   // only way to close a race against a child that re-resolves cwd for itself.
-  mkdirSync(join(root, ".cotal"), { recursive: true });
+  sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
   ({ establishIdpSession } = await import("../src/index.js"));
   SERVER = `nats://127.0.0.1:${await pickFreePort()}`;
 

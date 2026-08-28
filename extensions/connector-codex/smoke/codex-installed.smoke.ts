@@ -32,6 +32,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, isReachable } from "@cotal-ai/core";
+import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
   // Managed Codex agents are POSIX-only by design (the isolated CODEX_HOME symlinks the
@@ -85,6 +86,7 @@ const COTAL_HOME = join(dir, "cotalhome");
 const ROOT = join(dir, "project"); // the spawn's cwd / workspace root
 const SHIM = join(dir, "shim"); // prepended to PATH; holds the fake `codex`
 for (const d of [HOME, CONFIG, COTAL_HOME, ROOT, SHIM, join(HOME, ".codex")]) mkdirSync(d, { recursive: true });
+const sandbox = recordSmokeSandbox({ root: ROOT, cotalHome: COTAL_HOME, xdgConfigHome: CONFIG });
 
 // The launch symlinks the operator's `~/.codex/auth.json` into the per-agent CODEX_HOME and fails
 // loud without it. HOME is sandboxed, so plant one: this must be the smoke's own file and never
@@ -202,7 +204,9 @@ let tornDown: { status: number; stdout: string; stderr: string } | undefined;
 async function teardown(): Promise<{ status: number; stdout: string; stderr: string }> {
   if (tornDown) return tornDown;
   if (!meshUp) return (tornDown = { status: 0, stdout: "", stderr: "" });
-  const r = spawnSync("node", [CLI, "down"], { cwd: ROOT, env: cliEnv, encoding: "utf8" });
+  const options = { cwd: ROOT, env: cliEnv, encoding: "utf8" as const };
+  assertSmokeSandboxDown(sandbox, ["down"], options);
+  const r = spawnSync("node", [CLI, "down"], options);
   tornDown = { status: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   for (let i = 0; i < 40 && (await portOpen(PORT)); i++) await sleep(250);
   return tornDown;

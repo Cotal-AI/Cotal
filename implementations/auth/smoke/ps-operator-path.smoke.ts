@@ -22,6 +22,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { pickFreePort } from "./_free-port.js";
 import { assertScratchHeld, foreignRootFor, killManagerAtRoot, makeScratch } from "../../../bin/smoke/_scratch.js";
+import { assertSmokeSandboxDown, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 
 // Same temp-root sandbox as the user-mode sibling, and for the same reason: `findCotalRoot` walks to
 // `/` unbounded, so a `.cotal` above `tmpdir()` sends this fixture's `manager.pid` into that
@@ -34,14 +35,16 @@ const cleanScratch = (e: unknown): never => {
   rmSync(scratch, { recursive: true, force: true });
   throw new Error(`fixture setup failed (scratch removed): ${(e as Error).message}`, { cause: e });
 };
-let home!: string, root!: string, SERVER!: string;
+let home!: string, root!: string, configDir!: string, SERVER!: string, sandbox!: SmokeSandboxAnchor;
 try {
   home = mkdtempSync(join(scratch, "home-"));
+  configDir = join(home, "xdg");
   process.env.COTAL_HOME = home;
+  process.env.XDG_CONFIG_HOME = configDir;
   root = mkdtempSync(join(scratch, "root-"));
   // ANCHOR THE ROOT BEFORE ANY PRODUCT COMMAND RUNS: `findCotalRoot` stops at the first `.cotal`
   // from the directory itself, so owning one here pins every later resolution to this root.
-  mkdirSync(join(root, ".cotal"), { recursive: true });
+  sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
   SERVER = `nats://127.0.0.1:${await pickFreePort()}`;
 } catch (e) { cleanScratch(e); }
 const SPACE = `psstatic-${Math.floor(Math.random() * 1e6)}`;
@@ -77,7 +80,9 @@ type Run = {
 };
 function cotal(args: string[], timeoutMs = 120_000): Promise<Run> {
   return new Promise((res) => {
-    const child = spawn("npx", ["tsx", BIN, ...args], { cwd: root, env: { ...process.env, COTAL_HOME: home }, stdio: ["ignore", "pipe", "pipe"] });
+    const options = { cwd: root, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir }, stdio: ["ignore", "pipe", "pipe"] as const };
+    assertSmokeSandboxDown(sandbox, args, options);
+    const child = spawn("npx", ["tsx", BIN, ...args], options);
     let out = "";
     let timedOut = false;
     let settled = false;

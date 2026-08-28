@@ -200,7 +200,11 @@ export type ControlReach = "owner" | "any";
  *  — the generic item-5 caller, no hand-imported manager schemas), then the mapped command.
  *  Targeted ops resolve the alias to its CURRENT principal triple through the name-keyed
  *  `inspect` read first and ride mode `any` (admin instruments) or `owner` per {@link
- *  ControlReach}. */
+ *  ControlReach}.
+ *
+ *  `standaloneConnectOpts` handles static credentials, a user bearer plus sentinel, and bare open
+ *  meshes. The selected dialer matters: a user mesh behind an HTTPS edge has a `wss://` URL, which
+ *  the raw node transport refuses even though endpoint, send, and spawn rails can reach it. */
 async function askManagerEp(
   space: string,
   server: string,
@@ -215,13 +219,6 @@ async function askManagerEp(
   const mapped = EP_COMMANDS[op];
   if (!mapped) return { ok: false, error: `unknown manager op "${op}" (no v0.4 command mapping)` };
   const caller = auth.epCaller!;
-  // standaloneConnectOpts handles all three auth shapes: static creds, the user bearer + sentinel
-  // (client-chosen inbox nonce; the callout scopes the reply inbox on it), or BARE on an open
-  // mesh (no credential system; the broker enforces nothing).
-  // dialerFor, not the raw TCP connect: a user mesh reached through an HTTPS edge is a
-  // wss:// URL, and the node transport refuses those outright ("use the 'wsconnect'
-  // function instead") - which took `ps`/`stop`/`attach` down against every websocket
-  // broker while send and spawn (already routed through the dialer) worked.
   const nc = await dialerFor(server)({
     servers: server,
     ...standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true }),
@@ -439,12 +436,9 @@ export type ScatterReply = { ok: true; instances: ScatterInstanceReply[] } | { o
 /** Open one short-lived control connection under whichever of the three auth shapes this command
  *  holds (static creds / user bearer + sentinel / bare open mesh) and hand it to `fn`. Extracted so
  *  the scatter's TWO connections cannot drift in their connect options: they differ in credential
- *  and in nothing else. */
+ *  and in nothing else. The selected dialer matters because the raw node transport refuses a
+ *  `wss://` mesh behind an HTTPS edge even when the other endpoint rails can reach it. */
 async function withControlConnection<T>(server: string, auth: ControlAuth, fn: (nc: NatsConnection) => Promise<T>): Promise<T> {
-  // dialerFor, not the raw TCP connect: a user mesh reached through an HTTPS edge is a
-  // wss:// URL, and the node transport refuses those outright ("use the 'wsconnect'
-  // function instead") - which took `ps`/`stop`/`attach` down against every websocket
-  // broker while send and spawn (already routed through the dialer) worked.
   const nc = await dialerFor(server)({
     servers: server,
     ...standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true }),

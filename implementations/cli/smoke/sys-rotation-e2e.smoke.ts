@@ -49,6 +49,7 @@ import {
 } from "@cotal-ai/core";
 import { getSpaceAuth, MEMBERSHIP_RW_CREDS_KEY, putSpaceAuth, SYSTEM_CREDS_FILES, workspaceSecretStore } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 let pass = 0,
   fail = 0;
@@ -84,6 +85,8 @@ const RUN = randomUUID().slice(0, 8);
 const SPACE = `sysrote2e-${RUN}`;
 const HOME = mkdtempSync(join(tmpdir(), `cotal-sysrot-e2e-home-${RUN}-`));
 const root = mkdtempSync(join(tmpdir(), `cotal-sysrot-e2e-${RUN}-`));
+const CONFIG = join(HOME, "xdg");
+const sandbox = recordSmokeSandbox({ root, cotalHome: HOME, xdgConfigHome: CONFIG });
 const cotalPath = (f: string) => join(root, ".cotal", f);
 const obsPath = cotalPath(SYSTEM_CREDS_FILES[0]);
 const evPath = cotalPath(SYSTEM_CREDS_FILES[1]);
@@ -95,12 +98,14 @@ const SERVERS = `nats://127.0.0.1:${PORT}`;
 
 /** One `cotal` subprocess, on the sandboxed home, from the provisioned root. */
 function cotal(args: string[], timeout = 120_000): { code: number | null; out: string } {
-  const r = spawnSync(process.execPath, [cotalJs, ...args], {
+  const options = {
     cwd: root,
-    encoding: "utf8",
+    encoding: "utf8" as const,
     timeout,
-    env: { ...process.env, NO_COLOR: "1", COTAL_HOME: HOME, COTAL_SKIP_CONNECTOR_SEED: "1" },
-  });
+    env: { ...process.env, NO_COLOR: "1", COTAL_HOME: HOME, XDG_CONFIG_HOME: CONFIG, COTAL_SKIP_CONNECTOR_SEED: "1" },
+  };
+  assertSmokeSandboxDown(sandbox, args, options);
+  const r = spawnSync(process.execPath, [cotalJs, ...args], options);
   return { code: r.status, out: (r.stdout ?? "") + (r.stderr ?? "") };
 }
 

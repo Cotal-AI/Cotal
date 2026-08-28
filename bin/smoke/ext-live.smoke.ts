@@ -22,6 +22,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 // macOS commonly exposes tmpdir() through /var -> /private/var (and this harness may add another
 // alias). The CLI canonicalizes cwd, so register the same physical root or extension removal sees
@@ -33,6 +34,7 @@ mkdirSync(configDir, { recursive: true });
 mkdirSync(home, { recursive: true });
 // COTAL_HOME isolates only the registry; CLI project-root resolution still walks for `.cotal`.
 mkdirSync(join(sandbox, ".cotal"), { recursive: true });
+const sandboxAnchor = recordSmokeSandbox({ root: sandbox, cotalHome: home, xdgConfigHome: configDir });
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -48,8 +50,11 @@ const env = { ...process.env, XDG_CONFIG_HOME: configDir, COTAL_HOME: home, COTA
 const realNode = spawnSync("which", ["node"], { encoding: "utf8" }).stdout.trim();
 const tsxCli = resolve(import.meta.dirname, "..", "..", "node_modules", "tsx", "dist", "cli.mjs");
 const binCotal = resolve(import.meta.dirname, "..", "cotal.ts");
-const cotal = (args: string[], timeout = 180_000) =>
-  spawnSync(realNode, [tsxCli, binCotal, ...args], { encoding: "utf8", env, cwd: sandbox, timeout });
+const cotal = (args: string[], timeout = 180_000) => {
+  const options = { encoding: "utf8" as const, env, cwd: sandbox, timeout };
+  assertSmokeSandboxDown(sandboxAnchor, args, options);
+  return spawnSync(realNode, [tsxCli, binCotal, ...args], options);
+};
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const target = cotal(["meshes", "add", "main", "--server", "nats://127.0.0.1:1", "--root", sandbox, "--mode", "open", "--force"]);
@@ -442,7 +447,9 @@ registry.register(
   for (let i = 0; i < 50 && !existsSync(slowReady); i++) await sleep(20);
   writeFileSync(join(sandbox, ".cotal", "manager.pid"), String(slowManagerPid));
   writeFileSync(join(sandbox, ".cotal", "manager.delivery-aware"), String(slowManagerPid));
-  const concurrentDown = spawn(realNode, [tsxCli, binCotal, "down", "manager"], { env, cwd: sandbox });
+  const concurrentOptions = { env, cwd: sandbox };
+  assertSmokeSandboxDown(sandboxAnchor, ["down", "manager"], concurrentOptions);
+  const concurrentDown = spawn(realNode, [tsxCli, binCotal, "down", "manager"], concurrentOptions);
   let concurrentOut = "";
   let concurrentErr = "";
   concurrentDown.stdout?.on("data", (data: Buffer) => (concurrentOut += data.toString()));
