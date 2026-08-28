@@ -119,6 +119,34 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+async function stopOwned(child: ChildProcess | undefined, group = false): Promise<void> {
+  if (!child) return;
+  const alive = (): boolean => {
+    if (!group) return child.exitCode === null && child.signalCode === null;
+    if (child.pid === undefined) return false;
+    try {
+      process.kill(-child.pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const signal = (name: NodeJS.Signals): void => {
+    try {
+      if (group && child.pid !== undefined) process.kill(-child.pid, name);
+      else child.kill(name);
+    } catch {
+      /* already gone */
+    }
+  };
+  if (!alive()) return;
+  signal("SIGTERM");
+  for (let i = 0; i < 60 && alive(); i++) await wait(50);
+  if (alive()) signal("SIGKILL");
+  for (let i = 0; i < 100 && alive(); i++) await wait(50);
+  if (alive()) throw new Error(`owned ${group ? "process group" : "process"} did not exit before teardown`);
+}
+
 const PORT = await pickFreePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = `dbc-${Math.floor(Math.random() * 1e6)}`;
@@ -178,7 +206,7 @@ try {
     process.execPath,
     [...process.execArgv, SELF, "auth-service", "--space", SPACE, "--server", SERVER,
      "--exchange-public-port", String(publicPort), "--exchange-public-url", PUBLIC_URL],
-    { cwd: root, env: childEnv, stdio: "ignore" },
+    { cwd: root, env: childEnv, stdio: "ignore", detached: true },
   );
   {
     const end = Date.now() + 20000;
@@ -273,12 +301,11 @@ try {
   const EXPECTED = 11;
   if (pass + fail !== EXPECTED)
     throw new Error(`expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped; update EXPECTED deliberately`);
-  if (fail > 0) process.exit(1);
+  if (fail > 0) process.exitCode = 1;
 } finally {
-  authChild?.kill("SIGTERM");
-  broker?.kill("SIGTERM");
-  idpSrv.close();
-  await wait(300);
+  await stopOwned(authChild, true);
+  await stopOwned(broker);
+  if (idpSrv.listening) await new Promise<void>((resolveClose) => idpSrv.close(() => resolveClose()));
   if (jsDir) rmSync(jsDir, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });

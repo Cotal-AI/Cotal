@@ -1,7 +1,7 @@
 {
   "suite": "extensions/connector-jcode/smoke/jcode-host.smoke.ts",
   "guard": "Jcode retries a first readiness turn that used its pre-MCP tool snapshot exactly once, still refuses a never-callable bridge without presence, opens the foreground TUI before readiness completes, and records that bootstrap orientation predates an actual completed mesh join",
-  "command": "pnpm smoke:jcode-host",
+  "command": "pnpm --filter @cotal-ai/connector-core... build && pnpm smoke:jcode-host",
   "minTicks": 8,
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/jcode-readiness.json",
   "why": [
@@ -12,8 +12,8 @@
     {
       "name": "M1 remove the bounded retry after the pre-MCP snapshot",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "    if (!hasOrientation(readiness)) readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });",
-      "replace": "    if (false) readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });",
+      "find": "      if (!hasOrientation(readiness)) {\n        readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });\n      }",
+      "replace": "",
       "expectRed": "a first-turn MCP snapshot race recovers on one bounded retry"
     },
     {
