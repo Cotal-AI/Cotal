@@ -69,7 +69,7 @@
       "file": "extensions/connector-codex/src/host.ts",
       "find": "    return this.inner.read(cursor ?? this.start);",
       "replace": "    return this.inner.read(this.start);",
-      "expectRed": "broker-outage:the recovered stream carries ONE post-rebind turn and none of the failed initial binding"
+      "expectRed": "broker-outage-live:an existing cursor resumes the COMPLETE outage backlog once, tool result included"
     },
     {
       "name": "L11 a seat that recovers its plane says nothing about it, so a reader watching the log cannot tell a recovery from a plane that was never down",
