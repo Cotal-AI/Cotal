@@ -101,7 +101,9 @@ try {
   check("`cotal send dm` to an absent agent exits non-zero", missing.code !== 0, missing.code);
   check("`cotal send dm` to an absent agent says 'no agent'", /no agent/i.test(missing.stderr), missing.stderr);
 
-  console.log(`\nsend smoke: ${pass} checks passed`);
+  check(`every scenario cell ran — ${EXPECTED} expected`, pass + fail === EXPECTED, { pass, fail, expected: EXPECTED });
+  console.log(`\nsend smoke: ${pass} passed, ${fail} failed`);
+  if (fail) process.exitCode = 1;
 } finally {
   await bob.stop().catch(() => {});
   broker.kill("SIGTERM");
