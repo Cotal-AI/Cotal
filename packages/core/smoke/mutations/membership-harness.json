@@ -25,6 +25,14 @@
       "replace": "  const customId = \"node.7\";",
       "expectRed": "E: custom id follows the current owner/actor token grammar",
       "cell": "E: custom id follows the current owner/actor token grammar"
+    },
+    {
+      "name": "remove the awaited broker-exit barrier before membership JetStream tree removal",
+      "file": "packages/core/smoke/membership.smoke.ts",
+      "find": "  await killAndAwaitExit(broker);",
+      "replace": "  broker.kill(\"SIGTERM\");",
+      "expectRed": "owned broker exits before its JetStream tree is removed",
+      "cell": "owned broker exits before its JetStream tree is removed"
     }
   ]
 }

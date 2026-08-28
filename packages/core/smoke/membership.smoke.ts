@@ -29,7 +29,7 @@ import {
   type ChannelMember,
   type MembershipRecord,
 } from "../src/index.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
 
 const PORT = await pickFreePort();
@@ -345,7 +345,8 @@ try {
     }
   }
 } finally {
-  broker.kill("SIGTERM");
+  await killAndAwaitExit(broker);
+  check("owned broker exits before its JetStream tree is removed", broker.exitCode !== null || broker.signalCode !== null);
   rmSync(storeDir, { recursive: true, force: true });
   releaseBroker();
 }
