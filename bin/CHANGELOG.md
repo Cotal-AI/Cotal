@@ -1,5 +1,21 @@
 # cotal-ai
 
+## 0.33.4
+
+### Patch Changes
+
+- 1858932: The manager no longer ends its own process over its liveness lease. A renew that fails is re-read; a key still its own is adopted, a gone key is re-acquired, a key held by another process is reported and served through, and a broker that cannot be asked is retried for as long as it takes. Each change of state is one line in `manager.log`. The fail-close that took a manager and every pty seat it held down one tick past the lease TTL is removed, together with the detach-on-lease-loss path it needed. The endpoint also drops its manager-lease KV handle when it rebuilds a closed connection; before, every renew after a reconnect ran on the dead handle and timed out for good.
+- Updated dependencies [2151b4a]
+- Updated dependencies [5aa8a56]
+- Updated dependencies [1858932]
+  - @cotal-ai/connector-core@0.33.4
+  - @cotal-ai/manager@0.33.4
+  - @cotal-ai/core@0.33.4
+  - @cotal-ai/auth@0.33.4
+  - @cotal-ai/cli@0.33.4
+  - @cotal-ai/delivery@0.33.4
+  - @cotal-ai/workspace@0.33.4
+
 ## 0.33.3
 
 ### Patch Changes
