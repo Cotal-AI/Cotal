@@ -108,8 +108,8 @@ if (!base || !head) {
 // head count hides every move. The matrix and the shard runner's modulo count are two
 // independent facts, so both must describe the complete index set 0..N-1. The smoke job
 // and shard step must also keep the execution shape this parser models, including an
-// immutable verifier whose blob hash is pinned here and binds the runner to the committed
-// inputs graded here. Comments and
+// immutable verifier whose blob hash is pinned here, binds the runner to committed inputs,
+// and launches the shard under an explicit clean environment. Comments and
 // other jobs are not topology either. Any unsupported shape aborts instead of guessing.
 const shardCountFromWorkflow = (yml: string, requireCommittedInputs = true): number | null => {
   const lines = yml.split("\n");
@@ -170,25 +170,27 @@ const shardCountFromWorkflow = (yml: string, requireCommittedInputs = true): num
   const stepBlocks = stepStarts.map((start, index) =>
     steps.slice(start, stepStarts[index + 1] ?? steps.length)
   );
-  const guardedInvocationPattern = /^        run:\s*set -o pipefail && git show "\$GITHUB_SHA:bin\/smoke\/verify-shard-inputs\.sh" \| bash -s -- "\$GITHUB_SHA" && node bin\/smoke\/shard\.mjs \$\{\{ matrix\.shard \}\} ([1-9][0-9]*)\s*(?:#.*)?$/;
+  const guardedShell = "        shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}";
+  const guardedInvocationPattern = /^        run:\s*\/usr\/bin\/git show "\$GITHUB_SHA:bin\/smoke\/verify-shard-inputs\.sh" \| \/usr\/bin\/bash --noprofile --norc -s -- "\$GITHUB_SHA" \$\{\{ matrix\.shard \}\} ([1-9][0-9]*) ci\s*(?:#.*)?$/;
   const legacyInvocationPattern = /^        run:\s*node bin\/smoke\/shard\.mjs \$\{\{ matrix\.shard \}\} ([1-9][0-9]*)\s*(?:#.*)?$/;
-  const invocationPatterns = requireCommittedInputs
-    ? [guardedInvocationPattern]
-    : [guardedInvocationPattern, legacyInvocationPattern];
-  const invocationOf = (line: string): RegExpExecArray | null =>
-    invocationPatterns.map((pattern) => pattern.exec(line)).find((match) => match !== null) ?? null;
-  const shardSteps = stepBlocks.filter((block) => block.some((line) => invocationOf(line) !== null));
+  const shardSteps = stepBlocks.filter((block) => block.some((line) =>
+    guardedInvocationPattern.test(line) || legacyInvocationPattern.test(line)
+  ));
   if (shardSteps.length !== 1) return null;
   const activeShardStep = shardSteps[0].filter((line) => !/^\s*(?:#.*)?$/.test(line));
-  const invocations = activeShardStep
-    .map(invocationOf)
+  const guardedInvocations = activeShardStep
+    .map((line) => guardedInvocationPattern.exec(line))
     .filter((match): match is RegExpExecArray => match !== null);
-  if (
-    activeShardStep.length !== 2 ||
-    !/^      - name:\s*\S/.test(activeShardStep[0]) ||
-    invocations.length !== 1
-  ) return null;
-  const commandCount = Number(invocations[0][1]);
+  const legacyInvocations = activeShardStep
+    .map((line) => legacyInvocationPattern.exec(line))
+    .filter((match): match is RegExpExecArray => match !== null);
+  const named = /^      - name:\s*\S/.test(activeShardStep[0]);
+  const guarded = activeShardStep.length === 3 && named &&
+    activeShardStep[1] === guardedShell && guardedInvocations.length === 1;
+  const legacy = activeShardStep.length === 2 && named && legacyInvocations.length === 1;
+  if (requireCommittedInputs ? !guarded : !guarded && !legacy) return null;
+  const invocation = guarded ? guardedInvocations[0] : legacyInvocations[0];
+  const commandCount = Number(invocation[1]);
   return commandCount === indices.length ? commandCount : null;
 };
 
@@ -210,7 +212,7 @@ const verifierMatches = (sha: string): boolean => {
       stdio: ["ignore", "pipe", "pipe"],
     });
     const actual = createHash("sha256").update(source).digest("hex");
-    return actual === "895f1c675d3ed5e8e5dc663ffcce7c00d64369ba13670534760357698cf5d7f0";
+    return actual === "b15b5c4c29a50bdcb19634062980f29f32173406b6b3d074340a917aa0be71bb";
   } catch {
     return false;
   }
@@ -288,7 +290,8 @@ const commentShadowCount = shardCountFromWorkflow(`jobs:
         shard: [0, 1, 2, 3]
     steps:
       - name: Run shard
-        run: set -o pipefail && git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | bash -s -- "$GITHUB_SHA" && node bin/smoke/shard.mjs \${{ matrix.shard }} 4
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci
   other:
     runs-on: ubuntu-latest
 `);
@@ -299,7 +302,8 @@ const commandMismatchCount = shardCountFromWorkflow(`jobs:
         shard: [0, 1, 2, 3]
     steps:
       - name: Run shard
-        run: set -o pipefail && git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | bash -s -- "$GITHUB_SHA" && node bin/smoke/shard.mjs \${{ matrix.shard }} 5
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 5 ci
 `);
 const duplicateMatrixCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -308,7 +312,8 @@ const duplicateMatrixCount = shardCountFromWorkflow(`jobs:
         shard: [0, 1, 2, 2]
     steps:
       - name: Run shard
-        run: set -o pipefail && git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | bash -s -- "$GITHUB_SHA" && node bin/smoke/shard.mjs \${{ matrix.shard }} 4
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci
 `);
 const emptyMatrixCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -317,7 +322,8 @@ const emptyMatrixCount = shardCountFromWorkflow(`jobs:
         shard: [ ]
     steps:
       - name: Run shard
-        run: set -o pipefail && git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | bash -s -- "$GITHUB_SHA" && node bin/smoke/shard.mjs \${{ matrix.shard }} 1
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 1 ci
 `);
 const excludedMatrixCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -328,7 +334,8 @@ const excludedMatrixCount = shardCountFromWorkflow(`jobs:
           - shard: 3
     steps:
       - name: Run shard
-        run: set -o pipefail && git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | bash -s -- "$GITHUB_SHA" && node bin/smoke/shard.mjs \${{ matrix.shard }} 4
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci
 `);
 const conditionalJobCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -338,7 +345,8 @@ const conditionalJobCount = shardCountFromWorkflow(`jobs:
         shard: [0, 1, 2, 3]
     steps:
       - name: Run shard
-        run: set -o pipefail && git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | bash -s -- "$GITHUB_SHA" && node bin/smoke/shard.mjs \${{ matrix.shard }} 4
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci
 `);
 const conditionalStepCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -348,7 +356,8 @@ const conditionalStepCount = shardCountFromWorkflow(`jobs:
     steps:
       - name: Run shard
         if: \${{ false }}
-        run: set -o pipefail && git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | bash -s -- "$GITHUB_SHA" && node bin/smoke/shard.mjs \${{ matrix.shard }} 4
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci
 `);
 const unguardedRunnerCount = shardCountFromWorkflow(`jobs:
   smoke:

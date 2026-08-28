@@ -124,8 +124,9 @@ jobs:
       - name: Build
         run: pnpm build
       - name: Protocol & security smoke tests (shard ${{ matrix.shard }}/4)
-        # The detector grades committed blobs. Earlier steps must not change tracked inputs.
-        run: set -o pipefail && git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | bash -s -- "$GITHUB_SHA" && node bin/smoke/shard.mjs ${{ matrix.shard }} 4
+        # The detector grades committed blobs. Earlier steps must not change inputs or execution hooks.
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" ${{ matrix.shard }} 4 ci
 
   live:
     timeout-minutes: 25
