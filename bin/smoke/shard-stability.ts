@@ -109,8 +109,8 @@ if (!base || !head) {
 // independent facts, so both must describe the complete index set 0..N-1. The smoke job
 // and shard step must also keep the execution shape this parser models, including an
 // immutable verifier whose blob hash is pinned here, binds the runner to committed inputs,
-// checks the captured CI toolchain, and launches the shard under an explicit clean environment. Comments and
-// other jobs are not topology either. Any unsupported shape aborts instead of guessing.
+// checks the captured CI toolchain, and launches the shard under a clean environment.
+// Comments and other jobs are not topology either. Unsupported shapes abort instead of guessing.
 const shardCountFromWorkflow = (yml: string, requireCommittedInputs = true, requireToolPrelude = false): number | null => {
   const lines = yml.split("\n");
   const smokeStart = lines.findIndex((line) => /^  smoke:\s*(?:#.*)?$/.test(line));
@@ -207,6 +207,11 @@ const shardCountFromWorkflow = (yml: string, requireCommittedInputs = true, requ
     if (expectedPrelude.some((expected, index) =>
       activeStepBlocks[index]?.join("\n") !== expected.join("\n")
     )) return null;
+    const idLines = activeStepBlocks.flat().filter((line) => /^        id:/.test(line));
+    const ids = idLines
+      .map((line) => /^        id:\s*(["']?)([A-Za-z_][A-Za-z0-9_-]*)\1\s*(?:#.*)?$/.exec(line)?.[2] ?? null)
+      .filter((id): id is string => id !== null);
+    if (ids.length !== idLines.length || new Set(ids).size !== ids.length) return null;
   }
   const guardedShell = "        shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}";
   const guardedInvocationPattern = /^        run:\s*\/usr\/bin\/git show "\$GITHUB_SHA:bin\/smoke\/verify-shard-inputs\.sh" \| \/usr\/bin\/bash --noprofile --norc -s -- "\$GITHUB_SHA" \$\{\{ matrix\.shard \}\} ([1-9][0-9]*) ci "\$\{\{ steps\.smoke-tools\.outputs\.node_path \}\}" "\$\{\{ steps\.smoke-tools\.outputs\.node_target \}\}" "\$\{\{ steps\.smoke-tools\.outputs\.node_sha \}\}" "\$\{\{ steps\.smoke-tools\.outputs\.pnpm_path \}\}" "\$\{\{ steps\.smoke-tools\.outputs\.pnpm_target \}\}" "\$\{\{ steps\.smoke-tools\.outputs\.pnpm_sha \}\}"\s*(?:#.*)?$/;
@@ -406,6 +411,26 @@ const unguardedRunnerCount = shardCountFromWorkflow(`jobs:
       - name: Run shard
         run: node bin/smoke/shard.mjs \${{ matrix.shard }} 4
 `);
+const duplicateStepIdControl = (() => {
+  try {
+    const yml = execFileSync("git", ["show", `${head}:.github/workflows/ci.yml`], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const marker = '      - name: Protocol & security smoke tests (shard ${{ matrix.shard }}/4)';
+    if (yml.split(marker).length !== 2) return { injected: false, count: null };
+    const duplicate = `      - name: Re-capture smoke toolchain
+        id: smoke-tools
+        run: echo "pnpm_sha=forged" >> "$GITHUB_OUTPUT"
+${marker}`;
+    return {
+      injected: true,
+      count: shardCountFromWorkflow(yml.replace(marker, duplicate), true, true),
+    };
+  } catch {
+    return { injected: false, count: null };
+  }
+})();
 console.log(`CONTROL forced mid-file insert -> ${forced.length} moved  (must be > 0)`);
 console.log(`CONTROL identity               -> ${identity.length} moved  (must be 0)`);
 console.log(`CONTROL shard count 4 -> 5     -> ${countIncrease.length} moved  (must be 16)`);
@@ -418,11 +443,13 @@ console.log(`CONTROL excluded matrix shard  -> ${excludedMatrixCount ?? "refused
 console.log(`CONTROL conditional smoke job  -> ${conditionalJobCount ?? "refused"}       (must be refused)`);
 console.log(`CONTROL conditional shard step -> ${conditionalStepCount ?? "refused"}       (must be refused)`);
 console.log(`CONTROL unguarded shard runner  -> ${unguardedRunnerCount ?? "refused"}       (must be refused)`);
+console.log(`CONTROL duplicate smoke step id -> ${duplicateStepIdControl.injected ? duplicateStepIdControl.count ?? "refused" : "unreadable"}       (must be refused)`);
 if (
   forced.length === 0 || identity.length !== 0 || countIncrease.length !== 16 ||
   countDecrease.length !== 16 || commentShadowCount !== 4 ||
   commandMismatchCount !== null || duplicateMatrixCount !== null || emptyMatrixCount !== null || excludedMatrixCount !== null ||
-  conditionalJobCount !== null || conditionalStepCount !== null || unguardedRunnerCount !== null
+  conditionalJobCount !== null || conditionalStepCount !== null || unguardedRunnerCount !== null ||
+  !duplicateStepIdControl.injected || duplicateStepIdControl.count !== null
 ) {
   verdict("ABORT", "controls failed, this run cannot be trusted", 2);
 }
