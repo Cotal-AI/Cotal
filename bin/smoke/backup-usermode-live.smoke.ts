@@ -26,13 +26,18 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 const worktree = resolve(import.meta.dirname, "..", "..");
 
 // COTAL_HOME must be sandboxed BEFORE any @cotal-ai module loads (module-level state reads it).
 const home = mkdtempSync(join(tmpdir(), "cotal-bum-home-"));
+const configDir = join(home, "xdg");
 process.env.COTAL_HOME = home;
+process.env.XDG_CONFIG_HOME = configDir;
 const root = mkdtempSync(join(tmpdir(), "cotal-bum-root-"));
+const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
+const childEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
 
 // better-auth is a dependency of implementations/auth, not of this root package, so it does not
 // resolve from bin/. Resolve it from the package that owns it rather than widen root deps.
@@ -86,7 +91,9 @@ const SEEDED_TEXT = "seeded before the user-mode backup";
  *  process's event loop — and the in-process IdP with it — deadlocking every user-mode step. */
 function cotal(args: string[], timeoutMs = 120_000): Promise<{ status: number | null; out: string }> {
   return new Promise((resolveRun) => {
-    const child = spawn(TSX, [BIN, ...args], { cwd: root, env: { ...process.env, COTAL_HOME: home } });
+    const options = { cwd: root, env: childEnv };
+    assertSmokeSandboxDown(sandbox, args, options);
+    const child = spawn(TSX, [BIN, ...args], options);
     let out = "";
     child.stdout.on("data", (d: Buffer) => { out += d.toString(); });
     child.stderr.on("data", (d: Buffer) => { out += d.toString(); });

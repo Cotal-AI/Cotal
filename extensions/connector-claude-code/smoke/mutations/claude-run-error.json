@@ -1,7 +1,7 @@
 {
   "suite": "extensions/connector-claude-code/smoke/agui-run-error.smoke.ts",
   "guard": "a turn Claude Code ended on StopFailure is published as a run error carrying the harness's own error kind, and a turn that ended on Stop is not",
-  "command": "pnpm smoke:claude-run-error",
+  "command": "pnpm --filter @cotal-ai/connector-core build && pnpm smoke:claude-run-error",
   "completionMarker": "claude-run-error smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/claude-run-error.json",
   "why": [
@@ -28,8 +28,8 @@
     {
       "name": "C1 a StopFailure closes exactly as a Stop does, which is the state this connector shipped in",
       "file": "extensions/connector-claude-code/src/hooks.ts",
-      "find": "          events()?.closeRun(Date.now(), stopFailure(ev));",
-      "replace": "          events()?.closeRun(Date.now());",
+      "find": "          closeEvents(Date.now(), stopFailure(ev));",
+      "replace": "          closeEvents(Date.now());",
       "expectRed": "fail:and that close is RUN_ERROR, not RUN_FINISHED",
       "cell": "fail:and that close is RUN_ERROR, not RUN_FINISHED — THE DEFECT",
       "note": "The pre-fix line, restored verbatim. A rate_limit turn is published as a run that ended, carrying no outcome, and a reader cannot tell it from a turn that succeeded."

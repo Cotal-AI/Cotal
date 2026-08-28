@@ -14,6 +14,7 @@ import { createConnection } from "node:net";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 const PORT = 14322; // distinct from the other live smokes' fixed ports
 const SERVER = `nats://127.0.0.1:${PORT}`;
@@ -24,7 +25,9 @@ const TSX = join(WT, "node_modules", ".bin", "tsx");
 
 const home = mkdtempSync(join(tmpdir(), "cotal-singleton-home-"));
 const root = mkdtempSync(join(tmpdir(), "cotal-singleton-root-"));
-const env = { ...process.env, COTAL_HOME: home };
+const configDir = join(home, "xdg");
+const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
+const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -32,7 +35,11 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
   pass++;
   console.log(`  ✓ ${name}`);
 };
-const cli = (...args: string[]) => spawnSync(TSX, [CLI, ...args], { cwd: root, env, encoding: "utf8" });
+const cli = (...args: string[]) => {
+  const options = { cwd: root, env, encoding: "utf8" as const };
+  assertSmokeSandboxDown(sandbox, args, options);
+  return spawnSync(TSX, [CLI, ...args], options);
+};
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const portOpen = (port: number) =>
   new Promise<boolean>((res) => {

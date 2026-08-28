@@ -1,5 +1,5 @@
 {
-  "command": "pnpm smoke:codex-events-lifecycle",
+  "command": "pnpm --filter @cotal-ai/connector-core build && pnpm smoke:codex-events-lifecycle",
   "mutations": [
     {
       "name": "L1 a restarted thread is adopted into the bound holder, which is exactly the state this PR opened in",
@@ -37,11 +37,11 @@
       "expectRed": "an armed seat PUBLISHES its thread's activity"
     },
     {
-      "name": "L6 a dead emitter stays bound, so a seat whose broker was down at launch publishes nothing for the rest of its life",
+      "name": "L6 a dead emitter stays bound after an outage, so no later boundary can recover the plane",
       "file": "extensions/connector-codex/src/host.ts",
       "find": "    if (events?.failure !== undefined) {",
       "replace": "    if (events !== undefined && events.failure !== undefined && false) {",
-      "expectRed": "broker-late:the next turn boundary REBINDS the dead plane"
+      "expectRed": "broker-outage:the next turn boundary REBINDS the dead plane"
     },
     {
       "name": "L8 giving up on a successor stops draining the predecessor at all, so a run whose process is gone is left open on the wire",
@@ -62,21 +62,21 @@
       "file": "extensions/connector-codex/src/host.ts",
       "find": "        const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });",
       "replace": "        const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });\n        if (wal.frontier.sourceCursor === undefined) await wal.advanceCursorOnly(startCursor);",
-      "expectRed": "the recovered stream carries ONE turn, the first one after the rebind, and nothing the seat did before it"
+      "expectRed": "broker-outage:the recovered stream carries ONE post-rebind turn and none of the failed initial binding"
     },
     {
       "name": "L10 the bind's boundary is substituted on EVERY read rather than only on a log with no cursor, so the stream restarts from it and republishes what it has already sent",
       "file": "extensions/connector-codex/src/host.ts",
       "find": "    return this.inner.read(cursor ?? this.start);",
       "replace": "    return this.inner.read(this.start);",
-      "expectRed": "the recovered stream carries ONE turn, the first one after the rebind, and nothing the seat did before it"
+      "expectRed": "broker-outage-live:an existing cursor resumes the COMPLETE outage backlog once, tool result included"
     },
     {
       "name": "L11 a seat that recovers its plane says nothing about it, so a reader watching the log cannot tell a recovery from a plane that was never down",
       "file": "extensions/connector-codex/src/host.ts",
       "find": "      log(`AG-UI: the emitter stopped (${events.failure.message}), rebinding at this boundary`);",
       "replace": "      log(`AG-UI: the emitter stopped (${events.failure.message})`);",
-      "expectRed": "broker-late:and it said so rather than recovering silently"
+      "expectRed": "broker-outage:and it said so rather than recovering silently"
     },
     {
       "name": "L12 the bind's boundary is not substituted, so the emitter positions itself wherever the file ends when its own setup has finished",
@@ -84,6 +84,28 @@
       "find": "source: new BoundStartSource<CodexRecord>(new JsonlFileSource<CodexRecord>(rolloutPath), startCursor),",
       "replace": "source: new JsonlFileSource<CodexRecord>(rolloutPath),",
       "expectRed": "a turn written INSIDE the emitter's setup window is PUBLISHED rather than left behind the cursor"
+    },
+    {
+      "name": "L13 an existing WAL cursor is ignored on the first recovery read, so the rebind advances to its new boundary and drops the outage backlog",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "  read(cursor: string | undefined): Promise<SourceRead<T>> {\n    return this.inner.read(cursor ?? this.start);\n  }",
+      "replace": "  private firstRead = true;\n\n  read(cursor: string | undefined): Promise<SourceRead<T>> {\n    const from = this.firstRead && cursor !== undefined ? this.start : cursor ?? this.start;\n    this.firstRead = false;\n    return this.inner.read(from);\n  }",
+      "expectRed": "broker-outage-live:an existing cursor resumes the COMPLETE outage backlog once, tool result included"
+    },
+    {
+      "name": "L14 the replacement mapper starts empty instead of inheriting the WAL's open run, so recovery drops its completion and collides at the next start",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "        const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;\n        mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });",
+      "replace": "        const resumeRunId = undefined;\n        mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });",
+      "expectRed": "broker-outage-open-run:the replacement mapper CLOSES the WAL run before the next native start"
+    },
+    {
+      "name": "L15 pending-frame recovery updates the WAL on disk but leaves the live emitter at the pre-pending bracket state",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "    await this.attempt({ id: p.id, E: p.E, body: p.body, retry: true });\n    this.brackets = AguiBrackets.restore(p.brackets);",
+      "replace": "    await this.attempt({ id: p.id, E: p.E, body: p.body, retry: true });",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build",
+      "expectRed": "broker-outage-live:setup:the replacement holder stays alive through recovery"
     }
   ]
 }
