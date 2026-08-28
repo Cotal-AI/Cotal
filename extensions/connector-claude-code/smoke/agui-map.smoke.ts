@@ -343,11 +343,13 @@ const mint = (): string => `run-${(minted += 1)}`;
 // live session must do. Against a real 30-record session that read 0 and took eleven downstream
 // cells with it. The suite was wrong, not the source.
 //
-// So the session is driven through the shape production actually has: adopt an EMPTY file, then
-// let the records arrive. The real session's bytes are appended to the adopted file (same inode —
-// the cursor is bound to `<dev>:<ino>` and a replacement is refused by design), and the read
-// resumes from the adopt cursor. No cursor is hand-built here: constructing a `<dev>:<ino>:0:<seal>`
-// string would mean re-implementing `sealAt`, which is the same sin as splitting the file myself.
+// This suite therefore isolates the MAPPER with an empty adopt followed by real session bytes. It is
+// NOT the complete startup lifecycle: Claude can write a positional startup prompt before
+// SessionStart, which is the production order `smoke:claude-run-error` drives through the real
+// hook/emitter and `smoke:claude-start-source` grades across startup/resume/fork/clear/compact.
+// Generic adoption still starts at the current boundary; only Claude's explicit `source: "startup"`
+// opens the connector-specific from-zero door. The bytes here stay on the same inode, and no cursor
+// is hand-built: constructing `<dev>:<ino>:0:<seal>` would duplicate `JsonlFileSource`'s contract.
 // ---------------------------------------------------------------------------------------------
 const raw = readFileSync(SESSION);
 const rawLines = raw.toString("utf8").split("\n").filter((l) => l.trim() !== "").length;

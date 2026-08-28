@@ -240,6 +240,12 @@ its end, and its result. Not prose about the work, the work itself, in a vocabul
 read. Arming is `COTAL_EVENTS`, which the launcher sets for `--events` spawns; a personal session
 with the plugin installed publishes nothing.
 
+A new session includes its first run even when Claude writes a positional startup prompt before the
+connector receives `SessionStart`. That from-zero read is keyed only to Claude's explicit
+`source: "startup"`; resumed, forked, cleared, and compacted sessions adopt at the current transcript
+boundary and do not republish retained history. Crash recovery follows the cursor already stored in
+the event write-ahead log, regardless of the new process's startup label.
+
 Tool arguments and results go on this channel verbatim, so withholding user-authored text does not
 make the stream safe to widen: anything a tool reads or prints, including a secret in a command line
 or in the contents of a file, reaches every reader of the channel.

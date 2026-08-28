@@ -9,6 +9,13 @@
  * vocabulary, the bracket machine accepts it as a close and the dashboard renders it with its code;
  * the shared close path simply had no way to say it.
  *
+ * **THE STARTUP-CURSOR DEFECT.** A positional prompt is already a complete JSONL record when
+ * `SessionStart` reaches the connector. The generic fresh-adopt contract correctly parks at the
+ * current boundary to avoid replaying retained history, but on a genuinely new `source: "startup"`
+ * session that parks AFTER the only record that can open the first run. Assistant/tool records then
+ * map to nothing and the subject stays empty. This suite writes the prompt first, drives the real
+ * SessionStart source through the holder, appends the answer, and requires both turns on the broker.
+ *
  * **THE HANDLER IS THE SHIPPED ONE AND THE BROKER IS REAL.** `createClaudeHandle` from `src` runs
  * against a real `nats-server`, over a real `AguiEmitterHolder` reading a real transcript file
  * through a real write-ahead log — the holder is assembled here exactly as `mcp.ts` assembles it.
@@ -42,7 +49,6 @@ import {
   configFromEnv,
   AguiEmitter,
   AguiEmitterHolder,
-  JsonlFileSource,
   EventWal,
   FileSubjectFrontier,
   ensureEventWalDir,
@@ -51,6 +57,7 @@ import {
 } from "@cotal-ai/connector-core";
 import { createClaudeMapper, type ClaudeEntry, type ClaudeMapper } from "../src/agui-map.js";
 import { createClaudeHandle } from "../src/hooks.js";
+import { createClaudeTranscriptSource } from "../src/agui-source.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 async function freePort(): Promise<number> {
@@ -89,30 +96,37 @@ const check = (name: string, cond: boolean, extra?: unknown): void => {
   console.log(`  ✗ ${name}${extra !== undefined ? ` - ${JSON.stringify(extra)}` : ""}`);
 };
 
-/** One turn, in the transcript's own shape. The assistant text carries the turn number so a cell can
- *  LOCATE one turn in the replayed stream instead of counting and hoping. */
-function turn(n: number): string {
-  const u = `u-${n}`;
-  const a = `a-${n}`;
+/** One prompt, in the transcript's own shape. Kept separate from the assistant record because a
+ *  positional `--prompt` launch writes this record BEFORE SessionStart reaches the connector. */
+function prompt(n: number): string {
   return (
     JSON.stringify({
       type: "user",
-      uuid: u,
+      uuid: `u-${n}`,
       sessionId: THREAD,
       timestamp: new Date(1_700_000_000_000 + n * 1000).toISOString(),
       origin: { kind: "human" },
       message: { content: `prompt ${n}` },
-    }) +
-    "\n" +
+    }) + "\n"
+  );
+}
+
+/** The assistant text carries the turn number so a cell can LOCATE one turn in the replayed stream
+ *  instead of counting and hoping. */
+function answer(n: number): string {
+  return (
     JSON.stringify({
       type: "assistant",
-      uuid: a,
+      uuid: `a-${n}`,
       sessionId: THREAD,
       timestamp: new Date(1_700_000_000_000 + n * 1000 + 1).toISOString(),
       message: { id: `msg-${n}`, content: [{ type: "text", text: `answer-${n}` }] },
-    }) +
-    "\n"
+    }) + "\n"
   );
+}
+
+function turn(n: number): string {
+  return prompt(n) + answer(n);
 }
 
 // The connector reads its identity from COTAL_* env. Scrub what this process inherited: a live
@@ -137,8 +151,8 @@ agent.on?.("error", () => {});
 // process entry point that owns a control server and an MCP transport; what is under test is the
 // hook arm above it, and the seam between them is this object.
 let mapper: ClaudeMapper | undefined;
-const events = new AguiEmitterHolder<ClaudeEntry>(
-  async (transcriptPath: string) => {
+const events = new AguiEmitterHolder<ClaudeEntry, unknown>(
+  async (transcriptPath: string, sessionSource: unknown) => {
     const workspaceRoot = resolveEventsStateRoot(process.env);
     const threadId = THREAD;
     const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
@@ -150,7 +164,7 @@ const events = new AguiEmitterHolder<ClaudeEntry>(
       endpoint: agent.ep,
       wal,
       subjectFrontier,
-      source: new JsonlFileSource<ClaudeEntry>(transcriptPath),
+      source: createClaudeTranscriptSource(transcriptPath, sessionSource),
       map: mapper.map,
     });
   },
@@ -177,18 +191,19 @@ try {
   const hook = (ev: Record<string, unknown>): Promise<unknown> =>
     claude.handle(agent, { transcript_path: transcript, ...ev } as HookEvent);
 
-  // PARK FIRST, ON AN EMPTY TRANSCRIPT, AND THAT IS PRODUCTION ORDER RATHER THAN A TEST TRICK.
-  // `adopt` does not read; the FIRST pump is what parks the cursor at the current end of the file.
-  // In a live session `UserPromptSubmit` fires BEFORE the harness writes the turn's first record, so
-  // the park lands on an empty file. A harness that appended first would park past its own fixture
-  // and read zero everywhere — which is exactly what the first draft of this file did, and the
-  // `control:` cell below is what caught it.
-  await hook({ hook_event_name: "UserPromptSubmit" });
+  // THE LIVE POSITIONAL-PROMPT ORDER. Claude writes the run-opening prompt record before its
+  // SessionStart hook reaches this connector. A generic fresh adopt parks after that complete record,
+  // so the later assistant/tool records have no run to attach to and the whole event plane stays
+  // empty. `source: "startup"` is Claude's explicit discriminator for a new session; resume, fork,
+  // clear and compact must still adopt at the current boundary rather than replaying history.
+  writeFileSync(transcript, prompt(1));
+  await hook({ hook_event_name: "SessionStart", source: "startup" });
   await sleep(1_500);
 
-  // ---- Turn 1: a real turn, then the API error that killed it. `StopFailure` in the harness's own
-  //      payload shape: a required `error` naming the kind, plus optional free-text detail.
-  appendFileSync(transcript, turn(1));
+  // ---- Turn 1: append only the assistant record, then the API error that killed it.
+  //      `StopFailure` uses the harness's own payload shape: a required `error` naming the kind,
+  //      plus optional free-text detail.
+  appendFileSync(transcript, answer(1));
   await hook({
     hook_event_name: "StopFailure",
     error: "rate_limit",
