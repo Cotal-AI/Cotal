@@ -22,8 +22,8 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 try {
   assert.deepEqual(
-    detachedArgs(["--detach", "--space=old", "--server=old:1", "--port", "8123", "--no-open"], "new", "nats://new:2"),
-    ["--port", "8123", "--space", "new", "--server", "nats://new:2", "--no-open"],
+    detachedArgs(["--detach", "--space=old", "--server=old:1", "--host", "192.0.2.10", "--port", "8123", "--no-open"], "new", "nats://new:2"),
+    ["--host", "192.0.2.10", "--port", "8123", "--space", "new", "--server", "nats://new:2", "--no-open"],
     "equals-form targets are replaced without consuming the following flag",
   );
   assert.deepEqual(

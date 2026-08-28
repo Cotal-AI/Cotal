@@ -7,9 +7,10 @@ creates one private Jcode Harness API instance per seat, one Jcode session insid
 the normal `cotal_*` tool surface through Jcode's documented stdio MCP configuration.
 
 **Beta** means the supported path is deliberately narrow: a fresh private session, prompt
-injection, presence, managed start/stop, and an attached TUI work. Features that do not preserve
-that private session's mesh surface fail loud: `--resume`, exact-session continuation,
-`--variant`, `--share-tools`, `--events`, and connector `--opt` values are not supported.
+injection, presence, managed start/stop, requested reasoning effort, and an attached TUI work.
+Features that do not preserve that private session's mesh surface fail loud: `--resume`,
+exact-session continuation, `--share-tools`, `--events`, and connector `--opt` values are not
+supported.
 
 ## Install
 

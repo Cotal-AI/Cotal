@@ -68,5 +68,5 @@ check(
   "         variants: fast",
 );
 
-console.log(`\nPS PROVENANCE SMOKE PASSED (${pass} checks, ${fail} failed)`);
+console.log(`\nPS PROVENANCE SMOKE PASSED: ${pass} passed, ${fail} failed`);
 if (fail) process.exitCode = 1;

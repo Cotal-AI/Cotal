@@ -633,15 +633,16 @@ The human `ps` row is presentation text and is not a stable parsing target. Scri
 which is the machine-readable row contract.
 
 These are operator clients over the running manager's control plane. The default row includes the
-connector, model pin, optional requested variant, and runtime because those identify the seat that
-produced its work. An omitted variant means no override was requested; Cotal does not invent an
-effective provider default it cannot observe. `ps` also prints two state facts per
-managed agent, because they answer different questions: the process fact from the manager's own
-runtime handle (`running` with its uptime, or `exited` with how long it ran), and the mesh fact from
-the roster (`idle` / `working` / `waiting` / `mesh offline`, or `not in roster` when the seat has no
-presence row at all: a seat that has not joined yet, or one that never did). A seat can be `running` and `mesh offline` at once: the process is alive and
-its presence has lapsed. On a user-auth mesh `ps` also renders each managed agent's last
-credential-refresh outcome, fail-closed.
+connector, model pin, optional requested variant, and runtime as operational descriptors for the
+managed row. They do not make a shared display name a unique protocol identity; use `--json` when
+unambiguous owner+actor attribution is required. An omitted variant means no override was requested;
+Cotal does not invent an effective provider default it cannot observe. `ps` also prints two state
+facts per managed agent, because they answer different questions: the process fact from the manager's
+own runtime handle (`running` with its uptime, or `exited` with how long it ran), and the mesh fact
+from the roster (`idle` / `working` / `waiting` / `mesh offline`, or `not in roster` when the seat has
+no presence row at all: a seat that has not joined yet, or one that never did). A seat can be
+`running` and `mesh offline` at once: the process is alive and its presence has lapsed. On a user-auth
+mesh `ps` also renders each managed agent's last credential-refresh outcome, fail-closed.
 
 **Mode split (chosen up front, never try-scatter-then-degrade):**
 
@@ -1066,12 +1067,13 @@ user-auth mesh it rides the read-only admin view over your login, which needs le
 ## web
 
 ```bash
-cotal web [--detach] [--port <n>] [--no-open] [--space <s>]
+cotal web [--detach] [--host <host>] [--port <n>] [--no-open] [--space <s>]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Space to serve |
+| `--host <host>` | `127.0.0.1` | Concrete HTTP bind and browser host; wildcard addresses are refused |
 | `--port <n>` | `7799` | HTTP port |
 | `--detach` | off | Run in the background; stop with `cotal down web` or bare `cotal down` |
 | `--no-open` | off | Don't open the browser |
@@ -1080,7 +1082,7 @@ The browser observability dashboard: presence, channels, and a live feed. It is 
 `cotal up`: it ships inside `cotal-ai` as the `@cotal-ai/web` extension, seeded automatically on first
 run (like the built-in connectors) so it always matches your CLI version. It self-registers `cotal web`
 into this surface and serves
-`http://cotal.localhost:7799` (loopback; `*.localhost` resolves in Chrome/Firefox/Edge; Safari may
+`http://cotal.localhost:7799` by default (loopback; `*.localhost` resolves in Chrome/Firefox/Edge; Safari may
 need `http://127.0.0.1:7799`). On a user-auth mesh the dashboard rides the read-only admin view
 over your login, and a channel purge asks for its own channel-purger view per click; both need
 ledger scope `admin`. Detached mode re-execs the current Cotal installation, writes diagnostics to

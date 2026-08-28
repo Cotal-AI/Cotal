@@ -176,7 +176,7 @@ try {
   throws("refuses unsupported launch options", () => jcodeConnector.buildLaunch({ space: "s", name: "n", launchOptions: { profile: "full" } }), /launch options are not supported/);
   throws("still validates malformed launch option keys", () => jcodeConnector.buildLaunch({ space: "s", name: "n", launchOptions: { "a=b": "x" } }), /not a valid flag name/);
 
-  console.log(`\nJCODE ARGS SMOKE PASSED (${pass} checks, ${fail} failed)`);
+  console.log(`\nJCODE ARGS SMOKE PASSED: ${pass} passed, ${fail} failed`);
   if (fail) process.exitCode = 1;
 } finally {
   delete process.env.UNRELATED_JCODE_ENV_CANARY;
