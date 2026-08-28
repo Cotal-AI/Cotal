@@ -231,7 +231,7 @@ try {
   // renew at all, so before grading the outcome, prove the no-answer renew actually happened — and
   // prove it in a way that reads the same whether or not the defect is fixed.
   const duringStall = samples.filter((s) => s.atMs > stallStart + 500 && s.atMs <= stallEnd);
-  const learnedDuringStall = reported().filter((r) => r.atMs > stallStart + 500 && r.atMs <= stallEnd);
+  const learnedDuringStall = reported().filter((r) => r.atMs > stallStart + 500 && r.atMs < stallEnd);
   const storedLast = duringStall.at(-1);
 
   // What the manager itself said about the incident. Printed rather than asserted: the cells grade
