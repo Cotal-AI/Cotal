@@ -78,7 +78,7 @@ check("BOTH pass --plugin-dir, so the plugin's hooks are actually loaded",
 // ---- 3. the emitter race ----
 const mcp = strip(read("src/mcp.ts"));
 const iWait = mcp.indexOf("await agent.whenConnected(");
-const iRoot = mcp.indexOf("resolveEventsStateRoot(");
+const iStart = mcp.indexOf("return startEmitter();");
 console.log("\nthe emitter — it must not start against an unbound endpoint:");
 check("the emitter path AWAITS the mesh link", iWait !== -1);
 // REACHABILITY, not just presence. `if (false) await agent.whenConnected(20_000)` keeps every
@@ -92,9 +92,9 @@ check("the emitter path AWAITS the mesh link", iWait !== -1);
 check("…as a BARE statement, not guarded into unreachability",
   mcp.split("\n").some((l) => /^\s*await agent\.whenConnected\(/.test(l)),
   mcp.split("\n").filter((l) => l.includes("agent.whenConnected(")));
-check("instrument control: the emitter setup this guards is in this file", iRoot !== -1);
-check("…and the wait comes BEFORE the emitter is set up (the ordering IS the fix)",
-  iWait !== -1 && iRoot !== -1 && iWait < iRoot, { iWait, iRoot });
+check("instrument control: the guarded emitter start call is in this file", iStart !== -1);
+check("…and the wait comes BEFORE the emitter starts (the ordering IS the fix)",
+  iWait !== -1 && iStart !== -1 && iWait < iStart, { iWait, iStart });
 
 const agent = strip(readFileSync(join(root, "..", "connector-core", "src", "agent.ts"), "utf8"));
 check("connector-core exposes a PUBLIC bounded wait for callers outside the op methods",

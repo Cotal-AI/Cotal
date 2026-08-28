@@ -1,5 +1,5 @@
 {
-  "command": "pnpm smoke:web-body-cap",
+  "command": "pnpm --filter @cotal-ai/workspace... build && pnpm smoke:web-body-cap",
   "progressPattern": "^[0-9]\\. ",
   "mutations": [
     {
@@ -68,8 +68,8 @@
     {
       "name": "C10 a size refusal stops reaching the operator log, leaving the ONE report of it that a reset connection cannot lose: the caller mid-upload may never read the 413, so with this line gone an oversized request is refused silently as far as anyone running the dashboard can tell",
       "file": "implementations/web/src/web.ts",
-      "find": "      console.error(c[caller ? \"yellow\" : \"red\"](`${caller ? \"~\" : \"!\"} ${req.method ?? \"GET\"} ${req.url ?? \"/\"} ${caller ? \"refused\" : \"failed\"}: ${why}`));",
-      "replace": "      if (!(e instanceof PayloadTooLarge)) console.error(c[caller ? \"yellow\" : \"red\"](`${caller ? \"~\" : \"!\"} ${req.method ?? \"GET\"} ${req.url ?? \"/\"} ${caller ? \"refused\" : \"failed\"}: ${why}`));",
+      "find": "      console.error(c[caller ? \"yellow\" : \"red\"](`${caller ? \"~\" : \"!\"} ${req.method ?? \"GET\"} ${requestTargetForLog(req, gate.launchToken)} ${caller ? \"refused\" : \"failed\"}: ${why}`));",
+      "replace": "      if (!(e instanceof PayloadTooLarge)) console.error(c[caller ? \"yellow\" : \"red\"](`${caller ? \"~\" : \"!\"} ${req.method ?? \"GET\"} ${requestTargetForLog(req, gate.launchToken)} ${caller ? \"refused\" : \"failed\"}: ${why}`));",
       "expectRed": "7.3 an oversized CHUNKED body over keep-alive is cut off and RECORDED BY THE OPERATOR even though the uploading caller may get no readable reply, which is the durable half of the refusal and the half this change actually owns"
     }
   ]
