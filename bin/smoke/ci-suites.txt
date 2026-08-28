@@ -591,3 +591,11 @@ smoke:start-model
 # exclusion, presence, and open-mode membership semantics, then awaits broker teardown. Appended so
 # every existing shard assignment remains unchanged.
 smoke
+# The callout-minted control-trust proof owns a JWT broker and two user principals, then proves
+# payload, same-owner subject, cross-owner subject, and reply-lane forgeries all fail on the shipped
+# delivery control rail. Appended to preserve every existing shard assignment.
+smoke:ctl-trust:live
+# The static-auth dashboard seed-drop proof owns a JWT broker and registered workspace, seeds chat
+# through the operator profile, then proves its pre-minted channel-purger can purge while admin
+# cannot. Appended to preserve every existing shard assignment.
+smoke:web-seed:live
