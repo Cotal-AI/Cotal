@@ -349,6 +349,9 @@ const moved = (a: string[], b: string[], aCount: number, bCount: number): string
 const replaceRefRuntimeControl = (): boolean => {
   const root = mkdtempSync(join(tmpdir(), "shard-replace-control-"));
   const env = { ...process.env };
+  for (const name of Object.keys(env)) {
+    if (name.startsWith("COTAL_")) delete env[name];
+  }
   for (const name of ["BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "GIT_NO_REPLACE_OBJECTS"]) {
     delete env[name];
   }
