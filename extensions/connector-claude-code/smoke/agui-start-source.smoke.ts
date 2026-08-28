@@ -12,7 +12,7 @@
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createClaudeTranscriptSource } from "../src/agui-source.js";
+import { createClaudeTranscriptSource, readStartupTranscriptWhenReady } from "../src/agui-source.js";
 
 const line = (id: number): string => `${JSON.stringify({ id })}\n`;
 
@@ -46,25 +46,22 @@ try {
   // The retained SessionStart relay can now beat Claude's creation of the JSONL itself. The source
   // must wait for that real artifact, not turn one early ENOENT into a terminal emitter failure.
   const delayed = file("delayed");
-  let delayedRead: Awaited<ReturnType<ReturnType<typeof createClaudeTranscriptSource>["read"]>> | undefined;
-  let delayedError: Error | undefined;
-  const created = new Promise<void>((resolve) =>
+  const delayedOutcome = createClaudeTranscriptSource(delayed, "startup")
+    .read(undefined)
+    .then((read) => ({ read }), (error: unknown) => ({ error: error as Error }));
+  await new Promise<void>((resolve) =>
     setTimeout(() => {
       writeFileSync(delayed, line(13));
       resolve();
     }, 75),
   );
-  await Promise.all([
-    createClaudeTranscriptSource(delayed, "startup")
-      .read(undefined)
-      .then((read) => (delayedRead = read))
-      .catch((error) => (delayedError = error as Error)),
-    created,
-  ]);
+  const delayedResult = await delayedOutcome;
   check(
     "startup:a-SessionStart-before-transcript-creation-waits-for-the-real-file",
-    delayedError === undefined && delayedRead?.records.length === 1 && delayedRead.records[0]?.value.id === 13,
-    { error: delayedError?.message, records: delayedRead?.records.map((r) => r.value.id) },
+    "read" in delayedResult &&
+      delayedResult.read.records.length === 1 &&
+      delayedResult.read.records[0]?.value.id === 13,
+    "error" in delayedResult ? delayedResult.error.message : delayedResult.read.records.map((r) => r.value.id),
   );
 
   // The explicit from-zero door must preserve JsonlFileSource's core partial-record guarantee.
@@ -111,6 +108,20 @@ try {
     missingError?.message,
   );
 
+  let hangingError: Error | undefined;
+  const hangingStart = performance.now();
+  try {
+    await readStartupTranscriptWhenReady(() => new Promise(() => {}), { waitMs: 60 });
+  } catch (error) {
+    hangingError = error as Error;
+  }
+  check(
+    "startup:one-stalled-file-read-cannot-outlive-the-bounded-wait",
+    hangingError?.message.includes("did not appear within 60ms") === true &&
+      performance.now() - hangingStart < 250,
+    { error: hangingError?.message, elapsedMs: Math.round(performance.now() - hangingStart) },
+  );
+
   // These four source values all name retained history. Each cell proves BOTH halves: no replay of
   // the old records, and the first new append remains readable from the adopt cursor.
   for (const sessionSource of ["resume", "fork", "clear", "compact"] as const) {
@@ -153,7 +164,7 @@ try {
     );
   }
 
-  check("every cell ran", pass + fail === 14, { ran: pass + fail, expected: 14 });
+  check("every cell ran", pass + fail === 15, { ran: pass + fail, expected: 15 });
   console.log(`claude-start-source smoke: ${pass} passed, ${fail} failed`);
   process.exitCode = fail ? 1 : 0;
 } finally {

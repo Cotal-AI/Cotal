@@ -10,13 +10,14 @@
  * Run: pnpm smoke:hook-relay-startup
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createServer, type Server } from "node:net";
+import type { Server } from "node:net";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { HANDOFF_RECEIPT } from "../src/control.js";
+import { startControlServer } from "../src/control.js";
+import type { MeshAgent } from "../src/agent.js";
 import { controlEndpoint } from "../src/runtime.js";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -41,7 +42,6 @@ interface RelayRun {
   ready: Promise<void>;
   firstDialFailed: Promise<void>;
   done: Promise<{ code: number | null; stdout: string; stderr: string }>;
-  closed: () => boolean;
 }
 
 function launchRelay(
@@ -61,7 +61,6 @@ function launchRelay(
   });
   let stdout = "";
   let stderr = "";
-  let isClosed = false;
   let sawReady = false;
   let sawDialFailure = false;
   let resolveReady!: () => void;
@@ -94,7 +93,6 @@ function launchRelay(
   });
   const done = new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
     child.on("close", (code) => {
-      isClosed = true;
       if (!sawReady) rejectReady(new Error(`relay child exited before ready: ${stderr}`));
       if (!sawDialFailure) rejectDialFailure(new Error(`relay child exited before a failed dial: ${stderr}`));
       const diagnostic = `${DIAL_FAILED}\n`;
@@ -102,7 +100,7 @@ function launchRelay(
     });
   });
   child.stdin.end(JSON.stringify(event));
-  return { child, ready, firstDialFailed, done, closed: () => isClosed };
+  return { child, ready, firstDialFailed, done };
 }
 
 async function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
@@ -119,32 +117,23 @@ async function within<T>(promise: Promise<T>, ms: number, what: string): Promise
   }
 }
 
-async function listen(path: string, frames: unknown[], receipts: { count: number }): Promise<Server> {
-  const server = createServer((socket) => {
-    let buf = "";
-    socket.setEncoding("utf8");
-    socket.on("data", (chunk) => {
-      buf += chunk;
-      for (;;) {
-        const nl = buf.indexOf("\n");
-        if (nl < 0) break;
-        const line = buf.slice(0, nl);
-        buf = buf.slice(nl + 1);
-        if (line === HANDOFF_RECEIPT.trim()) {
-          receipts.count++;
-          socket.end();
-          continue;
-        }
-        frames.push(JSON.parse(line));
-        socket.write(JSON.stringify({ handled: true }) + "\n");
-      }
-    });
-  });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(path, resolve);
-  });
-  return server;
+async function listen(
+  endpoint: { path: string; token: string },
+  frames: unknown[],
+): Promise<{ server: Server; delivered: Promise<boolean> }> {
+  let resolveDelivered!: (delivered: boolean) => void;
+  const delivered = new Promise<boolean>((resolve) => (resolveDelivered = resolve));
+  const server = startControlServer(
+    {} as MeshAgent,
+    endpoint,
+    async (_agent, event) => {
+      frames.push({ event });
+      return { handled: true };
+    },
+    { onReply: (_event, didDeliver) => resolveDelivered(didDeliver) },
+  );
+  await new Promise<void>((resolve) => (server.listening ? resolve() : server.once("listening", () => resolve())));
+  return { server, delivered };
 }
 
 async function close(server: Server): Promise<void> {
@@ -158,13 +147,11 @@ try {
   const run = launchRelay(late, event);
   await within(run.ready, 3_000, "relay test shim to start");
   await within(run.firstDialFailed, 3_000, "the first real missing-socket refusal");
-  check("startup race: the first dial really failed before the connector bound", true);
-
   const frames: unknown[] = [];
-  const receipts = { count: 0 };
-  const server = await listen(late.path, frames, receipts);
+  const listening = await listen(late, frames);
   const result = await within(run.done, 3_000, "relay to cross the late-bound socket");
-  await close(server);
+  const delivered = await within(listening.delivered, 1_000, "connector to observe the handoff receipt");
+  await close(listening.server);
 
   const forwarded = (frames[0] as { event?: unknown } | undefined)?.event;
   const replyLines = result.stdout.split("\n").filter((line) => line && line !== "RELAY_READY");
@@ -178,12 +165,12 @@ try {
     replyLines.length === 1 && replyLines[0] === JSON.stringify({ handled: true }),
     { replyLines },
   );
-  check("startup race: confirmed handoff still reaches the connector", receipts.count === 1, receipts);
+  check("startup race: confirmed handoff still reaches the connector", delivered === true);
   check("startup race: relay exits cleanly", result.code === 0 && result.stderr === "", result);
 
   const absent = launchRelay(
     controlEndpoint("hook-relay-startup", "never-bound", "absent-race-token"),
-    { hook_event_name: "UserPromptSubmit" },
+    { hook_event_name: "SessionStart", source: "startup" },
   );
   await within(absent.ready, 3_000, "absent-socket relay to start");
   await within(absent.firstDialFailed, 3_000, "absent-socket relay to attempt its first dial");
@@ -197,6 +184,24 @@ try {
     { ...absentResult, elapsedMs: Math.round(absentElapsed) },
   );
 
+  const later = launchRelay(
+    controlEndpoint("hook-relay-startup", "later-hook", "later-hook-token"),
+    { hook_event_name: "UserPromptSubmit" },
+  );
+  await within(later.ready, 3_000, "later hook relay to start");
+  await within(later.firstDialFailed, 3_000, "later hook relay to attempt its dial");
+  const laterStart = performance.now();
+  const laterResult = await within(later.done, 500, "later hook to preserve immediate fail-open");
+  const laterReply = laterResult.stdout.split("\n").filter((line) => line && line !== "RELAY_READY");
+  check(
+    "later hook: missing connector fails open immediately instead of stalling the action",
+    laterResult.code === 0 &&
+      laterReply.length === 0 &&
+      laterResult.stderr === "" &&
+      performance.now() - laterStart < 500,
+    laterResult,
+  );
+
   // POSIX gives a deterministic permanent pre-connect error when an ancestor is a regular file.
   // Windows covers the production named-pipe shape above; its permanent-error codes share the same
   // classifier, but there is no filesystem ENOTDIR equivalent for a pipe namespace.
@@ -205,7 +210,7 @@ try {
     writeFileSync(blocker, "x");
     const permanent = launchRelay(
       { path: join(blocker, "control.sock"), token: "permanent-error-token" },
-      { hook_event_name: "Stop" },
+      { hook_event_name: "SessionStart", source: "startup" },
     );
     await within(permanent.ready, 3_000, "permanent-error relay to start");
     await within(permanent.firstDialFailed, 3_000, "permanent-error relay to attempt its dial");

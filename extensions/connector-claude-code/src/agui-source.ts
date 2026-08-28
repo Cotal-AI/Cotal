@@ -11,7 +11,8 @@ import { JsonlFileSource, type DurableSource, type SourceRead } from "@cotal-ai/
 import type { ClaudeEntry } from "./agui-map.js";
 
 const STARTUP_TRANSCRIPT_WAIT_MS = 5_000;
-const STARTUP_TRANSCRIPT_RETRY_MS = 25;
+const STARTUP_TRANSCRIPT_RETRY_INITIAL_MS = 25;
+const STARTUP_TRANSCRIPT_RETRY_MAX_MS = 250;
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 const isMissingFile = (error: unknown): error is NodeJS.ErrnoException =>
@@ -20,6 +21,46 @@ const isMissingFile = (error: unknown): error is NodeJS.ErrnoException =>
 export interface ClaudeTranscriptSourceOpts {
   /** Production defaults to five seconds. Tests can shorten only the fail-loud deadline. */
   startupFileWaitMs?: number;
+}
+
+class StartupTranscriptTimeout extends Error {}
+
+export async function readStartupTranscriptWhenReady<T>(
+  read: () => Promise<SourceRead<T>>,
+  opts: { waitMs: number; sleep?: (ms: number) => Promise<void> },
+): Promise<SourceRead<T>> {
+  const sleep = opts.sleep ?? delay;
+  const deadline = performance.now() + opts.waitMs;
+  let retryMs = STARTUP_TRANSCRIPT_RETRY_INITIAL_MS;
+  const timeout = (cause?: unknown): StartupTranscriptTimeout =>
+    new StartupTranscriptTimeout(
+      `Claude AG-UI source: startup transcript did not appear within ${opts.waitMs}ms; ` +
+        `refusing to lose the first run`,
+      { cause },
+    );
+
+  for (;;) {
+    const beforeRead = deadline - performance.now();
+    if (beforeRead <= 0) throw timeout();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        read(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(timeout()), beforeRead);
+        }),
+      ]);
+    } catch (error) {
+      if (error instanceof StartupTranscriptTimeout) throw error;
+      if (!isMissingFile(error)) throw error;
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) throw timeout(error);
+      await sleep(Math.min(retryMs, remaining));
+      retryMs = Math.min(retryMs * 2, STARTUP_TRANSCRIPT_RETRY_MAX_MS);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
 }
 
 class StartupClaudeTranscriptSource implements DurableSource<ClaudeEntry> {
@@ -32,24 +73,8 @@ class StartupClaudeTranscriptSource implements DurableSource<ClaudeEntry> {
     return this.file.kind;
   }
 
-  private async readFromBeginningWhenReady(): Promise<SourceRead<ClaudeEntry>> {
-    const deadline = performance.now() + this.waitMs;
-    for (;;) {
-      try {
-        return await this.file.readFromBeginning();
-      } catch (error) {
-        if (!isMissingFile(error)) throw error;
-        const remaining = deadline - performance.now();
-        if (remaining <= 0) {
-          throw new Error(
-            `Claude AG-UI source: startup transcript did not appear within ${this.waitMs}ms; ` +
-              `refusing to lose the first run`,
-            { cause: error },
-          );
-        }
-        await delay(Math.min(STARTUP_TRANSCRIPT_RETRY_MS, remaining));
-      }
-    }
+  private readFromBeginningWhenReady(): Promise<SourceRead<ClaudeEntry>> {
+    return readStartupTranscriptWhenReady(() => this.file.readFromBeginning(), { waitMs: this.waitMs });
   }
 
   read(cursor: string | undefined): Promise<SourceRead<ClaudeEntry>> {

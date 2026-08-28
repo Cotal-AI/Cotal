@@ -14,15 +14,20 @@ import { HANDOFF_RECEIPT } from "./control.js";
 const TIMEOUT_MS = 2000;
 /** A startup hook may run before the MCP process has bound its socket. Stay inside the existing
  * hook budget, but do not turn one early ENOENT into a permanently lost lifecycle event. */
-const CONNECT_RETRY_MS = 25;
+const CONNECT_RETRY_INITIAL_MS = 25;
+const CONNECT_RETRY_MAX_MS = 250;
 
 const isRetryableConnectError = (error: unknown): boolean => {
   const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
-  // Missing endpoint: the connector has not bound yet. Refused endpoint: POSIX can leave a stale
-  // socket inode while its replacement is starting. Everything else is a permanent local fault and
-  // must preserve the relay's immediate fail-open behavior.
-  return code === "ENOENT" || code === "ECONNREFUSED";
+  // These all mean no connection was established and can describe a listener that is still coming
+  // up or being replaced. Permission/path-shape/resource faults are permanent and fail open now.
+  return ["ENOENT", "ECONNREFUSED", "ECONNRESET", "EPIPE", "EAGAIN", "EBUSY"].includes(code ?? "");
 };
+
+const isSessionStart = (event: unknown): boolean =>
+  event !== null &&
+  typeof event === "object" &&
+  (event as { hook_event_name?: unknown }).hook_event_name === "SessionStart";
 
 /**
  * One bounded warning per hook process, on stderr, with no values in it.
@@ -125,9 +130,10 @@ export async function runHookRelay(): Promise<void> {
   } catch {
     /* malformed — relay an empty event under a valid token */
   }
+  const startupCritical = isSessionStart(event);
   let sock: ReturnType<typeof connect> | undefined;
-  let retry: ReturnType<typeof setTimeout> | undefined;
   let settled = false;
+  let retryDelayMs = CONNECT_RETRY_INITIAL_MS;
   const drop = (candidate = sock): void => {
     try {
       candidate?.destroy();
@@ -135,11 +141,14 @@ export async function runHookRelay(): Promise<void> {
       /* ignore */
     }
   };
-  const finish = (out: string): void => {
-    if (settled) return;
+  const settle = (): boolean => {
+    if (settled) return false;
     settled = true;
     clearTimeout(timer);
-    if (retry) clearTimeout(retry);
+    return true;
+  };
+  const finish = (out: string): void => {
+    if (!settle()) return;
     drop();
     done(out);
   };
@@ -147,10 +156,7 @@ export async function runHookRelay(): Promise<void> {
    *  that kills us first (the 1s backstop, the runtime SIGKILLing the hook) closes the socket with
    *  no receipt, which is exactly the signal the connector needs to NOT commit the batch. */
   const finishWithReceipt = (out: string, candidate: ReturnType<typeof connect>): void => {
-    if (settled) return;
-    settled = true;
-    clearTimeout(timer);
-    if (retry) clearTimeout(retry);
+    if (!settle()) return;
     done(out, (then) => {
       try {
         candidate.write(HANDOFF_RECEIPT, () => {
@@ -164,19 +170,14 @@ export async function runHookRelay(): Promise<void> {
   };
   const timer = setTimeout(() => finish(""), TIMEOUT_MS);
 
+  const retryLater = (): void => {
+    const wait = retryDelayMs;
+    retryDelayMs = Math.min(retryDelayMs * 2, CONNECT_RETRY_MAX_MS);
+    setTimeout(dial, wait);
+  };
   const dial = (): void => {
     if (settled) return;
-    let candidate: ReturnType<typeof connect>;
-    try {
-      candidate = connect(path);
-    } catch (error) {
-      if (!isRetryableConnectError(error)) {
-        finish("");
-        return;
-      }
-      retry = setTimeout(dial, CONNECT_RETRY_MS);
-      return;
-    }
+    const candidate = connect(path);
     sock = candidate;
     let connected = false;
     let reply = "";
@@ -200,13 +201,14 @@ export async function runHookRelay(): Promise<void> {
     });
     candidate.on("error", (error) => {
       if (settled || sock !== candidate) return;
-      if (!connected && isRetryableConnectError(error)) {
+      if (!connected && startupCritical && isRetryableConnectError(error)) {
         drop(candidate);
-        retry = setTimeout(dial, CONNECT_RETRY_MS);
+        retryLater();
         return;
       }
-      // Once the frame may have reached a connector, retrying could deliver one lifecycle event
-      // twice. Fail open instead; only the pre-connect startup race is safe to retry.
+      // Only SessionStart may outpace creation of the connector process. Later hooks must preserve
+      // immediate fail-open, and once the frame may have reached a connector any retry could deliver
+      // one lifecycle event twice.
       finish("");
     });
     candidate.on("end", () => {

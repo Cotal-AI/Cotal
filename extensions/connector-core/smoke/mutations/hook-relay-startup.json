@@ -1,36 +1,41 @@
 {
   "suite": "extensions/connector-core/smoke/hook-relay-startup.smoke.ts",
-  "guard": "a lifecycle hook retries only missing/refused pre-connect listener errors inside the existing deadline, forwards once after bind, and fails open immediately on permanent local faults",
+  "guard": "only SessionStart retries transient pre-connect listener errors inside the existing deadline, with capped backoff; later hooks and permanent faults fail open immediately, and a connected frame is never retried",
   "command": "pnpm smoke:hook-relay-startup",
   "completionMarker": "hook-relay-startup smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/hook-relay-startup.json",
   "why": [
     "A live 0.33.5 manager spawn completed its model turn and nonce DM, but wrote no event WAL.",
-    "Instrumenting the shipped MCP handler showed UserPromptSubmit, tool, and terminal frames while",
-    "SessionStart never arrived. Claude launched that one-shot hook before the MCP process bound its",
-    "local IPC endpoint; runHookRelay treated the first missing-listener error as a final no-op and",
-    "discarded the only frame carrying source: startup.",
+    "Instrumenting the shipped MCP handler showed later lifecycle frames while SessionStart never",
+    "arrived. Claude launched that one-shot hook before the MCP process bound its local IPC endpoint;",
+    "the first missing-listener error discarded the only frame carrying source: startup.",
     "",
-    "The smoke runs the real relay in a child process and observes its first actual failed dial before",
-    "binding a production-shaped Unix socket or Windows named pipe. It also pins the two-second absent",
-    "budget and a POSIX ENOTDIR permanent fault, which must fail open immediately rather than making",
-    "every lifecycle hook spend the whole retry window on an error no connector startup can repair."
+    "The smoke runs the real relay and the shipped control server in child processes, and observes the",
+    "first actual failed dial before binding a production-shaped Unix socket or Windows named pipe.",
+    "Only SessionStart may wait for connector process creation. Later hooks and permanent local faults",
+    "must preserve immediate fail-open; a connected exchange must never be delivered twice."
   ],
   "mutations": [
     {
       "name": "R1 restore the one-shot startup loss on the first missing socket",
       "file": "extensions/connector-core/src/relay.ts",
-      "find": "      if (!connected && isRetryableConnectError(error)) {\n        drop(candidate);\n        retry = setTimeout(dial, CONNECT_RETRY_MS);\n        return;\n      }",
-      "replace": "      if (!connected && isRetryableConnectError(error)) {\n        finish(\"\");\n        return;\n      }",
+      "find": "      if (!connected && startupCritical && isRetryableConnectError(error)) {\n        drop(candidate);\n        retryLater();\n        return;\n      }",
+      "replace": "      if (!connected && startupCritical && isRetryableConnectError(error)) {\n        finish(\"\");\n        return;\n      }",
       "expectRed": "startup race: relay forwards SessionStart once the connector binds"
     },
     {
-      "name": "R2 retry every pre-connect error, stalling hooks on permanent local faults",
+      "name": "R2 retry permanent pre-connect faults during SessionStart",
       "file": "extensions/connector-core/src/relay.ts",
-      "find": "      if (!connected && isRetryableConnectError(error)) {",
-      "replace": "      if (!connected) {",
-      "expectRed": "permanent socket error: fail open immediately instead of retrying for two seconds",
-      "note": "On POSIX the smoke connects below a regular file and gets ENOTDIR. The live startup errors ENOENT/ECONNREFUSED remain retryable."
+      "find": "      if (!connected && startupCritical && isRetryableConnectError(error)) {",
+      "replace": "      if (!connected && startupCritical) {",
+      "expectRed": "permanent socket error: fail open immediately instead of retrying for two seconds"
+    },
+    {
+      "name": "R3 make every later lifecycle hook wait for a missing connector",
+      "file": "extensions/connector-core/src/relay.ts",
+      "find": "      if (!connected && startupCritical && isRetryableConnectError(error)) {",
+      "replace": "      if (!connected && isRetryableConnectError(error)) {",
+      "expectRed": "later hook: missing connector fails open immediately instead of stalling the action"
     }
   ]
 }
