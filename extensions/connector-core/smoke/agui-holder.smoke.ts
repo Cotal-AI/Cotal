@@ -205,6 +205,25 @@ const B = "/tmp/session-b.jsonl";
   c("lazy:a-flush-with-no-prior-adopt-starts-the-emitter-itself", r.starts === 1, r.starts);
 }
 
+// ---- FIRST-ADOPT CONTEXT --------------------------------------------------------------------
+{
+  const contexts: unknown[] = [];
+  const emitter = new FakeEmitter();
+  const holder = new AguiEmitterHolder<unknown, string>(
+    async (_path, context) => {
+      contexts.push(context);
+      return emitter as unknown as AguiEmitter<unknown>;
+    },
+    () => {},
+  );
+  holder.adopt(A, "startup");
+  await holder.settled();
+  c("context:the-FIRST-adopt-context-reaches-the-start-factory", contexts.length === 1 && contexts[0] === "startup", contexts);
+  holder.adopt(A, "resume");
+  await holder.settled();
+  c("context:a-later-adopt-does-not-restart-or-replace-the-first-context", contexts.length === 1, contexts);
+}
+
 // ---- PUMP -----------------------------------------------------------------------------------
 {
   const r = rig();

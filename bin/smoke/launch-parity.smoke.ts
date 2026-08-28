@@ -83,6 +83,7 @@ for (const p of toolParams) {
 // `resume` stays deliberately OFF the peer-facing tool (host-transcript disclosure — see the
 // tool-specs note); this asserts today's intent so re-adding it is a conscious edit here too.
 assert.ok(!toolParams.includes("resume"), "cotal_spawn must not expose resume (deferred, #159)");
+assert.ok(toolParams.includes("prompt"), "cotal_spawn must expose a kickoff prompt so a new session can take its first turn");
 // `events` is likewise OFF the peer-facing tool, and deliberately so: arming another session's event
 // plane publishes that session's full tool inputs and outputs to a channel.
 //

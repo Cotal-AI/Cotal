@@ -3,7 +3,7 @@
 > **Guide** (informative) · **For:** operators · **Prereqs:** [Quickstart](getting-started.md)
 
 The [Quickstart](getting-started.md) gives you one agent. To run a **specific team** (your own
-channels, your own agents, and exactly who may read and post where), describe it once in a
+channels, your own agents, and the channel access for each agent), describe it once in a
 `cotal.yaml` and launch it with a single command.
 
 ## What a manifest is
@@ -83,14 +83,14 @@ the three `agents:` forms, channel cards, and the resolution rules are in the
 whole space. An additive deploy from `spawn -f` is torn down with **`cotal down -f <file>`** (or
 `cotal down -f <file> --run <id>`), which removes *only* that run's agents and channels.
 
-## Ownership and teardown
+## Manifest ownership
 
 The rule: **`up -f` owns the whole space; `spawn -f` owns only what it created.** Cotal only ever
 tears down what it owns; foreign actors on a shared mesh are never touched.
 
 - A fresh mesh from `up -f` → `cotal down` stops all of it.
 - An additive deploy from `spawn -f` records a creation-only **ledger**
-  (`.cotal/manifests/<runId>.json`) of exactly the channels and agents it added; `cotal down -f`
+  (`.cotal/manifests/<runId>.json`) of the channels and agents it added; `cotal down -f`
   removes only those. The **run id** is printed by `spawn -f` and is the filename under
   `.cotal/manifests/`; pass it to `down -f --run <id>` when the file has changed since the deploy
   (an edited file no longer matches its ledger) or to finish a teardown that was retained.
@@ -123,12 +123,12 @@ declared item against the live mesh:
 
 **Deploying to a remote manager.** The mesh's manager may live on another machine (or another
 checkout): `spawn -f` detects that from the manager lease and pushes the resolved launch spec
-inline over the control plane — the manager validates it as untrusted input and persists it under
+inline over the control plane. The manager validates it as untrusted input and persists it under
 its own `.cotal/run/` before launching, so nothing changes downstream. Run the deploy from the
 checkout the mesh is **registered** to on your machine (that's where the ledger lands), and run
 `down -f` from that same checkout; it stops remote agents over the control plane and treats a
 locally-absent cred file as proven-absent. One residual: the agents' cred files minted on the
-manager's host stay there until the mesh's own cleanup, exactly as after a crash.
+manager's host stay there until the mesh's own cleanup, the same way it would after a crash.
 
 ## Operating a manifest mesh
 

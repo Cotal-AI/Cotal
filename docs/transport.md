@@ -57,7 +57,7 @@ NATS/JetStream satisfies all five capabilities:
 
 Capabilities 2 and 3 are offloaded to JetStream and KV. Cotal does not implement history,
 presence, ack/redelivery, or publish dedup itself; it uses the native NATS mechanisms. Handlers
-still need to be idempotent: this is durable delivery, not exactly-once processing.
+still need to be idempotent because durable delivery may redeliver a message.
 
 The v0.4 endpoint control surface pins this binding to **nats-server >= 2.12**: it relies on
 native message schedules (durable timers) and per-message TTLs, with no degraded fallback

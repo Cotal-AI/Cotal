@@ -38,6 +38,24 @@ export type { AttentionMode, ChannelMode };
  *  relation by test. */
 export const SPAWN_TIMEOUT_MS = 40_000;
 
+/** Grace for a mesh op issued while the link is still coming up. `start()` deliberately returns
+ *  immediately so the connector's MCP surface boots while the broker is absent — which means a
+ *  host that auto-submits a prompt (`cotal spawn --prompt`) can call a mesh tool a second or two
+ *  after launch, several seconds before the first bind lands. Failing that call on the spot
+ *  reports "the mesh is down" about a mesh that is merely still connecting, and the agent then
+ *  repeats it to the user as fact. Waiting the window out is the honest answer; the bound is what
+ *  keeps a genuinely dead broker from becoming a hang instead of an error. */
+export const CONNECT_GRACE_MS = 10_000;
+
+/** Whether the configured broker is one the caller could actually start themselves. Matches the
+ *  host of a `nats://`/`ws://`/`wss://` server string; anything else (a hosted mesh, a LAN box) is
+ *  someone else's process. */
+export function isLocalServer(servers: string): boolean {
+  return servers
+    .split(",")
+    .every((s) => /^(?:[a-z]+:\/\/)?(?:[^@/]*@)?(?:localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)(?::\d+)?(?:\/|$)/i.test(s.trim()));
+}
+
 /** The display-only `AgentCard.meta` for a session. Agent-file metadata is preserved, then
  *  connector-owned fields are overlaid so files cannot spoof the hosting harness. */
 function buildMeta(config: AgentConfig): Record<string, string> | undefined {
@@ -954,7 +972,7 @@ export class MeshAgent extends EventEmitter {
     *  switch is ack-dropped. */
   async setAttention(mode: AttentionMode): Promise<void> {
     if (mode === "focus") {
-      this.assertConnected();
+      await this.requireConnected();
       this.focusExcludedIds.clear();
       this.focusRecallUnsafeChannels.clear();
       this.enteringFocus = this._attention !== "focus";
@@ -1012,7 +1030,7 @@ export class MeshAgent extends EventEmitter {
   // ---- sending -------------------------------------------------------------
 
   async send(text: string, channel?: string, mentions?: string[]): Promise<CotalMessage> {
-    this.assertConnected();
+    await this.requireConnected();
     const clean = normalizeMentions(mentions);
     if (clean) this.assertKnownMentions(clean);
     return this.ep.multicast(text, { channel, mentions: clean, contextId: this._contextId });
@@ -1034,7 +1052,7 @@ export class MeshAgent extends EventEmitter {
   }
 
   async anycast(role: string, text: string): Promise<CotalMessage> {
-    this.assertConnected();
+    await this.requireConnected();
     return this.ep.anycast(role, text, { contextId: this._contextId });
   }
 
@@ -1046,7 +1064,7 @@ export class MeshAgent extends EventEmitter {
   }
 
   async dm(target: string, text: string): Promise<{ msg: CotalMessage; peer: Presence }> {
-    this.assertConnected();
+    await this.requireConnected();
     const peer = this.resolvePeer(target);
     if (!peer) throw new Error(`no peer "${target}" in space "${this.config.space}"`);
     const msg = await this.ep.unicast(peer.card.id, text, { contextId: this._contextId });
@@ -1062,14 +1080,15 @@ export class MeshAgent extends EventEmitter {
    *  How it lands — a detached PTY, a tmux window, a cmux tab — is the manager's
    *  runtime; from here it just joins the mesh as a lateral peer. `opts.agent` picks
    *  the harness (default the manager's `COTAL_DEFAULT_AGENT`, else `cotal`/Claude), `opts.model` /
-   *  `opts.variant` override the persona file's model selectors, and `opts.cwd` roots the new peer at a different folder/repo
+   *  `opts.variant` override the persona file's model selectors, `opts.prompt` submits the new
+   *  peer's first turn, and `opts.cwd` roots it at a different folder/repo
    *  than the manager's workspace — the same knobs the operator's `cotal spawn --detach` carries, so
    *  the agent and operator spawn doors share one control-op contract. (Session `resume` is
    *  intentionally NOT forwarded here: forking a host-local `~/.claude` transcript is an
    *  operator-local intent, kept off the peer-facing spawn door — see #159.) */
-  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string }): Promise<ControlReply> {
-    this.assertConnected();
-    const args = { name, role, agent: opts?.agent, model: opts?.model, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd };
+  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string }): Promise<ControlReply> {
+    await this.requireConnected();
+    const args = { name, role, agent: opts?.agent, model: opts?.model, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt };
     // P2 item 2 (2b): spawn is an ACTION — follow the acceptance to the terminal so cotal_spawn
     // stays synchronous (the MCP reply carries the live outcome, not the pre-launch acceptance).
     return this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true });
@@ -1139,7 +1158,7 @@ export class MeshAgent extends EventEmitter {
    *  ever stop itself, never a peer. A `name` ⇒ rides the privileged control subject
    *  (transport-gated to spawn-capable/admin); the manager refines own-child vs admin. */
   async despawn(name?: string, opts?: { graceful?: boolean }): Promise<ControlReply> {
-    this.assertConnected();
+    await this.requireConnected();
     const graceful = opts?.graceful ?? true;
     if (!name) // self-halt: the baseline `stop` command, authz-mode self (the caller triple IS the target)
       return this.managerInvoke("stop", { graceful }, { target: { mode: "self" } });
@@ -1151,7 +1170,7 @@ export class MeshAgent extends EventEmitter {
   /** Ask the manager to purge the space's retained chat backlog (its `purge` op). Cleanup only —
    *  it doesn't touch live agents or the anycast work queue. `includeDms` also clears DM history. */
   async purgeHistory(opts?: { includeDms?: boolean }): Promise<ControlReply> {
-    this.assertConnected();
+    await this.requireConnected();
     const args = { includeDms: opts?.includeDms ?? false };
     return this.managerInvoke("purge", args);
   }
@@ -1182,7 +1201,7 @@ export class MeshAgent extends EventEmitter {
     model?: string;
     announce?: string;
   }): Promise<ControlReply & { announceError?: string; announceOutcome?: "denied" | "unknown" }> {
-    this.assertConnected();
+    await this.requireConnected();
     // Validate the destination BEFORE the write, and here rather than only in the tool's schema —
     // this is the API every host's tool surface funnels through, so a caller that reaches
     // definePersona directly gets the same guarantee. `announce` present must mean EXACTLY that
@@ -1256,7 +1275,7 @@ export class MeshAgent extends EventEmitter {
   }
 
   async setStatus(status: PresenceStatus, activity?: string): Promise<void> {
-    this.assertConnected();
+    await this.requireConnected();
     this._status = status;
     if (activity !== undefined) await this.ep.setActivity(activity);
     await this.ep.setStatus(status);
@@ -1265,7 +1284,7 @@ export class MeshAgent extends EventEmitter {
   /** Record the host's actual model and optional variant learned after launch, so peers see the
    *  selection in `cotal_roster` and the web roster even when the operator never pinned one. Explicit
    *  `model:` / `variant:` config wins; this only fills the gap. Best-effort presence mirror (no
-   *  `assertConnected` — safe pre-connect; it rides the first publish). */
+   *  `requireConnected` — safe pre-connect; it rides the first publish). */
   async setModel(model: string, variant?: string): Promise<void> {
     if (this.config.model) return; // operator pin is authoritative — never override it with the runtime value
     await this.ep.setCardModel(model, this.config.variant ?? variant);
@@ -1388,13 +1407,13 @@ export class MeshAgent extends EventEmitter {
   async joinChannel(
     channel: string,
   ): Promise<{ joined: boolean; backfilled: number; durable: boolean; reason?: string }> {
-    this.assertConnected();
+    await this.requireConnected();
     return this.ep.joinChannel(channel);
   }
 
   /** Leave a channel mid-session (refuses to leave the last one). */
   async leaveChannel(channel: string): Promise<{ left: boolean }> {
-    this.assertConnected();
+    await this.requireConnected();
     return this.ep.leaveChannel(channel);
   }
 
@@ -1404,12 +1423,54 @@ export class MeshAgent extends EventEmitter {
     return this.config.role ? `${this.config.name}/${this.config.role}` : this.config.name;
   }
 
-  private assertConnected(): void {
-    if (!this._connected) {
-      throw new Error(
-        `not connected to the mesh at ${this.config.servers} — is it running? (pnpm cotal up)`,
-      );
-    }
+  /** The connectedness gate every mesh op goes through. Waits out the initial connect window
+   *  rather than failing into it (see CONNECT_GRACE_MS), so the common startup race resolves as
+   *  a slightly slow first call instead of a false "mesh is down". */
+  private async requireConnected(): Promise<void> {
+    return this.whenConnected(CONNECT_GRACE_MS);
+  }
+
+  /** Public bounded wait for the mesh link, for callers OUTSIDE the op methods that need to gate
+   *  their own startup on it. The AG-UI emitter is the proven case: it lazy-starts from the first
+   *  lifecycle hook, `--prompt` fires that hook within a second of launch, and its start reached
+   *  the endpoint before the first bind — "endpoint not started", terminal by the holder's design,
+   *  so one race at spawn silenced the event plane for the whole session. */
+  async whenConnected(timeoutMs: number = CONNECT_GRACE_MS): Promise<void> {
+    if (this._connected) return;
+    if (!(await this.awaitConnection(timeoutMs))) throw new Error(this.notConnectedMessage());
+  }
+
+  /** Resolves true on the endpoint's real post-bind connection signal, false if the window closes
+   *  first. Listens on the ENDPOINT because its (re)binds are the single source of truth (see the
+   *  constructor), and re-checks after binding the listener so a connection that lands between the
+   *  guard above and the subscription cannot be missed. */
+  private awaitConnection(timeoutMs: number): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (ok: boolean): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.ep.off("connection", onConnection);
+        resolve(ok);
+      };
+      const onConnection = (e: { connected: boolean }): void => {
+        if (e.connected) finish(true);
+      };
+      const timer = setTimeout(() => finish(false), Math.max(1, timeoutMs));
+      this.ep.on("connection", onConnection);
+      if (this._connected) finish(true); // closes the check→listen race
+    });
+  }
+
+  /** `cotal up` starts a broker on THIS machine, so it is only advice when the configured one is
+   *  local. Someone whose agent joins a hosted mesh cannot fix it by starting their own, and being
+   *  told to try sends them to repair the wrong thing entirely. */
+  private notConnectedMessage(): string {
+    const remedy = isLocalServer(this.config.servers)
+      ? "is it running? (`cotal up`)"
+      : "it did not become reachable — check that the mesh is up and that this machine can reach it.";
+    return `not connected to the mesh at ${this.config.servers} — ${remedy}`;
   }
 
   /** Keep an ordered-consumer reset storm from painting hundreds of status lines through an

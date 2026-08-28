@@ -36,7 +36,7 @@ Task dispatch:
 | Sign in / grant a user's agents (user-auth mesh) | [Identity & auth](identity-and-auth.md) | `cotal login --idp <url>` · `cotal actor grant` |
 | Implement the wire in another language | [Build a client](build-a-client.md) | validate against [`cotal.schema.json`](../spec/cotal.schema.json) |
 | Write or host a durable workflow | [Workflow runs](workflows.md) | `validate` / `dryRun` / `run` from `@cotal-ai/lang` |
-| Check a normative rule | [Spec](../SPEC.md), [Cotal Lang](../spec/cotal-lang.md) | — |
+| Check a normative rule | [Spec](../SPEC.md), [Cotal Lang](../spec/cotal-lang.md) | `cotal_docs(page: "spec")` |
 
 ## Start here
 
@@ -67,7 +67,7 @@ For connector users putting an agent on the mesh:
 | [Connect Codex (beta)](connect-codex.md) | How does a Codex session join? |
 | [Connect Hermes (alpha)](connect-hermes.md) | How does a Hermes agent join? |
 | [Connect Jcode (beta)](connect-jcode.md) | How does a Jcode session join? |
-| [Connect pi (alpha)](connect-pi.md) | How does a pi session — or an agent built on pi's SDK — join? |
+| [Connect pi (alpha)](connect-pi.md) | How do pi sessions and agents built on pi's SDK join? |
 | [Authoring a connector](authoring-a-connector.md) | How do I add my own agent harness as a `cotal ext` plugin? |
 
 For protocol implementers:
