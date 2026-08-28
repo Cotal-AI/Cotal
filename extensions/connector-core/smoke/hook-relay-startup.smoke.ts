@@ -150,7 +150,13 @@ try {
   const frames: unknown[] = [];
   const listening = await listen(late, frames);
   const result = await within(run.done, 3_000, "relay to cross the late-bound socket");
-  const delivered = await within(listening.delivered, 1_000, "connector to observe the handoff receipt");
+  let delivered = false;
+  try {
+    delivered = await within(listening.delivered, 1_000, "connector to observe the handoff receipt");
+  } catch {
+    // A one-shot relay mutation exits before this late-bound server sees a frame. Keep grading the
+    // named forwarding cells instead of turning the intended red into a harness timeout.
+  }
   await close(listening.server);
 
   const forwarded = (frames[0] as { event?: unknown } | undefined)?.event;
@@ -191,15 +197,24 @@ try {
   await within(later.ready, 3_000, "later hook relay to start");
   await within(later.firstDialFailed, 3_000, "later hook relay to attempt its dial");
   const laterStart = performance.now();
-  const laterResult = await within(later.done, 500, "later hook to preserve immediate fail-open");
+  let laterResult: Awaited<typeof later.done> | undefined;
+  let laterTimedOut = false;
+  try {
+    laterResult = await within(later.done, 500, "later hook to preserve immediate fail-open");
+  } catch {
+    laterTimedOut = true;
+    later.child.kill();
+    laterResult = await later.done;
+  }
   const laterReply = laterResult.stdout.split("\n").filter((line) => line && line !== "RELAY_READY");
   check(
     "later hook: missing connector fails open immediately instead of stalling the action",
-    laterResult.code === 0 &&
+    !laterTimedOut &&
+      laterResult.code === 0 &&
       laterReply.length === 0 &&
       laterResult.stderr === "" &&
       performance.now() - laterStart < 500,
-    laterResult,
+    { ...laterResult, timedOut: laterTimedOut },
   );
 
   // POSIX gives a deterministic permanent pre-connect error when an ancestor is a regular file.
