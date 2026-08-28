@@ -349,7 +349,9 @@ const moved = (a: string[], b: string[], aCount: number, bCount: number): string
 const replaceRefRuntimeControl = (): boolean => {
   const root = mkdtempSync(join(tmpdir(), "shard-replace-control-"));
   const env = { ...process.env };
-  delete env.GIT_NO_REPLACE_OBJECTS;
+  for (const name of ["BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "GIT_NO_REPLACE_OBJECTS"]) {
+    delete env[name];
+  }
   try {
     mkdirSync(join(root, "bin/smoke"), { recursive: true });
     const verifier = execFileSync(
