@@ -9,7 +9,8 @@
     "ignored, argv positions can replace parser semantics, repeated space flags can stop being last-wins,",
     "a teardown call site can bypass the shared guard, or the proof can be removed from the check gate or",
     "moved behind its first environment-dependent live suite. The ownership marker is a separate",
-    "identity from the root directory, so its mutation proves that removing it is independently refused.",
+    "identity from the root directory, so its mutations prove that removing or replacing it is",
+    "independently refused.",
     "",
     "The empty-space mutation is the acceptance-boundary regression. The CLI treats an empty parsed space",
     "as absent, so the guard must refuse it rather than verify the empty-space record and let the CLI act",
@@ -72,6 +73,13 @@
       "find": "  const markerHeld = markerIdentity === \"same\";",
       "replace": "  const markerHeld = true;",
       "expectRed": "missing sandbox ownership marker is refused by identity"
+    },
+    {
+      "name": "M9 foreign sandbox ownership marker identity is accepted",
+      "file": "packages/smoke-kit/src/sandbox-guard.ts",
+      "find": "  const markerHeld = markerIdentity === \"same\";",
+      "replace": "  const markerHeld = markerIdentity === \"same\" || markerIdentity === \"foreign\";",
+      "expectRed": "replaced sandbox ownership marker is refused as foreign"
     }
   ]
 }

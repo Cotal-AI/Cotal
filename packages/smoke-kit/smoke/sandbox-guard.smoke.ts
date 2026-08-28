@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { assertSmokeSandboxDown, assertSmokeSandboxTargetDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -67,13 +67,21 @@ try {
     /COTAL_HOME .* expected .*XDG_CONFIG_HOME .* expected/,
   );
   const marker = join(root, ".cotal");
-  rmSync(marker, { recursive: true });
+  const recordedMarker = join(root, ".cotal-recorded");
+  renameSync(marker, recordedMarker);
   refuses(
     "missing sandbox ownership marker is refused by identity",
     () => assertSmokeSandboxDown(anchor, ["down"], { cwd: root, env }),
     /identity verdicts root=same, COTAL_HOME=same, XDG_CONFIG_HOME=same, marker=missing/,
   );
   mkdirSync(marker);
+  refuses(
+    "replaced sandbox ownership marker is refused as foreign",
+    () => assertSmokeSandboxDown(anchor, ["down"], { cwd: root, env }),
+    /identity verdicts root=same, COTAL_HOME=same, XDG_CONFIG_HOME=same, marker=foreign/,
+  );
+  rmSync(marker, { recursive: true });
+  renameSync(recordedMarker, marker);
 
   const alias = join(base, "root-alias");
   symlinkSync(root, alias, "dir");
