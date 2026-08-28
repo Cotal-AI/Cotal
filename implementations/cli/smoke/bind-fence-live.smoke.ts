@@ -191,7 +191,7 @@ try {
 } finally {
   // Always bare `cotal down`, never pkill — and it must run even when a cell above threw, or the
   // fixture leaks a broker on the fixed port and the NEXT run silently grades a stale mesh.
-  cli("down", "--server", SERVER);
+  cli("down");
   rmSync(home, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
 }
