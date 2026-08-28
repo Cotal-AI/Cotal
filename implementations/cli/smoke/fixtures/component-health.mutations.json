@@ -33,7 +33,7 @@
     {
       "name": "a live pid whose command is not the web dashboard is guessed onto the default port instead of refused",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "if (!portMatch && !isWebCommand)\n    return { name: \"web\", verdict: \"refused\", facts: [...facts, \"port probe refused (recorded PID is not a web command)\"] };",
+      "find": "  if (!portMatch && !isWebCommand)\n    return { refused: \"port probe refused (recorded PID is not a web command)\" };",
       "replace": "",
       "expectRed": "a live non-web pidfile is a probe refusal (3), never a healthy default-port guess",
       "cell": "a live non-web pidfile is a probe refusal (3), never a healthy default-port guess",
