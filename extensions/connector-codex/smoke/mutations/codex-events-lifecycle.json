@@ -97,7 +97,7 @@
       "file": "extensions/connector-codex/src/host.ts",
       "find": "        const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;\n        mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });",
       "replace": "        const resumeRunId = undefined;\n        mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });",
-      "expectRed": "broker-outage-live:an existing cursor resumes the COMPLETE outage backlog once, tool result included"
+      "expectRed": "broker-outage-open-run:the replacement mapper CLOSES the WAL run before the next native start"
     },
     {
       "name": "L15 pending-frame recovery updates the WAL on disk but leaves the live emitter at the pre-pending bracket state",

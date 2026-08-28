@@ -251,11 +251,12 @@ function startHost(
   /** An auto-submitted first prompt, and the file the fake waits on before it writes anything for
    *  it. Both or neither: the prompt is what `cotal spawn --prompt` sets, and the marker is how a
    *  caller orders that turn against a bind it cannot otherwise see. */
-  boot?: { prompt: string; goMark: string; outageGate?: string },
+  boot?: { prompt: string; goMark: string; outageGate?: string; openWalGate?: string },
   /** Widens the emitter's own setup, in ms, so a caller can put a completed turn inside the window
    *  between the bind's boundary and the emitter's first read. Test-only on the seat's side too:
    *  omitted here means the variable is never set and the seat runs the unwidened path. */
   startDelayMs?: number,
+  fake?: { threadId?: string; resumeRollout?: boolean; turnSeqStart?: number },
 ): ReturnType<typeof spawn> {
   const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
   for (const k of Object.keys(cleanEnv)) if (k.startsWith("COTAL_")) delete cleanEnv[k];
@@ -282,7 +283,11 @@ function startHost(
       COTAL_VARIANT: "high",
       ...(boot === undefined ? {} : { COTAL_CODEX_PROMPT: boot.prompt, FAKE_CODEX_GO: boot.goMark }),
       ...(boot?.outageGate === undefined ? {} : { FAKE_CODEX_OUTAGE_GATE: boot.outageGate }),
+      ...(boot?.openWalGate === undefined ? {} : { FAKE_CODEX_OPEN_WAL_GATE: boot.openWalGate }),
       ...(startDelayMs === undefined ? {} : { COTAL_EVENTS_TEST_START_DELAY_MS: String(startDelayMs) }),
+      ...(fake?.threadId === undefined ? {} : { FAKE_CODEX_THREAD_ID: fake.threadId }),
+      ...(fake?.resumeRollout === true ? { FAKE_CODEX_RESUME_ROLLOUT: "1" } : {}),
+      ...(fake?.turnSeqStart === undefined ? {} : { FAKE_CODEX_TURN_SEQ_START: String(fake.turnSeqStart) }),
     },
     stdio: ["ignore", "ignore", capture ? "pipe" : "inherit"],
   });
@@ -642,12 +647,14 @@ try {
   // WAL receives a cursor. The later `liveOutageGate` is consumed only by the already-running case.
   const goD = join(dir, "d.go");
   const liveOutageGate = join(dir, "d.live-outage.go");
+  const openWalGate = join(dir, "d.open-wal.go");
   const OUTAGE_BIND_WINDOW_MS = 30_000;
   const hostDStartedAt = Date.now();
   hostD = startHost(D, homeD, "1", join(dir, "d.log.jsonl"), (chunk) => (errD += chunk), servers2, {
     prompt: "TOOLREC the turn that runs while the mesh is unreachable",
     goMark: goD,
     outageGate: liveOutageGate,
+    openWalGate,
   }, OUTAGE_BIND_WINDOW_MS);
   check("broker-outage:setup:seat D came online before the outage", await settle("D:online before outage", () => online2.has(D), 60_000), margin("D:online before outage"));
   const launchBound = await settle("D:the launch bind announced its boundary", () => publishedThreads(errD).length >= 1, 60_000);
@@ -958,6 +965,7 @@ try {
     now: emitterStops(errD),
     tail: errD.slice(-400),
   });
+  const livePostRebindSentAt = Date.now();
   await dm(D, "the first turn after the live-emitter rebind", operator2);
 
   const liveComplete = await settle(
@@ -996,6 +1004,290 @@ try {
       deltas: liveDeltas,
       hasToolArgs: liveWire.includes(`toolargs:${liveOutageTurn}`),
       hasToolOutput: liveWire.includes(`tooloutput:${liveOutageTurn}`),
+    },
+  );
+  const livePostRebindIdle = await settle(
+    "D:the first post-rebind turn returns idle",
+    () =>
+      operator2?.getRoster().some(
+        (p) => p.card.name === D && p.status === "idle" && p.ts >= livePostRebindSentAt,
+      ) === true,
+    60_000,
+  );
+  check("broker-outage-live:setup:the post-rebind turn is IDLE before another outage", livePostRebindIdle, {
+    ...margin("D:the first post-rebind turn returns idle"),
+    sentAt: livePostRebindSentAt,
+    roster: operator2?.getRoster().map((p) => ({ name: p.card.name, ts: p.ts, status: p.status })),
+  });
+
+  // The pending-terminal recovery above proves the shared emitter's post-recovery bracket state.
+  // This second live outage constructs the OTHER state the Codex mapper must recover: a publish
+  // fails while the WAL run remains open, then task_complete lands only after the holder is dead.
+  // The replacement emitter can recover the pending open frame itself, but only a mapper seeded
+  // from that post-recovery WAL bracket can map the later native terminal onto the same run.
+  const openTurnsBefore = countRolloutType("task_started");
+  const openCompletesBefore = countRolloutType("task_complete");
+  const openOutageTurn = openTurnsBefore + 1;
+  const openRebindTurn = openOutageTurn + 1;
+  const openPostRebindTurn = openOutageTurn + 2;
+  const openFramesFrom = frames2.length;
+  const openStopsBefore = emitterStops(errD);
+  const openWalReady = await settle(
+    "D:the WAL is folded and closed before the open-run outage",
+    () => {
+      const wal = readLiveWal();
+      return wal?.pending === null && wal.brackets?.run === undefined && typeof wal.frontier.sourceCursor === "string";
+    },
+    60_000,
+  );
+  const openWalBefore = readLiveWal();
+  check("broker-outage-open-run:setup:the prior turns leave a FOLDED closed WAL", openWalReady, {
+    ...margin("D:the WAL is folded and closed before the open-run outage"),
+    wal: openWalBefore === undefined ? undefined : { pending: openWalBefore.pending?.state ?? null, brackets: openWalBefore.brackets, frontier: openWalBefore.frontier },
+  });
+
+  await dm(D, "TOOLREC OPENWALGATE the outage that leaves the WAL run open", operator2);
+  const openGateEntered = await settle(
+    "D:the open-run outage turn reaches its gate",
+    () => existsSync(`${openWalGate}.entered`),
+    60_000,
+  );
+  check("broker-outage-open-run:setup:the marked turn is held before its terminal records", openGateEntered, {
+    ...margin("D:the open-run outage turn reaches its gate"),
+    gate: `${openWalGate}.entered`,
+  });
+  const openStartPublished = await settle(
+    "D:the open-run outage start reaches the wire",
+    () => frames2.slice(openFramesFrom).some((f) => f.events.some((e) => e.type === "RUN_STARTED")),
+    60_000,
+  );
+  check("broker-outage-open-run:setup:the run is OPEN on wire before the broker dies", openStartPublished, {
+    ...margin("D:the open-run outage start reaches the wire"),
+    frames: frames2.length - openFramesFrom,
+  });
+  const openStartFolded = await settle(
+    "D:the open-run start is folded into its WAL",
+    () => {
+      const wal = readLiveWal();
+      return wal?.pending === null &&
+        openWalBefore !== undefined &&
+        wal.frontier.seq > openWalBefore.frontier.seq &&
+        wal.frontier.sourceCursor !== openWalBefore.frontier.sourceCursor &&
+        typeof wal.brackets?.run === "string";
+    },
+    60_000,
+  );
+  const openWalAfterStart = readLiveWal();
+  check("broker-outage-open-run:setup:the open run is DURABLY folded before the broker dies", openStartFolded, {
+    ...margin("D:the open-run start is folded into its WAL"),
+    before: openWalBefore === undefined ? undefined : { brackets: openWalBefore.brackets, frontier: openWalBefore.frontier },
+    after: openWalAfterStart === undefined ? undefined : { pending: openWalAfterStart.pending?.state ?? null, brackets: openWalAfterStart.brackets, frontier: openWalAfterStart.frontier },
+  });
+
+  // Pause, do not kill, the owned broker. The TCP connection remains established and keeps its
+  // negotiated max_payload, while JetStream cannot answer the publish. This produces the real
+  // uncertain-publish state: beginSend is durable, the request times out, and `sent_unacked` stays
+  // pending with an open run. Killing the broker here is the wrong instrument because the endpoint
+  // may observe disconnect first and refuse before the WAL ever begins a frame.
+  let openBrokerPaused = false;
+  try {
+    if (nats2?.pid !== undefined) {
+      process.kill(nats2.pid, "SIGSTOP");
+      openBrokerPaused = true;
+    }
+  } catch {
+    openBrokerPaused = false;
+  }
+  check("broker-outage-open-run:setup:the owned broker is PAUSED before the failed open-frame publish", openBrokerPaused, {
+    owned: nats2 !== undefined,
+    terminal: nats2 === undefined ? undefined : { exitCode: nats2.exitCode, signalCode: nats2.signalCode },
+  });
+  writeFileSync(`${openWalGate}.append`, "append");
+  const openRecordAppended = await settle(
+    "D:the open-run record is appended after the broker pauses",
+    () => existsSync(`${openWalGate}.appended`),
+    60_000,
+  );
+  check("broker-outage-open-run:setup:an OPEN-run record lands only after the broker is paused", openRecordAppended, {
+    ...margin("D:the open-run record is appended after the broker pauses"),
+    marker: `${openWalGate}.appended`,
+  });
+  const openEmitterDied = await settle(
+    "D:the open-frame publish makes the holder terminal",
+    () => emitterStops(errD) > openStopsBefore,
+    60_000,
+  );
+  const openPendingWal = readLiveWal();
+  check(
+    "broker-outage-open-run:setup:the failed frame is PENDING with its WAL run still open",
+    openEmitterDied &&
+      openPendingWal?.pending?.state === "sent_unacked" &&
+      typeof openPendingWal.pending.brackets.run === "string",
+    {
+      ...margin("D:the open-frame publish makes the holder terminal"),
+      beforeStops: openStopsBefore,
+      nowStops: emitterStops(errD),
+      wal: openPendingWal === undefined ? undefined : { pending: openPendingWal.pending, brackets: openPendingWal.brackets, frontier: openPendingWal.frontier },
+      tail: errD.slice(-400),
+    },
+  );
+  // Kill the still-paused broker before it can process the request buffered in its TCP socket. The
+  // durable JetStream store therefore remains at pending.E, which makes this the recoverable half
+  // of `sent_unacked`: the request outcome was uncertain to the writer but definitely absent after
+  // the owned process exits. Resuming the same process would let it accept the timed-out request; a
+  // duplicate retry is intentionally fail-stop under the single-replica policy.
+  const openBrokerExited = await stopBroker2();
+  check("broker-outage-open-run:setup:the paused broker exits before it can accept the pending frame", openBrokerExited);
+  await operator2.stop();
+  operator2 = undefined;
+  online2.delete(D);
+  const openBrokerDown = !(await isReachable(servers2));
+  check("broker-outage-open-run:setup:the broker is unreachable while the native terminal remains held", openBrokerDown);
+  // Released even when a setup cell failed: the fake's hold is intentionally unbounded, and a
+  // named red must not become an unrelated teardown hang.
+  writeFileSync(openWalGate, "go");
+  const openOutageDone = await settle(
+    "D:the open-run outage turn completes on disk",
+    () => countRolloutType("task_complete") > openCompletesBefore,
+    60_000,
+  );
+  check("broker-outage-open-run:setup:the native terminal lands only after the holder is dead", openOutageDone, {
+    ...margin("D:the open-run outage turn completes on disk"),
+    before: openCompletesBefore,
+    now: countRolloutType("task_complete"),
+  });
+
+  const oldHostD = hostD;
+  if (oldHostD?.pid !== undefined) stoppedOnPurpose.add(oldHostD.pid);
+  killTree(oldHostD);
+  const oldHostDGone = await settle(
+    "D:the old process group exits before its replacement starts",
+    () => oldHostD?.pid !== undefined && !alive(oldHostD.pid),
+    30_000,
+  );
+  check("broker-outage-open-run:setup:the old PROCESS is gone before mapper recovery", oldHostDGone, {
+    ...margin("D:the old process group exits before its replacement starts"),
+    pid: oldHostD?.pid,
+  });
+
+  const openBrokerRestarted = await startBroker2();
+  check("broker-outage-open-run:setup:the owned broker restarts from the unchanged store", openBrokerRestarted);
+  operator2 = makeOperator2(servers2);
+  await operator2.start();
+  // Subscribe before the replacement process starts. Events channels are live-only, so joining from
+  // its later roster row would let the recovery frames pass before the observer existed.
+  const principalDot = dPrincipal.indexOf(".");
+  const dEventsChannel = eventChannel({
+    owner: dPrincipal.slice(0, principalDot),
+    actor: dPrincipal.slice(principalDot + 1),
+  });
+  await operator2.joinChannel(dEventsChannel);
+
+  const openBindsBefore = publishedThreads(errD).length;
+  hostD = startHost(
+    D,
+    homeD,
+    "1",
+    join(dir, "d-restarted.log.jsonl"),
+    (chunk) => (errD += chunk),
+    servers2,
+    undefined,
+    undefined,
+    { threadId: dThreadId, resumeRollout: true, turnSeqStart: openOutageTurn },
+  );
+  const replacementOnline = await settle("D:the replacement process joins", () => online2.has(D), 60_000);
+  check("broker-outage-open-run:setup:the replacement PROCESS joins on the same principal", replacementOnline, {
+    ...margin("D:the replacement process joins"),
+    roster: operator2.getRoster().map((p) => ({ name: p.card.name, id: p.card.id, status: p.status })),
+  });
+  const replacementBound = await settle(
+    "D:the replacement process adopts the persisted thread",
+    () => publishedThreads(errD).length > openBindsBefore,
+    60_000,
+  );
+  check("broker-outage-open-run:setup:the replacement PROCESS adopts the persisted WAL thread", replacementBound, {
+    ...margin("D:the replacement process adopts the persisted thread"),
+    before: openBindsBefore,
+    now: publishedThreads(errD).length,
+    tail: errD.slice(-500),
+  });
+
+  const openFrames = (): AguiFramePart[] => frames2.slice(openFramesFrom);
+  const openRebindSentAt = Date.now();
+  await dm(D, "the first native turn after process recovery", operator2);
+  const openRunRecovered = await settle(
+    "D:the recovered mapper closes the WAL's open run",
+    () => {
+      const marker = `outage-open:${openOutageTurn}`;
+      const markerFrame = openFrames().find((f) =>
+        f.events.some((e) => e.type === "TEXT_MESSAGE_CONTENT" && String(e.delta ?? "") === marker),
+      );
+      return markerFrame !== undefined &&
+        openFrames().some((f) =>
+          f.runId === markerFrame.runId && f.events.some((e) => e.type === "RUN_FINISHED"),
+        ) &&
+        emitterStops(errD) === openStopsBefore + 1;
+    },
+    60_000,
+  );
+  check(
+    "broker-outage-open-run:the replacement mapper CLOSES the WAL run before the next native start",
+    openRunRecovered,
+    {
+      ...margin("D:the recovered mapper closes the WAL's open run"),
+      beforeStops: openStopsBefore,
+      nowStops: emitterStops(errD),
+      frames: openFrames().map((f) => ({ seq: f.seq, runId: f.runId, types: f.events.map((e) => e.type).join(",") })),
+      tail: errD.slice(-500),
+    },
+  );
+  const openRebindIdle = await settle(
+    "D:the first replacement turn returns idle",
+    () =>
+      operator2?.getRoster().some(
+        (p) => p.card.name === D && p.status === "idle" && p.ts >= openRebindSentAt,
+      ) === true,
+    60_000,
+  );
+  check("broker-outage-open-run:setup:the first replacement turn is IDLE before the next DM", openRebindIdle, {
+    ...margin("D:the first replacement turn returns idle"),
+    sentAt: openRebindSentAt,
+    roster: operator2?.getRoster().map((p) => ({ name: p.card.name, ts: p.ts, status: p.status })),
+  });
+  await dm(D, "the second native turn after process recovery", operator2);
+  const openComplete = await settle(
+    "D:the complete open-run recovery reaches the wire",
+    () => {
+      const text = openFrames().flatMap((f) => f.events)
+        .filter((e) => e.type === "TEXT_MESSAGE_CONTENT")
+        .map((e) => String(e.delta ?? ""));
+      return [openOutageTurn, openRebindTurn, openPostRebindTurn].every(
+        (turn) => text.filter((delta) => delta === `ok:${turn}`).length === 1,
+      );
+    },
+    60_000,
+  );
+  const openEv = openFrames().flatMap((f) => f.events as unknown as Record<string, unknown>[]);
+  const openDeltas = openEv.filter((e) => e.type === "TEXT_MESSAGE_CONTENT").map((e) => String(e.delta ?? ""));
+  const openStarts = openEv.filter((e) => e.type === "RUN_STARTED").length;
+  const openFinishes = openEv.filter((e) => e.type === "RUN_FINISHED").length;
+  check(
+    "broker-outage-open-run:the recovered stream carries every turn exactly once",
+    openComplete &&
+      openStarts === 3 &&
+      openFinishes === 3 &&
+      openRunsIn(openFrames()).length === 0 &&
+      openDeltas.filter((delta) => delta === `outage-open:${openOutageTurn}`).length === 1 &&
+      [openOutageTurn, openRebindTurn, openPostRebindTurn].every(
+        (turn) => openDeltas.filter((delta) => delta === `ok:${turn}`).length === 1,
+      ),
+    {
+      ...margin("D:the complete open-run recovery reaches the wire"),
+      turns: { openOutageTurn, openRebindTurn, openPostRebindTurn },
+      starts: openStarts,
+      finishes: openFinishes,
+      open: openRunsIn(openFrames()),
+      deltas: openDeltas,
     },
   );
 
