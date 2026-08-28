@@ -1165,7 +1165,11 @@ re-grant **replaces the whole row**, not the one field you name, so to add a cap
 every field out: the new scope plus the row's current read set, post set, role and label
 (`cotal actor list` shows what a row holds). A field left off does not stay as it was, it
 reverts to the wide default in the table above, which is how a narrow reader becomes a reader
-of every channel. `supervise` is separate from `spawn` and `admin`: it only makes a signed-in
+of every channel. A re-grant retires the current interactive lifecycle through the running auth
+service before it rotates the row, so copied bearers cannot cross an authorization update. If that
+retirement cannot be confirmed, the row is left unchanged and the command fails with the recovery
+action. `revoke` uses the same retirement before deleting the row, which lets a later grant create a
+real successor instead of colliding with a live predecessor. `supervise` is separate from `spawn` and `admin`: it only makes a signed-in
 person eligible for the host-provided closed remote manager-service view; it does not grant
 management of another owner or a general host profile. `revoke` denies the next exchange and
 the next connect with no restart, and evicts the principal's live connections. Managed-agent rows
