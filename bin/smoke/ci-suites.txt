@@ -603,3 +603,9 @@ smoke:web-seed:live
 # broker, including a caller-only COTAL_DEFAULT_AGENT crossing into an already-running manager.
 # Appended to preserve every existing shard assignment.
 smoke:persona-agent
+# The web remote-bind suites merged without a chain entry, so gate-inventory reported them as root
+# scripts nothing runs. The remote-bind proof drives the dashboard's remote URL binding against a
+# local listener; the probe-target proof pins the port/identity rules that status --components uses
+# to classify a recorded web pid. Appended at the tail so every existing shard assignment stays put.
+smoke:web-remote-bind
+smoke:web-probe-target
