@@ -68,7 +68,11 @@ async function stopHostTree(proc: ChildProcess, signal: NodeJS.Signals = "SIGTER
   } else if (leaderAlive()) {
     try { proc.kill(signal); } catch { /* already gone */ }
   }
-  for (let i = 0; i < 60 && leaderAlive(); i++) await sleep(50);
+  // The host's own shutdown can spend 3s gracefully stopping the bridge, 2s escalating it, then
+  // repeat that budget for descendants before its quiescence window and mesh close. The outer
+  // harness must outlive that whole path before it decides the leader is wedged.
+  const leaderDeadline = Date.now() + 15_000;
+  while (leaderAlive() && Date.now() < leaderDeadline) await sleep(50);
   // Whether the leader exited cleanly or was already gone, the process group may still contain a
   // reparented api-bridge. The group is the ownership unit and is never allowed past this helper.
   if (groupAlive(proc) && proc.pid !== undefined) {
