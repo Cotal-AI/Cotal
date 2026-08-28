@@ -554,7 +554,6 @@ smoke:claude-start-source
 # must survive that first refusal inside its existing two-second budget, then deliver exactly once;
 # an absent connector still fails open at the deadline. Appended to preserve every existing shard.
 smoke:hook-relay-startup
-smoke:ps-provenance
 # Restore recreates excluded endpoint infrastructure through the production creation seam. That
 # needs UPDATE on the records KV hardening step, but no restored message stream may inherit UPDATE;
 # the infrastructure credential's exact subset is gated independently from the live restore cycle.
@@ -592,3 +591,8 @@ smoke:start-model
 # exclusion, presence, and open-mode membership semantics, then awaits broker teardown. Appended so
 # every existing shard assignment remains unchanged.
 smoke
+# Seat provenance rows must stay correct across the three ps presentations; appended so
+# every existing shard assignment remains unchanged.
+# Seat provenance rows must stay correct across the three ps presentations; appended so
+# every existing shard assignment remains unchanged.
+smoke:ps-provenance
