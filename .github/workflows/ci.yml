@@ -33,12 +33,39 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          # The shard-stability check reads ci-suites.txt at the base commit, which a
+          # depth-1 clone does not contain.
+          fetch-depth: 0
       - uses: pnpm/action-setup@v6.0.8
       - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # ci-suites.txt is round-robin `index % count`. Inserting a line mid-file moves every
+      # suite below it while membership, count, and duplicate checks stay green.
+      - name: Smoke chain shard stability
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -eu
+          base="$BASE"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base="$(git rev-parse HEAD~1)" || { echo "no base commit or first parent"; exit 2; }
+            echo "no base commit on this event; using first parent $base"
+          fi
+
+          # Four checks keep an unrelated exit 1 from impersonating a real re-shard.
+          test -s bin/smoke/shard-stability.ts || { echo "detector missing"; exit 2; }
+          out="$(pnpm -s check:shard-stability "$base" "$(git rev-parse HEAD)" 2>&1)" && rc=0 || rc=$?
+          printf '%s\n' "$out"
+          printf '%s\n' "$out" | grep -q 'v1 starting' || { echo "detector never started"; exit 2; }
+          tok="$(printf '%s\n' "$out" | grep -oE 'shard-stability: [A-Z]+=[0-9]' || true)"
+          tok_count="$(printf '%s\n' "$tok" | grep -c . || true)"
+          [ "$tok_count" = 1 ] || { echo "no single verdict"; exit 2; }
+          [ "${tok##*=}" = "$rc" ] || { echo "verdict $tok disagrees with exit $rc"; exit 2; }
+          exit "$rc"
       - name: Typecheck
         run: pnpm typecheck
       - name: Build
