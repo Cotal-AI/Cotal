@@ -1,0 +1,38 @@
+{
+  "suite": "implementations/cli/smoke/isolated-infrastructure-scope.smoke.ts",
+  "guard": "restore infrastructure can update only an exact subset of the streams it may create and inspect",
+  "command": "pnpm smoke:isolated-infrastructure-scope",
+  "completionMarker": "isolated infrastructure scope:",
+  "proveWith": "pnpm mutation-proof --config implementations/cli/smoke/mutations/isolated-infrastructure-scope.json",
+  "why": [
+    "The restore path needs one STREAM.UPDATE for the freshly-created records KV hardening step.",
+    "Giving every restored or excluded stream UPDATE would let the maintenance phase rewrite data-plane",
+    "configuration. The exact-subset guard and the emitted grant list are both independently mutated."
+  ],
+  "mutations": [
+    {
+      "name": "every infrastructure stream receives UPDATE instead of only the named subset",
+      "file": "implementations/cli/src/lib/isolated-broker.ts",
+      "find": "        ...updateStreams.map((stream) => `$JS.API.STREAM.UPDATE.${stream}`),",
+      "replace": "        ...streams.map((stream) => `$JS.API.STREAM.UPDATE.${stream}`),",
+      "expectRed": "a non-update stream gets no UPDATE grant",
+      "cell": "a non-update stream gets no UPDATE grant"
+    },
+    {
+      "name": "the exact records UPDATE grant is omitted",
+      "file": "implementations/cli/src/lib/isolated-broker.ts",
+      "find": "        ...updateStreams.map((stream) => `$JS.API.STREAM.UPDATE.${stream}`),\n",
+      "replace": "",
+      "expectRed": "the named update stream gets exactly one UPDATE grant",
+      "cell": "the named update stream gets exactly one UPDATE grant"
+    },
+    {
+      "name": "an UPDATE outside create/info scope is accepted",
+      "file": "implementations/cli/src/lib/isolated-broker.ts",
+      "find": "  for (const stream of updateStreams)\n    if (!streams.includes(stream)) throw new Error(`infrastructure update stream ${stream} is outside its create/info scope`);\n",
+      "replace": "",
+      "expectRed": "an update stream outside create/info scope is rejected",
+      "cell": "an update stream outside create/info scope is rejected"
+    }
+  ]
+}

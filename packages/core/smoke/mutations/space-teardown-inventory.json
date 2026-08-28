@@ -1,0 +1,22 @@
+{
+  "suite": "packages/core/smoke/artifact-store.smoke.ts",
+  "guard": "deleteSpace removes every endpoint/control stream represented in the shared downstream ownership inventory",
+  "command": "pnpm smoke:artifact-store",
+  "completionMarker": "artifact-store:",
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/space-teardown-inventory.json",
+  "why": [
+    "The backup inventory can be complete while teardown still leaks every endpoint-plane stream.",
+    "This mutation removes the shared endpoint list only from deleteSpace; broker setup and backup",
+    "accounting remain intact, so the live post-delete enumeration must name the surviving streams."
+  ],
+  "mutations": [
+    {
+      "name": "endpoint-plane streams are omitted from open-mode teardown",
+      "file": "packages/core/src/spaces.ts",
+      "find": "      ...endpointPlaneStreamNames(opts.space),\n",
+      "replace": "",
+      "expectRed": "teardown leaves no space stream behind",
+      "cell": "teardown leaves no space stream behind"
+    }
+  ]
+}
