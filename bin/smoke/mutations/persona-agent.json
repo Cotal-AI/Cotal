@@ -1,7 +1,7 @@
 {
   "suite": "bin/smoke/persona-agent.smoke.ts",
   "guard": "a persona file's agent: pin picks the spawn harness on every launch path: flag > file > COTAL_DEFAULT_AGENT > default, and a pin naming an unregistered connector fails loud",
-  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/manager build && pnpm --filter @cotal-ai/cli build && pnpm smoke:persona-agent",
+  "command": "pnpm build && pnpm smoke:persona-agent",
   "completionMarker": "persona-agent 869 reachability smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/persona-agent.json",
   "why": [
