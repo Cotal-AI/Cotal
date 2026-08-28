@@ -567,3 +567,8 @@ smoke:channels
 # through setupSpaceStreams, tears it down through deleteSpace, and uses only current token-safe ids.
 # Concurrent runs share neither port nor space. Appended to preserve every existing shard assignment.
 smoke:membership
+# A managed-static renewal accepted before terminalization publishes an in-flight barrier; the
+# terminal drains it before durable revocation and file cleanup, while arrivals after the latch are
+# refused. Four fresh lifecycles drive both orderings against a real JWT broker and journal.
+# Appended to preserve every existing shard assignment.
+smoke:renewal-terminal-race

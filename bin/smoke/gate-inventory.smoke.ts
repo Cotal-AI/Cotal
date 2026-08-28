@@ -78,19 +78,6 @@ const UNGATED: Record<string, string> = {
   // it shows up in production; and it shares no assumption with the redactor, which itself encodes
   // a belief about which fields matter and could be wrong in the same direction as the mapper.
   "smoke:agui-map:real": "names an operator's own uncommittable session JSONL (COTAL_AGUI_SESSION); the fixture arm is gated as smoke:agui-map",
-  // Known-red suites: debt with a fuse, counted as such. Gating them would make the gate lie;
-  // leaving them unmarked made the list unable to say how much debt it held.
-  // EXPECTED RED BY DESIGN. It reproduces an OPEN defect (renewManagedStaticCred reads the
-  // terminal latch at entry, then does four awaits before two writes that retirement cleanup has
-  // already deleted, leaving a valid credential and an `active` durable row for a retired
-  // lifecycle). Gating a known red is how a chain teaches its readers to skim reds, which is the
-  // most expensive habit a gate can pick up.
-  //
-  // Originally written up as "a decision rather than debt", and it is marked BROKEN anyway. The
-  // decision is about not gating it TODAY; the entry still ends when the product defect is fixed,
-  // and its own reason says so. That is a fuse, and a fuse nobody counts is how the entry above it
-  // lasted six weeks. Being red for a good reason is still being red.
-  "smoke:renewal-terminal-race": `${BROKEN} reproduction of an open defect; gate when the fix lands`,
   // Full-stack live suites: boot a real broker + install tree, too slow/stateful for the PR gate.
   "smoke:manager-singleton:live": "full live stack", "smoke:seed-tarball:live": "packs a tarball",
   // `smoke:user-spawn:live` left this list when it was gated: it had thrown at section B1e on a
