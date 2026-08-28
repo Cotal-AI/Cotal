@@ -1,5 +1,5 @@
 /**
- * shard-stability.check.ts — does a commit RE-SHARD the smoke chain?
+ * shard-stability.check.ts: does a commit RE-SHARD the smoke chain?
  *
  * WHY THIS EXISTS. `bin/smoke/ci-suites.txt` is consumed by `shard.mjs` as round-robin
  * `index % count`. Inserting a line mid-file therefore moves every suite below it to a
@@ -20,26 +20,29 @@
  *   smoke:cross-path-dedup   idx 179 -> 177   shard 3 -> 1   (matched live CI)
  *
  * NOTE THE EVIDENCE CLASS: this static computation predicted a remote runner's observed
- * behaviour on two independent data points. A model agreeing with itself proves nothing.
+ * behaviour on two independent data points. The computation and runner logs are independent
+ * evidence.
  *
- * USAGE:  pnpm check:shard-stability <base-sha> <head-sha>   (shard count read from ci.yml)
- *   The shard count is READ FROM ci.yml. A third argument is accepted only so a
- *   disagreement can be caught and refused; DO NOT PASS IT from a gate. Hardcoding it at
- *   the call site restores the coincidence-coupling this tool exists to remove, and
- *   permanently silences the mismatch abort below.
+ * USAGE:  pnpm check:shard-stability <base-sha> <head-sha>   (shard counts read from ci.yml)
+ *   Both commits supply their own shard count. A third argument is accepted only so a
+ *   disagreement with the head topology can be caught and refused; DO NOT PASS IT from a
+ *   gate. Hardcoding it at the call site restores the coincidence-coupling this tool exists
+ *   to remove and permanently silences the mismatch abort below.
  * Run from inside a worktree of the repo. Exits 1 if any pre-existing suite changes shard.
  *
- * CONTROLS BUILT IN, because a bare zero is not evidence. Exactly two, and both run on
- * every invocation — this list is the code, not a wish:
+ * CONTROLS BUILT IN, because a bare zero is not evidence. All five run on every invocation:
  *   - a forced mid-file insert must report non-zero (the instrument responds at all)
  *   - identity (base vs base) must report 0
- * Either failing ABORTS with exit 2 rather than emitting a verdict.
+ *   - an unchanged 20-item registry under 4 -> 5 shards must move 16 items
+ *   - the reverse 5 -> 4 topology change must also move 16 items
+ *   - a comment containing a fake shard row must not shadow the active matrix
+ * Any failed control ABORTS with exit 2 rather than emitting a verdict.
  *
  * A third line once sat here claiming "the known production re-shard 7837b64c->d1aeafc3
  * reports 263 when both shas exist". THAT CONTROL DOES NOT EXIST IN THIS CODE. It was a
  * true fact about the repo listed under CONTROLS BUILT IN, where a reader takes it as
- * something the program enforces. default_agent caught it while placing this file — the
- * same class as the exit-2 a previous README promised and the code never emitted, and as
+ * something the program enforces. It was removed before landing. This is the same class as
+ * the exit-2 a previous README promised and the code never emitted, and as
  * `dist-freshness` naming a guarantee its mtime comparison cannot provide. Removed rather
  * than implemented: a control that only applies when two specific shas are present is
  * worse than none, because it reads as coverage on every other run.
@@ -51,13 +54,13 @@ import { execFileSync } from "node:child_process";
 // RE-SHARD DETECTED, so a typo'd script path would otherwise report a defect that does
 // not exist. An exit code is not an observation of what a program decided.
 //
-// THE BANNER ALONE IS NOT ENOUGH, and pr-review proved it with MUTANT D: a crash AFTER
-// startup (git failure, bad worktree, OOM — the likely ones in CI) prints the banner,
-// exits 1, and is indistinguishable from a real finding on both signals. It proves the
-// process LAUNCHED, not that it REACHED A DECISION. So every exit path below goes through
-// `verdict()`, which prints a TERMINAL marker on the decision path itself:
+// THE BANNER ALONE IS NOT ENOUGH. MUTANT D crashes after startup. A git failure,
+// bad worktree, or OOM can do the same: print the banner, exit 1, and look like a real
+// finding on both signals. The banner proves the process LAUNCHED, not that it REACHED A
+// DECISION. Every exit path below therefore goes through `verdict()`, which prints a
+// TERMINAL marker on the decision path itself:
 //
-//   gate on:  banner present  AND  exactly one `shard-stability: <TOKEN>` line
+//   gate on:  banner present  AND  one and only one `shard-stability: <TOKEN>` line
 //
 // Either alone is fakeable by a failure mode CI will actually produce.
 console.log("shard-stability.check v1 starting");
@@ -65,17 +68,16 @@ console.log("shard-stability.check v1 starting");
 /**
  * The only way out. Prints a terminal marker so a crash cannot impersonate a decision.
  *
- * THE TOKEN CARRIES ITS OWN EXIT CODE, AND THAT — NOT THE ORDERING — IS THE DEFENCE.
- * pr-review's MUTANT E threw between the token and the exit and produced `token=STABLE=0`
- * with exit 1. Printing the message first removed one window; `console.log(token)` and
+ * THE TOKEN CARRIES ITS OWN EXIT CODE. THE CODE, NOT THE ORDERING, IS THE DEFENCE.
+ * MUTANT E threw between the token and the exit and produced `token=STABLE=0` with exit 1.
+ * Printing the message first removed one window; `console.log(token)` and
  * `process.exit(code)` are still two statements, so a window remains and MUTANT E2 still
  * forges a contradiction. An earlier version of this comment claimed "nothing can run
- * after the token except the exit itself" — that was intent, not an enforced property,
- * and default_agent caught the overstatement.
+ * after the token except the exit itself"; that was intent, not an enforced property.
  *
  * What actually holds: the code travels INSIDE the claim, so a forged or truncated run is
  * DETECTABLE by comparing one string against `$?`. It is not detected unless the caller
- * compares them — see MUTANT F in the README, where a swallowed exit code ships a
+ * compares them; see MUTANT F in the README, where a swallowed exit code ships a
  * 263-suite re-shard past any gate reading only `$?`. Embedding makes the comparison
  * cheap; it does not perform it. THE GATE MUST STILL CHECK AGREEMENT.
  */
@@ -89,46 +91,69 @@ const [, , base, head, countArg] = process.argv;
 if (!base || !head) {
   verdict("ABORT", "usage: check:shard-stability <base-sha> <head-sha>", 2);
 }
-// THE SHARD COUNT IS READ FROM ci.yml, NOT DEFAULTED TO A LITERAL.
-// Found by pr-review: the tool used to default to 4 while `.github/workflows/ci.yml`
-// independently declared `shard: [0,1,2,3]`. They agreed, and nothing enforced that they
-// keep agreeing — so a workflow change to 5 runners would leave this confidently
-// answering for a topology CI no longer runs. That is this fold's own headline defect
-// (an invariant living in a comment and a default value, enforced by nothing) reproduced
-// inside the detector built to catch it.
+// BOTH SHARD COUNTS COME FROM jobs.smoke.strategy.matrix.shard in ci.yml.
+// A count change is itself a runner reassignment: comparing both registries under the
+// head count hides every move. Comments and other jobs are not topology either, so a
+// loose first-match regex is unsafe; walk the named YAML blocks by indentation and
+// accept one active inline shard row only. Any other shape aborts instead of guessing.
+const shardCountFromWorkflow = (yml: string): number | null => {
+  const lines = yml.split("\n");
+  const smokeStart = lines.findIndex((line) => /^  smoke:\s*(?:#.*)?$/.test(line));
+  if (smokeStart < 0) return null;
+  const smokeEnd = lines.findIndex((line, index) => index > smokeStart && /^  \S/.test(line));
+  const smoke = lines.slice(smokeStart + 1, smokeEnd < 0 ? undefined : smokeEnd);
+
+  const strategyStart = smoke.findIndex((line) => /^    strategy:\s*(?:#.*)?$/.test(line));
+  if (strategyStart < 0) return null;
+  const strategyEnd = smoke.findIndex((line, index) => index > strategyStart && /^    \S/.test(line));
+  const strategy = smoke.slice(strategyStart + 1, strategyEnd < 0 ? undefined : strategyEnd);
+
+  const matrixStart = strategy.findIndex((line) => /^      matrix:\s*(?:#.*)?$/.test(line));
+  if (matrixStart < 0) return null;
+  const matrixEnd = strategy.findIndex((line, index) => index > matrixStart && /^      \S/.test(line));
+  const matrix = strategy.slice(matrixStart + 1, matrixEnd < 0 ? undefined : matrixEnd);
+  const rows = matrix
+    .map((line) => /^        shard:\s*\[([0-9,\s]+)\]\s*(?:#.*)?$/.exec(line))
+    .filter((match): match is RegExpExecArray => match !== null);
+  if (rows.length !== 1) return null;
+  const count = rows[0][1].split(",").filter((value) => value.trim().length > 0).length;
+  return count > 0 ? count : null;
+};
+
 const ciShardCount = (sha: string): number | null => {
-  let yml: string;
   try {
-    yml = execFileSync("git", ["show", `${sha}:.github/workflows/ci.yml`], {
+    const yml = execFileSync("git", ["show", `${sha}:.github/workflows/ci.yml`], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
+    return shardCountFromWorkflow(yml);
   } catch {
     return null;
   }
-  const m = yml.match(/shard:\s*\[([0-9,\s]+)\]/);
-  if (!m) return null;
-  return m[1].split(",").filter((s) => s.trim().length > 0).length;
 };
 
-const declared = ciShardCount(head);
-const COUNT = countArg !== undefined ? Number(countArg) : (declared ?? 4);
-if (!Number.isInteger(COUNT) || COUNT < 1) {
+const baseCount = ciShardCount(base);
+const declaredHeadCount = ciShardCount(head);
+if (baseCount === null) {
+  verdict("ABORT", `cannot read jobs.smoke.strategy.matrix.shard from .github/workflows/ci.yml at '${base}'`, 2);
+}
+if (declaredHeadCount === null) {
+  verdict("ABORT", `cannot read jobs.smoke.strategy.matrix.shard from .github/workflows/ci.yml at '${head}'`, 2);
+}
+const headCount = countArg !== undefined ? Number(countArg) : declaredHeadCount;
+if (!Number.isInteger(headCount) || headCount < 1) {
   verdict("ABORT", `shard count must be a positive integer, got '${countArg}'`, 2);
 }
-if (declared === null) {
-  verdict("ABORT", `cannot read the shard matrix from .github/workflows/ci.yml at '${head}'; refusing to guess the topology`, 2);
+if (headCount !== declaredHeadCount) {
+  verdict("ABORT", `shard count ${headCount} disagrees with ci.yml's matrix of ${declaredHeadCount} at '${head}'. A verdict for a topology CI does not run is worse than no verdict.`, 2);
 }
-if (COUNT !== declared) {
-  verdict("ABORT", `shard count ${COUNT} disagrees with ci.yml's matrix of ${declared} at '${head}'. A verdict for a topology CI does not run is worse than no verdict.`, 2);
-}
-console.log(`shard count ${COUNT}, read from ci.yml at ${head.slice(0, 8)}`);
+console.log(`shard counts ${baseCount} -> ${headCount}, read from ci.yml at ${base.slice(0, 8)} and ${head.slice(0, 8)}`);
 
 const read = (sha: string): string[] => {
   // EXIT 2, NOT 1, when the input cannot be read. Exit 1 means "re-shard detected";
   // a bad sha must not be indistinguishable from a real defect, or a CI job wiring
-  // this in reports a typo as a production finding. Found by pr-review, who fed it a
-  // bogus sha and got exit 1 where the README promised 2.
+  // this in reports a typo as a production finding. The bogus-sha control once returned
+  // exit 1 where the README promised 2.
   let raw: string;
   try {
     raw = execFileSync("git", ["show", `${sha}:bin/smoke/ci-suites.txt`], {
@@ -148,36 +173,58 @@ const read = (sha: string): string[] => {
   return list;
 };
 
-const shardOf = (list: string[]) => {
+const shardOf = (list: string[], count: number) => {
   const m = new Map<string, number>();
-  list.forEach((s, i) => { if (!m.has(s)) m.set(s, i % COUNT); });
+  list.forEach((suite, index) => { if (!m.has(suite)) m.set(suite, index % count); });
   return m;
 };
 
-const moved = (a: string[], b: string[]): string[] => {
-  const sa = shardOf(a), sb = shardOf(b);
-  return [...sa.keys()].filter((s) => sb.has(s) && sa.get(s) !== sb.get(s));
+const moved = (a: string[], b: string[], aCount: number, bCount: number): string[] => {
+  const sa = shardOf(a, aCount), sb = shardOf(b, bCount);
+  return [...sa.keys()].filter((suite) => sb.has(suite) && sa.get(suite) !== sb.get(suite));
 };
 
 const A = read(base), B = read(head);
-const changed = moved(A, B);
+const changed = moved(A, B, baseCount, headCount);
 
 // --- controls, printed before the verdict ---
-const forced = moved(A, [...A.slice(0, 10), "smoke:FORCED-CONTROL", ...A.slice(10)]);
-const identity = moved(A, A);
+const forced = moved(A, [...A.slice(0, 10), "smoke:FORCED-CONTROL", ...A.slice(10)], baseCount, baseCount);
+const identity = moved(A, A, baseCount, baseCount);
+const topologyProbe = Array.from({ length: 20 }, (_, index) => `smoke:TOPOLOGY-CONTROL-${index}`);
+const countIncrease = moved(topologyProbe, topologyProbe, 4, 5);
+const countDecrease = moved(topologyProbe, topologyProbe, 5, 4);
+const commentShadowCount = shardCountFromWorkflow(`jobs:
+  smoke:
+    strategy:
+      matrix:
+        # historical note: shard: [0, 1]
+        shard: [0, 1, 2, 3]
+    steps: []
+  other:
+    runs-on: ubuntu-latest
+`);
 console.log(`CONTROL forced mid-file insert -> ${forced.length} moved  (must be > 0)`);
 console.log(`CONTROL identity               -> ${identity.length} moved  (must be 0)`);
-if (forced.length === 0 || identity.length !== 0) {
+console.log(`CONTROL shard count 4 -> 5     -> ${countIncrease.length} moved  (must be 16)`);
+console.log(`CONTROL shard count 5 -> 4     -> ${countDecrease.length} moved  (must be 16)`);
+console.log(`CONTROL matrix comment shadow  -> ${commentShadowCount ?? "unreadable"} shards (must be 4)`);
+if (
+  forced.length === 0 || identity.length !== 0 || countIncrease.length !== 16 ||
+  countDecrease.length !== 16 || commentShadowCount !== 4
+) {
   verdict("ABORT", "controls failed, this run cannot be trusted", 2);
 }
 
-const added = B.filter((s) => !A.includes(s));
-const removed = A.filter((s) => !B.includes(s));
-console.log(`\n${base.slice(0, 8)} -> ${head.slice(0, 8)}  @${COUNT} shards`);
+const added = B.filter((suite) => !A.includes(suite));
+const removed = A.filter((suite) => !B.includes(suite));
+console.log(`\n${base.slice(0, 8)} -> ${head.slice(0, 8)}  @${baseCount}->${headCount} shards`);
 console.log(`  suites: ${A.length} -> ${B.length} · added ${added.length} · removed ${removed.length}`);
 console.log(`  pre-existing suites CHANGING SHARD: ${changed.length} of ${A.length}`);
 if (changed.length > 0) {
   console.log(`  first few: ${changed.slice(0, 5).join(", ")}`);
-  verdict("RESHARD", `RE-SHARD DETECTED. Append new suites at the END of ci-suites.txt.`, 1);
+  const remedy = baseCount === headCount
+    ? "Append new suites at the END of ci-suites.txt."
+    : `The shard matrix changed ${baseCount} -> ${headCount}; review every reassignment as deliberate.`;
+  verdict("RESHARD", `RE-SHARD DETECTED. ${remedy}`, 1);
 }
-verdict("STABLE", `STABLE - no pre-existing suite changes runner.`, 0);
+verdict("STABLE", "STABLE - no pre-existing suite changes runner.", 0);
