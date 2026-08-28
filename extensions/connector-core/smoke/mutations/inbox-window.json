@@ -110,7 +110,7 @@
     {
       "name": "K2 clear the whole scope up front, the order the defect was written in",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          if (!peek) agent.drainInboxDeliveries(shown.map((i) => i.id));",
+      "find": "          if (!peek) agent.drainInboxDeliveries(shown.map((i) => i.recvKey));",
       "replace": "          if (!peek) agent.drainInbox(undefined, inboxScope);",
       "expectRed": "what did not fit was NOT consumed: the buffer still holds the rest",
       "cell": "what did not fit was NOT consumed: the buffer still holds the rest",
@@ -128,8 +128,8 @@
     {
       "name": "K4 peek clears what it shows",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          if (!peek) agent.drainInboxDeliveries(shown.map((i) => i.id));",
-      "replace": "          agent.drainInboxDeliveries(shown.map((i) => i.id));",
+      "find": "          if (!peek) agent.drainInboxDeliveries(shown.map((i) => i.recvKey));",
+      "replace": "          agent.drainInboxDeliveries(shown.map((i) => i.recvKey));",
       "expectRed": "peek clears nothing at all",
       "cell": "peek clears nothing at all",
       "note": "peek is the documented workaround for this very defect, so a peek that clears is the worst possible regression here."
@@ -146,17 +146,17 @@
     {
       "name": "K6 the focus drain acks every id in the reply, recall included",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          agent.drainInboxDeliveries(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));",
-      "replace": "          agent.drainInboxDeliveries(all.map((i) => i.id));",
+      "find": "          agent.drainInboxDeliveries(all.filter((i) => bufferedIds.has(i.recvKey)).map((i) => i.recvKey));",
+      "replace": "          agent.drainInboxDeliveries(all.map((i) => i.recvKey || i.id));",
       "expectRed": "focus: a recall id was NOT marked handled",
       "cell": "focus: a recall id was NOT marked handled, so a later live copy of it still buffers",
-      "note": "The filter reads like defensive noise: the reply carries both lanes, so acking 'what the reply carried' is the obvious simplification. It is not - drainInboxDeliveries marks an absent id HANDLED, so a later live copy of that channel message is dropped as a duplicate, and the read loses mail it never owned."
+      "note": "The filter reads like defensive noise: the reply carries both lanes, so acking 'what the reply carried' is the obvious simplification. It is not - drainInboxDeliveries marks an absent id HANDLED, so a later live copy of that channel message is dropped as a duplicate, and the read loses mail it never owned. The fixture recall lane intentionally carries only the wire id; the fallback keeps the mutant inside the shipped semantic defect instead of crashing on fixture-only missing receive metadata."
     },
     {
       "name": "K7 the focus drain stops honouring peek",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "        if (!peek) {\n          agent.drainInboxDeliveries(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));",
-      "replace": "        if (true) {\n          agent.drainInboxDeliveries(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));",
+      "find": "        if (!peek) {\n          agent.drainInboxDeliveries(all.filter((i) => bufferedIds.has(i.recvKey)).map((i) => i.recvKey));",
+      "replace": "        if (true) {\n          agent.drainInboxDeliveries(all.filter((i) => bufferedIds.has(i.recvKey)).map((i) => i.recvKey));",
       "cell": "focus + peek: the buffered lane is NOT cleared",
       "expectRed": "focus + peek: the buffered lane is NOT cleared",
       "note": "K4 covers the same slip on the ordinary path only. Without this one a focus reply could clear while peeking, and peek is the workaround this whole change exists to retire, so it has to hold on both paths."
@@ -227,7 +227,7 @@
     {
       "name": "K16 focus recall is re-served from the same frontier every call",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "            if (afterRecallMark({ ts: i.ts, id: i.id }, agent.recallCursor)) clocked.push(i);",
+      "find": "            if (afterRecallMark({ ts: i.ts, id: i.recvKey }, agent.recallCursor)) clocked.push(i);",
       "replace": "            clocked.push(i);",
       "cell": "successive calls walk the whole of focus recall instead of repeating its first window",
       "expectRed": "successive calls walk the whole of focus recall instead of repeating its first window",
@@ -245,7 +245,7 @@
     {
       "name": "K18 the mark keeps the time and drops the id that breaks its ties",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          if (last) agent.noteRecalled({ ts: last.ts, id: last.id });",
+      "find": "          if (last) agent.noteRecalled({ ts: last.ts, id: last.recvKey });",
       "replace": "          if (last) agent.noteRecalled({ ts: last.ts, id: \"\" });",
       "cell": "...and the twin already delivered is not re-served to pay for it",
       "expectRed": "...and the twin already delivered is not re-served to pay for it",
@@ -290,7 +290,7 @@
     {
       "name": "K24 the ahead lane hands over without recording what it handed over",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          for (const i of shownRecall) if (aheadIds.has(i.id)) agent.noteRecalledAhead(i.id);",
+      "find": "          for (const i of shownRecall) if (aheadIds.has(i.recvKey)) agent.noteRecalledAhead(i.recvKey);",
       "replace": "",
       "cell": "every scenario in the cursor's input universe makes total progress with no duplicates",
       "expectRed": "every scenario in the cursor's input universe makes total progress with no duplicates",
@@ -335,8 +335,8 @@
     {
       "name": "K29 an item that decays out of the ahead lane is handed over a second time",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "            if (agent.recallAheadSeen(i.id)) continue;\n            if (afterRecallMark({ ts: i.ts, id: i.id }, agent.recallCursor)) clocked.push(i);",
-      "replace": "            if (afterRecallMark({ ts: i.ts, id: i.id }, agent.recallCursor)) clocked.push(i);",
+      "find": "            if (agent.recallAheadSeen(i.recvKey)) continue;\n            if (afterRecallMark({ ts: i.ts, id: i.recvKey }, agent.recallCursor)) clocked.push(i);",
+      "replace": "            if (afterRecallMark({ ts: i.ts, id: i.recvKey }, agent.recallCursor)) clocked.push(i);",
       "cell": "...and crossing into the clocked lane does not hand it over a second time",
       "expectRed": "...and crossing into the clocked lane does not hand it over a second time",
       "note": "Found by the first lens attacking the seventh fix from the other side. The mark never moves for an item handed over while it was ahead of the clock, so when the clock passes that stamp the item arrives in the clocked lane above the mark and is offered again. The lanes are kept honest with each other by the same record that makes the ahead lane exactly-once. Its cell is the only one in this suite that WAITS for real time, because the crossing cannot be staged by stamping the clock."

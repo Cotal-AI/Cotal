@@ -53,8 +53,8 @@
     {
       "name": "M2 the served document loses its userAuth wrapper entirely (the original shape defect)",
       "file": "implementations/auth/src/service.ts",
-      "find": "  (bundle.userAuth as { endpoints: { url: string } }).endpoints.url = publicUrl;",
-      "replace": "  void publicUrl;\n  delete bundle.userAuth;",
+      "find": "export function finalizeUserBundleEndpoint(bundle: Record<string, unknown>, publicUrl: string): void {\n  const endpoints = (bundle.userAuth as { endpoints: { url: string; managerAuthorityUrl: string } }).endpoints;\n  endpoints.url = publicUrl;\n  endpoints.managerAuthorityUrl = `${publicUrl.replace(/\\/$/, \"\")}/manager-service-authority`;\n}",
+      "replace": "export function finalizeUserBundleEndpoint(bundle: Record<string, unknown>, publicUrl: string): void {\n  void publicUrl;\n  delete bundle.userAuth;\n}",
       "afterRestore": "pnpm --filter @cotal-ai/auth... build",
       "expectRed": "the LIVE served document is accepted by checkUserBundle (the `meshes add --from` consumer)",
       "cell": "the LIVE served document is accepted by checkUserBundle (the `meshes add --from` consumer)",
@@ -63,7 +63,7 @@
     {
       "name": "M3 the post-bind pin is skipped, leaving the wrapper present but pinning the empty string",
       "file": "implementations/auth/src/service.ts",
-      "find": "  (bundle.userAuth as { endpoints: { url: string } }).endpoints.url = publicUrl;",
+      "find": "  endpoints.url = publicUrl;",
       "replace": "  void publicUrl;",
       "afterRestore": "pnpm --filter @cotal-ai/auth... build",
       "expectRed": "the LIVE served document is accepted by checkUserBundle (the `meshes add --from` consumer)",

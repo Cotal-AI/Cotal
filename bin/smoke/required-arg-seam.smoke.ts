@@ -274,7 +274,10 @@ const SEAMS: Seam[] = [
   // Every site states `tls`, so only the deliberate population census moved.
   // 101/74 -> 102/75: the remote-agent-bearer live smoke opens the already-enrolled managed
   // actor with bearer+sentinel and an explicit plaintext-broker `tls: false` decision.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 102, untypecheckedSites: 75 },
+  // 102/75 -> 108/79: component status and remote manager registration add two typechecked calls;
+  // the manager boot self-heal and registered-user-authority smokes add four untypechecked calls.
+  // Every added site states the transport decision explicitly.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 108, untypecheckedSites: 79 },
 ];
 
 /**
