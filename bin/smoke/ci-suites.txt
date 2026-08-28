@@ -567,3 +567,8 @@ smoke:channels
 # and every real CLI subprocess, and resolves the repository's actual bin/cotal.ts entry. Concurrent
 # runs therefore share neither port nor state. Appended to preserve every existing shard assignment.
 smoke:send
+# A managed-static renewal accepted before terminalization publishes an in-flight barrier; the
+# terminal drains it before durable revocation and file cleanup, while arrivals after the latch are
+# refused. Four fresh lifecycles drive both orderings against a real JWT broker and journal.
+# Appended to preserve every existing shard assignment.
+smoke:renewal-terminal-race
