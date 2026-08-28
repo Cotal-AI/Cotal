@@ -572,6 +572,10 @@ smoke:renewal-terminal-race
 # and every real CLI subprocess, and resolves the repository's actual bin/cotal.ts entry. Concurrent
 # runs therefore share neither port nor state. Appended to preserve every existing shard assignment.
 smoke:send
+# Membership feature coverage now owns an OS-assigned open broker, provisions each unique space
+# through setupSpaceStreams, tears it down through deleteSpace, and uses only current token-safe ids.
+# Concurrent runs share neither port nor space. Appended to preserve every existing shard assignment.
+smoke:membership
 # These seven self-contained suites are cited by the shipped plan as executable evidence. Each owns
 # or needs no broker, passed serially and in six-way shard-like overlap, and was previously run by
 # nothing. Appended as one debt slice so every existing shard assignment remains unchanged.
