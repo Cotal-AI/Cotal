@@ -1,0 +1,38 @@
+{
+  "suite": "implementations/manager/smoke/renewal-terminal-race.smoke.ts",
+  "guard": "a managed-static credential renewal accepted before terminalization is drained before the terminal revokes and cleans its family, while a later renewal is refused by the synchronous latch",
+  "command": "pnpm smoke:renewal-terminal-race",
+  "completionMarker": "RENEWAL-TERMINAL RACE SMOKE",
+  "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/renewal-terminal-serialization.json",
+  "why": [
+    "The fixture uses four fresh aliases against a real JWT broker, the shipped manager, and the durable lifecycle journal. A SecretStore collaborator pauses the renewal after its row is appended but before materialization; despawn then latches terminalization, so the terminal must drain the accepted flight before it enumerates, revokes, and cleans.",
+    "",
+    "The independent late call occurs after the same synchronous terminal latch. It must be refused rather than join the accepted flight. Final cells enumerate the journal's own credential family and the real credential file, so a completed terminal with an active row or recreated material is red."
+  ],
+  "mutations": [
+    {
+      "name": "retirement no longer drains the renewal accepted before its latch",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    const acceptedRenewal = a.staticCredentialRenewal;\n    if (acceptedRenewal) await acceptedRenewal.catch(() => {});",
+      "replace": "    void a.staticCredentialRenewal;",
+      "expectRed": "the durable terminal does not pass an accepted renewal still in flight",
+      "cell": "the durable terminal does not pass an accepted renewal still in flight"
+    },
+    {
+      "name": "the accepted renewal is not published for terminalization to drain",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    a.staticCredentialRenewal = renewal;\n    return renewal;",
+      "replace": "    return renewal;",
+      "expectRed": "renewal publishes its accepted flight before returning",
+      "cell": "renewal publishes its accepted flight before returning"
+    },
+    {
+      "name": "a post-latch renewal joins the older accepted flight instead of refusing",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (a.terminalizing) throw new Error(\"renewManagedStaticCred: the lifecycle is terminalizing; no credential is minted after the terminal begins\");\n    if (a.staticCredentialRenewal) return a.staticCredentialRenewal;",
+      "replace": "    if (a.staticCredentialRenewal) return a.staticCredentialRenewal;\n    if (a.terminalizing) throw new Error(\"renewManagedStaticCred: the lifecycle is terminalizing; no credential is minted after the terminal begins\");",
+      "expectRed": "a renewal arriving after the terminal latch is refused",
+      "cell": "a renewal arriving after the terminal latch is refused"
+    }
+  ]
+}
