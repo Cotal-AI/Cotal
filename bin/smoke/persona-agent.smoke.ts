@@ -12,12 +12,15 @@
  *      the op's `agent` field and the manager resolved the connector before loadAgentFile, so the
  *      seat ran the WRONG harness silently. This is the mutation-proof target cell.)
  *   B. Detached, explicit --agent still WINS over the pin (flag > file).
- *   C. FOREGROUND: the same pinned persona spawned in the foreground (real `spawn()` run; the
+ *   C. DETACHED CALLER DEFAULT: an unpinned persona, with `COTAL_DEFAULT_AGENT` set only in the
+ *      invoking CLI process while the already-running manager lacks it. The caller's default must
+ *      survive dispatch without becoming an explicit override that could beat a persona pin.
+ *   D. FOREGROUND: the same pinned persona spawned in the foreground (real `spawn()` run; the
  *      connector's child is a one-shot `true`-equivalent node script, so the run terminates) builds
  *      its launch through the PINNED connector, not the registry's default.
- *   D. `spawnRequiredExtensions` declares the PINNED connector's extension for a foreground spawn
- *      (the preflight cell: if it demanded the wrong connector, the fix would be dead on arrival
- *      on the published binary, invisibly to the unit tests).
+ *   E. `spawnRequiredExtensions` stays root-free; persona connector materialization occurs only
+ *      after the target workspace is authoritative.
+ *   F. A divergent-root foreground spawn refuses with the TARGET persona's connector name.
  *
  * Throwaway everything: own nats-server on an OS-assigned free port with a scratch store dir, a
  * sandboxed COTAL_HOME, a scratch workspace root, kills only the PIDs it spawns. No live stack is
@@ -76,6 +79,10 @@ writeFileSync(
   join(workspaceRoot, ".cotal", "agents", "pinned.md"),
   "---\nname: pinned\nrole: prover\nagent: pin\nsubscribe: []\n---\nYou prove reachability.\n",
 );
+writeFileSync(
+  join(workspaceRoot, ".cotal", "agents", "unpinned.md"),
+  "---\nname: unpinned\nrole: prover\nsubscribe: []\n---\nYou prove caller defaults survive detached dispatch.\n",
+);
 
 // Two recorders. Both children are one-shot mesh endpoints (join presence so the detached
 // readiness race resolves "started" via the JOIN, then exit ~300ms later), so the detached reply
@@ -130,6 +137,18 @@ async function capture(fn: () => Promise<void>): Promise<string> {
   return out;
 }
 
+async function captureProcess(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<{ code: number | null; out: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawnProc(command, args, { cwd: join(import.meta.dirname, "..", ".."), env, stdio: ["ignore", "pipe", "pipe"] });
+    kids.push(child);
+    let out = "";
+    child.stdout?.on("data", (chunk) => { out += String(chunk); });
+    child.stderr?.on("data", (chunk) => { out += String(chunk); });
+    child.on("error", reject);
+    child.on("exit", (code) => resolve({ code, out }));
+  });
+}
+
 let mgr: InstanceType<typeof Manager> | undefined;
 try {
   const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), "cotal-869-js-"))], { stdio: "ignore" });
@@ -162,27 +181,46 @@ try {
     if (!r.ok) console.log(`  · note: stop ${n} replied ${JSON.stringify(r)}`);
   }
 
-  // C — FOREGROUND: same pinned persona, no --agent, env still pointing at `other`. The child is
+  // C — detached caller default versus manager default. `COTAL_DEFAULT_AGENT` belongs to the
+  // invoking operator: before #869, the detached CLI carried it over the control plane. The file
+  // pin must outrank it when present (A), but an UNPINNED persona must still receive the caller's
+  // default even when the already-running manager has no such environment variable. Run a real
+  // child CLI process so caller and manager environments genuinely differ.
+  delete process.env.COTAL_DEFAULT_AGENT;
+  builds.pin = [];
+  builds.other = [];
+  const child = await captureProcess(
+    "pnpm",
+    ["exec", "tsx", "bin/cotal.ts", "spawn", "unpinned", "--detach", "--space", SPACE],
+    { ...process.env, COTAL_HOME: home, COTAL_DEFAULT_AGENT: "other", COTAL_SKIP_CONNECTOR_SEED: "1" },
+  );
+  ok("C: detached child spawn with a caller-only default succeeded", child.code === 0 && /spawned .*unpinned/.test(child.out), child);
+  ok("C: detached caller COTAL_DEFAULT_AGENT reached the manager for an unpinned persona", builds.other.length === 1 && builds.pin.length === 0, { pin: builds.pin.length, other: builds.other.length, out: child.out });
+  const stopUnpinned = await (mgr as unknown as { opStop: (a: Record<string, unknown>, c: string, ad: boolean) => Promise<{ ok: boolean; error?: string }> }).opStop({ name: "unpinned" }, "smoke", true);
+  if (!stopUnpinned.ok) console.log(`  · note: stop unpinned replied ${JSON.stringify(stopUnpinned)}`);
+
+  // D — FOREGROUND: same pinned persona, no --agent, env pointing at `other`. The child is
   // one-shot, so the run resolves. The PINNED connector must build the launch.
+  process.env.COTAL_DEFAULT_AGENT = "other";
   builds.pin = [];
   builds.other = [];
   const cOut = await capture(() => run("spawn", ["pinned", "--space", SPACE, "--name", "fgpin"]));
-  ok("C: foreground spawn of the pinned persona ran to completion", /spawning fgpin/.test(cOut), cOut);
-  ok("C: foreground honored the persona's agent: pin", builds.pin.length === 1 && builds.other.length === 0, { pin: builds.pin.length, other: builds.other.length, out: cOut });
+  ok("D: foreground spawn of the pinned persona ran to completion", /spawning fgpin/.test(cOut), cOut);
+  ok("D: foreground honored the persona's agent: pin", builds.pin.length === 1 && builds.other.length === 0, { pin: builds.pin.length, other: builds.other.length, out: cOut });
 
-  // D — the hook contract after the deferral fix: `spawnRequiredExtensions` is ROOT-FREE (it was
+  // E — the hook contract after the deferral fix: `spawnRequiredExtensions` is ROOT-FREE (it was
   // root-free before #869 and must stay that way; a pre-parse persona read via the cwd walk made a
   // spawn from outside the target pre-materialize the WRONG connector and hard-abort the command).
   // Materialization now happens in the spawn body after the authoritative load, so the hook
   // contributes nothing for any argv — file, detach, or foreground.
   {
     const refs = spawnRequiredExtensions(parseCommandArgs(cmd("spawn"), ["pinned"]));
-    ok("D: requiredExtensions is root-free (no connector declared pre-parse)", refs.length === 0, refs);
+    ok("E: requiredExtensions is root-free (no connector declared pre-parse)", refs.length === 0, refs);
     const refsFlag = spawnRequiredExtensions(parseCommandArgs(cmd("spawn"), ["pinned", "--agent", "other"]));
-    ok("D: root-free for an explicit --agent too", refsFlag.length === 0, refsFlag);
+    ok("E: root-free for an explicit --agent too", refsFlag.length === 0, refsFlag);
   }
 
-  // E — THE DIVERGENCE CELL (the cold-read block): cwd-root and target-root ACTUALLY DIFFER. The
+  // F — THE DIVERGENCE CELL (the cold-read block): cwd-root and target-root ACTUALLY DIFFER. The
   // registry holds space E pointing at workspaceRoot (persona pins `pin`), while the process cwd is
   // a DIFFERENT scratch root whose walk (were the hook to read one) would find a persona pinning
   // `other`. Foreground spawn of the target persona from the foreign cwd: the pinned connector
@@ -267,14 +305,14 @@ try {
     // harness (`pin`, from the target persona), the correct, actionable refusal. The pre-fix
     // divergence abort named `other` (the cwd persona's) or aborted in the dispatcher before the
     // persona ever loaded; either way the operator was pointed at the wrong harness or none.
-    ok("E: divergence spawn refuses loudly (neither harness installed)", /pin|other|connector/.test(eOut) && !/spawning fgdiv/.test(eOut), eOut);
-    ok("E: the refusal names the PINNED harness (the target persona's choice), not the cwd persona's", /pin/.test(eOut) && !(/other/.test(eOut) && !/pin/.test(eOut)), eOut);
+    ok("F: divergence spawn refuses loudly (neither harness installed)", /pin|other|connector/.test(eOut) && !/spawning fgdiv/.test(eOut), eOut);
+    ok("F: the refusal names the PINNED harness (the target persona's choice), not the cwd persona's", /pin/.test(eOut) && !(/other/.test(eOut) && !/pin/.test(eOut)), eOut);
     // That the refusal names `pin` ALREADY proves the body loaded the TARGET persona: `pin` is
     // pinned only by the target's persona file (the foreign cwd's persona pins `other`). A
     // pre-body abort (the pre-fix dispatcher abort) could never name `pin`.
-    ok("E: naming `pin` proves the TARGET persona was loaded (only it pins pin)", /pin/.test(eOut), eOut);
-    // The GREEN-path divergence proof (harness choice under actually-different roots) ran as cell
-    // C/D with the recorders registered; this cell pins the ABORT SHAPE.
+    ok("F: naming `pin` proves the TARGET persona was loaded (only it pins pin)", /pin/.test(eOut), eOut);
+    // The GREEN-path divergence proof (harness choice under actually-different roots) ran in the
+    // earlier recorder cells; this cell pins the ABORT SHAPE.
     } finally {
       (process as unknown as { exit: typeof process.exit }).exit = realExit;
       setInstalledExtensionsEnabled(false);

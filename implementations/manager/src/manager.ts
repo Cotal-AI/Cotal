@@ -424,6 +424,9 @@ export interface StartAgentOpts {
   name: string;
   /** Connector / agent type — resolved from the registry. Defaults to `COTAL_DEFAULT_AGENT`, else `"cotal"`. */
   agent?: string;
+  /** Detached caller's default connector, kept separate from an explicit flag so the persona file
+   *  can outrank it. Imperative control requests only; direct and manifest launches omit it. */
+  defaultAgent?: string;
   role?: string;
   /** Explicit agent-file path that overrides the `name` ref for *which file to load* (identity still
    *  comes from that file's `name:`). The file must exist. */
@@ -3102,6 +3105,8 @@ export class Manager {
       return Promise.resolve({ ok: false, error: "resume: session id must not be empty" });
     if (args.variant !== undefined && !String(args.variant).trim())
       return Promise.resolve({ ok: false, error: "variant: must not be empty" });
+    if (args.defaultAgent !== undefined && !String(args.defaultAgent).trim())
+      return Promise.resolve({ ok: false, error: "defaultAgent: must not be empty" });
     // Opaque launch options, when present, must be a mapping — a raw control message could send a
     // scalar/array (the CLI never does). Core doesn't interpret the keys; the connector validates them.
     if (args.launchOptions !== undefined && (typeof args.launchOptions !== "object" || args.launchOptions === null || Array.isArray(args.launchOptions)))
@@ -3126,6 +3131,7 @@ export class Manager {
       {
         name: String(args.name ?? "").trim(),
         agent: args.agent ? String(args.agent) : undefined,
+        defaultAgent: args.defaultAgent ? String(args.defaultAgent) : undefined,
         role: args.role ? String(args.role) : undefined,
         config: args.config ? String(args.config) : undefined,
         identity: args.identity ? String(args.identity) : undefined,
@@ -3367,10 +3373,10 @@ export class Manager {
         return { ok: false, error: (e as Error).message };
       }
     }
-    // Harness precedence (#869): --agent flag > persona file `agent:` > COTAL_DEFAULT_AGENT >
-    // DEFAULT_CONNECTOR — the same shape as model/variant. The env var is a DEFAULT, not an
-    // override: it must not beat a deliberate per-persona pin.
-    const agent = opts.agent ?? def?.agent ?? defaultAgentType(DEFAULT_CONNECTOR);
+    // Harness precedence (#869): --agent flag > persona file `agent:` > detached caller default >
+    // this manager's COTAL_DEFAULT_AGENT > DEFAULT_CONNECTOR. Both environment values are defaults,
+    // never overrides: neither may beat a deliberate per-persona pin.
+    const agent = opts.agent ?? def?.agent ?? opts.defaultAgent ?? defaultAgentType(DEFAULT_CONNECTOR);
 
     // Materialize the requested connector up front — the ONE async step in the spawn path (a lazy
     // `cotal ext` manifest import on the published binary). It runs BEFORE the capacity/reserve span

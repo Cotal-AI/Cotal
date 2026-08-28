@@ -2,6 +2,7 @@
 "@cotal-ai/core": minor
 "@cotal-ai/cli": minor
 "@cotal-ai/manager": minor
+"@cotal-ai/connector-core": minor
 ---
 
 Honor the persona file's `agent:` frontmatter when picking the spawn harness. The key existed in
@@ -12,9 +13,9 @@ silently beat a deliberate per-persona pin (a `jcode` persona ran `claude` with 
 The harness now resolves once, on every spawn path, as: explicit `--agent` flag > persona `agent:` >
 `COTAL_DEFAULT_AGENT` > the product default. That is the precedence `model:` and `variant:` already
 have, keeping the env var a *default* rather than an override. On `--detach` the CLI now threads
-only an explicit flag across the control plane (flag and env used to collapse into one field, which
-made file precedence structurally unreachable manager-side); the manager loads the persona file
-before resolving its connector and applies the precedence itself. A pin naming an unregistered
+an explicit flag and the caller's environment default as separate control fields. The manager loads
+the persona file before resolving its connector and applies the same precedence while preserving
+the invoking operator's default when its own environment differs. A pin naming an unregistered
 connector fails the spawn loudly with the connector install hint (no silent fallback).
 
 `saveAgentFile` round-trips the field, so a runtime `cotal_persona` redefine preserves a pin.

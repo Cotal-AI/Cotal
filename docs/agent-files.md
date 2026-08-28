@@ -66,8 +66,9 @@ The three channel verbs on one card, with the common recipes:
   file. Individual `COTAL_*` vars still override it ([config](config.md)).
 - **Defaults.** A bare `cotal spawn` uses the `default` persona
   (`COTAL_DEFAULT_PERSONA` changes the fallback); the harness comes from `--agent` > the persona's
-  `agent:` pin > `COTAL_DEFAULT_AGENT`, else Claude. An explicit flag always wins over the file
-  ([run a mesh](run-a-mesh.md)).
+  `agent:` pin > the invoking CLI's `COTAL_DEFAULT_AGENT` > the manager's own environment, else
+  Claude. An explicit flag always wins over the file, and the file wins over either environment
+  default, including detached spawns ([run a mesh](run-a-mesh.md)).
 
 Every launcher consumes the file the same way; they differ only in how they run the spec:
 

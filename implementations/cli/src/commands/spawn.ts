@@ -39,6 +39,7 @@ import {
   agentSentinelCredsKey,
   authDir,
   credsFlag,
+  defaultAgentOverride,
   defaultAgentType,
   defaultPersonaOverride,
   defaultPersonaRef,
@@ -220,8 +221,6 @@ export const spawnFlags = [
  *  after the authoritative persona load and before registry.resolve — one resolver, one root, and
  *  the hook stays root-free exactly as it was before #869. */
 export function spawnRequiredExtensions(_args: ParsedArgs): readonly ExtensionRef[] {
-  // Deliberately root-free: no persona read, no cwd walk. Any pin the persona carries is applied
-  // (and materialized) inside the spawn body where the target root is authoritative.
   return [];
 }
 
@@ -256,12 +255,12 @@ async function spawnDetached(
     name: ref,
     identity: values.name,
     role: values.role,
-    // #869: send ONLY an explicit `--agent` flag. The old `values.agent ?? defaultAgentOverride()`
-    // collapsed flag and COTAL_DEFAULT_AGENT into one field before the wire, so the manager could not
-    // tell them apart: the env var arrived indistinguishable from an operator flag and beat the
-    // persona file's own `agent:` pin. The manager now applies the full precedence itself
-    // (flag > file > COTAL_DEFAULT_AGENT > default) against its workspace's copy of the file.
+    // #869: keep an explicit `--agent` and the invoking operator's COTAL_DEFAULT_AGENT in separate
+    // fields. Collapsing them made the env default indistinguishable from a flag, so it beat the
+    // persona pin; dropping the env instead changed detached semantics whenever the manager's own
+    // environment differed. The manager applies flag > file > caller default > manager default.
     agent: values.agent,
+    defaultAgent: defaultAgentOverride(),
     config: managerConfigRef,
     model: values.model,
     variant: values.variant,

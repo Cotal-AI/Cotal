@@ -12,6 +12,8 @@
  *   4. RESOLVED GUARD — a manifest launch (`resolved`) REJECTS imperative overrides.
  *   5. allowSubscribe default follows an overridden subscribe (override → creds source is one).
  *   6. COTAL_DEFAULT_AGENT picks the manager's default harness when opts.agent is absent.
+ *   7. A detached caller default sits below an explicit flag and persona pin, but above the
+ *      manager's own environment default.
  * Run: pnpm smoke:start-overrides
  */
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
@@ -86,6 +88,16 @@ const recCon: Connector = {
   buildLaunch: (o) => { lastOpts = o; return { command: "true", args: [], env: {} }; },
 };
 registry.register(recCon);
+const callerCon: Connector = {
+  ...recCon,
+  name: "caller-default",
+};
+const managerCon: Connector = {
+  ...recCon,
+  name: "manager-default",
+};
+registry.register(callerCon);
+registry.register(managerCon);
 
 const j = (v: unknown) => JSON.stringify(v);
 
@@ -234,6 +246,25 @@ const j = (v: unknown) => JSON.stringify(v);
   delete process.env.COTAL_DEFAULT_AGENT;
   const d = await mgr.startAgent({ name: "plain", agent: "smoke-other" });
   check("unpinned persona still honors the flag", (d.data as { agent?: string })?.agent === "smoke-other", d.data);
+}
+
+// 10 — a detached caller's environment default is a distinct precedence layer. It must survive
+// dispatch when the manager's environment differs, without becoming an explicit override that can
+// beat the persona file.
+{
+  const prev = process.env.COTAL_DEFAULT_AGENT;
+  process.env.COTAL_DEFAULT_AGENT = "manager-default";
+  try {
+    const caller = await mgr.startAgent({ name: "plain", defaultAgent: "caller-default" });
+    check("detached caller default beats the manager environment default", (caller.data as { agent?: string })?.agent === "caller-default", caller);
+    const pinned = await mgr.startAgent({ name: "pinned", defaultAgent: "caller-default" });
+    check("persona pin beats the detached caller default", (pinned.data as { agent?: string })?.agent === "smoke-ov", pinned);
+    const explicit = await mgr.startAgent({ name: "plain", agent: "manager-default", defaultAgent: "caller-default" });
+    check("explicit agent beats the detached caller default", (explicit.data as { agent?: string })?.agent === "manager-default", explicit);
+  } finally {
+    if (prev === undefined) delete process.env.COTAL_DEFAULT_AGENT;
+    else process.env.COTAL_DEFAULT_AGENT = prev;
+  }
 }
 
 console.log(failures ? `\nSTART-OVERRIDES SMOKE FAILED ❌ (${failures} failed)` : "\nstart-overrides smoke: all checks passed");
