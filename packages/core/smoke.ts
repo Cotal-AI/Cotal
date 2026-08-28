@@ -36,11 +36,16 @@ const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const SPACE = `core-smoke-${randomUUID().slice(0, 8)}`;
 const storeDir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+let brokerLog = "";
 const broker = spawn(
   "nats-server",
   ["-js", "-sd", storeDir, "-p", String(PORT), "-a", "127.0.0.1"],
-  { stdio: "ignore" },
+  { stdio: ["ignore", "pipe", "pipe"] },
 );
+for (const stream of [broker.stdout, broker.stderr])
+  stream?.on("data", (chunk: Buffer | string) => {
+    brokerLog = (brokerLog + String(chunk)).slice(-8_000);
+  });
 const releaseBroker = teardownOnSignal(broker, storeDir);
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 const until = async (
@@ -72,6 +77,14 @@ const check = (name: string, condition: boolean, extra?: unknown): void => {
   }
 };
 
+const endpointErrors: Array<{ endpoint: string; message: string }> = [];
+const watchEndpointErrors = (endpoint: string, instance: CotalEndpoint): void => {
+  instance.on("error", (error: Error) => {
+    endpointErrors.push({ endpoint, message: error.message });
+    console.error(`  ! ${endpoint}:`, error.message);
+  });
+};
+
 const started = new Set<CotalEndpoint>();
 const startEndpoint = async (endpoint: CotalEndpoint): Promise<void> => {
   started.add(endpoint);
@@ -81,20 +94,49 @@ const stopEndpoint = async (endpoint: CotalEndpoint): Promise<void> => {
   if (!started.delete(endpoint)) return;
   await endpoint.stop();
 };
+const stopEndpointWithin = async (endpoint: CotalEndpoint, timeoutMs = 5_000): Promise<void> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      stopEndpoint(endpoint),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`stop timed out after ${timeoutMs}ms`)), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
 
 let provisioned = false;
+const provisionedStreams = new Set<string>();
 try {
-  const ready = await until(() => isReachable(SERVERS), 5_000, 100);
-  check("owned broker is ready before the scenario", ready, SERVERS);
-  if (!ready) throw new Error("owned broker did not become reachable");
+  const reachable = await until(async () => {
+    if (broker.exitCode !== null || broker.signalCode !== null) return false;
+    return isReachable(SERVERS);
+  }, 5_000, 100);
+  if (reachable) await wait(200); // bind failures exit promptly; survive past that before trust
+  const ready = reachable
+    && broker.exitCode === null
+    && broker.signalCode === null
+    && await isReachable(SERVERS);
+  check("owned broker is ready before the scenario", ready, {
+    servers: SERVERS,
+    exitCode: broker.exitCode,
+    signalCode: broker.signalCode,
+    log: brokerLog,
+  });
+  if (!ready) throw new Error("owned broker did not survive bind and become reachable");
 
   await setupSpaceStreams({ servers: SERVERS, space: SPACE });
   provisioned = true;
   let chatExists = false;
   const setupProbe = await connect({ servers: SERVERS });
   try {
-    await (await jetstreamManager(setupProbe)).streams.info(chatStream(SPACE));
-    chatExists = true;
+    const setupManager = await jetstreamManager(setupProbe);
+    for await (const name of setupManager.streams.names()) provisionedStreams.add(name);
+    chatExists = provisionedStreams.has(chatStream(SPACE));
   } catch {
     chatExists = false;
   } finally {
@@ -122,8 +164,8 @@ try {
     heartbeatMs: 300,
     ttlMs: 1_500,
   });
-  alice.on("error", (error: Error) => console.error("  ! alice:", error.message));
-  bob.on("error", (error: Error) => console.error("  ! bob:", error.message));
+  watchEndpointErrors("alice", alice);
+  watchEndpointErrors("bob", bob);
 
   const bobReceived: Array<{ kind: string; text: string }> = [];
   let bobMentions: string[] | undefined;
@@ -199,7 +241,7 @@ try {
     heartbeatMs: 300,
     ttlMs: 1_500,
   });
-  carol.on("error", (error: Error) => console.error("  ! carol:", error.message));
+  watchEndpointErrors("carol", carol);
   await startEndpoint(carol);
 
   let carolDurableExists = false;
@@ -230,7 +272,7 @@ try {
     ttlMs: 1_500,
   });
   const carolReceived: string[] = [];
-  carolRestarted.on("error", (error: Error) => console.error("  ! carol restart:", error.message));
+  watchEndpointErrors("carol restart", carolRestarted);
   carolRestarted.on("message", (message: CotalMessage, delivery: Delivery) => {
     carolReceived.push(textOf(message));
     delivery.ack();
@@ -254,13 +296,18 @@ try {
     ttlMs: 1_500,
   });
   const daveReceived: string[] = [];
-  dave.on("error", (error: Error) => console.error("  ! dave:", error.message));
+  watchEndpointErrors("dave", dave);
   dave.on("message", (message: CotalMessage, delivery: Delivery) => {
     daveReceived.push(textOf(message));
     delivery.ack();
   });
   await startEndpoint(dave);
-  await wait(600);
+  await alice.unicast(dave.card.id, "published after activation");
+  check(
+    "the fresh lifecycle receives a post-activation DM sentinel",
+    await until(() => daveReceived.includes("published after activation")),
+    daveReceived,
+  );
   check(
     "a fresh lifecycle does not inherit a pre-activation DM",
     !daveReceived.includes("published before activation"),
@@ -286,37 +333,60 @@ try {
   unexpected++;
   console.error("  ✗ scenario threw:", (error as Error).message);
 } finally {
-  for (const endpoint of [...started].reverse()) {
-    try {
-      await stopEndpoint(endpoint);
-    } catch (error) {
-      unexpected++;
-      console.error("  ✗ endpoint cleanup threw:", (error as Error).message);
-    }
-  }
+  const endpointsToStop = [...started].reverse();
+  const stopResults = await Promise.allSettled(endpointsToStop.map((endpoint) => stopEndpointWithin(endpoint)));
+  stopResults.forEach((result, index) => {
+    if (result.status === "fulfilled") return;
+    unexpected++;
+    console.error(
+      `  ✗ endpoint cleanup for ${endpointsToStop[index]?.card.name ?? "unknown"} threw:`,
+      result.reason instanceof Error ? result.reason.message : String(result.reason),
+    );
+  });
+
+  check("the endpoints emitted no unexpected errors", endpointErrors.length === 0, endpointErrors);
 
   let spaceDeleted = false;
   let spaceDeleteError: unknown;
+  let remainingStreams: string[] = [];
   if (provisioned) {
     try {
       await deleteSpaceResources({ servers: SERVERS, space: SPACE });
-      spaceDeleted = true;
+      const deletionProbe = await connect({ servers: SERVERS });
+      try {
+        const deletionManager = await jetstreamManager(deletionProbe);
+        for await (const name of deletionManager.streams.names())
+          if (provisionedStreams.has(name)) remainingStreams.push(name);
+      } finally {
+        await deletionProbe.close();
+      }
+      spaceDeleted = provisionedStreams.size > 0 && remainingStreams.length === 0;
     } catch (error) {
       spaceDeleteError = error;
     }
   }
-  check("the production teardown seam removes the unique space", spaceDeleted, spaceDeleteError);
+  check("the production teardown seam removes the unique space", spaceDeleted, {
+    error: spaceDeleteError,
+    remainingStreams,
+    provisionedStreams: [...provisionedStreams],
+  });
 
   await killAndAwaitExit(broker);
-  check(
-    "the owned broker exits before its JetStream tree is removed",
-    broker.exitCode !== null || broker.signalCode !== null,
-  );
-  rmSync(storeDir, { recursive: true, force: true });
-  releaseBroker();
+  const brokerExited = broker.exitCode !== null || broker.signalCode !== null;
+  check("the owned broker exits before its JetStream tree is removed", brokerExited);
+  let storeRemoved = false;
+  let storeRemoveError: unknown;
+  try {
+    rmSync(storeDir, { recursive: true, force: true });
+    storeRemoved = true;
+  } catch (error) {
+    storeRemoveError = error;
+  }
+  check("the owned broker's JetStream tree is removed", storeRemoved, storeRemoveError);
+  if (brokerExited && storeRemoved) releaseBroker();
 }
 
-const EXPECTED_BEFORE_COUNT = 18;
+const EXPECTED_BEFORE_COUNT = 21;
 check(
   `every scenario cell ran — ${EXPECTED_BEFORE_COUNT} expected`,
   pass + fail === EXPECTED_BEFORE_COUNT,

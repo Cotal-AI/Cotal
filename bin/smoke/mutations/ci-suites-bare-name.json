@@ -13,10 +13,11 @@
     {
       "name": "restore the smoke-colon-only chain grammar",
       "file": "bin/smoke/ci-suites.mjs",
-      "find": "    if (!/^smoke(?::[A-Za-z0-9:_-]+)?$/.test(s))",
+      "find": "    if (!/^smoke(?::[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)*)?$/.test(s))",
       "replace": "    if (!/^smoke:[A-Za-z0-9:_-]+$/.test(s))",
       "expectRed": "the bare root smoke script is a valid chain entry",
       "cell": "the bare root smoke script is a valid chain entry"
     }
-  ]
+  ],
+  "grades": "tool"
 }

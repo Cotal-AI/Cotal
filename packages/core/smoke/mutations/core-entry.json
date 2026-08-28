@@ -43,12 +43,20 @@
       "cell": "the same lifecycle receives a DM sent while it was offline"
     },
     {
-      "name": "send dave's control message after activation too",
-      "file": "packages/core/smoke.ts",
-      "find": "  await startEndpoint(dave);\n  await wait(600);",
-      "replace": "  await startEndpoint(dave);\n  await alice.unicast(dave.card.id, \"published before activation\");\n  await until(() => daveReceived.includes(\"published before activation\"));",
+      "name": "drop the fresh-lifecycle DM activation frontier",
+      "file": "packages/core/src/streams.ts",
+      "find": "      ? { deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: frontier + 1 }",
+      "replace": "      ? { deliver_policy: DeliverPolicy.All }",
       "expectRed": "a fresh lifecycle does not inherit a pre-activation DM",
       "cell": "a fresh lifecycle does not inherit a pre-activation DM"
+    },
+    {
+      "name": "turn production space teardown into a no-op",
+      "file": "packages/core/smoke.ts",
+      "find": "      await deleteSpaceResources({ servers: SERVERS, space: SPACE });",
+      "replace": "      void SPACE;",
+      "expectRed": "the production teardown seam removes the unique space",
+      "cell": "the production teardown seam removes the unique space"
     },
     {
       "name": "remove the awaited broker-exit barrier before JetStream tree removal",
@@ -58,5 +66,6 @@
       "expectRed": "the owned broker exits before its JetStream tree is removed",
       "cell": "the owned broker exits before its JetStream tree is removed"
     }
-  ]
+  ],
+  "grades": "tool"
 }

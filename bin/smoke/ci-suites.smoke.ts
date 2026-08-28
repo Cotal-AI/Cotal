@@ -78,7 +78,7 @@ check("the refusal says what to do about it", /drop the `pnpm ` prefix/.test(Str
 check("the refusal names the line number", /<fixture>:2:/.test(String(pnpmPrefixed)), pnpmPrefixed);
 
 // ---- Anything else that is not a script name refuses, with its line ------------------------------
-for (const bad of ["not-a-suite", "smoke:", "check", "&& pnpm smoke:a", "smoke:a && smoke:b"]) {
+for (const bad of ["not-a-suite", "smoke:", "smoke::", "smoke::a", "smoke:a:", "check", "&& pnpm smoke:a", "smoke:a && smoke:b"]) {
   check(`a line that is not a smoke script name is refused: ${JSON.stringify(bad)}`, String(parse(bad)).startsWith("THREW"));
 }
 // A malformed line must NOT be skipped: a chain that silently drops what it could not parse runs
@@ -116,7 +116,7 @@ check(
   realError || real?.length,
 );
 
-const EXPECTED = 19;
+const EXPECTED = 22;
 check(
   `every cell ran - ${EXPECTED} expected, so a cell that stops existing is not mistaken for one that passed`,
   pass + fail === EXPECTED,
