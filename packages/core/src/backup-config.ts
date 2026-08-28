@@ -6,6 +6,7 @@ import {
   type StreamConfig,
 } from "@nats-io/jetstream";
 import { nanos } from "@nats-io/transport-node";
+import { endpointPlaneStreamNames } from "./endpoint-binding.js";
 import {
   aclBucket,
   channelBucket,
@@ -30,7 +31,7 @@ export type SpaceBackupStreamClass = "messages" | "registry" | "authorization";
  *  bytes are neither transient (they outlive a session), derived (nothing can recompute them),
  *  nor a lease. Excluding them is a RETENTION decision — pin extends lifetime, not durability —
  *  and giving it an honest name keeps a later reader from reading it as "derived, so recoverable".*/
-export type SpaceBackupExcludedClass = "transient" | "derived" | "lease" | "artifact";
+export type SpaceBackupExcludedClass = "transient" | "derived" | "lease" | "control" | "artifact";
 
 export interface SpaceBackupStream {
   name: string;
@@ -50,8 +51,8 @@ export interface SpaceBackupInventory {
 }
 
 /** The complete Cotal stream inventory at a stable backup cut. Only the eight `backedUp` streams
- * enter a full artifact; the five excluded streams are transient, derived, leases, or the artifact
- * object store. EVERY stream a space owns must appear in one list or the other:
+ * enter a full artifact; excluded streams are transient, derived, leases, nonportable control state,
+ * or the artifact object store. EVERY stream a space owns must appear in one list or the other:
  * {@link validateSpaceBackupInventory} is exact set-equality, so an unenumerated stream fails
  * validation for the WHOLE space, and a missing one fails it the same way. */
 export function spaceBackupInventory(space: string): SpaceBackupInventory {
@@ -71,6 +72,7 @@ export function spaceBackupInventory(space: string): SpaceBackupInventory {
     { name: `KV_${membershipBucket(space)}`, class: "derived" },
     { name: `KV_${deliveryBucket(space)}`, class: "lease" },
     { name: `KV_${managerBucket(space)}`, class: "lease" },
+    ...endpointPlaneStreamNames(space).map((name) => ({ name, class: "control" as const })),
     { name: objectStoreStream(artifactBucket(space)), class: "artifact" },
   ];
   return {

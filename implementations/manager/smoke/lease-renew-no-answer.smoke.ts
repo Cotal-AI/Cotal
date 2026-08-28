@@ -88,8 +88,6 @@ const check = (name: string, ok: boolean, detail?: unknown): void => {
  *  `PUB`/`HPUB` carry an explicit payload length, and a payload can contain anything including the
  *  subject's own bytes, so the parser consumes exactly the declared length and never guesses. */
 interface Relay {
-  /** Hold the broker-to-client direction for `ms`, then release everything held. */
-  stall: (ms: number) => Promise<void>;
   /** Start/stop holding that direction, for windows the caller times itself. */
   setStalled: (on: boolean) => void;
   /** Silently discard client-to-broker publishes whose subject matches. The broker never sees them,
@@ -135,7 +133,6 @@ function relay(targetPort: number, listenPort: number): Relay {
   });
   server.listen(listenPort, "127.0.0.1");
   return {
-    stall: async (ms: number) => { stalled = true; await wait(ms); stalled = false; for (const f of flushers) f(); },
     setStalled: (on: boolean) => { stalled = on; if (!on) for (const f of flushers) f(); },
     dropPublishes: (match) => { dropMatch = match; },
     close: () => server.close(),
@@ -220,8 +217,13 @@ try {
   const sampler = setInterval(() => { void readLease(instanceId).then((s) => { if (s) samples.push(s); }); }, 300);
   const heldBefore = reported().at(-1);
   const stallStart = Date.now();
-  await proxy.stall(400 + MANAGER_LEASE_ATTEMPT_MS + 1_500);
+  proxy.setStalled(true);
+  await wait(400 + MANAGER_LEASE_ATTEMPT_MS + 1_500);
+  // Capture the held interval BEFORE releasing its queued ACK. `setStalled(false)` flushes
+  // synchronously; recording the boundary afterward lets a fast child report the released revision
+  // inside the interval the control calls "no answer".
   const stallEnd = Date.now();
+  proxy.setStalled(false);
   const outcome = await Promise.race([exited, wait(4_000).then(() => "still serving" as const)]);
   clearInterval(sampler);
 
@@ -229,7 +231,7 @@ try {
   // renew at all, so before grading the outcome, prove the no-answer renew actually happened — and
   // prove it in a way that reads the same whether or not the defect is fixed.
   const duringStall = samples.filter((s) => s.atMs > stallStart + 500 && s.atMs <= stallEnd);
-  const learnedDuringStall = reported().filter((r) => r.atMs > stallStart + 500 && r.atMs <= stallEnd);
+  const learnedDuringStall = reported().filter((r) => r.atMs > stallStart + 500 && r.atMs < stallEnd);
   const storedLast = duringStall.at(-1);
 
   // What the manager itself said about the incident. Printed rather than asserted: the cells grade

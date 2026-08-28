@@ -16,6 +16,7 @@ import {
   objectStoreStream,
 } from "./subjects.js";
 import { idFromCreds } from "./identity.js";
+import { endpointPlaneStreamNames } from "./endpoint-binding.js";
 
 /** Connect opts for a possibly-scoped cred: an authenticator plus the per-id `inboxPrefix` a scoped
  *  cred needs (its `sub.allow` is `_INBOX_<id>.>`, so JS API replies must land there, not the default
@@ -126,6 +127,7 @@ export async function deleteSpace(opts: { servers?: string; creds?: string; spac
       `KV_${membershipBucket(opts.space)}`,
       `KV_${deliveryBucket(opts.space)}`,
       `KV_${managerBucket(opts.space)}`,
+      ...endpointPlaneStreamNames(opts.space),
       // The artifact Object Store's backing stream. It must be named HERE and not swept by
       // prefix: `$O.<bucket>.>` lives outside the `cotal.<space>.>` grammar, so a subject-based
       // sweep of the space never sees it. Teardown is the sole STREAM.DELETE holder, so a stream

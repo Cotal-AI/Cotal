@@ -1,5 +1,13 @@
 # @cotal-ai/core
 
+## 0.33.8
+
+## 0.33.7
+
+### Patch Changes
+
+- 576ac7d: Account for endpoint-plane streams in backup validation and space teardown, grant their deletion only to the ephemeral teardown credential, and recreate their canonical empty infrastructure during restore.
+
 ## 0.33.6
 
 ## 0.33.5

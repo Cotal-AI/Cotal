@@ -33,7 +33,7 @@ export function parseCiSuites(raw, label = CI_SUITES_PATH) {
         `${label}:${i + 1}: drop the \`pnpm \` prefix - this file holds script NAMES, one per line: ` +
           `${JSON.stringify(s)}`,
       );
-    if (!/^smoke:[A-Za-z0-9:_-]+$/.test(s))
+    if (!/^smoke(?::[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)*)?$/.test(s))
       throw new Error(`${label}:${i + 1}: not a smoke script name: ${JSON.stringify(s)}`);
     out.push(s);
   });

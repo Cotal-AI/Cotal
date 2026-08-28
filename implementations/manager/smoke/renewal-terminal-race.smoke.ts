@@ -1,176 +1,368 @@
 /**
- * RENEWAL-vs-TERMINAL RACE probe (control-surface v0.4, arbiter-recorded residual).
- * Run: pnpm smoke:renewal-terminal-race   (needs nats-server on PATH; boots its own broker)
+ * Managed-static renewal and terminalization have one order: an admitted renewal drains before
+ * retirement enumerates, revokes, and cleans its credential family; a later renewal refuses. The
+ * fixture exercises both terminal entry paths (despawn and natural process exit), and reaches the
+ * renewal once directly and once through the production half-TTL sweep.
  *
- * THIS IS A REPRODUCTION, NOT A REGRESSION TEST YET. It is deliberately NOT in `smoke:ci`: it is
- * expected to FAIL while the defect stands, and it becomes the regression test once a fix lands.
- *
- * READ THIS BEFORE DESIGNING THE FIX. The shape resembles the session-capacity race (B1) and the
- * remedy is NOT the same. B1 took a RESERVATION because the correct outcome there was "admit exactly
- * N". Here the correct outcome is "NO CREDENTIAL" — so a reservation is wrong, and a retry is wrong,
- * because the right answer is not "a credential minted later". The shape is to make the writes
- * conditional on the same latch read the teardown orders against, so both cannot win.
- *
- * THE DEFECT. `renewManagedStaticCred` reads the terminal latch at ENTRY and then performs four
- * awaits before its writes:
- *
- *     if (a.terminalizing) throw …          <- the check
- *     await mintCreds(…)                     <- yield 1
- *     await withLifecycleExecutor(… recordSlotCredential, appendStaticCredentialRow …)   <- yield 2, DURABLE ROW
- *     await secrets.put(agentSecretKeyForFile(creds))                                     <- yield 3, WRITE 1
- *     await materializeSecretToFile(…, creds)                                             <- yield 4, WRITE 2
- *
- * The retirement cleanup deletes exactly those two artifacts, by the same key and the same path. So a
- * despawn landing inside that window latches `terminalizing`, cleanup deletes the credential, and an
- * in-flight renewal re-creates it afterwards — for a lifecycle whose terminal has begun.
- *
- * TWO GUARDS AT THE SAME POSITION ARE ONE GUARD: the renewal sweep filter also reads `terminalizing`,
- * and it also sits before the same four awaits. A reviewer counting guards finds two and stops.
- *
- * WHY THE DURABLE ROW IS THE ASSERTION AND THE FILE IS NOT. A stale file on disk is recoverable by
- * re-running cleanup. A static-credential ROW for a retired lifecycle is a claim IN THE JOURNAL that
- * the credential is legitimate, and the journal is the authority. The row is also a deterministic KV
- * read, where catching the file before cleanup is timing-dependent — so the probe asserts on the
- * artifact rather than on the interleaving.
- *
- * TWO THINGS A FIXER NEEDS, AND THEY DO NOT CANCEL EACH OTHER.
- *
- *  1. THE WINDOW IS WIDE ONCE ENTERED. It reproduced on the FIRST attempt that reached the race,
- *     with no help — no injected clock, no fake timers, no patched interleaving.
- *  2. HOW OFTEN PRODUCTION ENTERS IT IS UNMEASURED. This probe calls `renewManagedStaticCred`
- *     DIRECTLY. Production reaches it only through the renewal sweep, which filters on
- *     `health.state === "healthy"` and near-expiry (manager.ts ~:939/:944) — a gate this probe
- *     bypasses entirely. So the run says nothing about the RATE at which production arrives at the
- *     window, and "rare" is not established either way. Both halves belong in any prioritisation:
- *     overstating a hole misallocates attention exactly as reassuring copy does.
- *
- * THE DEFECT BLOCKS ITS OWN RE-TEST, so a rate cannot be read off repeated attempts here. After the
- * first hit, every later attempt is refused at spawn — "the name is reserved pending retirement" —
- * because the alias frees only when teardown completes, and the defect is that teardown does not
- * complete. TO MEASURE A RATE, USE A FRESH ALIAS PER ATTEMPT. Reporting hits-over-attempts from this
- * file as written would be a number that is not a count.
- *
- * CONCURRENCY IS STRUCTURAL, NOT AN UNLUCKY SCHEDULE: renewal is reached from a `setInterval` sweep
- * and despawn is caller-triggered from the ep door, so every `await` above is a yield point a
- * despawn can be scheduled into. This probe drives the same window directly rather than waiting for
- * the timer, and reports HITS OUT OF ATTEMPTS rather than a boolean — the window's width is the
- * thing a fixer needs, and one hit is enough to establish reachability.
+ * Run: pnpm smoke:renewal-terminal-race
  */
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect } from "@nats-io/transport-node";
+import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import {
-  createSpaceAuth, mintCreds, newIdentity, standaloneConnectOpts, registry, DEV_OWNER,
-  setupSpaceStreams, recordsBucket, epAuthBucket, parseLedgerRow, credRowKey,
-  type AgentHandle, type Connector, type LaunchSpec, type Presence, type CredentialLedgerRow,
+  createSpaceAuth, gateObserve, headCandidate, mintCreds, newIdentity, principalKey, rawDigest,
+  standaloneConnectOpts, registry, DEV_OWNER, setupSpaceStreams, recordsBucket, epAuthBucket,
+  parseLedgerRow, credRowKey, type AgentHandle, type AttachSession,
+  type Connector, type LaunchSpec, type Presence, type CredentialLedgerRow,
+  type LifecycleStateTransport, type SecretStore,
 } from "@cotal-ai/core";
+import { agentSecretKeyForFile, putSpaceAuth } from "@cotal-ai/workspace";
 import {
-  staticLifecycleTransport, readStaticSlot,
+  appendStaticCredentialRow, recordSlotCredential, staticLifecycleTransport, readStaticSlot,
 } from "../src/static-lifecycle.js";
-import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { bootBroker } from "./_boot-broker.js";
 
-const ATTEMPTS = 12;
-let hitsRow = 0, hitsFile = 0, refused = 0, completed = 0;
+const SCENARIOS = [
+  { name: "racer_despawn", renewal: "direct", terminal: "despawn" },
+  { name: "racer_exit", renewal: "sweep", terminal: "natural-exit" },
+] as const;
+const SCENARIO_CELLS = SCENARIOS.length * 23;
+let pass = 0;
+let fail = 0;
+
+function check(label: string, ok: boolean, detail?: unknown): void {
+  if (ok) {
+    pass++;
+    console.log(`  ✓ ${label}`);
+  } else {
+    fail++;
+    console.error(`  ✗ ${label}${detail === undefined ? "" : ` — ${JSON.stringify(detail)}`}`);
+  }
+}
+
+async function until(predicate: () => boolean | Promise<boolean>, timeoutMs = 5_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return predicate();
+}
+
+async function bounded<T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), timeoutMs); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function enterNextEpochSecond(): Promise<void> {
+  const second = Math.floor(Date.now() / 1_000);
+  await until(() => Math.floor(Date.now() / 1_000) > second, 1_500);
+}
+
+class PausingSecretStore implements SecretStore {
+  private readonly values = new Map<string, string>();
+  private readonly deleted = new Set<string>();
+  private pause?: { reached: (key: string) => void; release: Promise<void> };
+
+  armNextPut(): { reached: Promise<string>; release: () => void } {
+    if (this.pause) throw new Error("a secret-store put is already paused");
+    let reached!: (key: string) => void;
+    let release!: () => void;
+    const reachedPromise = new Promise<string>((resolve) => { reached = resolve; });
+    const releasePromise = new Promise<void>((resolve) => { release = resolve; });
+    this.pause = { reached, release: releasePromise };
+    return {
+      reached: reachedPromise,
+      release: () => {
+        release();
+        this.pause = undefined;
+      },
+    };
+  }
+
+  get(key: string): Promise<string | undefined> {
+    return Promise.resolve(this.values.get(key));
+  }
+
+  async put(key: string, value: string): Promise<void> {
+    const pause = this.pause;
+    if (pause) {
+      pause.reached(key);
+      await pause.release;
+    }
+    this.deleted.delete(key);
+    this.values.set(key, value);
+  }
+
+  delete(key: string): Promise<void> {
+    this.deleted.add(key);
+    this.values.delete(key);
+    return Promise.resolve();
+  }
+
+  wasDeleted(key: string): boolean {
+    return this.deleted.has(key);
+  }
+}
+
+class ControlledHandle implements AgentHandle {
+  readonly kind = "fake";
+  private state: "running" | "exited" = "running";
+  private readonly exitListeners = new Set<() => void>();
+  private readonly session: AttachSession;
+
+  constructor(readonly name: string) {
+    this.session = {
+      cols: 80,
+      rows: 24,
+      backlog: () => Buffer.alloc(0),
+      onData: () => () => {},
+      onExit: (listener) => {
+        this.exitListeners.add(listener);
+        return () => this.exitListeners.delete(listener);
+      },
+      write: () => {},
+      resize: () => {},
+    };
+  }
+
+  status(): "running" | "exited" {
+    return this.state;
+  }
+
+  stop(): void {
+    this.state = "exited";
+  }
+
+  interrupt(): void {}
+
+  attach(): AttachSession {
+    return this.session;
+  }
+
+  exitNaturally(): boolean {
+    this.state = "exited";
+    const listeners = [...this.exitListeners];
+    for (const listener of listeners) listener();
+    return listeners.length > 0;
+  }
+}
 
 const space = `renewal-race-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const { servers: SERVERS, stop: stopBroker } = await bootBroker(auth);
+const { servers, stop: stopBroker } = await bootBroker(auth);
 const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-renewal-race-"));
+const secrets = new PausingSecretStore();
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
-writeFileSync(
-  join(workspaceRoot, ".cotal", "agents", "racer.md"),
-  `---\nname: racer\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\nallowPublish: [general]\n---\nbody\n`,
-);
+for (const { name } of SCENARIOS)
+  writeFileSync(
+    join(workspaceRoot, ".cotal", "agents", `${name}.md`),
+    `---\nname: ${name}\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\nallowPublish: [general]\n---\nbody\n`,
+  );
 
-// `mgr.start()` reads the space auth from the workspace authDir — session-cap (the other suite that
-// calls start()) does this; static-lifecycle does not need it because it drives startAgent directly.
-saveSpaceAuth(authDir(workspaceRoot), auth);
-const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
+await putSpaceAuth(secrets, auth);
+const mgr = new Manager({ space, servers, runtime: "pty", workspaceRoot, secretStore: secrets });
 (mgr as unknown as { auth: unknown }).auth = auth;
-const fakeSession = { cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} };
-const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status: () => "running", stop: () => {}, interrupt: () => {}, attach: () => fakeSession });
-(mgr as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle } }).runtime = { kind: "fake", spawn: (name) => fakeHandle(name) };
+const handles = new Map<string, ControlledHandle>();
+(mgr as unknown as { runtime: { kind: string; spawn: (name: string, spec: LaunchSpec) => AgentHandle } }).runtime = {
+  kind: "fake",
+  spawn: (name) => {
+    const handle = new ControlledHandle(name);
+    handles.set(name, handle);
+    return handle;
+  },
+};
 (mgr as unknown as { ep: Record<string, unknown> }).ep = {
   ref: () => ({ id: "smoke-mgr" }), on: () => {}, off: () => {},
   waitForPresenceSnapshot: () => Promise.resolve(), getRoster: (): Presence[] => [],
 };
 registry.register({ kind: "connector", name: "smoke-race", requires: ["node"], buildLaunch: () => ({ command: "true", args: [], env: {} }) } as Connector);
 
-type Agent = { id: string; name: string; lifecycleUid: string; terminalizing?: boolean; secretPaths?: { creds?: string } };
+type Agent = {
+  id: string;
+  name: string;
+  lifecycleUid: string;
+  seed?: string;
+  role?: string;
+  launch: { allowSubscribe: string[]; allowPublish?: string[]; capabilities?: string[] };
+  terminalizing?: boolean;
+  staticCredentialRenewal?: Promise<void>;
+  secretPaths?: { creds?: string };
+};
+type RetirementHold = { lifecycleUid: string; lastError?: string };
 const M = mgr as unknown as {
   agents: Map<string, Agent>;
-  renewManagedStaticCred(a: Agent): Promise<void>;
-  despawnAuthorized(a: Agent, graceful: boolean, wait: boolean): { ok: boolean };
+  retiring: Map<string, RetirementHold>;
+  renewManagedStaticCred(agent: Agent): Promise<void>;
+  renewDaemonCreds(): Promise<void>;
+  despawnAuthorized(agent: Agent, graceful: boolean, trackNonAdmin: boolean): { ok: boolean };
 };
 
-/** The journal's own view: every credential row the slot names, for one lifecycle. */
-async function credRowsFor(alias: string, actor: string, uid: string): Promise<CredentialLedgerRow[]> {
-  const creds = await mintCreds(auth, newIdentity(), "lifecycle-executor", { lifecycleExecutor: { owner: DEV_OWNER, actor, lifecycleUid: uid, alias } });
-  const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
-  try {
-    const kvm = new Kvm(nc);
-    const t = staticLifecycleTransport(await kvm.open(recordsBucket(space)), await kvm.open(epAuthBucket(space)));
-    const slot = await readStaticSlot(t, DEV_OWNER, alias);
-    const rows: CredentialLedgerRow[] = [];
-    for (const id of slot?.row.credentialIds ?? []) {
-      const e = await t.getAuth(credRowKey(uid, id));
-      if (e !== undefined) rows.push(parseLedgerRow(e.value, credRowKey(uid, id)));
-    }
-    return rows;
-  } finally {
-    await nc.drain().catch(() => nc.close());
-  }
+async function openLifecycleView(alias: string, actor: string, uid: string): Promise<{
+  nc: NatsConnection;
+  transport: LifecycleStateTransport;
+}> {
+  const creds = await mintCreds(auth, newIdentity(), "lifecycle-executor", {
+    lifecycleExecutor: { owner: DEV_OWNER, actor, lifecycleUid: uid, alias },
+  });
+  const nc = await connect({ servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+  const kvm = new Kvm(nc);
+  return {
+    nc,
+    transport: staticLifecycleTransport(await kvm.open(recordsBucket(space)), await kvm.open(epAuthBucket(space))),
+  };
+}
+
+async function stageExpiringCredential(agent: Agent, transport: LifecycleStateTransport, key: string, path: string): Promise<number> {
+  if (!agent.seed) throw new Error(`${agent.name}: no static seed`);
+  const exp = Math.floor(Date.now() / 1_000) + 1;
+  const creds = await mintCreds(auth, { id: agent.id, seed: agent.seed }, "agent", {
+    allowSubscribe: agent.launch.allowSubscribe,
+    allowPublish: agent.launch.allowPublish,
+    role: agent.role,
+    capabilities: agent.launch.capabilities,
+    lifecycleUid: agent.lifecycleUid,
+    expiresAt: exp,
+  });
+  const credentialId = rawDigest(creds).replace("sha256:", "sha256-");
+  await recordSlotCredential(transport, DEV_OWNER, agent.name, agent.lifecycleUid, credentialId);
+  await appendStaticCredentialRow(transport, {
+    lifecycleUid: agent.lifecycleUid,
+    credentialId,
+    holderPrincipal: principalKey(DEV_OWNER, agent.id).key,
+    exp,
+  });
+  await secrets.put(key, creds);
+  writeFileSync(path, creds, { mode: 0o600 });
+  return exp;
 }
 
 try {
-  // The space streams the manager's own connection authorizes against. Omitting this is an
-  // Authorization Violation at `mgr.start()`, not a defect in anything under test.
-  await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
+  await setupSpaceStreams({ servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   await mgr.start();
-  // The fake runtime's agent never joins the mesh, so the readiness wait would time out at 30s per
-  // spawn and every attempt would be SKIPPED — a probe that reports "not reproduced" having never
-  // reached the race. session-cap stubs this for the same reason.
   (mgr as unknown as { awaitReadiness(): Promise<{ ok: true }> }).awaitReadiness = async () => ({ ok: true });
-  console.log(`renewal-vs-terminal race probe — ${ATTEMPTS} attempts\n`);
 
-  for (let i = 0; i < ATTEMPTS; i++) {
-    const spawned = await mgr.startAgent({ name: "racer", agent: "smoke-race" });
-    if (!spawned.ok) { console.log(`  attempt ${i + 1}: spawn failed (${spawned.error}) — skipped`); continue; }
-    const a = M.agents.get("racer");
-    if (!a) { console.log(`  attempt ${i + 1}: no managed agent after spawn — skipped`); continue; }
-    const { id: actor, lifecycleUid: uid, secretPaths } = a;
-    const credsPath = secretPaths?.creds;
+  for (const scenario of SCENARIOS) {
+    const { name } = scenario;
+    console.log(`\n${name}: ${scenario.renewal} renewal then ${scenario.terminal}`);
+    const spawned = await mgr.startAgent({ name, agent: "smoke-race" });
+    check(`${name}: spawn succeeds`, spawned.ok, spawned);
+    const agent = M.agents.get(name);
+    check(`${name}: the spawned lifecycle is managed`, agent !== undefined);
+    if (!agent) throw new Error(`${name}: setup failed before the race`);
 
-    // THE RACE. Start the renewal and do NOT await it; despawn while it is between its latch read
-    // and its writes. Both are ordinary paths — no injection, no patched clock, no fake timers.
-    const renewal = M.renewManagedStaticCred(a).then(() => { completed++; return "completed" as const })
-      .catch((e) => { refused++; return `refused: ${(e as Error).message.slice(0, 60)}` as const });
-    M.despawnAuthorized(a, false, true);
-    const outcome = await renewal;
-    for (let w = 0; w < 100 && M.agents.has("racer"); w++) await new Promise((r) => setTimeout(r, 50));
+    const credsPath = agent.secretPaths?.creds;
+    if (!credsPath) throw new Error(`${name}: no managed credential path`);
+    const secretKey = agentSecretKeyForFile(credsPath);
+    const view = await openLifecycleView(name, agent.id, agent.lifecycleUid);
+    let pause: ReturnType<PausingSecretStore["armNextPut"]> | undefined;
+    try {
+      if (scenario.renewal === "sweep") {
+        const exp = await stageExpiringCredential(agent, view.transport, secretKey, credsPath);
+        await until(() => Math.floor(Date.now() / 1_000) >= exp, 2_000);
+      } else {
+        await enterNextEpochSecond();
+      }
+      pause = secrets.armNextPut();
 
-    const rows = await credRowsFor("racer", actor, uid);
-    const active = rows.filter((r) => r.state === "active");
-    const fileBack = credsPath !== undefined && existsSync(credsPath);
-    if (active.length > 0) hitsRow++;
-    if (fileBack) hitsFile++;
-    console.log(`  attempt ${i + 1}: renewal ${outcome} · rows ${rows.length} (active ${active.length}) · creds file ${fileBack ? "PRESENT" : "gone"}`);
+      const beforeSlot = await readStaticSlot(view.transport, DEV_OWNER, name);
+      const beforeIds = beforeSlot?.row.credentialIds ?? [];
+      check(`${name}: the pre-renewal credential family is non-empty`, beforeIds.length > 0, beforeIds);
+
+      const accepted = (scenario.renewal === "sweep"
+        ? M.renewDaemonCreds()
+        : M.renewManagedStaticCred(agent))
+        .then(() => "completed" as const)
+        .catch((error: Error) => `refused: ${error.message}` as const);
+
+      const pausedKey = await bounded(pause.reached, 5_000);
+      check(`${name}: renewal reaches the secret-store put after journaling`, pausedKey === secretKey, pausedKey);
+      check(`${name}: renewal publishes its accepted flight`, agent.staticCredentialRenewal !== undefined);
+
+      const duringSlot = await readStaticSlot(view.transport, DEV_OWNER, name);
+      const duringIds = duringSlot?.row.credentialIds ?? [];
+      const newIds = duringIds.filter((id) => !beforeIds.includes(id));
+      check(`${name}: renewal records exactly one new credential id`, newIds.length === 1, { beforeIds, duringIds });
+      const newEntry = newIds[0] ? await view.transport.getAuth(credRowKey(agent.lifecycleUid, newIds[0])) : undefined;
+      const newRow = newEntry && newIds[0] ? parseLedgerRow(newEntry.value, credRowKey(agent.lifecycleUid, newIds[0])) : undefined;
+      check(`${name}: the newly recorded renewal row is active before terminalization`, newRow?.state === "active", newRow);
+
+      let terminalEntered = false;
+      if (scenario.terminal === "despawn")
+        terminalEntered = M.despawnAuthorized(agent, false, true).ok;
+      else
+        terminalEntered = handles.get(name)?.exitNaturally() === true && !M.agents.has(name);
+      check(`${name}: ${scenario.terminal} enters the terminal path`, terminalEntered);
+      check(`${name}: the terminal latch closes synchronously`, agent.terminalizing === true);
+      check(`${name}: terminalization registers the lifecycle hold`, M.retiring.get(name)?.lifecycleUid === agent.lifecycleUid, M.retiring.get(name));
+
+      let lateOutcome: string | undefined;
+      const late = M.renewManagedStaticCred(agent)
+        .then(() => "completed" as const)
+        .catch((error: Error) => `refused: ${error.message}` as const)
+        .then((outcome) => { lateOutcome = outcome; return outcome; });
+      await until(() => lateOutcome !== undefined, 250);
+      check(`${name}: a renewal arriving after the terminal latch is refused`, lateOutcome?.startsWith("refused: renewManagedStaticCred: the lifecycle is terminalizing") === true, lateOutcome);
+      const lateSettled = await bounded(late, 1_000);
+      check(`${name}: the post-latch renewal promise settles within its budget`, lateSettled !== undefined, lateOutcome);
+
+      const terminalMovedWhilePaused = await until(async () => {
+        const slot = await readStaticSlot(view.transport, DEV_OWNER, name);
+        const hold = M.retiring.get(name);
+        return slot?.row.phase !== "active" || hold === undefined || hold.lastError !== undefined;
+      }, 3_000);
+      check(`${name}: the durable terminal does not pass an accepted renewal still in flight`, !terminalMovedWhilePaused, M.retiring.get(name));
+
+      pause.release();
+      const acceptedOutcome = await bounded(accepted, 10_000);
+      check(`${name}: the accepted renewal entry settles before cleanup`, acceptedOutcome === "completed", acceptedOutcome);
+      const flightReleased = await until(() => agent.staticCredentialRenewal === undefined, 1_000);
+      check(`${name}: a settled renewal releases its single-flight slot`, flightReleased);
+
+      const retired = await until(() => !M.retiring.has(name), 10_000);
+      check(`${name}: retirement drains the accepted renewal and reaches its terminal`, retired, M.retiring.get(name));
+
+      const slot = await readStaticSlot(view.transport, DEV_OWNER, name);
+      const gate = await gateObserve(view.transport, agent.lifecycleUid);
+      const head = await headCandidate(view.transport, DEV_OWNER, agent.id);
+      check(`${name}: the durable slot is retired`, slot?.row.phase === "retired", slot?.row);
+      check(`${name}: the issuance gate is retired`, gate?.row.state === "retired", gate?.row);
+      check(`${name}: the lifecycle head is retired`, head?.mapping.state === "retired", head?.mapping);
+
+      const rows: CredentialLedgerRow[] = [];
+      for (const id of slot?.row.credentialIds ?? []) {
+        const entry = await view.transport.getAuth(credRowKey(agent.lifecycleUid, id));
+        if (entry !== undefined) rows.push(parseLedgerRow(entry.value, credRowKey(agent.lifecycleUid, id)));
+      }
+      check(`${name}: the retired family includes the renewal generation`, newIds.length === 1 && rows.some((row) => row.credentialId === newIds[0]), rows);
+      check(`${name}: no credential row remains active after retirement`, rows.length > 0 && rows.every((row) => row.state === "revoked"), rows);
+      check(`${name}: the secret-store credential key is deleted`, secrets.wasDeleted(secretKey) && await secrets.get(secretKey) === undefined, secretKey);
+      check(`${name}: no credential file remains after retirement`, !existsSync(credsPath), credsPath);
+    } finally {
+      pause?.release();
+      await view.nc.drain().catch(() => view.nc.close());
+    }
   }
-
-  console.log(`\n── RESULT ──────────────────────────────────────────────`);
-  console.log(`  attempts                                   ${ATTEMPTS}`);
-  console.log(`  renewal REFUSED at the latch (correct)     ${refused}`);
-  console.log(`  renewal COMPLETED past the terminal        ${completed}`);
-  console.log(`  ACTIVE credential row for a retired uid    ${hitsRow}   <- the journal claims a live credential`);
-  console.log(`  credential FILE present after cleanup      ${hitsFile}`);
-  console.log(`\n  ${hitsRow > 0 ? "REPRODUCED" : "NOT reproduced in this run"} — one hit establishes reachability; zero does NOT establish absence.`);
 } finally {
   await mgr.stop().catch(() => {});
   await stopBroker();
+  rmSync(workspaceRoot, { recursive: true, force: true });
 }
-process.exit(0); // a probe reports; it does not gate
+
+check(`every scenario cell ran — ${SCENARIO_CELLS} expected`, pass + fail === SCENARIO_CELLS, { pass, fail, expected: SCENARIO_CELLS });
+if (fail) {
+  console.error(`\nRENEWAL-TERMINAL RACE SMOKE FAILED (${pass} passed, ${fail} failed)`);
+  process.exit(1);
+}
+console.log(`\nRENEWAL-TERMINAL RACE SMOKE OK ✅  (${pass} passed, 0 failed)`);

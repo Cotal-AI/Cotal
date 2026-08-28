@@ -61,6 +61,11 @@ check("an indented comment is still a comment", same(parse("   # note\nsmoke:a")
 check("a trailing space on an entry is trimmed, not carried into the script name", same(parse("smoke:a  "), ["smoke:a"]));
 check("a leading space on an entry is trimmed", same(parse("  smoke:a"), ["smoke:a"]));
 check("a carriage return does not survive into the name", same(parse("smoke:a\r\nsmoke:b"), ["smoke:a", "smoke:b"]));
+check(
+  "the bare root smoke script is a valid chain entry",
+  same(parse("smoke\nsmoke:a"), ["smoke", "smoke:a"]),
+  parse("smoke\nsmoke:a"),
+);
 
 // ---- A `pnpm ` prefix REFUSES: every line of the old chain looked like this ---------------------
 const pnpmPrefixed = parse("smoke:a\npnpm smoke:b");
@@ -73,7 +78,7 @@ check("the refusal says what to do about it", /drop the `pnpm ` prefix/.test(Str
 check("the refusal names the line number", /<fixture>:2:/.test(String(pnpmPrefixed)), pnpmPrefixed);
 
 // ---- Anything else that is not a script name refuses, with its line ------------------------------
-for (const bad of ["not-a-suite", "smoke:", "check", "&& pnpm smoke:a", "smoke:a && smoke:b"]) {
+for (const bad of ["not-a-suite", "smoke:", "smoke::", "smoke::a", "smoke:a:", "check", "&& pnpm smoke:a", "smoke:a && smoke:b"]) {
   check(`a line that is not a smoke script name is refused: ${JSON.stringify(bad)}`, String(parse(bad)).startsWith("THREW"));
 }
 // A malformed line must NOT be skipped: a chain that silently drops what it could not parse runs
@@ -98,10 +103,20 @@ try {
 check("a MISSING chain file throws at the reader rather than yielding an empty chain", missingThrew);
 
 // ---- The real file is parsed by this same parser ------------------------------------------------
-const real = readCiSuites() as string[];
-check("the real chain file parses, and holds more than one suite", Array.isArray(real) && real.length > 1, real.length);
+let real: string[] | undefined;
+let realError = "";
+try {
+  real = readCiSuites() as string[];
+} catch (error) {
+  realError = (error as Error).message;
+}
+check(
+  "the real chain file parses, and holds more than one suite",
+  realError === "" && Array.isArray(real) && real.length > 1,
+  realError || real?.length,
+);
 
-const EXPECTED = 18;
+const EXPECTED = 22;
 check(
   `every cell ran - ${EXPECTED} expected, so a cell that stops existing is not mistaken for one that passed`,
   pass + fail === EXPECTED,

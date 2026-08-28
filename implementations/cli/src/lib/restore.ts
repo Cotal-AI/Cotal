@@ -29,6 +29,7 @@ import {
   membershipBucket,
   MEMBERSHIP_MAX_BYTES,
   presenceBucket,
+  recordsBucket,
   recreateConsumerCheckpoint,
   spaceBackupInventory,
   uploadStreamRestoreChunk,
@@ -37,6 +38,7 @@ import {
   validateBackupStreamState,
   validateCanonicalBackupStreamConfig,
   type PersistentConsumerCheckpoint,
+  createEndpointStreams,
   ensureArtifactStore,
 } from "@cotal-ai/core";
 import {
@@ -526,6 +528,9 @@ async function createOmittedInfrastructure(
   const login = await broker.addLogin({
     profile: "infrastructure",
     streams: [...create, ...excluded],
+    // createEndpointStreams hardens a fresh records KV after KVM creates it. Keep this exact update
+    // grant separate from the wider create/info set so restored message streams remain immutable.
+    updateStreams: [`KV_${recordsBucket(space)}`],
   });
   const nc = await connectIsolatedBroker(broker, login);
   try {
@@ -536,6 +541,9 @@ async function createOmittedInfrastructure(
     await kvm.create(membershipBucket(space), { history: 1, max_bytes: MEMBERSHIP_MAX_BYTES });
     await kvm.create(deliveryBucket(space), { ttl: LEASE_TTL_MS });
     await kvm.create(managerBucket(space), { ttl: MANAGER_LEASE_TTL_MS });
+    // Endpoint journals and authority/session stores are nonportable control state. Recreate their
+    // canonical empty infrastructure through the same production seam as ordinary space setup.
+    await createEndpointStreams(jsm, kvm, space);
     // The artifact Object Store is EXCLUDED from the backup artifact, which does not mean restore
     // ignores it: the assertion below covers `excluded` too, so a restored space must come back
     // with an EMPTY store rather than none. Excluding a stream and forgetting to recreate it is the
