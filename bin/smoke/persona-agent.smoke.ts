@@ -214,6 +214,14 @@ try {
     mkdirSync(join(foreignRoot, "xdg", "cotal", "extensions"), { recursive: true });
     writeFileSync(join(foreignRoot, "xdg", "cotal", "extensions", "extensions.json"), JSON.stringify({ extensions: [] }));
     setInstalledExtensionsEnabled(true);
+    // The runCli boot gate (seedBoot) reconciles seeded connectors on every real command, and a
+    // first run in a fresh XDG root STAGES AND INSTALLS the default connectors (claude first).
+    // That is fleet-state-shaped mutation inside a smoke, and worse for this cell it erases the
+    // "not installed" world it exists to grade. The published binary sets this for its own
+    // internal children; the cell borrows the same opt-out so the dispatch is graded on
+    // extension RESOLUTION, never on seeding.
+    const prevSkip = process.env.COTAL_SKIP_CONNECTOR_SEED;
+    process.env.COTAL_SKIP_CONNECTOR_SEED = "1";
     // PUBLISHED-BINARY REGISTRY STATE: on the real binary no connector is pre-registered; the
     // suite's in-process recorders are, and materializeExtension returns a registry hit without
     // consulting the manifest, so with them present the pre-fix hook cannot produce the abort
@@ -270,6 +278,8 @@ try {
     } finally {
       (process as unknown as { exit: typeof process.exit }).exit = realExit;
       setInstalledExtensionsEnabled(false);
+      if (prevSkip === undefined) delete process.env.COTAL_SKIP_CONNECTOR_SEED;
+      else process.env.COTAL_SKIP_CONNECTOR_SEED = prevSkip;
       if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
       else process.env.XDG_CONFIG_HOME = prevXdg;
       delete process.env.COTAL_DEFAULT_AGENT;
