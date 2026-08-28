@@ -44,8 +44,9 @@ can declare tiers the provider refuses, and a refused tier kills the seat at lau
 ## Hard rules
 
 - Never switch the coordinator's branch. Create worktrees from a named committed base.
-- One manager per feature, one reviewer per channel lane, and one independent DM-only reviewer per
-  feature. No sibling instances or tester fan-out unless the user requests it.
+- One manager per feature, one reviewer per channel lane, and one independent cold reviewer per
+  feature. Select that seat's contact and delivery mode under `cold-review`; a file-only seat is valid
+  when DM delivery is unavailable. No sibling instances or tester fan-out unless the user requests it.
 - Managers alone edit their feature worktree. Reviewers only read, run non-mutating checks, and post
   findings with file/line references.
 - Each feature uses one channel: `review.<feature-slug>`. Keep acknowledgements and status chatter
@@ -140,12 +141,15 @@ The manager prompt must include all of the following:
   detached worktree and brief it under the **`cold-review` skill**, which owns what that seat is
   given, where its verdict goes, what the verdict binds, and how the rules degrade when the vendor
   set is short. Do not restate any of it here.
-- Fold or reason against the cold findings. **You may override a cold verdict only by publishing a
-  refutation you verified yourself, and never by telling that seat to reconsider.** If you authored
-  the change, you may not override it at all: fold, or escalate to a **permitted stand-in** as
-  `cold-review` defines one, which is an independence test rather than a second signature. If a
-  fold changes code, return the result to the channel panel for another final pass and re-pin the
-  cold seat to the new sha with its delivery limit explicitly reset in writing.
+- Resolve cold findings under `cold-review`'s canonical rule, never by telling that seat to
+  reconsider. If the manager authored the change and a blocker needs independent refutation, send the
+  coordinator only the exact-sha finding and artifact. The coordinator provisions a fresh
+  `review-referee` in its own detached worktree; that seat had no part in authoring, grading or
+  supervising the lane, does not share a model family with the author, and receives none of the
+  author's rationale. The coordinator provisions the
+  referee but does not serve as it. If a fold changes code, return the result to the channel panel for
+  another final pass and re-pin the cold seat to the new sha with its delivery limit explicitly reset
+  in writing.
 - Run the relevant tests itself. Reviewers do not edit source.
 - Escalate only unresolved consequential choices with this exact structure:
 
@@ -226,7 +230,8 @@ dependency, or mesh-access issues directly when safe.
 
 A feature is complete only when:
 
-- The manager has folded or reasoned against every concrete finding.
+- The manager has folded or reasoned against every **panel** finding. Cold findings are governed
+  only by the dedicated closure rule below; this bullet must not privately override them.
 - Every panel reviewer gives final approval, and **no two reviewers whose agreement is load-bearing
   share a model family**. "Spans more than one vendor" is NOT this condition: a panel staffed A, B, A
   satisfies it and violates the rule, and an A-A pair is the same-family echo the rule exists to
@@ -234,9 +239,9 @@ A feature is complete only when:
   leaves uncovered, per `cold-review`.
 - **Every cold finding is closed**, by one of exactly two routes and no third: the cold seat itself
   posted an APPROVE at the exact sha, to the destination its brief named, without having joined the
-  panel channel; **or** each blocker was answered by a public refutation from a permitted party under
-  `cold-review`'s override rule, left standing in the record beside the finding. **An unanswered cold
-  blocker is neither, and is not completion.**
+  panel channel; **or** each blocker at that sha was answered by a public refutation from a
+  permitted party under `cold-review`'s override rule, naming the same exact sha and left standing in
+  the record beside the finding. **An unanswered cold blocker is neither, and is not completion.**
   Requiring the seat's own approval *alone* would deadlock the override the first time it was used
   correctly: the seat is one-delivery and may never be told to reconsider, so a refuted blocker could
   be cleared only by changing code to satisfy a finding just publicly refuted, or by a zero-delta
@@ -248,8 +253,9 @@ A feature is complete only when:
   That the brief carried no findings is a **norm** resting on the briefer, so it is deliberately not a
   gate condition here; listing it as one would state a norm in the grammar of a control, which is the
   false assurance `cold-review` exists to prevent.
-- Every approval names the head it graded, and that head is re-resolved at merge time. A verdict is
-  never carried across a sha. Both are steps in the loop above, not assertions made here.
+- Every approval and public refutation names the exact head it grades or answers, and that head is
+  re-resolved at merge time. Neither is ever carried across a sha. These are steps in the loop above,
+  not assertions made here.
 - Required focused and integration tests pass.
 - The feature is committed on its own branch.
 - `git status` is clean except an explicitly acknowledged local `.internal` pointer mismatch.

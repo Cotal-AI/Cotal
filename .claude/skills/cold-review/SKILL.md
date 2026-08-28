@@ -118,20 +118,25 @@ is settled" is a skipping-instruction, and asking it to recheck is confirmation 
 
 The resolution never required talking to the seat:
 
-- **A manager may override a cold verdict.** It verifies the claim against the artifact itself and
-  publishes the refutation with its own evidence, under its own name, leaving the cold finding
-  standing in the record beside it. Nothing flows back to the seat, so isolation holds; the override
-  is auditable, so the control survives. **The forbidden act is a PRIVATE override, not an override.**
-- **An author may not override a cold verdict on their own change.** They may fold it, or escalate to
-  a permitted stand-in, who overrides publicly under their own name. Publication separates override
-  from launder only when the publisher and the accused are different parties: an author refuting a
-  finding about their own work has produced a document, not a check.
-- **A permitted stand-in is an independence test, not a signature.** It verifies the claim at the
-  artifact **without the author's account of it as input**, exactly as the manager rule requires, and
-  it has no stake in the outcome. **"Wrote nothing" is not "has no stake":** the coordinator who
-  staffed the panel, holds the seats and wants the round to close wrote nothing in the diff and is
-  still the wrong reader. A stand-in that publishes the author's reasoning under a clean byline is the
-  original hole with a different name on it.
+- **A manager may override only if it neither authored the change nor graded or supervised the
+  panel.** It verifies the claim against the artifact itself and publishes the refutation with its own
+  evidence, under its own name, leaving the cold finding standing in the record beside it. Nothing
+  flows back to the seat, so isolation holds; the override is auditable, so the control survives.
+  **The forbidden act is a PRIVATE override, not an override.**
+- **An author may not override a cold verdict on their own change.** They may fold it, or request a
+  fresh permitted stand-in, who overrides publicly under their own name. Publication separates
+  override from launder only when the publisher and the accused are different parties: an author
+  refuting a finding about their own work has produced a document, not a check.
+- **A permitted stand-in is an independence test, not a signature.** It had no part in authoring,
+  grading or supervising the change, never shares a model family with the author, and verifies the
+  claim at the artifact **without the author's account of it as input**. A coordinator may provision
+  a fresh referee in an isolated worktree and
+  give it only the artifact, the finding and the exact sha; whoever provisions the referee does not
+  thereby become the referee. A prior panelist, lane manager or supervising coordinator is not a
+  stand-in. A clean byline on the author's reasoning is the original hole with a different name.
+- **Every public refutation names the exact sha it answers and closes the blocker only at that sha.**
+  A moved head requires a new verification and a new public record; a refutation is never carried
+  across a sha any more than a verdict is.
 - **A cold blocker is closed by the seat's own APPROVE or by a permitted public refutation, and by
   nothing else.** Any completion gate must accept both. A gate that demands the seat's approval alone
   deadlocks the override the first time it is used correctly, because the seat is one-delivery and may
@@ -163,7 +168,13 @@ family would have framed*."
 
 ## Grade the artifact, never the account of it
 
-- **A reported sha is a claim.** Re-resolve it when you grade and again if you act.
+- **A reported sha is a claim.** Resolve a PR or branch head from its Git ref first, for example
+  `git ls-remote origin refs/pull/<n>/head`, then positive-control the object with `git cat-file -t`.
+  Cross-check with `gh pr view --json headRefOid` rather than treating it as authority: a head field
+  can lag after a push,
+  while a mergeability field may be answering a different strategy question. If two instruments
+  disagree, reproduce the exact question each asks before calling either one stale. Re-resolve the
+  ref when you grade and again if you act.
 - **A measurement over a mutable ref is only true as of a revision.** Report it as "at `<sha>`, read
   `<time>`". A ref name is not an identifier.
 - **A quoted argument is not the call's arguments.** Diagnose from the recorded entry, not from prose
