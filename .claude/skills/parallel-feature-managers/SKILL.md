@@ -103,10 +103,14 @@ Do not leave managers blocked merely because a fresh worktree cannot fetch a pri
 already available and verified locally. Do not pretend the mismatch is clean either; report the
 permanent repair needed.
 
-## 3. Create manager personas with policy first
+## 3. Create manager and reviewer personas with policy first
 
-Manager agents need `capabilities: [spawn]` plus channel ACLs. `cotal_persona` cannot grant policy,
-so author `.cotal/agents/mgr-<slug>.md` before spawning. These files are local/ignored in this repo.
+Manager agents need `capabilities: [spawn]` plus channel ACLs. Reviewer agents need channel ACLs and
+must not have spawn. `cotal_persona` cannot grant policy, and `cotal_spawn` cannot override
+`allowSubscribe` or `allowPublish`, so author every persona file before spawning. These files are
+local/ignored in this repo. A clean machine that has only a default persona cannot staff the panel:
+the spawn names below fail unless those files exist, and a leftover local persona is not a
+substitute because its grants may be missing or wider than the lane.
 
 ```yaml
 ---
@@ -122,18 +126,54 @@ capabilities: [spawn]
 ---
 ```
 
+Author matching files for the three panel seats and the cold seat before any spawn. Panel
+personas subscribe and publish only on `review.<slug>`. The cold persona lists empty subscribe
+and empty allowSubscribe and allowPublish so non-join is a property of the seat, not an
+instruction. Do not reuse a leftover `review-engineer` (or similar) from another lane.
+
+```yaml
+---
+name: review-engineer
+role: reviewer
+model: <pinned panel model, family A>
+subscribe: [review.<slug>]
+allowSubscribe: [review.<slug>]
+allowPublish: [review.<slug>]
+capabilities: []
+---
+```
+
+```yaml
+---
+name: review-freelance
+role: reviewer
+model: <pinned cold model, not the author's family>
+subscribe: []
+allowSubscribe: []
+allowPublish: []
+capabilities: []
+---
+```
+
+Repeat the panel template for `review-security` and `review-critic` with different model
+families. If a referee is later required, author `review-referee` the same way as the cold
+seat, with empty channel grants, before spawning it.
+
 The manager prompt must include all of the following:
 
 - Exact feature contract, branch, and absolute worktree path.
 - Own the feature end to end and commit only intended feature files.
 - Read repo instructions, current docs, and `.internal` before editing.
 - Join `review.<slug>` first.
-- Spawn `review-engineer`, `review-security` and `review-critic`, seated so that **no two of them
-  whose agreement is load-bearing share a model family**. That is the ordinal rule above and not a
-  headcount: where the vendor set is short, degrade and name the collision mechanically rather than
-  refusing to staff. Give each its own detached worktree as `cwd`. A reviewer grades in its own tree, never in
-  the tree it is grading, and "read-only" must name the git write verbs explicitly (`checkout`,
-  `switch`, `stash`, `reset`, `clean`, `restore`) rather than only saying "do not edit source".
+- Spawn only personas authored in this section. Spawn `review-engineer`, `review-security` and
+  `review-critic`, seated so that **no two of them whose agreement is load-bearing share a model
+  family**. That is the ordinal rule above and not a headcount. Where the vendor set is short, name
+  the collision mechanically and the class it leaves uncovered. **Naming is disclosure, not
+  completion:** a panel whose load-bearing approvals are same-family echoes cannot complete, including
+  A, A, A and A, B, A. Do not treat a staffed-but-collided panel as a passing gate. Give each its own
+  detached worktree as `cwd`. A reviewer grades in its own tree, never in the tree it is grading, and
+  "read-only" must name the git write verbs explicitly (`checkout`, `switch`, `stash`, `reset`,
+  `clean`, `restore`) rather than only saying "do not edit source".
 - DM each returned reviewer identity to join the channel and remain read/review-only.
 - Run plan review before editing, code/test review after implementation, fold valid findings, and ask
   all three for a final disposition.
@@ -149,7 +189,15 @@ The manager prompt must include all of the following:
   author's rationale. The coordinator provisions the
   referee but does not serve as it. If a fold changes code, return the result to the channel panel for
   another final pass and re-pin the cold seat to the new sha with its delivery limit explicitly reset
-  in writing.
+  in writing. If that seat is gone, author a fresh cold persona with empty channel grants, spawn it,
+  and brief it under `cold-review` on the new sha as a new one-delivery seat. That is a successor, not
+  a third closure route for the old sha.
+- Re-resolve the head as an action, not as a later assertion. At briefing, at any completion claim,
+  and again before merge, the manager or coordinator runs `git ls-remote origin refs/pull/<n>/head`
+  (or the branch ref), `git cat-file -t` on that object with a known-good control and an invented
+  tail that must fail, and `gh pr view --json headRefOid` as a cross-check. Name the actor who ran
+  them. If two instruments disagree, stop. A verdict or refutation that names a different sha does
+  not close this head.
 - Run the relevant tests itself. Reviewers do not edit source.
 - Escalate only unresolved consequential choices with this exact structure:
 
@@ -236,7 +284,9 @@ A feature is complete only when:
   share a model family**. "Spans more than one vendor" is NOT this condition: a panel staffed A, B, A
   satisfies it and violates the rule, and an A-A pair is the same-family echo the rule exists to
   reject. Where the vendor set is too short, name the collision mechanically and the failure class it
-  leaves uncovered, per `cold-review`.
+  leaves uncovered, per `cold-review`. **A named collision is not a third completion path.** If the
+  remaining load-bearing approvals share a family, the feature is not complete. Refuse below that
+  floor rather than recording a same-family panel as reviewed.
 - **Every cold finding is closed**, by one of exactly two routes and no third: the cold seat itself
   posted an APPROVE at the exact sha, to the destination its brief named, without having joined the
   panel channel; **or** each blocker at that sha was answered by a public refutation from a
@@ -248,14 +298,16 @@ A feature is complete only when:
   re-pin to manufacture an approval, which is laundering. The override answered the question and the
   gate has to let the answer count.
 - A verdict relayed by the manager satisfies nothing, and the manager confirms the seat's own post
-  landed by re-fetching the destination. Note which parts of that are checkable: the sha, the
-  destination, the poster and the channel membership are **controls** a later stranger can verify.
-  That the brief carried no findings is a **norm** resting on the briefer, so it is deliberately not a
-  gate condition here; listing it as one would state a norm in the grammar of a control, which is the
+  landed by re-fetching the destination. The sha, the destination, and (for a mesh post or a comment
+  on the change) the poster and channel membership are **controls** a later stranger can verify. For
+  a file destination, poster and channel membership are **norms**: the file's presence does not prove
+  the seat wrote it. That the brief carried no findings is also a **norm** resting on the briefer, so
+  it is deliberately not a gate condition here; listing a norm in the grammar of a control is the
   false assurance `cold-review` exists to prevent.
-- Every approval and public refutation names the exact head it grades or answers, and that head is
-  re-resolved at merge time. Neither is ever carried across a sha. These are steps in the loop above,
-  not assertions made here.
+- Every approval and public refutation names the exact head it grades or answers. The manager or
+  coordinator re-resolves that head at briefing, at the completion claim, and again at merge, using
+  the three instruments in the manager prompt (Git ref, object type, API cross-check). Neither a
+  verdict nor a refutation is ever carried across a sha.
 - Required focused and integration tests pass.
 - The feature is committed on its own branch.
 - `git status` is clean except an explicitly acknowledged local `.internal` pointer mismatch.

@@ -81,6 +81,15 @@ The second exists because the first is not always reachable: a seat that never j
 be told anything after launch, and a DM-only rule with no file path can leave a correct verdict with
 nowhere to go. Both have happened.
 
+**Poster is a control only on a broker-attested destination.** A GitHub comment or a mesh post carries
+a sender the broker or host records. A file at an absolute path does not: any process that can write
+that path can produce the artifact, including the manager who later "confirms" it by re-reading it.
+First-hand file delivery is therefore a **norm** on the seat and the briefer, not a control a later
+stranger can verify. A gate that treats the file's existence as proof the seat posted has accepted a
+relay. Prefer the comment destination when the seat can reach the change. When the brief must use a
+file, say so in the verdict record, and do not list poster or channel membership among the checkable
+controls for that delivery.
+
 **Verify at the destination, never at the source.** Re-fetch the landed artifact and grep it for
 content you expect, with a positive control so an empty fetch cannot pass as a clean result. Writes
 that report success and do not land are common: an edit that reports nothing and changes nothing, a
@@ -205,9 +214,11 @@ exists to prevent:
 
 - **Controls**, mechanically checkable by someone who was not there: channel non-join (visible in the
   seat's ACL and subscription list), the model and effort line, the sha named in the verdict, the
-  destination the verdict landed on, and vendor separation.
+  destination the verdict landed on, and vendor separation. Poster and channel membership are
+  controls only when the destination is broker-attested (a mesh post or a comment on the change).
 - **Norms**, resting entirely on the briefer's discipline and not auditable after the fact: that the
-  brief carried no findings, no diagnosis and no confirmation framing.
+  brief carried no findings, no diagnosis and no confirmation framing, and that a file destination
+  was written by the seat rather than by the manager.
 
 There is no artifact proving a brief was clean. That is why the briefer, and not the seat, is the
 party this file addresses.
