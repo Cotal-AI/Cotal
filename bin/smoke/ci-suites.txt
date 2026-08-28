@@ -572,3 +572,7 @@ smoke:renewal-terminal-race
 # through setupSpaceStreams, tears it down through deleteSpace, and uses only current token-safe ids.
 # Concurrent runs share neither port nor space. Appended to preserve every existing shard assignment.
 smoke:membership
+# The one-shot send smoke now owns an OS-assigned open broker, passes that address to its receiver
+# and every real CLI subprocess, and resolves the repository's actual bin/cotal.ts entry. Concurrent
+# runs therefore share neither port nor state. Appended to preserve every existing shard assignment.
+smoke:send
