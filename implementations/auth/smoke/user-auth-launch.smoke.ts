@@ -46,10 +46,10 @@ const root = mkdtempSync(join(tmpdir(), "cotal-ua-root-"));
 const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
 const childEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
 
-const { connect, credsAuthenticator } = await import("@nats-io/transport-node");
-const { chatSubject, isReachable, mintCreds, newIdentity } = await import("@cotal-ai/core");
-const { authDir, loadSoleSpaceAuth, loadSpaceAuth, readRenewalRecord, spaceKey, spaceSegment, userAuthStateDir } = await import("@cotal-ai/workspace");
-const { deleteIdpSession, establishIdpSession, loadAuthServiceInfo } = await import("../src/index.js");
+const { connect, credsAuthenticator, tokenAuthenticator } = await import("@nats-io/transport-node");
+const { chatSubject, isReachable, mintCreds, mintLifecycleUid, newIdentity } = await import("@cotal-ai/core");
+const { authDir, loadSoleSpaceAuth, loadSpaceAuth, readRenewalRecord, spaceKey, spaceSegment, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { cotalAuthProvider, deleteIdpSession, establishIdpSession, INTERACTIVE_RETIRE_PATH, loadActorLedger, loadAuthServiceInfo } = await import("../src/index.js");
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
 type DeviceLoginPrompt = import("../src/index.js").DeviceLoginPrompt;
 
@@ -149,6 +149,39 @@ try {
   // ---------- B. gate-4 surface: JWKS cache contract + exchange hardening ----------
   console.log("B) auth-service surface: JWKS cache contract, browser/cap rejection");
   const info = loadAuthServiceInfo(stateDir)!;
+  const retirementProbe = { owner: "u_" + "a".repeat(26), actor: "cli", lifecycleUid: "a".repeat(26) };
+  const retireGet = await fetch(`${info.url}${INTERACTIVE_RETIRE_PATH}`);
+  check("interactive lifecycle retirement is POST-only", retireGet.status === 405);
+  const retireBrowser = await fetch(`${info.url}${INTERACTIVE_RETIRE_PATH}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "https://evil.example", authorization: `Bearer ${info.cap}` },
+    body: JSON.stringify(retirementProbe),
+  });
+  check("interactive lifecycle retirement refuses browser-origin requests", retireBrowser.status === 403);
+  const retireWrongType = await fetch(`${info.url}${INTERACTIVE_RETIRE_PATH}`, {
+    method: "POST",
+    headers: { "content-type": "text/plain", authorization: `Bearer ${info.cap}` },
+    body: JSON.stringify(retirementProbe),
+  });
+  check("interactive lifecycle retirement requires JSON", retireWrongType.status === 415);
+  const retireWithoutCap = await fetch(`${info.url}${INTERACTIVE_RETIRE_PATH}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(retirementProbe),
+  });
+  check("interactive lifecycle retirement refuses a missing operator capability", retireWithoutCap.status === 401);
+  const retireExtraField = await fetch(`${info.url}${INTERACTIVE_RETIRE_PATH}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${info.cap}` },
+    body: JSON.stringify({ ...retirementProbe, takeover: true }),
+  });
+  check("interactive lifecycle retirement body is closed", retireExtraField.status === 400);
+  const retireMissingRow = await fetch(`${info.url}${INTERACTIVE_RETIRE_PATH}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${info.cap}` },
+    body: JSON.stringify(retirementProbe),
+  });
+  check("interactive lifecycle retirement refuses an actor absent from the current ledger", retireMissingRow.status === 404);
   const jwks = await fetch(`${info.url}/jwks`);
   check("JWKS serves with the explicit cache contract", jwks.ok && /max-age=300/.test(jwks.headers.get("cache-control") ?? ""), jwks.headers.get("cache-control"));
   check("JWKS publishes the Ed25519 key set", Array.isArray(((await jwks.json()) as { keys: unknown[] }).keys));
@@ -170,6 +203,14 @@ try {
   check("device login established (sub = the signed-up user)", sub === userId, { sub, userId });
   const grant = await cotal(["actor", "grant", "cli", "--sub", sub, "--label", "smoke human"]);
   check("actor grant cli succeeds", grant.status === 0 && grant.out.includes("granted"), grant.out);
+  const cliRow = loadActorLedger(stateDir).find((row) => row.kind === "interactive" && row.actor === "cli");
+  const wrongLifecycleUid = cliRow?.lifecycleUid === "a".repeat(26) ? "b".repeat(26) : "a".repeat(26);
+  const retireWrongUid = await fetch(`${info.url}${INTERACTIVE_RETIRE_PATH}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${info.cap}` },
+    body: JSON.stringify({ owner: cliRow?.owner, actor: "cli", lifecycleUid: wrongLifecycleUid }),
+  });
+  check("interactive lifecycle retirement refuses a UID other than the current actor row", retireWrongUid.status === 409, await retireWrongUid.text());
   // The flagless grant is the FULL one: all channels + spawn + the stock role (the golden path —
   // login, grant, spawn just works; narrowing is the operator's explicit act).
   check("flagless grant defaults to the full envelope", grant.out.includes("read [>]") && grant.out.includes("post [>]") && grant.out.includes("spawn"), grant.out);
@@ -254,6 +295,63 @@ try {
   // The suite used to do exactly that, which is the operator mistake this PR is about.
   const adminGrant = await cotal(["actor", "grant", "cli", "--sub", sub, "--scope", "spawn,role:default,admin", "--allow-subscribe", "general", "--allow-publish", "general", "--label", "smoke human"]);
   check("re-grant with admin ADDED to the current scope succeeds (upsert)", adminGrant.status === 0 && adminGrant.out.includes("admin"), adminGrant.out);
+
+  // Capture a REAL elevated bearer while this lifecycle is current, and prove it connects before
+  // using it as the stale credential below. A denial without this positive control could be a bad
+  // exchange fixture confirming itself rather than retirement invalidating a bearer that worked.
+  const copiedElevated = await cotalAuthProvider.userCredentials({
+    store: workspaceSecretStore(root),
+    dir: stateDir,
+    space: SPACE,
+    actor: "cli",
+    view: "purger",
+  });
+  const copiedConnect = () => connect({
+    servers: SERVER,
+    maxReconnectAttempts: 0,
+    timeout: 4_000,
+    name: "copied-elevated-probe",
+    inboxPrefix: "_INBOX_copied_elevated_probe",
+    authenticator: [
+      credsAuthenticator(new TextEncoder().encode(copiedElevated.sentinelCreds)),
+      tokenAuthenticator(copiedElevated.bearer),
+    ],
+  });
+  let copiedBefore: Awaited<ReturnType<typeof connect>> | undefined;
+  let copiedBeforeError = "";
+  try {
+    copiedBefore = await copiedConnect();
+    await copiedBefore.flush();
+  } catch (error) {
+    copiedBeforeError = error instanceof Error ? error.message : String(error);
+  }
+  check("copied elevated bearer connects before the authorization update", copiedBefore !== undefined, copiedBeforeError);
+  await copiedBefore?.close();
+
+  // Keep the admin gate while changing the row's base channel ACL. A scope-narrowing update would
+  // deny the copied purger bearer for a different reason and falsely confirm retirement; this one
+  // remains view-eligible, so only lifecycle rotation can make the copied bearer stale.
+  const rotateSamePrivilege = await cotal(["actor", "grant", "cli", "--sub", sub, "--scope", "spawn,role:default,admin", "--allow-subscribe", "general,ops", "--allow-publish", "general,ops", "--label", "smoke human"]);
+  check("admin-retaining ACL re-grant succeeds (whole-row authorization update)", rotateSamePrivilege.status === 0 && rotateSamePrivilege.out.includes("admin") && rotateSamePrivilege.out.includes("ops"), rotateSamePrivilege.out);
+  let copiedAfter: Awaited<ReturnType<typeof connect>> | undefined;
+  let copiedAfterError = "";
+  try {
+    copiedAfter = await copiedConnect();
+  } catch (error) {
+    copiedAfterError = error instanceof Error ? error.message : String(error);
+  }
+  check(
+    "copied elevated bearer is refused after re-grant rotates its lifecycle",
+    copiedAfter === undefined && /authorization|permission|retired|lifecycle/i.test(copiedAfterError),
+    copiedAfter === undefined ? copiedAfterError : "copied bearer connected",
+  );
+  await copiedAfter?.close();
+
+  // Re-grant again BEFORE the successor is used. Its row has a fresh uid while the authority head
+  // still names the retired predecessor; that is a legitimate not-started successor, not a foreign
+  // active lifecycle. The second rotation must therefore succeed without manufacturing a bearer.
+  const rerotateUnused = await cotal(["actor", "grant", "cli", "--sub", sub, "--scope", "spawn,role:default,admin", "--allow-subscribe", "general", "--allow-publish", "general", "--label", "smoke human"]);
+  check("an unused successor can be re-granted again after its predecessor retired", rerotateUnused.status === 0 && rerotateUnused.out.includes("admin"), rerotateUnused.out);
   const cleared = await cotal(["history", "clear", "--force", "--space", SPACE]);
   check("`history clear --force` passes over the one-shot purger view", cleared.status === 0 && cleared.out.includes("cleared"), cleared.out);
 
@@ -296,7 +394,20 @@ try {
   const oldCredsDir = join(root, ".cotal", "auth", "creds");
   mkdirSync(oldCredsDir, { recursive: true });
   const oldStaticCreds = join(oldCredsDir, "old-static.creds");
-  writeFileSync(oldStaticCreds, await mintCreds(auth, newIdentity(), "agent"), { mode: 0o600 });
+  let oldStaticMaterial = "";
+  let oldStaticError = "";
+  try {
+    oldStaticMaterial = await mintCreds(auth, newIdentity(), "agent", {
+      lifecycleUid: mintLifecycleUid(),
+      allowSubscribe: ["general"],
+      allowPublish: ["general"],
+    });
+  } catch (error) {
+    oldStaticError = error instanceof Error ? error.message : String(error);
+  }
+  check("the legacy static-agent control is a lifecycle-bound credential, not a pre-cut stub",
+    oldStaticMaterial.includes("BEGIN NATS USER JWT"), oldStaticError);
+  writeFileSync(oldStaticCreds, oldStaticMaterial, { mode: 0o600 });
   const joinOldStatic = await cotal(["join", "--creds", oldStaticCreds, "--server", SERVER, "--space", SPACE], { timeoutMs: 15_000 });
   check("the flip: `join --creds` with an old static cred is refused on a known user mesh", joinOldStatic.status !== 0 && joinOldStatic.out.includes("per-user-auth") && joinOldStatic.out.includes("cotal spawn"), joinOldStatic.out);
   const sendOldStatic = await cotal(["send", "msg", "general", "old static", "--creds", oldStaticCreds, "--server", SERVER, "--space", SPACE], { timeoutMs: 15_000 });
@@ -306,6 +417,19 @@ try {
   const svcPid = Number(readFileSync(svcPidPath, "utf8").trim());
   process.kill(svcPid, "SIGKILL");
   await until(() => { try { process.kill(svcPid, 0); return false; } catch { return true; } });
+  const rowBeforeFailedRegrant = loadActorLedger(stateDir).find((row) => row.kind === "interactive" && row.actor === "cli");
+  const failedDeadServiceRegrant = await cotal(["actor", "grant", "cli", "--sub", sub, "--scope", "spawn,role:default,admin", "--allow-subscribe", "general", "--allow-publish", "general", "--label", "must not land"]);
+  check(
+    "re-grant with a dead auth service is refused before changing the row",
+    failedDeadServiceRegrant.status !== 0 && failedDeadServiceRegrant.out.includes("row was not changed"),
+    failedDeadServiceRegrant.out,
+  );
+  const rowAfterFailedRegrant = loadActorLedger(stateDir).find((row) => row.kind === "interactive" && row.actor === "cli");
+  check(
+    "failed lifecycle retirement leaves the actor row byte-for-byte unchanged",
+    JSON.stringify(rowAfterFailedRegrant) === JSON.stringify(rowBeforeFailedRegrant),
+    { before: rowBeforeFailedRegrant, after: rowAfterFailedRegrant },
+  );
   const deadSend = await cotal(["send", "msg", "general", "service is dead", "--space", SPACE]);
   check("send with a dead auth service names the `cotal up` recovery", deadSend.status !== 0 && deadSend.out.includes("restart it with `cotal up`"), deadSend.out);
   const heal = await cotal(["up", "--server", SERVER, "--space", SPACE]);
