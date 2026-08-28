@@ -992,7 +992,7 @@ export async function getSpaceAuth(store: SecretStore, space: string): Promise<S
     return composeSpaceAuth(broker, account);
   } catch {
     throw new Error(
-      `the trust records (${BROKER_AUTH_KEY} + ${accountKey}) failed trust-chain validation for space "${space}" - the store holds an account this broker's operator did not sign; repair or replace it`,
+      `the trust records (${BROKER_AUTH_KEY} + ${accountKey}) failed trust-chain validation for space "${space}" - the store values are corrupt, mismatched, or outside one broker/account trust chain; repair or replace them`,
     );
   }
 }
