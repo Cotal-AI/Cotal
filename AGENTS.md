@@ -155,7 +155,9 @@ real entry point *reaches* it; if the test builds its inputs by hand, prove that
 not explicitly requested or clearly needed.
 - **Keep docs short and human**, and **keep them updated in the same change** as the behavior:
 when behavior changes, update the affected pages under [docs/](docs/README.md) (and
-[SPEC.md](SPEC.md) for wire changes) so they never drift from the code.
+[SPEC.md](SPEC.md) for wire changes) so they never drift from the code. Use direct sentences:
+no em dashes, filler words such as `exactly` or `fold`, list-style headings, or slogan-shaped
+"this, not that" contrasts. `pnpm check:docs-voice` enforces the mechanical parts.
 `docs/` describes the **protocol** only; each example documents itself in its own
 `examples/*/README.md`.
 - **No fallbacks.** Throw if something is not supported in the current environment or config,

@@ -38,7 +38,7 @@ Authoritative shape: [`agent-file.ts`](../packages/core/src/agent-file.ts).
 | `kind` | `agent` \| `endpoint` | Participation class; default `agent`. |
 | `description` | string | One-line summary → `card.description`. |
 | `tags` | string[] | Capability tags → `card.tags`. |
-| `subscribe` | string[] | The **active read set**: channels subscribed at boot (mutable at runtime via join/leave). Must be ⊆ `allowSubscribe`. **Omitted ⇒ no channels**: an agent reads exactly what it lists, and one that lists none joins none (still reachable by DM, anycast and presence). List `general` if you want it. |
+| `subscribe` | string[] | The **active read set**: channels subscribed at boot (mutable at runtime via join/leave). Must be ⊆ `allowSubscribe`. **Omitted ⇒ no channels**: an agent reads what it lists, and one that lists none joins none (still reachable by DM, anycast and presence). List `general` if you want it. |
 | `allowSubscribe` | string[] | The **read ACL**: channels it *may* read. Wildcard subtrees allowed (`team.>`). Omitted ⇒ same as `subscribe`. |
 | `allowPublish` | string[] | The **post ACL**: channels it may publish to. **Omitted ⇒ deny**; posting is the dangerous capability, declare it explicitly. |
 | `quiet` | string[] | Per-channel attention *default*: ambient stays buffered and pull-only until `cotal_inbox`; `@mention`s remain automatic. Concrete channels within the read ACL. |
@@ -54,9 +54,9 @@ Authoritative shape: [`agent-file.ts`](../packages/core/src/agent-file.ts).
 The three channel verbs on one card, with the common recipes:
 [Channels & permissions](channels-and-permissions.md). Attention semantics (`quiet` /
 `muted` are one-way *defaults*; the runtime toggle is per-instance and resets on restart):
-[Connect Claude](connect-claude.md#attention-how-much-traffic-wakes-you).
+[Connect Claude](connect-claude.md#attention).
 
-## Discovery and resolution
+## Persona lookup
 
 - **By name.** A launcher resolves a bare name to `.cotal/agents/<name>.md` (project
   catalog). This is a directory convention, not an HTTP well-known; mesh discovery stays
@@ -80,7 +80,7 @@ Every launcher consumes the file the same way; they differ only in how they run 
 shared some other way. The demo ships committed examples under
 [`examples/01-lateral-coordination/agents/`](../examples/01-lateral-coordination/agents/).
 
-## Personas: short contracts, not titles
+## Persona purpose
 
 Expert-persona prompts ("you are a world-class…") do not reliably improve accuracy. Keep
 the body to what the agent *does* and how it *coordinates*; a persona that needs facts
@@ -99,9 +99,8 @@ slot, so a peer cannot grant itself a capability by redefining a file.
 and then it goes to that channel only. A peer that did not ask for the persona has no way
 to judge whether spawning it is wanted, and a broadcast soliciting spawns from an
 unfamiliar principal is a thing a peer should be suspicious of, so announcing belongs on
-the channel your team is working on rather than `general`. Announcing did carry a little
-discovery — a bare name, to whoever happened to be listening — but nothing durable: no
-prompt, model, or role, and a peer joining later never saw it. No path a peer can
+the channel your team is working on rather than `general`. The old announcement carried limited discovery. Peers already listening saw the bare name, but
+no prompt, model, or role. Peers joining later saw nothing. No path a peer can
 deliberately consult is affected: `cotal personas list` reads the catalog within a
 workspace, and `cotal_spawn` on a name that does not exist fails loud.
 

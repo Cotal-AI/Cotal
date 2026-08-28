@@ -1,6 +1,6 @@
 {
   "suite": "extensions/connector-core/smoke/agui-holder.smoke.ts",
-  "guard": "the holder starts at most one emitter for the path it binds, and later callers get the one that already exists rather than a second start",
+  "guard": "the holder starts at most one emitter for the path it binds, and later callers get the one that already exists rather than a second start, and the first adopt carries its opaque start context to that one factory call",
   "command": "pnpm smoke:agui-holder",
   "completionMarker": "agui-holder smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/agui-holder.json",
@@ -25,7 +25,12 @@
     "carries the count so a later reader is not surprised by the second name.",
     "",
     "THE ANCHOR IS PURE CODE. It spans no comment, so a rewording of the prose around it cannot turn",
-    "this mutant into a no-op the way an edit to the halt message did to S26 in this same branch."
+    "this mutant into a no-op the way an edit to the halt message did to S26 in this same branch.",
+    "",
+    "FIRST-ADOPT CONTEXT IS A SEPARATE GUARANTEE. Claude's SessionStart source arrives on the hook",
+    "call and must reach the connector-owned source factory without a shared mutable slot. H2 drops",
+    "that context at the one call site; the direct context cell reddens while the existing start-once",
+    "cells remain controls for the holder lifecycle around it."
   ],
   "mutations": [
     {
@@ -35,6 +40,14 @@
       "replace": "    if (true) {\n",
       "expectRed": "lazy:a-second-adopt-of-the-SAME-path-does-not-start-a-second",
       "note": "Removing either guard alone survives, because the other answers for it. Removed together, a second adopt of the SAME path reaches `startEmitter` again. Also reds `lazy:a-flush-after-an-adopt-does-not-start-a-second`."
+    },
+    {
+      "name": "H2 drop the first-adopt context before the connector-owned factory sees it",
+      "file": "extensions/connector-core/src/agui-holder.ts",
+      "find": "this.emitter = await this.startEmitter(path, context);",
+      "replace": "this.emitter = await this.startEmitter(path, undefined);",
+      "expectRed": "context:the-FIRST-adopt-context-reaches-the-start-factory",
+      "note": "This is the one mechanism carrying Claude's SessionStart source through the generic holder; a later adopt remains unable to replace it."
     }
   ]
 }

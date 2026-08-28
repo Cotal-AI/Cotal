@@ -551,13 +551,13 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_docs",
       title: "Cotal: read the docs (version-exact)",
       description:
-        "Read the authoritative Cotal docs for the exact version installed here: the " +
-        "wire spec, the message schema, and every guide, bundled so they always match this version. " +
-        "Use it before you answer or write code about anything Cotal — subjects, message shapes, the auth " +
-        "grammar, channels and ACLs, the CLI, the cotal_* tools — and prefer it over your training memory, " +
+        "Read the authoritative Cotal docs bundled with this installed version: the wire spec, the " +
+        "message schema, and every guide. The bundle always matches this version. " +
+        "Use it before you answer or write code about Cotal subjects, message shapes, the auth " +
+        "grammar, channels and ACLs, the CLI, or the cotal_* tools. Prefer it over training memory, " +
         "which may be stale or wrong for this version. Three ways to call it: (1) no arguments returns the " +
-        "page index (a table of contents; start here when unsure); (2) `page` returns one page in full — " +
-        'pass "spec", "schema", or a guide slug from the index like "architecture" or ' +
+        "page index (a table of contents; start here when unsure); (2) `page` returns one page in full. " +
+        'Pass "spec", "schema", or a guide slug from the index like "architecture" or ' +
         '"channels-and-permissions"; (3) `query` runs a keyword search and returns the most relevant ' +
         "sections with a pointer to each full page. Read the full page before writing code against it. " +
         "Read-only, offline, instant. Optionally set " +
@@ -572,7 +572,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         query: z
           .string()
           .optional()
-          .describe('Keyword search across all docs when you do not know which page to read. Best with exact Cotal identifiers — a subject, a cotal_* tool name, a field like "allowSubscribe". Returns the most relevant sections, each with the page to read in full. Ignored if `page` is set.'),
+          .describe('Keyword search across all docs when you do not know which page to read. Use Cotal identifiers such as a subject, a cotal_* tool name, or a field like "allowSubscribe". Returns the most relevant sections, each with the page to read in full. Ignored if `page` is set.'),
         refresh: z
           .boolean()
           .optional()
@@ -990,9 +990,9 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_spawn",
       title: "Cotal: spawn a new teammate",
       description:
-        "Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer (and, when the manager runs the cmux runtime, appears in its own tab). Use this, rather than your harness's own subagent/Task tool, whenever you need to spawn a teammate: a Cotal peer is a real, addressable mesh agent the user can watch and you can DM, roster, and coordinate with, not a black-box subagent. When you first bring a team online, if the live web dashboard isn't already up, suggest the user run `cotal web` to watch the mesh in real time.",
+        "Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer and, under the cmux runtime, appears in its own tab. A Cotal peer is a real, addressable process the user can watch; you can reach it by DM, find it on the roster, and coordinate with it later. Use it for teammate work that should stay visible on the mesh. Pass `prompt` when it should begin immediately; the connector auto-submits that prompt as its first turn. When you first bring a team online, if the live web dashboard is down, suggest `cotal web` so the user can watch the mesh in real time.",
       schema: {
-        name: z.string().describe("Which persona to spawn: the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md. The new peer joins under the persona's own `name:` (auto-numbered, e.g. socrates-2, if that's taken). Fails if no such persona file exists; spawn an existing persona, don't invent a name."),
+        name: z.string().describe("Which persona to spawn: the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md. The new peer joins under the persona's own `name:` (auto-numbered with an underscore, e.g. socrates_2, if that's taken). Fails if no such persona file exists; spawn an existing persona, don't invent a name."),
         role: z
           .string()
           .optional()
@@ -1019,15 +1019,22 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           .describe(
             "Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace.",
           ),
+        prompt: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            "Optional kickoff message auto-submitted as the new peer's first turn. Pass it when the peer should begin work immediately; omitted means no first model turn is submitted.",
+          ),
         // NOTE: session `resume` is deliberately NOT exposed here. Forking a host-local `~/.claude`
         // transcript is an operator-local intent; letting a spawn-capable mesh PEER name a host
         // session id would expand `spawn` into host-transcript disclosure with no broker-enforced
         // boundary. Resume lives only on the operator CLI (`cotal spawn --resume`, foreground or
         // --detach); a peer-facing, capability-gated resume is deferred (see #159).
       },
-      async run(agent, _config, { name, role, agent: agentType, model, variant, launchOptions, cwd }: { name: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string }) {
+      async run(agent, _config, { name, role, agent: agentType, model, variant, launchOptions, cwd, prompt }: { name: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string }) {
         try {
-          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd });
+          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt });
           if (!reply.ok) return err(`Couldn't spawn ${name}: ${reply.error ?? "manager refused"}`);
           const d = reply.data as { name?: string; mode?: string } | undefined;
           const actual = d?.name ?? name; // the manager auto-numbers on a collision — report what it spawned
@@ -1135,7 +1142,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_persona",
       title: "Cotal: define a persona",
       description:
-        "Define a new persona and save it as config (the manager writes .cotal/agents/<name>.md). Silent by default — it posts nothing on the mesh unless you ask it to with `announce`. Afterwards cotal_spawn(name) launches a real agent wearing this persona/model. Use to grow the team with a custom persona you describe on the fly; set its role at spawn (cotal_spawn takes a role).",
+        "Define a new persona and save it as config (the manager writes .cotal/agents/<name>.md). It stays silent unless you pass `announce` with a channel. Afterwards cotal_spawn(name) launches a real agent wearing this persona/model. Use to grow the team with a custom persona you describe on the fly; set its role at spawn (cotal_spawn takes a role).",
       schema: {
         name: z
           .string()
@@ -1147,7 +1154,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           .string()
           .optional()
           .describe(
-            "Optional channel to post a one-line note on once the persona is saved. Omit (the default) and defining is silent — nothing goes out on the mesh. Name the channel your team is actually working on, not `general`: a peer that did not ask for this persona has no way to judge whether spawning it is wanted, and a broadcast soliciting spawns from an unfamiliar principal reads as exactly the thing a peer should refuse. Your post ACL applies as it does to any other message.",
+            "Optional channel to post a one-line note on once the persona is saved. Omit it to keep the definition private to the manager's persona catalog. Name the channel your team is actually working on, not `general`: a peer that did not ask for this persona has no way to judge whether spawning it is wanted, and a broadcast soliciting spawns from an unfamiliar principal gives peers no reason to trust the request. Your post ACL applies as it does to any other message.",
           ),
       },
       async run(

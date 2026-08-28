@@ -1,0 +1,53 @@
+{
+  "suite": "implementations/auth/smoke/user-spawn.smoke.ts",
+  "guard": "a SECOND spawn of a live name is allocated, MINTED and joined on the real user-auth path",
+  "command": "pnpm build && pnpm smoke:user-spawn:live",
+  "completionMarker": "USER-SPAWN SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/user-spawn-second-name.json",
+  "why": [
+    "ONE mutation, deliberately. This suite stands up a real broker with the callout account, a real",
+    "auth-service subprocess, a real IdP device login and a real pty child; a run costs minutes, so",
+    "the mutants that belong here are only the ones that CANNOT be posed anywhere cheaper. Everything",
+    "about the name rule itself is already pinned by the fast core suite and its seven mutants.",
+    "",
+    "What only this suite can answer: whether a green cell would still be green on the broken tree.",
+    "The B1b cells assert that a second spawn of a live name is allocated, minted and joined. On the",
+    "shipped defect the allocated name was `<base>-2`, the grammar refuses `-` inside an actor BEFORE",
+    "any row is written, and the spawn dies at mint. If reverting the separator does not redden these",
+    "cells, they are decoration on the live path and the coverage claim for this branch is false.",
+    "",
+    "READ THE CONTROL. `control: the allocator numbers a collision away from the base` must stay",
+    "GREEN under this mutation \u2014 `alpha-2` still differs from `alpha` and still starts with it. That",
+    "is deliberate: the control proves the series is non-degenerate, and it must NOT be the thing",
+    "that detects the defect, or the cells below it would be riding on their own setup rather than on",
+    "the mint. A run where the control reddens too is a worse result than a clean kill, not a better",
+    "one.",
+    "",
+    "THE COMMAND BUILDS, AND THAT IS NOT INCIDENTAL. The fast core suite imports `../src/agent-file.js`,",
+    "so tsx loads SOURCE and a mutation there bites immediately. This suite drives the real Manager,",
+    "which loads core from `dist`. The first attempt at this proof mutated src, ran without rebuilding,",
+    "and the suite passed with 107 marks \u2014 identical to baseline. The harness scored it UNGRADABLE and",
+    "was right to: `applies` and `mutates` are different properties, and only the first had been",
+    "checked. The running code was the previous build.",
+    "",
+    "Worth stating because the failure is invisible: BOTH sides agreed. The test computes its own",
+    "expected name with the same `firstFreeName` the manager uses, so a stale dist makes the",
+    "expectation and the behaviour wrong together, and every cell passes. A green here without a build",
+    "step is not weak evidence, it is zero evidence.",
+    "",
+    "SPECIFIER BOUNDARY. This drives the real entry point end to end, which is exactly what the fast",
+    "suite cannot claim. The residual runs the other way: it is slow and needs nats-server, so it is a",
+    "gate rather than an inner-loop check, and the fast suite remains the one that must hold the rule."
+  ],
+  "mutations": [
+    {
+      "name": "L1 the numbering separator reverts to the reserved character",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "const NUMBER_SEPARATOR = \"_\";",
+      "replace": "const NUMBER_SEPARATOR = \"-\";",
+      "expectRed": "the SECOND spawn of a LIVE name is accepted",
+      "cell": "the SECOND spawn of a LIVE name is accepted (the `-` separator made this impossible)",
+      "note": "The shipped defect, posed against the live authed path rather than against the two functions. Expect the accept, the mint and the join to redden together and the allocator control to stay green."
+    }
+  ]
+}

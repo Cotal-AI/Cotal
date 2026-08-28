@@ -1,4 +1,4 @@
-# Configuration & environment
+# Configuration
 
 > **Reference**: describes the TypeScript reference implementation (the `cotal` CLI and connectors), not the wire contract. · **For:** operators · **Wire contract:** [SPEC](../SPEC.md)
 
@@ -106,7 +106,7 @@ launcher. Comma-separated lists are trimmed.
 > `--console-port` is a `cotal supervise` flag, not an environment variable; there is no
 > `COTAL_CONSOLE_PORT`.
 
-### Set by the launcher, not by you
+### Launcher variables
 
 These are wired into a spawned child's environment by the connector / launcher and read back inside
 the session. They are not operator knobs; listed so you recognize them in a process listing.
@@ -146,7 +146,7 @@ To deliberately add an environment name for a spawned agent, declare `spawn.env`
 The listed names are added to the fixed boundary. That is also the opt-in for a host-session marker
 a persona has chosen to receive (`CLAUDE_CODE_CHILD_SESSION` and friends). An empty array adds
 nothing. A space-local `spawn` block replaces the operator-level one outright rather than merging,
-so a local list stays exactly local. No `spawn` block, `"spawn": { "env": [] }`, and `"spawn": {}`
+so a local list stays local. No `spawn` block, `"spawn": { "env": [] }`, and `"spawn": {}`
 all add no names.
 
 Be honest with yourself about what this buys: `HOME` is forwarded, so an agent with a shell reads
@@ -219,7 +219,7 @@ deliberate; failing open silently is not.
 
 ## On-disk layout
 
-### Project: `.cotal/`
+### Project files
 
 A project's state lives in `.cotal/` at the mesh root (found by walking up from the cwd, like `.git`).
 **It is gitignored**; it holds secrets and machine-local process state.
@@ -231,7 +231,7 @@ A project's state lives in `.cotal/` at the mesh root (found by walking up from 
 | `auth/space.<key>/` | One space's user-auth state (IdP pin, issuer keys, owner secret, callout account), present only when that space enables per-user auth. Keyed by the same case-safe hex encoding; pre-hex layouts (`auth/<space>/`) are renamed here on first touch |
 | `auth/creds/<name>.creds` | Per-agent minted NATS credentials |
 | `auth/server.conf` | Generated nats-server config for the broker. The core renderer accepts every space on the broker; `cotal up` currently orchestrates one space per root, so it renders that one space's account |
-| `broker-policy.json` | Durable broker **launch** policy (TLS-required cert/key path references, or plaintext). Survives `cotal down` so a bare re-`up` cannot silently drop TLS. Under the project root — **not** under `COTAL_HOME` |
+| `broker-policy.json` | Durable broker **launch** policy (TLS-required cert/key path references, or plaintext). Survives `cotal down` so a bare re-`up` cannot silently drop TLS. Under the project root: **not** under `COTAL_HOME` |
 | `agents/<name>.md` | Persona / agent files ([Agent files](agent-files.md)) |
 | `manifests/<hash>.json` | Manifest-deploy ledger (records of `up -f` / `spawn -f` runs) |
 | `config.json` | Space-local connector config (the override layer above) |
@@ -242,14 +242,14 @@ A project's state lives in `.cotal/` at the mesh root (found by walking up from 
 | `membership.json` · `membership-*.creds` | Membership feed state + its scoped creds |
 | `setup.log` | Last `cotal setup` run |
 
-### Machine: `~/.cotal`
+### Machine files
 
 Cross-project machine state, so a `cotal spawn` from any directory can find a running mesh. Location:
 `~/.cotal` on POSIX, `%LOCALAPPDATA%\Cotal` on Windows; overridable with `COTAL_HOME`.
 
 `COTAL_HOME` overrides **this tree only** (registry + current pointer + onboard marker). It is not a
 full workstation sandbox. Broker launch policy, the JetStream store, pidfiles, and auth live under
-the **project** `.cotal/` found by walking up from the cwd ([Project: `.cotal/`](#project-cotal)
+the **project** `.cotal/` found by walking up from the cwd ([Project: `.cotal/`](#project-files)
 above, including `broker-policy.json` on TLS meshes). A probe that sets `COTAL_HOME` alone and runs
 `cotal up --tls-cert …` from a directory whose walked root is the operator home still writes those
 project paths on the live machine.
@@ -261,7 +261,7 @@ project paths on the live machine.
 | `onboarded.json` | First-run marker (with `ONBOARD_VERSION`) that flips setup between first-run and status-card |
 | the Claude plugin marketplace | The installed `cotal-mesh` plugin assets |
 
-### Config dir: `$XDG_CONFIG_HOME/cotal`
+### Configuration files
 
 Distinct from `~/.cotal`. Location: `$XDG_CONFIG_HOME/cotal`, else `~/.config/cotal` on POSIX, or
 `%APPDATA%\Cotal` on Windows.

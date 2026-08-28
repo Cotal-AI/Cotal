@@ -12,6 +12,22 @@ import { controlFromEnv, hasIdentity } from "./config.js";
 import { HANDOFF_RECEIPT } from "./control.js";
 
 const TIMEOUT_MS = 2000;
+/** A startup hook may run before the MCP process has bound its socket. Stay inside the existing
+ * hook budget, but do not turn one early ENOENT into a permanently lost lifecycle event. */
+const CONNECT_RETRY_INITIAL_MS = 25;
+const CONNECT_RETRY_MAX_MS = 250;
+
+const isRetryableConnectError = (error: unknown): boolean => {
+  const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+  // These all mean no connection was established and can describe a listener that is still coming
+  // up or being replaced. Permission/path-shape/resource faults are permanent and fail open now.
+  return ["ENOENT", "ECONNREFUSED", "ECONNRESET", "EPIPE", "EAGAIN", "EBUSY"].includes(code ?? "");
+};
+
+const isSessionStart = (event: unknown): boolean =>
+  event !== null &&
+  typeof event === "object" &&
+  (event as { hook_event_name?: unknown }).hook_event_name === "SessionStart";
 
 /**
  * One bounded warning per hook process, on stderr, with no values in it.
@@ -114,33 +130,37 @@ export async function runHookRelay(): Promise<void> {
   } catch {
     /* malformed — relay an empty event under a valid token */
   }
-  const sock = connect(path);
-
-  let reply = "";
+  const startupCritical = isSessionStart(event);
+  let sock: ReturnType<typeof connect> | undefined;
   let settled = false;
-  const drop = (): void => {
+  let retryDelayMs = CONNECT_RETRY_INITIAL_MS;
+  const drop = (candidate = sock): void => {
     try {
-      sock.destroy();
+      candidate?.destroy();
     } catch {
       /* ignore */
     }
   };
-  const finish = (out: string): void => {
-    if (settled) return;
+  const settle = (): boolean => {
+    if (settled) return false;
     settled = true;
+    clearTimeout(timer);
+    return true;
+  };
+  const finish = (out: string): void => {
+    if (!settle()) return;
     drop();
     done(out);
   };
   /** Got a reply: keep the socket until stdout has flushed, then send the receipt down it. Anything
    *  that kills us first (the 1s backstop, the runtime SIGKILLing the hook) closes the socket with
    *  no receipt, which is exactly the signal the connector needs to NOT commit the batch. */
-  const finishWithReceipt = (out: string): void => {
-    if (settled) return;
-    settled = true;
+  const finishWithReceipt = (out: string, candidate: ReturnType<typeof connect>): void => {
+    if (!settle()) return;
     done(out, (then) => {
       try {
-        sock.write(HANDOFF_RECEIPT, () => {
-          drop();
+        candidate.write(HANDOFF_RECEIPT, () => {
+          drop(candidate);
           then();
         });
       } catch {
@@ -150,24 +170,52 @@ export async function runHookRelay(): Promise<void> {
   };
   const timer = setTimeout(() => finish(""), TIMEOUT_MS);
 
-  sock.setEncoding("utf8");
-  // `handoff` opts into the confirmed-delivery protocol: the connector holds the connection open and
-  // treats our receipt, not its own socket write, as proof the reply reached the runtime.
-  sock.on("connect", () => sock.write(JSON.stringify({ token, event, handoff: true }) + "\n"));
-  sock.on("data", (d) => {
-    reply += d;
-    const nl = reply.indexOf("\n");
-    if (nl >= 0) {
-      clearTimeout(timer);
-      finishWithReceipt(reply.slice(0, nl));
-    }
-  });
-  sock.on("error", () => {
-    clearTimeout(timer);
-    finish(""); // connector not running — no-op
-  });
-  sock.on("end", () => {
-    clearTimeout(timer);
-    finish(reply);
-  });
+  const retryLater = (): void => {
+    const wait = retryDelayMs;
+    retryDelayMs = Math.min(retryDelayMs * 2, CONNECT_RETRY_MAX_MS);
+    setTimeout(dial, wait);
+  };
+  const dial = (): void => {
+    if (settled) return;
+    const candidate = connect(path);
+    sock = candidate;
+    let connected = false;
+    let reply = "";
+    candidate.setEncoding("utf8");
+    // `handoff` opts into the confirmed-delivery protocol: the connector holds the connection open
+    // and treats our receipt, not its own socket write, as proof the reply reached the runtime.
+    candidate.on("connect", () => {
+      if (settled || sock !== candidate) return;
+      connected = true;
+      try {
+        candidate.write(JSON.stringify({ token, event, handoff: true }) + "\n");
+      } catch {
+        finish("");
+      }
+    });
+    candidate.on("data", (d) => {
+      if (settled || sock !== candidate) return;
+      reply += d;
+      const nl = reply.indexOf("\n");
+      if (nl >= 0) finishWithReceipt(reply.slice(0, nl), candidate);
+    });
+    candidate.on("error", (error) => {
+      if (settled || sock !== candidate) return;
+      if (!connected && startupCritical && isRetryableConnectError(error)) {
+        drop(candidate);
+        retryLater();
+        return;
+      }
+      // Only SessionStart may outpace creation of the connector process. Later hooks must preserve
+      // immediate fail-open, and once the frame may have reached a connector any retry could deliver
+      // one lifecycle event twice.
+      finish("");
+    });
+    candidate.on("end", () => {
+      if (settled || sock !== candidate) return;
+      finish(reply);
+    });
+  };
+
+  dial();
 }

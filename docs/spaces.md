@@ -1,4 +1,4 @@
-# Spaces & channels
+# Spaces
 
 > **Concept** (informative) · **For:** everyone · **Normative:** [SPEC §1](../SPEC.md#1-scope-and-terminology), [§7](../SPEC.md#7-channels) · Connecting spaces is design direction: see the [roadmap](roadmap.md).
 
@@ -24,7 +24,7 @@ Concretely, today:
 So a space answers "**who is here together, and isolated from whom**": presence, identity, and
 the trust boundary all live at this level.
 
-## 2. Space vs channel, why both
+## 2. Channel boundary
 
 A channel is a *topic*, not a room. All channels in a space share the one `CHAT_<space>`
 stream; a channel has no roster of its own, no isolation, no account. It is a routing suffix on
@@ -38,9 +38,9 @@ They are different axes:
 | Maps to | a NATS **account** (auth mode) | a NATS **subject** suffix |
 | Scope | "who is in this collaboration" | "what subtopic" |
 
-Collapsing space into "just channels" would drop the per-collaboration roster and the
-isolation boundary; you would be back to one global namespace with topic prefixes (exactly
-`--open` mode's soft isolation). The distinction earns its keep the moment you care about more
+Collapsing a space into channels would drop its roster and isolation boundary. The deployment
+would become one global namespace with topic prefixes, matching `--open` mode's soft isolation.
+The distinction matters as soon as you care about more
 than one collaboration on a deployment, or about presence scoped to a group. This is also the
 universal split: Slack workspace vs channel, NATS account vs subject.
 
@@ -62,7 +62,7 @@ already exist:
 A channel that had its own roster and access control would just be a sub-space, two mechanisms
 doing the same job. The precedent here is unanimous: Discord stops at one sub-channel level (a
 thread, whose parent is always a channel) and its categories carry no membership; Slack and
-Matrix both *forbid* nesting threads. The membership/permission boundary lives at exactly one
+Matrix both *forbid* nesting threads. The membership/permission boundary lives at one
 level everywhere.
 
 If a level *above* space is ever wanted, make it a **non-membership "org" grouping** (a label,

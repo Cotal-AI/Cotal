@@ -36,9 +36,8 @@
  * child announces each revision change instead, and the parent stalls from late in a cycle.
  *
  * THE STALL IS SIZED OFF THE SHIPPED BUDGET, not off a hardcoded number, and it covers ONE renew
- * deadline rather than one TTL. That bound matters in both directions: shorter and no renew would
- * time out at all, longer and the manager would be right to fail closed, because a holder that has
- * been unable to reach the broker for a whole TTL genuinely can no longer prove it holds its key.
+ * deadline rather than one TTL: shorter and no renew would time out at all, longer and the key itself
+ * would expire, which is scenario B's question rather than this one's.
  *
  * THE SAMPLER READS THE BROKER DIRECTLY, not through the relay, so what it reports is the broker's
  * own truth and not a second view of the stall being measured.
@@ -181,11 +180,6 @@ try {
   async function bootManager(tag: string): Promise<{
     child: ReturnType<typeof spawn>; instanceId: string; pid: string;
     stdout: () => string; stderr: () => string;
-    /** When a line matching `re` FIRST reached us, on the same clock the child stamps its own output
-     *  with. The fail-close DECISION is what a schedule can be graded against; the process exit that
-     *  follows it cannot, because teardown runs over the same connection the scenario has cut and its
-     *  duration is a property of the blackout rather than of the decision. */
-    firstStderrAt: (re: RegExp) => number | undefined;
     reported: () => Array<{ revision: number; atMs: number }>;
     exited: Promise<{ code: number | null; signal: string | null }>;
   }> {
@@ -196,9 +190,8 @@ try {
       "--import", "tsx", join(HERE, "lease-renew.child.ts"), space, `nats://127.0.0.1:${relayPort}`, root,
     ], { stdio: ["ignore", "pipe", "pipe"] });
     let out = "", err = "";
-    const errChunks: Array<{ atMs: number; text: string }> = [];
     child.stdout?.on("data", (b: Buffer) => { out += b.toString(); });
-    child.stderr?.on("data", (b: Buffer) => { const t = b.toString(); err += t; errChunks.push({ atMs: Date.now(), text: t }); });
+    child.stderr?.on("data", (b: Buffer) => { err += b.toString(); });
     const exited = new Promise<{ code: number | null; signal: string | null }>((r) =>
       child.on("exit", (code, signal) => r({ code, signal })));
     const reported = (): Array<{ revision: number; atMs: number }> =>
@@ -208,8 +201,7 @@ try {
     check(`[${tag}] the child manager started, acquired its own per-instance lease, and renewed it at least once`,
       up !== null && reported().length > 0, { up: up?.[0], reported: reported(), stderr: err.slice(-400) });
     if (!up) throw new Error(`[${tag}] child never came up`);
-    const firstStderrAt = (re: RegExp): number | undefined => errChunks.find((c) => re.test(c.text))?.atMs;
-    return { child, instanceId: up[1], pid: up[2], stdout: () => out, stderr: () => err, firstStderrAt, reported, exited };
+    return { child, instanceId: up[1], pid: up[2], stdout: () => out, stderr: () => err, reported, exited };
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -221,9 +213,8 @@ try {
   const err0 = a.stderr;
 
   // ONE ROUND TRIP, not one TTL. The stall is sized off the shipped budget and started as LATE in the
-  // cycle as it safely can be, so the blackout covers exactly one renew's deadline and no more. It has
-  // to be that tight: a manager that cannot reach the broker for a whole TTL genuinely can no longer
-  // prove it holds its key, and fail-closing on THAT is correct. This probe is about the other case.
+  // cycle as it safely can be, so the blackout covers one renew's deadline and no more, and the key
+  // never expires. Expiry is scenario B's question.
   await wait(Math.max(0, MANAGER_LEASE_RENEW_MS - 400));
   const samples: LeaseSample[] = [];
   const sampler = setInterval(() => { void readLease(instanceId).then((s) => { if (s) samples.push(s); }); }, 300);
@@ -280,82 +271,81 @@ try {
   child.kill("SIGKILL");
 
   // ---------------------------------------------------------------------------------------------
-  // SCENARIO B: THE WRITE DOES NOT LAND, AND THE READS ANSWER FOR A WHILE.
+  // SCENARIO B: THE WRITE DOES NOT LAND, THE READS THEN STOP TOO, AND THE KEY EXPIRES.
   //
-  // The other half of the same question, and the one that decides whether the budget for serving
-  // WITHOUT proof is measured from the right event. Here the renew publishes are DROPPED, so nothing
-  // reaches the broker, the key's TTL is never restarted, and the key expires on the schedule the last
-  // landed write set. Meanwhile the re-reads still answer, and each one truthfully says the key is
-  // present, ours, and at the SAME revision.
+  // The whole-outage case. The renew publishes are DROPPED, so nothing reaches the broker and the
+  // key's TTL is never restarted; the re-reads still answer for a while, truthfully saying the key is
+  // present, ours, and at the same revision. Then the reads are cut as well, just before the key's own
+  // expiry, and from that point the manager knows nothing. The key expires at the broker while the
+  // manager is blind.
   //
-  // A re-read like that is not a renewal. If it resets the clock, the budget is measured from the last
-  // OBSERVATION rather than from the last TTL-refreshing WRITE, and it can then outlive the key: once
-  // the reads stop answering too, this instance goes on serving for a further whole TTL after the key
-  // has expired and a same-id restart is free to take it. Two managers, one instance key, both serving.
-  //
-  // So the reads are cut just BEFORE the key's own expiry. From that point the manager knows nothing,
-  // and the only question left is which event it is counting from.
+  // The old code ended its own process here, one attempt past the TTL, and on a live mesh that turned
+  // a ten-second broker outage into a manager outage that lasted until someone noticed. What is graded
+  // now: the manager is still there well past the point it used to die, and when the link comes back
+  // it reads its key gone, puts it back, and renews again.
   // ---------------------------------------------------------------------------------------------
-  console.log("\nSCENARIO B - the renew never reaches the broker, and the re-reads answer until just before the key expires");
+  console.log("\nSCENARIO B - the renew never reaches the broker, the reads are cut before the key expires, and the link returns later");
   const b = await bootManager("nowrite");
   const landedRevision = b.reported().at(-1);
   const landedAt = Date.now();
   proxy.dropPublishes((subject) => subject.startsWith("$KV."));
 
-  // Cut the reads just inside the key's own lifetime. A read after expiry would answer "gone", which is
-  // proof and a correct reason to stop, and would grade a different question than this one.
+  // Cut the reads just inside the key's own lifetime, so the manager never gets to read "gone" while the
+  // link is up: its last answer was "present, same revision", and then nothing.
   const bSamples: LeaseSample[] = [];
-  const bSampler = setInterval(() => { void readLease(b.instanceId).then((s) => { if (s) bSamples.push(s); }); }, 300);
+  const bSampler = setInterval(() => { void readLease(b.instanceId).then((s) => { bSamples.push(s ?? { atMs: Date.now() }); }); }, 300);
   await wait(MANAGER_LEASE_TTL_MS - 1_000);
-  const atCut = bSamples.at(-1);
+  const atCut = bSamples.filter((s) => s.revision !== undefined).at(-1);
   proxy.setStalled(true);
 
-  // GRADE THE DECISION, NOT THE EXIT. Correct behaviour reaches the fail-close decision one attempt
-  // after the TTL runs out FROM THE LAST LANDED WRITE; counting from the last successful re-read
-  // instead buys several more cycles, and that gap is the whole question. The process death that
-  // follows the decision is not gradable on a schedule: teardown runs over the very connection this
-  // scenario has cut, so how long it takes is a property of the blackout and not of the decision.
-  const bDeadlineMs = MANAGER_LEASE_TTL_MS + MANAGER_LEASE_ATTEMPT_MS + 2_500;
-  for (let i = 0; i < 240 && b.firstStderrAt(/lost its liveness lease/) === undefined; i++) {
-    if (Date.now() - landedAt > bDeadlineMs + 8_000) break;
-    await wait(100);
-  }
-  clearInterval(bSampler);
-  const decidedAt = b.firstStderrAt(/lost its liveness lease/);
-  const decidedAfterMs = decidedAt !== undefined && landedRevision !== undefined ? decidedAt - landedRevision.atMs : undefined;
+  // Hold the blackout past the point the old code decided (one renew attempt past the TTL, plus slack)
+  // and then some, so "still here" is measured where "gone" used to be.
+  const oldDecisionMs = MANAGER_LEASE_TTL_MS + MANAGER_LEASE_ATTEMPT_MS + 2_500;
+  await wait(Math.max(0, landedAt + oldDecisionMs + 6_000 - Date.now()));
+  const expiredDuringBlackout = bSamples.some((s) => s.atMs > landedAt + MANAGER_LEASE_TTL_MS && s.revision === undefined);
+  const aliveAfterOldDecision = await Promise.race([b.exited, wait(500).then(() => "still serving" as const)]);
+  const revisionsBeforeRestore = b.reported().length;
 
-  // The blackout ends here. Teardown on the fail-close path talks to the broker (drain the serve loop,
-  // stop the endpoint, stop the attach face), so with the link still cut it would hang for reasons that
-  // have nothing to do with the decision under test. Lifting it lets the shutdown actually complete,
-  // which is what makes "it ended its own process" a fact about the decision rather than about the cut.
+  // The link returns. The manager's next renew CASes against a key that is no longer there and throws;
+  // the re-read answers "gone"; the manager puts the key back.
   proxy.dropPublishes(undefined);
   proxy.setStalled(false);
-  const bOutcome = await Promise.race([b.exited, wait(20_000).then(() => "still serving" as const)]);
+  const restoredAt = Date.now();
+  for (let i = 0; i < 300 && b.reported().length === revisionsBeforeRestore; i++) await wait(100);
+  const recoveredAt = Date.now();
+  await wait(MANAGER_LEASE_RENEW_MS + 500);
+  clearInterval(bSampler);
+  const afterRecovery = await readLease(b.instanceId);
+  const bOutcome = await Promise.race([b.exited, wait(300).then(() => "still serving" as const)]);
 
   console.log("\nwhat the manager said about it:");
   for (const line of b.stderr().split("\n").filter((l) => /liveness lease/.test(l))) console.log(`  ${line.trim()}`);
   console.log("");
 
-  const bAdvanced = bSamples.filter((s) => s.revision !== undefined && s.revision > (landedRevision?.revision ?? 0));
-  check("CONTROL: no renew reached the broker after the writes were dropped — the stored revision never moved",
-    landedRevision !== undefined && bSamples.length > 0 && bAdvanced.length === 0,
-    { lastLandedRevision: landedRevision?.revision, advancedSamples: bAdvanced.slice(0, 3), sampleCount: bSamples.length });
-  check("CONTROL: and the manager did take the still-ours branch on an unlanded renew, so this scenario reached the case it grades",
-    /could not renew its liveness lease.*the key is still ours at revision/.test(b.stderr()), b.stderr().slice(-500));
-  check("CONTROL: the key was still present when the reads were cut, so the manager was not already out of the game",
+  const bAdvanced = bSamples.filter((s) => s.revision !== undefined && s.atMs <= restoredAt && s.revision > (landedRevision?.revision ?? 0));
+  check("CONTROL: no renew reached the broker while the writes were dropped - the stored revision never moved",
+    landedRevision !== undefined && bAdvanced.length === 0, { lastLandedRevision: landedRevision?.revision, advancedSamples: bAdvanced.slice(0, 3) });
+  check("CONTROL: the key was still present when the reads were cut, so the manager had not read it gone",
     atCut !== undefined && atCut.instanceId === b.instanceId && String(atCut.pid) === b.pid,
     { atCut, expected: { instanceId: b.instanceId, pid: Number(b.pid) } });
+  check("CONTROL: the key then EXPIRED at the broker during the blackout, so this is the whole-outage case and not a shorter one",
+    expiredDuringBlackout, { samples: bSamples.filter((s) => s.atMs > landedAt + MANAGER_LEASE_TTL_MS).slice(0, 4) });
 
-  // THE GRADED CELL. A re-read that says "same revision" tells this instance the key is there now. It
-  // does not tell it the key will still be there a TTL from now, because nothing refreshed it.
-  check("A RE-READ AT THE SAME REVISION MUST NOT BUY MORE TIME: the unconfirmed budget runs from the last renew that actually LANDED, so the manager fail-closed on schedule rather than serving on past the key's own expiry",
-    decidedAfterMs !== undefined && decidedAfterMs <= bDeadlineMs,
-    { decidedAfterLastLandedWriteMs: decidedAfterMs, deadlineMs: bDeadlineMs, ttlMs: MANAGER_LEASE_TTL_MS, stderrTail: b.stderr().slice(-500) });
-  check("and it did end its own process, so the decision is a shutdown and not just a log line",
-    typeof bOutcome !== "string" && bOutcome.code === 1, { bOutcome });
-  check("and it stopped for the RIGHT reason: it could not confirm the key, rather than having read it gone",
-    /can no longer prove it holds it/.test(b.stderr()) && !/is GONE from the bucket/.test(b.stderr()),
-    b.stderr().slice(-500));
+  // THE GRADED CELLS.
+  check("A BLACKOUT PAST THE TTL MUST NOT END THE MANAGER: it was still serving well after the point the old code exited",
+    aliveAfterOldDecision === "still serving", { aliveAfterOldDecision, stderrTail: b.stderr().slice(-500) });
+  check("and it never decided to shut down: no lease-loss exit line was printed",
+    !/lost its liveness lease|shutting down/.test(b.stderr()), b.stderr().slice(-500));
+  check("WHEN THE LINK RETURNED IT PUT ITS KEY BACK: the broker holds the key again, with this process's pid, at a newer revision",
+    afterRecovery !== undefined && afterRecovery.instanceId === b.instanceId && String(afterRecovery.pid) === b.pid
+      && landedRevision !== undefined && (afterRecovery.revision ?? 0) > landedRevision.revision,
+    { afterRecovery, lastLandedRevision: landedRevision?.revision });
+  check("and it said so: the key was reported gone and re-acquired, once",
+    b.stderr().split("\n").filter((l) => /gone/.test(l) && /re-acquired/.test(l)).length === 1, b.stderr().slice(-600));
+  check("and the recovery was prompt: the key was back within a few renew periods of the link returning",
+    recoveredAt - restoredAt <= MANAGER_LEASE_RENEW_MS * 3 + MANAGER_LEASE_ATTEMPT_MS, { recoveredAfterMs: recoveredAt - restoredAt });
+  check("and the process is still there at the end of the scenario",
+    bOutcome === "still serving", { bOutcome });
 
   b.child.kill("SIGKILL");
 } finally {

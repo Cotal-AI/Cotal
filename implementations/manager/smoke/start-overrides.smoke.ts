@@ -18,6 +18,14 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Manager } from "../src/manager.js";
+import { firstFreeName } from "@cotal-ai/core";
+
+/** Match `<base>` or `<base><sep><n>` where SEP is the shipped auto-numbering separator, DERIVED
+ *  rather than spelled. Both cells below used to hard-code `-`, so changing the numbering scheme
+ *  surfaced here as a CI failure instead of as a deliberate update — an assertion that spells a
+ *  convention silently pins it. Derived, this follows the scheme wherever it goes. */
+const NUM_SEP = firstFreeName("a", (n) => n === "a").slice(1, 2);
+const autoNumbered = (base: string) => new RegExp(`^${base}(${NUM_SEP}\\d+)?$`);
 import { principalKey, registry, DEV_OWNER, type Connector, type LaunchOpts, type LaunchSpec, type AgentHandle, type MeshLaunchAgent } from "@cotal-ai/core";
 
 let failures = 0;
@@ -148,7 +156,9 @@ const j = (v: unknown) => JSON.stringify(v);
   resetOpts();
   await mgr.startAgent({ name: "plain", agent: "smoke-ov" });
   // Earlier sections spawned `plain` repeatedly — uniqueName auto-numbers, so match the series.
-  check("no identity override → file name: (auto-numbered)", /^plain(-\d+)?$/.test(lastOpts?.name ?? ""), lastOpts?.name);
+  check(`instrument control: the shipped numbering separator is one mintable char (${JSON.stringify(NUM_SEP)})`,
+    NUM_SEP.length === 1 && /^[A-Za-z0-9_]$/.test(NUM_SEP), NUM_SEP);
+  check("no identity override → file name: (auto-numbered)", autoNumbered("plain").test(lastOpts?.name ?? ""), lastOpts?.name);
 }
 
 // 7 — a manifest launch (resolved) rejects imperative overrides (access + identity authority).
@@ -178,7 +188,7 @@ const j = (v: unknown) => JSON.stringify(v);
     const r = await mgr.startAgent({ name: "plain" });
     check("COTAL_DEFAULT_AGENT spawn succeeds", r.ok === true, r);
     check("COTAL_DEFAULT_AGENT used as manager default", (r.data as { agent?: string })?.agent === "smoke-ov", r.data);
-    check("env default reaches LaunchOpts", lastOpts?.space === "smoke" && /^plain(-\d+)?$/.test(lastOpts?.name ?? ""), lastOpts);
+    check("env default reaches LaunchOpts", lastOpts?.space === "smoke" && autoNumbered("plain").test(lastOpts?.name ?? ""), { space: lastOpts?.space, name: lastOpts?.name });
   } finally {
     if (prev === undefined) delete process.env.COTAL_DEFAULT_AGENT;
     else process.env.COTAL_DEFAULT_AGENT = prev;

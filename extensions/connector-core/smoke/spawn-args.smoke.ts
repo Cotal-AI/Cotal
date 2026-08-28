@@ -1,5 +1,5 @@
 /**
- * cotal_spawn parity smoke — proves the MCP spawn door carries the same harness/model/variant knobs as the
+ * cotal_spawn parity smoke — proves the MCP spawn door carries the same harness/model/variant/prompt knobs as the
  * operator's `cotal spawn --detach`. The `cotal_spawn` tool forwards to MeshAgent.spawn, which (1c.2b/2c)
  * puts `agent` plus model selectors into the manager's v0.4 `spawn` command over the generic invoke path
  * (`CotalEndpoint.invokeService`) in EVERY auth mode — the user-mode caller triple is the endpoint's own
@@ -8,6 +8,7 @@
  * connected. Run with: pnpm smoke:spawn-args
  */
 import { MeshAgent, SPAWN_TIMEOUT_MS } from "../src/agent.js";
+import { cotalToolSpecs } from "../src/tool-specs.js";
 import type { AgentConfig } from "../src/config.js";
 
 let failures = 0;
@@ -39,14 +40,17 @@ let rec: Recorded | undefined;
 };
 (a as unknown as { _connected: boolean })._connected = true;
 
-// Full knobs: harness + model selectors ride through to the manager's v0.4 `spawn` command.
-await a.spawn("rev", "reviewer", { agent: "opencode", model: "sonnet", variant: "high" });
+// Full knobs: harness + model selectors + the kickoff prompt ride through to the manager's
+// v0.4 `spawn` command. The prompt is what makes a fresh, never-prompted session take its first
+// turn; a channel nudge reaches Claude but does not start that first turn on its own.
+await a.spawn("rev", "reviewer", { agent: "opencode", model: "sonnet", variant: "high", prompt: "Review the current diff." });
 check("command is the manager endpoint's `spawn`", rec?.endpoint === "manager" && rec?.command === "spawn", rec);
 check("name forwarded", rec?.args?.name === "rev");
 check("role forwarded", rec?.args?.role === "reviewer");
 check("agent (harness) forwarded", rec?.args?.agent === "opencode", rec?.args?.agent);
 check("model forwarded", rec?.args?.model === "sonnet", rec?.args?.model);
 check("variant forwarded", rec?.args?.variant === "high", rec?.args?.variant);
+check("kickoff prompt forwarded", rec?.args?.prompt === "Review the current diff.", rec?.args?.prompt);
 // #159 B1: the manager replies to `spawn` only on a real outcome (join / exit / ~30s readiness
 // backstop) — the request must carry the long spawn window, not fall back to the op default.
 check("request outlives the readiness wait (SPAWN_TIMEOUT_MS, not the default deadline)", rec?.opts?.deadlineMs === SPAWN_TIMEOUT_MS, rec?.opts?.deadlineMs);
@@ -59,6 +63,16 @@ check("name-only: agent key absent", !("agent" in (rec?.args ?? {})));
 check("name-only: model key absent", !("model" in (rec?.args ?? {})));
 check("name-only: variant key absent", !("variant" in (rec?.args ?? {})));
 check("name-only: role key absent", !("role" in (rec?.args ?? {})));
+check("name-only: prompt key absent", !("prompt" in (rec?.args ?? {})));
+
+// The published cotal_spawn surface carries the prompt too — proving MeshAgent.spawn alone is not
+// enough, because the live failure entered through the tool and that door omitted the field.
+const spawnTool = cotalToolSpecs(cfg).find((s) => s.name === "cotal_spawn") as
+  | { schema: { shape: Record<string, unknown> }; run: (agent: MeshAgent, config: AgentConfig, args: Record<string, unknown>) => Promise<unknown> }
+  | undefined;
+check("cotal_spawn schema exposes the kickoff prompt", spawnTool !== undefined && "prompt" in spawnTool.schema.shape);
+await spawnTool?.run(a, cfg, { name: "tool-rev", prompt: "Start the review now." });
+check("cotal_spawn tool forwards the kickoff prompt", rec?.args?.prompt === "Start the review now.", rec?.args?.prompt);
 
 // USER MODE rides the SAME invokeService door (1c.2c: the endpoint's bearer-derived principal +
 // the launcher's lifecycle uid ARE the caller triple; no ctl branch remains in the connector).

@@ -6,14 +6,14 @@ The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` an
 
 `cotal_orientation` is the entry point. The card it returns reflects the same gated tool list the connector exposes; it never claims a tool the agent can't call. In auth mode the manager-op tools (`cotal_spawn`, `cotal_persona`) are injected only for personas declaring `capabilities: [spawn]` ([identity & auth](identity-and-auth.md)).
 
-**Arguments are closed.** Every tool accepts exactly the arguments listed for it and REFUSES any other key, including tools that take no arguments at all. A key that is not in the table is an error, not something to be quietly dropped — so a call that names an identity (`owner`, `actor`, `caller`) is turned away rather than run as if it had never named one. The identity a tool acts under comes from the connector's own credential and can never be supplied as an argument. Every refusal names the offending keys, but its shape depends on who refuses: where the host validates the published schema (Claude Code, Codex, pi) you get that host's own schema error, and where it does not (OpenCode, Hermes) the connector refuses at its own dispatch and additionally lists the arguments the tool does accept, or says it takes none. In both cases the call did not run.
+**Arguments are closed.** Every tool accepts only the arguments listed for it and REFUSES any other key, including tools that take no arguments at all. An unlisted key is an error. A call that supplies an identity (`owner`, `actor`, `caller`) is turned away before anything runs. The identity a tool acts under comes from the connector's own credential and can never be supplied as an argument. Every refusal names the offending keys, but its shape depends on who refuses: where the host validates the published schema (Claude Code, Codex, pi) you get that host's own schema error, and where it does not (OpenCode, Hermes) the connector refuses at its own dispatch and additionally lists the arguments the tool does accept, or says it takes none. In both cases the call did not run.
 
 | Tool | Does | Side-effect |
 |---|---|---|
 | [`cotal_orientation`](#cotalorientation) | orient (who you are & what you can do) | read-only |
 | [`cotal_docs`](#cotaldocs) | read the docs (version-exact) | read-only |
 | [`cotal_roster`](#cotalroster) | who's present | read-only |
-| [`cotal_inbox`](#cotalinbox) | read incoming messages | clears exactly the messages it returns, never more (nothing at all when peek is true) |
+| [`cotal_inbox`](#cotalinbox) | read incoming messages | clears only the messages it returns (nothing at all when peek is true) |
 | [`cotal_send`](#cotalsend) | broadcast to a channel | publishes to a channel |
 | [`cotal_dm`](#cotaldm) | direct-message a peer | sends a private message to one peer |
 | [`cotal_anycast`](#cotalanycast) | ask any agent of a role | queues a request for one holder of a role |
@@ -45,7 +45,7 @@ No arguments.
 
 *read the docs (version-exact)*
 
-Read the authoritative Cotal docs for the exact version installed here: the wire spec, the message schema, and every guide, bundled so they always match this version. Use it before you answer or write code about anything Cotal — subjects, message shapes, the auth grammar, channels and ACLs, the CLI, the cotal_* tools — and prefer it over your training memory, which may be stale or wrong for this version. Three ways to call it: (1) no arguments returns the page index (a table of contents; start here when unsure); (2) `page` returns one page in full — pass "spec", "schema", or a guide slug from the index like "architecture" or "channels-and-permissions"; (3) `query` runs a keyword search and returns the most relevant sections with a pointer to each full page. Read the full page before writing code against it. Read-only, offline, instant. Optionally set `refresh: true` when reading a page to also pull a version-pinned copy from docs.cotal.ai (post-release patches); being version-pinned it can never return docs for a different version, and it falls back to the bundled copy when none is published.
+Read the authoritative Cotal docs bundled with this installed version: the wire spec, the message schema, and every guide. The bundle always matches this version. Use it before you answer or write code about Cotal subjects, message shapes, the auth grammar, channels and ACLs, the CLI, or the cotal_* tools. Prefer it over training memory, which may be stale or wrong for this version. Three ways to call it: (1) no arguments returns the page index (a table of contents; start here when unsure); (2) `page` returns one page in full. Pass "spec", "schema", or a guide slug from the index like "architecture" or "channels-and-permissions"; (3) `query` runs a keyword search and returns the most relevant sections with a pointer to each full page. Read the full page before writing code against it. Read-only, offline, instant. Optionally set `refresh: true` when reading a page to also pull a version-pinned copy from docs.cotal.ai (post-release patches); being version-pinned it can never return docs for a different version, and it falls back to the bundled copy when none is published.
 
 - **Side-effect:** read-only.
 - **Available:** always.
@@ -54,7 +54,7 @@ Read the authoritative Cotal docs for the exact version installed here: the wire
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
 | `page` | string | no | Read one page in full. Use "spec" for the normative wire contract, "schema" for the message JSON Schema, or a guide slug from the index (e.g. "architecture", "channels-and-permissions", "mcp-tools"). Leave page and query both empty to get the index. |
-| `query` | string | no | Keyword search across all docs when you do not know which page to read. Best with exact Cotal identifiers — a subject, a cotal_* tool name, a field like "allowSubscribe". Returns the most relevant sections, each with the page to read in full. Ignored if `page` is set. |
+| `query` | string | no | Keyword search across all docs when you do not know which page to read. Use Cotal identifiers such as a subject, a cotal_* tool name, or a field like "allowSubscribe". Returns the most relevant sections, each with the page to read in full. Ignored if `page` is set. |
 | `refresh` | boolean | no | Applies only when reading a `page` (ignored for the index and search). Default false serves the bundled, version-exact docs (offline). Set true to also try a version-pinned copy at docs.cotal.ai for post-release patches; if none is published or it is unreachable, the bundled copy is served and the response says which was used. |
 
 ## `cotal_roster`
@@ -76,7 +76,7 @@ Read messages other agents have sent you since you last checked: channel broadca
 
 **Connector variants:** Claude Code exposes the `peek` argument and otherwise reads the whole local inbox, one receivable window per call. OpenCode, Codex, Hermes, and Pi expose no arguments: the call pulls only buffered quiet ambient, leaving automatic traffic to the connector; normal focus recall shown with it remains read-only. On every variant the call clears only what that response actually carried.
 
-- **Side-effect:** clears exactly the messages it returns, never more (nothing at all when peek is true).
+- **Side-effect:** clears only the messages it returns (nothing at all when peek is true).
 - **Available:** always.
 - One call carries at most a receivable window; what does not fit stays buffered, is named in the reply, and comes back on the next call. OpenCode, Codex, Hermes, and Pi expose no arguments: automatic traffic remains connector-owned, while buffered quiet ambient is what this call returns and clears. In focus mode, normal channel recall is also shown read-only (replay-gated) and is never cleared by the read.
 
@@ -215,7 +215,7 @@ Unsubscribe from a channel mid-session; you stop receiving its messages. Leaving
 
 *spawn a new teammate*
 
-Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer (and, when the manager runs the cmux runtime, appears in its own tab). Use this, rather than your harness's own subagent/Task tool, whenever you need to spawn a teammate: a Cotal peer is a real, addressable mesh agent the user can watch and you can DM, roster, and coordinate with, not a black-box subagent. When you first bring a team online, if the live web dashboard isn't already up, suggest the user run `cotal web` to watch the mesh in real time.
+Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer and, under the cmux runtime, appears in its own tab. A Cotal peer is a real, addressable process the user can watch; you can reach it by DM, find it on the roster, and coordinate with it later. Use it for teammate work that should stay visible on the mesh. Pass `prompt` when it should begin immediately; the connector auto-submits that prompt as its first turn. When you first bring a team online, if the live web dashboard is down, suggest `cotal web` so the user can watch the mesh in real time.
 
 - **Side-effect:** starts a new agent process via the manager.
 - **Available:** capability-gated: injected only for personas declaring `capabilities: [spawn]` (auth mode); open mode is permissive.
@@ -223,13 +223,14 @@ Ask the manager to start a new peer endpoint in your space. It joins the mesh as
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
-| `name` | string | yes | Which persona to spawn: the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md. The new peer joins under the persona's own `name:` (auto-numbered, e.g. socrates-2, if that's taken). Fails if no such persona file exists; spawn an existing persona, don't invent a name. |
+| `name` | string | yes | Which persona to spawn: the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md. The new peer joins under the persona's own `name:` (auto-numbered with an underscore, e.g. socrates_2, if that's taken). Fails if no such persona file exists; spawn an existing persona, don't invent a name. |
 | `role` | string | no | Optional role for the new peer (e.g. worker, reviewer); overrides the persona file's role. |
 | `agent` | string | no | Optional harness the new peer runs on: the agent/connector type (claude, opencode, hermes), NOT the persona to spawn (that's `name`). Defaults to the manager's COTAL_DEFAULT_AGENT, else Claude. |
 | `model` | string | no | Optional model override (e.g. opus, sonnet); it wins over the persona file's model:. |
 | `variant` | string | no | Optional model variant override (connector-defined; for OpenCode, a model variant such as high/max/low). |
 | `launchOptions` | record | no | Optional connector-specific launch options: an opaque key→value map the chosen connector forwards raw to its own host form (claude CLI flags, OpenCode agent config); a connector with no option surface (Hermes) rejects any, and malformed keys are refused. |
 | `cwd` | string | no | Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace. |
+| `prompt` | string | no | Optional kickoff message auto-submitted as the new peer's first turn. Pass it when the peer should begin work immediately; omitted means no first model turn is submitted. |
 
 ## `cotal_feedback`
 
@@ -273,18 +274,18 @@ Ask the manager to tear a teammate down: it leaves the mesh and its process/tab 
 
 *define a persona*
 
-Define a new persona and save it as config (the manager writes .cotal/agents/<name>.md). Silent by default — it posts nothing on the mesh unless you ask it to with `announce`. Afterwards cotal_spawn(name) launches a real agent wearing this persona/model. Use to grow the team with a custom persona you describe on the fly; set its role at spawn (cotal_spawn takes a role).
+Define a new persona and save it as config (the manager writes .cotal/agents/<name>.md). It stays silent unless you pass `announce` with a channel. Afterwards cotal_spawn(name) launches a real agent wearing this persona/model. Use to grow the team with a custom persona you describe on the fly; set its role at spawn (cotal_spawn takes a role).
 
 - **Side-effect:** writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce`.
 - **Available:** capability-gated like cotal_spawn.
-- Content only (`prompt`, `model`): role, ACLs, capabilities, and ownership have no slot here; they are policy. Defining is silent by default — `announce` is the only way it emits, and then only to the channel you name.
+- Content only (`prompt`, `model`): role, ACLs, capabilities, and ownership have no slot here; they are policy. Defining is silent by default. `announce` is the only way it emits, and then only to the channel you name.
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
 | `name` | string | yes | Unique name for the persona (also the spawn name): letters, digits, _ or -. |
 | `prompt` | string | yes | The persona: an appended system prompt describing who this agent is. |
 | `model` | string | no | Optional model override (e.g. opus, sonnet). |
-| `announce` | string | no | Optional channel to post a one-line note on once the persona is saved. Omit (the default) and defining is silent — nothing goes out on the mesh. Name the channel your team is actually working on, not `general`: a peer that did not ask for this persona has no way to judge whether spawning it is wanted, and a broadcast soliciting spawns from an unfamiliar principal reads as exactly the thing a peer should refuse. Your post ACL applies as it does to any other message. |
+| `announce` | string | no | Optional channel to post a one-line note on once the persona is saved. Omit it to keep the definition private to the manager's persona catalog. Name the channel your team is actually working on, not `general`: a peer that did not ask for this persona has no way to judge whether spawning it is wanted, and a broadcast soliciting spawns from an unfamiliar principal gives peers no reason to trust the request. Your post ACL applies as it does to any other message. |
 
 ## `cotal_reconnect`
 

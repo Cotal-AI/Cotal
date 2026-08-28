@@ -1,4 +1,4 @@
-# Release and publish
+# Publishing a release
 
 > **Project** (non-normative maintainer notes) · **For:** maintainers shipping Cotal
 
@@ -13,16 +13,16 @@ must run `cotal ext add @cotal-ai/tmux` or `cotal ext add @cotal-ai/cmux` once a
 before using `runtime: tmux|cmux` in a manifest or passing `--runtime tmux|cmux`. Missing runtimes
 fail loudly with the matching install command; they never fall back to pty.
 
-## One-time npm setup: trusted publishing (OIDC)
+## Trusted publishing
 
 Trusted publishing replaces the long-lived `NPM_TOKEN` secret with short-lived OIDC tokens
 issued by GitHub Actions. Each published package must be configured once on npmjs.com.
 
-This list is the `fixed` group in [`.changeset/config.json`](../.changeset/config.json) — that
-group is what actually gets versioned and published, so derive the list from it rather than
+The `fixed` group in [`.changeset/config.json`](../.changeset/config.json) is the list that
+gets versioned and published. Derive the package list from it instead of
 maintaining it by hand. It had drifted by six packages before this was last reconciled.
 
-For **every** published package — `cotal-ai` (the binary), `@cotal-ai/core`,
+For **every** published package, `cotal-ai` (the binary), `@cotal-ai/core`,
 `@cotal-ai/workspace`, `@cotal-ai/cli`, `@cotal-ai/manager`, `@cotal-ai/delivery`,
 `@cotal-ai/web`, `@cotal-ai/cmux`, `@cotal-ai/orca`, `@cotal-ai/tmux`, `@cotal-ai/herdr`,
 `@cotal-ai/connector-core`, `@cotal-ai/connector-claude-code`, `@cotal-ai/connector-hermes`,
@@ -72,7 +72,7 @@ pnpm ci:publish
 
 Set `NPM_TOKEN` in your environment first. **Do not** commit the token.
 
-## How `ci:publish` is wired
+## Publication workflow
 
 `ci:publish` in the root `package.json` is:
 
