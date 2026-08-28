@@ -15,8 +15,8 @@ rows its callers grant it, and serves over a scoped credential.
 ## The `ep` rails
 
 One kind, `ep`, carries every request under a mode token that says where the request
-routes, never which verb it is (the verb rides the envelope): `one` (queue-group anycast,
-one class member), `all` (scatter, every instance), and `inst` (one instance by its
+routes, never which verb it is (the verb rides the envelope): `one` (queue-group
+anycast, one and only one class member), `all` (scatter, every instance), and `inst` (one instance by its
 stable address). Replies come back on a `reply` rail keyed to the serving instance and its
 epoch. Around these sit the sibling planes the composites use: per-goal events, timers,
 sessions, and the journal that holds durable facts. Every request carries the caller as
@@ -128,8 +128,8 @@ broker asynchronously, while the publish itself returns normally. A refused prob
 silent, and silence is what a live but slow instance looks like. Only the layer that
 minted the credential knows which ids it may ask about, so that layer asks about those and no
 others, and prints any refusal the broker raises anyway rather than letting it expire into a
-timeout. `cotal ps` freezes the class on its first connection, re-mints an instrument pinned to
-the frozen ids, and scatters on a second.
+timeout. `cotal ps` freezes the class on its first connection, re-mints an instrument pinned only
+to the frozen ids, and scatters on a second.
 
 This does not help against an instance that is **connected but not answering**. A hung manager
 holds its subscriptions, so it is indistinguishable from a slow one, and it still costs the full
@@ -214,8 +214,8 @@ from "not right now". See [cli.md](cli.md#input).
 ## Grants
 
 There is no broad control credential. A caller holds one capability row per command it is
-allowed to send, and minting maps each named capability to only the request subjects it
-needs, nothing wider. The manager serves over a scoped serve credential that can answer and
+allowed to send, and minting maps each named capability to the request subjects it needs and no
+others. The manager serves over a scoped serve credential that can answer and
 reply but cannot, for instance, write another endpoint's records or forge a goal terminal;
 the goal-fact writer and the session writer are separate, narrowly scoped credentials the
 broker fences by subject. Authorization is checked at the serving boundary, and for actions
