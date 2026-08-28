@@ -1,7 +1,7 @@
 {
   "suite": "extensions/connector-claude-code/smoke/hook-load-and-emitter-race.smoke.ts",
   "guard": "every lifecycle hook is actually loaded and runnable by the host, and the AG-UI emitter never starts against an unbound endpoint",
-  "command": "pnpm smoke:hook-load-emitter-race",
+  "command": "pnpm --filter @cotal-ai/connector-core... build && pnpm smoke:hook-load-emitter-race",
   "completionMarker": "HOOK-LOAD/EMITTER-RACE SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/hook-load-emitter-race.json",
   "why": [
