@@ -1,6 +1,6 @@
 {
   "suite": "extensions/connector-claude-code/smoke/agui-run-error.smoke.ts",
-  "guard": "Claude's documented SessionStart.source value crosses the shipped hook and holder into the transcript source factory, so the pre-existing startup prompt opens the first run",
+  "guard": "Claude event hooks may reach the connector out of lifecycle order: SessionStart.source still reaches the source factory, and early flush/terminal work waits for that context before adopt \u2192 flush \u2192 close",
   "command": "pnpm smoke:claude-run-error",
   "completionMarker": "claude-run-error smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/agui-start-hook.json",
@@ -8,15 +8,36 @@
     "A source-policy unit test can prove what startup means and still miss the production seam that",
     "drops the runtime value before the factory. This mutation removes only the second argument from",
     "the shipped SessionStart hook. The real broker suite writes the prompt before SessionStart and",
-    "must then lose turn one exactly as the live manager-spawned session did."
+    "must then lose turn one exactly as the live manager-spawned session did.",
+    "",
+    "The released 0.33.4 live probe exposed a second seam: UserPromptSubmit reached the MCP handler",
+    "before SessionStart and started the holder with an immutable undefined context. H2 restores that",
+    "early start. H3 drops the deferred terminal after a fully reordered failed turn; the later prompt",
+    "then closes it as RUN_FINISHED, so the named RUN_ERROR cell distinguishes the loss."
   ],
   "mutations": [
     {
       "name": "H1 drop SessionStart.source at the hook-to-holder boundary",
       "file": "extensions/connector-claude-code/src/hooks.ts",
-      "find": "events()?.adopt(ev.transcript_path, ev.source);",
-      "replace": "events()?.adopt(ev.transcript_path);",
+      "find": "adoptEvents(ev.transcript_path, ev.source);",
+      "replace": "adoptEvents(ev.transcript_path, undefined);",
       "expectRed": "control:BOTH turns reached the subject, in order"
+    },
+    {
+      "name": "H2 let an early flush start the holder before SessionStart supplies its source",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "    if (adoptedTranscript === undefined) {\n      deferredFlush ??= { path };\n      return;\n    }\n    holder.flush(path);",
+      "replace": "    holder.flush(path);",
+      "expectRed": "control:BOTH turns reached the subject, in order",
+      "note": "Recreates the live 0.33.4 failure: the first UserPromptSubmit starts the holder with undefined, which is terminal before SessionStart arrives."
+    },
+    {
+      "name": "H3 discard a turn terminal that arrived before SessionStart",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "    if (deferredClose) {\n      holder.closeRun(deferredClose.timestamp, deferredClose.error);\n      deferredClose = undefined;\n    }",
+      "replace": "    if (deferredClose) {\n      deferredClose = undefined;\n    }",
+      "expectRed": "fail:and that close is RUN_ERROR, not RUN_FINISHED",
+      "note": "The source still publishes both turns, but the next prompt closes the failed first run as RUN_FINISHED. The terminal's class, not merely non-empty output, is the assertion."
     }
   ]
 }

@@ -16,6 +16,12 @@
  * map to nothing and the subject stays empty. This suite writes the prompt first, drives the real
  * SessionStart source through the holder, appends the answer, and requires both turns on the broker.
  *
+ * **THE LIVE FOLLOW-UP.** Claude runs hooks in separate processes. On the released 0.33.4 path the
+ * positional prompt's `UserPromptSubmit` relay reached the MCP handler before `SessionStart`; the
+ * early flush started the holder with `undefined`, and the new source guard correctly stopped with
+ * “unsupported source undefined”. This suite now carries the reordering through `StopFailure` before
+ * SessionStart, so adopt → flush → close must be restored by the shipped handler itself.
+ *
  * **THE HANDLER IS THE SHIPPED ONE AND THE BROKER IS REAL.** `createClaudeHandle` from `src` runs
  * against a real `nats-server`, over a real `AguiEmitterHolder` reading a real transcript file
  * through a real write-ahead log — the holder is assembled here exactly as `mcp.ts` assembles it.
@@ -197,18 +203,21 @@ try {
   // empty. `source: "startup"` is Claude's explicit discriminator for a new session; resume, fork,
   // clear and compact must still adopt at the current boundary rather than replaying history.
   writeFileSync(transcript, prompt(1));
-  await hook({ hook_event_name: "SessionStart", source: "startup" });
-  await sleep(1_500);
+  // LIVE RACE: Claude launches separate hook processes, and the positional prompt's
+  // UserPromptSubmit relay can reach the connector before SessionStart. The first flush must wait
+  // for SessionStart's source instead of starting the holder with an undefined context.
+  await hook({ hook_event_name: "UserPromptSubmit" });
 
-  // ---- Turn 1: append only the assistant record, then the API error that killed it.
-  //      `StopFailure` uses the harness's own payload shape: a required `error` naming the kind,
-  //      plus optional free-text detail.
+  // Carry the race through the terminal so the queued flush AND close are load-bearing. The live
+  // failure only needed UserPromptSubmit to win; separate hook processes have no ordering fence, so
+  // a loaded host must not turn a later StopFailure into another undefined-context start either.
   appendFileSync(transcript, answer(1));
   await hook({
     hook_event_name: "StopFailure",
     error: "rate_limit",
     error_details: "Claude AI usage limit reached",
   });
+  await hook({ hook_event_name: "SessionStart", source: "startup" });
   await sleep(2_000);
 
   // ---- Turn 2: a real turn that ENDS NORMALLY. The control that says the mapping is not blanket.
