@@ -611,3 +611,7 @@ smoke:web-probe-target
 # loopback default when no host is supplied. Appended so every existing shard assignment remains
 # unchanged.
 smoke:web-remote-bind
+# The published manager entrypoint directly loads three NATS packages. Derive that runtime import
+# closure from built dist and require every external package in it to be installed by a production
+# dependency field. Appended so every existing shard assignment remains unchanged.
+smoke:manager-runtime-deps
