@@ -122,6 +122,15 @@ try {
     () => assertSmokeSandboxTargetDown(anchor, ["down", "web", "--space", space], { cwd: root, env }),
     /target-addressed cotal down: observed root.*operator-checkout.*expected root.*root/,
   );
+  writeFileSync(meshFile, JSON.stringify({ space: "other", root }));
+  writeFileSync(join(meshes, "legacy-target.json"), JSON.stringify({ space, root: foreign }));
+  refuses(
+    "target guard refuses a canonical record whose space field is not the requested space",
+    () => assertSmokeSandboxTargetDown(anchor, ["down", "web", "--space", space], { cwd: root, env }),
+    /target-addressed cotal down: observed space.*other.*expected space.*target/,
+  );
+  writeFileSync(meshFile, JSON.stringify({ space, root }));
+  rmSync(join(meshes, "legacy-target.json"), { force: true });
   assert.throws(
     () => assertSmokeSandboxTargetDown(anchor, ["down", "web"], { cwd: root, env }),
     /must name a non-empty --space explicitly/,

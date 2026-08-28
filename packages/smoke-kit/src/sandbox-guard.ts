@@ -176,8 +176,10 @@ export function assertSmokeSandboxDown(
 /**
  * Guard a target-addressed component such as `down web`. The call must name its space explicitly so
  * the CLI cannot select a different `current` entry. The guard reads that ONE canonical record from
- * the already-anchored COTAL_HOME and compares its concrete root with the root recorded at sandbox
- * construction. It never runs the mesh resolver, searches the registry, or consults ambient state.
+ * the already-anchored COTAL_HOME, requires that document's space field to be the requested space
+ * (the same key loadMeshes/findMesh honor), and compares its concrete root with the root recorded at
+ * sandbox construction. It never runs the mesh resolver, searches the registry, or consults ambient
+ * state.
  */
 export function assertSmokeSandboxTargetDown(
   anchor: SmokeSandboxAnchor | undefined,
@@ -198,12 +200,22 @@ export function assertSmokeSandboxTargetDown(
   const expected = anchor[smokeSandboxAnchor];
   const key = Buffer.from(space, "utf8").toString("hex");
   const recordPath = join(expected.cotalHome.path, "meshes", `space.${key}.json`);
-  let observedRoot: unknown;
+  let observed: { root?: unknown; space?: unknown };
   try {
-    observedRoot = (JSON.parse(readFileSync(recordPath, "utf8")) as { root?: unknown }).root;
+    observed = JSON.parse(readFileSync(recordPath, "utf8")) as { root?: unknown; space?: unknown };
   } catch (error) {
     throw new Error(`cannot establish smoke sandbox target identity from ${JSON.stringify(recordPath)}`, { cause: error });
   }
+  // Filename location is not the consumer's key. loadMeshes/findMesh select by the document's
+  // space field, so a canonical file whose document names another space must not satisfy the
+  // requested space: the CLI would then honor a different record (including a legacy file).
+  if (observed.space !== space) {
+    throw new Error(
+      `smoke sandbox refused target-addressed cotal down: observed space ${JSON.stringify(observed.space ?? "<missing>")}, ` +
+        `expected space ${JSON.stringify(space)}`,
+    );
+  }
+  const observedRoot = observed.root;
   if (typeof observedRoot === "string" && sameDirectory(expected.root, observedRoot) === "same") return;
   throw new Error(
     `smoke sandbox refused target-addressed cotal down: observed root ${JSON.stringify(observedRoot ?? "<missing>")}, ` +

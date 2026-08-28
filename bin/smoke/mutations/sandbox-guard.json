@@ -80,6 +80,13 @@
       "find": "  const markerHeld = markerIdentity === \"same\";",
       "replace": "  const markerHeld = markerIdentity === \"same\" || markerIdentity === \"foreign\";",
       "expectRed": "replaced sandbox ownership marker is refused as foreign"
+    },
+    {
+      "name": "M10 target guard ignores the canonical document space field",
+      "file": "packages/smoke-kit/src/sandbox-guard.ts",
+      "find": "  if (observed.space !== space) {",
+      "replace": "  if (false && observed.space !== space) {",
+      "expectRed": "target guard refuses a canonical record whose space field is not the requested space"
     }
   ]
 }
