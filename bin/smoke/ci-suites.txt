@@ -554,7 +554,6 @@ smoke:claude-start-source
 # must survive that first refusal inside its existing two-second budget, then deliver exactly once;
 # an absent connector still fails open at the deadline. Appended to preserve every existing shard.
 smoke:hook-relay-startup
-smoke:persona-agent
 # Restore recreates excluded endpoint infrastructure through the production creation seam. That
 # needs UPDATE on the records KV hardening step, but no restored message stream may inherit UPDATE;
 # the infrastructure credential's exact subset is gated independently from the live restore cycle.
@@ -600,3 +599,7 @@ smoke:ctl-trust:live
 # through the operator profile, then proves its pre-minted channel-purger can purge while admin
 # cannot. Appended to preserve every existing shard assignment.
 smoke:web-seed:live
+# The persona harness reachability proof drives foreground and detached spawn through a throwaway
+# broker, including a caller-only COTAL_DEFAULT_AGENT crossing into an already-running manager.
+# Appended to preserve every existing shard assignment.
+smoke:persona-agent
