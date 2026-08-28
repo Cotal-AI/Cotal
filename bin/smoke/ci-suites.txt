@@ -563,3 +563,7 @@ smoke:isolated-infrastructure-scope
 # teardown. Four concurrent real-broker runs pass without port collision or stale state; append to
 # preserve every existing shard assignment.
 smoke:channels
+# Membership feature coverage now owns an OS-assigned open broker, provisions each unique space
+# through setupSpaceStreams, tears it down through deleteSpace, and uses only current token-safe ids.
+# Concurrent runs share neither port nor space. Appended to preserve every existing shard assignment.
+smoke:membership

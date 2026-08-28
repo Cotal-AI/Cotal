@@ -1,0 +1,30 @@
+{
+  "suite": "packages/core/smoke/membership.smoke.ts",
+  "guard": "the channel-membership feature smoke provisions each unique space on its own broker and uses a valid custom actor id",
+  "command": "pnpm smoke:membership",
+  "completionMarker": "MEMBERSHIP TESTS",
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/membership-harness.json",
+  "why": [
+    "Each scenario invents a unique space. Before this repair, no code created that space's streams, so every endpoint failed with stream not found and none of the feature assertions ran.",
+    "",
+    "The stale lossy-id fixture also used a dotted actor id that the current principal grammar deliberately rejects. Named preconditions keep both harness requirements legible instead of letting setup throws masquerade as product failures."
+  ],
+  "mutations": [
+    {
+      "name": "skip production space provisioning",
+      "file": "packages/core/smoke/membership.smoke.ts",
+      "find": "  await setupSpaceStreams({ servers: SERVERS, space });",
+      "replace": "  void space;",
+      "expectRed": "A: space streams provisioned",
+      "cell": "A: space streams provisioned"
+    },
+    {
+      "name": "restore the rejected dotted actor fixture",
+      "file": "packages/core/smoke/membership.smoke.ts",
+      "find": "  const customId = \"node_7\";",
+      "replace": "  const customId = \"node.7\";",
+      "expectRed": "E: custom id follows the current owner/actor token grammar",
+      "cell": "E: custom id follows the current owner/actor token grammar"
+    }
+  ]
+}

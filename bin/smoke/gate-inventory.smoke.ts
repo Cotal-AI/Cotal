@@ -117,7 +117,7 @@ const UNGATED: Record<string, string> = {
   "smoke:delivery-broker-coupling": "UNTRIAGED", "smoke:delivery-old-manager": "UNTRIAGED",
   "smoke:feedback": "UNTRIAGED", "smoke:install": "UNTRIAGED",
   "smoke:lifecycle-files": "UNTRIAGED", "smoke:manager-console": "UNTRIAGED", "smoke:manifest-launch": "UNTRIAGED",
-  "smoke:members": "UNTRIAGED", "smoke:membership": "UNTRIAGED",
+  "smoke:members": "UNTRIAGED",
   "smoke:plane3-activation:auth": "UNTRIAGED",
   "smoke:plane3-gate:auth": "UNTRIAGED", "smoke:presence-scrub": "UNTRIAGED",
   "smoke:self-serve-join-coverage:auth": "UNTRIAGED", "smoke:send": "UNTRIAGED",
