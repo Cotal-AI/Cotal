@@ -554,3 +554,4 @@ smoke:claude-start-source
 # must survive that first refusal inside its existing two-second budget, then deliver exactly once;
 # an absent connector still fails open at the deadline. Appended to preserve every existing shard.
 smoke:hook-relay-startup
+smoke:persona-agent

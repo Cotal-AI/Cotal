@@ -98,13 +98,6 @@ const UNGATED: Record<string, string> = {
   // heard about it. "Too slow for the gate" was 105 seconds.
   "smoke:user-auth-launch:live": "full live stack",
   "smoke:web-seed:live": "full live stack",
-  // #869's reachability suite (real CLI spawn over a throwaway broker). Gating it in `smoke:ci`
-  // means inserting into `bin/smoke/ci-suites.txt`, which is FROZEN BY POSITION until PR #880: the
-  // shard walk is round-robin by index, so a mid-file insert re-shards every later suite across CI
-  // runners. Reaching the same effect by editing `smoke:ci`'s body to name it inline is the same
-  // violation in different clothing. Declared here instead — runnable by hand, one-line reversal
-  // with its reason when the freeze lifts.
-  "smoke:persona-agent": "ci-suites.txt is frozen by position until PR #880; gate when the freeze lifts",
   // NOT dead, despite the obvious reading. v0.4 removed the MANAGER's ctl tiers, not the ctl rail:
   // `ctl.delivery` survives as the delivery daemon's carve-out, still built by subjects.ts and still
   // served by endpoint.ts (CONTROL_DELIVERY / CONTROL_DELIVERY_ADMIN). This suite pins the security
