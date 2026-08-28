@@ -9,7 +9,6 @@
  *
  * Run: pnpm smoke:hook-relay-startup
  */
-import { strict as assert } from "node:assert";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createServer, type Server } from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -25,10 +24,15 @@ const tsxCli = createRequire(import.meta.url).resolve("tsx/cli");
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let pass = 0;
+let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
-  assert.ok(cond, `${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
-  pass++;
-  console.log(`  ✓ ${name}`);
+  if (cond) {
+    pass++;
+    console.log(`  ✓ ${name}`);
+    return;
+  }
+  fail++;
+  console.error(`  ✗ ${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
 };
 
 interface RelayRun {
@@ -173,7 +177,8 @@ try {
     absentResult,
   );
 
-  console.log(`\nhook-relay-startup smoke: ${pass} passed, 0 failed`);
+  console.log(`\nhook-relay-startup smoke: ${pass} passed, ${fail} failed`);
+  process.exitCode = fail === 0 ? 0 : 1;
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
