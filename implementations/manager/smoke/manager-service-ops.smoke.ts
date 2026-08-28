@@ -203,7 +203,7 @@ try {
       return { ok: true, data: { name: String(opts.name), id: "x", role: "worker", agent: "e2e-stub", mode: "fake", lifecycleUid: uid } };
     };
     const fields = {
-      agent: "e2e-stub", role: "worker", config: "cfg.md", identity: "idfile", model: "m1", variant: "high",
+      agent: "e2e-stub", defaultAgent: "caller-default", role: "worker", config: "cfg.md", identity: "idfile", model: "m1", variant: "high",
       launchOptions: { flag: "v", n: 2 }, resume: "sess-1", cwd: "/tmp/x", prompt: "hello",
       subscribe: ["general"], allowSubscribe: ["general", "task"], allowPublish: ["general"], shareTools: "all",
     };
@@ -223,6 +223,9 @@ try {
     const rEmpty = await A.call("spawn", { name: "wp1", resume: "" });
     check("an empty resume refuses through the shared deep validation",
       rEmpty.reply.ok === false && String(rEmpty.reply.error?.message ?? "").includes("session id must not be empty"), rEmpty.reply);
+    const rEmptyDefault = await A.call("spawn", { name: "wp1", defaultAgent: "   " });
+    check("an empty detached caller default refuses through the shared deep validation",
+      rEmptyDefault.reply.ok === false && String(rEmptyDefault.reply.error?.message ?? "").includes("defaultAgent: must not be empty"), rEmptyDefault.reply);
   }
 
   console.log("3. real lifecycle over ep.one: spawn -> ps/inspect -> targeted despawn");

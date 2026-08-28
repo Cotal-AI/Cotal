@@ -38,7 +38,7 @@ process.env.COTAL_CAPABILITIES = "spawn";
  *  Types are erased at runtime, so this list is the golden — a StartAgentOpts change must
  *  consciously edit it. */
 const START_OP_KEYS = new Set([
-  "name", "identity", "agent", "role", "config", "model", "variant", "launchOptions", "resume", "events", "cwd",
+  "name", "identity", "agent", "defaultAgent", "role", "config", "model", "variant", "launchOptions", "resume", "events", "cwd",
   "prompt", "subscribe", "allowSubscribe", "allowPublish", "shareTools",
 ]);
 
