@@ -104,6 +104,28 @@ export function sessionsBucket(space: string): string {
   return `cotal_sessions_${token(space)}`;
 }
 
+/** Every stream owned by {@link createEndpointStreams}. Keep this downstream ownership list
+ * independent from the creation statements: backup inventory tests compare it to the broker's own
+ * enumeration, so a family added to either side without the other fails rather than self-confirms.
+ * Deletion and its sole credential consume this same list because disagreement between those two
+ * leaves either an undeletable stream or a grant for a stream teardown never removes. */
+export function endpointPlaneStreamNames(space: string): string[] {
+  return [
+    epjStreamName(space),
+    epfStreamName(space),
+    epeStreamName(space),
+    eptReqStreamName(space),
+    eprStreamName(space),
+    eptStreamName(space),
+    epwStreamName(space),
+    wfjStreamName(space),
+    epcStreamName(space),
+    `KV_${recordsBucket(space)}`,
+    `KV_${epAuthBucket(space)}`,
+    `KV_${sessionsBucket(space)}`,
+  ];
+}
+
 // ---- §13.12 retention knobs (documented defaults, overridable per space policy) ----
 
 /** EPJ duplicate window: the server MINIMUM (100 ms), set explicitly. A `0` is not accepted

@@ -425,6 +425,7 @@
     "smoke:backup-cli": "tsx implementations/cli/smoke/backup.smoke.ts",
     "smoke:backup-perms:live": "pnpm -F @cotal-ai/core smoke:backup:live",
     "smoke:backup-restore:live": "tsx bin/smoke/backup-restore-live.smoke.ts",
+    "smoke:isolated-infrastructure-scope": "tsx implementations/cli/smoke/isolated-infrastructure-scope.smoke.ts",
     "smoke:backup-conservation:live": "tsx bin/smoke/backup-conservation-live.smoke.ts",
     "smoke:backup-usermode:live": "tsx bin/smoke/backup-usermode-live.smoke.ts",
     "smoke:backup-faults:live": "tsx bin/smoke/backup-faults-live.smoke.ts",
