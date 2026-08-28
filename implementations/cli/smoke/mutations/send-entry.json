@@ -25,6 +25,14 @@
       "replace": "  const target = [\"--space\", space];",
       "expectRed": "`cotal send dm` exits 0",
       "cell": "`cotal send dm` exits 0"
+    },
+    {
+      "name": "remove the awaited broker-exit barrier before JetStream tree removal",
+      "file": "implementations/cli/smoke/send.smoke.ts",
+      "find": "  await killAndAwaitExit(broker);",
+      "replace": "  broker.kill(\"SIGTERM\");",
+      "expectRed": "the owned broker exits before its JetStream tree is removed",
+      "cell": "the owned broker exits before its JetStream tree is removed"
     }
   ]
 }
