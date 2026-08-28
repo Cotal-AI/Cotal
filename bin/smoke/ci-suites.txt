@@ -603,3 +603,15 @@ smoke:web-seed:live
 # closure from built dist and require every external package in it to be installed by a production
 # dependency field. Appended so every existing shard assignment remains unchanged.
 smoke:manager-runtime-deps
+# The persona harness reachability proof drives foreground and detached spawn through a throwaway
+# broker, including a caller-only COTAL_DEFAULT_AGENT crossing into an already-running manager.
+# Appended to preserve every existing shard assignment.
+smoke:persona-agent
+# The web component probe parses the recorded process command and refuses unrelated PIDs,
+# wildcard hosts, and invalid ports instead of guessing at the dashboard default. Appended so
+# every existing shard assignment remains unchanged.
+smoke:web-probe-target
+# The web runtime binds the requested remote host, rejects wildcard public URLs, and keeps the
+# loopback default when no host is supplied. Appended so every existing shard assignment remains
+# unchanged.
+smoke:web-remote-bind

@@ -132,6 +132,7 @@ const SPAWN_INPUT_SCHEMA = {
   properties: {
     name: { type: "string", minLength: 1 },
     agent: { type: "string" },
+    defaultAgent: { type: "string" },
     role: { type: "string" },
     config: { type: "string" },
     identity: { type: "string" },

@@ -1,0 +1,139 @@
+{
+  "suite": "bin/smoke/persona-agent.smoke.ts",
+  "guard": "a persona file's agent: pin picks the spawn harness on every launch path: flag > file > COTAL_DEFAULT_AGENT > default, and a pin naming an unregistered connector fails loud",
+  "command": "pnpm build && pnpm smoke:persona-agent",
+  "completionMarker": "persona-agent 869 reachability smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/persona-agent.json",
+  "why": [
+    "THE ORDERING IS THE DEFECT, SO THE PROOF TARGETS THE PRECEDENCE LINE, NOT THE LOADER. A unit",
+    "cell asserting def.agent === 'jcode' after loadAgentFile would kill a loader mutation while",
+    "proving nothing: #869's whole failure mode was that the real entry point resolved the connector",
+    "before the code that would read agent: ever ran. Every mutation here is aimed at a line the",
+    "REAL spawn path consults, graded by the reachability suite, which drives the kernel-parsed CLI",
+    "spawn command over a real control plane into a real Manager (throwaway broker on an",
+    "OS-assigned port) and records WHICH connector's buildLaunch ran.",
+    "",
+    "EVERY COMMAND BUILDS FIRST, AND EVERY afterRestore REBUILDS. The suite imports",
+    "@cotal-ai/core, @cotal-ai/manager and @cotal-ai/cli as workspace deps, which resolve to",
+    "dist/. A mutation applied to src that is not built is a mutation the run never sees (it would",
+    "come back SURVIVED and read as 'this line does not matter' when what was measured is 'this",
+    "line was not in the artifact'). dist/ is gitignored, so git cannot be the recovery; the",
+    "rebuild in afterRestore keeps the tree from carrying a mutant-compiled dist after the source",
+    "is restored.",
+    "",
+    "CELL A IS THE ISSUE'S EXACT REPRO and the mutation-proof target the lane named: file pins",
+    "'pin', COTAL_DEFAULT_AGENT=other, spawn --detach with no --agent. The manager-precedence",
+    "mutation restores exactly the shipped defect on that cell (env beats file), the",
+    "cli-collapse mutation restores the pre-wire collapse (flag and env indistinguishable to the",
+    "manager), and the foreground mutation restores the foreground variant of the same ignore.",
+    "The loader mutation proves the modelling (agent: must parse as a field, not meta), and the",
+    "requiredExtensions mutation guards the preflight cell that would otherwise be dead on",
+    "arrival on the published binary with no unit test able to see it.",
+    "",
+    "CELL C PROVES DETACHED CALLER-DEFAULT CONTINUITY across a real process and control-plane",
+    "boundary. The already-running manager has no COTAL_DEFAULT_AGENT while the child CLI alone",
+    "sets it to 'other'. Removing the dedicated control field or placing it below the manager's",
+    "own environment both redden the same named assertion. Cell A remains the negative precedence",
+    "control: the same caller default must not beat a persona file pin."
+  ],
+  "mutations": [
+    {
+      "cell": "A: the persona's agent: pin built the launch (file beats env, detached)",
+      "name": "manager drops the file pin from the harness precedence (restores the shipped defect)",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "const agent = opts.agent ?? def?.agent ?? opts.defaultAgent ?? defaultAgentType(DEFAULT_CONNECTOR);",
+      "replace": "const agent = opts.agent ?? defaultAgentType(DEFAULT_CONNECTOR);",
+      "expectRed": "A: the persona's agent: pin built the launch",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "cell": "A: the persona's agent: pin built the launch (file beats env, detached)",
+      "name": "cli re-collapses flag and env into the control-plane agent field (pre-#869 shape)",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "    agent: values.agent,",
+      "replace": "    agent: values.agent ?? (process.env.COTAL_DEFAULT_AGENT || undefined),",
+      "expectRed": "A: the persona's agent: pin built the launch",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "cell": "C: detached caller COTAL_DEFAULT_AGENT reached the manager for an unpinned persona",
+      "name": "cli drops the detached caller's default instead of carrying it separately",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "    defaultAgent: defaultAgentOverride(),",
+      "replace": "    defaultAgent: undefined,",
+      "expectRed": "C: detached caller COTAL_DEFAULT_AGENT reached the manager for an unpinned persona",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "cell": "C: detached caller COTAL_DEFAULT_AGENT reached the manager for an unpinned persona",
+      "name": "manager places its own default ahead of the detached caller's default",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "const agent = opts.agent ?? def?.agent ?? opts.defaultAgent ?? defaultAgentType(DEFAULT_CONNECTOR);",
+      "replace": "const agent = opts.agent ?? def?.agent ?? defaultAgentType(DEFAULT_CONNECTOR) ?? opts.defaultAgent;",
+      "expectRed": "C: detached caller COTAL_DEFAULT_AGENT reached the manager for an unpinned persona",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "cell": "D: foreground honored the persona's agent: pin",
+      "name": "foreground ignores the pin when resolving its connector",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "  const agentType = values.agent ?? def.agent ?? defaultAgentType(\"claude\");",
+      "replace": "  const agentType = values.agent ?? defaultAgentType(\"claude\");",
+      "expectRed": "D: foreground honored the persona's agent: pin",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "cell": "E: requiredExtensions is root-free (no connector declared pre-parse)",
+      "name": "pre-materialization is revived (hook declares the env/default connector pre-parse)",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "export function spawnRequiredExtensions(_args: ParsedArgs): readonly ExtensionRef[] {\n  return [];\n}",
+      "replace": "export function spawnRequiredExtensions(args: ParsedArgs): readonly ExtensionRef[] {\n  const v = args.values as FlagValues<typeof spawnFlags>;\n  return [{ kind: \"connector\", name: v.agent ?? defaultAgentType(\"claude\") }];\n}",
+      "expectRed": "E: requiredExtensions is root-free (no connector declared pre-parse)",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "cell": "a hand-written agent: parses as the modelled harness pin (agent-file smoke)",
+      "name": "loader stops parsing agent: into the modelled field (full unmodelled restore)",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "    tags: list(\"tags\"),\n    agent: str(\"agent\"),\n    subscribe,",
+      "replace": "    tags: list(\"tags\"),\n    subscribe,",
+      "expectRed": "✗ FAIL: a hand-written agent: parses as the modelled harness pin",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:agent-file",
+      "completionMarker": "agent-file yaml smoke:",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "cell": "a hand-written agent: parses as the modelled harness pin (agent-file smoke)",
+      "name": "loader drops agent: from the known-set, double-capturing it into meta",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "  const known = new Set([\"name\", \"role\", \"kind\", \"description\", \"tags\", \"subscribe\", \"allowSubscribe\", \"allowPublish\", \"quiet\", \"muted\", \"agent\", \"model\", \"variant\", \"launchOptions\", \"capabilities\", \"owner\"]);",
+      "replace": "  const known = new Set([\"name\", \"role\", \"kind\", \"description\", \"tags\", \"subscribe\", \"allowSubscribe\", \"allowPublish\", \"quiet\", \"muted\", \"model\", \"variant\", \"launchOptions\", \"capabilities\", \"owner\"]);",
+      "expectRed": "✗ FAIL: a modelled agent: no longer lands in meta",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:agent-file",
+      "completionMarker": "agent-file yaml smoke:",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "cell": "round-trips the agent harness pin (#869)",
+      "name": "writer stops emitting the pin, so a redefine silently drops it",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "  if (def.agent) fm.agent = def.agent;\n  if (def.model) fm.model = def.model;",
+      "replace": "  if (def.model) fm.model = def.model;",
+      "expectRed": "✗ FAIL: round-trips the agent harness pin",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:agent-file",
+      "completionMarker": "agent-file yaml smoke:",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "cell": "persona agent: pin picks the harness (file beats env) [manager unit cell]",
+      "name": "manager unit: precedence drop on start-overrides cell 9",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "const agent = opts.agent ?? def?.agent ?? opts.defaultAgent ?? defaultAgentType(DEFAULT_CONNECTOR);",
+      "replace": "const agent = opts.agent ?? defaultAgentType(DEFAULT_CONNECTOR);",
+      "expectRed": "✗ persona agent: pin picks the harness (file beats env)",
+      "command": "pnpm --filter @cotal-ai/manager build && pnpm smoke:start-overrides",
+      "completionMarker": "START-OVERRIDES SMOKE FAILED",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    }
+  ]
+}
