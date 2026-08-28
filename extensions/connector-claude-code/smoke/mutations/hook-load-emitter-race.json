@@ -111,11 +111,11 @@
     {
       "name": "E5 the wait survives but moves AFTER what it guards",
       "file": "extensions/connector-claude-code/src/mcp.ts",
-      "find": "        await agent.whenConnected(20_000);",
-      "replace": "",
+      "find": "        await agent.whenConnected(20_000);\n        const workspaceRoot = resolveEventsStateRoot(process.env);",
+      "replace": "        const workspaceRoot = resolveEventsStateRoot(process.env);\n        await agent.whenConnected(20_000);",
       "expectRed": "\u2026and the wait comes BEFORE the emitter is set up (the ordering IS the fix)",
       "cell": "\u2026and the wait comes BEFORE the emitter is set up (the ordering IS the fix)",
-      "note": "Deletes it from before the guarded setup; the presence cell is what would keep this alive if ordering were not asserted separately. Ordering is the entire fix, so it needs its own cell."
+      "note": "Moves the same bare wait below the first guarded setup call; the presence cell stays green, so only the ordering assertion can kill it. Ordering is the entire fix, so it needs its own cell."
     },
     {
       "name": "E6 the bounded wait resolves on timeout instead of failing",

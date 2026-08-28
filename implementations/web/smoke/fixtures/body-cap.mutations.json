@@ -1,5 +1,5 @@
 {
-  "command": "pnpm smoke:web-body-cap",
+  "command": "pnpm --filter @cotal-ai/workspace... build && pnpm smoke:web-body-cap",
   "progressPattern": "^[0-9]\\. ",
   "mutations": [
     {

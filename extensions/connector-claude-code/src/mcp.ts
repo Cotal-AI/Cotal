@@ -81,9 +81,9 @@ async function main(): Promise<void> {
         // log line every time. The wait is generous because it happens once, off the hot path,
         // and a session that outlives it gets its whole plane; the timeout still fails into the
         // holder's terminal error rather than hanging the hook.
+        // The events state root throws rather than defaulting to the working directory: a WAL
+        // written somewhere no later start looks is a silent loss.
         await agent.whenConnected(20_000);
-        // The events state root. Throws rather than defaulting to the working directory, because a
-        // write-ahead log written somewhere no later start looks is a silent loss.
         const workspaceRoot = resolveEventsStateRoot(process.env);
 
         // The native session IS the AG-UI thread, and Claude Code names the transcript after it.

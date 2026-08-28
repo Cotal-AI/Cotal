@@ -1,5 +1,5 @@
 {
-  "command": "pnpm smoke:web-history-limit",
+  "command": "pnpm --filter @cotal-ai/workspace... build && pnpm smoke:web-history-limit",
   "mutations": [
     {
       "name": "H1 the whole parse is reverted to the truthy per-route one that shipped, so `limit=abc` becomes NaN again and reaches the history search that cannot terminate on it",

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { once } from "node:events";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,6 +39,47 @@ const shimDir = join(root, "bin");
 const shim = join(shimDir, "jcode");
 const log = join(root, "fake.jsonl");
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
+const hosts: ChildProcess[] = [];
+
+function spawnHost(opts: SpawnOptions): ChildProcess {
+  const proc = spawn(tsx, [host], { ...opts, detached: true });
+  hosts.push(proc);
+  return proc;
+}
+
+function groupAlive(proc: ChildProcess): boolean {
+  if (proc.pid === undefined) return false;
+  try {
+    process.kill(-proc.pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function stopHostTree(proc: ChildProcess, signal: NodeJS.Signals = "SIGTERM"): Promise<void> {
+  const leaderAlive = (): boolean => proc.exitCode === null && proc.signalCode === null;
+  if (signal === "SIGTERM" && leaderAlive()) {
+    // Grace belongs to the host leader. Signalling its whole group here kills the fake bridge before
+    // the host can retire it and turns a clean shutdown into a restart race.
+    try { proc.kill("SIGTERM"); } catch { /* already gone */ }
+  } else if (proc.pid !== undefined && groupAlive(proc)) {
+    try { process.kill(-proc.pid, signal); } catch { /* already gone */ }
+  } else if (leaderAlive()) {
+    try { proc.kill(signal); } catch { /* already gone */ }
+  }
+  for (let i = 0; i < 60 && leaderAlive(); i++) await sleep(50);
+  // Whether the leader exited cleanly or was already gone, the process group may still contain a
+  // reparented api-bridge. The group is the ownership unit and is never allowed past this helper.
+  if (groupAlive(proc) && proc.pid !== undefined) {
+    try { process.kill(-proc.pid, "SIGKILL"); } catch { /* already gone */ }
+  }
+  for (let i = 0; i < 100 && (leaderAlive() || groupAlive(proc)); i++) await sleep(50);
+  proc.stdin?.destroy();
+  proc.stdout?.destroy();
+  proc.stderr?.destroy();
+}
+
 let child: ChildProcess | undefined;
 let outage: ChildProcess | undefined;
 let outageNats: ChildProcess | undefined;
@@ -73,7 +114,7 @@ async function callJcodeMcp(
     args: entry.args,
     cwd: root,
     env: { ...entry.env, COTAL_JCODE_MCP_SOCKET: socket, COTAL_JCODE_MCP_TOKEN: token },
-    stderr: "pipe",
+    stderr: "ignore",
   });
   try {
     await client.connect(transport);
@@ -113,52 +154,73 @@ async function callJcodeMcpRaw(
   // discarding it here is acceptable; leaving it unread is not.
   bridge.stderr?.resume();
   let pending = "";
+  const MAX_PENDING_STDOUT_BYTES = 64 * 1024;
   const garbage: string[] = [];
-  const frames = new Map<number, (frame: Record<string, unknown>) => void>();
+  type FrameWaiter = {
+    resolve: (frame: Record<string, unknown>) => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  };
+  const frames = new Map<number, FrameWaiter>();
   const describeGarbage = (): string =>
     garbage.length === 0
       ? ""
       : `; child also wrote ${garbage.length} unparseable line(s), first: ${garbage[0]}`;
+  const settleFrame = (id: number, fn: (waiter: FrameWaiter) => void): void => {
+    const waiter = frames.get(id);
+    if (!waiter) return;
+    frames.delete(id);
+    clearTimeout(waiter.timer);
+    fn(waiter);
+  };
+  const rejectAll = (error: Error): void => {
+    for (const id of [...frames.keys()]) settleFrame(id, (waiter) => waiter.reject(error));
+  };
   bridge.stdout?.setEncoding("utf8");
   bridge.stdout?.on("data", (chunk: string) => {
+    if (Buffer.byteLength(pending) + Buffer.byteLength(chunk) > MAX_PENDING_STDOUT_BYTES) {
+      rejectAll(new Error(`callJcodeMcpRaw exceeded ${MAX_PENDING_STDOUT_BYTES} buffered stdout bytes without a complete response`));
+      return;
+    }
     pending += chunk;
     for (;;) {
       const newline = pending.indexOf("\n");
       if (newline < 0) return;
       const line = pending.slice(0, newline);
       pending = pending.slice(newline + 1);
-      let frame: Record<string, unknown>;
+      let parsed: unknown;
       try {
-        frame = JSON.parse(line) as Record<string, unknown>;
+        parsed = JSON.parse(line);
       } catch {
         if (garbage.length < 5) garbage.push(line.slice(0, 200));
         continue;
       }
-      if (typeof frame.id === "number") frames.get(frame.id)?.(frame);
+      if (parsed === null || typeof parsed !== "object") {
+        if (garbage.length < 5) garbage.push(line.slice(0, 200));
+        continue;
+      }
+      const frame = parsed as Record<string, unknown>;
+      if (typeof frame.id !== "number" || !frames.has(frame.id)) continue;
+      if (frame.jsonrpc !== "2.0" || (!Object.hasOwn(frame, "result") && !Object.hasOwn(frame, "error"))) {
+        settleFrame(frame.id, (waiter) =>
+          waiter.reject(new Error(`callJcodeMcpRaw received an invalid JSON-RPC response for id ${frame.id}`)),
+        );
+        continue;
+      }
+      settleFrame(frame.id, (waiter) => waiter.resolve(frame));
     }
   });
   const frameName = (id: number): string => (id === 1 ? "initialize" : id === 2 ? "tools/call" : `id ${id}`);
+  bridge.once("close", (code, signal) =>
+    rejectAll(new Error(`callJcodeMcpRaw child closed (code=${code} signal=${signal}) before its response${describeGarbage()}`)),
+  );
   const request = (id: number, json: string): Promise<Record<string, unknown>> =>
     new Promise((resolve, reject) => {
-      const settle = (fn: () => void): void => {
-        if (!frames.has(id)) return;
-        frames.delete(id);
-        clearTimeout(timer);
-        fn();
-      };
-      // A healthy initialize or tools/call returns in milliseconds here. 10s is three
-      // orders of magnitude of headroom so a wedged child becomes a named failure
-      // rather than a tolerated slow one.
       const timer = setTimeout(
-        () => settle(() => reject(new Error(`callJcodeMcpRaw timed out waiting for frame id ${id} (${frameName(id)})${describeGarbage()}`))),
+        () => settleFrame(id, (waiter) => waiter.reject(new Error(`callJcodeMcpRaw timed out waiting for frame id ${id} (${frameName(id)})${describeGarbage()}`))),
         10_000,
       );
-      frames.set(id, (frame) => settle(() => resolve(frame)));
-      bridge.once("exit", (code, signal) =>
-        settle(() =>
-          reject(new Error(`callJcodeMcpRaw child exited (code=${code} signal=${signal}) before frame id ${id} (${frameName(id)})${describeGarbage()}`)),
-        ),
-      );
+      frames.set(id, { resolve, reject, timer });
       bridge.stdin?.write(json + "\n");
     });
 
@@ -173,8 +235,14 @@ async function callJcodeMcpRaw(
       isError: result.isError,
     };
   } finally {
-    bridge.kill("SIGTERM");
-    await Promise.race([once(bridge, "exit"), sleep(5_000)]);
+    bridge.stdin?.end();
+    if (bridge.exitCode === null && bridge.signalCode === null) bridge.kill("SIGTERM");
+    for (let i = 0; i < 20 && bridge.exitCode === null && bridge.signalCode === null; i++) await sleep(50);
+    if (bridge.exitCode === null && bridge.signalCode === null) bridge.kill("SIGKILL");
+    for (let i = 0; i < 100 && bridge.exitCode === null && bridge.signalCode === null; i++) await sleep(50);
+    bridge.stdin?.destroy();
+    bridge.stdout?.destroy();
+    bridge.stderr?.destroy();
   }
 }
 
@@ -200,7 +268,7 @@ try {
   const inheritedJcodeHome = join(root, "source-jcode");
   mkdirSync(inheritedJcodeHome, { recursive: true, mode: 0o700 });
   writeFileSync(join(inheritedJcodeHome, "auth.json"), "host-smoke-token", { mode: 0o600 });
-  child = spawn(tsx, [host], {
+  child = spawnHost({
     cwd: root,
     env: {
       ...env,
@@ -310,14 +378,13 @@ try {
   const firstTurnAt = requests.findIndex((entry) => (entry.frame as { req?: string; no_reply?: boolean }).req === "send_message" && !(entry.frame as { no_reply?: boolean }).no_reply);
   check("reasoning effort is set before the session's first turn", effortAt >= 0 && firstTurnAt > effortAt, { effortAt, firstTurnAt });
 
-  child.kill("SIGTERM");
-  await Promise.race([once(child, "exit"), sleep(10_000)]);
+  await stopHostTree(child, "SIGTERM");
   check("host exits cleanly on SIGTERM", child.exitCode === 0, { code: child.exitCode, stderr });
 
   // #777 reproduction: Jcode can lock the first turn's tool snapshot before cotal connects. The
   // old host makes one proof turn and rejects this otherwise healthy launch before it can join.
   const raceLog = join(root, "readiness-race.jsonl");
-  const race = spawn(tsx, [host], {
+  const race = spawnHost({
     cwd: root,
     env: {
       ...env,
@@ -345,14 +412,13 @@ try {
   const raceEntries = readFileSync(raceLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>;
   const raceTurns = raceEntries.filter((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply && String(entry.frame?.content).includes("cotal_orientation"));
   check("a first-turn MCP snapshot race recovers on one bounded retry", announced.has("racepeer") && raceTurns.length === 2, { code: race.exitCode, turns: raceTurns, stderr: raceErr });
-  if (race.exitCode === null) race.kill("SIGTERM");
-  await Promise.race([once(race, "exit"), sleep(10_000)]);
+  await stopHostTree(race, "SIGTERM");
   check("the recovered readiness launch exits cleanly", race.exitCode === 0, { code: race.exitCode, stderr: raceErr });
 
   // A bridge that never publishes the tool must still fail loud after the bounded retry and must
   // never advertise presence. This distinguishes the recovery from a false-online fallback.
   const absentLog = join(root, "readiness-absent.jsonl");
-  const absent = spawn(tsx, [host], {
+  const absent = spawnHost({
     cwd: root,
     env: {
       ...env,
@@ -378,7 +444,7 @@ try {
   absent.stderr?.on("data", (chunk: Buffer) => (absentErr += chunk.toString()));
   await Promise.race([once(absent, "exit"), sleep(20_000)]);
   const absentCode = absent.exitCode;
-  if (absentCode === null) absent.kill("SIGKILL");
+  await stopHostTree(absent, "SIGKILL");
   const absentEntries = readFileSync(absentLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>;
   const absentTurns = absentEntries.filter((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply && String(entry.frame?.content).includes("cotal_orientation"));
   check("a permanently absent cotal tool gets exactly two readiness turns", absentTurns.length === 2, absentTurns);
@@ -390,7 +456,7 @@ try {
   const effortCanary = "JCODE-REFUSAL-CANARY-3c5e9d77-DO-NOT-PRINT";
   const acceptedLadder = "minimal, low, high";
   const refusedLog = join(root, "refused-effort.jsonl");
-  const refused = spawn(tsx, [host], {
+  const refused = spawnHost({
     cwd: root,
     env: {
       ...env,
@@ -418,7 +484,7 @@ try {
   refused.stderr?.on("data", (chunk: Buffer) => (refusedErr += chunk.toString()));
   await Promise.race([once(refused, "exit"), sleep(20_000)]);
   const refusedCode = refused.exitCode;
-  if (refusedCode === null) refused.kill("SIGKILL");
+  await stopHostTree(refused, "SIGKILL");
   check("a tier the provider refuses ends the launch", refusedCode !== null && refusedCode !== 0, { code: refusedCode, stderr: refusedErr });
   check(
     "effort refusal keeps only its requested tier, effective model, fixed provider code, and accepted ladder",
@@ -449,7 +515,7 @@ try {
   const outagePort = await freePort();
   const outageServers = `nats://127.0.0.1:${outagePort}`;
   const outageLog = join(root, "join-outage.jsonl");
-  outage = spawn(tsx, [host], {
+  outage = spawnHost({
     cwd: root,
     env: {
       ...env,
@@ -498,14 +564,13 @@ try {
   const joinedNotice = await waitFor("post-join notice after the recovered mesh join", () => findOutageNotice());
   await waitFor("recovered mesh presence", () => outagePeerId);
   check("post-join notice fires only after the later real mesh join", Boolean(joinedNotice) && Boolean(outagePeerId), { joinedNotice, outagePeerId });
-  outage.kill("SIGTERM");
-  await Promise.race([once(outage, "exit"), sleep(10_000)]);
+  await stopHostTree(outage, "SIGTERM");
   check("the outage launch exits cleanly", outage.exitCode === 0, { code: outage.exitCode, stderr: outageErr });
 
   // #779 reproduction: the foreground observer belongs beside the session, before the slow
   // readiness request. The old host only spawns it after that request has completed.
   const tuiLog = join(root, "tui-order.jsonl");
-  const foreground = spawn(tsx, [host], {
+  const foreground = spawnHost({
     cwd: root,
     env: {
       ...env,
@@ -534,14 +599,13 @@ try {
   const tuiAt = tuiEntries.findIndex((entry) => entry.ev === "tui");
   const readinessDoneAt = tuiEntries.findIndex((entry) => entry.ev === "orientation_done");
   check("foreground TUI starts before its readiness turn finishes", tuiAt >= 0 && tuiAt < readinessDoneAt, { tuiAt, readinessDoneAt, entries: tuiEntries });
-  foreground.kill("SIGTERM");
-  await Promise.race([once(foreground, "exit"), sleep(10_000)]);
+  await stopHostTree(foreground, "SIGTERM");
   check("the early foreground TUI launch exits cleanly", foreground.exitCode === 0, { code: foreground.exitCode, stderr: foregroundErr });
 
   // Deliberate failing case: project MCP files would override Jcode's private cotal config, so the
   // host must refuse before it starts an API bridge rather than silently loading another server.
   writeFileSync(join(root, ".mcp.json"), '{"mcpServers":{}}');
-  const blocked = spawn(tsx, [host], {
+  const blocked = spawnHost({
     cwd: root,
     env: {
       ...env,
@@ -571,7 +635,7 @@ try {
   // turns into HarnessError and assert the bounded public diagnostic, not private child text.
   rmSync(join(root, ".mcp.json"), { force: true });
   const refusalLog = join(root, "readiness-refusal.jsonl");
-  const refusal = spawn(tsx, [host], {
+  const refusal = spawnHost({
     cwd: root,
     env: {
       ...env,
@@ -616,14 +680,22 @@ try {
     !refusalErr.includes("was refused by provider"),
     refusalErr,
   );
-  console.log(`\nJCODE HOST SMOKE PASSED (${pass} checks)`);
 } finally {
-  if (child && child.exitCode === null) child.kill("SIGKILL");
-  if (outage && outage.exitCode === null) outage.kill("SIGKILL");
+  for (const proc of hosts) await stopHostTree(proc, "SIGKILL");
+  check("teardown: every Jcode host process group is gone", hosts.every((proc) => !groupAlive(proc)), {
+    started: hosts.length,
+    alive: hosts.filter(groupAlive).map((proc) => proc.pid),
+  });
   await operator?.stop().catch(() => {});
   await outageOperator?.stop().catch(() => {});
   nats.kill("SIGKILL");
   outageNats?.kill("SIGKILL");
-  await sleep(100);
+  for (let i = 0; i < 100; i++) {
+    if ((nats.exitCode !== null || nats.signalCode !== null) &&
+        (outageNats === undefined || outageNats.exitCode !== null || outageNats.signalCode !== null)) break;
+    await sleep(50);
+  }
   rmSync(root, { recursive: true, force: true });
 }
+
+console.log(`\nJCODE HOST SMOKE PASSED (${pass} checks)`);

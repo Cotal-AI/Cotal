@@ -1,5 +1,5 @@
 {
-  "command": "pnpm smoke:web-bounded-aggregation",
+  "command": "pnpm --filter @cotal-ai/workspace... build && pnpm smoke:web-bounded-aggregation",
   "mutations": [
     {
       "name": "B1 the per-source deadline is dropped: every source is read to completion, so the request is unbounded again and the caller waits for the slowest read however long that takes - the 34-second success half of the measured defect",
@@ -37,6 +37,13 @@
       "expectRed": "4.0 one failing channel does not make the whole aggregation throw"
     },
     {
+      "name": "B6 the dms route's deadline is dropped: an inner history walk that never ends holds the browser until its own abort instead of returning the route's named refusal",
+      "file": "implementations/web/src/web.ts",
+      "find": "        const dms = await within(\n          ep.dmHistory({ limit }).catch((e: unknown) => {\n            throw new Error(`direct messages: the read failed: ${e instanceof Error ? e.message : String(e)}`);\n          }),\n          clock.until,\n        );\n        if (dms === LATE)\n          return json(res, { error: `direct messages: the read did not finish within ${AGGREGATION_DEADLINE_MS}ms` }, 503);",
+      "replace": "        const dms = await ep.dmHistory({ limit }).catch((e: unknown) => {\n          throw new Error(`direct messages: the read failed: ${e instanceof Error ? e.message : String(e)}`);\n        });",
+      "expectRed": "5.4 `/api/dms` REFUSES at its own deadline when the inner read never ends"
+    },
+    {
       "name": "B7 the refusal stops naming what it exceeded, so the page can say only that something returned a status - the same illegibility as the `{\"error\":\"timeout\"}` this change exists to replace",
       "file": "implementations/web/src/web.ts",
       "find": "`direct messages: the read did not finish within ${AGGREGATION_DEADLINE_MS}ms`",
@@ -71,13 +78,5 @@
       "replace": "          ep.channelHistory(name, { limit }),",
       "expectRed": "5.2 `/api/channels/<name>/history` names a read that REJECTS instead of returning the bare 500"
     }
-  ],
-  "why": [
-    "",
-    "B6 WAS REMOVED AFTER RE-EXECUTION. Dropping the outer `/api/dms` deadline no longer makes the",
-    "route run unbounded: `dmHistory` now returns its own timeout at the same boundary, so the status",
-    "and wall-time cells stay green and only the wording cell fails. B7 already owns that wording",
-    "failure. Keeping the old row under a new expected cell would count one defect twice and preserve",
-    "a claim the current call graph no longer exhibits."
   ]
 }
