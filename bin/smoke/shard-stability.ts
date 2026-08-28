@@ -109,9 +109,9 @@ if (!base || !head) {
 // independent facts, so both must describe the complete index set 0..N-1. The smoke job
 // and shard step must also keep the execution shape this parser models, including an
 // immutable verifier whose blob hash is pinned here, binds the runner to committed inputs,
-// and launches the shard under an explicit clean environment. Comments and
+// checks the captured CI toolchain, and launches the shard under an explicit clean environment. Comments and
 // other jobs are not topology either. Any unsupported shape aborts instead of guessing.
-const shardCountFromWorkflow = (yml: string, requireCommittedInputs = true): number | null => {
+const shardCountFromWorkflow = (yml: string, requireCommittedInputs = true, requireToolPrelude = false): number | null => {
   const lines = yml.split("\n");
   const smokeStart = lines.findIndex((line) => /^  smoke:\s*(?:#.*)?$/.test(line));
   if (smokeStart < 0) return null;
@@ -170,8 +170,42 @@ const shardCountFromWorkflow = (yml: string, requireCommittedInputs = true): num
   const stepBlocks = stepStarts.map((start, index) =>
     steps.slice(start, stepStarts[index + 1] ?? steps.length)
   );
+  const activeStepBlocks = stepBlocks.map((block) =>
+    block.filter((line) => !/^\s*(?:#.*)?$/.test(line))
+  );
+  if (requireToolPrelude) {
+    const expectedPrelude = [
+      ["      - uses: actions/checkout@v6"],
+      ["      - uses: pnpm/action-setup@v6.0.8"],
+      [
+        "      - uses: actions/setup-node@v6",
+        "        with:",
+        "          node-version: 22",
+        "          cache: pnpm",
+      ],
+      [
+        "      - name: Capture smoke toolchain",
+        "        id: smoke-tools",
+        "        shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}",
+        "        run: |",
+        '          node_path="$(command -v node)"',
+        '          pnpm_path="$(command -v pnpm)"',
+        '          node_target="$(/usr/bin/readlink -f "$node_path")"',
+        '          pnpm_target="$(/usr/bin/readlink -f "$pnpm_path")"',
+        '          echo "node_path=$node_path" >> "$GITHUB_OUTPUT"',
+        '          echo "node_target=$node_target" >> "$GITHUB_OUTPUT"',
+        `          echo "node_sha=$(/usr/bin/sha256sum "$node_target" | /usr/bin/cut -d' ' -f1)" >> "$GITHUB_OUTPUT"`,
+        '          echo "pnpm_path=$pnpm_path" >> "$GITHUB_OUTPUT"',
+        '          echo "pnpm_target=$pnpm_target" >> "$GITHUB_OUTPUT"',
+        `          echo "pnpm_sha=$(/usr/bin/sha256sum "$pnpm_target" | /usr/bin/cut -d' ' -f1)" >> "$GITHUB_OUTPUT"`,
+      ],
+    ];
+    if (expectedPrelude.some((expected, index) =>
+      activeStepBlocks[index]?.join("\n") !== expected.join("\n")
+    )) return null;
+  }
   const guardedShell = "        shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}";
-  const guardedInvocationPattern = /^        run:\s*\/usr\/bin\/git show "\$GITHUB_SHA:bin\/smoke\/verify-shard-inputs\.sh" \| \/usr\/bin\/bash --noprofile --norc -s -- "\$GITHUB_SHA" \$\{\{ matrix\.shard \}\} ([1-9][0-9]*) ci\s*(?:#.*)?$/;
+  const guardedInvocationPattern = /^        run:\s*\/usr\/bin\/git show "\$GITHUB_SHA:bin\/smoke\/verify-shard-inputs\.sh" \| \/usr\/bin\/bash --noprofile --norc -s -- "\$GITHUB_SHA" \$\{\{ matrix\.shard \}\} ([1-9][0-9]*) ci "\$\{\{ steps\.smoke-tools\.outputs\.node_path \}\}" "\$\{\{ steps\.smoke-tools\.outputs\.node_target \}\}" "\$\{\{ steps\.smoke-tools\.outputs\.node_sha \}\}" "\$\{\{ steps\.smoke-tools\.outputs\.pnpm_path \}\}" "\$\{\{ steps\.smoke-tools\.outputs\.pnpm_target \}\}" "\$\{\{ steps\.smoke-tools\.outputs\.pnpm_sha \}\}"\s*(?:#.*)?$/;
   const legacyInvocationPattern = /^        run:\s*node bin\/smoke\/shard\.mjs \$\{\{ matrix\.shard \}\} ([1-9][0-9]*)\s*(?:#.*)?$/;
   const shardSteps = stepBlocks.filter((block) => block.some((line) =>
     guardedInvocationPattern.test(line) || legacyInvocationPattern.test(line)
@@ -200,7 +234,7 @@ const ciShardCount = (sha: string, requireCommittedInputs: boolean): number | nu
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
-    return shardCountFromWorkflow(yml, requireCommittedInputs);
+    return shardCountFromWorkflow(yml, requireCommittedInputs, requireCommittedInputs);
   } catch {
     return null;
   }
@@ -212,7 +246,7 @@ const verifierMatches = (sha: string): boolean => {
       stdio: ["ignore", "pipe", "pipe"],
     });
     const actual = createHash("sha256").update(source).digest("hex");
-    return actual === "b15b5c4c29a50bdcb19634062980f29f32173406b6b3d074340a917aa0be71bb";
+    return actual === "1541c008ccf066dec2facebde4e67e7b27e1730cee90d24fa9cc19df3784755e";
   } catch {
     return false;
   }
@@ -291,7 +325,7 @@ const commentShadowCount = shardCountFromWorkflow(`jobs:
     steps:
       - name: Run shard
         shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
-        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci
+        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci "\${{ steps.smoke-tools.outputs.node_path }}" "\${{ steps.smoke-tools.outputs.node_target }}" "\${{ steps.smoke-tools.outputs.node_sha }}" "\${{ steps.smoke-tools.outputs.pnpm_path }}" "\${{ steps.smoke-tools.outputs.pnpm_target }}" "\${{ steps.smoke-tools.outputs.pnpm_sha }}"
   other:
     runs-on: ubuntu-latest
 `);
@@ -303,7 +337,7 @@ const commandMismatchCount = shardCountFromWorkflow(`jobs:
     steps:
       - name: Run shard
         shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
-        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 5 ci
+        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 5 ci "\${{ steps.smoke-tools.outputs.node_path }}" "\${{ steps.smoke-tools.outputs.node_target }}" "\${{ steps.smoke-tools.outputs.node_sha }}" "\${{ steps.smoke-tools.outputs.pnpm_path }}" "\${{ steps.smoke-tools.outputs.pnpm_target }}" "\${{ steps.smoke-tools.outputs.pnpm_sha }}"
 `);
 const duplicateMatrixCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -313,7 +347,7 @@ const duplicateMatrixCount = shardCountFromWorkflow(`jobs:
     steps:
       - name: Run shard
         shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
-        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci
+        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci "\${{ steps.smoke-tools.outputs.node_path }}" "\${{ steps.smoke-tools.outputs.node_target }}" "\${{ steps.smoke-tools.outputs.node_sha }}" "\${{ steps.smoke-tools.outputs.pnpm_path }}" "\${{ steps.smoke-tools.outputs.pnpm_target }}" "\${{ steps.smoke-tools.outputs.pnpm_sha }}"
 `);
 const emptyMatrixCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -323,7 +357,7 @@ const emptyMatrixCount = shardCountFromWorkflow(`jobs:
     steps:
       - name: Run shard
         shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
-        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 1 ci
+        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 1 ci "\${{ steps.smoke-tools.outputs.node_path }}" "\${{ steps.smoke-tools.outputs.node_target }}" "\${{ steps.smoke-tools.outputs.node_sha }}" "\${{ steps.smoke-tools.outputs.pnpm_path }}" "\${{ steps.smoke-tools.outputs.pnpm_target }}" "\${{ steps.smoke-tools.outputs.pnpm_sha }}"
 `);
 const excludedMatrixCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -335,7 +369,7 @@ const excludedMatrixCount = shardCountFromWorkflow(`jobs:
     steps:
       - name: Run shard
         shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
-        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci
+        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci "\${{ steps.smoke-tools.outputs.node_path }}" "\${{ steps.smoke-tools.outputs.node_target }}" "\${{ steps.smoke-tools.outputs.node_sha }}" "\${{ steps.smoke-tools.outputs.pnpm_path }}" "\${{ steps.smoke-tools.outputs.pnpm_target }}" "\${{ steps.smoke-tools.outputs.pnpm_sha }}"
 `);
 const conditionalJobCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -346,7 +380,7 @@ const conditionalJobCount = shardCountFromWorkflow(`jobs:
     steps:
       - name: Run shard
         shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
-        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci
+        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci "\${{ steps.smoke-tools.outputs.node_path }}" "\${{ steps.smoke-tools.outputs.node_target }}" "\${{ steps.smoke-tools.outputs.node_sha }}" "\${{ steps.smoke-tools.outputs.pnpm_path }}" "\${{ steps.smoke-tools.outputs.pnpm_target }}" "\${{ steps.smoke-tools.outputs.pnpm_sha }}"
 `);
 const conditionalStepCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -357,7 +391,7 @@ const conditionalStepCount = shardCountFromWorkflow(`jobs:
       - name: Run shard
         if: \${{ false }}
         shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
-        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci
+        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci "\${{ steps.smoke-tools.outputs.node_path }}" "\${{ steps.smoke-tools.outputs.node_target }}" "\${{ steps.smoke-tools.outputs.node_sha }}" "\${{ steps.smoke-tools.outputs.pnpm_path }}" "\${{ steps.smoke-tools.outputs.pnpm_target }}" "\${{ steps.smoke-tools.outputs.pnpm_sha }}"
 `);
 const unguardedRunnerCount = shardCountFromWorkflow(`jobs:
   smoke:
