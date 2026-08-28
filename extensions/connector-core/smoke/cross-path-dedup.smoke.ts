@@ -286,7 +286,10 @@ try {
     (a2.ep as unknown as { chatFrontier(): Promise<number> }).chatFrontier = () => frontier;
     (a2.ep as unknown as { setAttention(mode: string): Promise<void> }).setAttention = async () => {};
     const focusing = a2.setAttention("focus");
-    await Promise.resolve();
+    let windowOpen = false;
+    for (let i = 0; i < 1_000 && !(windowOpen = (a2 as unknown as { enteringFocus: boolean }).enteringFocus); i++)
+      await Promise.resolve();
+    check(`focus-entry ${quiet ? "quiet" : "normal"} transition window opened before the retain emit`, windowOpen);
     const id = quiet ? "focus-transition-quiet" : "focus-transition-normal";
     a2.ep.emit("message", msg(id), mkDelivery(false, { n: 0 }), meta);
     release(0);
