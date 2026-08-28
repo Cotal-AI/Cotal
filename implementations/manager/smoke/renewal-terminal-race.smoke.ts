@@ -24,7 +24,7 @@ import { Manager } from "../src/manager.js";
 import { bootBroker } from "./_boot-broker.js";
 
 const ATTEMPTS = 4;
-const SCENARIO_CELLS = ATTEMPTS * 17;
+const SCENARIO_CELLS = ATTEMPTS * 18;
 let pass = 0;
 let fail = 0;
 
@@ -213,6 +213,7 @@ try {
       const acceptedOutcome = await accepted;
       await late;
       check(`${name}: the renewal accepted before terminalization settles before cleanup`, acceptedOutcome === "completed", acceptedOutcome);
+      check(`${name}: a settled renewal releases its single-flight slot`, agent.staticCredentialRenewal === undefined);
 
       const retired = await until(() => !M.retiring.has(name));
       check(`${name}: retirement drains the accepted renewal and reaches its terminal`, retired, M.retiring.get(name));

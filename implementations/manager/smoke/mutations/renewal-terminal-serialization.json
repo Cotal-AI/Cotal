@@ -33,6 +33,38 @@
       "replace": "    if (a.staticCredentialRenewal) return a.staticCredentialRenewal;\n    if (a.terminalizing) throw new Error(\"renewManagedStaticCred: the lifecycle is terminalizing; no credential is minted after the terminal begins\");",
       "expectRed": "a renewal arriving after the terminal latch is refused",
       "cell": "a renewal arriving after the terminal latch is refused"
+    },
+    {
+      "name": "a settled renewal keeps occupying the per-agent single-flight slot forever",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (a.staticCredentialRenewal === renewal) a.staticCredentialRenewal = undefined;",
+      "replace": "      void a.staticCredentialRenewal;",
+      "expectRed": "a settled renewal releases its single-flight slot",
+      "cell": "a settled renewal releases its single-flight slot"
+    },
+    {
+      "name": "the synchronous terminal admission check is deleted",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (a.terminalizing) throw new Error(\"renewManagedStaticCred: the lifecycle is terminalizing; no credential is minted after the terminal begins\");",
+      "replace": "    void a.terminalizing;",
+      "expectRed": "a renewal arriving after the terminal latch is refused",
+      "cell": "a renewal arriving after the terminal latch is refused"
+    },
+    {
+      "name": "the active static terminal no longer revokes its recorded credential rows",
+      "file": "implementations/manager/src/static-lifecycle.ts",
+      "find": "  if (headNow.mapping.state !== \"retired\")\n    await headBeginRetirement(t, { owner: args.owner, actor: args.actor, lifecycleUid: args.lifecycleUid, opId: args.opId });\n  await revokeStaticCredentialRows(t, args.lifecycleUid, slot.row.credentialIds, hooks.log);\n  await hooks.cleanup();",
+      "replace": "  if (headNow.mapping.state !== \"retired\")\n    await headBeginRetirement(t, { owner: args.owner, actor: args.actor, lifecycleUid: args.lifecycleUid, opId: args.opId });\n  await hooks.cleanup();",
+      "expectRed": "no credential row remains active after retirement",
+      "cell": "no credential row remains active after retirement"
+    },
+    {
+      "name": "static retirement leaves the managed credential material in its secret store and file",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    const cleanup = async (): Promise<void> => {\n      const secrets = this.secrets;\n      const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, a.name, a.lifecycleUid);\n      if (files.creds) {\n        await secrets.delete(agentSecretKeyForFile(files.creds));\n        rmSync(files.creds, { force: true });\n      }\n      await this.deprovisionBroker(a);\n    };",
+      "replace": "    const cleanup = async (): Promise<void> => {\n      await this.deprovisionBroker(a);\n    };",
+      "expectRed": "no credential file remains after retirement",
+      "cell": "no credential file remains after retirement"
     }
   ]
 }
