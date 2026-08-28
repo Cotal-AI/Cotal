@@ -16,6 +16,14 @@ const TIMEOUT_MS = 2000;
  * hook budget, but do not turn one early ENOENT into a permanently lost lifecycle event. */
 const CONNECT_RETRY_MS = 25;
 
+const isRetryableConnectError = (error: unknown): boolean => {
+  const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+  // Missing endpoint: the connector has not bound yet. Refused endpoint: POSIX can leave a stale
+  // socket inode while its replacement is starting. Everything else is a permanent local fault and
+  // must preserve the relay's immediate fail-open behavior.
+  return code === "ENOENT" || code === "ECONNREFUSED";
+};
+
 /**
  * One bounded warning per hook process, on stderr, with no values in it.
  *
@@ -161,7 +169,11 @@ export async function runHookRelay(): Promise<void> {
     let candidate: ReturnType<typeof connect>;
     try {
       candidate = connect(path);
-    } catch {
+    } catch (error) {
+      if (!isRetryableConnectError(error)) {
+        finish("");
+        return;
+      }
       retry = setTimeout(dial, CONNECT_RETRY_MS);
       return;
     }
@@ -186,9 +198,9 @@ export async function runHookRelay(): Promise<void> {
       const nl = reply.indexOf("\n");
       if (nl >= 0) finishWithReceipt(reply.slice(0, nl), candidate);
     });
-    candidate.on("error", () => {
+    candidate.on("error", (error) => {
       if (settled || sock !== candidate) return;
-      if (!connected) {
+      if (!connected && isRetryableConnectError(error)) {
         drop(candidate);
         retry = setTimeout(dial, CONNECT_RETRY_MS);
         return;

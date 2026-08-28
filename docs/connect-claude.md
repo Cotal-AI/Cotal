@@ -251,9 +251,13 @@ Claude starts each hook in its own process, so a prompt or stop relay can reach 
 supplies the source, then enqueues adopt, flush, and close in that order.
 
 `SessionStart` can also run before the connector process has bound its local control socket. The hook
-relay retries only that pre-connect startup refusal, and only inside its existing two-second budget.
-Once a socket has connected, a broken exchange is not retried: the connector may already have handled
-the frame, so replaying it could apply one lifecycle event twice.
+relay retries only missing/refused-listener errors before connect, and only inside its existing
+two-second budget; permanent local faults still fail open immediately. Once a socket has connected,
+a broken exchange is not retried: the connector may already have handled the frame, so replaying it
+could apply one lifecycle event twice.
+That retained `SessionStart` can itself arrive before Claude creates the transcript path. A genuinely
+new startup waits up to five seconds for that file, then fails loud instead of silently losing the
+first run. Retained-history starts and recovered cursors still require their existing source at once.
 
 Tool arguments and results go on this channel verbatim, so withholding user-authored text does not
 make the stream safe to widen: anything a tool reads or prints, including a secret in a command line

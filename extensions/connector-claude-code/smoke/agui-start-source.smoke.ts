@@ -43,6 +43,30 @@ try {
     startupRead.records.map((r) => r.value.id),
   );
 
+  // The retained SessionStart relay can now beat Claude's creation of the JSONL itself. The source
+  // must wait for that real artifact, not turn one early ENOENT into a terminal emitter failure.
+  const delayed = file("delayed");
+  let delayedRead: Awaited<ReturnType<ReturnType<typeof createClaudeTranscriptSource>["read"]>> | undefined;
+  let delayedError: Error | undefined;
+  const created = new Promise<void>((resolve) =>
+    setTimeout(() => {
+      writeFileSync(delayed, line(13));
+      resolve();
+    }, 75),
+  );
+  await Promise.all([
+    createClaudeTranscriptSource(delayed, "startup")
+      .read(undefined)
+      .then((read) => (delayedRead = read))
+      .catch((error) => (delayedError = error as Error)),
+    created,
+  ]);
+  check(
+    "startup:a-SessionStart-before-transcript-creation-waits-for-the-real-file",
+    delayedError === undefined && delayedRead?.records.length === 1 && delayedRead.records[0]?.value.id === 13,
+    { error: delayedError?.message, records: delayedRead?.records.map((r) => r.value.id) },
+  );
+
   // The explicit from-zero door must preserve JsonlFileSource's core partial-record guarantee.
   const partial = file("partial");
   writeFileSync(partial, line(3) + '{"id":4');
@@ -71,6 +95,20 @@ try {
     "startup:a-later-turn-in-a-promptless-session-is-read-after-the-virgin-cursor",
     promptlessTurn.records.map((r) => r.value.id).join(",") === "5,6",
     promptlessTurn.records.map((r) => r.value.id),
+  );
+
+  const neverCreated = file("never-created");
+  let missingError: Error | undefined;
+  try {
+    await createClaudeTranscriptSource(neverCreated, "startup", { startupFileWaitMs: 60 }).read(undefined);
+  } catch (error) {
+    missingError = error as Error;
+  }
+  check(
+    "startup:a-transcript-that-never-appears-fails-loud-after-the-bounded-wait",
+    missingError?.message.includes("did not appear within 60ms") === true &&
+      missingError.message.includes("refusing to lose the first run"),
+    missingError?.message,
   );
 
   // These four source values all name retained history. Each cell proves BOTH halves: no replay of
@@ -115,7 +153,7 @@ try {
     );
   }
 
-  check("every cell ran", pass + fail === 12, { ran: pass + fail, expected: 12 });
+  check("every cell ran", pass + fail === 14, { ran: pass + fail, expected: 14 });
   console.log(`claude-start-source smoke: ${pass} passed, ${fail} failed`);
   process.exitCode = fail ? 1 : 0;
 } finally {
