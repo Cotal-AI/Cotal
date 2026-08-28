@@ -586,3 +586,8 @@ smoke:manifest-launch
 smoke:members
 smoke:presence-scrub
 smoke:start-model
+# The bare core smoke now owns an OS-assigned broker and a production-provisioned unique space. It
+# drives explicit live channels, lifecycle-scoped offline DM restart delivery, pre-activation DM
+# exclusion, presence, and open-mode membership semantics, then awaits broker teardown. Appended so
+# every existing shard assignment remains unchanged.
+smoke

@@ -1,0 +1,71 @@
+{
+  "suite": "packages/core/smoke.ts",
+  "guard": "the repository's bare core smoke owns its broker and proves lifecycle-scoped open-mode delivery rather than borrowing ambient state",
+  "command": "pnpm smoke",
+  "completionMarker": "SMOKE ",
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/core-entry.json",
+  "why": [
+    "The previous bare entry point required an ambient broker, omitted every channel subscription after the no-implicit-general cut, read durable membership from a registry nobody populated, and expected a new lifecycle to inherit a DM published before its activation frontier.",
+    "",
+    "The repaired fixture provisions one unique space through the shipped setup seam, uses explicit live channels, and distinguishes same-lifecycle offline delivery from pre-activation exclusion before production teardown and an awaited broker exit."
+  ],
+  "mutations": [
+    {
+      "name": "skip production space provisioning",
+      "file": "packages/core/smoke.ts",
+      "find": "  await setupSpaceStreams({ servers: SERVERS, space: SPACE });",
+      "replace": "  void SPACE;",
+      "expectRed": "the production setup seam provisions this unique space",
+      "cell": "the production setup seam provisions this unique space"
+    },
+    {
+      "name": "remove bob's explicit general subscription",
+      "file": "packages/core/smoke.ts",
+      "find": "  const bob = new CotalEndpoint({\n    space: SPACE,\n    servers: SERVERS,\n    lifecycleUid: mintLifecycleUid(),\n    card: { id: bobActor, name: \"bob\", role: \"builder\", kind: \"agent\" },\n    channels: [\"general\"],",
+      "replace": "  const bob = new CotalEndpoint({\n    space: SPACE,\n    servers: SERVERS,\n    lifecycleUid: mintLifecycleUid(),\n    card: { id: bobActor, name: \"bob\", role: \"builder\", kind: \"agent\" },\n    channels: [],",
+      "expectRed": "multicast reaches the explicitly joined channel",
+      "cell": "multicast reaches the explicitly joined channel"
+    },
+    {
+      "name": "skip carol's first activation and durable creation",
+      "file": "packages/core/smoke.ts",
+      "find": "  await startEndpoint(carol);\n\n  let carolDurableExists = false;",
+      "replace": "  void carol;\n\n  let carolDurableExists = false;",
+      "expectRed": "carol's lifecycle creates its DM durable before the offline gap",
+      "cell": "carol's lifecycle creates its DM durable before the offline gap"
+    },
+    {
+      "name": "restart carol as a fresh lifecycle",
+      "file": "packages/core/smoke.ts",
+      "find": "  const carolRestarted = new CotalEndpoint({\n    space: SPACE,\n    servers: SERVERS,\n    lifecycleUid: carolLifecycleUid,",
+      "replace": "  const carolRestarted = new CotalEndpoint({\n    space: SPACE,\n    servers: SERVERS,\n    lifecycleUid: mintLifecycleUid(),",
+      "expectRed": "the same lifecycle receives a DM sent while it was offline",
+      "cell": "the same lifecycle receives a DM sent while it was offline"
+    },
+    {
+      "name": "drop the fresh-lifecycle DM activation frontier",
+      "file": "packages/core/src/streams.ts",
+      "find": "      ? { deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: frontier + 1 }",
+      "replace": "      ? { deliver_policy: DeliverPolicy.All }",
+      "expectRed": "a fresh lifecycle does not inherit a pre-activation DM",
+      "cell": "a fresh lifecycle does not inherit a pre-activation DM"
+    },
+    {
+      "name": "turn production space teardown into a no-op",
+      "file": "packages/core/smoke.ts",
+      "find": "      await deleteSpaceResources({ servers: SERVERS, space: SPACE });",
+      "replace": "      void SPACE;",
+      "expectRed": "the production teardown seam removes the unique space",
+      "cell": "the production teardown seam removes the unique space"
+    },
+    {
+      "name": "remove the awaited broker-exit barrier before JetStream tree removal",
+      "file": "packages/core/smoke.ts",
+      "find": "  await killAndAwaitExit(broker);",
+      "replace": "  broker.kill(\"SIGTERM\");",
+      "expectRed": "the owned broker exits before its JetStream tree is removed",
+      "cell": "the owned broker exits before its JetStream tree is removed"
+    }
+  ],
+  "grades": "tool"
+}
