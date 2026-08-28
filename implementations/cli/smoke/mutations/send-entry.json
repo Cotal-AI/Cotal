@@ -1,0 +1,30 @@
+{
+  "suite": "implementations/cli/smoke/send.smoke.ts",
+  "guard": "the send end-to-end smoke runs the repository's real bin/cotal.ts entry against its explicitly owned broker",
+  "command": "pnpm smoke:send",
+  "completionMarker": "send smoke:",
+  "proveWith": "pnpm mutation-proof --config implementations/cli/smoke/mutations/send-entry.json",
+  "why": [
+    "The prior URL walked only to implementations/ and attempted implementations/bin/cotal.ts. Every delivery assertion was unreachable, and the suite stayed ungated.",
+    "",
+    "The named precondition proves the subprocess entry exists before any command runs. The owned OS-assigned broker and explicit --server arguments make the real CLI path safe to run in CI and concurrently without borrowing an ambient mesh."
+  ],
+  "mutations": [
+    {
+      "name": "resolve the CLI from implementations/bin again",
+      "file": "implementations/cli/smoke/send.smoke.ts",
+      "find": "const root = fileURLToPath(new URL(\"../../../\", import.meta.url));\nconst cli = fileURLToPath(new URL(\"../../../bin/cotal.ts\", import.meta.url));",
+      "replace": "const root = fileURLToPath(new URL(\"../../\", import.meta.url));\nconst cli = fileURLToPath(new URL(\"../../bin/cotal.ts\", import.meta.url));",
+      "expectRed": "the subprocess entry is the repository's real bin/cotal.ts",
+      "cell": "the subprocess entry is the repository's real bin/cotal.ts"
+    },
+    {
+      "name": "the CLI subprocesses no longer receive the owned broker address",
+      "file": "implementations/cli/smoke/send.smoke.ts",
+      "find": "  const target = [\"--space\", space, \"--server\", servers];",
+      "replace": "  const target = [\"--space\", space];",
+      "expectRed": "`cotal send dm` exits 0",
+      "cell": "`cotal send dm` exits 0"
+    }
+  ]
+}

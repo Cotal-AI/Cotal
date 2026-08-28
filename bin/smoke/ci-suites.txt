@@ -563,3 +563,7 @@ smoke:isolated-infrastructure-scope
 # teardown. Four concurrent real-broker runs pass without port collision or stale state; append to
 # preserve every existing shard assignment.
 smoke:channels
+# The one-shot send smoke now owns an OS-assigned open broker, passes that address to its receiver
+# and every real CLI subprocess, and resolves the repository's actual bin/cotal.ts entry. Concurrent
+# runs therefore share neither port nor state. Appended to preserve every existing shard assignment.
+smoke:send
