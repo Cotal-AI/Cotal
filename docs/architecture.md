@@ -190,17 +190,15 @@ laterally; the manager only births and configures them.
   the same flag); an untargeted spawn rides class anycast and the acceptance records which
   instance took it. `ps` and `status` scatter across every registered instance and label a
   non-answering one as registered with no answer within the deadline, never dropping it.
-- **A manager holds a liveness lease, and only proof ends it.** Each instance keeps its own key
-  in the space's manager bucket and refreshes it several times over inside the key's TTL. A
-  refresh that gets *no answer* is not a lost lease: it proves nothing about the key, and the
-  write may even have landed with only the acknowledgement lost. So the manager re-reads the key
-  before deciding. It keeps serving when the key is still its own, adopting whatever revision the
-  broker actually has, and shuts itself down only on proof: the key is gone, or it now holds a
-  different process. Going longer than the TTL with no refresh that *landed* is its own reason
-  to stop, and it says so in those words. That window runs from the last write that actually
-  restarted the key's TTL: a re-read that finds the key unchanged is a real answer and the
-  manager keeps serving on it, but reading a key does not refresh it, so it buys no extra time.
-  Either way that stops one instance, never the space; a sibling manager keeps serving.
+- **A manager holds a liveness lease, and nothing about it ends the process.** Each instance
+  keeps its own key in the space's manager bucket and refreshes it several times over inside the
+  key's TTL. A refresh that fails is a question, not a verdict, so the manager re-reads the key
+  before deciding what to do. If the key is still its own it adopts the broker's revision and
+  carries on. If the key is gone (it expired during a stall) it puts it back. If another process
+  holds it, it says so and keeps serving; which of the two goes is the operator's call. If the
+  broker cannot be asked at all it keeps serving and asks again, for as long as that takes. A
+  manager that cannot reach its broker gains nothing by ending itself, and the seats it holds
+  lose everything. Each change of state is one line in `manager.log`, not one line per tick.
 - **Attach is a mesh session.** The console and dashboard discover agents over the **mesh**
   (presence, `ps`). `cotal attach` no longer hands back a `127.0.0.1` URL: it redeems a
   one-use, holder-bound session offer, and the terminal bytes stream over the mesh on

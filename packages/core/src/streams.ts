@@ -102,10 +102,9 @@ export const MANAGER_LEASE_TTL_MS = 10_000;
  *  the in-flight guard skips any tick that falls while the pair is running, so the unit to count is
  *  the pair and not the tick. On the path this budget exists for — the renew gets no answer and the
  *  re-read does — the pair costs about one deadline and three of them complete inside the TTL. Under a
- *  TOTAL blackout, where both halves spend their deadline, the pair costs two and exactly ONE completes
- *  inside the TTL while the next completes just after it. That second completion is the fail-close
- *  decision, and arriving one attempt past the TTL is the intended behaviour rather than a shortfall:
- *  the holder stops as soon as it can no longer prove anything, and not before.
+ *  TOTAL blackout, where both halves spend their deadline, the pair costs two and one completes inside
+ *  the TTL. Past the TTL the key expires at the broker; the holder keeps serving and, when the broker
+ *  answers again, reads the key gone and puts it back. Nothing here ends the holder's process.
  *
  *  They are CLIENT-SIDE PACING ONLY. Unlike the TTL, which is written into the bucket at `cotal up`
  *  and so has to be reconciled on an existing mesh (see {@link ttlBuckets}), changing these two
