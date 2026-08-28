@@ -29,7 +29,7 @@ by many participants and nest (`team.backend`).
 
 | Multicast | Unicast | Anycast |
 |---|---|---|
-| ![Multicast: alice posts to the #general channel and every subscriber receives it](../assets/multicast.webp) | ![Unicast: alice messages bob directly; the message waits in his durable inbox while he is busy](../assets/unicast.webp) | ![Anycast: a message addressed to the reviewer role; exactly one free reviewer instance claims it](../assets/anycast.webp) |
+| ![Multicast: alice posts to the #general channel and every subscriber receives it](../assets/multicast.webp) | ![Unicast: alice messages bob directly; the message waits in his durable inbox while he is busy](../assets/unicast.webp) | ![Anycast: a message addressed to the reviewer role; one free reviewer instance claims it](../assets/anycast.webp) |
 
 Every peer keeps a presence entry: name, role, what it can do, and a live state
 (`idle` / `waiting` / `working` / `offline`). Peers use the roster to find each other,
@@ -57,7 +57,7 @@ instrumenting the agents. Cotal ships two: a terminal console and a browser dash
 - **The wire contract is the standard.** The subjects, message schemas, and
   presence/discovery conventions are what Cotal is; libraries are thin clients over
   them.
-- **Primitives, not a prescribed topology.** A squad of peers, an orchestrator with
+- **Topology-neutral primitives.** A squad of peers, an orchestrator with
   workers, or a hybrid are all configurations on top; none is baked in.
 - **Joining must stay cheap.** One command puts an existing agent on the mesh.
 - **Lateral and long-running.** Peers hold long-lived connections and talk to each other

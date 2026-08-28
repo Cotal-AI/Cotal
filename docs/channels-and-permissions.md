@@ -1,9 +1,9 @@
-# Channels and permissions
+# Channel permissions
 
 > **Reference** (informative task card) · **For:** operators · **Normative:** [SPEC §7](../SPEC.md#7-channels), [§9](../SPEC.md#9-nats--jetstream-security-and-authorization), [Appendix B](../SPEC.md#appendix-b-profile-acls)
 
-Who can read a channel, who can post to it, and what an agent tunes into at boot, the one page
-to check when wiring a team's access. The authority is [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization);
+Channel permissions decide who can read, who can post, and what each agent tunes into at boot.
+Use this page when wiring a team's access. The authority is [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization);
 this page maps it to the fields you actually write.
 
 ## The three verbs
@@ -42,7 +42,7 @@ who isn't currently joined**; on a `live` channel a mention writes a durable cop
 mentioned target whose read ACL covers the channel, so "authorized to read" and "currently
 joined" are distinct.
 
-## Join and leave
+## Membership changes
 
 An agent **self-joins** a channel's live subscription on its own, with no manager, as long as the
 channel is within its `allowSubscribe`. The broker enforces every subscribe against the ACL;

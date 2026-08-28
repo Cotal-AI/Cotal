@@ -28,7 +28,7 @@ and teardown behavior are in the guide: [Define a team](define-a-team.md).
 
 Unknown keys are rejected (no silent ignore), and every error is reported with its file and line.
 
-## `agents:` (three forms)
+## Agent forms
 
 ```yaml
 agents:
@@ -57,12 +57,12 @@ lists both). Persona file format: [agent files](agent-files.md).
 
 `instructions` and `prompt` differ in kind: `instructions` become the session's **system
 prompt** (who the agent is), while `prompt` is a **kickoff message** auto-submitted once
-the session is up (what to do right now) — the declarative form of `cotal spawn --prompt`.
+the session is up (what to do right now). This is the declarative form of `cotal spawn --prompt`.
 It is submitted on first boot and again on a stale-restart (it is part of the launch form,
 so changing it marks a running agent `stale` like any other launch field); a manager
 reclaiming a still-live session does not re-submit it.
 
-## `channels:` (the three access verbs)
+## Channel grants
 
 A channel carries its registry card (`description`, `instructions`, `replay`, …;
 [SPEC §7](../SPEC.md#7-channels)) plus three lists of agent names, the same verbs Cotal
@@ -70,7 +70,7 @@ uses everywhere ([channels & permissions](channels-and-permissions.md)):
 
 | Verb | ACL | Meaning |
 |---|---|---|
-| `subscribe` | — | Auto-listen at boot. A subscriber is implicitly allowed to read. |
+| `subscribe` | none | Auto-listen at boot. A subscriber is implicitly allowed to read. |
 | `allowSubscribe` | **read** | May read the channel. Omitted ⇒ defaults to `subscribe`. Must be a superset of `subscribe`. |
 | `allowPublish` | **post** | May post. **Default-deny**: an empty or omitted list means nobody posts. |
 
@@ -98,7 +98,7 @@ You declare membership per channel; Cotal inverts it into each agent's minted cr
 - `subscribe` only sets what an agent *auto-listens to* at boot; it never widens read.
 
 With `personaPermissions: reject` (the default) the manifest is the complete picture; a
-persona file's own channel grants are ignored, so the file you read is exactly what each
+persona file's own channel grants are ignored, so the file you read is what each
 agent can do. Set `include` (top level or per agent) to *also* inherit a persona's own
 grants for channels the manifest doesn't mention. `cotal topology view -f` always prints
 the resolved graph, inherited scopes included.

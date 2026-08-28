@@ -101,13 +101,13 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
   fork the token and break plan refreshes).
 - **Autonomy defaults.** Spawned agents run `approval_policy=never`,
   `sandbox_mode=workspace-write`, and `sandbox_workspace_write={network_access=true}`.
-  See [Autonomy and the sandbox](#autonomy-and-the-sandbox) for what each one means and how to
+  See [Sandbox autonomy](#sandbox-autonomy) for what each one means and how to
   change it.
 - **It really is Codex.** `cotal spawn --agent codex` drops you into the actual Codex TUI,
   attached to the thread the mesh drives (`codex resume --remote`). Mesh turns render as they
   happen, and anything you type is a real user turn on that same thread with the `cotal_*` tools
   still available. In the foreground that is your terminal; detached it is the manager's pty,
-  which is exactly what `cotal attach` streams and drives. With no terminal at all (piped output,
+  which is what `cotal attach` streams and drives. With no terminal at all (piped output,
   CI, a smoke) the host stays headless and prints an activity feed instead: the same peer either
   way, only the UI differs.
   **Which mode you get** is decided by whether *stdout* is a terminal, and `COTAL_CODEX_TUI=1|0`
@@ -152,7 +152,7 @@ cotal spawn watcher --agent codex --events -d   # armed, detached; read it with 
 
 Eight things are specific to Codex and worth knowing before you read a stream:
 
-- **The durable record is the thread's rollout file, not the live app-server stream.** The seat's
+- **The thread's rollout file is the durable record.** The seat's
   rollout lives inside its own isolated `CODEX_HOME`, under
   `<workspace>/.cotal/codex/<space>-<name>-<hash>/sessions/<yyyy>/<mm>/<dd>/rollout-<stamp>-<thread>.jsonl`.
   Reading the file rather than the stream is what lets the seat resume a thread's stream where it
@@ -170,18 +170,18 @@ Eight things are specific to Codex and worth knowing before you read a stream:
   file appears when the thread is primed. The seat binds to it then, and publishes from that point
   forward. If the file is slow to appear the seat says so in its log and looks again at each turn
   boundary, and whatever the thread wrote before the bind is not republished.
-- **Codex's own built-in tools are not published yet.** Web search, tool search and image generation
+- **Codex's built-in tools remain private to the host.** Web search, tool search and image generation
   record an end with no start, and nothing joins the two halves: the start-shaped record carries no
   call id and the end carries one. Rather than guess a pairing, the seat drops them, so those tool
   uses are absent from the stream while everything on the function-call path is present.
-- **A failed turn is published as a run error, not as a finished run.** Codex records a failure on
+- **Failed turns publish run errors.** Codex records a failure on
   the turn's own completion record, so a turn that hit a usage limit or an upstream error ends its
   run with `RUN_ERROR` carrying the code Codex reported.
 - **No user-authored text is published, ever.** Your prompts, the peer messages injected into the
   thread, and the developer instructions the persona supplies are all withheld. The events channel
   carries a different read ACL from the channel you typed into, so republishing your own words there
   would widen who can read them. Assistant text, reasoning and tool activity are unaffected.
-- **A broker that is down when the seat starts costs the outage, not the seat.** The plane publishes
+- **The seat waits out a broker outage at startup.** The plane publishes
   through the seat's mesh connection, so a seat armed while its broker was unreachable cannot start
   its emitter. It says so in its log, and rebuilds the emitter at the first turn boundary once the
   broker is there. A rebind DECLINES to publish two things, and they are one rule rather than two
@@ -224,7 +224,7 @@ Eight things are specific to Codex and worth knowing before you read a stream:
 - **Reasoning is published as its summary only.** Codex also stores an encrypted reasoning blob on
   every reasoning record; it is opaque, no reader can display it, and it is never put on the wire.
 
-## Autonomy and the sandbox
+## Sandbox autonomy
 
 A spawned Codex agent is woken by peer messages, which arrive when nobody is watching the
 terminal. The defaults follow from that, and all three are overridable per spawn with `--opt`.
@@ -274,7 +274,7 @@ tightening the workspace over removing the sandbox.
   local writes outside the workspace are stopped, so this is not "everything risky is reversible"
   and not "the only exposure is disclosure". If that is wrong for a given agent, spawn it with
   `--opt 'sandbox_workspace_write={network_access=false}'` or `--opt sandbox_mode=read-only`, or
-  run it as a separate OS user. See [Autonomy and the sandbox](#autonomy-and-the-sandbox).
+  run it as a separate OS user. See [Sandbox autonomy](#sandbox-autonomy).
 - **Not a boundary between agents on one machine.** The app-server listener and the tool
   endpoint are both loopback-bound and token-authenticated, which keeps out other OS users and
   anything off-box. It is not isolation between *managed agents*, which run as the same user and
