@@ -130,6 +130,7 @@
     "smoke:attention": "tsx extensions/connector-core/smoke/attention.smoke.ts",
     "smoke:injection-framing": "tsx extensions/connector-core/smoke/injection-framing.smoke.ts",
     "smoke:control-reply": "tsx extensions/connector-core/smoke/control-reply.smoke.ts",
+    "smoke:hook-relay-startup": "tsx extensions/connector-core/smoke/hook-relay-startup.smoke.ts",
     "smoke:manager-invoke-verdict": "tsx extensions/connector-core/smoke/manager-invoke-verdict.smoke.ts",
     "smoke:card-host": "tsx extensions/connector-core/smoke/card-host.smoke.ts",
     "smoke:attention:auth": "tsx extensions/connector-core/smoke/attention-auth.smoke.ts",
