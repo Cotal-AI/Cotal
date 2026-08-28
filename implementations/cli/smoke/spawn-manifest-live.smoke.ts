@@ -14,6 +14,7 @@ import { createConnection } from "node:net";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 const PORT = 14321;
 const SERVER = `nats://127.0.0.1:${PORT}`;
@@ -25,12 +26,16 @@ const CLI = join(WT, "bin", "cotal.ts");
 // silently no-ops (null stdout) there. `import.meta.resolve` gives tsx an absolute URL so it resolves
 // regardless of the spawn's cwd (the temp project root below).
 const TSX_IMPORT = import.meta.resolve("tsx");
-const nodeRun = (...args: string[]) =>
-  spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], { cwd: root, env, encoding: "utf8" });
-
 const home = mkdtempSync(join(tmpdir(), "cotal-spawnf-home-"));
 const root = mkdtempSync(join(tmpdir(), "cotal-spawnf-root-"));
-const env = { ...process.env, COTAL_HOME: home };
+const configDir = join(home, "xdg");
+const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
+const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
+const nodeRun = (...args: string[]) => {
+  const options = { cwd: root, env, encoding: "utf8" as const };
+  assertSmokeSandboxDown(sandbox, args, options);
+  return spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], options);
+};
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {

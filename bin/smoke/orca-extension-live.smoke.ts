@@ -23,6 +23,7 @@ import { createConnection, createServer, type AddressInfo } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 interface OrcaTerminal {
   handle: string;
@@ -62,6 +63,7 @@ const root = mkdtempSync(join(REPO, ".cotal-orca-e2e-"));
 const home = mkdtempSync(join(tmpdir(), "cotal-orca-e2e-home-"));
 const config = mkdtempSync(join(tmpdir(), "cotal-orca-e2e-config-"));
 mkdirSync(join(root, ".cotal"), { recursive: true });
+const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: config });
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: config };
 
 let pass = 0;
@@ -71,13 +73,16 @@ const ok = (name: string, cond: boolean, extra?: unknown): void => {
   console.log(`  ✓ ${name}`);
 };
 const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
-const cli = (args: string[], timeout = 180_000) =>
-  spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], {
+const cli = (args: string[], timeout = 180_000) => {
+  const options = {
     cwd: root,
     env,
-    encoding: "utf8",
+    encoding: "utf8" as const,
     timeout,
-  });
+  };
+  assertSmokeSandboxDown(sandbox, args, options);
+  return spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], options);
+};
 const commandExists = (name: string): boolean =>
   spawnSync(process.platform === "win32" ? "where" : "which", [name], { encoding: "utf8", env }).status === 0;
 const alive = (pid: number): boolean => {

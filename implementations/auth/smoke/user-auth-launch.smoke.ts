@@ -29,6 +29,7 @@ import type { AddressInfo } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
 import { jwt } from "better-auth/plugins/jwt";
@@ -38,8 +39,12 @@ import { toNodeHandler } from "better-auth/node";
 import { pickFreePort } from "./_free-port.js";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-ua-home-"));
+const configDir = join(home, "xdg");
 process.env.COTAL_HOME = home;
+process.env.XDG_CONFIG_HOME = configDir;
 const root = mkdtempSync(join(tmpdir(), "cotal-ua-root-"));
+const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
+const childEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
 
 const { connect, credsAuthenticator } = await import("@nats-io/transport-node");
 const { chatSubject, isReachable, mintCreds, newIdentity } = await import("@cotal-ai/core");
@@ -72,10 +77,12 @@ const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
  *  deadlocking any subprocess step that calls back into the IdP (the user-mode send does). */
 function cotal(args: string[], opts: { cwd?: string; timeoutMs?: number } = {}): Promise<{ status: number | null; out: string }> {
   return new Promise((resolvePromise) => {
-    const child = spawn("npx", ["tsx", BIN, ...args], {
+    const options = {
       cwd: opts.cwd ?? root,
-      env: { ...process.env, COTAL_HOME: home },
-    });
+      env: childEnv,
+    };
+    assertSmokeSandboxDown(sandbox, args, options);
+    const child = spawn("npx", ["tsx", BIN, ...args], options);
     let out = "";
     child.stdout.on("data", (d: Buffer) => { out += d.toString(); });
     child.stderr.on("data", (d: Buffer) => { out += d.toString(); });

@@ -1,0 +1,92 @@
+{
+  "suite": "packages/smoke-kit/smoke/sandbox-guard.smoke.ts",
+  "guard": "smoke teardown reaches only the recorded sandbox root, target-addressed down uses the same parsed space the CLI honors, and the guard runs before any environment-dependent live suite",
+  "command": "pnpm smoke:sandbox-guard",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/sandbox-guard.json",
+  "why": [
+    "This guard protects destructive smoke teardown from resolving through ambient operator state.",
+    "The mutations cover the independent ways that guarantee can be lost: directory identity can be",
+    "ignored, argv positions can replace parser semantics, repeated space flags can stop being last-wins,",
+    "a teardown call site can bypass the shared guard, or the proof can be removed from the check gate or",
+    "moved behind its first environment-dependent live suite. The ownership marker is a separate",
+    "identity from the root directory, so its mutations prove that removing or replacing it is",
+    "independently refused.",
+    "",
+    "The empty-space mutation is the acceptance-boundary regression. The CLI treats an empty parsed space",
+    "as absent, so the guard must refuse it rather than verify the empty-space record and let the CLI act",
+    "on a different current mesh. Its expected failure names both argv cells because the separate empty",
+    "value and the repeated last-empty value reach the same parsed state through different routes."
+  ],
+  "mutations": [
+    {
+      "name": "M1 directory identity comparison accepts every observed root",
+      "file": "packages/smoke-kit/src/sandbox-guard.ts",
+      "find": "observed.physicalPath === expected.physicalPath && observed.dev === expected.dev && observed.ino === expected.ino",
+      "replace": "true",
+      "expectRed": "foreign sandbox root is refused by identity"
+    },
+    {
+      "name": "M2 target routing scans argv position instead of parsed positionals",
+      "file": "packages/smoke-kit/src/sandbox-guard.ts",
+      "find": "  if (requested.includes(\"web\"))",
+      "replace": "  if (args[1] === \"web\")",
+      "expectRed": "generic guard refuses flag-before-target down web"
+    },
+    {
+      "name": "M3 target space scans the first separate flag instead of using parser last-wins semantics",
+      "file": "packages/smoke-kit/src/sandbox-guard.ts",
+      "find": "  const space = parsed.values.space;",
+      "replace": "  const space = (() => { const i = args.indexOf(\"--space\"); return i >= 0 ? args[i + 1] : undefined; })();",
+      "expectRed": "target guard uses the CLI parser's last space value"
+    },
+    {
+      "name": "M4 dogfood finally teardown bypasses the shared sandbox guard",
+      "file": "bin/smoke/dogfood-live.smoke.ts",
+      "find": "  cotal([\"down\"]);",
+      "replace": "  spawnSync(realNode, [tsxCli, binCotal, \"down\"], { encoding: \"utf8\", env, cwd: root });",
+      "expectRed": "raw down spawn is not immediately guarded"
+    },
+    {
+      "name": "M5 sandbox guard proof is removed from the check gate",
+      "file": "package.json",
+      "find": " && pnpm smoke:sandbox-guard",
+      "replace": "",
+      "expectRed": "check reaches smoke:sandbox-guard"
+    },
+    {
+      "name": "M6 sandbox guard proof remains in check but moves behind the first live suite",
+      "file": "package.json",
+      "find": "pnpm smoke:core-boundary && pnpm smoke:sandbox-guard && pnpm smoke:spawn-from-anywhere && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:connect",
+      "replace": "pnpm smoke:core-boundary && pnpm smoke:spawn-from-anywhere && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:sandbox-guard && pnpm smoke:connect",
+      "expectRed": "check reaches smoke:sandbox-guard before its first environment-dependent live suite"
+    },
+    {
+      "name": "M7 target guard accepts empty parsed space values that the CLI treats as absent",
+      "file": "packages/smoke-kit/src/sandbox-guard.ts",
+      "find": "  if (typeof space !== \"string\" || space === \"\")",
+      "replace": "  if (typeof space !== \"string\")",
+      "expectRed": "target guard refuses both empty-space argv forms"
+    },
+    {
+      "name": "M8 sandbox ownership marker identity is ignored",
+      "file": "packages/smoke-kit/src/sandbox-guard.ts",
+      "find": "  const markerHeld = markerIdentity === \"same\";",
+      "replace": "  const markerHeld = true;",
+      "expectRed": "missing sandbox ownership marker is refused by identity"
+    },
+    {
+      "name": "M9 foreign sandbox ownership marker identity is accepted",
+      "file": "packages/smoke-kit/src/sandbox-guard.ts",
+      "find": "  const markerHeld = markerIdentity === \"same\";",
+      "replace": "  const markerHeld = markerIdentity === \"same\" || markerIdentity === \"foreign\";",
+      "expectRed": "replaced sandbox ownership marker is refused as foreign"
+    },
+    {
+      "name": "M10 target guard ignores the canonical document space field",
+      "file": "packages/smoke-kit/src/sandbox-guard.ts",
+      "find": "  if (observed.space !== space) {",
+      "replace": "  if (false && observed.space !== space) {",
+      "expectRed": "target guard refuses a canonical record whose space field is not the requested space"
+    }
+  ]
+}
