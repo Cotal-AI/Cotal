@@ -442,11 +442,21 @@ const gradeDuplicateStepId = (duplicate: string) => {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
-    const marker = '      - name: Protocol & security smoke tests (shard ${{ matrix.shard }}/4)';
-    if (yml.split(marker).length !== 2) return { injected: false, count: null };
+    const lines = yml.split("\n");
+    const invocationPrefix = '        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- ';
+    const invocations = lines
+      .map((line, index) => line.startsWith(invocationPrefix) ? index : -1)
+      .filter((index) => index >= 0);
+    if (invocations.length !== 1 || !duplicate.endsWith("\n")) {
+      return { injected: false, count: null };
+    }
+    let stepStart = invocations[0];
+    while (stepStart >= 0 && !/^      - \S/.test(lines[stepStart])) stepStart -= 1;
+    if (stepStart < 0) return { injected: false, count: null };
+    lines.splice(stepStart, 0, ...duplicate.slice(0, -1).split("\n"));
     return {
       injected: true,
-      count: shardCountFromWorkflow(yml.replace(marker, `${duplicate}${marker}`), true, true),
+      count: shardCountFromWorkflow(lines.join("\n"), true, true),
     };
   } catch {
     return { injected: false, count: null };
