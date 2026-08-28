@@ -18,6 +18,7 @@ import {
   dmDurableConfig,
   dmStream,
   downloadStreamSnapshot,
+  endpointPlaneStreamNames,
   fanoutDurableConfig,
   inboxReaderConfig,
   inboxStream,
@@ -38,10 +39,17 @@ const connId = "UAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const inventory = spaceBackupInventory(space);
 
 assert.equal(inventory.full.length, 8);
-// 5 excluded, not 4: the artifact object store joined them. It is excluded because pin extends
-// LIFETIME, not durability - artifact bytes are transferable, not records. Its own `artifact`
-// class exists so this line cannot be read as "derived, therefore recomputable".
-assert.equal(inventory.excluded.length, 5);
+const endpointStreams = endpointPlaneStreamNames(space);
+assert.equal(endpointStreams.length, 12);
+assert.equal(new Set(endpointStreams).size, 12);
+assert.deepEqual(
+  inventory.excluded.filter((stream) => stream.class === "control").map((stream) => stream.name).sort(),
+  [...endpointStreams].sort(),
+);
+// The five legacy exclusions remain alongside twelve nonportable endpoint/control resources. The
+// artifact object store keeps its own class because pin extends lifetime, not durability; endpoint
+// state is recreated empty after restore rather than misrepresented as derived or transient data.
+assert.equal(inventory.excluded.length, 17);
 // Comparator mechanics ONLY: the list below is synthesized from the inventory itself, so this line
 // can never fail for a family the inventory lost or never knew. That is the #643 circularity; the claim
 // it used to carry (that the inventory agrees with a real broker) is proved by the GATED live

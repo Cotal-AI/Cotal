@@ -5,19 +5,11 @@
   "completionMarker": "backup inventory vs broker truth:",
   "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/backup-inventory.json   # --config resolves against the repo root, never the cwd",
   "why": [
-    "The gated smoke used to feed `spaceBackupInventory()` into `validateSpaceBackupInventory()`,",
-    "an exact set-equality with the same list on both sides, so it passed while a whole stream family",
-    "was missing from the inventory. That is how the unenumerated authority stores (#356) sat",
-    "undetected: the suites that would catch them did not run, and the suites that ran could not fail.",
-    "A hand-pinned count could not catch that class either; it counts the inventory's own length, and",
-    "a family the inventory never knew has nothing to count.",
-    "",
-    "The suite now provisions a real space and validates the broker's OWN enumeration against the",
-    "inventory (the artifact-plane S2 shape), so the check fails in both directions. Each mutation",
-    "below removes one family from one side and must redden the equality cell on the validator's own",
-    "words, which name the family. The three plants cover the three ways the circularity used to",
-    "hide: a backed-up family dropped, an excluded family dropped, and a family the broker holds that",
-    "the inventory never knew (the #356 direction, planted by refusing the named subtraction)."
+    "The gated suite provisions a real space and compares the broker's own stream enumeration to",
+    "the independently maintained backup inventory. This keeps the check non-circular: removing a",
+    "family from either creation or accounting must fail by name rather than shrinking both sides.",
+    "The mutations cover a backed-up family, a legacy excluded family, and one endpoint-plane family",
+    "whose downstream ownership list also drives teardown and its sole delete credential."
   ],
   "mutations": [
     {
@@ -39,13 +31,13 @@
       "note": "Excluded streams are part of the validated set too: the space must account for every stream it owns, whether or not it enters the artifact."
     },
     {
-      "name": "the named #356 subtraction is widened to swallow every unexpected stream",
-      "file": "packages/core/smoke/backup-inventory.smoke.ts",
-      "find": "const isUnenumeratedAuthority = (n: string) =>\n  n.startsWith(\"KV_cotal_auth_\") || n.startsWith(\"KV_cotal_records_\");",
-      "replace": "  const isUnenumeratedAuthority = (n: string) => true;",
-      "expectRed": "the known-unenumerated pair is exactly the two authority stores",
-      "cell": "the known-unenumerated pair is exactly the two authority stores",
-      "note": "The subtraction is the check's only tolerance; a widened one is the circularity rebuilt one level up. The pair-count cell refuses it. This mutation plants the #356 direction: the broker holds families the inventory never knew, and the tolerance must not learn to ignore them."
+      "name": "an endpoint-plane family is dropped from the downstream ownership inventory",
+      "file": "packages/core/src/endpoint-binding.ts",
+      "find": "    eprStreamName(space),\n",
+      "replace": "",
+      "expectRed": "the broker's own stream set equals the backup inventory exactly",
+      "cell": "the broker's own stream set equals the backup inventory exactly",
+      "note": "Creation remains independent and still adds EPR, so the broker reports it as unexpected when the downstream inventory forgets it."
     }
   ]
 }
