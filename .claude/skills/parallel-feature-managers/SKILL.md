@@ -70,6 +70,7 @@ For every requested feature, choose and record:
 | Branch | `feat/channels-export` |
 | Worktree | sibling path such as `Cotal-feature-channels-export` |
 | Manager persona | `mgr-channels-export` |
+| PR | exact number, or `none` until one exists |
 | Channel | `review.channels-export` |
 | Contract | concrete behavior, boundaries, tests, and known non-goals |
 
@@ -229,9 +230,9 @@ model: <pinned manager model>
 cwd: /absolute/path/to/feature-worktree
 ```
 
-Launch managers in parallel only after all worktrees, personas, and channels exist. The manager may
-auto-number repeated reviewer persona identities (`review-engineer-2`, etc.); track the returned
-identity, not an assumed name.
+Launch managers in parallel only after all worktrees, personas, and channels exist. Track the
+returned reviewer identity, not an assumed name; a restarted or duplicated launch may still be
+auto-numbered even though the persona filename is lane-scoped.
 
 Verify with `cotal_roster` that every manager appears and holds its full panel. Do not spawn
 missing-looking duplicates prematurely; allow startup time and recheck first.
@@ -310,8 +311,8 @@ A feature is complete only when:
   false assurance `cold-review` exists to prevent.
 - Every approval and public refutation names the exact head it grades or answers. The manager or
   coordinator re-resolves that head at briefing, at the completion claim, and again at merge, using
-  the three instruments in the manager prompt (Git ref, object type, API cross-check). Neither a
-  verdict nor a refutation is ever carried across a sha.
+  the instruments in the manager prompt: Git ref and object type for every lane, plus the exact PR
+  API cross-check when a PR exists. Neither a verdict nor a refutation is ever carried across a sha.
 - Required focused and integration tests pass.
 - The feature is committed on its own branch.
 - `git status` is clean except an explicitly acknowledged local `.internal` pointer mismatch.
@@ -332,8 +333,7 @@ After landing and verification:
 
 1. `cotal_despawn` the three panel reviewers, independent reviewer, and manager for each feature.
 2. Remove only clean, landed worktrees and their branches according to the user's cleanup request.
-3. Leave reusable base reviewer personas in `.cotal/agents/`; remove throwaway manager personas only
-   if they are no longer useful.
+3. Remove lane-scoped reviewer and manager personas only if they are no longer useful.
 4. Restore channel attention/subscriptions if desired.
 
 Never tear down peers before their final result is captured, and never remove an unmerged worktree.

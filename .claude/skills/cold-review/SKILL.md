@@ -179,11 +179,12 @@ family would have framed*."
 
 - **A reported sha is a claim.** Resolve a PR or branch head from its Git ref first, for example
   `git ls-remote origin refs/pull/<n>/head`, then positive-control the object with `git cat-file -t`.
-  Cross-check with `gh pr view --json headRefOid` rather than treating it as authority: a head field
-  can lag after a push,
-  while a mergeability field may be answering a different strategy question. If two instruments
-  disagree, reproduce the exact question each asks before calling either one stale. Re-resolve the
-  ref when you grade and again if you act.
+  Fetch the exact ref first if that object is not local. When a PR exists, cross-check with
+  `gh pr view <n> --json headRefOid` rather than treating it as authority: a head field can lag after
+  a push, while a mergeability field may be answering a different strategy question. A branch-only
+  lane has no PR API cross-check; `gh pr view <branch>` may select an old closed PR and is not a
+  substitute. If two instruments disagree, reproduce the exact question each asks before calling
+  either one stale. Re-resolve the ref when you grade and again if you act.
 - **A measurement over a mutable ref is only true as of a revision.** Report it as "at `<sha>`, read
   `<time>`". A ref name is not an identifier.
 - **A quoted argument is not the call's arguments.** Diagnose from the recorded entry, not from prose
