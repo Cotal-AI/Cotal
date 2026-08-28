@@ -30,7 +30,7 @@
  *   to remove and permanently silences the mismatch abort below.
  * Run from inside a worktree of the repo. Exits 1 if any pre-existing suite changes shard.
  *
- * CONTROLS BUILT IN, because a bare zero is not evidence. All eight run on every invocation:
+ * CONTROLS BUILT IN, because a bare zero is not evidence. All nine run on every invocation:
  *   - a forced mid-file insert must report non-zero (the instrument responds at all)
  *   - identity (base vs base) must report 0
  *   - an unchanged 20-item registry under 4 -> 5 shards must move 16 items
@@ -39,6 +39,7 @@
  *   - the matrix and runner command must not disagree on the count
  *   - matrix indices must not repeat or leave gaps
  *   - an empty matrix must not masquerade as shard zero
+ *   - extra matrix content must not remove or duplicate jobs
  * Any failed control ABORTS with exit 2 rather than emitting a verdict.
  *
  * A third line once sat here claiming "the known production re-shard 7837b64c->d1aeafc3
@@ -115,11 +116,11 @@ const shardCountFromWorkflow = (yml: string): number | null => {
   if (matrixStart < 0) return null;
   const matrixEnd = strategy.findIndex((line, index) => index > matrixStart && /^      \S/.test(line));
   const matrix = strategy.slice(matrixStart + 1, matrixEnd < 0 ? undefined : matrixEnd);
-  const rows = matrix
-    .map((line) => /^        shard:\s*\[([0-9,\s]+)\]\s*(?:#.*)?$/.exec(line))
-    .filter((match): match is RegExpExecArray => match !== null);
-  if (rows.length !== 1) return null;
-  const tokens = rows[0][1].split(",").map((value) => value.trim());
+  const activeMatrix = matrix.filter((line) => !/^\s*(?:#.*)?$/.test(line));
+  if (activeMatrix.length !== 1) return null;
+  const row = /^        shard:\s*\[([0-9,\s]+)\]\s*(?:#.*)?$/.exec(activeMatrix[0]);
+  if (!row) return null;
+  const tokens = row[1].split(",").map((value) => value.trim());
   if (tokens.length === 0 || tokens.some((value) => !/^(?:0|[1-9][0-9]*)$/.test(value))) {
     return null;
   }
@@ -246,6 +247,17 @@ const emptyMatrixCount = shardCountFromWorkflow(`jobs:
       - name: Run shard
         run: node bin/smoke/shard.mjs \${{ matrix.shard }} 1
 `);
+const excludedMatrixCount = shardCountFromWorkflow(`jobs:
+  smoke:
+    strategy:
+      matrix:
+        shard: [0, 1, 2, 3]
+        exclude:
+          - shard: 3
+    steps:
+      - name: Run shard
+        run: node bin/smoke/shard.mjs \${{ matrix.shard }} 4
+`);
 console.log(`CONTROL forced mid-file insert -> ${forced.length} moved  (must be > 0)`);
 console.log(`CONTROL identity               -> ${identity.length} moved  (must be 0)`);
 console.log(`CONTROL shard count 4 -> 5     -> ${countIncrease.length} moved  (must be 16)`);
@@ -254,10 +266,11 @@ console.log(`CONTROL matrix comment shadow  -> ${commentShadowCount ?? "unreadab
 console.log(`CONTROL command count mismatch -> ${commandMismatchCount ?? "refused"}       (must be refused)`);
 console.log(`CONTROL duplicate matrix index -> ${duplicateMatrixCount ?? "refused"}       (must be refused)`);
 console.log(`CONTROL empty matrix           -> ${emptyMatrixCount ?? "refused"}       (must be refused)`);
+console.log(`CONTROL excluded matrix shard  -> ${excludedMatrixCount ?? "refused"}       (must be refused)`);
 if (
   forced.length === 0 || identity.length !== 0 || countIncrease.length !== 16 ||
   countDecrease.length !== 16 || commentShadowCount !== 4 ||
-  commandMismatchCount !== null || duplicateMatrixCount !== null || emptyMatrixCount !== null
+  commandMismatchCount !== null || duplicateMatrixCount !== null || emptyMatrixCount !== null || excludedMatrixCount !== null
 ) {
   verdict("ABORT", "controls failed, this run cannot be trusted", 2);
 }
