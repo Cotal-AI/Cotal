@@ -37,7 +37,7 @@
       "expectRed": "an armed seat PUBLISHES its thread's activity"
     },
     {
-      "name": "L6 a dead emitter stays bound after a post-start broker outage, so the recovered seat never publishes again",
+      "name": "L6 a dead emitter stays bound after an outage, so no later boundary can recover the plane",
       "file": "extensions/connector-codex/src/host.ts",
       "find": "    if (events?.failure !== undefined) {",
       "replace": "    if (events !== undefined && events.failure !== undefined && false) {",
@@ -84,6 +84,13 @@
       "find": "source: new BoundStartSource<CodexRecord>(new JsonlFileSource<CodexRecord>(rolloutPath), startCursor),",
       "replace": "source: new JsonlFileSource<CodexRecord>(rolloutPath),",
       "expectRed": "a turn written INSIDE the emitter's setup window is PUBLISHED rather than left behind the cursor"
+    },
+    {
+      "name": "L13 an existing WAL cursor is ignored on the first recovery read, so the rebind advances to its new boundary and drops the outage backlog",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "  read(cursor: string | undefined): Promise<SourceRead<T>> {\n    return this.inner.read(cursor ?? this.start);\n  }",
+      "replace": "  private firstRead = true;\n\n  read(cursor: string | undefined): Promise<SourceRead<T>> {\n    const from = this.firstRead && cursor !== undefined ? this.start : cursor ?? this.start;\n    this.firstRead = false;\n    return this.inner.read(from);\n  }",
+      "expectRed": "broker-outage-live:an existing cursor resumes the COMPLETE outage backlog once, tool result included"
     }
   ]
 }

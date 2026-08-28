@@ -37,8 +37,9 @@
  *   5. restart INTO a late file: the successor thread's rollout misses the bind budget while a
  *      previous thread is still bound, and the plane must move to the live thread rather than
  *      pumping the dead one forever.
- *   6. late broker: an armed seat whose broker is unreachable at launch loses its emitter, and has
- *      to PUBLISH once the broker arrives rather than staying quietly dead for the rest of its life.
+ *   6. broker outage: after honest mesh readiness, a failed initial event-plane start declines
+ *      pre-cursor content, while a later outage of an already-running emitter resumes its WAL and
+ *      publishes the complete backlog once the broker returns.
  *
  * Run: pnpm smoke:codex-events-lifecycle
  */
@@ -128,6 +129,9 @@ const gaveUpLooks = (log: string): number => [...log.matchAll(/no rollout file y
  *  reason the announcements above are: a boundary that finds a dead holder announces one, so by the
  *  time a recovery is asked for, the string is already in the log from a boundary that failed. */
 const rebindsAnnounced = (log: string): number => [...log.matchAll(/rebinding at this boundary/g)].length;
+/** How many event holders have reported a terminal failure. Counted so the second outage cannot be
+ *  satisfied by the first holder's already-present diagnostic. */
+const emitterStops = (log: string): number => [...log.matchAll(/AG-UI emitter stopped/g)].length;
 
 /** Wait for a condition, and return WHETHER it happened rather than throwing.
  *
@@ -218,9 +222,9 @@ let hostE: ReturnType<typeof spawn> | undefined;
 /** The late seat's own log. Printed on failure: when this suite goes red the seat's stderr is the
  *  only place the reason is written, and a suite that hides it makes its own failures unreadable. */
 let errB = "";
-/** Seat C's log (the restarted seat whose successor file was late) and seat D's (the seat that
- *  launched with no broker). Both cases are read from the seat's own stderr, because the state each
- *  one is about is only visible from inside the seat until it recovers. */
+/** Seat C's log (the restarted seat whose successor file was late) and seat D's (the seat whose
+ *  event plane crosses two broker outages). Both cases are read from the seat's own stderr, because
+ *  the state each one is about is only visible from inside the seat until it recovers. */
 let errC = "";
 let errD = "";
 /** Seat E's log (the seat whose emitter setup is widened so a turn can run inside it). Same reason
@@ -246,7 +250,7 @@ function startHost(
   /** An auto-submitted first prompt, and the file the fake waits on before it writes anything for
    *  it. Both or neither: the prompt is what `cotal spawn --prompt` sets, and the marker is how a
    *  caller orders that turn against a bind it cannot otherwise see. */
-  boot?: { prompt: string; goMark: string },
+  boot?: { prompt: string; goMark: string; outageGate?: string },
   /** Widens the emitter's own setup, in ms, so a caller can put a completed turn inside the window
    *  between the bind's boundary and the emitter's first read. Test-only on the seat's side too:
    *  omitted here means the variable is never set and the seat runs the unwidened path. */
@@ -276,6 +280,7 @@ function startHost(
       COTAL_MODEL: "fake-model",
       COTAL_VARIANT: "high",
       ...(boot === undefined ? {} : { COTAL_CODEX_PROMPT: boot.prompt, FAKE_CODEX_GO: boot.goMark }),
+      ...(boot?.outageGate === undefined ? {} : { FAKE_CODEX_OUTAGE_GATE: boot.outageGate }),
       ...(startDelayMs === undefined ? {} : { COTAL_EVENTS_TEST_START_DELAY_MS: String(startDelayMs) }),
     },
     stdio: ["ignore", "ignore", capture ? "pipe" : "inherit"],
@@ -321,6 +326,10 @@ function alive(pid: number): boolean {
 }
 /** Which seat groups were alive at the moment teardown began. Filled inside the `finally`. */
 let aliveBeforeTeardown: number[] = [];
+let groupsGoneDuringTeardown = false;
+let brokersExitedBeforeRemoval = false;
+let storeRemoved = false;
+let storeRemoveError: unknown;
 /** Seats this suite stopped ON PURPOSE before teardown (case 3 exits one mid-turn). They are not
  *  teardown's to have killed, so the control below counts the universe teardown is responsible for
  *  rather than every seat that ever existed. */
@@ -587,23 +596,38 @@ try {
 
   // ---- (6) the broker drops after an honest launch ---------------------------------------------
   // Initial mesh absence is intentionally terminal: Codex does not advertise a ready/offline-looking
-  // TUI and fails its startup gate within 15 seconds. Recovery belongs to a seat that was already
-  // ready when the broker dropped. Its event holder then fails on a real publish, while the endpoint
-  // reconnects in the background; the next turn boundary rebinds that dead holder.
+  // TUI and fails its startup gate within 15 seconds. This arm starts after honest readiness and
+  // grades both event-plane states: a first emitter start that fails before it writes a cursor, then
+  // an already-running emitter whose WAL must resume the complete outage backlog.
   const PORT2 = await freePort();
   const servers2 = `nats://127.0.0.1:${PORT2}`;
   const js2 = join(dir, "js2");
-  nats2 = spawn("nats-server", ["-js", "-p", String(PORT2), "-sd", js2], { stdio: "ignore" });
-  releaseBroker2 = teardownOnSignal(nats2, dir);
-  let broker2Ready = false;
-  for (let i = 0; i < 50; i++) {
-    if (nats2.exitCode !== null || nats2.signalCode !== null) break;
-    if (await isReachable(servers2)) {
-      broker2Ready = true;
-      break;
+  const startBroker2 = async (): Promise<boolean> => {
+    if (nats2 !== undefined) return false;
+    nats2 = spawn("nats-server", ["-js", "-p", String(PORT2), "-sd", js2], { stdio: "ignore" });
+    releaseBroker2 = teardownOnSignal(nats2, dir);
+    for (let i = 0; i < 50; i++) {
+      if (nats2.exitCode !== null || nats2.signalCode !== null) return false;
+      if (await isReachable(servers2)) return true;
+      await sleep(200);
     }
-    await sleep(200);
-  }
+    return false;
+  };
+  const stopBroker2 = async (): Promise<boolean> => {
+    const child = nats2;
+    if (child === undefined) return true;
+    await killAndAwaitExit(child, "SIGKILL", 3_000);
+    const exited = child.exitCode !== null || child.signalCode !== null;
+    // Ownership is released only after the child is observably terminal. If it somehow survives
+    // SIGKILL, the process-exit reaper keeps responsibility for both it and the store.
+    if (exited && nats2 === child) {
+      releaseBroker2?.();
+      releaseBroker2 = undefined;
+      nats2 = undefined;
+    }
+    return exited;
+  };
+  const broker2Ready = await startBroker2();
   check("broker-outage:setup:the owned broker is up before the seat launches", broker2Ready);
   await seedChannelRegistry({ servers: servers2, space, file: { defaults: { replay: false }, channels: { team: { replay: false } } } });
   operator2 = makeOperator2(servers2);
@@ -611,16 +635,18 @@ try {
 
   const D = "brokerlatepeer";
   const homeD = join(dir, "d");
-  // The auto-submitted prompt waits on `goD`, so the host reaches honest mesh readiness and binds the
-  // emitter before any outage content is written. Once the broker is down, releasing the marker puts
-  // one full assistant/tool turn through the already-bound plane and makes the holder fail for the
-  // outage we actually mean to recover from.
+  // The auto-submitted prompt waits on `goD`, so the host reaches honest mesh readiness and captures
+  // the first bind boundary before any outage content is written. The widened setup then remains
+  // inside `AguiEmitter.start`; dropping the broker there makes its preflight fail before the virgin
+  // WAL receives a cursor. The later `liveOutageGate` is consumed only by the already-running case.
   const goD = join(dir, "d.go");
+  const liveOutageGate = join(dir, "d.live-outage.go");
   const OUTAGE_BIND_WINDOW_MS = 30_000;
   const hostDStartedAt = Date.now();
   hostD = startHost(D, homeD, "1", join(dir, "d.log.jsonl"), (chunk) => (errD += chunk), servers2, {
     prompt: "TOOLREC the turn that runs while the mesh is unreachable",
     goMark: goD,
+    outageGate: liveOutageGate,
   }, OUTAGE_BIND_WINDOW_MS);
   check("broker-outage:setup:seat D came online before the outage", await settle("D:online before outage", () => online2.has(D), 60_000), margin("D:online before outage"));
   const launchBound = await settle("D:the launch bind announced its boundary", () => publishedThreads(errD).length >= 1, 60_000);
@@ -628,21 +654,13 @@ try {
     ...margin("D:the launch bind announced its boundary"),
     tail: errD.slice(-400),
   });
-  check(
-    "broker-outage:setup:the drop happens inside the widened emitter-start window",
-    launchBound && Date.now() - hostDStartedAt < OUTAGE_BIND_WINDOW_MS,
-    { elapsedMs: Date.now() - hostDStartedAt, windowMs: OUTAGE_BIND_WINDOW_MS },
-  );
-
   // The first observer is deliberately stopped before the outage; after restart a FRESH observer
-  // must see D publish presence again, rather than a retained roster cache satisfying recovery.
+  // must see D publish presence again, rather than this endpoint's retained roster satisfying it.
   await operator2.stop();
   operator2 = undefined;
   online2.delete(D);
-  await killAndAwaitExit(nats2, "SIGKILL", 3_000);
-  releaseBroker2?.();
-  releaseBroker2 = undefined;
-  nats2 = undefined;
+  const firstBrokerExited = await stopBroker2();
+  check("broker-outage:setup:the owned broker exits before its replacement starts", firstBrokerExited);
   let brokerDown = false;
   for (let i = 0; i < 50; i++) {
     if (!(await isReachable(servers2))) {
@@ -652,6 +670,11 @@ try {
     await sleep(100);
   }
   check("broker-outage:setup:the seat's broker drops after launch", brokerDown);
+  check(
+    "broker-outage:setup:the actual drop lands inside the widened initial emitter-start window",
+    firstBrokerExited && brokerDown && launchBound && Date.now() - hostDStartedAt < OUTAGE_BIND_WINDOW_MS,
+    { elapsedMs: Date.now() - hostDStartedAt, windowMs: OUTAGE_BIND_WINDOW_MS },
+  );
 
   writeFileSync(goD, "go");
   const rolloutD = /publishing thread \S+ from (\S+)/.exec(errD)?.[1] ?? "";
@@ -667,21 +690,17 @@ try {
   const emitterDied = await settle("D:the emitter dies during the outage", () => errD.includes("AG-UI emitter stopped"), 60_000);
   check("broker-outage:the armed seat LOSES its emitter when the broker drops", emitterDied, { tail: errD.slice(-400) });
 
-  nats2 = spawn("nats-server", ["-js", "-p", String(PORT2), "-sd", js2], { stdio: "ignore" });
-  releaseBroker2 = teardownOnSignal(nats2, dir);
-  let broker2Restarted = false;
-  for (let i = 0; i < 50; i++) {
-    if (nats2.exitCode !== null || nats2.signalCode !== null) break;
-    if (await isReachable(servers2)) {
-      broker2Restarted = true;
-      break;
-    }
-    await sleep(200);
-  }
+  const firstRestartAt = Date.now();
+  const broker2Restarted = await startBroker2();
   check("broker-outage:setup:the owned broker restarts", broker2Restarted);
   operator2 = makeOperator2(servers2);
   await operator2.start();
-  check("broker-outage:the seat recovers its mesh connection on its own", await settle("D:reconnects", () => online2.has(D), 60_000), margin("D:reconnects"));
+  const reconnected = await settle(
+    "D:reconnects",
+    () => operator2?.getRoster().some((p) => p.card.name === D && p.ts >= firstRestartAt) === true,
+    60_000,
+  );
+  check("broker-outage:the seat writes FRESH presence after reconnecting", reconnected, margin("D:reconnects"));
   await joinEventsOf(D, operator2);
 
   // COUNTED FROM A MARK, both of them: the outage turn's boundary may already have retried the dead
@@ -737,6 +756,149 @@ try {
       deltas,
       leakedArgs: wire.includes("toolargs:1"),
       leakedOutput: wire.includes("tooloutput:1"),
+    },
+  );
+
+  // The first outage established the virgin-WAL branch. This second outage starts from a holder
+  // that has already published, so its WAL carries a real source cursor and bracket state. The
+  // marked turn pauses only after its RUN_STARTED and tool records are durable; seeing RUN_STARTED
+  // on the wire before the kill proves this is a running emitter, not another queued initial start.
+  const countRolloutType = (type: string): number =>
+    rolloutD === "" || !existsSync(rolloutD)
+      ? 0
+      : readFileSync(rolloutD, "utf8").split("\n").filter((line) => line.includes(`\"type\":\"${type}\"`)).length;
+  const turnsBeforeLiveOutage = countRolloutType("task_started");
+  const completesBeforeLiveOutage = countRolloutType("task_complete");
+  const liveOutageTurn = turnsBeforeLiveOutage + 1;
+  const liveRebindTurn = liveOutageTurn + 1;
+  const livePostRebindTurn = liveOutageTurn + 2;
+  const liveFramesFrom = frames2.length;
+  const liveStopsBefore = emitterStops(errD);
+  await dm(D, "TOOLREC OUTAGEGATE the already-running emitter outage turn", operator2);
+  const liveGateEntered = await settle(
+    "D:the live-outage turn reaches its gate",
+    () => existsSync(`${liveOutageGate}.entered`),
+    60_000,
+  );
+  check("broker-outage-live:setup:the turn reaches the boundary after its tool records are durable", liveGateEntered, {
+    ...margin("D:the live-outage turn reaches its gate"),
+    gate: `${liveOutageGate}.entered`,
+  });
+  const liveStartPublished = await settle(
+    "D:the running emitter publishes the outage turn start",
+    () => frames2.slice(liveFramesFrom).some((f) => f.events.some((e) => e.type === "RUN_STARTED")),
+    60_000,
+  );
+  check("broker-outage-live:setup:the emitter PUBLISHED immediately before the outage", liveStartPublished, {
+    ...margin("D:the running emitter publishes the outage turn start"),
+    frames: frames2.length - liveFramesFrom,
+  });
+
+  await operator2.stop();
+  operator2 = undefined;
+  online2.delete(D);
+  const liveBrokerExited = await stopBroker2();
+  check("broker-outage-live:setup:the owned broker exits before its second replacement starts", liveBrokerExited);
+  const liveBrokerDown = !(await isReachable(servers2));
+  check("broker-outage-live:setup:the broker is unreachable while the turn remains held", liveBrokerDown);
+  writeFileSync(liveOutageGate, "go");
+  const liveOutageDone = await settle(
+    "D:the live-emitter outage turn completes on disk",
+    () => countRolloutType("task_complete") > completesBeforeLiveOutage,
+    60_000,
+  );
+  check("broker-outage-live:setup:the rest of the turn lands while the broker is down", liveOutageDone, {
+    ...margin("D:the live-emitter outage turn completes on disk"),
+    before: completesBeforeLiveOutage,
+    now: countRolloutType("task_complete"),
+  });
+  const liveEmitterDied = await settle(
+    "D:the running emitter reports its outage failure",
+    () => emitterStops(errD) > liveStopsBefore,
+    60_000,
+  );
+  check("broker-outage-live:the running emitter becomes terminal on the failed publish", liveEmitterDied, {
+    ...margin("D:the running emitter reports its outage failure"),
+    before: liveStopsBefore,
+    now: emitterStops(errD),
+    tail: errD.slice(-400),
+  });
+
+  const liveRestartAt = Date.now();
+  const liveBrokerRestarted = await startBroker2();
+  check("broker-outage-live:setup:the owned broker restarts again", liveBrokerRestarted);
+  operator2 = makeOperator2(servers2);
+  await operator2.start();
+  await joinEventsOf(D, operator2);
+
+  const liveBindsBefore = publishedThreads(errD).length;
+  const liveRebindsBefore = rebindsAnnounced(errD);
+  await dm(D, "the live-outage boundary that rebinds", operator2);
+  const liveRebound = await settle(
+    "D:the existing-cursor holder rebinds",
+    () => publishedThreads(errD).length > liveBindsBefore,
+    60_000,
+  );
+  check("broker-outage-live:the next boundary REBINDS the failed running emitter", liveRebound, {
+    ...margin("D:the existing-cursor holder rebinds"),
+    before: liveBindsBefore,
+    now: publishedThreads(errD).length,
+    tail: errD.slice(-400),
+  });
+  check("broker-outage-live:the existing-cursor recovery is announced", rebindsAnnounced(errD) > liveRebindsBefore, {
+    before: liveRebindsBefore,
+    now: rebindsAnnounced(errD),
+  });
+  const liveMeshRecovered = await settle(
+    "D:the live-outage recovery refreshes presence",
+    () => operator2?.getRoster().some((p) => p.card.name === D && p.ts >= liveRestartAt) === true,
+    60_000,
+  );
+  check("broker-outage-live:the recovered seat writes fresh presence on its first turn", liveMeshRecovered, {
+    ...margin("D:the live-outage recovery refreshes presence"),
+    restartAt: liveRestartAt,
+    roster: operator2?.getRoster().map((p) => ({ name: p.card.name, ts: p.ts, status: p.status })),
+  });
+  await dm(D, "the first turn after the live-emitter rebind", operator2);
+
+  const liveEvents = (): Record<string, unknown>[] =>
+    frames2.slice(liveFramesFrom).flatMap((f) => f.events as unknown as Record<string, unknown>[]);
+  const liveComplete = await settle(
+    "D:the complete existing-cursor backlog reaches the wire",
+    () => {
+      const events = liveEvents();
+      const text = events.filter((e) => e.type === "TEXT_MESSAGE_CONTENT").map((e) => String(e.delta ?? ""));
+      return [liveOutageTurn, liveRebindTurn, livePostRebindTurn].every(
+        (turn) => text.filter((delta) => delta === `ok:${turn}`).length === 1,
+      );
+    },
+    60_000,
+  );
+  const liveEv = liveEvents();
+  const liveDeltas = liveEv.filter((e) => e.type === "TEXT_MESSAGE_CONTENT").map((e) => String(e.delta ?? ""));
+  const liveWire = JSON.stringify(liveEv);
+  const liveStarts = liveEv.filter((e) => e.type === "RUN_STARTED").length;
+  const liveFinishes = liveEv.filter((e) => e.type === "RUN_FINISHED").length;
+  check(
+    "broker-outage-live:an existing cursor resumes the COMPLETE outage backlog once, tool result included",
+    liveComplete &&
+      liveStarts === 3 &&
+      liveFinishes === 3 &&
+      openRunsIn(frames2.slice(liveFramesFrom)).length === 0 &&
+      [liveOutageTurn, liveRebindTurn, livePostRebindTurn].every(
+        (turn) => liveDeltas.filter((delta) => delta === `ok:${turn}`).length === 1,
+      ) &&
+      liveWire.includes(`toolargs:${liveOutageTurn}`) &&
+      liveWire.includes(`tooloutput:${liveOutageTurn}`),
+    {
+      ...margin("D:the complete existing-cursor backlog reaches the wire"),
+      turns: { liveOutageTurn, liveRebindTurn, livePostRebindTurn },
+      starts: liveStarts,
+      finishes: liveFinishes,
+      open: openRunsIn(frames2.slice(liveFramesFrom)),
+      deltas: liveDeltas,
+      hasToolArgs: liveWire.includes(`toolargs:${liveOutageTurn}`),
+      hasToolOutput: liveWire.includes(`tooloutput:${liveOutageTurn}`),
     },
   );
 
@@ -888,14 +1050,34 @@ try {
     } catch {
       /* leaving anyway */
     }
+  groupsGoneDuringTeardown = await settle("teardown:process groups gone", () => !seatPids.some(alive), 10_000);
   await killAndAwaitExit(nats, "SIGKILL", 3_000);
-  releaseBroker();
-  if (nats2) {
-    await killAndAwaitExit(nats2, "SIGKILL", 3_000);
+  if (nats2) await killAndAwaitExit(nats2, "SIGKILL", 3_000);
+  brokersExitedBeforeRemoval =
+    (nats.exitCode !== null || nats.signalCode !== null) &&
+    (nats2 === undefined || nats2.exitCode !== null || nats2.signalCode !== null);
+
+  const keep = process.env.CODEX_EVENTS_KEEP === "1";
+  if (keep) {
+    // Deliberate retention is the owner releasing intentionally, not a failed removal.
+    releaseBroker();
     releaseBroker2?.();
+    console.log(`KEEP ${dir}`);
+  } else if (groupsGoneDuringTeardown && brokersExitedBeforeRemoval) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      storeRemoved = !existsSync(dir);
+    } catch (error) {
+      storeRemoveError = error;
+    }
+    // Release LAST. If removal failed, the process-exit reaper still owns the dead brokers' tree
+    // and gets one final chance to remove it; a release before rmSync would turn that failure into
+    // an unowned leak.
+    if (storeRemoved) {
+      releaseBroker();
+      releaseBroker2?.();
+    }
   }
-  if (process.env.CODEX_EVENTS_KEEP !== "1") rmSync(dir, { recursive: true, force: true });
-  else console.log(`KEEP ${dir}`);
 }
 
 // A LEAK HERE IS INVISIBLE FROM INSIDE: the suite cannot assert its own exit, because the code that
@@ -906,8 +1088,16 @@ check(
   seatPids.length >= 5 && aliveBeforeTeardown.length === seatPids.length - stoppedOnPurpose.size,
   { started: seatPids.length, stoppedOnPurpose: stoppedOnPurpose.size, alive: aliveBeforeTeardown.length },
 );
-const groupsGone = await settle("teardown:process groups gone", () => !seatPids.some(alive), 10_000);
-check("teardown:and not one of their process groups survived it", groupsGone, { still: seatPids.filter(alive) });
+check("teardown:and not one of their process groups survived it", groupsGoneDuringTeardown, { still: seatPids.filter(alive) });
+check("teardown:the owned brokers exited before the store was touched", brokersExitedBeforeRemoval, {
+  primary: { exitCode: nats.exitCode, signalCode: nats.signalCode },
+  secondary: nats2 === undefined ? undefined : { exitCode: nats2.exitCode, signalCode: nats2.signalCode },
+});
+check(
+  "teardown:the temporary store is removed before cleanup ownership is released",
+  process.env.CODEX_EVENTS_KEEP === "1" || storeRemoved,
+  storeRemoveError,
+);
 
 // THE MARGIN, REPORTED WHILE THE SUITE IS STILL GREEN. A failing cell already carries its own
 // wait in its payload; this line is for the run that passed with almost nothing to spare, which is

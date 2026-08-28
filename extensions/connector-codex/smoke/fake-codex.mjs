@@ -241,6 +241,18 @@ async function waitForGo() {
   while (!existsSync(GO_MARK)) await new Promise((r) => setTimeout(r, 50));
 }
 
+/** Hold one explicitly marked turn after its start and tool records are durable, so the harness can
+ *  remove the broker before allowing the completion records. The `.entered` marker is the positive
+ *  signal that the turn reached this exact boundary; the gate file releases it. */
+const OUTAGE_GATE = process.env.FAKE_CODEX_OUTAGE_GATE ?? "";
+let outageGateSpent = false;
+async function waitForOutageGate(text) {
+  if (OUTAGE_GATE === "" || outageGateSpent || !text.includes("OUTAGEGATE")) return;
+  outageGateSpent = true;
+  writeFileSync(`${OUTAGE_GATE}.entered`, "entered");
+  while (!existsSync(OUTAGE_GATE)) await new Promise((r) => setTimeout(r, 50));
+}
+
 let turnSeq = 0;
 let activeTurn;
 let interruptWaiter;
@@ -305,6 +317,7 @@ async function runTurn(text) {
     });
     rolloutRecord("response_item", { type: "function_call_output", call_id: callId, output: `tooloutput:${turnSeq}` });
   }
+  await waitForOutageGate(text);
   if (text.includes("SOLOTUI") && !soloUsed) {
     // A turn the human started with NOTHING of ours open. The host must still pump its buffered
     // traffic when this ends — otherwise a DM that arrived while someone was typing sits in the
