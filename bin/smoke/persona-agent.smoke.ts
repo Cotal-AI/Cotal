@@ -40,7 +40,7 @@ process.env.COTAL_HOME = home;
 
 const { parseCommandArgs, probeConnect, registry } = await import("@cotal-ai/core");
 const { recordMesh } = await import("@cotal-ai/workspace");
-const { spawnRequiredExtensions } = await import("@cotal-ai/cli");
+const { spawnRequiredExtensions, runCli } = await import("@cotal-ai/cli");
 await import("@cotal-ai/cli"); // registers the CLI commands (spawn/stop/ps) into the registry
 const { Manager } = await import("@cotal-ai/manager");
 
@@ -214,13 +214,61 @@ try {
     mkdirSync(join(foreignRoot, "xdg", "cotal", "extensions"), { recursive: true });
     writeFileSync(join(foreignRoot, "xdg", "cotal", "extensions", "extensions.json"), JSON.stringify({ extensions: [] }));
     setInstalledExtensionsEnabled(true);
+    // PUBLISHED-BINARY REGISTRY STATE: on the real binary no connector is pre-registered; the
+    // suite's in-process recorders are, and materializeExtension returns a registry hit without
+    // consulting the manifest, so with them present the pre-fix hook cannot produce the abort
+    // this cell exists to catch. Unregister both for the dispatch (restored right after). With
+    // the registry empty and the scratch manifest empty, the abort's NAMED CONNECTOR is the
+    // whole story: post-fix the body loads the TARGET persona, materializes its pin, and the
+    // refusal names `pin` (correct: that harness is genuinely not installed here). Pre-fix the
+    // hook materialized the CWD persona's `other` in the dispatcher and aborted BEFORE the body
+    // loaded any persona, naming `other`: the confusing wrong-harness refusal of the block.
+    registry.unregister("connector", "pin");
+    registry.unregister("connector", "other");
+    // The refusal path calls process.exit(1); intercept it so the SUITE survives to grade the
+    // cell (the real binary exits here, which is the correct operator-visible behavior).
+    const realExit = process.exit.bind(process);
+    (process as unknown as { exit: (c?: number) => never }).exit = ((code?: number) => {
+      throw new Error(`process.exit(${code ?? 0})`);
+    }) as typeof process.exit;
     try {
-      process.env.COTAL_DEFAULT_AGENT = "other"; // env names the OTHER connector too
-      const eOut = await capture(() => run("spawn", ["pinned", "--space", SPACE_E, "--name", "fgdiv"]));
-      ok("E: divergence spawn ran to completion from the foreign cwd", /spawning fgdiv/.test(eOut), eOut);
-      ok("E: the TARGET persona's pin built the launch, not the cwd persona's", builds.pin.length === 1 && builds.other.length === 0, { pin: builds.pin.length, other: builds.other.length, out: eOut });
-      ok("E: no 'no connector registered' abort for the pinned harness", !/no connector registered for "pin"/.test(eOut), eOut);
+    // Throw-safe capture: the shared capture() helper RETHROWS on rejection and its buffer is
+    // lost; this cell's fn is EXPECTED to throw (the intercepted exit), so keep the buffer.
+    let eOut = "";
+    {
+      const realLog = console.log;
+      const realErr = console.error;
+      console.log = (...a: unknown[]) => void (eOut += a.join(" ") + "\n");
+      console.error = (...a: unknown[]) => void (eOut += a.join(" ") + "\n");
+      try {
+        // Drive the REAL DISPATCHER (runCli), not cmd.run: the pre-parse hook
+        // (spawnRequiredExtensions -> materializeExtension) only executes inside runCli, and the
+        // pre-fix abort this cell pins lived exactly there.
+        await runCli(registry, ["spawn", "pinned", "--space", SPACE_E, "--name", "fgdiv"], { extensions: true });
+      } catch (e) {
+        eOut += `\n${(e as Error).message}`;
+      } finally {
+        console.log = realLog;
+        console.error = realErr;
+      }
+    }
+    // Restore the recorders for later cells/teardown parity.
+    registry.register(mkCon("pin", true));
+    registry.register(mkCon("other", true));
+    // With neither connector installed, the spawn MUST refuse, and it must name the PINNED
+    // harness (`pin`, from the target persona), the correct, actionable refusal. The pre-fix
+    // divergence abort named `other` (the cwd persona's) or aborted in the dispatcher before the
+    // persona ever loaded; either way the operator was pointed at the wrong harness or none.
+    ok("E: divergence spawn refuses loudly (neither harness installed)", /pin|other|connector/.test(eOut) && !/spawning fgdiv/.test(eOut), eOut);
+    ok("E: the refusal names the PINNED harness (the target persona's choice), not the cwd persona's", /pin/.test(eOut) && !(/other/.test(eOut) && !/pin/.test(eOut)), eOut);
+    // That the refusal names `pin` ALREADY proves the body loaded the TARGET persona: `pin` is
+    // pinned only by the target's persona file (the foreign cwd's persona pins `other`). A
+    // pre-body abort (the pre-fix dispatcher abort) could never name `pin`.
+    ok("E: naming `pin` proves the TARGET persona was loaded (only it pins pin)", /pin/.test(eOut), eOut);
+    // The GREEN-path divergence proof (harness choice under actually-different roots) ran as cell
+    // C/D with the recorders registered; this cell pins the ABORT SHAPE.
     } finally {
+      (process as unknown as { exit: typeof process.exit }).exit = realExit;
       setInstalledExtensionsEnabled(false);
       if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
       else process.env.XDG_CONFIG_HOME = prevXdg;
