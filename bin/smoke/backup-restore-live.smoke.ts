@@ -154,7 +154,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       const malformed: Array<[string, (auth: Record<string, any>) => void, RegExp]> = [
         ["public nkey", (auth) => { auth.account.pub = "not-an-account-key"; }, /invalid encoded key|valid account public nkey/],
         ["seed mismatch", (auth) => { auth.account.seed = auth.account.signingSeed; }, /account\.seed does not match account\.pub/],
-        ["JWT", (auth) => { auth.account.jwt = "not-a-jwt"; }, /invalid jwt/],
+        ["JWT", (auth) => { auth.account.jwt = "not-a-jwt"; }, /store values are corrupt, mismatched, or outside one broker\/account trust chain/],
         ["untrusted signer", (auth) => {
           auth.account.signingSeed = foreignAuth.account.signingSeed;
           auth.account.signingPub = foreignAuth.account.signingPub;
