@@ -35,7 +35,10 @@ const here = dirname(fileURLToPath(import.meta.url));
  *  resolve to loopback with no DNS setup — just works. (Safari may not resolve
  *  `*.localhost`; plain http://127.0.0.1:7799 always does.) */
 export const WEB_PORT = 7799;
+export const WEB_HOST = "127.0.0.1";
 export const WEB_URL = `http://cotal.localhost:${WEB_PORT}/`;
+const WILDCARD_HOSTS = new Set(["0.0.0.0", "::"]);
+const IPV4_MAPPED_WILDCARD = "::ffff:0:0";
 /** The three reasons this surface refuses a request, named as constants because the browser and the
  *  cells must both match the SAME token — a restated literal drifts silently, and a refusal that
  *  cannot be told apart from another refusal is the defect this lane exists to remove. Four
@@ -126,7 +129,7 @@ function cookieValue(header: string | undefined, name: string): string | undefin
  *  request as `unauthenticated` and the operator would never learn that something cross-origin was
  *  talking to their console. The more specific condition wins.
  */
-export function makeAuthGate(port: number) {
+export function makeAuthGate(port: number, host: string = WEB_HOST) {
   // Single-use, minted per process. 32 bytes: this is the only secret standing between a local
   // process and the mesh view until the cookie exists.
   let launchToken: string | undefined = randomBytes(32).toString("base64url");
@@ -147,7 +150,9 @@ export function makeAuthGate(port: number) {
   // origin serialization drops the default port — so on `--port 80` the console would refuse its own
   // browser. Normalizing both sides is the only way the comparison means what it reads as.
   const allowedOrigins = new Set(
-    [`http://cotal.localhost:${port}`, `http://127.0.0.1:${port}`, `http://localhost:${port}`]
+    (host === WEB_HOST
+      ? [`http://cotal.localhost:${port}`, `http://127.0.0.1:${port}`, `http://localhost:${port}`]
+      : [webUrl(host, port)])
       .map((o) => new URL(o).origin),
   );
 
@@ -707,9 +712,14 @@ export async function activityBackfill(
 
 /** A live observability dashboard for a space, served over HTTP + SSE. A read-only
  *  observer endpoint (invisible to peers) feeds the page presence, channel history,
- *  and a live message stream — no manager required. Bound to loopback. */
+ *  and a live message stream — no manager required. Bound to loopback unless the operator opts in
+ *  to a different host explicitly. */
 export async function web(args: ParsedArgs): Promise<void> {
-  const values = args.values as { space?: string; server?: string; port?: string; "no-open"?: boolean; detach?: boolean; creds?: string };
+  const values = args.values as { space?: string; server?: string; host?: string; port?: string; "no-open"?: boolean; detach?: boolean; creds?: string };
+  // Validate the exposure coordinate before connecting to the broker or claiming local artifacts.
+  // An invalid remote-exposure request must have no dashboard side effects.
+  const host = normalizeWebHost(values.host);
+  const port = values.port ? Number(values.port) : WEB_PORT;
   // Resolve WHICH running mesh + creds (admin god-view: shows DMs + anycast), then DROP the account
   // seed. The dashboard is a loopback HTTP process; holding the space signing seed (`auth` — it can
   // mint ANY identity/role) for the whole session would make a dashboard compromise = full account
@@ -734,11 +744,10 @@ export async function web(args: ParsedArgs): Promise<void> {
   const detachedRoot = process.env[DETACHED_ROOT_ENV];
   if (detachedRoot && conn.root !== detachedRoot)
     throw new Error(`detached web target lost its recorded mesh root (${detachedRoot}) before startup`);
-  const port = values.port ? Number(values.port) : WEB_PORT;
   if (values.detach) {
     if (!conn.root)
       throw new Error("`cotal web --detach` requires a recorded mesh root; start or register the mesh with `cotal up` first");
-    await launchDetachedWeb(args.raw, conn.root, conn.space, conn.server, port, Boolean(values["no-open"]));
+    await launchDetachedWeb(args.raw, conn.root, conn.space, conn.server, host, port, Boolean(values["no-open"]));
     return;
   }
   const user = conn.bearer ? await userViewAuthOrExit(conn, "admin") : undefined;
@@ -851,7 +860,7 @@ export async function web(args: ParsedArgs): Promise<void> {
   for (const plane of ["chat", "inst", "svc"])
     ep.tap(onTap, { subject: `${spacePrefix(space)}.${plane}.>` });
 
-  const gate = makeAuthGate(port);
+  const gate = makeAuthGate(port, host);
 
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const path = (req.url ?? "/").split("?")[0];
@@ -1120,9 +1129,10 @@ export async function web(args: ParsedArgs): Promise<void> {
     process.exit(1);
   });
 
-  await new Promise<void>((ready) => httpServer.listen(port, "127.0.0.1", ready));
-  // Branded URL only when on the default port; a custom --port keeps the plain loopback address.
-  const url = webUrl(port);
+  await new Promise<void>((ready) => httpServer.listen(port, host, ready));
+  // The advertised coordinate is the coordinate the operator explicitly chose. The branded URL is
+  // reserved for the untouched loopback default, where cotal.localhost is honest and convenient.
+  const url = webUrl(host, port);
   // The launch URL carries the one-time token. It is printed as well as opened, because a browser
   // that cannot be launched (headless box, wrong default) must still have a way in — and because a
   // token the operator cannot see is a token they cannot revoke by restarting.
@@ -1177,6 +1187,7 @@ async function launchDetachedWeb(
   root: string,
   space: string,
   server: string,
+  host: string,
   port: number,
   noOpen: boolean,
 ): Promise<void> {
@@ -1199,10 +1210,10 @@ async function launchDetachedWeb(
   }
   child.unref();
 
-  const url = webUrl(port);
+  const url = webUrl(host, port);
   const sessionPath = localProcessPath(SESSION_FILE, context);
   try {
-    await waitForDetachedWeb(child, { pidPath, sessionPath, url: `http://127.0.0.1:${port}/`, space, timeoutMs: DETACHED_READY_TIMEOUT_MS });
+    await waitForDetachedWeb(child, { pidPath, sessionPath, url, space, timeoutMs: DETACHED_READY_TIMEOUT_MS });
   } catch (e) {
     let cleanupError: Error | undefined;
     try { await terminateDetachedWeb(child, pidPath); }
@@ -1360,8 +1371,36 @@ export function appendedLogTail(path: string, offset: number): string {
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-function webUrl(port: number): string {
-  return port === WEB_PORT ? WEB_URL : `http://127.0.0.1:${port}/`;
+/** Validate and normalize one host used for both binding and browser advertisement. Wildcard binds
+ *  are refused because they do not name a destination a browser or readiness probe can honestly use. */
+export function normalizeWebHost(input: string | undefined): string {
+  if (input === undefined) return WEB_HOST;
+  if (input === "" || input !== input.trim()) throw new Error("--host must be a hostname or IP address without surrounding whitespace");
+  const unbracketed = input.startsWith("[") && input.endsWith("]") ? input.slice(1, -1) : input;
+  if (unbracketed.includes("[") || unbracketed.includes("]") || /[\s/?#@]/.test(unbracketed))
+    throw new Error(`invalid --host ${input}`);
+  let host: string;
+  try {
+    // WHATWG parsing canonicalizes alternate IPv4 spellings and compressed IPv6. Check the
+    // canonical value so aliases such as `0` cannot bypass the wildcard refusal and advertise
+    // `0.0.0.0` after URL serialization.
+    const ipv6 = unbracketed.includes(":");
+    const parsed = new URL(`http://${ipv6 ? `[${unbracketed}]` : unbracketed}:1/`);
+    if (parsed.port !== "1" || parsed.pathname !== "/" || parsed.username || parsed.password)
+      throw new Error(`invalid --host ${input}`);
+    host = ipv6 ? parsed.hostname.slice(1, -1) : parsed.hostname;
+  } catch {
+    throw new Error(`invalid --host ${input}`);
+  }
+  if (WILDCARD_HOSTS.has(host) || host === IPV4_MAPPED_WILDCARD)
+    throw new Error(`--host ${input} is a wildcard bind, not a browser address; pass one reachable hostname or IP address`);
+  return host;
+}
+
+export function webUrl(host: string, port: number): string {
+  if (host === WEB_HOST && port === WEB_PORT) return WEB_URL;
+  const literal = host.includes(":") ? `[${host}]` : host;
+  return `http://${literal}:${port}/`;
 }
 
 function json(res: ServerResponse, data: unknown, status = 200): void {

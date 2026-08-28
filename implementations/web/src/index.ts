@@ -15,6 +15,7 @@ const webCommand: Command = {
   summary: "browser observability dashboard - presence, channels, live feed",
   flags: [
     ...targetFlags,
+    { name: "host", type: "string", value: "<host>", description: "HTTP bind and browser host (default 127.0.0.1; remote exposure is explicit)" },
     { name: "port", type: "string", value: "<n>", description: "HTTP port (default 7799)" },
     { name: "detach", type: "boolean", description: "run in the background (stop with `cotal down web`)" },
     { name: "no-open", type: "boolean", description: "don't open the browser" },

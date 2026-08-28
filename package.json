@@ -75,6 +75,8 @@
     "smoke:web-channel-authority": "tsx implementations/web/smoke/channel-authority.smoke.ts",
     "smoke:web-console-auth": "tsx implementations/web/smoke/console-auth.smoke.ts",
     "smoke:web-registration-seam": "tsx implementations/web/smoke/registration-seam.smoke.ts",
+    "smoke:web-remote-bind": "tsx implementations/web/smoke/remote-bind.smoke.ts",
+    "smoke:web-probe-target": "tsx implementations/cli/smoke/web-probe-target.smoke.ts",
     "smoke:web-membership-refusal": "tsx implementations/web/smoke/membership-refusal.smoke.ts",
     "smoke:web-snapshot": "tsx implementations/web/smoke/snapshot-retention.smoke.ts",
     "smoke:web-bounded-aggregation": "tsx implementations/web/smoke/bounded-aggregation.smoke.ts",

@@ -567,7 +567,7 @@ check("POSITIVE CONTROL for the sentinel: an ALLOWED request DOES reach the rout
 // server would be a fixture wearing an integration test's name — the same defect shape as (3).
 // Tracked as a follow-up, not as a blocker on this change.
 {
-  const decl = "  const gate = makeAuthGate(port);\n\n  const handleRequest = async (req: IncomingMessage, res: ServerResponse)";
+  const decl = "  const gate = makeAuthGate(port, host);\n\n  const handleRequest = async (req: IncomingMessage, res: ServerResponse)";
   check("INTERIM: the handler's gate is created by makeAuthGate and NOTHING sits between that and the handler",
     webTs.includes(decl), { found: webTs.includes(decl) });
   check("CONTROL: the adjacency pin is not vacuous — a creation line that is not in the file is not found",
