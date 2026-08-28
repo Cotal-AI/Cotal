@@ -113,7 +113,7 @@ const participantStore = workspaceSecretStore(participantRoot);
 const authDiagnosticCap = 32 * 1024;
 const closedChildren = new WeakSet<ChildProcess>();
 let authService: ChildProcess | undefined;
-let authServiceDiagnostics = "";
+let authServiceDiagnostics = Buffer.alloc(0);
 let authServiceSpawnError: Error | undefined;
 let broker: ChildProcess | undefined;
 let idpServer: ReturnType<typeof createServer> | undefined;
@@ -126,7 +126,15 @@ function trackChild(child: ChildProcess): ChildProcess {
 }
 
 function appendAuthDiagnostic(chunk: Buffer | string): void {
-  authServiceDiagnostics = `${authServiceDiagnostics}${chunk.toString()}`.slice(-authDiagnosticCap);
+  const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+  const combined = authServiceDiagnostics.length === 0
+    ? bytes
+    : Buffer.concat([authServiceDiagnostics, bytes]);
+  let start = Math.max(0, combined.length - authDiagnosticCap);
+  // Never begin the retained suffix in the middle of a valid UTF-8 code point. Dropping the
+  // partial prefix keeps both the byte cap and the rendered diagnostic honest.
+  while (start < combined.length && (combined[start]! & 0xc0) === 0x80) start++;
+  authServiceDiagnostics = combined.subarray(start);
 }
 
 function authServiceFailure(child: ChildProcess, reason: string): Error {
@@ -139,7 +147,7 @@ function authServiceFailure(child: ChildProcess, reason: string): Error {
         : child.pid === undefined
           ? "no pid"
           : `pid ${child.pid} still running`;
-  const diagnostics = authServiceDiagnostics.trim();
+  const diagnostics = authServiceDiagnostics.toString("utf8").trim();
   return new Error(`${reason}; child ${state}${diagnostics === "" ? "" : `\nauth-service output (last ${authDiagnosticCap} bytes):\n${diagnostics}`}`);
 }
 
@@ -147,7 +155,7 @@ function spawnAuthService(): ChildProcess {
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
   env.COTAL_HOME = participantHome;
-  authServiceDiagnostics = "";
+  authServiceDiagnostics = Buffer.alloc(0);
   authServiceSpawnError = undefined;
   const child = spawn(process.execPath, [...process.execArgv, self, "auth-service", "--space", space, "--server", server, "--exchange-public-port", "0"], {
     cwd: hostRoot,
@@ -201,6 +209,24 @@ async function stopChild(child: ChildProcess | undefined): Promise<boolean> {
 }
 
 try {
+  const asciiHead = "ascii-head-marker";
+  const asciiTail = "ascii-tail-marker";
+  appendAuthDiagnostic(Buffer.from(`${asciiHead}${"a".repeat(authDiagnosticCap * 2)}${asciiTail}`));
+  const asciiDiagnostic = authServiceDiagnostics.toString("utf8");
+  check("diagnostic retention is capped in bytes for ASCII output",
+    authServiceDiagnostics.length <= authDiagnosticCap && !asciiDiagnostic.includes(asciiHead) && asciiDiagnostic.includes(asciiTail));
+
+  authServiceDiagnostics = Buffer.alloc(0);
+  const utf8Head = "utf8-head-marker";
+  const utf8Tail = "utf8-tail-marker";
+  appendAuthDiagnostic(Buffer.from(`${utf8Head}${"€".repeat(authDiagnosticCap)}${utf8Tail}`));
+  const utf8Diagnostic = authServiceDiagnostics.toString("utf8");
+  check("diagnostic retention is capped in bytes for multibyte UTF-8 output",
+    authServiceDiagnostics.length <= authDiagnosticCap &&
+      Buffer.byteLength(utf8Diagnostic) <= authDiagnosticCap &&
+      !utf8Diagnostic.includes(utf8Head) && utf8Diagnostic.includes(utf8Tail));
+  authServiceDiagnostics = Buffer.alloc(0);
+
   mkdirSync(join(hostRoot, ".cotal"), { recursive: true });
   mkdirSync(join(participantRoot, ".cotal"), { recursive: true });
 
