@@ -37,25 +37,18 @@
       "expectRed": "4.0 one failing channel does not make the whole aggregation throw"
     },
     {
-      "name": "B6 the dms route's deadline is dropped: the one read that has no partial to serve answers long after the reader gave up instead of refusing, and the browser has nothing to hold its last good list against",
-      "file": "implementations/web/src/web.ts",
-      "find": "        const dms = await within(\n          ep.dmHistory({ limit }).catch((e: unknown) => {\n            throw new Error(`direct messages: the read failed: ${e instanceof Error ? e.message : String(e)}`);\n          }),\n          clock.until,\n        );\n        if (dms === LATE)\n          return json(res, { error: `direct messages: the read did not finish within ${AGGREGATION_DEADLINE_MS}ms` }, 503);",
-      "replace": "        const dms = await ep.dmHistory({ limit }).catch((e: unknown) => {\n          throw new Error(`direct messages: the read failed: ${e instanceof Error ? e.message : String(e)}`);\n        });",
-      "expectRed": "5.6 `/api/dms` REFUSES at its deadline"
-    },
-    {
       "name": "B7 the refusal stops naming what it exceeded, so the page can say only that something returned a status - the same illegibility as the `{\"error\":\"timeout\"}` this change exists to replace",
       "file": "implementations/web/src/web.ts",
       "find": "`direct messages: the read did not finish within ${AGGREGATION_DEADLINE_MS}ms`",
       "replace": "\"direct messages unavailable\"",
-      "expectRed": "5.7 and the refusal names the deadline it exceeded"
+      "expectRed": "6.7 and the refusal names the deadline it exceeded"
     },
     {
       "name": "B8 the server stops saying a page was short in its own log, so the operator who can tell a slow link from a broken channel is the one person never told",
       "file": "implementations/web/src/web.ts",
       "find": "      if (page.partial)\n        console.error(c.yellow(`~ ${req.method ?? \"GET\"} ${path} partial: ${page.read}/${page.of} sources within ${page.deadlineMs}ms, missing ${page.missing.join(\", \")}`));\n",
       "replace": "",
-      "expectRed": "5.10 the server SAYS in its own log that the page was short"
+      "expectRed": "6.10 the server SAYS in its own log that the page was short, and what it left out"
     },
     {
       "name": "B9 the suite's own ceiling is pulled BELOW the deadline, which would make every timing cell here red for a reason that is about this constant rather than about the code, and would let a future edit quietly retune the harness until it agrees with whatever the implementation does",
@@ -78,5 +71,13 @@
       "replace": "          ep.channelHistory(name, { limit }),",
       "expectRed": "5.2 `/api/channels/<name>/history` names a read that REJECTS instead of returning the bare 500"
     }
+  ],
+  "why": [
+    "",
+    "B6 WAS REMOVED AFTER RE-EXECUTION. Dropping the outer `/api/dms` deadline no longer makes the",
+    "route run unbounded: `dmHistory` now returns its own timeout at the same boundary, so the status",
+    "and wall-time cells stay green and only the wording cell fails. B7 already owns that wording",
+    "failure. Keeping the old row under a new expected cell would count one defect twice and preserve",
+    "a claim the current call graph no longer exhibits."
   ]
 }

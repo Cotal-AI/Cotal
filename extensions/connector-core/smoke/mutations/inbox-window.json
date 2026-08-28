@@ -147,10 +147,10 @@
       "name": "K6 the focus drain acks every id in the reply, recall included",
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "          agent.drainInboxDeliveries(all.filter((i) => bufferedIds.has(i.recvKey)).map((i) => i.recvKey));",
-      "replace": "          agent.drainInboxDeliveries(all.map((i) => i.recvKey));",
+      "replace": "          agent.drainInboxDeliveries(all.map((i) => i.recvKey || i.id));",
       "expectRed": "focus: a recall id was NOT marked handled",
       "cell": "focus: a recall id was NOT marked handled, so a later live copy of it still buffers",
-      "note": "The filter reads like defensive noise: the reply carries both lanes, so acking 'what the reply carried' is the obvious simplification. It is not - drainInboxDeliveries marks an absent id HANDLED, so a later live copy of that channel message is dropped as a duplicate, and the read loses mail it never owned."
+      "note": "The filter reads like defensive noise: the reply carries both lanes, so acking 'what the reply carried' is the obvious simplification. It is not - drainInboxDeliveries marks an absent id HANDLED, so a later live copy of that channel message is dropped as a duplicate, and the read loses mail it never owned. The fixture recall lane intentionally carries only the wire id; the fallback keeps the mutant inside the shipped semantic defect instead of crashing on fixture-only missing receive metadata."
     },
     {
       "name": "K7 the focus drain stops honouring peek",

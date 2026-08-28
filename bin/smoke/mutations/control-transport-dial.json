@@ -1,7 +1,7 @@
 {
   "suite": "bin/smoke/control-transport-dial.smoke.ts",
   "guard": "CLI control dials select websocket transport from ws:// and preserve raw TCP behavior",
-  "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:control-transport-dial",
+  "command": "pnpm --filter @cotal-ai/manager... build && pnpm --filter @cotal-ai/cli build && pnpm smoke:control-transport-dial",
   "completionMarker": "control transport dial:",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/control-transport-dial.json",
   "why": [

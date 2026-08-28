@@ -1,7 +1,7 @@
 {
   "suite": "extensions/connector-claude-code/smoke/agui-run-error.smoke.ts",
   "guard": "a turn Claude Code ended on StopFailure is published as a run error carrying the harness's own error kind, and a turn that ended on Stop is not",
-  "command": "pnpm smoke:claude-run-error",
+  "command": "pnpm --filter @cotal-ai/connector-core build && pnpm smoke:claude-run-error",
   "completionMarker": "claude-run-error smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/claude-run-error.json",
   "why": [
