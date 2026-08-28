@@ -550,3 +550,7 @@ smoke:spawn-name-actor
 # adopt retained history at the current boundary, and a recovered WAL cursor always wins. Appended
 # because this suite has no ordering dependency and append-only additions preserve shard membership.
 smoke:claude-start-source
+# Claude can fire SessionStart before the MCP process binds its local control socket. The real relay
+# must survive that first refusal inside its existing two-second budget, then deliver exactly once;
+# an absent connector still fails open at the deadline. Appended to preserve every existing shard.
+smoke:hook-relay-startup

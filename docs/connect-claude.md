@@ -250,6 +250,11 @@ Claude starts each hook in its own process, so a prompt or stop relay can reach 
 `SessionStart` relay. The connector holds those event flushes and the terminal until `SessionStart`
 supplies the source, then enqueues adopt, flush, and close in that order.
 
+`SessionStart` can also run before the connector process has bound its local control socket. The hook
+relay retries only that pre-connect startup refusal, and only inside its existing two-second budget.
+Once a socket has connected, a broken exchange is not retried: the connector may already have handled
+the frame, so replaying it could apply one lifecycle event twice.
+
 Tool arguments and results go on this channel verbatim, so withholding user-authored text does not
 make the stream safe to widen: anything a tool reads or prints, including a secret in a command line
 or in the contents of a file, reaches every reader of the channel.

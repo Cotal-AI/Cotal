@@ -12,6 +12,9 @@ import { controlFromEnv, hasIdentity } from "./config.js";
 import { HANDOFF_RECEIPT } from "./control.js";
 
 const TIMEOUT_MS = 2000;
+/** A startup hook may run before the MCP process has bound its socket. Stay inside the existing
+ * hook budget, but do not turn one early ENOENT into a permanently lost lifecycle event. */
+const CONNECT_RETRY_MS = 25;
 
 /**
  * One bounded warning per hook process, on stderr, with no values in it.
@@ -114,13 +117,12 @@ export async function runHookRelay(): Promise<void> {
   } catch {
     /* malformed — relay an empty event under a valid token */
   }
-  const sock = connect(path);
-
-  let reply = "";
+  let sock: ReturnType<typeof connect> | undefined;
+  let retry: ReturnType<typeof setTimeout> | undefined;
   let settled = false;
-  const drop = (): void => {
+  const drop = (candidate = sock): void => {
     try {
-      sock.destroy();
+      candidate?.destroy();
     } catch {
       /* ignore */
     }
@@ -128,19 +130,23 @@ export async function runHookRelay(): Promise<void> {
   const finish = (out: string): void => {
     if (settled) return;
     settled = true;
+    clearTimeout(timer);
+    if (retry) clearTimeout(retry);
     drop();
     done(out);
   };
   /** Got a reply: keep the socket until stdout has flushed, then send the receipt down it. Anything
    *  that kills us first (the 1s backstop, the runtime SIGKILLing the hook) closes the socket with
    *  no receipt, which is exactly the signal the connector needs to NOT commit the batch. */
-  const finishWithReceipt = (out: string): void => {
+  const finishWithReceipt = (out: string, candidate: ReturnType<typeof connect>): void => {
     if (settled) return;
     settled = true;
+    clearTimeout(timer);
+    if (retry) clearTimeout(retry);
     done(out, (then) => {
       try {
-        sock.write(HANDOFF_RECEIPT, () => {
-          drop();
+        candidate.write(HANDOFF_RECEIPT, () => {
+          drop(candidate);
           then();
         });
       } catch {
@@ -150,24 +156,52 @@ export async function runHookRelay(): Promise<void> {
   };
   const timer = setTimeout(() => finish(""), TIMEOUT_MS);
 
-  sock.setEncoding("utf8");
-  // `handoff` opts into the confirmed-delivery protocol: the connector holds the connection open and
-  // treats our receipt, not its own socket write, as proof the reply reached the runtime.
-  sock.on("connect", () => sock.write(JSON.stringify({ token, event, handoff: true }) + "\n"));
-  sock.on("data", (d) => {
-    reply += d;
-    const nl = reply.indexOf("\n");
-    if (nl >= 0) {
-      clearTimeout(timer);
-      finishWithReceipt(reply.slice(0, nl));
+  const dial = (): void => {
+    if (settled) return;
+    let candidate: ReturnType<typeof connect>;
+    try {
+      candidate = connect(path);
+    } catch {
+      retry = setTimeout(dial, CONNECT_RETRY_MS);
+      return;
     }
-  });
-  sock.on("error", () => {
-    clearTimeout(timer);
-    finish(""); // connector not running — no-op
-  });
-  sock.on("end", () => {
-    clearTimeout(timer);
-    finish(reply);
-  });
+    sock = candidate;
+    let connected = false;
+    let reply = "";
+    candidate.setEncoding("utf8");
+    // `handoff` opts into the confirmed-delivery protocol: the connector holds the connection open
+    // and treats our receipt, not its own socket write, as proof the reply reached the runtime.
+    candidate.on("connect", () => {
+      if (settled || sock !== candidate) return;
+      connected = true;
+      try {
+        candidate.write(JSON.stringify({ token, event, handoff: true }) + "\n");
+      } catch {
+        finish("");
+      }
+    });
+    candidate.on("data", (d) => {
+      if (settled || sock !== candidate) return;
+      reply += d;
+      const nl = reply.indexOf("\n");
+      if (nl >= 0) finishWithReceipt(reply.slice(0, nl), candidate);
+    });
+    candidate.on("error", () => {
+      if (settled || sock !== candidate) return;
+      if (!connected) {
+        drop(candidate);
+        retry = setTimeout(dial, CONNECT_RETRY_MS);
+        return;
+      }
+      // Once the frame may have reached a connector, retrying could deliver one lifecycle event
+      // twice. Fail open instead; only the pre-connect startup race is safe to retry.
+      finish("");
+    });
+    candidate.on("end", () => {
+      if (settled || sock !== candidate) return;
+      finish(reply);
+    });
+  };
+
+  dial();
 }

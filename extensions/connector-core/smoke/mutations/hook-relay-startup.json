@@ -1,0 +1,27 @@
+{
+  "suite": "extensions/connector-core/smoke/hook-relay-startup.smoke.ts",
+  "guard": "a lifecycle hook that starts before the connector socket exists retries only its pre-connect refusal inside the existing deadline, then forwards the event once",
+  "command": "pnpm smoke:hook-relay-startup",
+  "completionMarker": "hook-relay-startup smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/hook-relay-startup.json",
+  "why": [
+    "A live 0.33.5 manager spawn completed its model turn and nonce DM, but wrote no event WAL.",
+    "Instrumenting the shipped MCP handler showed UserPromptSubmit, tool, and terminal frames while",
+    "SessionStart never arrived. Claude launched that one-shot hook before the MCP process bound its",
+    "Unix socket; runHookRelay treated the first ENOENT as a final no-op and discarded the only",
+    "frame carrying source: startup.",
+    "",
+    "The smoke runs the real relay in a child process, holds the socket absent through its first",
+    "dial, then binds a real server inside the unchanged two-second budget. The mutation restores",
+    "the one-attempt behavior, so the named liveness cell fails before the server is allowed to bind."
+  ],
+  "mutations": [
+    {
+      "name": "R1 restore the one-shot startup loss on the first missing socket",
+      "file": "extensions/connector-core/src/relay.ts",
+      "find": "      if (!connected) {\n        drop(candidate);\n        retry = setTimeout(dial, CONNECT_RETRY_MS);\n        return;\n      }",
+      "replace": "      if (!connected) {\n        finish(\"\");\n        return;\n      }",
+      "expectRed": "startup race: relay stays alive after the first missing-socket refusal"
+    }
+  ]
+}
