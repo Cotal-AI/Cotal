@@ -181,6 +181,7 @@ const noIncFiles = (name: string): boolean => {
   return !readdirSync(credsDir).some((f) => re.test(f));
 };
 const coreDist = join(import.meta.dirname, "..", "..", "..", "packages", "core", "dist", "index.js");
+const offlineSignalReady = join(root, ".e2e-offline-signal-ready");
 
 // The agent CHILD: a REAL long-lived node process through the REAL pty runtime, connecting USER-MODE
 // with a bearer SOURCE (execs COTAL_BEARER_CMD for each token) + the sentinel creds — the exact wire
@@ -253,7 +254,7 @@ registry.register(e2eQuietCon);
 // assertions instead of racing the manager's readiness wait.
 const CHILD_OFFLINE = CHILD.replace(
   "setInterval(()=>{},1000);",
-  "setInterval(()=>{},1000);const seq=['working','waiting'];let phase=0;process.on('SIGUSR2',()=>{ep.setStatus(seq[Math.min(phase++,seq.length-1)]).catch(()=>{});});process.on('SIGUSR1',()=>{ep.setStatus('offline').catch(()=>{});});",
+  "setInterval(()=>{},1000);const seq=['working','waiting'];let phase=0;process.on('SIGUSR2',()=>{ep.setStatus(seq[Math.min(phase++,seq.length-1)]).catch(()=>{});});process.on('SIGUSR1',()=>{ep.setStatus('offline').catch(()=>{});});fs.writeFileSync(process.env.E2E_OFFLINE_READY,'ready',{flag:'wx',mode:0o600});",
 );
 const e2eOfflineCon: Connector = {
   kind: "connector",
@@ -269,6 +270,7 @@ const e2eOfflineCon: Connector = {
       COTAL_SPACE: o.space,
       COTAL_NAME: o.name,
       COTAL_SERVERS: o.servers ?? "",
+      E2E_OFFLINE_READY: offlineSignalReady,
       ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
     },
   }),
@@ -601,6 +603,8 @@ try {
   // carry. Signalling rather than timing keeps the flip ordered after the manager's readiness wait
   // instead of racing it.
   const offlineReply: ControlReply = await manager.startAgent({ name: "kappa", agent: "e2e-offline", owner: OWNER });
+  const signalHandlersReady = await until(() => existsSync(offlineSignalReady), 5_000);
+  check("precondition: kappa installed its signal handlers before the status walk", signalHandlersReady, offlineSignalReady);
   const signalPid = psList(mgr).find((a) => a.name === "kappa")?.pid;
   // One row walks the rest of the union. A review found the hole at `offline`, having found an
   // earlier one at `idle`, and the shape of both is the same: a rewrite of a status no row carries
@@ -608,8 +612,13 @@ try {
   // `PresenceStatus` that a joined row can reach and records what the projection carried for it.
   const carried: Record<string, string> = { idle: meshOf("alpha") };
   for (const want of ["working", "waiting", "offline"] as const) {
-    if (signalPid) process.kill(signalPid, want === "offline" ? "SIGUSR1" : "SIGUSR2");
-    const reached = await until(() => rosterOf("kappa") === want);
+    let signalSent = false;
+    if (signalHandlersReady && signalPid) {
+      try { process.kill(signalPid, want === "offline" ? "SIGUSR1" : "SIGUSR2"); signalSent = true; }
+      catch { /* named below; a dead child is a failed precondition, never an opaque ESRCH abort */ }
+    }
+    check(`precondition: kappa remained alive to receive the ${want} status signal`, signalSent);
+    const reached = signalSent && await until(() => rosterOf("kappa") === want);
     carried[want] = reached ? meshOf("kappa") : `the roster never reached ${want} (it says ${rosterOf("kappa")})`;
   }
   check(
