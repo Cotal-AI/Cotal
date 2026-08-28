@@ -348,6 +348,8 @@ const moved = (a: string[], b: string[], aCount: number, bCount: number): string
 
 const replaceRefRuntimeControl = (): boolean => {
   const root = mkdtempSync(join(tmpdir(), "shard-replace-control-"));
+  const env = { ...process.env };
+  delete env.GIT_NO_REPLACE_OBJECTS;
   try {
     mkdirSync(join(root, "bin/smoke"), { recursive: true });
     const verifier = execFileSync(
@@ -369,6 +371,7 @@ const replaceRefRuntimeControl = (): boolean => {
     writeFileSync(join(root, "bin/smoke/verify-shard-inputs.sh"), verifier);
     const git = (args: string[]): string => execFileSync("git", args, {
       cwd: root,
+      env,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     }).trim();
@@ -388,6 +391,11 @@ const replaceRefRuntimeControl = (): boolean => {
     const tree = git(["write-tree"]);
     const replacement = git(["commit-tree", tree, "-p", original, "-m", "control: replacement tree"]);
     git(["replace", original, replacement]);
+    if (
+      git(["show", `${original}:bin/smoke/ci-suites.txt`]) !== "smoke:first" ||
+      git(["--no-replace-objects", "show", `${original}:bin/smoke/ci-suites.txt`]) !==
+        "smoke:first\nsmoke:second"
+    ) return false;
 
     const result = spawnSync(
       "/bin/bash",
@@ -397,7 +405,7 @@ const replaceRefRuntimeControl = (): boolean => {
         "shard-replace-control",
         original,
       ],
-      { cwd: root, encoding: "utf8" },
+      { cwd: root, env, encoding: "utf8" },
     );
     return result.status === 2 && result.stderr.includes(
       "tracked shard input changed after checkout: bin/smoke/ci-suites.txt",
