@@ -99,16 +99,15 @@ const UNGATED: Record<string, string> = {
   "smoke": "UNTRIAGED",
   // Untriaged debt. These are the ones that should shrink.
   "smoke:attention": "UNTRIAGED",
-  "smoke:attention:auth": "UNTRIAGED", "smoke:channel-attention": "UNTRIAGED",
-  "smoke:channel-attention:auth": "UNTRIAGED", "smoke:delivery-boot-retry:auth": "UNTRIAGED",
+  "smoke:attention:auth": "UNTRIAGED",
+ "smoke:delivery-boot-retry:auth": "UNTRIAGED",
   "smoke:delivery-broker-coupling": "UNTRIAGED", "smoke:delivery-old-manager": "UNTRIAGED",
-  "smoke:feedback": "UNTRIAGED", "smoke:install": "UNTRIAGED",
-  "smoke:lifecycle-files": "UNTRIAGED", "smoke:manager-console": "UNTRIAGED", "smoke:manifest-launch": "UNTRIAGED",
-  "smoke:members": "UNTRIAGED", "smoke:membership": "UNTRIAGED",
+  "smoke:feedback": "UNTRIAGED",
+  "smoke:lifecycle-files": "UNTRIAGED", "smoke:manager-console": "UNTRIAGED",
+ "smoke:membership": "UNTRIAGED",
   "smoke:plane3-activation:auth": "UNTRIAGED",
-  "smoke:plane3-gate:auth": "UNTRIAGED", "smoke:presence-scrub": "UNTRIAGED",
+  "smoke:plane3-gate:auth": "UNTRIAGED",
   "smoke:self-serve-join-coverage:auth": "UNTRIAGED",
-  "smoke:start-model": "UNTRIAGED",
 };
 
 /**
