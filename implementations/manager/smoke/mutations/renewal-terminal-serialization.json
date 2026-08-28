@@ -5,9 +5,9 @@
   "completionMarker": "RENEWAL-TERMINAL RACE SMOKE",
   "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/renewal-terminal-serialization.json",
   "why": [
-    "The fixture uses four fresh aliases against a real JWT broker, the shipped manager, and the durable lifecycle journal. A SecretStore collaborator pauses the renewal after its row is appended but before materialization; despawn then latches terminalization, so the terminal must drain the accepted flight before it enumerates, revokes, and cleans.",
+    "The fixture uses a direct-renew/despawn lifecycle and a production-sweep/natural-exit lifecycle against a real JWT broker. An in-memory SecretStore collaborator pauses each renewal after a distinct credential id and active row are durably recorded but before materialization.",
     "",
-    "The independent late call occurs after the same synchronous terminal latch. It must be refused rather than join the accepted flight. Final cells enumerate the journal's own credential family and the real credential file, so a completed terminal with an active row or recreated material is red."
+    "The terminal must stay behind that accepted flight. After release, the smoke waits for the original hold to clear without re-driving it, then independently proves slot, gate, head, the renewal row, every row state, hosted-store deletion, and local-file deletion."
   ],
   "mutations": [
     {
@@ -59,10 +59,42 @@
       "cell": "no credential row remains active after retirement"
     },
     {
-      "name": "static retirement leaves the managed credential material in its secret store and file",
+      "name": "natural process exit no longer closes the terminal latch in freeSlot",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    a.terminalizing = true; // F5 latch (Unit B): also covers exit/reap paths that never rode stopHandle",
+      "replace": "    void a.terminalizing;",
+      "expectRed": "racer_exit: the terminal latch closes synchronously",
+      "cell": "racer_exit: the terminal latch closes synchronously"
+    },
+    {
+      "name": "renewal no longer records its credential id or active ledger row",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: a.id, lifecycleUid: a.lifecycleUid, alias: a.name }, async (t) => {\n      await recordSlotCredential(t, DEV_OWNER, a.name, a.lifecycleUid, credentialId);\n      await appendStaticCredentialRow(t, { lifecycleUid: a.lifecycleUid, credentialId, holderPrincipal: principalKey(DEV_OWNER, a.id).key, exp });\n    });",
+      "replace": "    void credentialId;",
+      "expectRed": "renewal records exactly one new credential id",
+      "cell": "renewal records exactly one new credential id"
+    },
+    {
+      "name": "the production renewal sweep no longer enters managed-static renewal",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "            await this.renewManagedStaticCred(a);",
+      "replace": "            void a;",
+      "expectRed": "racer_exit: renewal records exactly one new credential id",
+      "cell": "racer_exit: renewal records exactly one new credential id"
+    },
+    {
+      "name": "static retirement leaves the hosted secret-store credential key intact",
       "file": "implementations/manager/src/manager.ts",
       "find": "    const cleanup = async (): Promise<void> => {\n      const secrets = this.secrets;\n      const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, a.name, a.lifecycleUid);\n      if (files.creds) {\n        await secrets.delete(agentSecretKeyForFile(files.creds));\n        rmSync(files.creds, { force: true });\n      }\n      await this.deprovisionBroker(a);\n    };",
-      "replace": "    const cleanup = async (): Promise<void> => {\n      await this.deprovisionBroker(a);\n    };",
+      "replace": "    const cleanup = async (): Promise<void> => {\n      const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, a.name, a.lifecycleUid);\n      if (files.creds) rmSync(files.creds, { force: true });\n      await this.deprovisionBroker(a);\n    };",
+      "expectRed": "the secret-store credential key is deleted",
+      "cell": "the secret-store credential key is deleted"
+    },
+    {
+      "name": "static retirement leaves the local credential materialization intact",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    const cleanup = async (): Promise<void> => {\n      const secrets = this.secrets;\n      const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, a.name, a.lifecycleUid);\n      if (files.creds) {\n        await secrets.delete(agentSecretKeyForFile(files.creds));\n        rmSync(files.creds, { force: true });\n      }\n      await this.deprovisionBroker(a);\n    };",
+      "replace": "    const cleanup = async (): Promise<void> => {\n      const secrets = this.secrets;\n      const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, a.name, a.lifecycleUid);\n      if (files.creds) await secrets.delete(agentSecretKeyForFile(files.creds));\n      await this.deprovisionBroker(a);\n    };",
       "expectRed": "no credential file remains after retirement",
       "cell": "no credential file remains after retirement"
     }
