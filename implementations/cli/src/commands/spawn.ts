@@ -42,7 +42,6 @@ import {
   defaultAgentType,
   defaultPersonaOverride,
   defaultPersonaRef,
-  findCotalRoot,
   launchFlags,
   loadMeshes,
   getSpaceAuth,
