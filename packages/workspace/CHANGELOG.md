@@ -1,5 +1,13 @@
 # @cotal-ai/workspace
 
+## 0.33.7
+
+### Patch Changes
+
+- 7119b4c: Report split trust-record validation failures with an accurate non-material trust-chain diagnostic instead of attributing every corruption to an operator-signing mismatch.
+- Updated dependencies [576ac7d]
+  - @cotal-ai/core@0.33.7
+
 ## 0.33.6
 
 ### Patch Changes

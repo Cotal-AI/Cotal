@@ -47,18 +47,6 @@ const check = (name: string, pass: boolean, extra?: unknown) => {
   if (pass) { ok++; } else { fail++; console.log("  ✗ FAIL:", name, extra ?? ""); }
 };
 
-// PRE-EXISTING GAP, NOT AN ACCEPTED ONE. `setupSpaceStreams` also creates the two SPEC 13.12
-// authority stores via `ensureAuthorityStores`, and they are in NEITHER the backup inventory NOR
-// `deleteSpace`'s explicit array (#356, owned by the control-surface lane). Subtracted HERE, by
-// prefix, exactly as `smoke:artifact-store` subtracts them: the gap is per-space, so every space
-// this suite creates leaks its own pair. This subtraction is why the equality below is "the
-// inventory matches the broker, bar the named pair" and not "the inventory matches the broker":
-// every OTHER family, on either side, still fails the check. When #356 enumerates them, DELETE
-// THIS BLOCK and the equality tightens automatically.
-const isUnenumeratedAuthority = (n: string) =>
-  n.startsWith("KV_cotal_auth_") || n.startsWith("KV_cotal_records_");
-const minusKnown = (names: string[]) => names.filter((n) => !isUnenumeratedAuthority(n));
-
 /** The broker's OWN stream list, on a fresh connection each call: a probe that mutates the broker
  *  and re-validates must re-read it, or it grades a memory of the broker instead of the broker. */
 const readBrokerStreams = async (): Promise<string[]> => {
@@ -75,7 +63,7 @@ const readBrokerStreams = async (): Promise<string[]> => {
  *  message, the validator's own words, so a red names the stream it reddened for. */
 const validateAgainstBroker = async (): Promise<string> => {
   const names = await readBrokerStreams();
-  try { validateSpaceBackupInventory(SPACE, minusKnown(names)); return ""; }
+  try { validateSpaceBackupInventory(SPACE, names); return ""; }
   catch (e) { return (e as Error).message; }
 };
 
@@ -93,12 +81,6 @@ try {
   // broker's list still names it, so the validator throws `unexpected` here.
   const equality = await validateAgainstBroker();
   check("the broker's own stream set equals the backup inventory exactly", equality === "", equality);
-
-  // The named pair is the ONLY tolerance: prove the subtraction subtracts exactly the gap and
-  // nothing more, so the equality above cannot be quietly widened by a rename or a fourth store.
-  const raw = await readBrokerStreams();
-  check("the known-unenumerated pair is exactly the two authority stores",
-    raw.filter(isUnenumeratedAuthority).length === 2, raw);
 
   // TEETH, BOTH DIRECTIONS, ON A REAL BROKER. The equality above is a claim that CAN fail; these
   // cells make it fail on purpose, so the suite proves its own check is live rather than trusting

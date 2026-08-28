@@ -1,0 +1,39 @@
+{
+  "suite": "extensions/connector-core/smoke/cross-path-dedup.smoke.ts",
+  "guard": "traffic retained while the asynchronous focus frontier is captured is excluded from recall without depending on a fixed microtask count",
+  "command": "pnpm smoke:cross-path-dedup",
+  "completionMarker": "CROSS-PATH DEDUP SMOKE",
+  "proveWith": "pnpm mutation-proof --config extensions/connector-core/smoke/mutations/focus-entry-exclusion.json",
+  "why": [
+    "setAttention(focus) now awaits the connectedness gate before it opens enteringFocus, so one",
+    "blind Promise.resolve no longer reaches the transition window. The smoke must wait on the real",
+    "flag, boundedly, before injecting the retained message. Separate mutants remove the ingest-side",
+    "exclusion and recall-side filter so the fixed scheduling cannot mask a broken implementation."
+  ],
+  "mutations": [
+    {
+      "name": "ingest no longer records messages arriving during focus entry",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      if (this.enteringFocus) this.excludeFromFocus(item);\n",
+      "replace": "",
+      "expectRed": "focus-entry normal buffer is excluded from recall",
+      "cell": "focus-entry normal buffer is excluded from recall"
+    },
+    {
+      "name": "recall no longer filters ids retained during focus entry",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        if (!this.focusExcludedIds.has(m.id)) items.push(this.toInboxItem(m, \"channel\", true));",
+      "replace": "        items.push(this.toInboxItem(m, \"channel\", true));",
+      "expectRed": "focus-entry normal buffer is excluded from recall",
+      "cell": "focus-entry normal buffer is excluded from recall"
+    },
+    {
+      "name": "the smoke returns to one blind microtask yield",
+      "file": "extensions/connector-core/smoke/cross-path-dedup.smoke.ts",
+      "find": "    let windowOpen = false;\n    for (let i = 0; i < 1_000 && !(windowOpen = (a2 as unknown as { enteringFocus: boolean }).enteringFocus); i++)\n      await Promise.resolve();\n    check(`focus-entry ${quiet ? \"quiet\" : \"normal\"} transition window opened before the retain emit`, windowOpen);\n",
+      "replace": "    await Promise.resolve();\n    check(`focus-entry ${quiet ? \"quiet\" : \"normal\"} transition window opened before the retain emit`, (a2 as unknown as { enteringFocus: boolean }).enteringFocus);\n",
+      "expectRed": "focus-entry normal transition window opened before the retain emit",
+      "cell": "focus-entry normal transition window opened before the retain emit"
+    }
+  ]
+}

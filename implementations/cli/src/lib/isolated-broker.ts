@@ -193,7 +193,7 @@ export interface IsolatedBroker {
 export type IsolatedMaintenanceScope =
   | { profile: "backup"; scope: BackupPermissionScope }
   | { profile: "restore"; scope: RestorePermissionScope }
-  | { profile: "infrastructure"; streams: readonly string[] };
+  | { profile: "infrastructure"; streams: readonly string[]; updateStreams?: readonly string[] };
 
 export interface IsolatedMaintenanceLogin {
   readonly user: string;
@@ -220,17 +220,35 @@ function exactStreamName(name: string): string {
   return name;
 }
 
-function loginPermissions(space: string, connId: string, operation: IsolatedMaintenanceScope): Record<string, unknown> {
-  if (operation.profile === "backup") return backupProfilePermissions(space, connId, operation.scope);
-  if (operation.profile === "restore") return restoreProfilePermissions(space, connId, operation.scope);
-  const streams = [...new Set(operation.streams.map(exactStreamName))];
+export function infrastructureMaintenancePermissions(
+  connId: string,
+  streamNames: readonly string[],
+  updateNames: readonly string[] = [],
+): Record<string, unknown> {
+  const streams = [...new Set(streamNames.map(exactStreamName))];
   if (!streams.length) throw new Error("infrastructure maintenance login requires at least one stream");
+  const updateStreams = [...new Set(updateNames.map(exactStreamName))];
+  for (const stream of updateStreams)
+    if (!streams.includes(stream)) throw new Error(`infrastructure update stream ${stream} is outside its create/info scope`);
   return {
     // STREAM.NAMES carries no body-read or mutation authority; it feeds the exact post-restore
     // inventory assertion before commit intent.
-    pub: { allow: ["$JS.API.INFO", "$JS.API.STREAM.NAMES", ...streams.flatMap((stream) => [`$JS.API.STREAM.CREATE.${stream}`, `$JS.API.STREAM.INFO.${stream}`])] },
+    pub: {
+      allow: [
+        "$JS.API.INFO",
+        "$JS.API.STREAM.NAMES",
+        ...streams.flatMap((stream) => [`$JS.API.STREAM.CREATE.${stream}`, `$JS.API.STREAM.INFO.${stream}`]),
+        ...updateStreams.map((stream) => `$JS.API.STREAM.UPDATE.${stream}`),
+      ],
+    },
     sub: { allow: [`_INBOX_${connId}.>`] },
   };
+}
+
+function loginPermissions(space: string, connId: string, operation: IsolatedMaintenanceScope): Record<string, unknown> {
+  if (operation.profile === "backup") return backupProfilePermissions(space, connId, operation.scope);
+  if (operation.profile === "restore") return restoreProfilePermissions(space, connId, operation.scope);
+  return infrastructureMaintenancePermissions(connId, operation.streams, operation.updateStreams);
 }
 
 function maintenanceLogin(
