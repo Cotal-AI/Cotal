@@ -30,12 +30,15 @@
  *   to remove and permanently silences the mismatch abort below.
  * Run from inside a worktree of the repo. Exits 1 if any pre-existing suite changes shard.
  *
- * CONTROLS BUILT IN, because a bare zero is not evidence. All five run on every invocation:
+ * CONTROLS BUILT IN, because a bare zero is not evidence. All eight run on every invocation:
  *   - a forced mid-file insert must report non-zero (the instrument responds at all)
  *   - identity (base vs base) must report 0
  *   - an unchanged 20-item registry under 4 -> 5 shards must move 16 items
  *   - the reverse 5 -> 4 topology change must also move 16 items
  *   - a comment containing a fake shard row must not shadow the active matrix
+ *   - the matrix and runner command must not disagree on the count
+ *   - matrix indices must not repeat or leave gaps
+ *   - an empty matrix must not masquerade as shard zero
  * Any failed control ABORTS with exit 2 rather than emitting a verdict.
  *
  * A third line once sat here claiming "the known production re-shard 7837b64c->d1aeafc3
@@ -91,11 +94,11 @@ const [, , base, head, countArg] = process.argv;
 if (!base || !head) {
   verdict("ABORT", "usage: check:shard-stability <base-sha> <head-sha>", 2);
 }
-// BOTH SHARD COUNTS COME FROM jobs.smoke.strategy.matrix.shard in ci.yml.
+// BOTH SHARD TOPOLOGIES COME FROM the smoke job in ci.yml.
 // A count change is itself a runner reassignment: comparing both registries under the
-// head count hides every move. Comments and other jobs are not topology either, so a
-// loose first-match regex is unsafe; walk the named YAML blocks by indentation and
-// accept one active inline shard row only. Any other shape aborts instead of guessing.
+// head count hides every move. The matrix and the shard runner's modulo count are two
+// independent facts, so both must describe the complete index set 0..N-1. Comments and
+// other jobs are not topology either. Any unsupported shape aborts instead of guessing.
 const shardCountFromWorkflow = (yml: string): number | null => {
   const lines = yml.split("\n");
   const smokeStart = lines.findIndex((line) => /^  smoke:\s*(?:#.*)?$/.test(line));
@@ -116,8 +119,19 @@ const shardCountFromWorkflow = (yml: string): number | null => {
     .map((line) => /^        shard:\s*\[([0-9,\s]+)\]\s*(?:#.*)?$/.exec(line))
     .filter((match): match is RegExpExecArray => match !== null);
   if (rows.length !== 1) return null;
-  const count = rows[0][1].split(",").filter((value) => value.trim().length > 0).length;
-  return count > 0 ? count : null;
+  const tokens = rows[0][1].split(",").map((value) => value.trim());
+  if (tokens.length === 0 || tokens.some((value) => !/^(?:0|[1-9][0-9]*)$/.test(value))) {
+    return null;
+  }
+  const indices = tokens.map(Number);
+  if (indices.some((value, index) => value !== index)) return null;
+
+  const invocations = smoke
+    .map((line) => /^        run:\s*node bin\/smoke\/shard\.mjs \$\{\{ matrix\.shard \}\} ([1-9][0-9]*)\s*(?:#.*)?$/.exec(line))
+    .filter((match): match is RegExpExecArray => match !== null);
+  if (invocations.length !== 1) return null;
+  const commandCount = Number(invocations[0][1]);
+  return commandCount === indices.length ? commandCount : null;
 };
 
 const ciShardCount = (sha: string): number | null => {
@@ -135,10 +149,10 @@ const ciShardCount = (sha: string): number | null => {
 const baseCount = ciShardCount(base);
 const declaredHeadCount = ciShardCount(head);
 if (baseCount === null) {
-  verdict("ABORT", `cannot read jobs.smoke.strategy.matrix.shard from .github/workflows/ci.yml at '${base}'`, 2);
+  verdict("ABORT", `cannot read a complete smoke shard topology from .github/workflows/ci.yml at '${base}'`, 2);
 }
 if (declaredHeadCount === null) {
-  verdict("ABORT", `cannot read jobs.smoke.strategy.matrix.shard from .github/workflows/ci.yml at '${head}'`, 2);
+  verdict("ABORT", `cannot read a complete smoke shard topology from .github/workflows/ci.yml at '${head}'`, 2);
 }
 const headCount = countArg !== undefined ? Number(countArg) : declaredHeadCount;
 if (!Number.isInteger(headCount) || headCount < 1) {
@@ -199,18 +213,51 @@ const commentShadowCount = shardCountFromWorkflow(`jobs:
       matrix:
         # historical note: shard: [0, 1]
         shard: [0, 1, 2, 3]
-    steps: []
+    steps:
+      - name: Run shard
+        run: node bin/smoke/shard.mjs \${{ matrix.shard }} 4
   other:
     runs-on: ubuntu-latest
+`);
+const commandMismatchCount = shardCountFromWorkflow(`jobs:
+  smoke:
+    strategy:
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - name: Run shard
+        run: node bin/smoke/shard.mjs \${{ matrix.shard }} 5
+`);
+const duplicateMatrixCount = shardCountFromWorkflow(`jobs:
+  smoke:
+    strategy:
+      matrix:
+        shard: [0, 1, 2, 2]
+    steps:
+      - name: Run shard
+        run: node bin/smoke/shard.mjs \${{ matrix.shard }} 4
+`);
+const emptyMatrixCount = shardCountFromWorkflow(`jobs:
+  smoke:
+    strategy:
+      matrix:
+        shard: [ ]
+    steps:
+      - name: Run shard
+        run: node bin/smoke/shard.mjs \${{ matrix.shard }} 1
 `);
 console.log(`CONTROL forced mid-file insert -> ${forced.length} moved  (must be > 0)`);
 console.log(`CONTROL identity               -> ${identity.length} moved  (must be 0)`);
 console.log(`CONTROL shard count 4 -> 5     -> ${countIncrease.length} moved  (must be 16)`);
 console.log(`CONTROL shard count 5 -> 4     -> ${countDecrease.length} moved  (must be 16)`);
 console.log(`CONTROL matrix comment shadow  -> ${commentShadowCount ?? "unreadable"} shards (must be 4)`);
+console.log(`CONTROL command count mismatch -> ${commandMismatchCount ?? "refused"}       (must be refused)`);
+console.log(`CONTROL duplicate matrix index -> ${duplicateMatrixCount ?? "refused"}       (must be refused)`);
+console.log(`CONTROL empty matrix           -> ${emptyMatrixCount ?? "refused"}       (must be refused)`);
 if (
   forced.length === 0 || identity.length !== 0 || countIncrease.length !== 16 ||
-  countDecrease.length !== 16 || commentShadowCount !== 4
+  countDecrease.length !== 16 || commentShadowCount !== 4 ||
+  commandMismatchCount !== null || duplicateMatrixCount !== null || emptyMatrixCount !== null
 ) {
   verdict("ABORT", "controls failed, this run cannot be trusted", 2);
 }
