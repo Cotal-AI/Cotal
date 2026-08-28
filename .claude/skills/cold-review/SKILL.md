@@ -81,8 +81,8 @@ The second exists because the first is not always reachable: a seat that never j
 be told anything after launch, and a DM-only rule with no file path can leave a correct verdict with
 nowhere to go. Both have happened.
 
-**Poster is a control only on a broker-attested destination.** A GitHub comment or a mesh post carries
-a sender the broker or host records. A file at an absolute path does not: any process that can write
+**Poster is a control only on a broker- or host-attested destination.** A GitHub comment or a mesh
+post carries a sender the host or broker records. A file at an absolute path does not: any process that can write
 that path can produce the artifact, including the manager who later "confirms" it by re-reading it.
 First-hand file delivery is therefore a **norm** on the seat and the briefer, not a control a later
 stranger can verify. A gate that treats the file's existence as proof the seat posted has accepted a
@@ -179,6 +179,9 @@ family would have framed*."
 
 - **A reported sha is a claim.** Resolve a PR or branch head from its Git ref first, for example
   `git ls-remote origin refs/pull/<n>/head`, then positive-control the object with `git cat-file -t`.
+  Use a known-missing full-width object id as the negative control, for example forty zeroes. Do not
+  append a character to a valid object id: Git accepts an overlong hex string when its leading full
+  object id resolves, so that apparent negative can return the original object and pass falsely.
   Fetch the exact ref first if that object is not local. When a PR exists, cross-check with
   `gh pr view <n> --json headRefOid` rather than treating it as authority: a head field can lag after
   a push, while a mergeability field may be answering a different strategy question. A branch-only
@@ -213,10 +216,11 @@ family would have framed*."
 Stated plainly, because a norm presented as a control is the false assurance this whole discipline
 exists to prevent:
 
-- **Controls**, mechanically checkable by someone who was not there: channel non-join (visible in the
-  seat's ACL and subscription list), the model and effort line, the sha named in the verdict, the
-  destination the verdict landed on, and vendor separation. Poster and channel membership are
-  controls only when the destination is broker-attested (a mesh post or a comment on the change).
+- **Controls**, mechanically enforced while the seat runs: a read ACL that excludes the panel
+  channel, the pinned model and effort, and broker- or host-attested poster identity. The sha named in
+  the verdict and the destination it landed on are retrospective evidence. A later stranger can call
+  non-join auditable only when launch-time ACL evidence was retained; a current subscription snapshot
+  cannot prove historical non-join, and a GitHub comment says nothing about channel membership.
 - **Norms**, resting entirely on the briefer's discipline and not auditable after the fact: that the
   brief carried no findings, no diagnosis and no confirmation framing, and that a file destination
   was written by the seat rather than by the manager.

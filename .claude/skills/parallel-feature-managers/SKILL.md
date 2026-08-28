@@ -200,8 +200,10 @@ The manager prompt must include all of the following:
   `git ls-remote origin refs/pull/<n>/head` and cross-check `gh pr view <n> --json headRefOid`. For a
   branch with no PR, resolve `git ls-remote origin refs/heads/<branch>` and omit the PR-only API
   cross-check. Fetch the resolved object into the detached review worktree if it is not already
-  present, then run `git cat-file -t` on that object with a known-good control and an invented tail
-  that must fail. Name the actor who ran the instruments. If applicable instruments disagree, stop.
+  present, then run `git cat-file -t` on that object with a known-good control and a known-missing
+  full-width object id, such as forty zeroes, that must fail. Do not make the negative control by
+  appending a character to the real id: Git may resolve the valid leading object id and return
+  success. Name the actor who ran the instruments. If applicable instruments disagree, stop.
   A verdict or refutation that names a different sha does not close this head.
 - Run the relevant tests itself. Reviewers do not edit source.
 - Escalate only unresolved consequential choices with this exact structure:
@@ -303,12 +305,13 @@ A feature is complete only when:
   re-pin to manufacture an approval, which is laundering. The override answered the question and the
   gate has to let the answer count.
 - A verdict relayed by the manager satisfies nothing, and the manager confirms the seat's own post
-  landed by re-fetching the destination. The sha, the destination, and (for a mesh post or a comment
-  on the change) the poster and channel membership are **controls** a later stranger can verify. For
-  a file destination, poster and channel membership are **norms**: the file's presence does not prove
-  the seat wrote it. That the brief carried no findings is also a **norm** resting on the briefer, so
-  it is deliberately not a gate condition here; listing a norm in the grammar of a control is the
-  false assurance `cold-review` exists to prevent.
+  landed by re-fetching the destination. The sha and destination are retrospective evidence. A mesh
+  post or comment on the change also attests the poster, but a GitHub comment says nothing about mesh
+  membership. Historical non-join is auditable only from retained launch-time ACL evidence; a current
+  subscription snapshot is not proof. For a file destination, poster is a **norm**: the file's
+  presence does not prove the seat wrote it. That the brief carried no findings is also a **norm**
+  resting on the briefer, so it is deliberately not a gate condition here; listing a norm in the
+  grammar of a control is the false assurance `cold-review` exists to prevent.
 - Every approval and public refutation names the exact head it grades or answers. The manager or
   coordinator re-resolves that head at briefing, at the completion claim, and again at merge, using
   the instruments in the manager prompt: Git ref and object type for every lane, plus the exact PR
