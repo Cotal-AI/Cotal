@@ -126,14 +126,16 @@ capabilities: [spawn]
 ---
 ```
 
-Author matching files for the three panel seats and the cold seat before any spawn. Panel
-personas subscribe and publish only on `review.<slug>`. The cold persona lists empty subscribe
-and empty allowSubscribe and allowPublish so non-join is a property of the seat, not an
-instruction. Do not reuse a leftover `review-engineer` (or similar) from another lane.
+Author matching files for the three panel seats and the cold seat before any spawn. Give every
+reviewer persona a lane-scoped filename such as `review-<slug>-engineer`; the persona catalog is
+shared by concurrent lanes, so generic filenames collide even when the worktrees and channels do
+not. Panel personas subscribe and publish only on `review.<slug>`. The cold persona lists empty
+subscribe, allowSubscribe, and allowPublish so non-join is a property of the seat, not an instruction.
+Do not reuse or redefine a reviewer persona from another lane.
 
 ```yaml
 ---
-name: review-engineer
+name: review-<slug>-engineer
 role: reviewer
 model: <pinned panel model, family A>
 subscribe: [review.<slug>]
@@ -145,7 +147,7 @@ capabilities: []
 
 ```yaml
 ---
-name: review-freelance
+name: review-<slug>-freelance
 role: reviewer
 model: <pinned cold model, not the author's family>
 subscribe: []
@@ -155,9 +157,9 @@ capabilities: []
 ---
 ```
 
-Repeat the panel template for `review-security` and `review-critic` with different model
-families. If a referee is later required, author `review-referee` the same way as the cold
-seat, with empty channel grants, before spawning it.
+Repeat the panel template for `review-<slug>-security` and `review-<slug>-critic` with different model
+families. If a referee is later required, author `review-<slug>-referee` the same way as the cold seat,
+with empty channel grants, before spawning it.
 
 The manager prompt must include all of the following:
 
@@ -165,9 +167,9 @@ The manager prompt must include all of the following:
 - Own the feature end to end and commit only intended feature files.
 - Read repo instructions, current docs, and `.internal` before editing.
 - Join `review.<slug>` first.
-- Spawn only personas authored in this section. Spawn `review-engineer`, `review-security` and
-  `review-critic`, seated so that **no two of them whose agreement is load-bearing share a model
-  family**. That is the ordinal rule above and not a headcount. Where the vendor set is short, name
+- Spawn only personas authored in this section. Spawn `review-<slug>-engineer`,
+  `review-<slug>-security`, and `review-<slug>-critic`, seated so that **no two of them whose agreement
+  is load-bearing share a model family**. That is the ordinal rule above and not a headcount. Where the vendor set is short, name
   the collision mechanically and the class it leaves uncovered. **Naming is disclosure, not
   completion:** a panel whose load-bearing approvals are same-family echoes cannot complete, including
   A, A, A and A, B, A. Do not treat a staffed-but-collided panel as a passing gate. Give each its own
@@ -177,14 +179,14 @@ The manager prompt must include all of the following:
 - DM each returned reviewer identity to join the channel and remain read/review-only.
 - Run plan review before editing, code/test review after implementation, fold valid findings, and ask
   all three for a final disposition.
-- After the panel and implementation converge, spawn exactly one `review-freelance` in its own
+- After the panel and implementation converge, spawn exactly one `review-<slug>-freelance` in its own
   detached worktree and brief it under the **`cold-review` skill**, which owns what that seat is
   given, where its verdict goes, what the verdict binds, and how the rules degrade when the vendor
   set is short. Do not restate any of it here.
 - Resolve cold findings under `cold-review`'s canonical rule, never by telling that seat to
   reconsider. If the manager authored the change and a blocker needs independent refutation, send the
   coordinator only the exact-sha finding and artifact. The coordinator provisions a fresh
-  `review-referee` in its own detached worktree; that seat had no part in authoring, grading or
+  `review-<slug>-referee` in its own detached worktree; that seat had no part in authoring, grading or
   supervising the lane, does not share a model family with the author, and receives none of the
   author's rationale. The coordinator provisions the
   referee but does not serve as it. If a fold changes code, return the result to the channel panel for
@@ -193,11 +195,13 @@ The manager prompt must include all of the following:
   and brief it under `cold-review` on the new sha as a new one-delivery seat. That is a successor, not
   a third closure route for the old sha.
 - Re-resolve the head as an action, not as a later assertion. At briefing, at any completion claim,
-  and again before merge, the manager or coordinator runs `git ls-remote origin refs/pull/<n>/head`
-  (or the branch ref), `git cat-file -t` on that object with a known-good control and an invented
-  tail that must fail, and `gh pr view --json headRefOid` as a cross-check. Name the actor who ran
-  them. If two instruments disagree, stop. A verdict or refutation that names a different sha does
-  not close this head.
+  and again before merge, the manager or coordinator first resolves the review target. For a PR, run
+  `git ls-remote origin refs/pull/<n>/head` and cross-check `gh pr view <n> --json headRefOid`. For a
+  branch with no PR, resolve `git ls-remote origin refs/heads/<branch>` and omit the PR-only API
+  cross-check. Fetch the resolved object into the detached review worktree if it is not already
+  present, then run `git cat-file -t` on that object with a known-good control and an invented tail
+  that must fail. Name the actor who ran the instruments. If applicable instruments disagree, stop.
+  A verdict or refutation that names a different sha does not close this head.
 - Run the relevant tests itself. Reviewers do not edit source.
 - Escalate only unresolved consequential choices with this exact structure:
 
@@ -247,7 +251,7 @@ it only at the cold-review gate, and **briefs it by applying the `cold-review` s
 file addresses the briefer, and the graded seat never loads it. It owns that seat's isolation,
 briefing, and verdict rules. Do not restate them here: one source for the rule, or the two copies
 drift and the stale one is invisible to whoever is editing the other.
-Auto-numbering applies to `review-freelance` too, so track the returned identity.
+Auto-numbering applies to the lane-scoped cold persona too, so track the returned identity.
 
 ## 5. Monitor without taking over
 
