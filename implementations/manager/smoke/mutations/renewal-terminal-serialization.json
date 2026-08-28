@@ -23,8 +23,8 @@
       "file": "implementations/manager/src/manager.ts",
       "find": "    a.staticCredentialRenewal = renewal;\n    return renewal;",
       "replace": "    return renewal;",
-      "expectRed": "renewal publishes its accepted flight before returning",
-      "cell": "renewal publishes its accepted flight before returning"
+      "expectRed": "renewal publishes its accepted flight",
+      "cell": "renewal publishes its accepted flight"
     },
     {
       "name": "a post-latch renewal joins the older accepted flight instead of refusing",
