@@ -26,6 +26,7 @@ import {
   createAttemptClone,
   startIsolatedBroker,
 } from "../../implementations/cli/src/lib/isolated-broker.js";
+import { assertSmokeSandboxDown, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 
 const freePort = () => new Promise<number>((resolvePort, reject) => {
   const server = createServer();
@@ -66,6 +67,22 @@ const cliPath = join(worktree, "bin", "cotal.ts");
 const taskSeedPath = join(worktree, "implementations", "cli", "smoke", "seed-task-durable.ts");
 const tsx = join(worktree, "node_modules", ".bin", "tsx");
 
+function sandboxRun(root: string, home: string): {
+  run: (...args: string[]) => SpawnSyncReturns<string>;
+  env: NodeJS.ProcessEnv;
+  sandbox: SmokeSandboxAnchor;
+} {
+  const configDir = join(home, "xdg");
+  const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
+  const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
+  const run = (...args: string[]) => {
+    const options = { cwd: root, env, encoding: "utf8" as const, timeout: 240_000 };
+    assertSmokeSandboxDown(sandbox, args, options);
+    return spawnSync(tsx, [cliPath, ...args], options);
+  };
+  return { run, env, sandbox };
+}
+
 interface Checkpoint { stream: string; name: string }
 
 async function scenario(mode: "open" | "auth"): Promise<void> {
@@ -76,8 +93,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = `backup_live_${mode}`;
-  const env = { ...process.env, COTAL_HOME: home };
-  const run = (...args: string[]) => spawnSync(tsx, [cliPath, ...args], { cwd: root, env, encoding: "utf8", timeout: 240_000 });
+  const { run } = sandboxRun(root, home);
   const must = (label: string, result: ReturnType<typeof run>) => {
     assert.equal(result.status, 0, `${mode} ${label}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
   };
@@ -291,8 +307,7 @@ async function occupiedRestoreScenario(): Promise<void> {
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = "backup_occupied_restore";
-  const env = { ...process.env, COTAL_HOME: home };
-  const run = (...args: string[]) => spawnSync(tsx, [cliPath, ...args], { cwd: root, env, encoding: "utf8", timeout: 240_000 });
+  const { run } = sandboxRun(root, home);
   let occupied: ChildProcess | undefined;
   try {
     assert.equal(run("up", "--detach", "--open", "--server", server, "--space", space).status, 0);
@@ -325,8 +340,7 @@ async function restoreReentryScenario(
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = `backup_reentry_${label}`;
-  const env = { ...process.env, COTAL_HOME: home };
-  const run = (...args: string[]) => spawnSync(tsx, [cliPath, ...args], { cwd: root, env, encoding: "utf8", timeout: 240_000 });
+  const { run } = sandboxRun(root, home);
   const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
   try {
     assert.equal(run("up", "--detach", ...(authenticated ? [] : ["--open"]), "--server", server, "--space", space).status, 0);
@@ -400,8 +414,7 @@ async function ordinaryResumeReentryScenario(injection: "resume-commit" | "resum
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = `backup_ordinary_${injection}`;
-  const env = { ...process.env, COTAL_HOME: home };
-  const run = (...args: string[]) => spawnSync(tsx, [cliPath, ...args], { cwd: root, env, encoding: "utf8", timeout: 240_000 });
+  const { run } = sandboxRun(root, home);
   const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
   try {
     assert.equal(run("up", "--detach", "--open", "--server", server, "--space", space).status, 0);
@@ -450,8 +463,7 @@ async function deadBoundListenerReplacementScenario(): Promise<void> {
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = "backup_dead_listener_replacement";
-  const env = { ...process.env, COTAL_HOME: home };
-  const run = (...args: string[]) => spawnSync(tsx, [cliPath, ...args], { cwd: root, env, encoding: "utf8", timeout: 240_000 });
+  const { run } = sandboxRun(root, home);
   const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
   try {
     assert.equal(run("up", "--detach", "--open", "--server", server, "--space", space).status, 0);
@@ -497,8 +509,7 @@ async function unboundRestoreReentryScenario(detached: boolean): Promise<void> {
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = `backup_unbound_${label}`;
-  const env = { ...process.env, COTAL_HOME: home };
-  const run = (...args: string[]) => spawnSync(tsx, [cliPath, ...args], { cwd: root, env, encoding: "utf8", timeout: 240_000 });
+  const { run } = sandboxRun(root, home);
   const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
   const pidPath = join(root, ".cotal", "nats.pid");
   let listenerPid: number | undefined;
@@ -540,8 +551,7 @@ async function boundForeignListenerScenario(): Promise<void> {
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = "backup_bound_foreign";
-  const env = { ...process.env, COTAL_HOME: home };
-  const run = (...args: string[]) => spawnSync(tsx, [cliPath, ...args], { cwd: root, env, encoding: "utf8", timeout: 240_000 });
+  const { run } = sandboxRun(root, home);
   const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
   let foreign: ChildProcess | undefined;
   try {
@@ -589,8 +599,7 @@ async function missingPidfileListenerScenario(): Promise<void> {
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = "backup_missing_pid_listener";
-  const env = { ...process.env, COTAL_HOME: home };
-  const run = (...args: string[]) => spawnSync(tsx, [cliPath, ...args], { cwd: root, env, encoding: "utf8", timeout: 240_000 });
+  const { run } = sandboxRun(root, home);
   const pidPath = join(root, ".cotal", "nats.pid");
   const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
   let foreign: ChildProcess | undefined;
@@ -632,17 +641,18 @@ async function preservationCommitCrashScenario(): Promise<void> {
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = "backup_preserve_commit_crash";
-  const env = { ...process.env, COTAL_HOME: home };
-  const run = (...args: string[]) => spawnSync(tsx, [cliPath, ...args], { cwd: root, env, encoding: "utf8", timeout: 240_000 });
+  const { run, env, sandbox } = sandboxRun(root, home);
   const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
   try {
     assert.equal(run("up", "--detach", "--open", "--server", server, "--space", space).status, 0);
-    const interrupted = spawnSync(tsx, [cliPath, "down", "--preserve-state"], {
+    const interruptOptions = {
       cwd: root,
       env: { ...env, COTAL_SMOKE_EXIT_AFTER_PRESERVATION_MANAGER_COMMIT: "1" },
-      encoding: "utf8",
+      encoding: "utf8" as const,
       timeout: 240_000,
-    });
+    };
+    assertSmokeSandboxDown(sandbox, ["down", "--preserve-state"], interruptOptions);
+    const interrupted = spawnSync(tsx, [cliPath, "down", "--preserve-state"], interruptOptions);
     assert.equal(interrupted.status, 90);
     assert.equal((JSON.parse(readFileSync(journalPath, "utf8")) as { state: string }).state, "cut-committed");
     const recovered = run("down", "--preserve-state");
@@ -667,13 +677,13 @@ async function preservationStopCrashRecoveryScenario(): Promise<void> {
     const port = await freePort();
     const server = `nats://127.0.0.1:${port}`;
     const space = `backup_preserve_stop_${suffix}`;
-    const env = { ...process.env, COTAL_HOME: home };
-    const run = (...args: string[]) => spawnSync(tsx, [cliPath, ...args], { cwd: root, env, encoding: "utf8", timeout: 240_000 });
+    const { run, env, sandbox } = sandboxRun(root, home);
     const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
     assert.equal(run("up", "--detach", "--open", "--server", server, "--space", space).status, 0, `${suffix} up`);
     const mgrPid = Number(readFileSync(join(root, ".cotal", "manager.pid"), "utf8").trim());
-    const crashed = spawnSync(tsx, [cliPath, "down", "--preserve-state"],
-      { cwd: root, env: { ...env, [hook]: "1" }, encoding: "utf8", timeout: 240_000 });
+    const crashOptions = { cwd: root, env: { ...env, [hook]: "1" }, encoding: "utf8" as const, timeout: 240_000 };
+    assertSmokeSandboxDown(sandbox, ["down", "--preserve-state"], crashOptions);
+    const crashed = spawnSync(tsx, [cliPath, "down", "--preserve-state"], crashOptions);
     assert.equal((JSON.parse(readFileSync(journalPath, "utf8")) as { state: string }).state, "cut-intent", `${suffix} parked at cut-intent`);
     if (alive(mgrPid)) process.kill(mgrPid, "SIGKILL");
     await waitUntil(() => !alive(mgrPid), `${suffix} manager dead`);
@@ -718,8 +728,7 @@ async function restoreClaimRaceScenario(): Promise<void> {
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = "backup_claim_race";
-  const env = { ...process.env, COTAL_HOME: home };
-  const run = (...args: string[]) => spawnSync(tsx, [cliPath, ...args], { cwd: root, env, encoding: "utf8", timeout: 240_000 });
+  const { run } = sandboxRun(root, home);
   try {
     assert.equal(run("up", "--detach", "--open", "--server", server, "--space", space).status, 0);
     assert.equal(run("down", "--preserve-state").status, 0);
@@ -783,8 +792,7 @@ async function backupRestoreCycleScenario(): Promise<void> {
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = "backup_cycle";
-  const env = { ...process.env, COTAL_HOME: home };
-  const run = (...args: string[]) => spawnSync(tsx, [cliPath, ...args], { cwd: root, env, encoding: "utf8", timeout: 240_000 });
+  const { run } = sandboxRun(root, home);
   const must = (label: string, result: ReturnType<typeof run>) => {
     assert.equal(result.status, 0, `cycle ${label}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
   };

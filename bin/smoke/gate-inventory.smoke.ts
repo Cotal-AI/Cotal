@@ -83,15 +83,6 @@ const UNGATED: Record<string, string> = {
   // missing explicit `tls` and stopped after 14 of its 66 cells, and being ungated is why nobody
   // heard about it. "Too slow for the gate" was 105 seconds.
   "smoke:user-auth-launch:live": "full live stack",
-  "smoke:web-seed:live": "full live stack",
-  // NOT dead, despite the obvious reading. v0.4 removed the MANAGER's ctl tiers, not the ctl rail:
-  // `ctl.delivery` survives as the delivery daemon's carve-out, still built by subjects.ts and still
-  // served by endpoint.ts (CONTROL_DELIVERY / CONTROL_DELIVERY_ADMIN). This suite pins the security
-  // properties of that LIVE rail - that the broker forge-locks the subject's identity slots to the
-  // connection's minted grant, and that serveControl's guards reject a payload disagreeing with the
-  // subject. It is ungated because it needs a real user-auth broker plus a real callout, not because
-  // it is obsolete. Deleting it would drop a security proof for shipped code.
-  "smoke:ctl-trust:live": "needs a real user-auth broker + callout; pins the LIVE ctl.delivery rail",
   // Untriaged debt. These are the ones that should shrink.
   "smoke:attention": "UNTRIAGED",
   "smoke:attention:auth": "UNTRIAGED",
@@ -118,10 +109,10 @@ const UNGATED: Record<string, string> = {
  */
 const CITED_IN_PLAN = new Set([
   "smoke:auth", "smoke:channel-attention", "smoke:channel-attention:auth", "smoke:channels",
-  "smoke:ctl-trust:live", "smoke:doctor-auth", "smoke:install", "smoke:ledger",
+  "smoke:doctor-auth", "smoke:install", "smoke:ledger",
   "smoke:manifest-launch", "smoke:members", "smoke:membership-feed:auth", "smoke:presence-scrub",
   "smoke:start-model", "smoke:static-lifecycle", "smoke:user-auth-launch:live",
-  "smoke:user-spawn:live", "smoke:web-seed:live",
+  "smoke:user-spawn:live",
 ]);
 
 const packagePath = join(ROOT, "package.json");

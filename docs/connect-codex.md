@@ -181,21 +181,21 @@ Eight things are specific to Codex and worth knowing before you read a stream:
   thread, and the developer instructions the persona supplies are all withheld. The events channel
   carries a different read ACL from the channel you typed into, so republishing your own words there
   would widen who can read them. Assistant text, reasoning and tool activity are unaffected.
-- **The seat waits out a broker outage at startup.** The plane publishes
-  through the seat's mesh connection, so a seat armed while its broker was unreachable cannot start
-  its emitter. It says so in its log, and rebuilds the emitter at the first turn boundary once the
-  broker is there. A rebind DECLINES to publish two things, and they are one rule rather than two
-  exceptions. It declines what the thread wrote while the seat was cut off. It also declines the
+- **Recovery after a broker outage.** Initial mesh absence still
+  fails the host's readiness gate within 15 seconds, so it never opens an offline-looking TUI. Once
+  ready, the plane publishes through the seat's reconnecting mesh endpoint: an outage can stop an
+  emitter, and the first turn boundary after reconnect rebuilds it. A rebind DECLINES to publish two
+  things, and they are one rule rather than two exceptions. It declines what the thread wrote while
+  the seat was cut off. It also declines the
   turn whose own boundary triggered it: Codex writes a turn's first record before it announces that
   the turn started, and that announcement is what a rebind runs on, so the record is always behind
   whatever boundary the rebind takes, and a run is never opened from the middle of a turn. The first
   turn to start after the rebind is published in full. One case is different and is named here
   rather than left to be discovered: if the emitter had already been publishing this thread and
   then died, the seat's log carries its position, and the rebind CONTINUES that log rather than
-  starting where it binds. An outage there costs the wait, not the content: everything the thread
-  wrote while the plane was down, including whatever it wrote while the plane was already dead, is
-  published once the plane is back. Two consequences are worth stating plainly, because both are
-  easy to read past. A tool RESULT is published as the tool returned it, so anything a tool read on
+  starting where it binds. The rebind publishes the complete outage backlog once the plane is back,
+  including everything the thread wrote after the previous emitter became terminal. Two consequences
+  are worth stating plainly, because both are easy to read past. A tool RESULT is published as the tool returned it, so anything a tool read on
   the seat's behalf, including messages it fetched from a channel with a narrower reader set, is in
   this stream; nothing redacts it or marks where it came from. And a backlog written while the
   plane was terminal is not discarded, it is delivered on recovery. Together those mean the readers
