@@ -55,6 +55,7 @@
  * worse than none, because it reads as coverage on every other run.
  */
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 // FIRST LINE OF OUTPUT, BEFORE ANY WORK: a gate can grep for this to prove the detector
 // actually ran. `npx tsx <missing-file>` exits 1, which is indistinguishable from
@@ -107,7 +108,8 @@ if (!base || !head) {
 // head count hides every move. The matrix and the shard runner's modulo count are two
 // independent facts, so both must describe the complete index set 0..N-1. The smoke job
 // and shard step must also keep the execution shape this parser models, including an
-// immutable verifier that binds the runner to the committed inputs graded here. Comments and
+// immutable verifier whose blob hash is pinned here and binds the runner to the committed
+// inputs graded here. Comments and
 // other jobs are not topology either. Any unsupported shape aborts instead of guessing.
 const shardCountFromWorkflow = (yml: string, requireCommittedInputs = true): number | null => {
   const lines = yml.split("\n");
@@ -202,6 +204,18 @@ const ciShardCount = (sha: string, requireCommittedInputs: boolean): number | nu
   }
 };
 
+const verifierMatches = (sha: string): boolean => {
+  try {
+    const source = execFileSync("git", ["show", `${sha}:bin/smoke/verify-shard-inputs.sh`], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const actual = createHash("sha256").update(source).digest("hex");
+    return actual === "895f1c675d3ed5e8e5dc663ffcce7c00d64369ba13670534760357698cf5d7f0";
+  } catch {
+    return false;
+  }
+};
+
 const baseCount = ciShardCount(base, false);
 const declaredHeadCount = ciShardCount(head, true);
 if (baseCount === null) {
@@ -209,6 +223,9 @@ if (baseCount === null) {
 }
 if (declaredHeadCount === null) {
   verdict("ABORT", `cannot read a complete smoke shard topology from .github/workflows/ci.yml at '${head}'`, 2);
+}
+if (!verifierMatches(head)) {
+  verdict("ABORT", `verifier blob at '${head}' does not match the fail-closed implementation pinned by this detector`, 2);
 }
 const headCount = countArg !== undefined ? Number(countArg) : declaredHeadCount;
 if (!Number.isInteger(headCount) || headCount < 1) {
