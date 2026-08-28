@@ -32,6 +32,12 @@ assert.throws(() => normalizeWebHost("::"), /wildcard bind, not a browser addres
   "IPv6 wildcard exposure must be refused rather than advertised");
 pass++;
 console.log("  ok  IPv6 wildcard exposure is refused");
+for (const host of ["::ffff:0.0.0.0", "::ffff:0:0", "0:0:0:0:0:ffff:0:0"]) {
+  assert.throws(() => normalizeWebHost(host), /wildcard bind, not a browser address/,
+    `IPv4-mapped wildcard exposure ${host} must be refused rather than advertised`);
+  pass++;
+}
+console.log("  ok  IPv4-mapped wildcard aliases are refused");
 assert.throws(() => normalizeWebHost("host/name"), /invalid --host/,
   "a host containing URL path syntax must be refused");
 pass++;

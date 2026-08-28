@@ -38,6 +38,7 @@ export const WEB_PORT = 7799;
 export const WEB_HOST = "127.0.0.1";
 export const WEB_URL = `http://cotal.localhost:${WEB_PORT}/`;
 const WILDCARD_HOSTS = new Set(["0.0.0.0", "::"]);
+const IPV4_MAPPED_WILDCARD = "::ffff:0:0";
 /** The three reasons this surface refuses a request, named as constants because the browser and the
  *  cells must both match the SAME token — a restated literal drifts silently, and a refusal that
  *  cannot be told apart from another refusal is the defect this lane exists to remove. Four
@@ -1391,7 +1392,7 @@ export function normalizeWebHost(input: string | undefined): string {
   } catch {
     throw new Error(`invalid --host ${input}`);
   }
-  if (WILDCARD_HOSTS.has(host))
+  if (WILDCARD_HOSTS.has(host) || host === IPV4_MAPPED_WILDCARD)
     throw new Error(`--host ${input} is a wildcard bind, not a browser address; pass one reachable hostname or IP address`);
   return host;
 }

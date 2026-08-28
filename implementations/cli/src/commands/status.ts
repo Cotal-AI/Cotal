@@ -635,7 +635,7 @@ export function webProbeTarget(command: string):
     const ipv6 = unbracketed.includes(":");
     const parsed = new URL(`http://${ipv6 ? `[${unbracketed}]` : unbracketed}:${port}/api/meta`);
     const normalized = ipv6 ? parsed.hostname.slice(1, -1) : parsed.hostname;
-    if (normalized === "0.0.0.0" || normalized === "::") throw new Error("invalid");
+    if (normalized === "0.0.0.0" || normalized === "::" || normalized === "::ffff:0:0") throw new Error("invalid");
     return {
       host: normalized,
       port,

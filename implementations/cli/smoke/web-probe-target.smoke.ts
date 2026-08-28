@@ -14,7 +14,7 @@ const defaults = webProbeTarget("node cotal web --no-open");
 assert.ok(!("refused" in defaults) && defaults.url.href === "http://127.0.0.1:7799/api/meta",
   "the CLI status probe preserves loopback defaults when host and port are absent");
 
-for (const host of ["0.0.0.0", "0", "::"]) {
+for (const host of ["0.0.0.0", "0", "::", "::ffff:0.0.0.0", "::ffff:0:0", "0:0:0:0:0:ffff:0:0"]) {
   const wildcard = webProbeTarget(`node cotal web --host ${host}`);
   assert.ok("refused" in wildcard && wildcard.refused.includes("invalid process host"),
     `the CLI status probe refuses wildcard process host ${host}`);
