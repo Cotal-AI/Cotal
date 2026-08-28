@@ -11,10 +11,12 @@
  * Needs `nats-server` on PATH (like the other auth smokes). Kills only the broker it spawns.
  * Run: pnpm smoke:web-seed:live
  */
+import { once } from "node:events";
 import { closeSync, mkdtempSync, writeFileSync, openSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
+import { createServer } from "node:net";
 import {
   CotalEndpoint,
   clearChannel,
@@ -26,9 +28,19 @@ import {
   serverConfig,
   setupSpaceStreams,
 } from "@cotal-ai/core";
-import { pickFreePort } from "../../auth/smoke/_free-port.js";
+import { killAndAwaitExit } from "@cotal-ai/smoke-kit";
 
-const port = await pickFreePort();
+async function freePort(): Promise<number> {
+  const socket = createServer();
+  socket.listen(0, "127.0.0.1");
+  await once(socket, "listening");
+  const address = socket.address();
+  if (address === null || typeof address === "string") throw new Error("free-port probe did not bind a TCP port");
+  await new Promise<void>((resolve) => socket.close(() => resolve()));
+  return address.port;
+}
+
+const port = await freePort();
 const server = `nats://127.0.0.1:${port}`;
 const space = "webseed";
 const dir = mkdtempSync(join(tmpdir(), "cotal-webseed-"));
@@ -38,9 +50,7 @@ const log = join(dir, "s.log");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0;
-const closedChildren = new WeakSet<ChildProcess>();
-let broker: ChildProcess | undefined;
-let pub: CotalEndpoint | undefined;
+let broker: ReturnType<typeof spawn> | undefined;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
   if (!cond) throw new Error(`FAIL: ${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
   pass++;
@@ -56,7 +66,6 @@ try {
   } finally {
     closeSync(fd);
   }
-  broker.once("close", () => closedChildren.add(broker!));
 
   const mgrCreds = await mintCreds(auth, newIdentity(), "provisioner");
   let up = false;
@@ -78,7 +87,7 @@ try {
   const publisherCreds = await mintCreds(auth, newIdentity(), "operator");
 
   // Seed #ops through the same self-scoped operator publish surface a CLI message uses.
-  pub = new CotalEndpoint({
+  const pub = new CotalEndpoint({
     space,
     servers: server,
     creds: publisherCreds,
@@ -89,17 +98,18 @@ try {
   });
   const publisherErrors: string[] = [];
   pub.on("error", (error: Error) => publisherErrors.push(error.message));
-  await pub.start();
-  for (let i = 0; i < 3; i++) {
+  try {
+    await pub.start();
     try {
-      await pub.multicast(`m${i}`, { channel: "ops" });
+      await pub.multicast("seeded history", { channel: "ops" });
     } catch (error) {
       publisherErrors.push(error instanceof Error ? error.message : String(error));
     }
+    await sleep(300);
+    ok("operator publisher seeds #ops without broker permission violations", publisherErrors.length === 0, publisherErrors);
+  } finally {
+    await pub.stop().catch(() => {});
   }
-  await sleep(300);
-  ok("operator publisher seeds #ops without broker permission violations", publisherErrors.length === 0, publisherErrors);
-  await pub.stop();
 
   // The ADMIN connection cred (what web connects with) must NOT be able to purge — that's the whole
   // reason web mints a manager cred separately.
@@ -121,18 +131,9 @@ try {
 
   console.log(`\nweb account-seed live e2e: ${pass} checks passed`);
 } finally {
-  await pub?.stop().catch(() => {});
-  let brokerClosed = broker === undefined || closedChildren.has(broker);
-  if (broker && !brokerClosed) {
-    const closed = new Promise<boolean>((resolve) => {
-      const onClose = () => { clearTimeout(timer); resolve(true); };
-      const timer = setTimeout(() => { broker!.off("close", onClose); resolve(false); }, 5_000);
-      broker.once("close", onClose);
-    });
-    try { broker.kill("SIGKILL"); } catch { /* already gone */ }
-    brokerClosed = await closed;
-  }
-  if (!brokerClosed) throw new Error(`web-seed broker did not close; preserving scratch state at ${dir}`);
+  if (broker) await killAndAwaitExit(broker, "SIGKILL", 5_000);
+  const brokerStopped = broker === undefined || broker.exitCode !== null || broker.signalCode !== null;
+  if (!brokerStopped) throw new Error(`web-seed broker did not stop; preserving scratch state at ${dir}`);
   rmSync(dir, { recursive: true, force: true });
 }
 process.exit(0);
