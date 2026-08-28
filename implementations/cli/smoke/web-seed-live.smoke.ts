@@ -90,7 +90,13 @@ try {
   const publisherErrors: string[] = [];
   pub.on("error", (error: Error) => publisherErrors.push(error.message));
   await pub.start();
-  for (let i = 0; i < 3; i++) await pub.multicast(`m${i}`, { channel: "ops" });
+  for (let i = 0; i < 3; i++) {
+    try {
+      await pub.multicast(`m${i}`, { channel: "ops" });
+    } catch (error) {
+      publisherErrors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
   await sleep(300);
   ok("operator publisher seeds #ops without broker permission violations", publisherErrors.length === 0, publisherErrors);
   await pub.stop();
