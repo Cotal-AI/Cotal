@@ -30,7 +30,7 @@
  *   to remove and permanently silences the mismatch abort below.
  * Run from inside a worktree of the repo. Exits 1 if any pre-existing suite changes shard.
  *
- * CONTROLS BUILT IN, because a bare zero is not evidence. All fifteen run on every invocation:
+ * CONTROLS BUILT IN, because a bare zero is not evidence. All sixteen run on every invocation:
  *   - a forced mid-file insert must report non-zero (the instrument responds at all)
  *   - identity (base vs base) must report 0
  *   - an unchanged 20-item registry under 4 -> 5 shards must move 16 items
@@ -43,6 +43,7 @@
  *   - the smoke job must not carry an execution condition
  *   - the shard step must not carry an execution condition
  *   - the shard runner must compare execution inputs directly with committed blobs
+ *   - replacement refs must not redirect the streamed verifier or its committed input reads
  *   - duplicate step IDs declared after another step key must be refused
  *   - duplicate step IDs declared as the first step key must also be refused
  *   - the complete head workflow must parse under the next shard count and still refuse both duplicates
@@ -57,8 +58,11 @@
  * than implemented: a control that only applies when two specific shas are present is
  * worse than none, because it reads as coverage on every other run.
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // FIRST LINE OF OUTPUT, BEFORE ANY WORK: a gate can grep for this to prove the detector
 // actually ran. `npx tsx <missing-file>` exits 1, which is indistinguishable from
@@ -240,7 +244,7 @@ const shardCountFromWorkflow = (yml: string, requireCommittedInputs = true, requ
     if (ids.length !== idValues.length || new Set(ids).size !== ids.length) return null;
   }
   const guardedShell = "        shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}";
-  const guardedInvocationPattern = /^        run:\s*\/usr\/bin\/git show "\$GITHUB_SHA:bin\/smoke\/verify-shard-inputs\.sh" \| \/usr\/bin\/bash --noprofile --norc -s -- "\$GITHUB_SHA" \$\{\{ matrix\.shard \}\} ([1-9][0-9]*) ci "\$\{\{ steps\.smoke-tools\.outputs\.node_path \}\}" "\$\{\{ steps\.smoke-tools\.outputs\.node_target \}\}" "\$\{\{ steps\.smoke-tools\.outputs\.node_sha \}\}" "\$\{\{ steps\.smoke-tools\.outputs\.pnpm_path \}\}" "\$\{\{ steps\.smoke-tools\.outputs\.pnpm_target \}\}" "\$\{\{ steps\.smoke-tools\.outputs\.pnpm_sha \}\}"\s*(?:#.*)?$/;
+  const guardedInvocationPattern = /^        run:\s*\/usr\/bin\/git --no-replace-objects show "\$GITHUB_SHA:bin\/smoke\/verify-shard-inputs\.sh" \| \/usr\/bin\/bash --noprofile --norc -s -- "\$GITHUB_SHA" \$\{\{ matrix\.shard \}\} ([1-9][0-9]*) ci "\$\{\{ steps\.smoke-tools\.outputs\.node_path \}\}" "\$\{\{ steps\.smoke-tools\.outputs\.node_target \}\}" "\$\{\{ steps\.smoke-tools\.outputs\.node_sha \}\}" "\$\{\{ steps\.smoke-tools\.outputs\.pnpm_path \}\}" "\$\{\{ steps\.smoke-tools\.outputs\.pnpm_target \}\}" "\$\{\{ steps\.smoke-tools\.outputs\.pnpm_sha \}\}"\s*(?:#.*)?$/;
   const legacyInvocationPattern = /^        run:\s*node bin\/smoke\/shard\.mjs \$\{\{ matrix\.shard \}\} ([1-9][0-9]*)\s*(?:#.*)?$/;
   const shardSteps = stepBlocks.filter((block) => block.some((line) =>
     guardedInvocationPattern.test(line) || legacyInvocationPattern.test(line)
@@ -265,7 +269,7 @@ const shardCountFromWorkflow = (yml: string, requireCommittedInputs = true, requ
 
 const ciShardCount = (sha: string, requireCommittedInputs: boolean): number | null => {
   try {
-    const yml = execFileSync("git", ["show", `${sha}:.github/workflows/ci.yml`], {
+    const yml = execFileSync("git", ["--no-replace-objects", "show", `${sha}:.github/workflows/ci.yml`], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -277,11 +281,11 @@ const ciShardCount = (sha: string, requireCommittedInputs: boolean): number | nu
 
 const verifierMatches = (sha: string): boolean => {
   try {
-    const source = execFileSync("git", ["show", `${sha}:bin/smoke/verify-shard-inputs.sh`], {
+    const source = execFileSync("git", ["--no-replace-objects", "show", `${sha}:bin/smoke/verify-shard-inputs.sh`], {
       stdio: ["ignore", "pipe", "pipe"],
     });
     const actual = createHash("sha256").update(source).digest("hex");
-    return actual === "1541c008ccf066dec2facebde4e67e7b27e1730cee90d24fa9cc19df3784755e";
+    return actual === "5ca0cd091a3eef8630f452e7b52ca1f4edc521a4f789533592cdcd6d14433761";
   } catch {
     return false;
   }
@@ -314,7 +318,7 @@ const read = (sha: string): string[] => {
   // exit 1 where the README promised 2.
   let raw: string;
   try {
-    raw = execFileSync("git", ["show", `${sha}:bin/smoke/ci-suites.txt`], {
+    raw = execFileSync("git", ["--no-replace-objects", "show", `${sha}:bin/smoke/ci-suites.txt`], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -342,6 +346,69 @@ const moved = (a: string[], b: string[], aCount: number, bCount: number): string
   return [...sa.keys()].filter((suite) => sb.has(suite) && sa.get(suite) !== sb.get(suite));
 };
 
+const replaceRefRuntimeControl = (): boolean => {
+  const root = mkdtempSync(join(tmpdir(), "shard-replace-control-"));
+  try {
+    mkdirSync(join(root, "bin/smoke"), { recursive: true });
+    const verifier = execFileSync(
+      "git",
+      ["--no-replace-objects", "show", `${head}:bin/smoke/verify-shard-inputs.sh`],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    );
+    const inputs = new Map([
+      ["bin/smoke/ci-suites.txt", "smoke:first\nsmoke:second\n"],
+      ["bin/smoke/ci-suites.mjs", "export {};\n"],
+      ["bin/smoke/shard.mjs", "export {};\n"],
+      ["bin/smoke/reap-smoke-brokers.mjs", "export {};\n"],
+      ["package.json", "{}\n"],
+      ["pnpm-workspace.yaml", "packages: []\n"],
+    ]);
+    for (const [path, source] of inputs) {
+      writeFileSync(join(root, path), source);
+    }
+    writeFileSync(join(root, "bin/smoke/verify-shard-inputs.sh"), verifier);
+    const git = (args: string[]): string => execFileSync("git", args, {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    git(["init", "-q"]);
+    git(["config", "user.name", "Shard control"]);
+    git(["config", "user.email", "shard-control@example.invalid"]);
+    git(["add", "."]);
+    git(["commit", "-qm", "control: original tree"]);
+    const original = git(["rev-parse", "HEAD"]);
+
+    writeFileSync(join(root, "bin/smoke/ci-suites.txt"), "smoke:first\n");
+    writeFileSync(
+      join(root, "bin/smoke/verify-shard-inputs.sh"),
+      "#!/usr/bin/env bash\nexit 0\n",
+    );
+    git(["add", "bin/smoke/ci-suites.txt", "bin/smoke/verify-shard-inputs.sh"]);
+    const tree = git(["write-tree"]);
+    const replacement = git(["commit-tree", tree, "-p", original, "-m", "control: replacement tree"]);
+    git(["replace", original, replacement]);
+
+    const result = spawnSync(
+      "/bin/bash",
+      [
+        "-o", "pipefail", "-c",
+        '/usr/bin/git --no-replace-objects show "$1:bin/smoke/verify-shard-inputs.sh" | /bin/bash --noprofile --norc -s -- "$1"',
+        "shard-replace-control",
+        original,
+      ],
+      { cwd: root, encoding: "utf8" },
+    );
+    return result.status === 2 && result.stderr.includes(
+      "tracked shard input changed after checkout: bin/smoke/ci-suites.txt",
+    );
+  } catch {
+    return false;
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+};
+
 const A = read(base), B = read(head);
 const changed = moved(A, B, baseCount, headCount);
 
@@ -360,7 +427,7 @@ const commentShadowCount = shardCountFromWorkflow(`jobs:
     steps:
       - name: Run shard
         shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
-        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci "\${{ steps.smoke-tools.outputs.node_path }}" "\${{ steps.smoke-tools.outputs.node_target }}" "\${{ steps.smoke-tools.outputs.node_sha }}" "\${{ steps.smoke-tools.outputs.pnpm_path }}" "\${{ steps.smoke-tools.outputs.pnpm_target }}" "\${{ steps.smoke-tools.outputs.pnpm_sha }}"
+        run: /usr/bin/git --no-replace-objects show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci "\${{ steps.smoke-tools.outputs.node_path }}" "\${{ steps.smoke-tools.outputs.node_target }}" "\${{ steps.smoke-tools.outputs.node_sha }}" "\${{ steps.smoke-tools.outputs.pnpm_path }}" "\${{ steps.smoke-tools.outputs.pnpm_target }}" "\${{ steps.smoke-tools.outputs.pnpm_sha }}"
   other:
     runs-on: ubuntu-latest
 `);
@@ -372,7 +439,7 @@ const commandMismatchCount = shardCountFromWorkflow(`jobs:
     steps:
       - name: Run shard
         shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
-        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 5 ci "\${{ steps.smoke-tools.outputs.node_path }}" "\${{ steps.smoke-tools.outputs.node_target }}" "\${{ steps.smoke-tools.outputs.node_sha }}" "\${{ steps.smoke-tools.outputs.pnpm_path }}" "\${{ steps.smoke-tools.outputs.pnpm_target }}" "\${{ steps.smoke-tools.outputs.pnpm_sha }}"
+        run: /usr/bin/git --no-replace-objects show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 5 ci "\${{ steps.smoke-tools.outputs.node_path }}" "\${{ steps.smoke-tools.outputs.node_target }}" "\${{ steps.smoke-tools.outputs.node_sha }}" "\${{ steps.smoke-tools.outputs.pnpm_path }}" "\${{ steps.smoke-tools.outputs.pnpm_target }}" "\${{ steps.smoke-tools.outputs.pnpm_sha }}"
 `);
 const duplicateMatrixCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -382,7 +449,7 @@ const duplicateMatrixCount = shardCountFromWorkflow(`jobs:
     steps:
       - name: Run shard
         shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
-        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci "\${{ steps.smoke-tools.outputs.node_path }}" "\${{ steps.smoke-tools.outputs.node_target }}" "\${{ steps.smoke-tools.outputs.node_sha }}" "\${{ steps.smoke-tools.outputs.pnpm_path }}" "\${{ steps.smoke-tools.outputs.pnpm_target }}" "\${{ steps.smoke-tools.outputs.pnpm_sha }}"
+        run: /usr/bin/git --no-replace-objects show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci "\${{ steps.smoke-tools.outputs.node_path }}" "\${{ steps.smoke-tools.outputs.node_target }}" "\${{ steps.smoke-tools.outputs.node_sha }}" "\${{ steps.smoke-tools.outputs.pnpm_path }}" "\${{ steps.smoke-tools.outputs.pnpm_target }}" "\${{ steps.smoke-tools.outputs.pnpm_sha }}"
 `);
 const emptyMatrixCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -392,7 +459,7 @@ const emptyMatrixCount = shardCountFromWorkflow(`jobs:
     steps:
       - name: Run shard
         shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
-        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 1 ci "\${{ steps.smoke-tools.outputs.node_path }}" "\${{ steps.smoke-tools.outputs.node_target }}" "\${{ steps.smoke-tools.outputs.node_sha }}" "\${{ steps.smoke-tools.outputs.pnpm_path }}" "\${{ steps.smoke-tools.outputs.pnpm_target }}" "\${{ steps.smoke-tools.outputs.pnpm_sha }}"
+        run: /usr/bin/git --no-replace-objects show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 1 ci "\${{ steps.smoke-tools.outputs.node_path }}" "\${{ steps.smoke-tools.outputs.node_target }}" "\${{ steps.smoke-tools.outputs.node_sha }}" "\${{ steps.smoke-tools.outputs.pnpm_path }}" "\${{ steps.smoke-tools.outputs.pnpm_target }}" "\${{ steps.smoke-tools.outputs.pnpm_sha }}"
 `);
 const excludedMatrixCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -404,7 +471,7 @@ const excludedMatrixCount = shardCountFromWorkflow(`jobs:
     steps:
       - name: Run shard
         shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
-        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci "\${{ steps.smoke-tools.outputs.node_path }}" "\${{ steps.smoke-tools.outputs.node_target }}" "\${{ steps.smoke-tools.outputs.node_sha }}" "\${{ steps.smoke-tools.outputs.pnpm_path }}" "\${{ steps.smoke-tools.outputs.pnpm_target }}" "\${{ steps.smoke-tools.outputs.pnpm_sha }}"
+        run: /usr/bin/git --no-replace-objects show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci "\${{ steps.smoke-tools.outputs.node_path }}" "\${{ steps.smoke-tools.outputs.node_target }}" "\${{ steps.smoke-tools.outputs.node_sha }}" "\${{ steps.smoke-tools.outputs.pnpm_path }}" "\${{ steps.smoke-tools.outputs.pnpm_target }}" "\${{ steps.smoke-tools.outputs.pnpm_sha }}"
 `);
 const conditionalJobCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -415,7 +482,7 @@ const conditionalJobCount = shardCountFromWorkflow(`jobs:
     steps:
       - name: Run shard
         shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
-        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci "\${{ steps.smoke-tools.outputs.node_path }}" "\${{ steps.smoke-tools.outputs.node_target }}" "\${{ steps.smoke-tools.outputs.node_sha }}" "\${{ steps.smoke-tools.outputs.pnpm_path }}" "\${{ steps.smoke-tools.outputs.pnpm_target }}" "\${{ steps.smoke-tools.outputs.pnpm_sha }}"
+        run: /usr/bin/git --no-replace-objects show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci "\${{ steps.smoke-tools.outputs.node_path }}" "\${{ steps.smoke-tools.outputs.node_target }}" "\${{ steps.smoke-tools.outputs.node_sha }}" "\${{ steps.smoke-tools.outputs.pnpm_path }}" "\${{ steps.smoke-tools.outputs.pnpm_target }}" "\${{ steps.smoke-tools.outputs.pnpm_sha }}"
 `);
 const conditionalStepCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -426,7 +493,7 @@ const conditionalStepCount = shardCountFromWorkflow(`jobs:
       - name: Run shard
         if: \${{ false }}
         shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
-        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci "\${{ steps.smoke-tools.outputs.node_path }}" "\${{ steps.smoke-tools.outputs.node_target }}" "\${{ steps.smoke-tools.outputs.node_sha }}" "\${{ steps.smoke-tools.outputs.pnpm_path }}" "\${{ steps.smoke-tools.outputs.pnpm_target }}" "\${{ steps.smoke-tools.outputs.pnpm_sha }}"
+        run: /usr/bin/git --no-replace-objects show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- "$GITHUB_SHA" \${{ matrix.shard }} 4 ci "\${{ steps.smoke-tools.outputs.node_path }}" "\${{ steps.smoke-tools.outputs.node_target }}" "\${{ steps.smoke-tools.outputs.node_sha }}" "\${{ steps.smoke-tools.outputs.pnpm_path }}" "\${{ steps.smoke-tools.outputs.pnpm_target }}" "\${{ steps.smoke-tools.outputs.pnpm_sha }}"
 `);
 const unguardedRunnerCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -437,7 +504,7 @@ const unguardedRunnerCount = shardCountFromWorkflow(`jobs:
       - name: Run shard
         run: node bin/smoke/shard.mjs \${{ matrix.shard }} 4
 `);
-const guardedInvocationPrefix = '        run: /usr/bin/git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- ';
+const guardedInvocationPrefix = '        run: /usr/bin/git --no-replace-objects show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | /usr/bin/bash --noprofile --norc -s -- ';
 const duplicateMappedStep = `      - name: Re-capture smoke toolchain
         id: smoke-tools
         run: echo "pnpm_sha=forged" >> "$GITHUB_OUTPUT"
@@ -448,7 +515,7 @@ const duplicateLeadingStep = `      - id: smoke-tools
 `;
 const headWorkflowForControls = (() => {
   try {
-    return execFileSync("git", ["show", `${head}:.github/workflows/ci.yml`], {
+    return execFileSync("git", ["--no-replace-objects", "show", `${head}:.github/workflows/ci.yml`], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -532,6 +599,7 @@ const completeTopologyLeadingId = gradeDuplicateStepId(completeTopologyWorkflow,
 const completeTopologyDuplicatesRefused =
   completeTopologyMappedId.injected && completeTopologyMappedId.count === null &&
   completeTopologyLeadingId.injected && completeTopologyLeadingId.count === null;
+const replaceRefRefused = replaceRefRuntimeControl();
 console.log(`CONTROL forced mid-file insert -> ${forced.length} moved  (must be > 0)`);
 console.log(`CONTROL identity               -> ${identity.length} moved  (must be 0)`);
 console.log(`CONTROL shard count 4 -> 5     -> ${countIncrease.length} moved  (must be 16)`);
@@ -544,6 +612,7 @@ console.log(`CONTROL excluded matrix shard  -> ${excludedMatrixCount ?? "refused
 console.log(`CONTROL conditional smoke job  -> ${conditionalJobCount ?? "refused"}       (must be refused)`);
 console.log(`CONTROL conditional shard step -> ${conditionalStepCount ?? "refused"}       (must be refused)`);
 console.log(`CONTROL unguarded shard runner  -> ${unguardedRunnerCount ?? "refused"}       (must be refused)`);
+console.log(`CONTROL Git replacement ref     -> ${replaceRefRefused ? "refused" : "accepted"}       (must be refused)`);
 console.log(`CONTROL duplicate mapped step id -> ${duplicateMappedIdControl.injected ? duplicateMappedIdControl.count ?? "refused" : "unreadable"}       (must be refused)`);
 console.log(`CONTROL duplicate leading step id -> ${duplicateLeadingIdControl.injected ? duplicateLeadingIdControl.count ?? "refused" : "unreadable"}       (must be refused)`);
 console.log(`CONTROL complete workflow ${headCount} -> ${headCount + 1} -> ${completeTopologyCount ?? "unreadable"} shards, duplicate ids ${completeTopologyDuplicatesRefused ? "refused" : "accepted"}       (must be ${headCount + 1}, refused)`);
@@ -551,7 +620,7 @@ if (
   forced.length === 0 || identity.length !== 0 || countIncrease.length !== 16 ||
   countDecrease.length !== 16 || commentShadowCount !== 4 ||
   commandMismatchCount !== null || duplicateMatrixCount !== null || emptyMatrixCount !== null || excludedMatrixCount !== null ||
-  conditionalJobCount !== null || conditionalStepCount !== null || unguardedRunnerCount !== null ||
+  conditionalJobCount !== null || conditionalStepCount !== null || unguardedRunnerCount !== null || !replaceRefRefused ||
   !duplicateMappedIdControl.injected || duplicateMappedIdControl.count !== null ||
   !duplicateLeadingIdControl.injected || duplicateLeadingIdControl.count !== null ||
   completeTopologyCount !== headCount + 1 || !completeTopologyDuplicatesRefused

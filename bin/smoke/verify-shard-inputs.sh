@@ -18,7 +18,7 @@ for path in \
   package.json \
   pnpm-workspace.yaml
 do
-  /usr/bin/git show "$sha:$path" > "$tmp"
+  /usr/bin/git --no-replace-objects show "$sha:$path" > "$tmp"
   if ! /usr/bin/cmp -s "$tmp" "$path"; then
     echo "tracked shard input changed after checkout: $path" >&2
     exit 2
