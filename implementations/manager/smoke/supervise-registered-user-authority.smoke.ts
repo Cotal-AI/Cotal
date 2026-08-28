@@ -111,6 +111,7 @@ const participantDir = userAuthStateDir(participantRoot, space);
 const hostStore = workspaceSecretStore(hostRoot);
 const participantStore = workspaceSecretStore(participantRoot);
 const authDiagnosticCap = 32 * 1024;
+const closedChildren = new WeakSet<ChildProcess>();
 let authService: ChildProcess | undefined;
 let authServiceDiagnostics = "";
 let authServiceSpawnError: Error | undefined;
@@ -118,6 +119,11 @@ let broker: ChildProcess | undefined;
 let idpServer: ReturnType<typeof createServer> | undefined;
 let endpoint: CotalEndpoint | undefined;
 let storeDir: string | undefined;
+
+function trackChild(child: ChildProcess): ChildProcess {
+  child.once("close", () => closedChildren.add(child));
+  return child;
+}
 
 function appendAuthDiagnostic(chunk: Buffer | string): void {
   authServiceDiagnostics = `${authServiceDiagnostics}${chunk.toString()}`.slice(-authDiagnosticCap);
@@ -154,7 +160,7 @@ function spawnAuthService(): ChildProcess {
     authServiceSpawnError = error;
     appendAuthDiagnostic(`[spawn error] ${error.message}\n`);
   });
-  return child;
+  return trackChild(child);
 }
 
 async function awaitAuthService(child: ChildProcess, timeoutMs = 60_000): Promise<{ url: string; publicUrl?: string; pid: number }> {
@@ -176,7 +182,7 @@ async function awaitAuthService(child: ChildProcess, timeoutMs = 60_000): Promis
 }
 
 async function awaitChildClose(child: ChildProcess, timeoutMs: number): Promise<boolean> {
-  if (child.exitCode !== null || child.signalCode !== null) return true;
+  if (closedChildren.has(child)) return true;
   return new Promise((resolve) => {
     const onClose = () => { clearTimeout(timer); resolve(true); };
     const timer = setTimeout(() => { child.off("close", onClose); resolve(false); }, timeoutMs);
@@ -185,8 +191,10 @@ async function awaitChildClose(child: ChildProcess, timeoutMs: number): Promise<
 }
 
 async function stopChild(child: ChildProcess | undefined): Promise<boolean> {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return true;
-  try { child.kill("SIGTERM"); } catch { /* already gone */ }
+  if (!child || closedChildren.has(child)) return true;
+  if (child.exitCode === null && child.signalCode === null) {
+    try { child.kill("SIGTERM"); } catch { /* already gone */ }
+  }
   if (await awaitChildClose(child, 3_000)) return true;
   try { child.kill("SIGKILL"); } catch { /* already gone */ }
   return awaitChildClose(child, 3_000);
@@ -238,7 +246,7 @@ try {
     storeDir,
     extraAccounts: preparedHost.extraAccounts,
   }));
-  broker = spawn("nats-server", ["-c", join(hostRoot, "server.conf")], { stdio: "ignore" });
+  broker = trackChild(spawn("nats-server", ["-c", join(hostRoot, "server.conf")], { stdio: "ignore" }));
   let brokerReady = false;
   for (let tries = 0; tries < 50 && broker.exitCode === null; tries++) {
     try {
