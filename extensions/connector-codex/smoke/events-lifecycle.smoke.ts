@@ -616,17 +616,23 @@ try {
   // one full assistant/tool turn through the already-bound plane and makes the holder fail for the
   // outage we actually mean to recover from.
   const goD = join(dir, "d.go");
+  const OUTAGE_BIND_WINDOW_MS = 30_000;
+  const hostDStartedAt = Date.now();
   hostD = startHost(D, homeD, "1", join(dir, "d.log.jsonl"), (chunk) => (errD += chunk), servers2, {
     prompt: "TOOLREC the turn that runs while the mesh is unreachable",
     goMark: goD,
-  });
+  }, OUTAGE_BIND_WINDOW_MS);
   check("broker-outage:setup:seat D came online before the outage", await settle("D:online before outage", () => online2.has(D), 60_000), margin("D:online before outage"));
-  await joinEventsOf(D, operator2);
   const launchBound = await settle("D:the launch bind announced its boundary", () => publishedThreads(errD).length >= 1, 60_000);
   check("broker-outage:setup:the launch bind took its boundary BEFORE the outage turn wrote anything", launchBound, {
     ...margin("D:the launch bind announced its boundary"),
     tail: errD.slice(-400),
   });
+  check(
+    "broker-outage:setup:the drop happens inside the widened emitter-start window",
+    launchBound && Date.now() - hostDStartedAt < OUTAGE_BIND_WINDOW_MS,
+    { elapsedMs: Date.now() - hostDStartedAt, windowMs: OUTAGE_BIND_WINDOW_MS },
+  );
 
   // The first observer is deliberately stopped before the outage; after restart a FRESH observer
   // must see D publish presence again, rather than a retained roster cache satisfying recovery.
@@ -714,23 +720,23 @@ try {
   const starts = evD.filter((e) => e.type === "RUN_STARTED").length;
   const finishes = evD.filter((e) => e.type === "RUN_FINISHED").length;
   const toolEvents = evD.filter((e) => String(e.type).startsWith("TOOL_CALL")).map((e) => String(e.type));
-  const occurrences = (needle: string): number => wire.split(needle).length - 1;
   check(
-    "broker-outage:the recovered stream catches up the outage and boundary turns exactly once, then carries the post-rebind turn",
-    starts === 3 &&
-      finishes === 3 &&
-      deltas.filter((delta) => delta === "ok:1").length === 1 &&
-      deltas.filter((delta) => delta === "ok:2").length === 1 &&
-      deltas.filter((delta) => delta === "ok:3").length === 1 &&
-      occurrences("toolargs:1") === 1 &&
-      occurrences("tooloutput:1") === 1,
+    "broker-outage:the recovered stream carries ONE post-rebind turn and none of the failed initial binding",
+    starts === 1 &&
+      finishes === 1 &&
+      toolEvents.length === 0 &&
+      !deltas.includes("ok:1") &&
+      !deltas.includes("ok:2") &&
+      !wire.includes("toolargs:1") &&
+      !wire.includes("tooloutput:1") &&
+      deltas.includes("ok:3"),
     {
       starts,
       finishes,
       toolEvents,
       deltas,
-      args: occurrences("toolargs:1"),
-      outputs: occurrences("tooloutput:1"),
+      leakedArgs: wire.includes("toolargs:1"),
+      leakedOutput: wire.includes("tooloutput:1"),
     },
   );
 
