@@ -1,5 +1,11 @@
 # @cotal-ai/connector-claude-code
 
+## 0.33.6
+
+### Patch Changes
+
+- 7e250a3: Keep Claude lifecycle hooks inside their existing bounded relay window when the connector control socket has not bound yet, and wait boundedly for a new startup transcript that the retained `SessionStart` can precede.
+
 ## 0.33.5
 
 ### Patch Changes
