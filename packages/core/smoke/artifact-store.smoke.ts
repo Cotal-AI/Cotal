@@ -78,22 +78,6 @@ try {
     } finally { await c.close(); }
   };
 
-  // PRE-EXISTING GAP, NOT AN ACCEPTED ONE. `setupSpaceStreams` also creates the two SPEC 13.12
-  // authority stores via `ensureAuthorityStores`, and they are in NEITHER the backup inventory NOR
-  // `deleteSpace`'s explicit array — verified absent on origin/main, so this predates the artifact
-  // plane. Live consequences today: `validateSpaceBackupInventory` against a real space throws
-  // `unexpected [...]`, and `cotal down -f` leaks both buckets permanently, since teardown is the
-  // sole STREAM.DELETE holder. Subtracted HERE, by name, so this suite still guards the artifact
-  // store's own five-list membership instead of being weakened to accommodate someone else's hole.
-  // Reported to the control-surface owners; when they are enumerated, DELETE THESE TWO LINES and the
-  // assertions below tighten automatically.
-  // Matched by PREFIX, not by exact name: the gap is per-space, so every space this suite creates
-  // leaks its own pair. Naming only the first space's would have quietly re-reddened the moment a
-  // second space appeared — which is exactly what happened when the drift case was added.
-  const isUnenumeratedAuthority = (n: string) =>
-    n.startsWith("KV_cotal_auth_") || n.startsWith("KV_cotal_records_");
-  const minusKnown = (names: string[]) => names.filter((n) => !isUnenumeratedAuthority(n));
-
   const after = await live();
   check("space setup creates the artifact object store", after.includes(OBJ), after);
 
@@ -101,7 +85,7 @@ try {
   // declares — so a store created but unenumerated fails here, and one enumerated but never created
   // fails here too. Both directions, one assertion.
   let validated = "";
-  try { validateSpaceBackupInventory(SPACE, minusKnown(after)); validated = "ok"; }
+  try { validateSpaceBackupInventory(SPACE, after); validated = "ok"; }
   catch (e) { validated = (e as Error).message; }
   check("the live stream set matches the backup inventory exactly", validated === "ok", validated);
 
@@ -253,12 +237,7 @@ try {
   await deleteSpace({ servers, space: SPACE });
   const gone = await live();
   check("teardown removes the object store", !gone.includes(OBJ), gone);
-  check("teardown leaves no space stream behind, bar the known-unenumerated pair",
-    minusKnown(gone).length === 0, gone);
-  // Stated rather than asserted: this suite EXPECTS the leak below until it is fixed elsewhere. If
-  // this line ever prints nothing, the gap closed and KNOWN_UNENUMERATED should go.
-  if (gone.some(isUnenumeratedAuthority))
-    console.log("  ! pre-existing leak (Cotal #356), not this slice:", gone.filter(isUnenumeratedAuthority).join(", "));
+  check("teardown leaves no space stream behind", gone.length === 0, gone);
 } finally {
   broker.kill("SIGKILL");
   rmSync(sd, { recursive: true, force: true });

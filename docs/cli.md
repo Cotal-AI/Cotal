@@ -336,7 +336,12 @@ preserved source, or the maintenance attempt tree.
 `full` is the default and indivisible: channel registry, CHAT/DM/TASK/INBOX/DLV, ACL, MEMBERS, and
 validated durable checkpoints. `registry` is the sole partial artifact. Presence, derived membership
 feed, leases, native ephemeral/history consumers, credentials, keys, tokens, owner secrets, and actor
-ledger files are excluded. Artifacts are exclusively created `0700`; snapshot/checkpoint files and
+ledger files are excluded. `full` means every transferable message and registry stream, not every
+JetStream resource: endpoint submissions/facts/events/timers/workflow state, contract artifacts, and
+the records/auth/session stores are nonportable control state. Restore recreates those streams empty
+with their canonical configs before exposing the normal listener, so active endpoint runs,
+lifecycles, and sessions do not cross a backup. Artifacts are exclusively created `0700`;
+snapshot/checkpoint files and
 the manifest are `0600`; `manifest.json` is written last with exact sizes and SHA-256 values. The
 directory is trusted operator input: hashes detect corruption, not malicious rewriting.
 

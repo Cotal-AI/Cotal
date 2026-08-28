@@ -550,10 +550,12 @@ interface ManagedAgent {
   suppressCleanup?: boolean;
   /** The F5 TERMINALIZING latch (Unit B): flipped SYNCHRONOUSLY before the first await on every
    *  stop/despawn path (stopHandle + freeSlot are the chokepoints). Once set, this principal's
-   *  control ops refuse (the membership gate) and no further credential is minted for it
-   *  (renewal + the slot's own durable phase both refuse) — closing the freeSlot→retiring window
-   *  in-process, not just by `agents.delete` ordering. */
+   *  control ops refuse and no later renewal is admitted. A renewal already admitted drains before
+   *  the durable terminal begins, so its row and material are included in revocation and cleanup. */
   terminalizing?: boolean;
+  /** The one renewal admitted before terminalization. Retirement drains it before revocation and
+   *  cleanup; callers arriving after the latch never join it. */
+  staticCredentialRenewal?: Promise<void>;
 }
 
 
@@ -2328,7 +2330,8 @@ export class Manager {
    *  never swallowed silently. Being the single stop chokepoint, guarding here covers all callers at once. */
   private stopHandle(a: ManagedAgent, graceful: boolean): void {
     // The F5 TERMINALIZING latch (Unit B): flipped SYNCHRONOUSLY, before any await anywhere on
-    // this stop path — from here this principal's control ops refuse and no credential renews.
+    // this stop path — later renewals refuse, while an already-admitted renewal drains before the
+    // durable terminal begins.
     a.terminalizing = true;
     try {
       if (graceful && process.platform === "win32" && a.control) controlShutdown(a.control);
@@ -5663,7 +5666,12 @@ export class Manager {
    *  clears (ABA-guarded by uid). A PRE-UNIT-B lifecycle (no slot row — spawned before the
    *  durable registry existed) has nothing to terminalize: its footprint teardown runs directly
    *  and the hold clears, the honest upgrade path. */
-  private async driveStaticRetirement(a: { id: string; name: string; lifecycleUid: string; secretPaths?: ManagedAgent["secretPaths"] }): Promise<void> {
+  private async driveStaticRetirement(a: { id: string; name: string; lifecycleUid: string; secretPaths?: ManagedAgent["secretPaths"]; staticCredentialRenewal?: Promise<void> }): Promise<void> {
+    // A renewal that published its flight before the synchronous terminal latch is accepted work.
+    // Drain it before the durable terminal enumerates credential ids and before cleanup deletes its
+    // material; a failed renewal must not block retirement because it may still have staged an id.
+    const acceptedRenewal = a.staticCredentialRenewal;
+    if (acceptedRenewal) await acceptedRenewal.catch(() => {});
     const opId = retireOpId(a.lifecycleUid);
     const cleanup = async (): Promise<void> => {
       const secrets = this.secrets;
@@ -5704,42 +5712,28 @@ export class Manager {
    *  identity with the SAME scope (recorded on the managed row at spawn) and a fresh bounded
    *  exp, ledger the new credentialId (slot record first, then the row, then the file — a
    *  credential is never materialized before its ledger row exists), and re-sign the SAME
-   *  lifecycle-keyed file the agent endpoint's source seam re-reads. Never advances the epoch,
-   *  never routes through any barrier (renewal is the THIRD transition). */
+   *  lifecycle-keyed file the agent endpoint's source seam re-reads. Never advances the epoch;
+   *  renewal remains the THIRD transition. */
   private async renewManagedStaticCred(a: ManagedAgent): Promise<void> {
     if (!this.auth || !a.seed || !a.secretPaths?.creds) throw new Error("renewManagedStaticCred: not a renewable managed-static agent");
-    // THIS CHECK IS THE AUTHORITATIVE ONE. The renewal sweep's own `a.terminalizing` filter is an
-    // optimisation that has already-awaited by the time it matters; removing or weakening this line
-    // promotes that filter into the whole guard, with nothing failing at the moment of the change.
-    //
-    // CONFIRMED, OPEN, AND UNGATED. This check runs at ENTRY and there are FOUR awaits before the
-    // two writes below (`secrets.put` and `materializeSecretToFile`). A despawn landing in that
-    // window latches `terminalizing` and the retirement cleanup deletes exactly those two things —
-    // same secret key, same path — so an in-flight renewal RE-CREATES a valid bounded credential
-    // after teardown removed it, and `appendStaticCredentialRow` lands in the window too, which is
-    // the worse half: a stale file is recoverable by re-running cleanup, a durable credential row
-    // is the journal asserting the credential is legitimate.
-    //
-    // Reproduced by `smoke:renewal-terminal-race` (`renewal-terminal-race.smoke.ts`), which asserts
-    // the DURABLE ROW rather than the file — the file is timing-dependent, the row is a KV read.
-    // That suite is deliberately NOT in `smoke:ci`: it is expected RED until this is fixed, and
-    // gating a known red trains readers to treat the gate as noisy. So the absence of a red here
-    // is not evidence this is closed; run that suite.
-    //
-    // Reproduced on the FIRST attempt that reached the race, and that suite cannot produce a second:
-    // the alias frees only when teardown completes, and the defect is that teardown does not, so
-    // every later attempt is refused at spawn. That is a limit of the probe, NOT of the world — a
-    // FRESH ALIAS PER ATTEMPT makes a rate measurable. Do not read hits-over-attempts off that file
-    // as written; it is a number that is not a count.
-    //
-    // The fix is to make the WRITES conditional on the same latch the teardown orders against,
-    // never to retry: the correct outcome is "no credential", never "a credential minted later".
+    // Admission is synchronous. An accepted renewal publishes its flight before its first caller can
+    // terminalize the agent; terminalization rejects later callers and drains this flight before the
+    // durable terminal starts, giving renewal-before-terminal and terminal-before-renewal one order.
     if (a.terminalizing) throw new Error("renewManagedStaticCred: the lifecycle is terminalizing; no credential is minted after the terminal begins");
+    if (a.staticCredentialRenewal) return a.staticCredentialRenewal;
+    const renewal = this.driveManagedStaticCredRenewal(a).finally(() => {
+      if (a.staticCredentialRenewal === renewal) a.staticCredentialRenewal = undefined;
+    });
+    a.staticCredentialRenewal = renewal;
+    return renewal;
+  }
+
+  private async driveManagedStaticCredRenewal(a: ManagedAgent): Promise<void> {
     const exp = Math.floor(Date.now() / 1000) + MANAGED_STATIC_TTL_SEC;
     // The SAME permission scope the spawn minted (recorded on the managed row): allowSubscribe/
     // allowPublish/role/capabilities are the JWT-shaping inputs; `subscribe` (the active read
     // set) shapes durable membership only and is not a mint input.
-    const creds = await mintCreds(this.auth, { id: a.id, seed: a.seed }, "agent", {
+    const creds = await mintCreds(this.auth!, { id: a.id, seed: a.seed! }, "agent", {
       allowSubscribe: a.launch.allowSubscribe,
       allowPublish: a.launch.allowPublish,
       role: a.role,
@@ -5753,8 +5747,9 @@ export class Manager {
       await appendStaticCredentialRow(t, { lifecycleUid: a.lifecycleUid, credentialId, holderPrincipal: principalKey(DEV_OWNER, a.id).key, exp });
     });
     const secrets = this.secrets;
-    await secrets.put(agentSecretKeyForFile(a.secretPaths.creds), creds);
-    await materializeSecretToFile(secrets, agentSecretKeyForFile(a.secretPaths.creds), a.secretPaths.creds);
+    const credsPath = a.secretPaths!.creds!;
+    await secrets.put(agentSecretKeyForFile(credsPath), creds);
+    await materializeSecretToFile(secrets, agentSecretKeyForFile(credsPath), credsPath);
     console.error(`managed cred renewal ${a.name}: re-signed for the same identity (exp +${MANAGED_STATIC_TTL_SEC}s); the agent endpoint's source re-read adopts it`);
   }
 

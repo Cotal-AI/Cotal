@@ -1,180 +1,400 @@
 /**
- * End-to-end smoke test (no test runner) — run with: pnpm smoke
- * Requires a nats-server running locally (pnpm cotal up).
+ * Core open-mode end-to-end smoke — run with: pnpm smoke
+ *
+ * Owns an OS-assigned JetStream broker and a unique provisioned space, so the repository's bare
+ * smoke entry point is safe in CI and in concurrent checkouts. Open mode has no trusted Plane-3
+ * delivery daemon: channels are live-only and therefore create no durable membership rows. Direct
+ * messages are separately durable through the lifecycle-keyed DM consumer: a lifecycle that has
+ * connected once receives a message sent during a later offline gap, while a freshly activated
+ * lifecycle does not inherit messages published before its activation frontier.
  */
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
+import { killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import {
   CotalEndpoint,
-  isReachable,
-  chatStream,
-  dmStream,
-  taskStream,
-  presenceBucket,
-  membersBucket,
-  openMembersRegistry,
-  principalKey,
   DEV_OWNER,
+  chatStream,
+  deleteSpace as deleteSpaceResources,
+  dmDurable,
+  dmStream,
+  isReachable,
+  mintLifecycleUid,
+  principalKey,
+  setupSpaceStreams,
   type CotalMessage,
   type Delivery,
 } from "./src/index.js";
+import { pickFreePort } from "./smoke/_free-port.js";
 
-const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const PORT = await pickFreePort();
+const SERVERS = `nats://127.0.0.1:${PORT}`;
+const SPACE = `core-smoke-${randomUUID().slice(0, 8)}`;
+const storeDir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+let brokerLog = "";
+const broker = spawn(
+  "nats-server",
+  ["-js", "-sd", storeDir, "-p", String(PORT), "-a", "127.0.0.1"],
+  { stdio: ["ignore", "pipe", "pipe"] },
+);
+for (const stream of [broker.stdout, broker.stderr])
+  stream?.on("data", (chunk: Buffer | string) => {
+    brokerLog = (brokerLog + String(chunk)).slice(-8_000);
+  });
+const releaseBroker = teardownOnSignal(broker, storeDir);
+const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+const until = async (
+  condition: () => boolean | Promise<boolean>,
+  timeoutMs = 8_000,
+  stepMs = 50,
+): Promise<boolean> => {
+  const deadline = Date.now() + timeoutMs;
+  let current = await condition();
+  while (!current && Date.now() < deadline) {
+    await wait(stepMs);
+    current = await condition();
+  }
+  return current;
+};
+const textOf = (message: CotalMessage): string =>
+  message.parts.map((part) => (part.kind === "text" ? part.text : "")).join("");
 
-// Wait for NATS to be reachable (handles a just-started server).
-for (let i = 0; i < 50; i++) {
-  if (await isReachable()) break;
-  await wait(200);
+let pass = 0;
+let fail = 0;
+let unexpected = 0;
+const check = (name: string, condition: boolean, extra?: unknown): void => {
+  if (condition) {
+    pass++;
+    console.log(`  ✓ ${name}`);
+  } else {
+    fail++;
+    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
+  }
+};
+
+const endpointErrors: Array<{ endpoint: string; message: string }> = [];
+const watchEndpointErrors = (endpoint: string, instance: CotalEndpoint): void => {
+  instance.on("error", (error: Error) => {
+    endpointErrors.push({ endpoint, message: error.message });
+    console.error(`  ! ${endpoint}:`, error.message);
+  });
+};
+
+const started = new Set<CotalEndpoint>();
+const startEndpoint = async (endpoint: CotalEndpoint): Promise<void> => {
+  started.add(endpoint);
+  await endpoint.start();
+};
+const stopEndpoint = async (endpoint: CotalEndpoint): Promise<void> => {
+  if (!started.delete(endpoint)) return;
+  await endpoint.stop();
+};
+const stopEndpointWithin = async (endpoint: CotalEndpoint, timeoutMs = 5_000): Promise<void> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      stopEndpoint(endpoint),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`stop timed out after ${timeoutMs}ms`)), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
+
+let provisioned = false;
+const provisionedStreams = new Set<string>();
+try {
+  const reachable = await until(async () => {
+    if (broker.exitCode !== null || broker.signalCode !== null) return false;
+    return isReachable(SERVERS);
+  }, 5_000, 100);
+  if (reachable) await wait(200); // bind failures exit promptly; survive past that before trust
+  const ready = reachable
+    && broker.exitCode === null
+    && broker.signalCode === null
+    && await isReachable(SERVERS);
+  check("owned broker is ready before the scenario", ready, {
+    servers: SERVERS,
+    exitCode: broker.exitCode,
+    signalCode: broker.signalCode,
+    log: brokerLog,
+  });
+  if (!ready) throw new Error("owned broker did not survive bind and become reachable");
+
+  await setupSpaceStreams({ servers: SERVERS, space: SPACE });
+  provisioned = true;
+  let chatExists = false;
+  const setupProbe = await connect({ servers: SERVERS });
+  try {
+    const setupManager = await jetstreamManager(setupProbe);
+    for await (const name of setupManager.streams.names()) provisionedStreams.add(name);
+    chatExists = provisionedStreams.has(chatStream(SPACE));
+  } catch {
+    chatExists = false;
+  } finally {
+    await setupProbe.close();
+  }
+  check("the production setup seam provisions this unique space", chatExists);
+
+  const aliceActor = `alice_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  const bobActor = `bob_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  const alice = new CotalEndpoint({
+    space: SPACE,
+    servers: SERVERS,
+    lifecycleUid: mintLifecycleUid(),
+    card: { id: aliceActor, name: "alice", role: "planner", kind: "agent" },
+    channels: ["general"],
+    heartbeatMs: 300,
+    ttlMs: 1_500,
+  });
+  const bob = new CotalEndpoint({
+    space: SPACE,
+    servers: SERVERS,
+    lifecycleUid: mintLifecycleUid(),
+    card: { id: bobActor, name: "bob", role: "builder", kind: "agent" },
+    channels: ["general"],
+    heartbeatMs: 300,
+    ttlMs: 1_500,
+  });
+  watchEndpointErrors("alice", alice);
+  watchEndpointErrors("bob", bob);
+
+  const bobReceived: Array<{ kind: string; text: string }> = [];
+  let bobMentions: string[] | undefined;
+  bob.on("message", (message: CotalMessage, delivery: Delivery) => {
+    const kind = message.to ? "dm" : message.toService ? `any:${message.toService}` : `channel:${message.channel ?? ""}`;
+    const text = textOf(message);
+    bobReceived.push({ kind, text });
+    if (text === "hello team") bobMentions = message.mentions;
+    delivery.ack();
+  });
+
+  await startEndpoint(alice);
+  await startEndpoint(bob);
+  check(
+    "both explicit-channel peers become visible",
+    await until(
+      () => alice.getRoster().some((peer) => peer.card.id === bob.card.id)
+        && bob.getRoster().some((peer) => peer.card.id === alice.card.id),
+    ),
+  );
+
+  await alice.setStatus("working");
+  check(
+    "presence status propagates",
+    await until(() => bob.getRoster().find((peer) => peer.card.id === alice.card.id)?.status === "working"),
+    bob.getRoster().find((peer) => peer.card.id === alice.card.id)?.status,
+  );
+
+  const sent = await alice.multicast("hello team", {
+    channel: "general",
+    mentions: ["BOB", " bob ", "carol", ""],
+  });
+  const omitted = await alice.multicast("no ping", { channel: "general", mentions: [""] });
+  await alice.unicast(bob.card.id, "private hello");
+  await alice.anycast("builder", "build the thing");
+  await until(
+    () => bobReceived.some((entry) => entry.kind === "channel:general" && entry.text === "hello team")
+      && bobReceived.some((entry) => entry.kind === "dm" && entry.text === "private hello")
+      && bobReceived.some((entry) => entry.kind === "any:builder" && entry.text === "build the thing"),
+  );
+
+  check(
+    "multicast reaches the explicitly joined channel",
+    bobReceived.some((entry) => entry.kind === "channel:general" && entry.text === "hello team"),
+    bobReceived,
+  );
+  check(
+    "unicast reaches the addressed principal",
+    bobReceived.some((entry) => entry.kind === "dm" && entry.text === "private hello"),
+    bobReceived,
+  );
+  check(
+    "anycast reaches the builder role",
+    bobReceived.some((entry) => entry.kind === "any:builder" && entry.text === "build the thing"),
+    bobReceived,
+  );
+  check(
+    "mentions are normalized on the wire",
+    JSON.stringify(sent.mentions) === JSON.stringify(["bob", "carol"]),
+    sent.mentions,
+  );
+  check("empty mentions are omitted", omitted.mentions === undefined, omitted.mentions);
+  check("the recipient sees its normalized mention", bobMentions?.includes("bob") === true, bobMentions);
+
+  const carolActor = `carol_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  const carolLifecycleUid = mintLifecycleUid();
+  const carol = new CotalEndpoint({
+    space: SPACE,
+    servers: SERVERS,
+    lifecycleUid: carolLifecycleUid,
+    card: { id: carolActor, name: "carol", role: "tester", kind: "agent" },
+    channels: [],
+    heartbeatMs: 300,
+    ttlMs: 1_500,
+  });
+  watchEndpointErrors("carol", carol);
+  await startEndpoint(carol);
+
+  let carolDurableExists = false;
+  const durableProbe = await connect({ servers: SERVERS });
+  try {
+    await (await jetstreamManager(durableProbe)).consumers.info(
+      dmStream(SPACE),
+      dmDurable(DEV_OWNER, carolActor, carolLifecycleUid),
+    );
+    carolDurableExists = true;
+  } catch {
+    carolDurableExists = false;
+  } finally {
+    await durableProbe.close();
+  }
+  check("carol's lifecycle creates its DM durable before the offline gap", carolDurableExists);
+
+  await stopEndpoint(carol);
+  await alice.unicast(carol.card.id, "held during the offline gap");
+
+  const carolRestarted = new CotalEndpoint({
+    space: SPACE,
+    servers: SERVERS,
+    lifecycleUid: carolLifecycleUid,
+    card: { id: carolActor, name: "carol", role: "tester", kind: "agent" },
+    channels: [],
+    heartbeatMs: 300,
+    ttlMs: 1_500,
+  });
+  const carolReceived: string[] = [];
+  watchEndpointErrors("carol restart", carolRestarted);
+  carolRestarted.on("message", (message: CotalMessage, delivery: Delivery) => {
+    carolReceived.push(textOf(message));
+    delivery.ack();
+  });
+  await startEndpoint(carolRestarted);
+  check(
+    "the same lifecycle receives a DM sent while it was offline",
+    await until(() => carolReceived.includes("held during the offline gap")),
+    carolReceived,
+  );
+
+  const daveActor = `dave_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  await alice.unicast(principalKey(DEV_OWNER, daveActor).key, "published before activation");
+  const dave = new CotalEndpoint({
+    space: SPACE,
+    servers: SERVERS,
+    lifecycleUid: mintLifecycleUid(),
+    card: { id: daveActor, name: "dave", role: "tester", kind: "agent" },
+    channels: [],
+    heartbeatMs: 300,
+    ttlMs: 1_500,
+  });
+  const daveReceived: string[] = [];
+  watchEndpointErrors("dave", dave);
+  dave.on("message", (message: CotalMessage, delivery: Delivery) => {
+    daveReceived.push(textOf(message));
+    delivery.ack();
+  });
+  await startEndpoint(dave);
+  await alice.unicast(dave.card.id, "published after activation");
+  check(
+    "the fresh lifecycle receives a post-activation DM sentinel",
+    await until(() => daveReceived.includes("published after activation")),
+    daveReceived,
+  );
+  check(
+    "a fresh lifecycle does not inherit a pre-activation DM",
+    !daveReceived.includes("published before activation"),
+    daveReceived,
+  );
+
+  check(
+    "open live-only channels do not fabricate durable membership",
+    (await alice.channelMembers("general")).length === 0,
+  );
+  check(
+    "the no-arg durable-membership map is empty in open live-only mode",
+    (await alice.channelMembers()).size === 0,
+  );
+
+  await stopEndpoint(bob);
+  check(
+    "presence flips offline after a peer stops",
+    await until(() => alice.getRoster().find((peer) => peer.card.id === bob.card.id)?.status === "offline"),
+    alice.getRoster().find((peer) => peer.card.id === bob.card.id)?.status,
+  );
+} catch (error) {
+  unexpected++;
+  console.error("  ✗ scenario threw:", (error as Error).message);
+} finally {
+  const endpointsToStop = [...started].reverse();
+  const stopResults = await Promise.allSettled(endpointsToStop.map((endpoint) => stopEndpointWithin(endpoint)));
+  stopResults.forEach((result, index) => {
+    if (result.status === "fulfilled") return;
+    unexpected++;
+    console.error(
+      `  ✗ endpoint cleanup for ${endpointsToStop[index]?.card.name ?? "unknown"} threw:`,
+      result.reason instanceof Error ? result.reason.message : String(result.reason),
+    );
+  });
+
+  check("the endpoints emitted no unexpected errors", endpointErrors.length === 0, endpointErrors);
+
+  let spaceDeleted = false;
+  let spaceDeleteError: unknown;
+  let remainingStreams: string[] = [];
+  if (provisioned) {
+    try {
+      await deleteSpaceResources({ servers: SERVERS, space: SPACE });
+      const deletionProbe = await connect({ servers: SERVERS });
+      try {
+        const deletionManager = await jetstreamManager(deletionProbe);
+        for await (const name of deletionManager.streams.names())
+          if (provisionedStreams.has(name)) remainingStreams.push(name);
+      } finally {
+        await deletionProbe.close();
+      }
+      spaceDeleted = provisionedStreams.size > 0 && remainingStreams.length === 0;
+    } catch (error) {
+      spaceDeleteError = error;
+    }
+  }
+  check("the production teardown seam removes the unique space", spaceDeleted, {
+    error: spaceDeleteError,
+    remainingStreams,
+    provisionedStreams: [...provisionedStreams],
+  });
+
+  await killAndAwaitExit(broker);
+  const brokerExited = broker.exitCode !== null || broker.signalCode !== null;
+  check("the owned broker exits before its JetStream tree is removed", brokerExited);
+  let storeRemoved = false;
+  let storeRemoveError: unknown;
+  try {
+    rmSync(storeDir, { recursive: true, force: true });
+    storeRemoved = true;
+  } catch (error) {
+    storeRemoveError = error;
+  }
+  check("the owned broker's JetStream tree is removed", storeRemoved, storeRemoveError);
+  if (brokerExited && storeRemoved) releaseBroker();
 }
 
-// Unique space per run → isolated streams, no cross-run history bleed, deterministic.
-const space = `smoke-${randomUUID().slice(0, 8)}`;
+const EXPECTED_BEFORE_COUNT = 21;
+check(
+  `every scenario cell ran — ${EXPECTED_BEFORE_COUNT} expected`,
+  pass + fail === EXPECTED_BEFORE_COUNT,
+  { pass, fail, unexpected, expected: EXPECTED_BEFORE_COUNT },
+);
 
-// Provision this run's members registry BEFORE any endpoint exists.
-//
-// `cotal up` creates the members bucket for the space IT provisions; this suite invents its own
-// (`smoke-<uuid>`), so nothing ever created the bucket that `channelMembers` reads. The read path
-// opens without creating (`openMembersRegistry`, `create` defaults false), so the call threw
-// StreamNotFoundError and killed the process at that line. That throw is why the final `ok` and its
-// `SMOKE FAILED` line were unreachable: the suite could not report on any assertion after it,
-// including the offline-DM durability one this file exists to exercise. Creating it here is what
-// lets the run reach its own verdict instead of dying before it.
-const provision = await connect();
-await openMembersRegistry(provision, space, { create: true });
-await provision.close();
-
-const a = new CotalEndpoint({
-  space,
-  card: { name: "alice", role: "planner", kind: "agent" },
-  heartbeatMs: 500,
-  ttlMs: 2000,
-});
-const b = new CotalEndpoint({
-  space,
-  card: { name: "bob", role: "builder", kind: "agent" },
-  heartbeatMs: 500,
-  ttlMs: 2000,
-});
-a.on("error", (e: Error) => console.error("! alice:", e.message));
-b.on("error", (e: Error) => console.error("! bob:", e.message));
-
-const got: string[] = [];
-let bobSawMentions: string[] | undefined;
-b.on("message", (m: CotalMessage, d: Delivery) => {
-  const text = m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("");
-  const kind = m.to ? "DM" : m.toService ? "ANY:" + m.toService : "#" + (m.channel ?? "");
-  got.push(`${kind}:${m.from.name}:${text}`);
-  if (text === "hello team") bobSawMentions = m.mentions; // mentions ride the multicast payload
-  d.ack(); // recorded = surfaced
-});
-
-await a.start();
-await b.start();
-await wait(800);
-
-console.log("roster(a):", a.getRoster().map((p) => `${p.card.name}=${p.status}`));
-console.log("roster(b):", b.getRoster().map((p) => `${p.card.name}=${p.status}`));
-
-await a.setStatus("working");
-// Mentions ride the multicast payload: normalized (trim + lowercase + dedupe) on the wire,
-// and the field is omitted entirely when empty.
-const sent = await a.multicast("hello team", { channel: "general", mentions: ["BOB", " bob ", "carol", ""] });
-const omitted = await a.multicast("noping", { channel: "general", mentions: [""] });
-await wait(300);
-
-const bob = a.getRoster().find((p) => p.card.name === "bob");
-if (bob) await a.unicast(bob.card.id, "psst bob");
-await wait(300);
-
-// anycast to the "builder" service — bob (role: builder) should receive it
-await a.anycast("builder", "build the thing");
-await wait(300);
-
-// Durability: a DM sent to carol BEFORE she connects must still arrive.
-// NOTE: this case currently FAILS and the assertion below is left as it is on purpose. The
-// message is stored, but carol's durable is created past it, so she never sees it; the
-// authenticated sibling passes the same test only because it provisions her durable first.
-// Whether open mode is meant to deliver this at all is the open question in #534, and it is
-// not settled by editing the expectation here.
-// Addressed by PRINCIPAL (<owner>.<actor>), not by a bare id: the owner+actor cutover made a
-// bare id an invalid recipient, and the actor token must be dash-free to be a valid token.
-const carolActor = randomUUID().replace(/-/g, "");
-await a.unicast(principalKey(DEV_OWNER, carolActor).key, "stored while you were away");
-await wait(200);
-const carol = new CotalEndpoint({
-  space,
-  card: { id: carolActor, name: "carol", role: "tester", kind: "agent" },
-  heartbeatMs: 500,
-  ttlMs: 2000,
-});
-carol.on("error", (e: Error) => console.error("! carol:", e.message));
-const carolGot: string[] = [];
-carol.on("message", (m: CotalMessage, d: Delivery) => {
-  carolGot.push(m.parts.map((p) => (p.kind === "text" ? p.text : "")).join(""));
-  d.ack();
-});
-await carol.start();
-await wait(600);
-console.log("carol received (DM sent while offline):", carolGot);
-
-const aliceInB = b.getRoster().find((p) => p.card.name === "alice");
-console.log("bob received:", got);
-console.log("alice status seen by b:", aliceInB?.status);
-
-// Channel membership = broker truth (chat-stream consumers) ∩ presence liveness.
-// Pre-leave, #general has alice, bob, carol — all live. The no-arg form maps every channel.
-const preLeave = await a.channelMembers("general");
-const allChannels = await a.channelMembers();
-console.log("#general members (pre-leave):", preLeave.map((m) => `${m.name}=${m.live ? "live" : "stale"}`));
-console.log("channels → member count:", [...allChannels].map(([ch, ms]) => `${ch}:${ms.length}`));
-
-await b.stop();
-await wait(500);
-const bobInA = a.getRoster().find((p) => p.card.name === "bob");
-console.log("bob status seen by a after stop:", bobInA?.status);
-
-// Bob's chat durable lingers past his leave (reconnect grace), but presence flipped offline:
-// he stays visible as a STALE member (live:false), distinct from still-live alice.
-const afterLeave = await a.channelMembers("general");
-const bobMember = afterLeave.find((m) => m.name === "bob");
-const aliceMember = afterLeave.find((m) => m.name === "alice");
-console.log("#general members (post-leave):", afterLeave.map((m) => `${m.name}=${m.live ? "live" : "stale"}`));
-
-const mentionsNormalized = JSON.stringify(sent.mentions) === JSON.stringify(["bob", "carol"]);
-const emptyOmitted = omitted.mentions === undefined;
-const bobSawMention = bobSawMentions?.includes("bob") === true;
-console.log("mention wire:", { sent: sent.mentions, omitted: omitted.mentions, bobSaw: bobSawMentions });
-
-const membershipLive =
-  preLeave.some((m) => m.name === "alice" && m.live) &&
-  preLeave.some((m) => m.name === "bob" && m.live);
-const membershipMap = (allChannels.get("general") ?? []).some((m) => m.name === "alice");
-const membershipStale = bobMember?.live === false && aliceMember?.live === true;
-
-const ok =
-  got.some((g) => g.startsWith("#general")) &&
-  got.some((g) => g.startsWith("DM")) &&
-  got.some((g) => g.startsWith("ANY:builder")) &&
-  carolGot.some((g) => g.includes("stored while you were away")) &&
-  mentionsNormalized &&
-  emptyOmitted &&
-  bobSawMention &&
-  membershipLive &&
-  membershipMap &&
-  membershipStale &&
-  aliceInB?.status === "working" &&
-  bobInA?.status === "offline";
-
-console.log(ok ? "\nSMOKE OK ✅" : "\nSMOKE FAILED ❌");
-await carol.stop();
-await a.stop();
-
-// Tear down this run's (uniquely-named) streams + presence bucket — race-free, no litter.
-const cleanup = await connect();
-const jsm = await jetstreamManager(cleanup);
-for (const s of [chatStream(space), dmStream(space), taskStream(space), `KV_${presenceBucket(space)}`, `KV_${membersBucket(space)}`]) {
-  await jsm.streams.delete(s).catch(() => {});
-}
-await cleanup.close();
-process.exit(ok ? 0 : 1);
+const totalFail = fail + unexpected;
+console.log(
+  `\n${totalFail === 0 ? "SMOKE OK ✅" : "SMOKE FAILED ❌"}  (${pass} passed, ${totalFail} failed)`,
+);
+process.exit(totalFail === 0 ? 0 : 1);

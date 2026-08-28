@@ -555,3 +555,40 @@ smoke:claude-start-source
 # an absent connector still fails open at the deadline. Appended to preserve every existing shard.
 smoke:hook-relay-startup
 smoke:persona-agent
+# Restore recreates excluded endpoint infrastructure through the production creation seam. That
+# needs UPDATE on the records KV hardening step, but no restored message stream may inherit UPDATE;
+# the infrastructure credential's exact subset is gated independently from the live restore cycle.
+# Appended so existing shard membership stays stable.
+smoke:isolated-infrastructure-scope
+# Channel registry/replay now uses OS-assigned ports, polls positive readiness, and awaits broker
+# teardown. Four concurrent real-broker runs pass without port collision or stale state; append to
+# preserve every existing shard assignment.
+smoke:channels
+# A managed-static renewal accepted before terminalization publishes an in-flight barrier; the
+# terminal drains it before durable revocation and file cleanup, while arrivals after the latch are
+# refused. Four fresh lifecycles drive both orderings against a real JWT broker and journal.
+# Appended to preserve every existing shard assignment.
+smoke:renewal-terminal-race
+# The one-shot send smoke now owns an OS-assigned open broker, passes that address to its receiver
+# and every real CLI subprocess, and resolves the repository's actual bin/cotal.ts entry. Concurrent
+# runs therefore share neither port nor state. Appended to preserve every existing shard assignment.
+smoke:send
+# Membership feature coverage now owns an OS-assigned open broker, provisions each unique space
+# through setupSpaceStreams, tears it down through deleteSpace, and uses only current token-safe ids.
+# Concurrent runs share neither port nor space. Appended to preserve every existing shard assignment.
+smoke:membership
+# These seven self-contained suites are cited by the shipped plan as executable evidence. Each owns
+# or needs no broker, passed serially and in six-way shard-like overlap, and was previously run by
+# nothing. Appended as one debt slice so every existing shard assignment remains unchanged.
+smoke:channel-attention
+smoke:channel-attention:auth
+smoke:install
+smoke:manifest-launch
+smoke:members
+smoke:presence-scrub
+smoke:start-model
+# The bare core smoke now owns an OS-assigned broker and a production-provisioned unique space. It
+# drives explicit live channels, lifecycle-scoped offline DM restart delivery, pre-activation DM
+# exclusion, presence, and open-mode membership semantics, then awaits broker teardown. Appended so
+# every existing shard assignment remains unchanged.
+smoke
