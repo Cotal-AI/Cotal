@@ -12,6 +12,8 @@
  *   4. RESOLVED GUARD — a manifest launch (`resolved`) REJECTS imperative overrides.
  *   5. allowSubscribe default follows an overridden subscribe (override → creds source is one).
  *   6. COTAL_DEFAULT_AGENT picks the manager's default harness when opts.agent is absent.
+ *   7. A detached caller default sits below an explicit flag and persona pin, but above the
+ *      manager's own environment default.
  * Run: pnpm smoke:start-overrides
  */
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
@@ -86,6 +88,16 @@ const recCon: Connector = {
   buildLaunch: (o) => { lastOpts = o; return { command: "true", args: [], env: {} }; },
 };
 registry.register(recCon);
+const callerCon: Connector = {
+  ...recCon,
+  name: "caller-default",
+};
+const managerCon: Connector = {
+  ...recCon,
+  name: "manager-default",
+};
+registry.register(callerCon);
+registry.register(managerCon);
 
 const j = (v: unknown) => JSON.stringify(v);
 
@@ -189,6 +201,66 @@ const j = (v: unknown) => JSON.stringify(v);
     check("COTAL_DEFAULT_AGENT spawn succeeds", r.ok === true, r);
     check("COTAL_DEFAULT_AGENT used as manager default", (r.data as { agent?: string })?.agent === "smoke-ov", r.data);
     check("env default reaches LaunchOpts", lastOpts?.space === "smoke" && autoNumbered("plain").test(lastOpts?.name ?? ""), { space: lastOpts?.space, name: lastOpts?.name });
+  } finally {
+    if (prev === undefined) delete process.env.COTAL_DEFAULT_AGENT;
+    else process.env.COTAL_DEFAULT_AGENT = prev;
+  }
+}
+
+// 9 — #869: the persona file's `agent:` pin picks the harness. The defect this issue names: the
+// connector was resolved BEFORE loadAgentFile on this exact path, so the file's pin could never
+// participate, and a pinned persona silently ran whatever the env/default chose.
+{
+  writeFileSync(
+    join(agentsDir, "pinned.md"),
+    "---\nname: pinned\nagent: smoke-ov\nsubscribe: []\n---\npinned persona\n",
+  );
+  const recOther: Connector = {
+    kind: "connector",
+    name: "smoke-other",
+    requires: ["node"],
+    buildLaunch: (o) => { lastOpts = o; return { command: "true", args: [], env: {} }; },
+  };
+  registry.register(recOther);
+  const prev = process.env.COTAL_DEFAULT_AGENT;
+  process.env.COTAL_DEFAULT_AGENT = "smoke-other";
+  try {
+    resetOpts();
+    const r = await mgr.startAgent({ name: "pinned" }); // no --agent, env points elsewhere
+    check("file pin spawn succeeds", r.ok === true, r);
+    check("persona agent: pin picks the harness (file beats env)", (r.data as { agent?: string })?.agent === "smoke-ov", r.data);
+    check("the pinned connector built the launch", lastOpts !== undefined && /^pinned(-\d+)?$/.test(lastOpts.name ?? ""), lastOpts?.name);
+    resetOpts();
+    const f = await mgr.startAgent({ name: "pinned", agent: "smoke-other" }); // explicit flag wins
+    check("flag spawn succeeds", f.ok === true, f);
+    check("explicit --agent wins over the file pin", (f.data as { agent?: string })?.agent === "smoke-other", f.data);
+  } finally {
+    if (prev === undefined) delete process.env.COTAL_DEFAULT_AGENT;
+    else process.env.COTAL_DEFAULT_AGENT = prev;
+  }
+  // The loud guard: a pin naming an unregistered connector fails the spawn (no silent default).
+  writeFileSync(join(agentsDir, "typo.md"), "---\nname: typo\nagent: no-such-connector\nsubscribe: []\n---\nx\n");
+  const t = await mgr.startAgent({ name: "typo" });
+  check("a pin naming an unregistered connector fails loud", t.ok === false && /no-such-connector/.test(t.error ?? ""), t);
+  // An UNPINNED persona with an explicit flag is unaffected by any of the above (pin must not leak).
+  delete process.env.COTAL_DEFAULT_AGENT;
+  const d = await mgr.startAgent({ name: "plain", agent: "smoke-other" });
+  check("unpinned persona still honors the flag", (d.data as { agent?: string })?.agent === "smoke-other", d.data);
+}
+
+// 10 — a detached caller's environment default is a distinct precedence layer. It must survive
+// dispatch when the manager's environment differs, without becoming an explicit override that can
+// beat the persona file.
+{
+  const prev = process.env.COTAL_DEFAULT_AGENT;
+  process.env.COTAL_DEFAULT_AGENT = "manager-default";
+  try {
+    const caller = await mgr.startAgent({ name: "plain", defaultAgent: "caller-default" });
+    check("detached caller default beats the manager environment default", (caller.data as { agent?: string })?.agent === "caller-default", caller);
+    const pinned = await mgr.startAgent({ name: "pinned", defaultAgent: "caller-default" });
+    check("persona pin beats the detached caller default", (pinned.data as { agent?: string })?.agent === "smoke-ov", pinned);
+    const explicit = await mgr.startAgent({ name: "plain", agent: "manager-default", defaultAgent: "caller-default" });
+    check("explicit agent beats the detached caller default", (explicit.data as { agent?: string })?.agent === "manager-default", explicit);
   } finally {
     if (prev === undefined) delete process.env.COTAL_DEFAULT_AGENT;
     else process.env.COTAL_DEFAULT_AGENT = prev;

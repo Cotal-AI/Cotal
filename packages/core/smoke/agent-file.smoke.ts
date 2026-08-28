@@ -25,6 +25,7 @@ const dir = mkdtempSync(join(tmpdir(), "agentfile-yaml-"));
 const def: AgentDef = {
   name: "builder",
   role: "builder",
+  agent: "jcode",                                          // #869: the harness pin round-trips like model/variant
   description: "handles: config, deploy # careful",      // colon + hash — the old parser would misread
   tags: ["edit", "test"],
   subscribe: ["general", "ops"],
@@ -41,6 +42,7 @@ const p = join(dir, "builder.md");
 saveAgentFile(p, def);
 const back = loadAgentFile(p);
 ok("round-trips name/role/model/variant", back.name === "builder" && back.role === "builder" && back.model === "opus" && back.variant === "high");
+ok("round-trips the agent harness pin (#869)", back.agent === "jcode", back.agent);
 ok("round-trips tricky description with : and #", back.description === "handles: config, deploy # careful", back.description);
 ok("round-trips list fields", JSON.stringify(back.subscribe) === JSON.stringify(["general", "ops"]) && JSON.stringify(back.allowPublish) === JSON.stringify(["ops"]));
 ok("round-trips launchOptions map (typed values preserved)", JSON.stringify(back.launchOptions) === JSON.stringify({ temperature: "0.2", reasoning: "high", verbose: true, retries: 3 }), back.launchOptions);
@@ -170,6 +172,15 @@ throws("launchOptions as scalar throws", "---\nname: x\nlaunchOptions: nope\n---
 throws("launchOptions as sequence throws", "---\nname: x\nlaunchOptions:\n  - a\n---\n");
 throws("renamed field 'channels' still fails loud", "---\nname: x\nchannels: [general]\n---\n");
 throws("malformed YAML fails loud", "---\nname: x\n  bad: : indent\n\t- weird\n---\n");
+
+// 6b) #869: a HAND-WRITTEN `agent:` pin parses as a modelled field, not meta. Half this fleet's
+//     personas already carry the key; before the fix it swept into the verbatim meta bag and no
+//     spawn path ever consulted it. An unset one stays unset (omitted is a real state).
+writeFileSync(join(dir, "pinned.md"), "---\nname: pinned\nagent: jcode\nsubscribe: []\n---\nbody\n");
+const pinned = loadAgentFile(join(dir, "pinned.md"));
+ok("a hand-written agent: parses as the modelled harness pin", pinned.agent === "jcode", pinned.agent);
+ok("a modelled agent: no longer lands in meta", pinned.meta?.agent === undefined, pinned.meta);
+ok("a persona without agent: has none (omitted is a state)", loadAgentFile(join(dir, "policy-unset.md")).agent === undefined);
 
 // 7) Saving refuses a persona with no declared read set. The channels an agent reads must be said,
 //    because the two available defaults are both wrong: inheriting a channel grants one nobody

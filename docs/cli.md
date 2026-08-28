@@ -517,7 +517,7 @@ cotal spawn -f <cotal.yaml> [--dry-run]
 | `--creds <path>` | none | Control-caller creds for an off-registry manager (`--detach` only) |
 | `--name <n>` | persona's `name:` | Presence-name override (does not choose the persona) |
 | `--config <persona-or-path>` | none | Persona catalog name or file path; wins over the positional |
-| `--agent <a>` | `COTAL_DEFAULT_AGENT`, else `claude` | Connector type (`claude`, `opencode`, `jcode`, `hermes`, …) |
+| `--agent <a>` | persona's `agent:`, else `COTAL_DEFAULT_AGENT`, else `claude` | Connector type (`claude`, `opencode`, `jcode`, `hermes`, and so on) |
 | `--role <r>` | persona's `role:` | Role override |
 | `--model <m>` | persona's `model:` | Model override |
 | `--variant <v>` | persona's `variant:` | Model variant override (connector-defined; e.g. OpenCode reasoning tiers) |
@@ -1273,8 +1273,10 @@ command of each boot, so you rarely call it):
 | `--reset` | Discard the record and re-seed all seven built-ins (the six connectors plus the web dashboard). **Resurrects any you removed.** Rebuilds cleanly over corrupt seed state. |
 | `--force` | Re-seed the built-ins even when the version stamp is current or a downgrade. |
 
-The default connector for a bare `cotal spawn` (no `--agent`) is `claude`; set `COTAL_DEFAULT_AGENT`
-(e.g. `opencode`) to change it. An `--agent` naming a removed connector fails loud with the exact
+The default connector for a bare `cotal spawn` (no `--agent`) is the persona's `agent:` pin if it
+has one, else `claude`; set `COTAL_DEFAULT_AGENT` (e.g. `opencode`) to change the fallback. It is
+a default, so a persona that pins its harness still wins over it. An `--agent` naming a removed
+connector fails loud with the exact
 `cotal ext add` to restore it. Set `COTAL_SKIP_CONNECTOR_SEED=1` to turn off the automatic first-run
 seed/refresh entirely (for a controlled or offline setup that manages connectors by hand); `cotal ext
 seed` still runs on request.

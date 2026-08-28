@@ -14,6 +14,7 @@
  *   model: opus                # optional CLI/model override
  *   variant: high              # optional connector-defined model variant
  *   capabilities: [spawn]  # control-plane capabilities (spawn → may start/despawn others)
+ *   agent: jcode           # optional connector/harness pin (flag > file > COTAL_DEFAULT_AGENT > default)
  *   theme: dark            # any unmodelled key is kept verbatim in AgentDef.meta, so a
  *                          #   connector can read its own launcher hints without core knowing them
  *   ---
@@ -37,6 +38,11 @@ export interface AgentDef {
   kind?: EndpointKind;
   description?: string;
   tags?: string[];
+  /** The connector/harness this persona pins (e.g. `claude`, `jcode`). Honored with the same
+   *  precedence as {@link model}/{@link variant}: an explicit `--agent` flag wins over the file,
+   *  the file wins over `COTAL_DEFAULT_AGENT`, which wins over the product default. A value
+   *  naming an unregistered connector fails loud at spawn (registry resolve, no fallback). */
+  agent?: string;
   /** The *active* read set: channels this agent subscribes to at boot (the live chat-durable
    *  filter; mutable at runtime via join/leave). Must be ⊆ {@link allowSubscribe}. Omitted or
    *  empty ⇒ NO channels: an agent reads exactly the channels it lists, and a file that names
@@ -204,7 +210,7 @@ export function loadAgentFile(path: string): AgentDef {
 
   // Sweep every scalar frontmatter key we don't model into meta, verbatim — connector launcher
   // hints ride here so core stays ignorant of surface-specific keys.
-  const known = new Set(["name", "role", "kind", "description", "tags", "subscribe", "allowSubscribe", "allowPublish", "quiet", "muted", "model", "variant", "launchOptions", "capabilities", "owner"]);
+  const known = new Set(["name", "role", "kind", "description", "tags", "subscribe", "allowSubscribe", "allowPublish", "quiet", "muted", "agent", "model", "variant", "launchOptions", "capabilities", "owner"]);
   const meta: Record<string, string> = {};
   for (const [k, v] of Object.entries(fm)) if (!known.has(k) && v !== null && typeof v !== "object") meta[k] = String(v);
 
@@ -214,6 +220,7 @@ export function loadAgentFile(path: string): AgentDef {
     kind: kind as EndpointKind | undefined,
     description: str("description"),
     tags: list("tags"),
+    agent: str("agent"),
     subscribe,
     allowSubscribe,
     allowPublish,
@@ -267,6 +274,7 @@ export function saveAgentFile(path: string, def: AgentDef): void {
   if (def.allowPublish) fm.allowPublish = def.allowPublish;
   if (def.quiet?.length) fm.quiet = def.quiet;
   if (def.muted?.length) fm.muted = def.muted;
+  if (def.agent) fm.agent = def.agent;
   if (def.model) fm.model = def.model;
   if (def.variant) fm.variant = def.variant;
   if (def.launchOptions && Object.keys(def.launchOptions).length) fm.launchOptions = def.launchOptions;

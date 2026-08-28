@@ -599,6 +599,18 @@ smoke:ctl-trust:live
 # through the operator profile, then proves its pre-minted channel-purger can purge while admin
 # cannot. Appended to preserve every existing shard assignment.
 smoke:web-seed:live
+# The persona harness reachability proof drives foreground and detached spawn through a throwaway
+# broker, including a caller-only COTAL_DEFAULT_AGENT crossing into an already-running manager.
+# Appended to preserve every existing shard assignment.
+smoke:persona-agent
+# The web component probe parses the recorded process command and refuses unrelated PIDs,
+# wildcard hosts, and invalid ports instead of guessing at the dashboard default. Appended so
+# every existing shard assignment remains unchanged.
+smoke:web-probe-target
+# The web runtime binds the requested remote host, rejects wildcard public URLs, and keeps the
+# loopback default when no host is supplied. Appended so every existing shard assignment remains
+# unchanged.
+smoke:web-remote-bind
 # Seat provenance rows must stay correct across the three ps presentations; appended so
 # every existing shard assignment remains unchanged.
 smoke:ps-provenance
