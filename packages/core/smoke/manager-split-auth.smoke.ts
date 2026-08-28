@@ -66,6 +66,7 @@ import {
   managerLeaseKey,
   epRequestSubject,
   BASELINE_LIFECYCLE_ENDPOINT,
+  eprStreamName,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -204,6 +205,7 @@ try {
 
   const CHAT = chatStream(space), DM = dmStream(space), DLV = dlvStream(space), TASK = taskStream(space);
   const PKV = `KV_${presenceBucket(space)}`;
+  const EPR = eprStreamName(space);
   // The DM/DLV consumer-create push-bypass (the create-time deliver_subject isn't ACL-constrained, so a
   // consumer-create = body read). The supervisor MUST NOT have it; the provisioner must.
   const victimUid = mintLifecycleUid();
@@ -401,8 +403,9 @@ try {
 
   console.log("teardown (down -f — the SOLE STREAM.DELETE holder; reads + admin-control + delete, no body read):");
   check("STREAM.DELETE the chat stream ALLOWED", await tryPublish(tdCreds, `$JS.API.STREAM.DELETE.${CHAT}`, td.id) === "allowed");
-  check("STREAM.DELETE the manager bucket ALLOWED (all 12)", await tryPublish(tdCreds, `$JS.API.STREAM.DELETE.${MGRKV}`, td.id) === "allowed");
-  check("STREAM.DELETE the members bucket ALLOWED (all 12)", await tryPublish(tdCreds, `$JS.API.STREAM.DELETE.${MKV}`, td.id) === "allowed");
+  check("STREAM.DELETE an endpoint record-ingress stream ALLOWED", await tryPublish(tdCreds, `$JS.API.STREAM.DELETE.${EPR}`, td.id) === "allowed");
+  check("STREAM.DELETE the manager bucket ALLOWED (all base streams)", await tryPublish(tdCreds, `$JS.API.STREAM.DELETE.${MGRKV}`, td.id) === "allowed");
+  check("STREAM.DELETE the members bucket ALLOWED (all base streams)", await tryPublish(tdCreds, `$JS.API.STREAM.DELETE.${MKV}`, td.id) === "allowed");
   check("STREAM.PURGE the chat stream ALLOWED (clearChannel)", await tryPublish(tdCreds, `$JS.API.STREAM.PURGE.${CHAT}`, td.id) === "allowed");
   check("publish the ep any-mode `despawn` ALLOWED (stop the agents it did not spawn)", await tryPublish(tdCreds, epReq(td.id, tdUid, "despawn", { mode: "any", tOwner: DEV_OWNER }), td.id) === "allowed");
   check("call the (deleted) admin control tier DENIED", await tryPublish(tdCreds, ctlAdmin(td.id), td.id) === "denied");

@@ -1,0 +1,22 @@
+{
+  "suite": "packages/core/smoke/manager-split-auth.smoke.ts",
+  "guard": "the ephemeral teardown credential can delete endpoint-plane streams while every standing profile remains denied",
+  "command": "pnpm smoke:manager-split",
+  "completionMarker": "MANAGER-SPLIT SMOKE",
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/space-teardown-permissions.json",
+  "why": [
+    "deleteSpace can name a stream and still fail under auth mode if its sole teardown credential",
+    "does not carry the matching INFO and DELETE subjects. The runtime auth smoke asks the broker",
+    "about EPR directly, so removing the endpoint list from the credential must fail that named cell."
+  ],
+  "mutations": [
+    {
+      "name": "endpoint-plane delete grants are omitted from the teardown credential",
+      "file": "packages/core/src/provision.ts",
+      "find": "    ...endpointPlaneStreamNames(space),\n    objectStoreStream(artifactBucket(space)),\n",
+      "replace": "    objectStoreStream(artifactBucket(space)),\n",
+      "expectRed": "STREAM.DELETE an endpoint record-ingress stream ALLOWED",
+      "cell": "STREAM.DELETE an endpoint record-ingress stream ALLOWED"
+    }
+  ]
+}
