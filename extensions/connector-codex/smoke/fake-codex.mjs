@@ -182,7 +182,8 @@ const serverRequest = (method, params) =>
 // is precisely what made the existing crash cell blind to the emitter defect, so the id has to move
 // for the same reason the real one does.
 const ROLLOUT = process.env.FAKE_CODEX_ROLLOUT ?? "";
-const THREAD = ROLLOUT === "" ? "t_fake" : randomUUID();
+const THREAD = process.env.FAKE_CODEX_THREAD_ID ?? (ROLLOUT === "" ? "t_fake" : randomUUID());
+const RESUME_ROLLOUT = process.env.FAKE_CODEX_RESUME_ROLLOUT === "1";
 /** `late` withholds the file until the SECOND turn, so the host's bounded first look misses it and
  *  only a later retry can bind. A seat whose file appeared late must still publish what it wrote
  *  before the bind, which is why turn one's records are appended to the file when it is created.
@@ -213,10 +214,11 @@ function materializeRollout() {
   const dir = join(home, "sessions", "2026", "08", "19");
   mkdirSync(dir, { recursive: true });
   const p = join(dir, `rollout-2026-08-19T00-00-00-${THREAD}.jsonl`);
-  writeFileSync(
-    p,
-    JSON.stringify({ timestamp: stamp(), type: "session_meta", payload: { id: THREAD, originator: "codex_app_server" } }) + "\n",
-  );
+  if (!RESUME_ROLLOUT || !existsSync(p))
+    writeFileSync(
+      p,
+      JSON.stringify({ timestamp: stamp(), type: "session_meta", payload: { id: THREAD, originator: "codex_app_server" } }) + "\n",
+    );
   rolloutPath = p;
   journal({ ev: "rollout", path: p, thread: THREAD });
   for (const line of pendingRecords.splice(0)) appendFileSync(p, line);
@@ -241,7 +243,48 @@ async function waitForGo() {
   while (!existsSync(GO_MARK)) await new Promise((r) => setTimeout(r, 50));
 }
 
-let turnSeq = 0;
+/** Hold one explicitly marked turn after its start and tool records are durable, so the harness can
+ *  remove the broker before allowing the completion records. The `.entered` marker is the positive
+ *  signal that the turn reached this exact boundary; the gate file releases it. */
+const OUTAGE_GATE = process.env.FAKE_CODEX_OUTAGE_GATE ?? "";
+let outageGateSpent = false;
+async function waitForOutageGate(text) {
+  if (OUTAGE_GATE === "" || outageGateSpent || !text.includes("OUTAGEGATE")) return;
+  outageGateSpent = true;
+  writeFileSync(`${OUTAGE_GATE}.entered`, "entered");
+  while (!existsSync(OUTAGE_GATE)) await new Promise((r) => setTimeout(r, 50));
+}
+
+/** Hold a second marked turn in the distinct recovery state where the WAL still has an open run.
+ * The harness pauses the broker, then creates `.append`; only then does this append one more source
+ * record and signal an item boundary, forcing a failed publish whose pending brackets remain open.
+ * The ordinary gate file releases the later assistant + task_complete records after the holder is
+ * terminal, so a replacement mapper must inherit the WAL run in order to close it. */
+const OPEN_WAL_GATE = process.env.FAKE_CODEX_OPEN_WAL_GATE ?? "";
+let openWalGateSpent = false;
+async function waitForOpenWalGate(text, turnId) {
+  if (OPEN_WAL_GATE === "" || openWalGateSpent || !text.includes("OPENWALGATE")) return;
+  openWalGateSpent = true;
+  writeFileSync(`${OPEN_WAL_GATE}.entered`, "entered");
+  while (!existsSync(`${OPEN_WAL_GATE}.append`)) await new Promise((r) => setTimeout(r, 50));
+  const marker = `outage-open:${turnSeq}`;
+  const id = `msg_outage_open_${turnSeq}`;
+  rolloutRecord("response_item", {
+    type: "message",
+    role: "assistant",
+    id,
+    content: [{ type: "output_text", text: marker }],
+  });
+  notify("item/completed", {
+    threadId: THREAD,
+    turnId,
+    item: { type: "agentMessage", id, text: marker, phase: "final_answer" },
+  });
+  writeFileSync(`${OPEN_WAL_GATE}.appended`, "appended");
+  while (!existsSync(OPEN_WAL_GATE)) await new Promise((r) => setTimeout(r, 50));
+}
+
+let turnSeq = Number(process.env.FAKE_CODEX_TURN_SEQ_START ?? "0");
 let activeTurn;
 let interruptWaiter;
 let hangUsed = false; // HANG is one-shot: its REDELIVERED batch must complete normally
@@ -305,6 +348,8 @@ async function runTurn(text) {
     });
     rolloutRecord("response_item", { type: "function_call_output", call_id: callId, output: `tooloutput:${turnSeq}` });
   }
+  await waitForOutageGate(text);
+  await waitForOpenWalGate(text, turnId);
   if (text.includes("SOLOTUI") && !soloUsed) {
     // A turn the human started with NOTHING of ours open. The host must still pump its buffered
     // traffic when this ends — otherwise a DM that arrived while someone was typing sits in the

@@ -81,6 +81,16 @@ function cli(...args: string[]) {
   return spawnSync(TSX, [CLI, ...args], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
 }
 
+/** The old-surface fact under comparison, excluding unrelated process-wide advisories whose
+ * presence depends on whether this particular subprocess crossed an approximate CPU threshold. */
+function oldManagerAnswer(text: string): string | undefined {
+  return text
+    .replace(/\x1b\[[0-9;]*m/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => /failed-precondition: the service registry for "manager"|no manager reachable/i.test(line));
+}
+
 async function waitForFile(path: string): Promise<void> {
   for (let i = 0; i < 100 && !existsSync(path); i++) await sleep(50);
   assert.ok(existsSync(path), `fixture never wrote ${path}`);
@@ -171,7 +181,15 @@ try {
   const oldAbsentText = `${oldAbsent.stdout}${oldAbsent.stderr}`;
   check("REPRO control: existing ps gives the same manager-service answer when absent",
     oldAbsent.status !== 0 && /service registry.*stream not found|no manager reachable/i.test(oldAbsentText), oldAbsentText);
-  check("REPRO is indistinguishable on the old surface", oldPresent.status === oldAbsent.status && oldPresentText === oldAbsentText, { oldPresentText, oldAbsentText });
+  const oldPresentAnswer = oldManagerAnswer(oldPresentText);
+  const oldAbsentAnswer = oldManagerAnswer(oldAbsentText);
+  check(
+    "REPRO is indistinguishable on the old surface",
+    oldPresent.status === oldAbsent.status &&
+      oldPresentAnswer !== undefined &&
+      oldPresentAnswer === oldAbsentAnswer,
+    { oldPresentAnswer, oldAbsentAnswer, oldPresentText, oldAbsentText },
+  );
 
   const absent = cli("status", "--components", "--space", SPACE, "--server", server);
   const absentText = `${absent.stdout}${absent.stderr}`;

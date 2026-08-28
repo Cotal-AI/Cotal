@@ -336,6 +336,97 @@ try {
     );
   });
 
+  // ── PENDING RECOVERY PROMOTES ITS BRACKET STATE IN MEMORY ────────────────────────────────────
+  await block("PENDING RECOVERY PROMOTES ITS BRACKET STATE IN MEMORY", async () => {
+    const { wal, source, src } = await fresh("pending-brackets-live");
+    const sf = memorySubjectFrontier();
+    await wal.bindSubjectFrontier(sf);
+    const cursor = (await source.read(undefined)).cursor;
+    const open = { run: "old-run", text: [], reasoning: [], tools: [] };
+    await wal.beginSend({
+      id: "old-start",
+      E: 0,
+      seq: 1,
+      sourceCursor: cursor,
+      body: [{ kind: "ag-ui.frame", protocol: "ag-ui/0.0.57" } as unknown as Part],
+      brackets: open,
+    });
+    await wal.recordAck(1);
+    await wal.fold();
+    await wal.beginSend({
+      id: "old-finish",
+      E: wal.expectedTip,
+      seq: 2,
+      sourceCursor: cursor,
+      body: [{ kind: "ag-ui.frame", protocol: "ag-ui/0.0.57" } as unknown as Part],
+      brackets: BR,
+    });
+    append(src, { run: "next-run", msg: "next-message", text: "after recovery" });
+
+    const ep = new FakeEndpoint();
+    ep.answers = [
+      { seq: 2, duplicate: false }, // retry and fold the pending terminal
+      { seq: 3, duplicate: false }, // publish the next complete run
+    ];
+    const started = await attempt(() =>
+      AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: sf, source, map: mapper }),
+    );
+    const pumped = started.value === undefined ? { err: started.err } : await attempt(() => started.value!.pump());
+    c(
+      "recover:a-pending-terminal-promotes-its-brackets-before-the-next-pump",
+      started.err === undefined &&
+        pumped.err === undefined &&
+        pumped.value?.frames === 1 &&
+        ep.publishes.length === 2 &&
+        ((ep.publishes[1]?.parts[0] as unknown as AguiFrame | undefined)?.events[0] as { type?: string } | undefined)?.type === "RUN_STARTED",
+      { started: started.err?.message, pumped: pumped.err?.message, publishes: ep.publishes.length },
+    );
+  });
+
+  await block("ACKED RECOVERY PROMOTES ITS BRACKET STATE IN MEMORY", async () => {
+    const { wal, source, src } = await fresh("acked-brackets-live");
+    const sf = memorySubjectFrontier();
+    await wal.bindSubjectFrontier(sf);
+    const cursor = (await source.read(undefined)).cursor;
+    const open = { run: "old-run", text: [], reasoning: [], tools: [] };
+    await wal.beginSend({
+      id: "acked-start",
+      E: 0,
+      seq: 1,
+      sourceCursor: cursor,
+      body: [{ kind: "ag-ui.frame", protocol: "ag-ui/0.0.57" } as unknown as Part],
+      brackets: open,
+    });
+    await wal.recordAck(1);
+    await wal.fold();
+    await wal.beginSend({
+      id: "acked-finish",
+      E: wal.expectedTip,
+      seq: 2,
+      sourceCursor: cursor,
+      body: [{ kind: "ag-ui.frame", protocol: "ag-ui/0.0.57" } as unknown as Part],
+      brackets: BR,
+    });
+    await wal.recordAck(2); // crash after ack, before fold
+    append(src, { run: "next-run", msg: "next-message", text: "after acked recovery" });
+
+    const ep = new FakeEndpoint();
+    ep.answers = [{ seq: 3, duplicate: false }];
+    const started = await attempt(() =>
+      AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: sf, source, map: mapper }),
+    );
+    const pumped = started.value === undefined ? { err: started.err } : await attempt(() => started.value!.pump());
+    c(
+      "recover:an-acked-pending-promotes-its-brackets-before-the-next-pump",
+      started.err === undefined &&
+        pumped.err === undefined &&
+        pumped.value?.frames === 1 &&
+        ep.publishes.length === 1 &&
+        ((ep.publishes[0]?.parts[0] as unknown as AguiFrame | undefined)?.events[0] as { type?: string } | undefined)?.type === "RUN_STARTED",
+      { started: started.err?.message, pumped: pumped.err?.message, publishes: ep.publishes.length },
+    );
+  });
+
   // ── THE WAL MUST BE THIS PRINCIPAL'S ──────────────────────────────────────────────────────────
   await block("THE WAL MUST BE THIS PRINCIPAL'S", async () => {
     const { source } = await fresh("wrong-principal");

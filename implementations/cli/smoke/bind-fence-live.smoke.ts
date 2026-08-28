@@ -47,6 +47,7 @@ import {
   type EndpointReply,
 } from "../../../packages/core/src/index.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 // EPHEMERAL, not a fixed port distinct from the other live smokes'. A fixed port is only safe while
 // no two live smokes share a runner, which is a property of how smoke:ci is sharded rather than of
@@ -76,7 +77,9 @@ if (!/^nats:\/\/127\.0\.0\.1:\d+$/.test(SERVER)) throw new Error(`this fixture o
 
 const home = mkdtempSync(join(tmpdir(), "cotal-split-home-"));
 const root = mkdtempSync(join(tmpdir(), "cotal-split-root-"));
-const env = { ...process.env, COTAL_HOME: home };
+const configDir = join(home, "xdg");
+const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
+const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
 
 let pass = 0, fail = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -97,7 +100,11 @@ process.on("exit", () => {
     process.exitCode = 1;
   }
 });
-const cli = (...args: string[]) => spawnSync(TSX, [CLI, ...args], { cwd: root, env, encoding: "utf8" });
+const cli = (...args: string[]) => {
+  const options = { cwd: root, env, encoding: "utf8" as const };
+  assertSmokeSandboxDown(sandbox, args, options);
+  return spawnSync(TSX, [CLI, ...args], options);
+};
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const portOpen = (port: number) =>
   new Promise<boolean>((res) => {
@@ -184,7 +191,7 @@ try {
 } finally {
   // Always bare `cotal down`, never pkill — and it must run even when a cell above threw, or the
   // fixture leaks a broker on the fixed port and the NEXT run silently grades a stale mesh.
-  cli("down", "--server", SERVER);
+  cli("down");
   rmSync(home, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
 }
