@@ -13,7 +13,7 @@
       "name": "M1 remove the bounded retry after the pre-MCP snapshot",
       "file": "extensions/connector-jcode/src/host.ts",
       "find": "      if (!hasOrientation(readiness)) {\n        readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });\n      }",
-      "replace": "      if (false) {\n        readiness = await client.run(sessionId, readinessPrompt, { autoApprove: true });\n      }",
+      "replace": "",
       "expectRed": "a first-turn MCP snapshot race recovers on one bounded retry"
     },
     {
