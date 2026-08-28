@@ -334,7 +334,7 @@
     "smoke:supervise-registered-user": "tsx implementations/manager/smoke/supervise-registered-user.smoke.ts",
     "smoke:supervise-registered-user-authority": "tsx implementations/manager/smoke/supervise-registered-user-authority.smoke.ts",
     "smoke:seat-exit-cause": "tsx implementations/manager/smoke/seat-exit-cause.smoke.ts",
-    "smoke:detach-not-teardown": "tsx implementations/manager/smoke/detach-not-teardown.smoke.ts",
+    "smoke:lease-loss-keeps-serving": "tsx implementations/manager/smoke/lease-loss-keeps-serving.smoke.ts",
     "smoke:preserve-state": "tsx implementations/manager/smoke/preserve-state.smoke.ts",
     "smoke:ep-serve:auth": "tsx packages/core/smoke/endpoint-serve-auth.smoke.ts",
     "smoke:scatter-liveness": "tsx packages/core/smoke/scatter-liveness.smoke.ts",

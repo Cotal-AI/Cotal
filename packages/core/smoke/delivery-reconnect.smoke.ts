@@ -38,7 +38,7 @@ http: "127.0.0.1:${MON}"
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
 
-let mgr: CotalEndpoint | undefined, daemon: CotalEndpoint | undefined, agent: CotalEndpoint | undefined, observer: CotalEndpoint | undefined;
+let mgr: CotalEndpoint | undefined, daemon: CotalEndpoint | undefined, agent: CotalEndpoint | undefined, observer: CotalEndpoint | undefined, sup: CotalEndpoint | undefined;
 try {
   let up = false;
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
@@ -89,10 +89,25 @@ try {
   check("the pre-reconnect membership watch owns exactly one live broker consumer", beforeMembershipConsumers.length === 1, beforeMembershipConsumers);
   const predecessorMembershipConsumerName = beforeMembershipConsumers[0];
 
-  // Force both roles to drain + rebuild. The daemon exercises its responder/Plane-3 handles; the
-  // observer exercises the cached read-only membership-feed handle that triggered #800.
-  await Promise.all([daemon.reconnect(), observer.reconnect()]);
+  // A supervisor holding its manager liveness lease, so the lease KV handle is cached before the rebuild.
+  // Its renew after the reconnect is the cell: the handle is bound to the connection, and a rebuild that
+  // keeps it leaves every later renew and re-read timing out on a dead connection for good.
+  sup = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "supervisor"), channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "sup", role: "manager", kind: "endpoint" } });
+  sup.on("error", () => {}); await sup.start();
+  const leaseInfo = { holder: sup.ref().id, instanceId: `iid-${randomUUID().slice(0, 8)}`, runtime: "pty", root: dir, pid: process.pid };
+  const supRev = await sup.acquireManagerLease(leaseInfo);
+
+  // Force the roles to drain + rebuild. The daemon exercises its responder/Plane-3 handles; the
+  // observer exercises the cached read-only membership-feed handle that triggered #800; the
+  // supervisor exercises the cached manager-lease handle.
+  await Promise.all([daemon.reconnect(), observer.reconnect(), sup.reconnect()]);
   await wait(400);
+
+  let renewedRev: number | undefined, renewErr: string | undefined;
+  try { renewedRev = await sup.renewManagerLease(leaseInfo, supRev); } catch (e) { renewErr = (e as Error).message; }
+  const reread = await sup.readOwnManagerLease(leaseInfo.instanceId).catch((e: Error) => e.message);
+  check("the manager lease renews after reconnect (managerLeaseKv reopened on the fresh connection)", renewedRev !== undefined && renewedRev > supRev, { renewErr, supRev, renewedRev });
+  check("and the manager lease reads back as its own after reconnect", typeof reread === "object" && reread?.revision === renewedRev, reread);
 
   // Post-reconnect, ALL ctl.delivery ops + every Plane-3 KV handle must work on the fresh connection:
   // join (aclKv read + membersKv write), list (membersKv read), leave (membersKv tombstone), and the
@@ -244,6 +259,7 @@ try {
   try { await agent?.stop(); } catch { /* ignore */ }
   try { await observer?.stop(); } catch { /* ignore */ }
   try { await daemon?.stop(); } catch { /* ignore */ }
+  try { await sup?.stop(); } catch { /* ignore */ }
   try { await mgr?.stop(); } catch { /* ignore */ }
   srv.kill("SIGKILL");
   await awaitExit(srv);

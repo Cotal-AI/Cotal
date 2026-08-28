@@ -18,9 +18,7 @@ const say = (line: string) => writeSync(1, `${line}\n`);
 const mgr = new Manager({ space, servers, runtime: "pty", workspaceRoot, consolePort: 0 });
 const held = mgr as unknown as { managerInstanceId: string; leaseRevision?: number };
 
-// The revision the manager was holding at the instant it gave up. On the lease-loss path the failing
-// renew throws, so this is the last renew that SUCCEEDED — which is what the parent needs to compare
-// against what the broker actually stored.
+// The revision the manager was holding when the process ended, for the parent's report.
 process.on("exit", () => say(`HELD ${held.leaseRevision ?? "none"}`));
 
 await mgr.start();
@@ -34,5 +32,5 @@ setInterval(() => {
   if (held.leaseRevision !== last) { last = held.leaseRevision; say(`REV ${last} ${Date.now()}`); }
 }, 50);
 
-// Idle forever. The only thing that ends this process is the manager's own decision to fail closed.
+// Idle forever. Only the parent ends this process; the manager never ends it over its lease.
 await new Promise(() => {});
