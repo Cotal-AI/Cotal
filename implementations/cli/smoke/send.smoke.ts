@@ -110,6 +110,5 @@ try {
 }
 
 check(`every scenario cell ran — ${EXPECTED} expected`, pass + fail === EXPECTED, { pass, fail, expected: EXPECTED });
-console.log(`
-send smoke: ${pass} passed, ${fail} failed`);
+console.log(`\nsend smoke: ${pass} passed, ${fail} failed`);
 if (fail) process.exitCode = 1;
