@@ -111,8 +111,8 @@
     {
       "name": "E5 the wait survives but moves AFTER what it guards",
       "file": "extensions/connector-claude-code/src/mcp.ts",
-      "find": "        await agent.whenConnected(20_000);\n        // The events state root.",
-      "replace": "        // The events state root.",
+      "find": "        await agent.whenConnected(20_000);",
+      "replace": "",
       "expectRed": "\u2026and the wait comes BEFORE the emitter is set up (the ordering IS the fix)",
       "cell": "\u2026and the wait comes BEFORE the emitter is set up (the ordering IS the fix)",
       "note": "Deletes it from before the guarded setup; the presence cell is what would keep this alive if ordering were not asserted separately. Ordering is the entire fix, so it needs its own cell."
