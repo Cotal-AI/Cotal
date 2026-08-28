@@ -620,6 +620,7 @@ let openInventory: ManagerResumeAgent;
   const committed = await control(manager, "admin", "commitResume", { attemptId: "lease_gap" });
   const ep = (manager as unknown as { ep: Record<string, unknown> }).ep;
   ep.renewManagerLease = async () => { throw new Error("simulated lease loss"); };
+  ep.readOwnManagerLease = async () => { throw new Error("simulated broker silence"); };
   (manager as unknown as { leaseInfo: unknown; leaseRevision: number }).leaseInfo = {
     holder: "local.manager", runtime: "fake", root, pid: process.pid,
   };
@@ -635,7 +636,7 @@ let openInventory: ManagerResumeAgent;
   } finally {
     (process as unknown as { exit: typeof process.exit }).exit = originalExit;
   }
-  check("lease loss after commit-before-finalize exits fail-closed and stops the child", committed.ok && exitCode === 1 && handle.stops === 1, `${exitCode}/${handle.stops}`);
+  check("lease loss after commit-before-finalize ends nothing: no exit, and the child keeps running", committed.ok && exitCode === undefined && handle.stops === 0, `${exitCode}/${handle.stops}`);
   check("lease loss after commit-before-finalize preserves retained footprint", deprovisions === 0, deprovisions);
 }
 

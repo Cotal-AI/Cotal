@@ -1,5 +1,60 @@
 # @cotal-ai/manager
 
+## 0.33.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.6
+- @cotal-ai/workspace@0.33.6
+
+## 0.33.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.5
+- @cotal-ai/workspace@0.33.5
+
+## 0.33.4
+
+### Patch Changes
+
+- 1858932: The manager no longer ends its own process over its liveness lease. A renew that fails is re-read; a key still its own is adopted, a gone key is re-acquired, a key held by another process is reported and served through, and a broker that cannot be asked is retried for as long as it takes. Each change of state is one line in `manager.log`. The fail-close that took a manager and every pty seat it held down one tick past the lease TTL is removed, together with the detach-on-lease-loss path it needed. The endpoint also drops its manager-lease KV handle when it rebuilds a closed connection; before, every renew after a reconnect ran on the dead handle and timed out for good.
+- Updated dependencies [1858932]
+  - @cotal-ai/core@0.33.4
+  - @cotal-ai/workspace@0.33.4
+
+## 0.33.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.3
+- @cotal-ai/workspace@0.33.3
+
+## 0.33.2
+
+### Patch Changes
+
+- ffdde4d: Fix the second spawn of any persona being unmintable under per-user auth.
+
+  In user mode the allocated agent name IS the mesh actor, and the principal grammar reserves `-` as
+  the separator of the JetStream-name form, so it is rejected inside a token. The spawn auto-numbering
+  scheme appended its counter with exactly that character: the second live instance of a persona was
+  named `<base>-2` and could never be granted. It numbers with `_` now.
+
+  The failure was invisible outside per-user auth, because static/open mode keys the actor on the
+  freshly minted nkey rather than on the name — so it fired only on hosted meshes, only from the
+  second spawn onward, and looked like a problem with one persona's name rather than with numbering.
+
+  The name rule itself now lives in one exported predicate (`spawnNameError`) that both the manager's
+  name door and the numbering are checked against, and whose narrow half delegates to the shipped
+  token validator instead of restating its alphabet. In user mode a name that could never become an
+  actor is refused where it is chosen, rather than at mint. Static/open mode keeps the looser rule, so
+  an existing `my-agent` persona still spawns across an upgrade.
+
+- Updated dependencies [ffdde4d]
+  - @cotal-ai/core@0.33.2
+  - @cotal-ai/workspace@0.33.2
+
 ## 0.33.1
 
 ### Patch Changes

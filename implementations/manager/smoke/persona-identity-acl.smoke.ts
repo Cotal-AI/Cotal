@@ -12,7 +12,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Manager } from "../src/manager.js";
-import {
+import { firstFreeName,
   createSpaceAuth,
   registry,
   mintCreds,
@@ -109,10 +109,16 @@ try {
     check("spawn by display-name fails loud (no socrates.md)", reply.ok === false && /no persona "socrates"/.test(reply.error ?? ""), reply);
   }
 
-  // 3 — A second spawn of the same persona auto-numbers the IDENTITY (socrates → socrates-2).
+  // 3 — A second spawn of the same persona auto-numbers the IDENTITY. The expected name is
+  //     DERIVED from the shipped allocator, never spelled: this cell hard-coded the separator and
+  //     was the SIXTH place to do so, each in a different syntactic form, each invisible to the
+  //     search aimed at the previous one.
   {
     const reply = await mgr.startAgent({ name: "review-critic", agent: "smoke-rec2" });
-    check("second spawn auto-numbers the identity", reply.ok && replyName(reply) === "socrates-2", reply.ok && replyName(reply));
+    const expectSocrates = firstFreeName("socrates", (n) => n === "socrates");
+  check(`control: the derived numbered identity differs from the base (${expectSocrates})`,
+    expectSocrates !== "socrates" && expectSocrates.startsWith("socrates"), expectSocrates);
+  check("second spawn auto-numbers the identity", reply.ok && replyName(reply) === expectSocrates, reply.ok && replyName(reply));
   }
 } finally {
   await stopBroker();

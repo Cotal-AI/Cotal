@@ -1,0 +1,68 @@
+{
+  "suite": "implementations/manager/smoke/lease-loss-keeps-serving.smoke.ts",
+  "guard": "a manager never ends its own process over its liveness lease: on unknown it keeps serving and retrying, on gone it re-acquires, on taken it warns and keeps serving, and the operator gets one line per state change while the ordinary shutdown path stays destructive",
+  "command": "pnpm smoke:lease-loss-keeps-serving",
+  "completionMarker": "checks passed",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/lease-loss-keeps-serving.json",
+  "why": [
+    "NO BUILD IN `command`, AND THAT IS A CLAIM THIS RUN CHECKS RATHER THAN ASSUMES. The suite",
+    "imports the subject RELATIVELY (`../src/manager.js`), so tsx loads `manager.ts` itself and a",
+    "mutation on it is live with no `dist` in the path. `@cotal-ai/core` is imported for TYPES only",
+    "and every plane the cells touch is stubbed, so no built artifact sits between the mutation and",
+    "the run. If that were wrong, mutation 1 would come back SURVIVED.",
+    "",
+    "MUTATION 1 IS THE DEFECT IN ITS SHORTEST FORM: the process ends when the broker cannot be asked.",
+    "The shipped code waited one TTL first; the wait is not what the suite grades, the exit is.",
+    "",
+    "MUTATION 2 DROPS THE RE-ACQUIRE. The process survives a gone key but never puts it back, so the",
+    "class scatter reads the instance as dead and a same-id restart is free to take the key while this",
+    "one is still serving. Every process-and-children cell stays green; only the re-acquire cell reddens.",
+    "",
+    "MUTATION 3 REMOVES THE THROTTLE. Correct behaviour, and an outage of hours becomes fourteen",
+    "thousand identical lines in `manager.log`, which is how the motivating incident was read: by",
+    "searching a log for the one line that mattered.",
+    "",
+    "MUTATION 4 IS THE CONTROL AND ALSO A REAL INVARIANT. It makes the ORDINARY shutdown path leave",
+    "the children running. Every lease cell stays green and only the control cell reddens, which proves",
+    "the `stops` counter fires (so the zeros in the graded cells are earned) and that `cotal down` /",
+    "Ctrl-C stay destructive."
+  ],
+  "mutations": [
+    {
+      "name": "the defect restored: an unanswerable broker ends the process",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "          case \"unknown\":\n            this.noteLease(\"unknown\",",
+      "replace": "          case \"unknown\":\n            process.exit(1);\n            this.noteLease(\"unknown\",",
+      "expectRed": "unknown: the process is not ended",
+      "cell": "unknown: the process is not ended",
+      "note": "The exit the shipped code reached one tick past the TTL, taken on the first tick instead. What the suite grades is that no tick may reach it."
+    },
+    {
+      "name": "a gone key is never put back",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "            try {\n              this.leaseRevision = await this.ep.acquireManagerLease(this.leaseInfo);",
+      "replace": "            try {\n              this.leaseRevision = 42;",
+      "expectRed": "gone: the key is put back (acquire called once) and the new revision is adopted",
+      "cell": "gone: the key is put back (acquire called once) and the new revision is adopted",
+      "note": "The half fix: survive the expiry, forget to re-register liveness. The revision is faked to the value the cell expects so that only the acquire count can catch it."
+    },
+    {
+      "name": "the state-change throttle is removed, so every tick prints",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (state === this.leaseState) return;\n",
+      "replace": "",
+      "expectRed": "unknown: repeated ticks in the same state print nothing more",
+      "cell": "unknown: repeated ticks in the same state print nothing more",
+      "note": "Correct decision, unreadable log. A careless edit rather than a malicious one."
+    },
+    {
+      "name": "CONTROL and invariant: the ordinary shutdown path leaves every agent running",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      await this.teardownManagedAgents();",
+      "replace": "      this.agents.clear();",
+      "expectRed": "CONTROL: the ordinary stop path stops the child",
+      "cell": "CONTROL: the ordinary stop path stops the child (instrument fires)",
+      "note": "Doubles as the positive control for the `stops` counter and as the guard on the opposite failure: an operator who asked for a shutdown must get one. Anchored on the bare call with no trailing comment, which is unique in the file."
+    }
+  ]
+}

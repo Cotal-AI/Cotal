@@ -28,7 +28,8 @@ import { Kvm } from "@nats-io/kv";
 import {
   probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER, epCall,
   actionContext, readGoalResult, listGoalIndex, recordsBucket,
-  registry, type ActionContext, type Connector, type EpCaller, type GoalRef, type LaunchOpts, type LaunchSpec,
+  registry, firstFreeName,
+  type ActionContext, type Connector, type EpCaller, type GoalRef, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import { recordMesh } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
@@ -255,9 +256,14 @@ try {
     const rHard = await callSpawn({ name: "peer", identity: "dup", agent: "stuck" });
     check("M6 a hard-pinned --name colliding with a live incarnation refuses at accept",
       rHard.reply.ok === false && /hard-pinned/.test(rHard.reply.error?.message ?? ""), rHard.reply);
-    // A second persona-derived "dup" numbers to dup-2 (multi-peer preserved).
+    // A second persona-derived "dup" numbers (multi-peer preserved). The expected name is DERIVED
+    // from the shipped allocator, never spelled: a literal suffix here pins the numbering scheme in
+    // a place no search for that scheme will look.
     const r3 = await callSpawn({ name: "dup", agent: "stuck" });
-    check("M6 a second persona-derived spawn numbers (dup-2)", acc(r3).name === "dup-2", acc(r3));
+    const expectDup = firstFreeName("dup", (n) => n === "dup");
+    check(`M6 control: the derived numbered name differs from the base (${expectDup})`,
+      expectDup !== "dup" && expectDup.startsWith("dup"), expectDup);
+    check(`M6 a second persona-derived spawn numbers (${expectDup})`, acc(r3).name === expectDup, acc(r3));
   }
 
   // ── M7: A POST-ACCEPT THROW STILL TERMINALIZES (H1: no accepted goal is left unanswered) ──────

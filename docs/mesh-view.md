@@ -1,13 +1,13 @@
-# MeshView: one model, many surfaces
+# MeshView
 
-> **Reference**: describes the TypeScript reference implementation's observer surfaces (`MeshView`), not the wire contract. · **For:** integrators building a watch surface · **Wire contract:** [SPEC](../SPEC.md)
+> **Reference**: TypeScript observer surfaces (`MeshView`) · **For:** integrators building a watch surface · **Wire contract:** [SPEC](../SPEC.md)
 
 `MeshView` is the shared model behind every surface that lets a human *watch* a live mesh: the
 terminal [console](watch-a-mesh.md), the plain stream, and the web dashboard. It defines what
 those surfaces show and keeps them from drifting apart.
 
-**This is a reference-implementation API, not the wire.** The wire is the source of truth; every
-field below is a *rendering* derived from it. A different client is free to derive its own model
+**Reference-implementation boundary.** MeshView is an observer API. The wire remains the source of
+truth; every field below is a *rendering* derived from it. A different client is free to derive its own model
 or none at all; nothing here is normative. What *is* normative (subjects, delivery modes,
 presence) lives in the [SPEC](../SPEC.md).
 
@@ -18,7 +18,7 @@ Every surface is built on one **read-only observer**: a `CotalEndpoint` started 
 durables, reading the space through the live tap plus history and presence-watch. No surface opens
 its own NATS connection, and none re-implements the wire semantics.
 
-## The model: `MeshView` (`@cotal-ai/cli`)
+## MeshView data
 
 One class (`implementations/cli/src/view/mesh-view.ts`) consumes that observer and emits a
 normalized, render-agnostic model: no ANSI, no React, no HTML, no colour, pure data. It owns the
@@ -86,11 +86,11 @@ interface MeshSignals {
 }
 ```
 
-**Why `waiting` is not age-ordered.** `Presence.ts` is the *last heartbeat*, republished on every
-beat (2 s by default) — it is not the time the agent entered its current status, and the wire
+**How `waiting` is ordered.** `Presence.ts` is the *last heartbeat*, republished on every
+beat (2 s by default). It is not the time the agent entered its current status, and the wire
 carries no such field. So "how long has this agent been blocked" is **not knowable** from presence,
 and no surface may claim it. `waiting` is therefore name-ordered, and the fifth golden-signal tile
-reports `stalestLiveTs` — the oldest heartbeat among *live* agents, which answers "is a peer going
+reports `stalestLiveTs`: the oldest heartbeat among *live* agents, which answers "is a peer going
 quiet?" and self-clears when that peer drops to offline. Offline agents are excluded: their
 heartbeat age only grows, so including them would pin the tile to an ever-increasing number that
 can never be acted on.
@@ -120,12 +120,12 @@ visible (god-view / open mode); a chat-only observer leaves it empty.
 | channel policy (replay, delivery class) | `/api/channels` (web) |  |  | ✓ sidebar + header chips |
 
 Both interactive surfaces render every model field. The console adds the signals as an always-on
-tiles strip, a NEEDS-YOU rail (`n`), and a DM lens (`d`); the topology lens (`t`) folds the feed
+tiles strip, a NEEDS-YOU rail (`n`), and a DM lens (`d`); the topology lens (`t`) collapses the feed
 plus roster into a who-talks-to-whom graph client-side and renders it three switchable ways
 (`v` / `1`–`3`): swimlane sequence, adjacency heat matrix, and a ring node-link map. The stream is
 line-oriented, so the signals stay out of it.
 
-## Future: not yet on the wire
+## Future work
 
 The web's `?demo` scene also mocks features that **no protocol message backs yet**. They render
 only as the static design reference, never from live data, and are deliberately *not* implemented
@@ -150,11 +150,11 @@ on the live surfaces, design intent until the wire grows to support them:
 - **Status is shape *and* colour.** `● working · ◐ waiting · ○ idle · ⨯/⊘ offline`, never colour
   alone (accessibility).
 - **Never render what the wire cannot say.** A surface shows a value only if the protocol actually
-  carries it. Where it does not, say so plainly — an agent whose harness never reported a model
+  carries it. Where it does not, say so plainly. An agent whose harness never reported a model
   reads *"not reported"*, never a guessed default; a heartbeat age is labelled as a heartbeat age,
   never as a blocked-duration. A confident wrong number costs more trust than an honest gap.
 - **`open` attention is silent.** `attention: "open"` and an absent `attention` mean the same thing
-  (receives everything), so neither renders a badge. Only `dnd` and `focus` surface — a marker on
+  (receives everything), so neither renders a badge. Only `dnd` and `focus` surface. A marker on
   every peer is noise, and the point of the signal is that it stands out.
 
 For the operator-facing walkthrough of these surfaces, see [Watch a mesh](watch-a-mesh.md).

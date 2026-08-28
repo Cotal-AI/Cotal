@@ -1,4 +1,4 @@
-# Deploy: agent teams against an external broker
+# Deploying agent teams
 
 > **Guide** (informative) · **For:** operators · **Prereqs:** [Quickstart](getting-started.md)
 
@@ -73,7 +73,7 @@ CLAUDE_CODE_OAUTH_TOKEN=<token> OPENCODE_API_KEY=<key> \
 The README's quickstart shows the equivalent single `docker run` (with the mounts spelled out) and
 a local-broker variant. Watch the team join with `cotal console --plain --space <s>`.
 
-## How creds and auth flow
+## Credential flow
 
 Two independent credentials, both set from **outside** the container:
 

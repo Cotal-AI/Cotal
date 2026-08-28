@@ -1118,6 +1118,9 @@ export class CotalEndpoint extends EventEmitter {
       this.aclKv = undefined;
       this.membershipFeedKv = undefined;
       this.deliveryKv = undefined;
+      // The manager's liveness-lease handle too: left bound to the old connection, every renew and
+      // re-read after a reconnect times out, and the manager reports its lease unknown for good.
+      this.managerLeaseKv = undefined;
       this.emit("connection", { connected: false }); // null window opened — not live until the rebind below
       try {
         await oldNc?.drain();

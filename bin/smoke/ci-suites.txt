@@ -516,12 +516,11 @@ smoke:jcode-retry-policy
 smoke:seat-exit-cause
 smoke:empty-id-ingest
 smoke:hermes-empty-id
-# A manager that may no longer SERVE must not destroy the agents it was serving. The lease-loss exit
-# path did both in one act: it hard-stopped every managed child and deprovisioned its credential and
-# durables. Stopping serving is the right conclusion there; killing the seats is a separate act that
-# a connectivity fact does not license. Four occurrences on the live space "main" reached the
-# neighbouring branch and survived only because the lease re-read answered.
-smoke:detach-not-teardown
+# A manager never ends its own process over its liveness lease. The old fail-close turned a ten-second
+# broker or KV outage into a manager outage that lasted until an operator noticed (netcup, 2026-08-27,
+# ten hours). This entry replaces `smoke:detach-not-teardown` IN PLACE, at the same index, so no other
+# suite changes shard; the in-process half of the guard is here, the wire half is `smoke:lease-renew`.
+smoke:lease-loss-keeps-serving
 # Appended at the end per this file's own rule: the cell has no ordering dependency, and appending
 # is what keeps two branches adding suites from conflicting. It is the end-to-end half of a guard
 # whose ingest half runs earlier as `smoke:cross-path-dedup`: that one drives hand-built deliveries
@@ -543,3 +542,15 @@ smoke:web-console-auth
 smoke:no-implicit-general
 smoke:session-channels
 smoke:jcode-private-lifecycle
+smoke:hook-load-emitter-race
+smoke:spawn-name-actor
+# Claude writes a positional startup prompt before SessionStart reaches the connector. A generic
+# fresh adopt then parks after the only run opener and all later assistant/tool records map to zero.
+# `source: startup` reads this genuinely-new session from byte zero; resume/fork/clear/compact still
+# adopt retained history at the current boundary, and a recovered WAL cursor always wins. Appended
+# because this suite has no ordering dependency and append-only additions preserve shard membership.
+smoke:claude-start-source
+# Claude can fire SessionStart before the MCP process binds its local control socket. The real relay
+# must survive that first refusal inside its existing two-second budget, then deliver exactly once;
+# an absent connector still fails open at the deadline. Appended to preserve every existing shard.
+smoke:hook-relay-startup
