@@ -296,7 +296,9 @@ A feature is complete only when:
   floor rather than recording a same-family panel as reviewed.
 - **Every cold finding is closed**, by one of exactly two routes and no third: the cold seat itself
   posted an APPROVE at the exact sha, to the destination its brief named, without having joined the
-  panel channel; **or** each blocker at that sha was answered by a public refutation from a
+  panel channel; for a mesh destination, the cold persona alone may publish to its dedicated record
+  channel and panel personas may not read it; **or** each blocker at that sha was answered by a public
+  refutation from a
   permitted party under `cold-review`'s override rule, naming the same exact sha and left standing in
   the record beside the finding. **An unanswered cold blocker is neither, and is not completion.**
   Requiring the seat's own approval *alone* would deadlock the override the first time it was used
@@ -305,9 +307,10 @@ A feature is complete only when:
   re-pin to manufacture an approval, which is laundering. The override answered the question and the
   gate has to let the answer count.
 - A verdict relayed by the manager satisfies nothing, and the manager confirms the seat's own post
-  landed by re-fetching the destination. The sha and destination are retrospective evidence. A mesh
-  post or comment on the change also attests the poster, but a GitHub comment says nothing about mesh
-  membership. Historical non-join is auditable only from retained launch-time ACL evidence; a current
+  landed by re-fetching the destination. The sha and destination are retrospective evidence. A post
+  on the dedicated Cotal record channel also attests the cold seat's principal. A GitHub comment
+  attests only a GitHub account and is not cold-seat evidence when the workstation credential is
+  shared. Historical non-join is auditable only from retained launch-time ACL evidence; a current
   subscription snapshot is not proof. For a file destination, poster is a **norm**: the file's
   presence does not prove the seat wrote it. That the brief carried no findings is also a **norm**
   resting on the briefer, so it is deliberately not a gate condition here; listing a norm in the

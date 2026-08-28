@@ -74,15 +74,19 @@ survives the seat and the manager, and the seat must put it there **itself**, be
 verdict cannot be distinguished from an invented one.
 
 Two acceptable destinations, and the brief must name one:
-- a comment the seat posts on the change itself; or
+- a Cotal mesh post on a dedicated record channel that the cold seat alone may publish to and the
+  panel cannot read; or
 - a file at an absolute path written into the seat's persona, which the manager then verifies.
 
-The second exists because the first is not always reachable: a seat that never joins the mesh cannot
-be told anything after launch, and a DM-only rule with no file path can leave a correct verdict with
-nowhere to go. Both have happened.
+The first keeps sender identity broker-attested without joining the panel channel. A GitHub comment
+is not a substitute: it identifies the workstation's GitHub account, not the Cotal seat, and a shared
+`gh` credential lets the manager post the same comment. The file destination exists because a seat
+with no record-channel grant can still leave a durable verdict, but it carries the weaker poster norm
+below.
 
-**Poster is a control only on a broker- or host-attested destination.** A GitHub comment or a mesh
-post carries a sender the host or broker records. A file at an absolute path does not: any process that can write
+**Poster is a control only on the Cotal broker-attested destination.** A mesh post carries the Cotal
+principal the broker records. A GitHub comment carries a GitHub account and does not bind that account
+to the Cotal seat. A file at an absolute path carries neither: any process that can write
 that path can produce the artifact, including the manager who later "confirms" it by re-reading it.
 First-hand file delivery is therefore a **norm** on the seat and the briefer, not a control a later
 stranger can verify. A gate that treats the file's existence as proof the seat posted has accepted a
@@ -217,7 +221,8 @@ Stated plainly, because a norm presented as a control is the false assurance thi
 exists to prevent:
 
 - **Controls**, mechanically enforced while the seat runs: a read ACL that excludes the panel
-  channel, the pinned model and effort, and broker- or host-attested poster identity. The sha named in
+  channel, the pinned model and effort, and broker-attested poster identity on a dedicated Cotal
+  record channel. The sha named in
   the verdict and the destination it landed on are retrospective evidence. A later stranger can call
   non-join auditable only when launch-time ACL evidence was retained; a current subscription snapshot
   cannot prove historical non-join, and a GitHub comment says nothing about channel membership.
