@@ -107,7 +107,7 @@ const UNGATED: Record<string, string> = {
   "smoke:members": "UNTRIAGED", "smoke:membership": "UNTRIAGED",
   "smoke:plane3-activation:auth": "UNTRIAGED",
   "smoke:plane3-gate:auth": "UNTRIAGED", "smoke:presence-scrub": "UNTRIAGED",
-  "smoke:self-serve-join-coverage:auth": "UNTRIAGED", "smoke:send": "UNTRIAGED",
+  "smoke:self-serve-join-coverage:auth": "UNTRIAGED",
   "smoke:start-model": "UNTRIAGED",
 };
 

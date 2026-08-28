@@ -568,3 +568,7 @@ smoke:channels
 # refused. Four fresh lifecycles drive both orderings against a real JWT broker and journal.
 # Appended to preserve every existing shard assignment.
 smoke:renewal-terminal-race
+# The one-shot send smoke now owns an OS-assigned open broker, passes that address to its receiver
+# and every real CLI subprocess, and resolves the repository's actual bin/cotal.ts entry. Concurrent
+# runs therefore share neither port nor state. Appended to preserve every existing shard assignment.
+smoke:send
