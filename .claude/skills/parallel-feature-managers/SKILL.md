@@ -45,12 +45,14 @@ can declare tiers the provider refuses, and a refused tier kills the seat at lau
 
 - Never switch the coordinator's branch. Create worktrees from a named committed base.
 - One manager per feature, one reviewer per channel lane, and one independent cold reviewer per
-  feature. Select that seat's contact and delivery mode under `cold-review`; a file-only seat is valid
-  when DM delivery is unavailable. No sibling instances or tester fan-out unless the user requests it.
+  feature. Select that seat's contact and destination under `cold-review`. A file destination is a
+  norm-only fallback and cannot satisfy a gate that requires broker-attested poster identity. No
+  sibling instances or tester fan-out unless the user requests it.
 - Managers alone edit their feature worktree. Reviewers only read, run non-mutating checks, and post
   findings with file/line references.
-- Each feature uses one channel: `review.<feature-slug>`. Keep acknowledgements and status chatter
-  off it; use it for plans, findings, reasoned dispositions, code-review requests, and final results.
+- Each feature uses one panel channel, `review.<feature-slug>`, plus one dedicated cold record channel,
+  `review.<feature-slug>.cold-record`. Keep acknowledgements and status chatter off the panel channel;
+  use it for plans, findings, reasoned dispositions, code-review requests, and final results.
 - The independent cold reviewer is not on that channel. Its isolation, briefing and reporting are
   owned by `cold-review`; enforce them there rather than restating them per lane.
 - Product/design decisions travel by DM: manager -> coordinator -> user -> coordinator -> manager.
@@ -121,7 +123,7 @@ model: <pinned manager model>
 description: Owns <feature> and its review panel.
 tags: [manager, <slug>]
 subscribe: [review.<slug>]
-allowSubscribe: [review.<slug>]
+allowSubscribe: [review.<slug>, review.<slug>.cold-record]
 allowPublish: [review.<slug>]
 capabilities: [spawn]
 ---
@@ -131,8 +133,9 @@ Author matching files for the three panel seats and the cold seat before any spa
 reviewer persona a lane-scoped filename such as `review-<slug>-engineer`; the persona catalog is
 shared by concurrent lanes, so generic filenames collide even when the worktrees and channels do
 not. Panel personas subscribe and publish only on `review.<slug>`. The cold persona lists empty
-subscribe, allowSubscribe, and allowPublish so non-join is a property of the seat, not an instruction.
-Do not reuse or redefine a reviewer persona from another lane.
+subscribe and allowSubscribe so non-join is a property of the seat, not an instruction, and may
+publish only to `review.<slug>.cold-record`. Do not reuse or redefine a reviewer persona from another
+lane.
 
 ```yaml
 ---
@@ -153,14 +156,15 @@ role: reviewer
 model: <pinned cold model, not the author's family>
 subscribe: []
 allowSubscribe: []
-allowPublish: []
+allowPublish: [review.<slug>.cold-record]
 capabilities: []
 ---
 ```
 
 Repeat the panel template for `review-<slug>-security` and `review-<slug>-critic` with different model
 families. If a referee is later required, author `review-<slug>-referee` the same way as the cold seat,
-with empty channel grants, before spawning it.
+with empty subscribe and allowSubscribe plus one dedicated record-channel allowPublish grant, before
+spawning it.
 
 The manager prompt must include all of the following:
 
@@ -192,9 +196,10 @@ The manager prompt must include all of the following:
   author's rationale. The coordinator provisions the
   referee but does not serve as it. If a fold changes code, return the result to the channel panel for
   another final pass and re-pin the cold seat to the new sha with its delivery limit explicitly reset
-  in writing. If that seat is gone, author a fresh cold persona with empty channel grants, spawn it,
-  and brief it under `cold-review` on the new sha as a new one-delivery seat. That is a successor, not
-  a third closure route for the old sha.
+  in writing. If that seat is gone, author a fresh cold persona with empty subscribe and
+  allowSubscribe plus only its dedicated record-channel allowPublish grant, spawn it, and brief it
+  under `cold-review` on the new sha as a new one-delivery seat. That is a successor, not a third
+  closure route for the old sha.
 - Re-resolve the head as an action, not as a later assertion. At briefing, at any completion claim,
   and again before merge, the manager or coordinator first resolves the review target. For a PR, run
   `git ls-remote origin refs/pull/<n>/head` and cross-check `gh pr view <n> --json headRefOid`. For a
@@ -216,13 +221,13 @@ Impact: <observable behavior / compatibility / risk>
 Blocked: <what cannot proceed>; Continuing: <what can proceed>
 ```
 
-- On completion, DM the coordinator the commit id, tests run, all three reviewer dispositions, and
-  residual risks.
+- On completion, DM the coordinator the commit id, tests run, all three panel dispositions, the
+  terminal cold verdict and any public refutations, and residual risks.
 
 ## 4. Seed channels and launch managers
 
-Create the feature channel before inviting the team, with replay enabled and a short operator note.
-Then spawn each manager through `cotal_spawn`:
+Create the panel channel and dedicated cold record channel before inviting the team, with replay
+enabled and a short operator note. Then spawn each manager through `cotal_spawn`:
 
 ```text
 name: mgr-<slug>
@@ -294,11 +299,15 @@ A feature is complete only when:
   leaves uncovered, per `cold-review`. **A named collision is not a third completion path.** If the
   remaining load-bearing approvals share a family, the feature is not complete. Refuse below that
   floor rather than recording a same-family panel as reviewed.
-- **Every cold finding is closed**, by one of exactly two routes and no third: the cold seat itself
-  posted an APPROVE at the exact sha, to the destination its brief named, without having joined the
-  panel channel; for a mesh destination, the cold persona alone may publish to its dedicated record
-  channel and panel personas may not read it; **or** each blocker at that sha was answered by a public
-  refutation from a
+- **A terminal cold verdict landed first-hand before finding closure is evaluated:** APPROVE or named
+  blockers at the exact sha, at the destination the brief named. A silent, failed, or non-verdict cold
+  lifecycle is not completion. On the broker-attested route, the cold persona has empty subscribe and
+  allowSubscribe, may publish only to its dedicated record channel, and panel personas may not read
+  it. A file is a norm-only fallback and cannot satisfy a gate requiring broker-attested poster
+  identity.
+- **After that terminal verdict exists, every cold blocker is closed**, by one of exactly two routes
+  and no third: the cold seat posted APPROVE at the exact sha; **or** each blocker at that sha was
+  answered by a public refutation from a
   permitted party under `cold-review`'s override rule, naming the same exact sha and left standing in
   the record beside the finding. **An unanswered cold blocker is neither, and is not completion.**
   Requiring the seat's own approval *alone* would deadlock the override the first time it was used
@@ -322,7 +331,8 @@ A feature is complete only when:
 - Required focused and integration tests pass.
 - The feature is committed on its own branch.
 - `git status` is clean except an explicitly acknowledged local `.internal` pointer mismatch.
-- The completion DM includes commit, tests, approvals, and residual risk.
+- The completion DM includes commit, tests, panel approvals, the terminal cold verdict and any public
+  refutations, and residual risk.
 
 Park completed teams until integration is requested. Report progress to the user as a compact matrix:
 completed commit, in-review findings, implementing, or decision needed.
@@ -342,4 +352,5 @@ After landing and verification:
 3. Remove lane-scoped reviewer and manager personas only if they are no longer useful.
 4. Restore channel attention/subscriptions if desired.
 
-Never tear down peers before their final result is captured, and never remove an unmerged worktree.
+Never tear down peers before their final result is captured, never remove an unmerged worktree, and
+do not delete the dedicated cold record channel or its retained verdict history as routine cleanup.

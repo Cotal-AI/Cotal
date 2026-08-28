@@ -24,7 +24,8 @@ may be written so that it does.
 - **Never joins the review channel.** Not muted, not quiet. Not joined.
 - **Never shown the panel's findings**, verdict, or round count, including as a list of things
   already ruled out so it can skip them. Skipping-instructions are findings shaped like scope.
-- **DM-only or file-only** with the author or manager, and its verdict goes to the record itself.
+- **DM-only or file-only** input from the author or manager. Its verdict goes first-hand to the
+  dedicated record destination itself.
 - **Never shares a model family with whoever WROTE the change.**
 
 **Why never join, stated correctly.** Joining exposes the seat to the panel's live traffic for as
@@ -73,16 +74,16 @@ A verdict that exists only in a manager's context is not a verdict. It must land
 survives the seat and the manager, and the seat must put it there **itself**, because a relayed
 verdict cannot be distinguished from an invented one.
 
-Two acceptable destinations, and the brief must name one:
-- a Cotal mesh post on a dedicated record channel that the cold seat alone may publish to and the
-  panel cannot read; or
-- a file at an absolute path written into the seat's persona, which the manager then verifies.
+The broker-attested destination is a Cotal mesh post on one dedicated record channel that the cold
+seat may publish only to and the panel cannot read. The cold persona keeps `subscribe: []` and
+`allowSubscribe: []`, and grants `allowPublish` only for that record channel. Publishing the verdict
+does not require joining it.
 
-The first keeps sender identity broker-attested without joining the panel channel. A GitHub comment
-is not a substitute: it identifies the workstation's GitHub account, not the Cotal seat, and a shared
-`gh` credential lets the manager post the same comment. The file destination exists because a seat
-with no record-channel grant can still leave a durable verdict, but it carries the weaker poster norm
-below.
+A file at an absolute path written into the seat's persona remains an explicit fallback when the
+record-channel route is unavailable. It is first-hand delivery only as a norm and cannot satisfy a
+gate that requires broker-attested poster identity. A GitHub comment is not a substitute: it
+identifies the workstation's GitHub account, not the Cotal seat, and a shared `gh` credential lets the
+manager post the same comment.
 
 **Poster is a control only on the Cotal broker-attested destination.** A mesh post carries the Cotal
 principal the broker records. A GitHub comment carries a GitHub account and does not bind that account
@@ -90,15 +91,13 @@ to the Cotal seat. A file at an absolute path carries neither: any process that 
 that path can produce the artifact, including the manager who later "confirms" it by re-reading it.
 First-hand file delivery is therefore a **norm** on the seat and the briefer, not a control a later
 stranger can verify. A gate that treats the file's existence as proof the seat posted has accepted a
-relay. Prefer the comment destination when the seat can reach the change. When the brief must use a
-file, say so in the verdict record, and do not list poster or channel membership among the checkable
-controls for that delivery.
+relay. When the brief must use a file, say so in the verdict record, and do not list poster or channel
+membership among the checkable controls for that delivery.
 
 **Verify at the destination, never at the source.** Re-fetch the landed artifact and grep it for
 content you expect, with a positive control so an empty fetch cannot pass as a clean result. Writes
-that report success and do not land are common: an edit that reports nothing and changes nothing, a
-file write that does not persist while the tree reports clean, and `gh api -f body=@file`, which does
-not expand `@` and writes the literal filename with exit code 0.
+that report success and do not land are common, including an edit that reports nothing and changes
+nothing or a file write that does not persist while the tree reports clean.
 
 ## What the verdict says
 
@@ -151,10 +150,13 @@ The resolution never required talking to the seat:
   A moved head requires a new verification and a new public record; a refutation is never carried
   across a sha any more than a verdict is.
 - **A cold blocker is closed by the seat's own APPROVE or by a permitted public refutation, and by
-  nothing else.** Any completion gate must accept both. A gate that demands the seat's approval alone
-  deadlocks the override the first time it is used correctly, because the seat is one-delivery and may
-  never be told to reconsider: the only exits left are satisfying a finding that was just publicly
-  refuted, or a zero-delta re-pin to manufacture an approval, which is laundering.
+  nothing else.** Any completion gate must first require a landed terminal verdict, APPROVE or named
+  blockers, before it evaluates closure. A silent, failed, or non-verdict lifecycle cannot pass on an
+  empty finding set. After that prerequisite, the gate must accept both closure routes. A gate that
+  demands the seat's approval alone deadlocks the override the first time it is used correctly,
+  because the seat is one-delivery and may never be told to reconsider: the only exits left are
+  satisfying a finding that was just publicly refuted, or a zero-delta re-pin to manufacture an
+  approval, which is laundering.
 
 ## When the vendor set is short
 
@@ -249,5 +251,7 @@ panel breadth does not substitute for it.
 - **Anchoring by vendor.** Seating it on the same family that wrote or graded the change.
 - **Laundering.** Reporting a head as reviewed when the verdicts name a superseded commit.
 - **Relay.** Someone else posting the verdict on its behalf.
+- **Vacuous completion.** Applying blocker-closure logic before a terminal APPROVE or named-blocker
+  verdict has landed, so a silent or failed seat appears to have no open findings.
 - **Confirmation framing.** Any question answerable by agreeing.
 - **Self-certification.** An author publishing a refutation of a finding about their own work.
