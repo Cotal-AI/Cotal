@@ -59,12 +59,12 @@
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
-      "cell": "D: requiredExtensions names the pinned connector",
-      "name": "pre-materialization ignores the pin and demands the env/default connector",
+      "cell": "D: requiredExtensions is root-free (no connector declared pre-parse)",
+      "name": "pre-materialization is revived (hook declares the env/default connector pre-parse)",
       "file": "implementations/cli/src/commands/spawn.ts",
-      "find": "  return [{ kind: \"connector\", name: v.agent ?? personaAgent ?? defaultAgentType(\"claude\") }];",
-      "replace": "  return [{ kind: \"connector\", name: v.agent ?? defaultAgentType(\"claude\") }];",
-      "expectRed": "D: requiredExtensions names the pinned connector",
+      "find": "export function spawnRequiredExtensions(_args: ParsedArgs): readonly ExtensionRef[] {\n  // Deliberately root-free: no persona read, no cwd walk. Any pin the persona carries is applied\n  // (and materialized) inside the spawn body where the target root is authoritative.\n  return [];\n}",
+      "replace": "export function spawnRequiredExtensions(args: ParsedArgs): readonly ExtensionRef[] {\n  const v = args.values as FlagValues<typeof spawnFlags>;\n  return [{ kind: \"connector\", name: v.agent ?? defaultAgentType(\"claude\") }];\n}",
+      "expectRed": "D: requiredExtensions is root-free (no connector declared pre-parse)",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
