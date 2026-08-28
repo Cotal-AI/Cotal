@@ -26,7 +26,6 @@ import ts from "typescript";
 import { readCiSuites, ciChainBody } from "./ci-suites.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const SCRIPT_RE = /(smoke:[A-Za-z0-9:_-]+)/g;
 
 /**
  * Suites deliberately not run by any automated path, each with the reason it is excluded.
@@ -93,10 +92,6 @@ const UNGATED: Record<string, string> = {
   // subject. It is ungated because it needs a real user-auth broker plus a real callout, not because
   // it is obsolete. Deleting it would drop a security proof for shipped code.
   "smoke:ctl-trust:live": "needs a real user-auth broker + callout; pins the LIVE ctl.delivery rail",
-  // The bare `smoke` script — `tsx packages/core/smoke.ts`, documented in AGENTS.md as the core
-  // smoke entry point, and reached by nothing. Invisible to this file until the audited set stopped
-  // filtering on `smoke:`, and found by a second independent derivation rather than by this check.
-  "smoke": "UNTRIAGED",
   // Untriaged debt. These are the ones that should shrink.
   "smoke:attention": "UNTRIAGED",
   "smoke:attention:auth": "UNTRIAGED",
@@ -279,8 +274,8 @@ for (const name of Object.keys(pkg.scripts))
       else if (!(target in scripts)) dangling.push([name, `${target} (absent from ${pkgName})`]);
       continue;
     }
-    for (const m of segment.matchAll(SCRIPT_RE))
-      if (m[1] !== name && !(m[1] in pkg.scripts)) dangling.push([name, m[1]]);
+    for (const target of suitesIn(segment))
+      if (target !== name && !(target in pkg.scripts)) dangling.push([name, target]);
   }
 if (dangling.length) {
   fail++;
@@ -296,8 +291,12 @@ if (dangling.length) {
 // gate quietly running less than it says. An empty chain is the sharp one: `smoke:ci` would exit 0
 // in seconds and every branch would read green.
 const chain = readCiSuites() as string[];
+const missingChainEntries = chain.filter((suite) => !(suite in pkg.scripts));
 const dupes = [...new Set(chain.filter((s, i) => chain.indexOf(s) !== i))].sort();
-if (chain.length < 2) {
+if (missingChainEntries.length) {
+  fail++;
+  console.log(`  ✗ FAIL: bin/smoke/ci-suites.txt names ${missingChainEntries.length} missing script(s): ${missingChainEntries.join(", ")}`);
+} else if (chain.length < 2) {
   fail++;
   console.log(`  ✗ FAIL: bin/smoke/ci-suites.txt holds ${chain.length} suite(s) — a chain that runs nothing exits 0`);
 } else if (dupes.length) {
