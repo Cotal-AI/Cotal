@@ -20,6 +20,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { webProbeTarget } from "../src/commands/status.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -43,6 +44,19 @@ const env = { ...process.env };
 for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
 env.COTAL_HOME = home;
 env.COTAL_SKIP_CONNECTOR_SEED = "1";
+
+const remoteProbe = webProbeTarget("node cotal web --host 192.0.2.10 --port 8123 --no-open");
+check("the CLI status probe uses the explicit dashboard host and port",
+  !("refused" in remoteProbe) && remoteProbe.url.href === "http://192.0.2.10:8123/api/meta", remoteProbe);
+const defaultProbe = webProbeTarget("node cotal web --no-open");
+check("the CLI status probe preserves loopback defaults when --host and --port are absent",
+  !("refused" in defaultProbe) && defaultProbe.url.href === "http://127.0.0.1:7799/api/meta", defaultProbe);
+const wildcardProbe = webProbeTarget("node cotal web --host 0.0.0.0");
+check("the CLI status probe refuses a wildcard process host rather than probing a guessed address",
+  "refused" in wildcardProbe && wildcardProbe.refused.includes("invalid process host"), wildcardProbe);
+const wildcardAliasProbe = webProbeTarget("node cotal web --host 0");
+check("the CLI status probe refuses a canonical wildcard alias",
+  "refused" in wildcardAliasProbe && wildcardAliasProbe.refused.includes("invalid process host"), wildcardAliasProbe);
 
 async function freePort(): Promise<number> {
   const server = createServer();
