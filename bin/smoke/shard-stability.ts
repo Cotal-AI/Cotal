@@ -176,7 +176,11 @@ const shardCountFromWorkflow = (yml: string, requireCommittedInputs = true, requ
   if (requireToolPrelude) {
     const expectedPrelude = [
       ["      - uses: actions/checkout@v6"],
-      ["      - uses: pnpm/action-setup@v6.0.8"],
+      [
+        "      - uses: pnpm/action-setup@v6.0.8",
+        "        with:",
+        "          standalone: true",
+      ],
       [
         "      - uses: actions/setup-node@v6",
         "        with:",
