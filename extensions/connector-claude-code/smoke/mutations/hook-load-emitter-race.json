@@ -1,7 +1,7 @@
 {
   "suite": "extensions/connector-claude-code/smoke/hook-load-and-emitter-race.smoke.ts",
   "guard": "every lifecycle hook is actually loaded and runnable by the host, and the AG-UI emitter never starts against an unbound endpoint",
-  "command": "pnpm smoke:hook-load-emitter-race",
+  "command": "pnpm --filter @cotal-ai/core... build && pnpm smoke:hook-load-emitter-race",
   "completionMarker": "HOOK-LOAD/EMITTER-RACE SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/hook-load-emitter-race.json",
   "why": [
@@ -111,11 +111,11 @@
     {
       "name": "E5 the wait survives but moves AFTER what it guards",
       "file": "extensions/connector-claude-code/src/mcp.ts",
-      "find": "        await agent.whenConnected(20_000);\n        // The events state root.",
-      "replace": "        // The events state root.",
-      "expectRed": "\u2026and the wait comes BEFORE the emitter is set up (the ordering IS the fix)",
-      "cell": "\u2026and the wait comes BEFORE the emitter is set up (the ordering IS the fix)",
-      "note": "Deletes it from before the guarded setup; the presence cell is what would keep this alive if ordering were not asserted separately. Ordering is the entire fix, so it needs its own cell."
+      "find": "        await agent.whenConnected(20_000);\n        return startEmitter();",
+      "replace": "        const emitter = await startEmitter();\n        await agent.whenConnected(20_000);\n        return emitter;",
+      "expectRed": "\u2026and the wait comes BEFORE the emitter starts (the ordering IS the fix)",
+      "cell": "\u2026and the wait comes BEFORE the emitter starts (the ordering IS the fix)",
+      "note": "Runs the actual emitter-start closure before the same bare wait; the presence cell stays green, so only the behavioral ordering assertion can kill it."
     },
     {
       "name": "E6 the bounded wait resolves on timeout instead of failing",

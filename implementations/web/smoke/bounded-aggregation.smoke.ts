@@ -169,6 +169,7 @@ let link: { close(): void } | undefined;
 let link2: { close(): void } | undefined;
 let webChild: ReturnType<typeof spawn> | undefined;
 let rejectingWebChild: ReturnType<typeof spawn> | undefined;
+let hangingWebChild: ReturnType<typeof spawn> | undefined;
 try {
   let up = false;
   for (let i = 0; i < 80; i++) { if (await isReachable(SERVER)) { up = true; break; } await wait(150); }
@@ -389,6 +390,53 @@ try {
 
     rejectingWebChild.kill("SIGKILL");
     rejectingWebChild = undefined;
+
+    // The outer route deadline is independent of any timeout inside one history window. A sparse
+    // subject can complete many windows successfully while walking toward sequence 1, so this arm
+    // gives dmHistory no ending at all and proves the HTTP route still owns a finite refusal.
+    const HANG_PORT = await freePort();
+    let hangLog = "";
+    const hangEnv: NodeJS.ProcessEnv = { ...process.env };
+    for (const key of Object.keys(hangEnv)) if (key.startsWith("COTAL_")) delete hangEnv[key];
+    hangEnv.COTAL_WEB_SMOKE_HANG_DMS = "1";
+    hangingWebChild = spawn(process.execPath, [
+      "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
+      "--server", SERVER, "--space", SPACE, "--port", String(HANG_PORT), "--no-open",
+    ], { stdio: ["ignore", "pipe", "pipe"], env: hangEnv });
+    hangingWebChild.stdout?.on("data", (d: Buffer) => { hangLog += d.toString(); });
+    hangingWebChild.stderr?.on("data", (d: Buffer) => { hangLog += d.toString(); });
+
+    let hangLaunch: string | undefined;
+    for (let i = 0; i < 200 && hangLaunch === undefined; i++) {
+      hangLaunch = hangLog.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
+      await wait(50);
+    }
+    const hangExchange = hangLaunch === undefined
+      ? undefined
+      : await fetch(hangLaunch, { redirect: "manual" }).catch(() => undefined);
+    const hangSession = /(?:^|,\s*)cotal_web_session=([^;]+)/.exec(hangExchange?.headers.get("set-cookie") ?? "")?.[1];
+    const hangAuthed = { cookie: `cotal_web_session=${hangSession}` };
+    const hangReady = hangSession === undefined
+      ? undefined
+      : await fetch(`http://127.0.0.1:${HANG_PORT}/api/roster`, { headers: hangAuthed }).catch(() => undefined);
+    ok("5.3 CONTROL: the never-ending DM probe reaches the shipped web entry point",
+      hangExchange?.status === 302 && hangSession !== undefined && hangReady?.status === 200, hangLog.slice(-400));
+
+    const hangStarted = Date.now();
+    const hangRes = await fetch(`http://127.0.0.1:${HANG_PORT}/api/dms?limit=1`, {
+      headers: hangAuthed, signal: AbortSignal.timeout(CEILING_MS),
+    }).catch((e) => e as Error);
+    const hangMs = Date.now() - hangStarted;
+    const hangBody = hangRes instanceof Error ? undefined : await hangRes.json().catch(() => undefined);
+    ok("5.4 `/api/dms` REFUSES at its own deadline when the inner read never ends",
+      !(hangRes instanceof Error) && hangRes.status === 503,
+      { status: hangRes instanceof Error ? 0 : hangRes.status, hangMs });
+    ok("5.5 the never-ending refusal names the deadline it exceeded",
+      /did not finish within 8000ms/.test(String(hangBody?.error)), hangBody);
+    ok("5.6 the never-ending read is bounded in wall time, not only in prose",
+      hangMs < AGGREGATION_DEADLINE_MS + 5000, hangMs);
+    hangingWebChild.kill("SIGKILL");
+    hangingWebChild = undefined;
   }
 
   // ── 6. THE DEADLINE ENDING, NOT JUST THE FUNCTION ──────────────────────────────────────────────
@@ -497,6 +545,7 @@ try {
 } finally {
   webChild?.kill("SIGKILL");
   rejectingWebChild?.kill("SIGKILL");
+  hangingWebChild?.kill("SIGKILL");
   link?.close();
   link2?.close();
   releaseBroker();
