@@ -84,6 +84,13 @@
       "find": "      const failed = payload.error !== null && payload.error !== undefined;",
       "replace": "      const failed = errRecord !== undefined;",
       "expectRed": "error:a bare string error is a FAILED run, not a finished one"
+    },
+    {
+      "name": "M13 process recovery forgets the WAL's open run, so the native completion is dropped and the next start collides with persisted brackets",
+      "file": "extensions/connector-codex/src/agui-map.ts",
+      "find": "  let open: string | null = resumeRunId ?? null;",
+      "replace": "  let open: string | null = null;",
+      "expectRed": "resume:a task_complete after process recovery closes the WAL's existing run"
     }
   ]
 }

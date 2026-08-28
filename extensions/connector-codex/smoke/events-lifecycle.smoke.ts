@@ -51,6 +51,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, eventChannel, isAguiFramePart, seedChannelRegistry, isReachable } from "@cotal-ai/core";
+import { eventWalLocation, type WalDoc } from "@cotal-ai/connector-core";
 import { killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
@@ -774,6 +775,33 @@ try {
   const livePostRebindTurn = liveOutageTurn + 2;
   const liveFramesFrom = frames2.length;
   const liveStopsBefore = emitterStops(errD);
+  const dPrincipal = operator2.getRoster().find((p) => p.card.name === D)?.card.id ?? "";
+  const dThreadId = rolloutD.match(/rollout-.*?-([0-9a-f-]{36})\.jsonl$/)?.[1] ?? "";
+  const liveWalPath = dPrincipal === "" || dThreadId === ""
+    ? ""
+    : eventWalLocation({ workspaceRoot: homeD, space, principal: dPrincipal, threadId: dThreadId }).walPath;
+  const readLiveWal = (): WalDoc | undefined => {
+    try {
+      return liveWalPath === "" ? undefined : JSON.parse(readFileSync(liveWalPath, "utf8")) as WalDoc;
+    } catch {
+      return undefined;
+    }
+  };
+  const liveWalReady = await settle(
+    "D:the existing WAL is folded before the live-outage turn",
+    () => {
+      const wal = readLiveWal();
+      return wal?.pending === null && wal.frontier.seq > 0 && typeof wal.frontier.sourceCursor === "string";
+    },
+    60_000,
+  );
+  const liveWalBefore = readLiveWal();
+  check("broker-outage-live:setup:the existing WAL has a FOLDED cursor before the outage turn", liveWalReady && liveWalBefore?.pending === null, {
+    ...margin("D:the existing WAL is folded before the live-outage turn"),
+    principal: dPrincipal,
+    threadId: dThreadId,
+    wal: liveWalBefore === undefined ? undefined : { pending: liveWalBefore.pending?.state ?? null, frontier: liveWalBefore.frontier },
+  });
   await dm(D, "TOOLREC OUTAGEGATE the already-running emitter outage turn", operator2);
   const liveGateEntered = await settle(
     "D:the live-outage turn reaches its gate",
@@ -792,6 +820,27 @@ try {
   check("broker-outage-live:setup:the emitter PUBLISHED immediately before the outage", liveStartPublished, {
     ...margin("D:the running emitter publishes the outage turn start"),
     frames: frames2.length - liveFramesFrom,
+  });
+  // Subscriber delivery proves the frame reached the broker, but it does not order the publisher's
+  // later recordAck + fold writes. The outage must begin only after the test-owned WAL has no pending
+  // frame and its own frontier has advanced from the snapshot taken before this turn. Otherwise a
+  // clean implementation can be killed in the sent_unacked window and look exactly like cursor loss.
+  const liveStartFolded = await settle(
+    "D:the published outage start is folded into its WAL",
+    () => {
+      const wal = readLiveWal();
+      return wal?.pending === null &&
+        liveWalBefore !== undefined &&
+        wal.frontier.seq > liveWalBefore.frontier.seq &&
+        wal.frontier.sourceCursor !== liveWalBefore.frontier.sourceCursor;
+    },
+    60_000,
+  );
+  const liveWalAfterStart = readLiveWal();
+  check("broker-outage-live:setup:the published start is DURABLY folded before the broker dies", liveStartFolded, {
+    ...margin("D:the published outage start is folded into its WAL"),
+    before: liveWalBefore === undefined ? undefined : { pending: liveWalBefore.pending?.state ?? null, frontier: liveWalBefore.frontier },
+    after: liveWalAfterStart === undefined ? undefined : { pending: liveWalAfterStart.pending?.state ?? null, frontier: liveWalAfterStart.frontier },
   });
 
   await operator2.stop();
@@ -829,10 +878,24 @@ try {
   check("broker-outage-live:setup:the owned broker restarts again", liveBrokerRestarted);
   operator2 = makeOperator2(servers2);
   await operator2.start();
+  const liveSeatReconnected = await settle(
+    "D:the second reconnect publishes fresh idle presence",
+    () =>
+      operator2?.getRoster().some(
+        (p) => p.card.name === D && p.status === "idle" && p.ts >= liveRestartAt,
+      ) === true,
+    60_000,
+  );
+  check("broker-outage-live:setup:the seat is stably reconnected before the rebind turn", liveSeatReconnected, {
+    ...margin("D:the second reconnect publishes fresh idle presence"),
+    restartAt: liveRestartAt,
+    roster: operator2?.getRoster().map((p) => ({ name: p.card.name, ts: p.ts, status: p.status })),
+  });
   await joinEventsOf(D, operator2);
 
   const liveBindsBefore = publishedThreads(errD).length;
   const liveRebindsBefore = rebindsAnnounced(errD);
+  const liveRebindTurnSentAt = Date.now();
   await dm(D, "the live-outage boundary that rebinds", operator2);
   const liveRebound = await settle(
     "D:the existing-cursor holder rebinds",
@@ -849,20 +912,54 @@ try {
     before: liveRebindsBefore,
     now: rebindsAnnounced(errD),
   });
-  const liveMeshRecovered = await settle(
-    "D:the live-outage recovery refreshes presence",
-    () => operator2?.getRoster().some((p) => p.card.name === D && p.ts >= liveRestartAt) === true,
+  const liveEvents = (): Record<string, unknown>[] =>
+    frames2.slice(liveFramesFrom).flatMap((f) => f.events as unknown as Record<string, unknown>[]);
+  // The announcement above means adopt + flush were QUEUED, not settled. Two independent facts
+  // close the race before the next DM: the outage run is closed on the wire, and the native rebind
+  // turn has returned the seat to a freshly published idle state. The latter is necessary because
+  // Codex can append that turn's terminal after its last same-turn flush; the next boundary then
+  // publishes it, but only after idle proves a new DM cannot be steered into the old turn.
+  const outageRunRecovered = await settle(
+    "D:the existing-cursor recovery closes the outage run",
+    () => {
+      const events = liveEvents();
+      const text = events.filter((e) => e.type === "TEXT_MESSAGE_CONTENT").map((e) => String(e.delta ?? ""));
+      return events.filter((e) => e.type === "RUN_FINISHED").length >= 1 &&
+        openRunsIn(frames2.slice(liveFramesFrom)).length === 0 &&
+        text.filter((delta) => delta === `ok:${liveOutageTurn}`).length === 1;
+    },
     60_000,
   );
-  check("broker-outage-live:the recovered seat writes fresh presence on its first turn", liveMeshRecovered, {
-    ...margin("D:the live-outage recovery refreshes presence"),
-    restartAt: liveRestartAt,
+  check("broker-outage-live:setup:the outage run CLOSES on wire before another turn starts", outageRunRecovered, {
+    ...margin("D:the existing-cursor recovery closes the outage run"),
+    types: liveEvents().map((e) => String(e.type)),
+    frames: frames2.slice(liveFramesFrom).map((f) => ({
+      seq: f.seq,
+      runId: f.runId,
+      types: f.events.map((e) => e.type).join(","),
+    })),
+    open: openRunsIn(frames2.slice(liveFramesFrom)),
+  });
+  const liveRebindTurnIdle = await settle(
+    "D:the native rebind turn returns idle",
+    () =>
+      operator2?.getRoster().some(
+        (p) => p.card.name === D && p.status === "idle" && p.ts >= liveRebindTurnSentAt,
+      ) === true,
+    60_000,
+  );
+  check("broker-outage-live:setup:the native rebind turn is IDLE before the next DM", liveRebindTurnIdle, {
+    ...margin("D:the native rebind turn returns idle"),
+    sentAt: liveRebindTurnSentAt,
     roster: operator2?.getRoster().map((p) => ({ name: p.card.name, ts: p.ts, status: p.status })),
+  });
+  check("broker-outage-live:setup:the replacement holder stays alive through recovery", emitterStops(errD) === liveStopsBefore + 1, {
+    beforeOutage: liveStopsBefore,
+    now: emitterStops(errD),
+    tail: errD.slice(-400),
   });
   await dm(D, "the first turn after the live-emitter rebind", operator2);
 
-  const liveEvents = (): Record<string, unknown>[] =>
-    frames2.slice(liveFramesFrom).flatMap((f) => f.events as unknown as Record<string, unknown>[]);
   const liveComplete = await settle(
     "D:the complete existing-cursor backlog reaches the wire",
     () => {

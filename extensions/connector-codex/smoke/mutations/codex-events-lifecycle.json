@@ -1,5 +1,5 @@
 {
-  "command": "pnpm smoke:codex-events-lifecycle",
+  "command": "pnpm --filter @cotal-ai/connector-core build && pnpm smoke:codex-events-lifecycle",
   "mutations": [
     {
       "name": "L1 a restarted thread is adopted into the bound holder, which is exactly the state this PR opened in",
@@ -91,6 +91,21 @@
       "find": "  read(cursor: string | undefined): Promise<SourceRead<T>> {\n    return this.inner.read(cursor ?? this.start);\n  }",
       "replace": "  private firstRead = true;\n\n  read(cursor: string | undefined): Promise<SourceRead<T>> {\n    const from = this.firstRead && cursor !== undefined ? this.start : cursor ?? this.start;\n    this.firstRead = false;\n    return this.inner.read(from);\n  }",
       "expectRed": "broker-outage-live:an existing cursor resumes the COMPLETE outage backlog once, tool result included"
+    },
+    {
+      "name": "L14 the replacement mapper starts empty instead of inheriting the WAL's open run, so recovery drops its completion and collides at the next start",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "        const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;\n        mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });",
+      "replace": "        const resumeRunId = undefined;\n        mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });",
+      "expectRed": "broker-outage-live:an existing cursor resumes the COMPLETE outage backlog once, tool result included"
+    },
+    {
+      "name": "L15 pending-frame recovery updates the WAL on disk but leaves the live emitter at the pre-pending bracket state",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "    await this.attempt({ id: p.id, E: p.E, body: p.body, retry: true });\n    this.brackets = AguiBrackets.restore(p.brackets);",
+      "replace": "    await this.attempt({ id: p.id, E: p.E, body: p.body, retry: true });",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build",
+      "expectRed": "broker-outage-live:setup:the replacement holder stays alive through recovery"
     }
   ]
 }

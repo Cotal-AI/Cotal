@@ -99,10 +99,14 @@ function outputText(payload: Record<string, unknown>): string {
  *  id, so reading it back would make the two independently derivable and let them disagree.
  * @param mintRunId Injected so a test can make runs deterministic without the mapper owning a
  *  source of randomness.
+ * @param resumeRunId The WAL's already-open AG-UI run after a process-local mapper was lost. The
+ *  source cursor is ordered, so the next native task terminal closes this run before another task
+ *  can start. Without this handoff, the terminal is dropped and the next RUN_STARTED collides with
+ *  the WAL bracket that correctly survived the outage.
  */
-export function createCodexMapper(opts: { threadId: string; mintRunId: () => string }): CodexMapper {
-  const { threadId, mintRunId } = opts;
-  let open: string | null = null;
+export function createCodexMapper(opts: { threadId: string; mintRunId: () => string; resumeRunId?: string }): CodexMapper {
+  const { threadId, mintRunId, resumeRunId } = opts;
+  let open: string | null = resumeRunId ?? null;
   /** The turn this run was opened for, so an abort or a completion for a DIFFERENT turn cannot
    *  close it. Codex retries a failed turn with a fresh turn id, and each retry is its own run. */
   let openTurn: string | undefined;

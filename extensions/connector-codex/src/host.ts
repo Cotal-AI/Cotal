@@ -423,7 +423,11 @@ export async function runCodexHost(): Promise<void> {
         const { walPath, subjectPath } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
         const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
         const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
-        mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID() });
+        // `AguiEmitter.start` settles `pending` before the first pump. Seed the mapper from the
+        // bracket state that will exist AFTER that recovery, not from the folded state before it:
+        // a pending terminal closes the WAL's run without passing through this new mapper.
+        const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
+        mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
         return AguiEmitter.start<CodexRecord>({
           endpoint: agent.ep,
           wal,
