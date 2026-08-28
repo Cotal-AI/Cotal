@@ -205,6 +205,19 @@ try {
   await forged.put(SPACE_AUTH_KEY, JSON.stringify(relabeled));
   await rejects("a relabeled real bundle is rejected by trust-chain validation (label alone is forgeable)",
     () => getSpaceAuth(forged, "decoy-space"), "failed trust-chain validation", seed);
+
+  const malformedSplit = new MemStore();
+  await putSpaceAuth(malformedSplit, auth);
+  const malformedKey = spaceAccountKey(space);
+  const malformedAccount = JSON.parse(malformedSplit.map.get(malformedKey)!) as SpaceAuth;
+  malformedAccount.account.jwt = "MALFORMED_JWT_LEAK_CANARY";
+  await malformedSplit.put(malformedKey, JSON.stringify(malformedAccount));
+  await rejects(
+    "a malformed split account JWT reports an accurate generic trust failure without echoing stored bytes",
+    () => getSpaceAuth(malformedSplit, space),
+    "store values are corrupt, mismatched, or outside one broker/account trust chain",
+    "MALFORMED_JWT_LEAK_CANARY",
+  );
   // HIGH-1 C: the mismatch error echoes ONLY the caller's expected space, NEVER the attacker-controlled
   // STORED space. Store a canary stored-space; ask for a different expected space.
   const canary = new MemStore();
