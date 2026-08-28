@@ -301,7 +301,7 @@ try {
   const EXPECTED = 11;
   if (pass + fail !== EXPECTED)
     throw new Error(`expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped; update EXPECTED deliberately`);
-  if (fail > 0) process.exit(1);
+  if (fail > 0) process.exitCode = 1;
 } finally {
   await stopOwned(authChild, true);
   await stopOwned(broker);
