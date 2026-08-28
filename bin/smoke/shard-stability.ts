@@ -42,7 +42,7 @@
  *   - extra matrix content must not remove or duplicate jobs
  *   - the smoke job must not carry an execution condition
  *   - the shard step must not carry an execution condition
- *   - the shard runner must refuse tracked files changed after checkout
+ *   - the shard runner must compare execution inputs directly with committed blobs
  * Any failed control ABORTS with exit 2 rather than emitting a verdict.
  *
  * A third line once sat here claiming "the known production re-shard 7837b64c->d1aeafc3
@@ -106,8 +106,8 @@ if (!base || !head) {
 // A count change is itself a runner reassignment: comparing both registries under the
 // head count hides every move. The matrix and the shard runner's modulo count are two
 // independent facts, so both must describe the complete index set 0..N-1. The smoke job
-// and shard step must also keep the execution shape this parser models, including a
-// clean-tree guard that binds the runner to the committed inputs graded here. Comments and
+// and shard step must also keep the execution shape this parser models, including an
+// immutable verifier that binds the runner to the committed inputs graded here. Comments and
 // other jobs are not topology either. Any unsupported shape aborts instead of guessing.
 const shardCountFromWorkflow = (yml: string, requireCommittedInputs = true): number | null => {
   const lines = yml.split("\n");
@@ -168,7 +168,7 @@ const shardCountFromWorkflow = (yml: string, requireCommittedInputs = true): num
   const stepBlocks = stepStarts.map((start, index) =>
     steps.slice(start, stepStarts[index + 1] ?? steps.length)
   );
-  const guardedInvocationPattern = /^        run:\s*git diff --exit-code "\$GITHUB_SHA" -- \. && node bin\/smoke\/shard\.mjs \$\{\{ matrix\.shard \}\} ([1-9][0-9]*)\s*(?:#.*)?$/;
+  const guardedInvocationPattern = /^        run:\s*set -o pipefail && git show "\$GITHUB_SHA:bin\/smoke\/verify-shard-inputs\.sh" \| bash -s -- "\$GITHUB_SHA" && node bin\/smoke\/shard\.mjs \$\{\{ matrix\.shard \}\} ([1-9][0-9]*)\s*(?:#.*)?$/;
   const legacyInvocationPattern = /^        run:\s*node bin\/smoke\/shard\.mjs \$\{\{ matrix\.shard \}\} ([1-9][0-9]*)\s*(?:#.*)?$/;
   const invocationPatterns = requireCommittedInputs
     ? [guardedInvocationPattern]
@@ -271,7 +271,7 @@ const commentShadowCount = shardCountFromWorkflow(`jobs:
         shard: [0, 1, 2, 3]
     steps:
       - name: Run shard
-        run: git diff --exit-code "$GITHUB_SHA" -- . && node bin/smoke/shard.mjs \${{ matrix.shard }} 4
+        run: set -o pipefail && git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | bash -s -- "$GITHUB_SHA" && node bin/smoke/shard.mjs \${{ matrix.shard }} 4
   other:
     runs-on: ubuntu-latest
 `);
@@ -282,7 +282,7 @@ const commandMismatchCount = shardCountFromWorkflow(`jobs:
         shard: [0, 1, 2, 3]
     steps:
       - name: Run shard
-        run: git diff --exit-code "$GITHUB_SHA" -- . && node bin/smoke/shard.mjs \${{ matrix.shard }} 5
+        run: set -o pipefail && git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | bash -s -- "$GITHUB_SHA" && node bin/smoke/shard.mjs \${{ matrix.shard }} 5
 `);
 const duplicateMatrixCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -291,7 +291,7 @@ const duplicateMatrixCount = shardCountFromWorkflow(`jobs:
         shard: [0, 1, 2, 2]
     steps:
       - name: Run shard
-        run: git diff --exit-code "$GITHUB_SHA" -- . && node bin/smoke/shard.mjs \${{ matrix.shard }} 4
+        run: set -o pipefail && git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | bash -s -- "$GITHUB_SHA" && node bin/smoke/shard.mjs \${{ matrix.shard }} 4
 `);
 const emptyMatrixCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -300,7 +300,7 @@ const emptyMatrixCount = shardCountFromWorkflow(`jobs:
         shard: [ ]
     steps:
       - name: Run shard
-        run: git diff --exit-code "$GITHUB_SHA" -- . && node bin/smoke/shard.mjs \${{ matrix.shard }} 1
+        run: set -o pipefail && git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | bash -s -- "$GITHUB_SHA" && node bin/smoke/shard.mjs \${{ matrix.shard }} 1
 `);
 const excludedMatrixCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -311,7 +311,7 @@ const excludedMatrixCount = shardCountFromWorkflow(`jobs:
           - shard: 3
     steps:
       - name: Run shard
-        run: git diff --exit-code "$GITHUB_SHA" -- . && node bin/smoke/shard.mjs \${{ matrix.shard }} 4
+        run: set -o pipefail && git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | bash -s -- "$GITHUB_SHA" && node bin/smoke/shard.mjs \${{ matrix.shard }} 4
 `);
 const conditionalJobCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -321,7 +321,7 @@ const conditionalJobCount = shardCountFromWorkflow(`jobs:
         shard: [0, 1, 2, 3]
     steps:
       - name: Run shard
-        run: git diff --exit-code "$GITHUB_SHA" -- . && node bin/smoke/shard.mjs \${{ matrix.shard }} 4
+        run: set -o pipefail && git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | bash -s -- "$GITHUB_SHA" && node bin/smoke/shard.mjs \${{ matrix.shard }} 4
 `);
 const conditionalStepCount = shardCountFromWorkflow(`jobs:
   smoke:
@@ -331,7 +331,7 @@ const conditionalStepCount = shardCountFromWorkflow(`jobs:
     steps:
       - name: Run shard
         if: \${{ false }}
-        run: git diff --exit-code "$GITHUB_SHA" -- . && node bin/smoke/shard.mjs \${{ matrix.shard }} 4
+        run: set -o pipefail && git show "$GITHUB_SHA:bin/smoke/verify-shard-inputs.sh" | bash -s -- "$GITHUB_SHA" && node bin/smoke/shard.mjs \${{ matrix.shard }} 4
 `);
 const unguardedRunnerCount = shardCountFromWorkflow(`jobs:
   smoke:
