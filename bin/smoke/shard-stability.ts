@@ -30,7 +30,7 @@
  *   to remove and permanently silences the mismatch abort below.
  * Run from inside a worktree of the repo. Exits 1 if any pre-existing suite changes shard.
  *
- * CONTROLS BUILT IN, because a bare zero is not evidence. All nine run on every invocation:
+ * CONTROLS BUILT IN, because a bare zero is not evidence. All eleven run on every invocation:
  *   - a forced mid-file insert must report non-zero (the instrument responds at all)
  *   - identity (base vs base) must report 0
  *   - an unchanged 20-item registry under 4 -> 5 shards must move 16 items
@@ -40,6 +40,8 @@
  *   - matrix indices must not repeat or leave gaps
  *   - an empty matrix must not masquerade as shard zero
  *   - extra matrix content must not remove or duplicate jobs
+ *   - the smoke job must not carry an execution condition
+ *   - the shard step must not carry an execution condition
  * Any failed control ABORTS with exit 2 rather than emitting a verdict.
  *
  * A third line once sat here claiming "the known production re-shard 7837b64c->d1aeafc3
@@ -85,7 +87,11 @@ console.log("shard-stability.check v1 starting");
  * 263-suite re-shard past any gate reading only `$?`. Embedding makes the comparison
  * cheap; it does not perform it. THE GATE MUST STILL CHECK AGREEMENT.
  */
-const verdict = (token: "RESHARD" | "STABLE" | "ABORT", message: string, code: 0 | 1 | 2): never => {
+const verdict: (
+  token: "RESHARD" | "STABLE" | "ABORT",
+  message: string,
+  code: 0 | 1 | 2,
+) => never = (token, message, code) => {
   (code === 0 ? console.log : console.error)(message);
   console.log(`shard-stability: ${token}=${code}`);
   process.exit(code);
@@ -98,7 +104,8 @@ if (!base || !head) {
 // BOTH SHARD TOPOLOGIES COME FROM the smoke job in ci.yml.
 // A count change is itself a runner reassignment: comparing both registries under the
 // head count hides every move. The matrix and the shard runner's modulo count are two
-// independent facts, so both must describe the complete index set 0..N-1. Comments and
+// independent facts, so both must describe the complete index set 0..N-1. The smoke job
+// and shard step must also keep the execution shape this parser models. Comments and
 // other jobs are not topology either. Any unsupported shape aborts instead of guessing.
 const shardCountFromWorkflow = (yml: string): number | null => {
   const lines = yml.split("\n");
@@ -106,11 +113,31 @@ const shardCountFromWorkflow = (yml: string): number | null => {
   if (smokeStart < 0) return null;
   const smokeEnd = lines.findIndex((line, index) => index > smokeStart && /^  \S/.test(line));
   const smoke = lines.slice(smokeStart + 1, smokeEnd < 0 ? undefined : smokeEnd);
+  const jobLines = smoke.filter((line) => /^    \S/.test(line) && !/^    #/.test(line));
+  const jobKeys = jobLines
+    .map((line) => /^    ([a-z][a-z0-9-]*):/i.exec(line)?.[1] ?? null)
+    .filter((key): key is string => key !== null);
+  const allowedJobKeys = new Set(["name", "timeout-minutes", "runs-on", "strategy", "steps"]);
+  if (
+    jobKeys.length !== jobLines.length ||
+    jobKeys.some((key) => !allowedJobKeys.has(key)) ||
+    new Set(jobKeys).size !== jobKeys.length
+  ) return null;
 
   const strategyStart = smoke.findIndex((line) => /^    strategy:\s*(?:#.*)?$/.test(line));
   if (strategyStart < 0) return null;
   const strategyEnd = smoke.findIndex((line, index) => index > strategyStart && /^    \S/.test(line));
   const strategy = smoke.slice(strategyStart + 1, strategyEnd < 0 ? undefined : strategyEnd);
+  const strategyLines = strategy.filter((line) => /^      \S/.test(line) && !/^      #/.test(line));
+  const strategyKeys = strategyLines
+    .map((line) => /^      ([a-z][a-z0-9-]*):/i.exec(line)?.[1] ?? null)
+    .filter((key): key is string => key !== null);
+  const allowedStrategyKeys = new Set(["fail-fast", "matrix"]);
+  if (
+    strategyKeys.length !== strategyLines.length ||
+    strategyKeys.some((key) => !allowedStrategyKeys.has(key)) ||
+    new Set(strategyKeys).size !== strategyKeys.length
+  ) return null;
 
   const matrixStart = strategy.findIndex((line) => /^      matrix:\s*(?:#.*)?$/.test(line));
   if (matrixStart < 0) return null;
@@ -127,10 +154,30 @@ const shardCountFromWorkflow = (yml: string): number | null => {
   const indices = tokens.map(Number);
   if (indices.some((value, index) => value !== index)) return null;
 
-  const invocations = smoke
-    .map((line) => /^        run:\s*node bin\/smoke\/shard\.mjs \$\{\{ matrix\.shard \}\} ([1-9][0-9]*)\s*(?:#.*)?$/.exec(line))
+  const stepsStart = smoke.findIndex((line) => /^    steps:\s*(?:#.*)?$/.test(line));
+  if (stepsStart < 0) return null;
+  const stepsEnd = smoke.findIndex((line, index) => index > stepsStart && /^    \S/.test(line));
+  const steps = smoke.slice(stepsStart + 1, stepsEnd < 0 ? undefined : stepsEnd);
+  const stepStarts = steps
+    .map((line, index) => /^      - \S/.test(line) ? index : -1)
+    .filter((index) => index >= 0);
+  if (stepStarts.length === 0) return null;
+  if (steps.slice(0, stepStarts[0]).some((line) => !/^\s*(?:#.*)?$/.test(line))) return null;
+  const stepBlocks = stepStarts.map((start, index) =>
+    steps.slice(start, stepStarts[index + 1] ?? steps.length)
+  );
+  const invocationPattern = /^        run:\s*node bin\/smoke\/shard\.mjs \$\{\{ matrix\.shard \}\} ([1-9][0-9]*)\s*(?:#.*)?$/;
+  const shardSteps = stepBlocks.filter((block) => block.some((line) => invocationPattern.test(line)));
+  if (shardSteps.length !== 1) return null;
+  const activeShardStep = shardSteps[0].filter((line) => !/^\s*(?:#.*)?$/.test(line));
+  const invocations = activeShardStep
+    .map((line) => invocationPattern.exec(line))
     .filter((match): match is RegExpExecArray => match !== null);
-  if (invocations.length !== 1) return null;
+  if (
+    activeShardStep.length !== 2 ||
+    !/^      - name:\s*\S/.test(activeShardStep[0]) ||
+    invocations.length !== 1
+  ) return null;
   const commandCount = Number(invocations[0][1]);
   return commandCount === indices.length ? commandCount : null;
 };
@@ -258,6 +305,26 @@ const excludedMatrixCount = shardCountFromWorkflow(`jobs:
       - name: Run shard
         run: node bin/smoke/shard.mjs \${{ matrix.shard }} 4
 `);
+const conditionalJobCount = shardCountFromWorkflow(`jobs:
+  smoke:
+    if: \${{ false }}
+    strategy:
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - name: Run shard
+        run: node bin/smoke/shard.mjs \${{ matrix.shard }} 4
+`);
+const conditionalStepCount = shardCountFromWorkflow(`jobs:
+  smoke:
+    strategy:
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - name: Run shard
+        if: \${{ false }}
+        run: node bin/smoke/shard.mjs \${{ matrix.shard }} 4
+`);
 console.log(`CONTROL forced mid-file insert -> ${forced.length} moved  (must be > 0)`);
 console.log(`CONTROL identity               -> ${identity.length} moved  (must be 0)`);
 console.log(`CONTROL shard count 4 -> 5     -> ${countIncrease.length} moved  (must be 16)`);
@@ -267,10 +334,13 @@ console.log(`CONTROL command count mismatch -> ${commandMismatchCount ?? "refuse
 console.log(`CONTROL duplicate matrix index -> ${duplicateMatrixCount ?? "refused"}       (must be refused)`);
 console.log(`CONTROL empty matrix           -> ${emptyMatrixCount ?? "refused"}       (must be refused)`);
 console.log(`CONTROL excluded matrix shard  -> ${excludedMatrixCount ?? "refused"}       (must be refused)`);
+console.log(`CONTROL conditional smoke job  -> ${conditionalJobCount ?? "refused"}       (must be refused)`);
+console.log(`CONTROL conditional shard step -> ${conditionalStepCount ?? "refused"}       (must be refused)`);
 if (
   forced.length === 0 || identity.length !== 0 || countIncrease.length !== 16 ||
   countDecrease.length !== 16 || commentShadowCount !== 4 ||
-  commandMismatchCount !== null || duplicateMatrixCount !== null || emptyMatrixCount !== null || excludedMatrixCount !== null
+  commandMismatchCount !== null || duplicateMatrixCount !== null || emptyMatrixCount !== null || excludedMatrixCount !== null ||
+  conditionalJobCount !== null || conditionalStepCount !== null
 ) {
   verdict("ABORT", "controls failed, this run cannot be trusted", 2);
 }
