@@ -74,7 +74,7 @@ function stopFailure(ev: HookEvent): { message: string; code?: string } | undefi
 
 export interface ClaudeHandleDeps {
   /** The session's AG-UI emitter, read lazily — `mcp.ts` assigns it after the handler exists. */
-  events?: () => AguiEmitterHolder<ClaudeEntry> | undefined;
+  events?: () => AguiEmitterHolder<ClaudeEntry, unknown> | undefined;
 }
 
 /** Prefixed to a batch containing anything whose previous delivery went unconfirmed. */
@@ -124,7 +124,7 @@ export interface ClaudeHooks {
  * `drive()` OWNS delivery; this connector only hands a reply off, so the ack binds to the handoff.
  */
 export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
-  const events = (): AguiEmitterHolder<ClaudeEntry> | undefined => deps.events?.();
+  const events = (): AguiEmitterHolder<ClaudeEntry, unknown> | undefined => deps.events?.();
   /**
    * Last tool Claude tried to use, captured on PreToolUse. When a permission Notification
    * fires moments later, this is *what* it's blocked on — so the dashboard shows the actual
@@ -189,7 +189,11 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     try {
       switch (event) {
         case "SessionStart": {
-          events()?.adopt(ev.transcript_path); // read from HERE — a resumed session never republishes history
+          // `source` is the runtime's explicit new-vs-retained discriminator. A startup prompt may
+          // already be in the file before this hook; resume/fork/clear/compact must still adopt at the
+          // current boundary and never republish history. The holder carries the value opaquely to
+          // the connector-owned source factory.
+          events()?.adopt(ev.transcript_path, ev.source);
           // Claude Code reports the session's actual model here (the ONLY hook that carries it; absent
           // after /clear or conversation recovery, so guard on string). Surface it in presence when the
           // operator didn't pin one. A mid-session /model switch fires no hook, so this holds until the

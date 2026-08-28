@@ -544,3 +544,9 @@ smoke:session-channels
 smoke:jcode-private-lifecycle
 smoke:hook-load-emitter-race
 smoke:spawn-name-actor
+# Claude writes a positional startup prompt before SessionStart reaches the connector. A generic
+# fresh adopt then parks after the only run opener and all later assistant/tool records map to zero.
+# `source: startup` reads this genuinely-new session from byte zero; resume/fork/clear/compact still
+# adopt retained history at the current boundary, and a recovered WAL cursor always wins. Appended
+# because this suite has no ordering dependency and append-only additions preserve shard membership.
+smoke:claude-start-source

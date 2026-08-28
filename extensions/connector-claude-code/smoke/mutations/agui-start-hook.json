@@ -1,0 +1,22 @@
+{
+  "suite": "extensions/connector-claude-code/smoke/agui-run-error.smoke.ts",
+  "guard": "Claude's documented SessionStart.source value crosses the shipped hook and holder into the transcript source factory, so the pre-existing startup prompt opens the first run",
+  "command": "pnpm smoke:claude-run-error",
+  "completionMarker": "claude-run-error smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/agui-start-hook.json",
+  "why": [
+    "A source-policy unit test can prove what startup means and still miss the production seam that",
+    "drops the runtime value before the factory. This mutation removes only the second argument from",
+    "the shipped SessionStart hook. The real broker suite writes the prompt before SessionStart and",
+    "must then lose turn one exactly as the live manager-spawned session did."
+  ],
+  "mutations": [
+    {
+      "name": "H1 drop SessionStart.source at the hook-to-holder boundary",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "events()?.adopt(ev.transcript_path, ev.source);",
+      "replace": "events()?.adopt(ev.transcript_path);",
+      "expectRed": "control:BOTH turns reached the subject, in order"
+    }
+  ]
+}

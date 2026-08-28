@@ -159,6 +159,32 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
     return 0; // no newline anywhere: nothing in the file is a complete record yet
   }
 
+  /**
+   * Read every complete record from byte zero.
+   *
+   * This is deliberately NOT the meaning of `read(undefined)`: an ordinary fresh adopt must still
+   * park at the current complete boundary and never replay retained history. A connector may call
+   * this only when its own runtime has explicitly said the file is a NEW session and records can
+   * already exist before the connector's first lifecycle hook (Claude's positional startup prompt
+   * is one such case).
+   *
+   * The cursor is minted by the same identity + seal path as every other read. Constructing one in a
+   * connector would duplicate the opaque cursor format and eventually drift from it.
+   */
+  async readFromBeginning(): Promise<SourceRead<T>> {
+    const fh = await open(this.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    let cursor: string;
+    try {
+      const st = await fh.stat();
+      cursor = `${String(st.dev)}:${String(st.ino)}:0:${await JsonlFileSource.sealAt(fh, 0)}`;
+    } finally {
+      await fh.close();
+    }
+    // A replacement between the two opens is detected by `read`'s file-identity check. Appends are
+    // ordinary: starting at zero still means consuming every complete record now present.
+    return this.read(cursor);
+  }
+
   async read(cursor: string | undefined): Promise<SourceRead<T>> {
     // O_NOFOLLOW: a symlinked source is REFUSED, not followed.
     //
