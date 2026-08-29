@@ -84,10 +84,14 @@
  *   OUT replacement transport restoration (the new watcher still seeds true) and every other cell:
  *       none enters doRebuild's explicit no-nc window.
  *
- * M16 removes the epoch check from watchStatus's catch handler.
- *   IN  stale status iterator THROW is ignored after replacement.
+ * M16 removes the defensive epoch check from watchStatus's catch handler.
+ *   IN  controlled stale status iterator THROW is ignored after replacement.
  *   OUT the stale in-loop status cell (different guard), all ordinary edges, reconnect, stop, and
  *       diagnostic cells: none makes a replaced iterator reject.
+ *   REAL REACHABILITY: intentionally unclaimed. Five runs of the real broker companion exercised
+ *       loss, reconnect, manual epoch replacement, and terminal close on pinned nats.js 3.4.0 with
+ *       temporary catch instrumentation; every iterator ended normally and the catch fired zero
+ *       times. This cell grades defensive symmetry for a future/runtime rejection, not a shipped path.
  *
  * Harness correction after the first 15-mutation run: the completion marker still named the former
  * 17-cell total after the manual-reconnect cells raised the suite to 19. Every mutation printed its
@@ -281,7 +285,7 @@ check(
 epoch1.queue.fail(new Error("stale iterator failure"));
 await tick();
 check(
-  "a stale status iterator THROW is ignored after the replacement epoch is current",
+  "a controlled stale status iterator THROW is ignored after the replacement epoch is current",
   !endpointErrors.includes("stale iterator failure"),
   { endpointErrors },
 );

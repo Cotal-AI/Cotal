@@ -2608,6 +2608,10 @@ export class CotalEndpoint extends EventEmitter {
         this.emit("error", describeStatusError(s.error));
       }
     })().catch((e) => {
+      // Defensive symmetry with the reachable in-loop epoch guard above. Measured against five real
+      // broker loss/reconnect/terminal-close cycles on pinned nats.js 3.4.0: status iterators ended
+      // normally and this catch never fired. Keep an old epoch from surfacing an error if a runtime or
+      // future client version can reject here, but do not treat this as a currently reachable edge.
       if (!this.stopped && this.nc === nc) this.emit("error", e as Error);
     });
     // The transport is already live when connect() returns, while the Cotal bind below is still in
