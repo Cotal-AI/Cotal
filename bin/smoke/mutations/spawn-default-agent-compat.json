@@ -1,0 +1,43 @@
+{
+  "suite": "bin/smoke/spawn-default-agent-compat.smoke.ts",
+  "guard": "detached spawn omits defaultAgent when an explicit agent wins or no caller default exists, while preserving a non-empty caller default as a distinct field",
+  "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:spawn-default-agent-compat",
+  "completionMarker": "a non-empty caller default remains distinct from the explicit agent field",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/spawn-default-agent-compat.json",
+  "why": [
+    "The suite imports the exact request builder used by detached spawn and validates its in-memory output against the closed manager schema from immediately before defaultAgent was added.",
+    "Every mutation builds the CLI first and rebuilds after restore because the request builder imports workspace packages through their dist entrypoints.",
+    "The three mutations separately restore the irrelevant explicit-default property, restore the undefined own-property, and drop the caller-default path."
+  ],
+  "progressPattern": "^[✓✗]",
+  "minTicks": 4,
+  "mutations": [
+    {
+      "cell": "explicit --agent must omit the irrelevant caller default",
+      "name": "restore irrelevant caller default beside explicit flag",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "...(values.agent !== undefined ? { agent: values.agent } : callerDefault !== undefined ? { defaultAgent: callerDefault } : {}),",
+      "replace": "...(values.agent !== undefined ? { agent: values.agent, defaultAgent: callerDefault } : callerDefault !== undefined ? { defaultAgent: callerDefault } : {}),",
+      "expectRed": "explicit --agent must omit the irrelevant caller default",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "cell": "an unset caller default must not create a defaultAgent own-property",
+      "name": "restore undefined defaultAgent own-property",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "...(values.agent !== undefined ? { agent: values.agent } : callerDefault !== undefined ? { defaultAgent: callerDefault } : {}),",
+      "replace": "...(values.agent !== undefined ? { agent: values.agent } : { defaultAgent: callerDefault }),",
+      "expectRed": "an unset caller default must not create a defaultAgent own-property",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "cell": "a non-empty caller default must remain defaultAgent",
+      "name": "drop the non-empty caller default path",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "...(values.agent !== undefined ? { agent: values.agent } : callerDefault !== undefined ? { defaultAgent: callerDefault } : {}),",
+      "replace": "...(values.agent !== undefined ? { agent: values.agent } : {}),",
+      "expectRed": "a non-empty caller default must remain defaultAgent",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    }
+  ]
+}

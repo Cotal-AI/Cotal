@@ -627,3 +627,8 @@ smoke:user-auth-launch:live
 # sibling silently. Drives the real CLI against a real broker. Appended so every existing shard
 # assignment remains unchanged.
 smoke:up-multi-space-render:live
+# Detached spawn validates the in-memory request against the manager's fetched closed schema before
+# serialization. Keep explicit-agent and no-default requests compatible with the actual manager
+# contract from before defaultAgent existed, while retaining caller-default precedence on new peers.
+# Appended so every existing shard assignment remains unchanged.
+smoke:spawn-default-agent-compat
