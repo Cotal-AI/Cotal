@@ -1,0 +1,27 @@
+{
+  "suite": "implementations/cli/smoke/status-persona-root.smoke.ts",
+  "guard": "status reports the persona root a bare spawn will actually use and marks divergence from the folder",
+  "command": "pnpm --filter @cotal-ai/cli typecheck && pnpm smoke:status-persona-root",
+  "progressPattern": "✓",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/fixtures/status-persona-root.mutations.json",
+  "why": [
+    "ONE MUTATION, AND IT REMOVES SPAWN TRUTH FROM STATUS. Assigning spawnRoot from folder makes the",
+    "comparison agree by construction even when the selected mesh points elsewhere, recreating the",
+    "false status card that advertised the folder's default persona as if spawn could launch it.",
+    "",
+    "The mutation is compile-clean and leaves target resolution intact. The counting smoke continues",
+    "through the full matrix and must redden the exact cell that requires the selected mesh's catalog",
+    "path to appear: `divergent: the spawn root is named too`."
+  ],
+  "mutations": [
+    {
+      "name": "status compares the folder catalog with itself instead of spawn truth",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "  const spawnRoot = selected.target.personaRoot;",
+      "replace": "  const spawnRoot = folder;",
+      "expectRed": "divergent: the spawn root is named too",
+      "cell": "divergent: the spawn root is named too",
+      "note": "This preserves a valid string and keeps TypeScript green while making divergence detection impossible by construction."
+    }
+  ]
+}

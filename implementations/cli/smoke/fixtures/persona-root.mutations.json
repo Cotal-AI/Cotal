@@ -1,0 +1,27 @@
+{
+  "suite": "implementations/cli/smoke/persona-root.smoke.ts",
+  "guard": "persona catalog readers answer for the resolved mesh root rather than the cwd",
+  "command": "pnpm --filter @cotal-ai/cli typecheck && pnpm smoke:persona-root",
+  "progressPattern": "✓",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/fixtures/persona-root.mutations.json",
+  "why": [
+    "ONE MUTATION, AND IT RESTORES THE SHIPPED DEFECT. Making personasDir ignore its required root",
+    "sends every shared reader back to process.cwd(): personas list and the completers describe the",
+    "folder the operator stands in while spawn still launches from the selected mesh's catalog.",
+    "",
+    "The mutation is compile-clean and the smoke drives the real personas command before comparing",
+    "its printed answer with spawn's product reader. It must redden `catalog: personas list prints the",
+    "MESH's personas`; a general non-zero or a different failing cell is not accepted as proof."
+  ],
+  "mutations": [
+    {
+      "name": "the persona catalog ignores the resolved root and reads from the cwd",
+      "file": "implementations/cli/src/lib/personas.ts",
+      "find": "  return join(root, \".cotal\", \"agents\");",
+      "replace": "  return join(process.cwd(), \".cotal\", \"agents\");",
+      "expectRed": "catalog: personas list prints the MESH's personas",
+      "cell": "catalog: personas list prints the MESH's personas",
+      "note": "This exact substitution keeps TypeScript green while restoring the silent cwd fallback the required root argument removed."
+    }
+  ]
+}
