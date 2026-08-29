@@ -4185,11 +4185,19 @@ export class CotalEndpoint extends EventEmitter {
   async recallChannel(
     channel: string,
     sinceSeq: number,
+    opts: { replayEligible?: boolean } = {},
   ): Promise<{ messages: CotalMessage[]; dropped: boolean }> {
     if (!this.jsm) throw new Error(this.notLiveMsg());
     if (!isConcreteChannel(channel)) return { messages: [], dropped: false };
-    const policy = await this.joinPolicyFresh(channel);
-    if (!policy.replay) return { messages: [], dropped: false };
+    // A focus receiver may already have ack-dropped a live body after an authoritative replay=true
+    // read. A later registry edit cannot revoke the only remaining copy of that body. The connector
+    // carries that ingest-time eligibility for the focus episode; absent it, use today's policy and
+    // keep the ordinary replay gate. This is NOT general history bypass: the read starts at the focus
+    // watermark and the connector excludes every body it retained locally after replay turned off.
+    if (opts.replayEligible !== true) {
+      const policy = await this.joinPolicyFresh(channel);
+      if (!policy.replay) return { messages: [], dropped: false };
+    }
     const subject = chatSubject(this.space, "*", "*", channel);
     let raw: JsMsg[];
     try {

@@ -262,6 +262,10 @@ export class MeshAgent extends EventEmitter {
   private recvKeySeq = 0;
   private focusExcludedIds = new Map<string, string>();
   private focusRecallUnsafeChannels = new Set<string>();
+  /** Concrete channels for which this focus episode actually ack-dropped at least one body after an
+   * authoritative replay=true read. Recall must honor that ingest-time promise even if an operator
+   * flips replay off before cotal_inbox runs (#977 review). */
+  private focusRecallEligibleChannels = new Set<string>();
   /** Focus-policy decisions are serial because their authoritative registry read is asynchronous.
    * Ordinary open/dnd/quiet/muted ingest stays synchronous; only the branch that may ack-drop under
    * focus enters this chain. */
@@ -524,6 +528,7 @@ export class MeshAgent extends EventEmitter {
 
           const recallable = item.channel !== undefined && await this.ep.focusRecallable(item.channel);
           if (recallable) {
+            if (item.channel) this.focusRecallEligibleChannels.add(item.channel);
             this.protectDisposition(item.id, "drop");
             delivery.ack();
             if (item.mentionsMe) this.emit("mention-wake", item);
@@ -1018,6 +1023,7 @@ export class MeshAgent extends EventEmitter {
       await this.requireConnected();
       this.focusExcludedIds.clear();
       this.focusRecallUnsafeChannels.clear();
+      this.focusRecallEligibleChannels.clear();
       this.enteringFocus = this._attention !== "focus";
       try {
         this.focusSince = await this.ep.chatFrontier();
@@ -1025,6 +1031,7 @@ export class MeshAgent extends EventEmitter {
         this.enteringFocus = false;
         this.focusExcludedIds.clear();
         this.focusRecallUnsafeChannels.clear();
+        this.focusRecallEligibleChannels.clear();
         throw error;
       }
       this.enteringFocus = false;
@@ -1034,6 +1041,7 @@ export class MeshAgent extends EventEmitter {
       this.focusSince = undefined;
       this.focusExcludedIds.clear();
       this.focusRecallUnsafeChannels.clear();
+      this.focusRecallEligibleChannels.clear();
       this.resetRecallWalk();
     }
     this._attention = mode;
@@ -1060,7 +1068,9 @@ export class MeshAgent extends EventEmitter {
         droppedChannels.push(channel);
         continue;
       }
-      const { messages, dropped } = await this.ep.recallChannel(channel, this.focusSince);
+      const { messages, dropped } = await this.ep.recallChannel(channel, this.focusSince, {
+        replayEligible: this.focusRecallEligibleChannels.has(channel),
+      });
       for (const m of messages) {
         if (!this.focusExcludedIds.has(m.id)) items.push(this.toInboxItem(m, "channel", true));
       }

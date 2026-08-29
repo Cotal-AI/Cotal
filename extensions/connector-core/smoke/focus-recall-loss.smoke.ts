@@ -29,16 +29,16 @@ const awaitExit = (p: ReturnType<typeof spawn>) => new Promise<void>((resolve) =
 
 const cfg: AgentConfig = {
   space, name: "Otto", role: "reviewer", servers,
-  subscribe: ["open-ch", "quiet-ch", "team.>"],
-  allowSubscribe: ["open-ch", "quiet-ch", "team.>"],
-  allowPublish: ["open-ch", "quiet-ch", "team.x"],
+  subscribe: ["open-ch", "quiet-ch", "flip-ch", "team.>"],
+  allowSubscribe: ["open-ch", "quiet-ch", "flip-ch", "team.>"],
+  allowPublish: ["open-ch", "quiet-ch", "flip-ch", "team.x"],
   kind: "agent", tls: false, id: "otto_issue977", lifecycleUid: mintLifecycleUid(),
 };
 const agent = new MeshAgent(cfg); agent.on("error", () => {});
 const wakes: InboxItem[] = []; agent.on("mention-wake", (i: InboxItem) => wakes.push(i));
 const pub = new CotalEndpoint({
   space, servers, card: { name: "Pubby", kind: "agent", id: "pubby_issue977" },
-  channels: ["open-ch", "quiet-ch", "team.x"], lifecycleUid: mintLifecycleUid(),
+  channels: ["open-ch", "quiet-ch", "flip-ch", "team.x"], lifecycleUid: mintLifecycleUid(),
 });
 pub.on("error", () => {});
 const inbox = cotalToolSpecs(cfg).find((s) => s.name === "cotal_inbox")!;
@@ -46,7 +46,7 @@ const inbox = cotalToolSpecs(cfg).find((s) => s.name === "cotal_inbox")!;
 const result: Record<string, unknown> = { sha: "7c0b24a971c22186145d372a0364437d6f8b8b22", broker: "nats-server 2.14.0" };
 try {
   for (let i = 0; i < 50 && !(await isReachable(servers)); i++) await sleep(100);
-  await seedChannelRegistry({ servers, space, file: { defaults: { replay: false }, channels: { "open-ch": { replay: true }, "quiet-ch": { replay: false }, "team.x": { replay: true } } } });
+  await seedChannelRegistry({ servers, space, file: { defaults: { replay: false }, channels: { "open-ch": { replay: true }, "quiet-ch": { replay: false }, "flip-ch": { replay: true }, "team.x": { replay: true } } } });
   await pub.start(); agent.start();
   for (let i = 0; i < 50 && !agent.connected; i++) await sleep(100);
   assert.equal(agent.connected, true, "agent connects");
@@ -86,21 +86,45 @@ try {
   result.wildcard = { joinedChannels: agent.joinedChannels(), recallTexts: wildRecall.items.map((i) => i.text), droppedChannels: wildRecall.droppedChannels, inboxText: wildInbox.text,
     bodiesRecovered: wildBodiesInInbox, lossReported: wildRecall.droppedChannels.includes("team.>") || wildRecall.droppedChannels.includes("team.x") };
 
+  // Temporal case from independent review: ingest proves replay=true and ack-drops, then an operator
+  // flips the registry off before recall. The earlier promise must still be kept. Traffic arriving
+  // after the flip is retained locally and excluded from the historical copy.
+  await pub.multicast("flip-before-ambient", { channel: "flip-ch" });
+  await pub.multicast("flip-before-mention", { channel: "flip-ch", mentions: ["otto"] });
+  assert.equal(await until(() => wakes.some((i) => i.text === "flip-before-mention")), true, "pre-flip mention wakes");
+  await sleep(250);
+  await seedChannelRegistry({ servers, space, file: { channels: { "flip-ch": { replay: false } } } });
+  await pub.multicast("flip-after-ambient", { channel: "flip-ch" });
+  await pub.multicast("flip-after-mention", { channel: "flip-ch", mentions: ["otto"] });
+  assert.equal(await until(() => wakes.some((i) => i.text === "flip-after-mention")), true, "post-flip mention wakes");
+  await sleep(250);
+  const flipRecall = await agent.recallAmbient();
+  const flipInbox = await inbox.run(agent, cfg, { peek: true });
+  const flipBodies = ["flip-before-ambient", "flip-before-mention", "flip-after-ambient", "flip-after-mention"];
+  result.policyFlip = {
+    recallTexts: flipRecall.items.map((i) => i.text), inboxText: flipInbox.text,
+    allBodiesRecovered: flipBodies.every((body) => flipInbox.text.includes(body)),
+    postFlipNotDuplicatedByRecall: !flipRecall.items.some((i) => i.text.startsWith("flip-after-")),
+  };
+
   console.log(JSON.stringify(result, null, 2));
   const off = result.replayOff as { bodiesRecovered: boolean; lossReported: boolean };
   const wild = result.wildcard as { bodiesRecovered: boolean; lossReported: boolean };
   const failures: string[] = [];
   if (!(off.bodiesRecovered || off.lossReported)) failures.push("replay-off body must be returned or loss reported");
   if (!(wild.bodiesRecovered || wild.lossReported)) failures.push("wildcard body must be returned or loss reported");
+  const flip = result.policyFlip as { allBodiesRecovered: boolean; postFlipNotDuplicatedByRecall: boolean };
+  if (!flip.allBodiesRecovered) failures.push("policy-flip bodies must all be returned");
+  if (!flip.postFlipNotDuplicatedByRecall) failures.push("post-flip local bodies must not duplicate through recall");
 
   // End-user pull semantics: one destructive cotal_inbox call returns each target body once and
   // clears the locally retained lane; the next call cannot repeat them. Stream-recalled controls are
   // read-only but advance their cursor when delivered, so they also disappear from the second reply.
   const delivered = await inbox.run(agent, cfg, { peek: false });
-  for (const body of ["off-ambient", "off-mention", "wild-ambient", "wild-mention"])
+  for (const body of ["off-ambient", "off-mention", "wild-ambient", "wild-mention", "flip-before-ambient", "flip-before-mention", "flip-after-ambient", "flip-after-mention"])
     if (delivered.text.split(body).length - 1 !== 1) failures.push(`${body} delivered exactly once`);
   const after = await inbox.run(agent, cfg, { peek: false });
-  for (const body of ["off-ambient", "off-mention", "wild-ambient", "wild-mention"])
+  for (const body of ["off-ambient", "off-mention", "wild-ambient", "wild-mention", "flip-before-ambient", "flip-before-mention", "flip-after-ambient", "flip-after-mention"])
     if (after.text.includes(body)) failures.push(`${body} not repeated after destructive pull`);
   result.destructivePull = { delivered: delivered.text, after: after.text };
   console.log("ISSUE_977_ACCEPTANCE_COMPLETE");

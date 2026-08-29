@@ -33,6 +33,14 @@
       "find": "return (await this.joinPolicyFresh(channel)).replay;",
       "replace": "return true;",
       "expectRed": "replay-off body must be returned or loss reported"
+    },
+    {
+      "cell": "ingest-time replay promise survives a later policy revoke",
+      "name": "recheck only current policy during recall",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "replayEligible: this.focusRecallEligibleChannels.has(channel),",
+      "replace": "replayEligible: false,",
+      "expectRed": "policy-flip bodies must all be returned"
     }
   ]
 }
