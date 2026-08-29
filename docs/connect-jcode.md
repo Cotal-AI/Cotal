@@ -7,9 +7,10 @@ creates one private Jcode Harness API instance per seat, one Jcode session insid
 the normal `cotal_*` tool surface through Jcode's documented stdio MCP configuration.
 
 **Beta** means the supported path is deliberately narrow: a fresh private session, prompt
-injection, presence, managed start/stop, and an attached TUI work. Features that do not preserve
-that private session's mesh surface fail loud: `--resume`, exact-session continuation,
-`--variant`, `--share-tools`, `--events`, and connector `--opt` values are not supported.
+injection, presence, managed start/stop, requested reasoning effort, and an attached TUI work.
+Features that do not preserve that private session's mesh surface fail loud: `--resume`,
+exact-session continuation, `--share-tools`, `--events`, and connector `--opt` values are not
+supported.
 
 ## Install
 
@@ -122,8 +123,23 @@ quiet ambient from that host-owned queue; its shared optional `peek` argument is
 `--model` is passed to Jcode's session-level Harness API model selector. Jcode validates the model
 against the active provider, then the connector reads runtime identity back and refuses startup if
 it is not the requested model; a seat is never allowed to join under a model label it did not
-receive. The connector does not currently offer a Cotal model catalog because the Harness API's
-`listModels()` is session-scoped and provider-specific.
+receive.
+
+`cotal models --agent jcode` reads the declared catalog from the operator Jcode home's
+`config.toml`: each provider with `model_catalog = true`, its `[[providers.<name>.models]]` ids,
+and any declared `reasoning_efforts`. This is the same config Jcode copies into a private managed
+instance. The command fails loud when the file is unreadable, malformed, or enables a catalog
+without model entries.
+
+The listed effort tiers are declarations, not provider-verified capabilities. `cotal models` prints
+that caveat inline as `variants (declared, not provider-verified)` beside each configured tier list,
+so it cannot be missed by reading only the model rows. Providers can reject a tier the file names,
+so launch remains the authority: Jcode applies the requested value and a provider rejection ends the
+launch. `--refresh` does not turn this local declaration into a live probe.
+
+The Harness API can set a requested effort but cannot read an effective effort back. Its runtime
+identity reports provider, model, and routes only; no reply or event carries the applied tier. Cotal
+therefore records the accepted request and does not relabel it as an observed effect.
 
 `--variant` is the session's **reasoning effort**, applied after the model and before the seat's
 first turn, so a seat never serves a turn at an effort nobody chose. A persona's `variant:` is the

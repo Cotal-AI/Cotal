@@ -1,13 +1,98 @@
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
-import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
+import { userJcodeHome } from "@1jehuang/jcode-sdk";
+import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, controlEndpoint, launchEnv, materialEnv } from "@cotal-ai/connector-core";
+import { parse as parseToml } from "smol-toml";
 
 const FROM_BUILD = import.meta.url.includes("/dist/");
 const HOST_ENTRY = fileURLToPath(new URL(`./${FROM_BUILD ? "host.js" : "host-main.ts"}`, import.meta.url));
 const HOST_COMMAND = FROM_BUILD
   ? process.execPath
   : fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
+
+type JcodeCatalogConfig = {
+  providers?: Record<string, {
+    model_catalog?: unknown;
+    models?: unknown;
+  }>;
+};
+
+function stringList(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item.trim()))
+    throw new Error("reasoning_efforts must be an array of non-empty strings");
+  return value.map((item) => item.trim());
+}
+
+/** Read the same operator config Jcode copies into each private instance. This is a DECLARED local
+ *  catalog, not a provider acceptance probe: live providers on the same host have rejected tiers
+ *  declared here, so the metadata marks that distinction instead of presenting it as authority. */
+export function listJcodeModels(): ModelCatalog {
+  const path = join(userJcodeHome(), "config.toml");
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    throw new Error(`jcode model catalog could not read Jcode config: unreadable${code ? ` (${code})` : ""}`);
+  }
+
+  let raw: JcodeCatalogConfig;
+  try {
+    raw = parseToml(text) as JcodeCatalogConfig;
+  } catch {
+    throw new Error("jcode model catalog could not parse Jcode config: malformed TOML");
+  }
+
+  const providers = raw.providers;
+  if (!providers || typeof providers !== "object")
+    throw new Error("jcode model catalog has no [providers] table in Jcode config");
+
+  const models: ModelInfo[] = [];
+  const seen = new Set<string>();
+  let enabledProviders = 0;
+  for (const [provider, config] of Object.entries(providers)) {
+    if (!config || typeof config !== "object" || config.model_catalog !== true) continue;
+    enabledProviders++;
+    if (!Array.isArray(config.models))
+      throw new Error(`jcode model catalog provider ${provider} enables model_catalog but has no [[providers.${provider}.models]] entries`);
+    for (const [index, value] of config.models.entries()) {
+      if (!value || typeof value !== "object" || Array.isArray(value))
+        throw new Error(`jcode model catalog provider ${provider} entry ${index + 1} is not a table`);
+      const entry = value as Record<string, unknown>;
+      const id = typeof entry.id === "string" ? entry.id.trim() : "";
+      if (!id) throw new Error(`jcode model catalog provider ${provider} entry ${index + 1} has no non-empty id`);
+      const key = `${provider}\0${id}`;
+      if (seen.has(key)) throw new Error(`jcode model catalog repeats ${provider}/${id}`);
+      seen.add(key);
+      const efforts = stringList(entry.reasoning_efforts);
+      models.push({
+        id,
+        provider,
+        ...(efforts?.length
+          ? {
+              variants: efforts.map((name) => ({
+                name,
+                options: {
+                  provenance: "declared-config",
+                  authoritative: false,
+                  warning: "declared by Jcode config; provider acceptance is validated only at launch",
+                },
+              })),
+            }
+          : {}),
+      });
+    }
+  }
+
+  if (!enabledProviders)
+    throw new Error("jcode model catalog has no provider with model_catalog = true in Jcode config");
+  if (!models.length)
+    throw new Error(`jcode model catalog enabled ${enabledProviders} provider(s) in Jcode config but declared no models`);
+  return { source: "declared Jcode config", models };
+}
 
 /**
  * Jcode's stable Harness API is the supported integration seam: the host creates one private
@@ -28,6 +113,7 @@ export const jcodeConnector: Connector = {
   // per provider AND per model, and the Harness API publishes no ladder to check against — so the
   // tier is carried verbatim and validated at launch by Jcode itself, which owns that catalog.
   supportsModelVariant: true,
+  listModels: listJcodeModels,
   launchHint: "starting Jcode and joining the mesh (first boot can take several minutes)",
 
   buildLaunch(opts: LaunchOpts): LaunchSpec {

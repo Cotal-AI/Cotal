@@ -30,7 +30,8 @@
   },
   "dependencies": {
     "@1jehuang/jcode-sdk": "^1.1.0",
-    "@modelcontextprotocol/sdk": "^1.29.0"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "smol-toml": "^1.8.0"
   },
   "devDependencies": {
     "@cotal-ai/connector-core": "workspace:*",
