@@ -16,7 +16,7 @@
       "file": "extensions/connector-core/src/agent.ts",
       "find": "const recallable = item.channel !== undefined && await this.ep.focusRecallable(item.channel);",
       "replace": "const recallable = true;",
-      "expectRed": "replay-off body must be returned or loss reported"
+      "expectRed": "wildcard body must be returned or loss reported"
     },
     {
       "cell": "wildcard body is retained",
@@ -32,7 +32,7 @@
       "file": "packages/core/src/endpoint.ts",
       "find": "return (await this.joinPolicyFresh(channel)).replay;",
       "replace": "return true;",
-      "expectRed": "replay-off body must be returned or loss reported"
+      "expectRed": "post-flip local bodies must not duplicate through recall"
     },
     {
       "cell": "ingest-time replay promise survives a later policy revoke",
