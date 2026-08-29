@@ -38,26 +38,31 @@
  * root with an EMPTY `.cotal/` to stop the walk, and cell 0 asserts the walk actually landed there
  * before anything else runs.
  *
- * THE SERVER VERSION IS PINNED, NOT SAMPLED. F4 measured the `$SYS` behaviour this design rests on
- * against nats-server 2.14.5, and this box's `PATH` carries other versions, so the binary is taken
- * from `COTAL_SMOKE_NATS_SERVER` by ABSOLUTE PATH and its `--version` is asserted. With none set the
- * smoke REFUSES rather than proving the property on whatever is first on `PATH`.
+ * THE SERVER IS NAMED AND FLOOR-CHECKED, NOT SILENTLY SAMPLED. F4 measured the `$SYS` behaviour this
+ * design rests on against nats-server 2.14.5; it has since been measured 37/37 at 2.12.12 as well, so
+ * the property spans the supported band rather than being 2.14-only. The gate therefore refuses only
+ * BELOW `BROKER_FLOOR` — the product's own constant, not a literal copied here, so this suite and the
+ * control surface's startup gate cannot drift apart about what is supported. Whatever server is used,
+ * the resolved ABSOLUTE path and measured version are PRINTED first and repeated on the final line: a
+ * green always names what it tested. `COTAL_SMOKE_NATS_SERVER` picks the binary; with it unset one is
+ * resolved from `PATH` (CI sets neither, and a suite CI cannot run proves nothing).
+ * `COTAL_SMOKE_NATS_VERSION` still pins an EXACT version, for reproducing one named measurement.
  *
  * COTAL_HOME-free; kills only the nats-server it starts, by exact PID (never pkill).
- * Run: COTAL_SMOKE_NATS_SERVER=/abs/path/to/nats-server-2.14.5 \
- *        npx tsx implementations/delivery/smoke/sys-injection-evict.smoke.ts
+ * Run: npx tsx implementations/delivery/smoke/sys-injection-evict.smoke.ts
+ *   or COTAL_SMOKE_NATS_SERVER=/abs/path/to/nats-server-2.14.5 npx tsx …
  */
 import { randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import {
   composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable, mintCreds, newIdentity,
   mintConnectionEvictorCreds, mintMembershipObserverCreds, principalKey, rotateSystemAccount,
-  serverConfig, setupSpaceStreams, waitForDeliveryLease, CotalEndpoint, DEV_OWNER,
-  type ParsedArgs, type SecretStore, type SpaceAuth,
+  serverConfig, setupSpaceStreams, waitForDeliveryLease, BROKER_FLOOR, CotalEndpoint, DEV_OWNER,
+  meetsBrokerFloor, type ParsedArgs, type SecretStore, type SpaceAuth,
 } from "@cotal-ai/core";
 import {
   calloutPermissions, createCalloutAuth, createUserTokenIssuer, deriveOwnerToken, generateSigningKey,
@@ -98,21 +103,57 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   else { fail++; realLog(`  ✗ FAIL: ${name}`, extra ?? ""); }
 };
 
-// ---------- the server binary is NAMED, not sampled (F4 / §6) ----------
-const NATS_BIN = process.env.COTAL_SMOKE_NATS_SERVER;
-const WANT_VERSION = process.env.COTAL_SMOKE_NATS_VERSION ?? "2.14.5";
-if (!NATS_BIN) {
+// ---------- the server binary is NAMED and FLOOR-CHECKED, never silently sampled (F4 / §6) ----------
+// `COTAL_SMOKE_NATS_SERVER` still wins when set. With it UNSET the binary is resolved from `PATH` and
+// realpath'd rather than refused, because CI does not set that variable and a suite CI cannot run is a
+// suite that proves nothing — the ungated-in-name-of-rigour trade this file briefly made.
+const resolveOnPath = (bin: string): string | undefined => {
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    if (!dir) continue;
+    const p = join(dir, bin);
+    if (existsSync(p)) return p;
+  }
+  return undefined;
+};
+const NATS_BIN_NAMED = process.env.COTAL_SMOKE_NATS_SERVER ?? resolveOnPath("nats-server");
+if (!NATS_BIN_NAMED) {
   console.error(
-    "✗ REFUSING: this gate proves a $SYS property F4 measured against nats-server " + WANT_VERSION +
-    ", and this box's PATH carries other versions. Set COTAL_SMOKE_NATS_SERVER to the ABSOLUTE path of a " +
-    WANT_VERSION + " binary — proving it on whatever is first on PATH would name a version it did not test.",
+    "✗ REFUSING: no nats-server to test against. Set COTAL_SMOKE_NATS_SERVER to an ABSOLUTE path, or " +
+    "put a nats-server on PATH — this gate boots a real broker and cannot be proven without one.",
   );
   process.exit(2);
 }
+// RESOLVED AND PRINTED BEFORE ANY CHECK. The anti-sampling discipline was never the exact-match
+// refusal; it is that a green NAMES the binary and version it actually tested, so a passing line can
+// always be audited against the server someone thinks it ran on.
+const NATS_BIN = realpathSync(NATS_BIN_NAMED);
 const NATS_VERSION = execFileSync(NATS_BIN, ["--version"], { encoding: "utf8" }).trim();
 console.log(`  · server under test: ${NATS_BIN} → ${NATS_VERSION}`);
-if (!NATS_VERSION.includes(WANT_VERSION)) {
-  console.error(`✗ REFUSING: COTAL_SMOKE_NATS_SERVER reports "${NATS_VERSION}", which is not ${WANT_VERSION}.`);
+
+// THE FLOOR COMES FROM THE PRODUCT, NEVER A LITERAL HERE. `BROKER_FLOOR` is the same constant the
+// control surface's own startup gate refuses below, so the suite and the daemon cannot drift into
+// disagreeing about what is supported — a copied number is the copy that goes stale. Measured 37/37 at
+// both 2.12.12 (what CI installs) and 2.14.5 (what F4 measured), so this property spans the floor band
+// rather than being a 2.14-only behaviour.
+//
+// `COTAL_SMOKE_NATS_VERSION` keeps its documented meaning — an EXACT pin — for reproducing one named
+// measurement. Unset, the check is the floor, which is what lets CI run all 37 cells on its own 2.12.x.
+const WANT_EXACT = process.env.COTAL_SMOKE_NATS_VERSION;
+const VERSION_NUMBER = /\d+\.\d+\.\d+\S*/.exec(NATS_VERSION)?.[0] ?? "";
+if (WANT_EXACT) {
+  if (!NATS_VERSION.includes(WANT_EXACT)) {
+    console.error(
+      `✗ REFUSING: COTAL_SMOKE_NATS_VERSION pins ${WANT_EXACT}, but this binary reports "${NATS_VERSION}".`,
+    );
+    process.exit(2);
+  }
+} else if (!meetsBrokerFloor(VERSION_NUMBER)) {
+  // An unparseable version lands here too, and refuses: fail-closed, exactly like `requireBrokerFloor`.
+  console.error(
+    `✗ REFUSING: nats-server "${NATS_VERSION}" is below the product's own control-surface floor ` +
+    `${BROKER_FLOOR.major}.${BROKER_FLOOR.minor} (packages/core/src/broker-floor.ts). The daemon under test ` +
+    `refuses to start there, so a result from this server would describe a broker the product does not support.`,
+  );
   process.exit(2);
 }
 
