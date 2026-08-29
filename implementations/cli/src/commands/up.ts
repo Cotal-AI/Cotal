@@ -89,6 +89,7 @@ import {
   retireOrdinaryResume,
   sameStoreIdentity,
   type JsonValue,
+  type MaintenanceLock,
   type ManagerCommitEvidence,
   type ManagerFinalizeEvidence,
   type ProcessOwner,
@@ -188,7 +189,22 @@ export function upComplete(argv: string[]): CompletionResult {
   return { items, directive: items.length ? "nofiles" : "default" };
 }
 
-export async function up(args: ParsedArgs): Promise<void> {
+/** `inheritedLock` is the root maintenance lock a recovery re-entry hands down (see the re-entry
+ *  below). Ownership transfers with it: this call releases it at its own release point. */
+export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock): Promise<void> {
+  if (!inheritedLock) return await runUp(args);
+  // A re-entry owns the inherited lock from the moment it is called, but `runUp` only adopts it
+  // part-way in — an early refusal (an unusable `--runtime`, say) throws before that. Release it
+  // here in exactly that case, so a refused re-entry never leaves the root locked for the reaper.
+  let adopted = false;
+  try {
+    return await runUp(args, inheritedLock, () => { adopted = true; });
+  } finally {
+    if (!adopted) releaseMaintenanceLock(inheritedLock);
+  }
+}
+
+async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?: () => void): Promise<void> {
   const values = args.values as {
     server?: string; "store-dir"?: string; space?: string; open?: boolean; "user-auth"?: boolean; idp?: string;
     "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean; "advertised-server"?: string; "agent-provisioning-url"?: string;
@@ -230,6 +246,11 @@ export async function up(args: ParsedArgs): Promise<void> {
       await up({ ...args, values: next });
     } catch (error) {
       pendingRestores.delete(prepared.attemptId);
+      // The one journal writer deliberately NOT handed a lock, and the reason is structural rather
+      // than stylistic: no lock is held in this frame either way. This invocation returns just below
+      // without ever reaching the `startupLock` acquire, and the re-entry that did hold one released
+      // it in its own `finally` on the way out through this very throw. So the helper must take its
+      // own — passing something here would mean passing `undefined`, which reads as an oversight.
       markPreparedRestoreDegraded(prepared.root, prepared.attemptId, (error as Error).message);
       throw error;
     }
@@ -256,6 +277,9 @@ export async function up(args: ParsedArgs): Promise<void> {
     const lock = acquireMaintenanceLock(root);
     let pending: PendingOrdinaryResume | undefined;
     let recoveredRestore: PreparedRestore | undefined;
+    // Set only at the moment the lock is passed to a re-entry, which then owns releasing it. Any
+    // other exit from this block — including a throw after `pending` was built — still releases.
+    let handedOff = false;
     try {
       const journal = readMaintenanceJournal(root);
       if (journal?.state === "restore-ready") {
@@ -395,53 +419,60 @@ export async function up(args: ParsedArgs): Promise<void> {
       } else if (journal) {
         throw new Error(`cotal up is refused while maintenance state is ${journal.state}; follow the recorded recovery`);
       }
+      // The re-entries run INSIDE this block, under the lock the journal was just written with, and
+      // inherit it rather than letting it drop. Releasing here and re-acquiring in the nested `up`
+      // left the journal reading `resume-intent` with the lock free — the window a concurrent `up`
+      // could render the whole-broker server.conf through (design doc §4, P2).
+      if (recoveredRestore) {
+        handedOff = true;
+        try {
+          await up({
+            ...args,
+            values: {
+              ...values,
+              __restoreAttempt: recoveredRestore.attemptId,
+              space: recoveredRestore.space,
+              server: recoveredRestore.server,
+              host: recoveredRestore.host,
+              "store-dir": recoveredRestore.targetPath,
+              runtime: recoveredRestore.runtime,
+              detach: recoveredRestore.detached,
+              open: recoveredRestore.mode === "open",
+              "user-auth": recoveredRestore.mode === "user",
+            },
+          }, lock);
+        } catch (error) {
+          // The nested `up` released the inherited lock on its way out, so this takes its own.
+          markPendingResumeDegraded(recoveredRestore.attemptId, error instanceof Error ? error.message : String(error));
+          throw error;
+        }
+        return;
+      }
+      if (pending) {
+        handedOff = true;
+        try {
+          await up({
+            ...args,
+            values: {
+              ...values,
+              __ordinaryResumeAttempt: pending.attemptId,
+              space: pending.space,
+              server: pending.server,
+              "store-dir": pending.storeDir,
+              runtime: pending.runtime,
+              detach: pending.detached,
+              open: pending.mode === "open",
+              "user-auth": pending.mode === "user",
+            },
+          }, lock);
+        } catch (error) {
+          markPendingResumeDegraded(pending.attemptId, error instanceof Error ? error.message : String(error));
+          throw error;
+        }
+        return;
+      }
     } finally {
-      releaseMaintenanceLock(lock);
-    }
-    if (recoveredRestore) {
-      try {
-        await up({
-          ...args,
-          values: {
-            ...values,
-            __restoreAttempt: recoveredRestore.attemptId,
-            space: recoveredRestore.space,
-            server: recoveredRestore.server,
-            host: recoveredRestore.host,
-            "store-dir": recoveredRestore.targetPath,
-            runtime: recoveredRestore.runtime,
-            detach: recoveredRestore.detached,
-            open: recoveredRestore.mode === "open",
-            "user-auth": recoveredRestore.mode === "user",
-          },
-        });
-      } catch (error) {
-        markPendingResumeDegraded(recoveredRestore.attemptId, error instanceof Error ? error.message : String(error));
-        throw error;
-      }
-      return;
-    }
-    if (pending) {
-      try {
-        await up({
-          ...args,
-          values: {
-            ...values,
-            __ordinaryResumeAttempt: pending.attemptId,
-            space: pending.space,
-            server: pending.server,
-            "store-dir": pending.storeDir,
-            runtime: pending.runtime,
-            detach: pending.detached,
-            open: pending.mode === "open",
-            "user-auth": pending.mode === "user",
-          },
-        });
-      } catch (error) {
-        markPendingResumeDegraded(pending.attemptId, error instanceof Error ? error.message : String(error));
-        throw error;
-      }
-      return;
+      if (!handedOff) releaseMaintenanceLock(lock);
     }
   }
   const wantUser = Boolean(values["user-auth"]);
@@ -573,14 +604,41 @@ export async function up(args: ParsedArgs): Promise<void> {
   // recourse) instead of a silent fallback in a detached child. No fallbacks. (`pty`/unset: no-op.)
   if (values.runtime) await preflightRuntime(values.runtime);
   const resumeAttempt = values.__restoreAttempt ?? values.__ordinaryResumeAttempt;
-  let startupLock = resumeAttempt ? undefined : acquireMaintenanceLock(cotalRoot());
+  // Held for EVERY `up`, resume re-entry included. A re-entry used to hold no lock at all and still
+  // reach the renderer below, so a concurrent `cotal up` could rewrite the whole-broker server.conf
+  // — every tenant's trust, unserialized — while a resume was mid-flight (design doc §4, P2). A
+  // re-entry INHERITS the recovery's lock rather than taking its own: the recovery journals
+  // `resume-intent` under that lock, so releasing it to re-acquire here would leave exactly the
+  // window the probe catches — the journal already in a resume state with the lock free.
+  //
+  // Inheriting makes handing this lock down MANDATORY, not tidy: the lock is not reentrant, and it
+  // cannot stale-reap its way out either, because the recorded owner is alive — it is us. A helper
+  // that self-acquired would take the "held by a live owner" refusal and fail the resume outright.
+  // So EVERY helper below that journals under this lock takes it as a parameter, on both the restore
+  // and the ordinary side: the two ADOPT paths (proven-restore and proven-ordinary listeners, which
+  // recover by adopting an already-live listener rather than spawning a competitor), the spawn-path
+  // listener binds (detached and foreground, restore and ordinary), the dead-listener replacement,
+  // `completeResumeActivation` and the manager-commit / activation / degraded writers it calls.
+  //
+  // Read that list as a rule, not an inventory. The trap is that a call site with no lock ARGUMENT
+  // says nothing about whether the CALLEE acquires: the restore-side writers took no parameter and
+  // self-acquired, so handing the lock to the sites that visibly named it left `up --restore` dead
+  // on its first pass — it died in the listener bind, before any of the seams. If you add a helper
+  // that journals, give it `heldLock` and hand it down from here; do not audit by call-site shape.
+  // The one caller that does NOT pass it is the prepare-failure path above, where the lock has
+  // genuinely not been taken yet in this frame and the helper is meant to take its own.
+  let startupLock: MaintenanceLock | undefined = inheritedLock ?? acquireMaintenanceLock(cotalRoot());
+  onAdopt?.(); // from here the release below owns it, inherited or not
   const releaseStartupLock = () => {
     if (!startupLock) return;
     releaseMaintenanceLock(startupLock);
     startupLock = undefined;
   };
   try {
-    if (startupLock) assertOrdinaryUpAllowed(cotalRoot(), values["store-dir"] ? resolve(values["store-dir"]) : cotalPath("nats"));
+    // Gated on the ATTEMPT, not on holding the lock. The lock is now always held, and this refuses
+    // whenever a journal exists — which is precisely the state a resume re-entry is in, so gating
+    // it on the lock would refuse the very resume the lock is here to protect.
+    if (!resumeAttempt) assertOrdinaryUpAllowed(cotalRoot(), values["store-dir"] ? resolve(values["store-dir"]) : cotalPath("nats"));
     let server = values.server ?? DEFAULT_SERVER;
     const host = values.host ?? "127.0.0.1";
     // `--host` is the BIND address; `server` is the URL the readiness probe, the mesh registry, and
@@ -596,7 +654,7 @@ export async function up(args: ParsedArgs): Promise<void> {
         throw new Error(`restore attempt ${resumeAttempt} re-entry has no bound listener proof; preserving recovery state`);
       const ownerStatus = localProcessOwnerStatus(restoredAttempt.listenerProof.processOwner);
       if (ownerStatus === "alive") {
-        await resumeProvenRestoreListener(restoredAttempt);
+        await resumeProvenRestoreListener(restoredAttempt, startupLock);
         return;
       }
       if (ownerStatus === "unknown")
@@ -605,13 +663,13 @@ export async function up(args: ParsedArgs): Promise<void> {
         throw new Error(`restore attempt ${resumeAttempt} is manager-committed but its bound listener is dead; preserving the commit token and retained suppression`);
       if (await isReachable(restoredAttempt.server))
         throw new Error(`restore attempt ${resumeAttempt} refuses the occupied foreign listener at ${restoredAttempt.server}`);
-      replacePreparedDeadRestoreListener(restoredAttempt);
+      replacePreparedDeadRestoreListener(restoredAttempt, startupLock);
     }
     const ordinaryAttempt = resumeAttempt ? pendingOrdinaryResumes.get(resumeAttempt) : undefined;
     if (ordinaryAttempt?.adoptProof) {
       // The recovered attempt's exact bound listener is alive: prove it over the wire and adopt it
       // instead of spawning a competitor over the same store.
-      await resumeProvenOrdinaryListener(ordinaryAttempt);
+      await resumeProvenOrdinaryListener(ordinaryAttempt, startupLock);
       return;
     }
     if (ordinaryAttempt?.journalState === "resume-committed")
@@ -853,14 +911,14 @@ export async function up(args: ParsedArgs): Promise<void> {
         boundListener: {
           serverName: restored.serverName,
           serverNonce: restored.serverNonce,
-          onSpawn: (pid: number, startedAt: string) => bindSpawnedRestoreListener(restored, pid, startedAt),
+          onSpawn: (pid: number, startedAt: string) => bindSpawnedRestoreListener(restored, pid, startedAt, startupLock),
           verify: async () => { await provePreparedRestoreListener(restored); },
         },
       } : ordinaryAttempt ? {
         boundListener: {
           serverName: ordinaryAttempt.serverName,
           serverNonce: ordinaryAttempt.serverNonce,
-          onSpawn: (pid: number, startedAt: string) => bindSpawnedOrdinaryResumeListener(ordinaryAttempt, pid, startedAt),
+          onSpawn: (pid: number, startedAt: string) => bindSpawnedOrdinaryResumeListener(ordinaryAttempt, pid, startedAt, startupLock),
           verify: async () => { await verifySpawnedOrdinaryListener(ordinaryAttempt); },
         },
       } : {}),
@@ -880,6 +938,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       controlPlane && authService,
       !authService ? "normal listener started but the user-auth service is unavailable" : "normal listener started but the control plane is degraded",
       server,
+      startupLock,
     );
     return;
   }
@@ -932,14 +991,14 @@ export async function up(args: ParsedArgs): Promise<void> {
   if (child.pid) writeFileSync(cotalPath("nats.pid"), String(child.pid));
   if (restored && process.env.COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_SPAWN === "1") process.exit(87);
   if (restored) try {
-    bindSpawnedRestoreListener(restored, child.pid ?? 0, listenerStartedAt);
+    bindSpawnedRestoreListener(restored, child.pid ?? 0, listenerStartedAt, startupLock);
   } catch (error) {
     await stopUnboundRestoreListener(child);
     removeMatchingNatsPid(child.pid ?? 0);
     throw error;
   }
   if (ordinaryAttempt) try {
-    bindSpawnedOrdinaryResumeListener(ordinaryAttempt, child.pid ?? 0, listenerStartedAt);
+    bindSpawnedOrdinaryResumeListener(ordinaryAttempt, child.pid ?? 0, listenerStartedAt, startupLock);
   } catch (error) {
     await stopUnboundRestoreListener(child);
     removeMatchingNatsPid(child.pid ?? 0);
@@ -997,7 +1056,9 @@ export async function up(args: ParsedArgs): Promise<void> {
   if (!ready) {
     child.kill("SIGTERM");
     const reason = `nats-server did not become ready at ${server}`;
-    markPendingResumeDegraded(resumeAttempt ?? "", reason);
+    // `startupLock` is already released by here on this path (and the helper then takes its own);
+    // passed anyway so the call stays correct if the release above ever moves.
+    markPendingResumeDegraded(resumeAttempt ?? "", reason, startupLock);
     throw new Error(reason);
   }
   if (restored) await provePreparedRestoreListener(restored);
@@ -1055,6 +1116,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       controlPlane && svc.ok,
       !svc.ok ? "normal listener started but the user-auth service is unavailable" : "normal listener started but the control plane is degraded",
       server,
+      startupLock,
     );
     activationFinished = true;
   }
@@ -1087,10 +1149,10 @@ function assertOrdinaryUpAllowed(root: string, storeDir?: string): void {
   throw new Error(`cotal up is refused while maintenance state is ${maintenance.state}; follow the recorded restore recovery`);
 }
 
-function markPendingResumeDegraded(attemptId: string, reason: string): void {
+function markPendingResumeDegraded(attemptId: string, reason: string, heldLock?: MaintenanceLock): void {
   const ordinary = pendingOrdinaryResumes.get(attemptId);
   if (ordinary) {
-    const lock = acquireMaintenanceLock(ordinary.root);
+    const lock = heldLock ?? acquireMaintenanceLock(ordinary.root);
     try {
       const journal = readMaintenanceJournal(ordinary.root);
       if (journal && (journal.state === "resume-intent" || journal.state === "resume-active"))
@@ -1100,12 +1162,12 @@ function markPendingResumeDegraded(attemptId: string, reason: string): void {
           paths: [journal.source.path],
         }]);
     } finally {
-      releaseMaintenanceLock(lock);
+      if (!heldLock) releaseMaintenanceLock(lock);
     }
     return;
   }
   const restored = pendingRestores.get(attemptId);
-  if (restored) markPreparedRestoreDegraded(restored.root, restored.attemptId, reason);
+  if (restored) markPreparedRestoreDegraded(restored.root, restored.attemptId, reason, heldLock);
 }
 
 async function resumeControlAuth(root: string, mode: "open" | "auth" | "user"): Promise<ControlAuth> {
@@ -1162,12 +1224,12 @@ async function stopUnboundRestoreListener(child: ChildProcess): Promise<void> {
     throw new Error(`unbound restore listener process ${child.pid ?? "unknown"} did not exit`);
 }
 
-function bindSpawnedRestoreListener(prepared: PreparedRestore, pid: number, startedAt: string): void {
-  bindRestoreListenerOwner(prepared, restoreListenerOwner(pid, prepared.serverNonce, startedAt));
+function bindSpawnedRestoreListener(prepared: PreparedRestore, pid: number, startedAt: string, heldLock?: MaintenanceLock): void {
+  bindRestoreListenerOwner(prepared, restoreListenerOwner(pid, prepared.serverNonce, startedAt), heldLock);
 }
 
-function bindRestoreListenerOwner(prepared: PreparedRestore, processOwner: ProcessOwner): void {
-  bindPreparedRestoreListener(prepared, processOwner);
+function bindRestoreListenerOwner(prepared: PreparedRestore, processOwner: ProcessOwner, heldLock?: MaintenanceLock): void {
+  bindPreparedRestoreListener(prepared, processOwner, heldLock);
   if (process.env.COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_BIND === "1") process.exit(86);
 }
 
@@ -1282,9 +1344,9 @@ async function provePreparedRestoreListener(prepared: PreparedRestore): Promise<
   return proof;
 }
 
-function bindSpawnedOrdinaryResumeListener(pending: PendingOrdinaryResume, pid: number, startedAt: string): void {
+function bindSpawnedOrdinaryResumeListener(pending: PendingOrdinaryResume, pid: number, startedAt: string, heldLock?: MaintenanceLock): void {
   if (!Number.isInteger(pid) || pid <= 0) throw new Error("resume listener spawn returned no pid");
-  const lock = acquireMaintenanceLock(pending.root);
+  const lock = heldLock ?? acquireMaintenanceLock(pending.root);
   try {
     const journal = readMaintenanceJournal(pending.root);
     if (!journal || !("ordinaryResume" in journal) || journal.ordinaryResume.attemptId !== pending.attemptId)
@@ -1298,7 +1360,7 @@ function bindSpawnedOrdinaryResumeListener(pending: PendingOrdinaryResume, pid: 
       target: journal.source,
     });
   } finally {
-    releaseMaintenanceLock(lock);
+    if (!heldLock) releaseMaintenanceLock(lock);
   }
 }
 
@@ -1369,7 +1431,7 @@ async function verifySpawnedOrdinaryListener(pending: PendingOrdinaryResume): Pr
     throw new Error(`resume attempt ${pending.attemptId} spawned listener reports a foreign NATS server name`);
 }
 
-async function resumeProvenOrdinaryListener(pending: PendingOrdinaryResume): Promise<void> {
+async function resumeProvenOrdinaryListener(pending: PendingOrdinaryResume, heldLock?: MaintenanceLock): Promise<void> {
   await proveOrdinaryResumeListener(pending);
   const svc = await ensureRecoveredUserAuth(pending);
   // Read the recorded exposure BEFORE re-recording: `recordOurMesh` writes the entry whole, so a
@@ -1398,6 +1460,7 @@ async function resumeProvenOrdinaryListener(pending: PendingOrdinaryResume): Pro
     controlPlane && svc.ok,
     !svc.ok ? "adopted resume listener has no user-auth service" : "adopted resume listener has a degraded control plane",
     pending.server,
+    heldLock,
   );
 }
 
@@ -1418,7 +1481,7 @@ async function ensureRecoveredUserAuth(
   return startUserAuthService(prepared.space, prepared.server, { prepared: provider, stateDir });
 }
 
-async function resumeProvenRestoreListener(prepared: PreparedRestore): Promise<void> {
+async function resumeProvenRestoreListener(prepared: PreparedRestore, heldLock?: MaintenanceLock): Promise<void> {
   await provePreparedRestoreListener(prepared);
   const svc = await ensureRecoveredUserAuth(prepared);
   // Same ordering constraint as the pending-adopt path above: capture the recorded exposure before
@@ -1447,6 +1510,7 @@ async function resumeProvenRestoreListener(prepared: PreparedRestore): Promise<v
     controlPlane && svc.ok,
     !svc.ok ? "proven restore listener has no user-auth service" : "proven restore listener has a degraded control plane",
     prepared.server,
+    heldLock,
   );
 }
 
@@ -1455,6 +1519,7 @@ async function completeResumeActivation(
   healthy: boolean,
   reason: string,
   server: string,
+  heldLock?: MaintenanceLock,
 ): Promise<void> {
   if (!attemptId) return;
   const ordinary = pendingOrdinaryResumes.get(attemptId);
@@ -1462,7 +1527,7 @@ async function completeResumeActivation(
   const pending = ordinary ?? restored;
   if (!pending) throw new Error(`resume activation lost attempt context ${attemptId}`);
   if (!healthy) {
-    markPendingResumeDegraded(attemptId, reason);
+    markPendingResumeDegraded(attemptId, reason, heldLock);
     throw new Error(reason);
   }
   let journal = readMaintenanceJournal(pending.root);
@@ -1479,9 +1544,9 @@ async function completeResumeActivation(
     if (!("ordinaryResume" in journal) || journal.ordinaryResume.attemptId !== attemptId)
       throw new Error(`ordinary resume journal does not match attempt ${attemptId}`);
     if (journal.state === "resume-retired") {
-      const lock = acquireMaintenanceLock(ordinary!.root);
+      const lock = heldLock ?? acquireMaintenanceLock(ordinary!.root);
       try { consumeRetiredMaintenance(lock); }
-      finally { releaseMaintenanceLock(lock); }
+      finally { if (!heldLock) releaseMaintenanceLock(lock); }
       pendingOrdinaryResumes.delete(attemptId);
       return;
     }
@@ -1508,7 +1573,7 @@ async function completeResumeActivation(
     if (!ready.unanswered) break;
     if (Date.now() >= readinessDeadline) {
       const why = ready.error ?? "no manager answered within the readiness deadline";
-      markPendingResumeDegraded(attemptId, why);
+      markPendingResumeDegraded(attemptId, why, heldLock);
       throw new Error(why);
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 150));
@@ -1530,12 +1595,12 @@ async function completeResumeActivation(
   if (!resumed.ok) {
     const detail = resumed.data ? ` (${JSON.stringify(resumed.data)})` : "";
     const message = `${resumed.error ?? "retained-agent resume failed"}${detail}`;
-    markPendingResumeDegraded(attemptId, message);
+    markPendingResumeDegraded(attemptId, message, heldLock);
     throw new Error(message);
   }
   if (restored && process.env.COTAL_SMOKE_EXIT_AFTER_RESUME_PRESERVED === "1") process.exit(88);
   if (ordinary && !managerCommit) {
-    const lock = acquireMaintenanceLock(ordinary.root);
+    const lock = heldLock ?? acquireMaintenanceLock(ordinary.root);
     try {
       const current = readMaintenanceJournal(ordinary.root);
       if (current?.state !== "resume-active") {
@@ -1548,7 +1613,7 @@ async function completeResumeActivation(
       }
       ordinary.journalState = "resume-active";
     } finally {
-      releaseMaintenanceLock(lock);
+      if (!heldLock) releaseMaintenanceLock(lock);
     }
   }
   if (!managerCommit) {
@@ -1563,26 +1628,26 @@ async function completeResumeActivation(
     );
     if (!committed.ok) {
       const message = committed.error ?? "manager resume commit failed";
-      markPendingResumeDegraded(attemptId, message);
+      markPendingResumeDegraded(attemptId, message, heldLock);
       throw new Error(message);
     }
     if (!isManagerCommitResult(committed.data, attemptId)) {
       const message = `manager resume commit returned invalid awaiting-finalize evidence for attempt ${attemptId}`;
-      markPendingResumeDegraded(attemptId, message);
+      markPendingResumeDegraded(attemptId, message, heldLock);
       throw new Error(message);
     }
     managerCommit = committed.data;
     if (ordinary) {
-      const lock = acquireMaintenanceLock(ordinary.root);
+      const lock = heldLock ?? acquireMaintenanceLock(ordinary.root);
       try {
         recordOrdinaryResumeManagerCommit(lock, managerCommit);
         ordinary.journalState = "resume-committed";
         ordinary.managerCommit = managerCommit;
       } finally {
-        releaseMaintenanceLock(lock);
+        if (!heldLock) releaseMaintenanceLock(lock);
       }
     } else {
-      recordPreparedRestoreManagerCommit(restored!, managerCommit);
+      recordPreparedRestoreManagerCommit(restored!, managerCommit, heldLock);
     }
     if (process.env.COTAL_SMOKE_EXIT_AFTER_RESUME_COMMIT === "1") process.exit(89);
   } else {
@@ -1628,17 +1693,17 @@ async function completeResumeActivation(
   if (process.env.COTAL_SMOKE_EXIT_AFTER_RESUME_FINALIZE === "1") process.exit(91);
 
   if (ordinary) {
-    const lock = acquireMaintenanceLock(ordinary.root);
+    const lock = heldLock ?? acquireMaintenanceLock(ordinary.root);
     try {
       retireOrdinaryResume(lock, finalizeEvidence);
       consumeRetiredMaintenance(lock);
     } finally {
-      releaseMaintenanceLock(lock);
+      if (!heldLock) releaseMaintenanceLock(lock);
     }
     pendingOrdinaryResumes.delete(attemptId);
   } else {
     restored!.managerCommit = managerCommit;
-    markPreparedRestoreActive(restored!, finalizeEvidence);
+    markPreparedRestoreActive(restored!, finalizeEvidence, heldLock);
     restored!.cleanupStage();
     pendingRestores.delete(attemptId);
   }
