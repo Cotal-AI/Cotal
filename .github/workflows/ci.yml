@@ -8,17 +8,22 @@ on:
 
 # A new push to a PR supersedes the run already going; a merge to main does not.
 #
-# The group expression is unchanged — only what happens to the run holding it. Without
-# `cancel-in-progress` the superseded run keeps the group and its replacement is created with
-# ZERO JOBS and sits pending, which reads as "queued and about to start" rather than "starved".
-#
 # Deliberately not unconditional: a main commit's CI result is the record for that commit, not a
-# preview of the next, and a cancelled run leaves a merge ungradable — neither red nor green.
+# preview of the next, and a cancelled run leaves a merge ungradable, neither red nor green.
 # Superseding is only right where the earlier answer has stopped being interesting, which is true
 # of a PR revision and false of a merge.
+#
+# `cancel-in-progress: false` on its own does not deliver that, which is what #976 measured. A
+# group holds one pending run by default, so when a third push arrives the queued run is evicted
+# rather than made to wait: it is cancelled with zero jobs, and that commit ends up with no CI
+# result of any kind. It happened to 13 of 29 consecutive main runs. `queue: max` is the part that
+# actually makes them wait, FIFO, up to 100 deep.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # `queue: max` with `cancel-in-progress: true` is a validation error, so this tracks the line
+  # above: a PR keeps the default single slot and supersedes, main queues instead of evicting.
+  queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}
 
 # Same coverage as before, fanned across parallel jobs so wall-clock is the slowest job, not the sum:
 #   • unit  — typecheck + build + unit tests + the broker-free view/pack checks (fast).
