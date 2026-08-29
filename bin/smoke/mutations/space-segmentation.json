@@ -55,8 +55,8 @@
     {
       "name": "the hosted arm answers with the bare kind, as a composition with no root to segment by would",
       "file": "packages/workspace/src/space-segmentation.ts",
-      "find": "  return segmentedKey(kind, space);\n}\n\n/** {@link DELIVERY_CREDS_KIND}'s key",
-      "replace": "  return composition.injected ? kind : segmentedKey(kind, space);\n}\n\n/** {@link DELIVERY_CREDS_KIND}'s key",
+      "find": "  if (!composition.injected) migrateLegacyCotalMaterial(composition.root, space, kind);\n  return segmentedKey(kind, space);\n}",
+      "replace": "  if (!composition.injected) migrateLegacyCotalMaterial(composition.root, space, kind);\n  return composition.injected ? kind : segmentedKey(kind, space);\n}",
       "expectRed": "delivery.creds: the hosted arm resolves the SAME key and migrates NOTHING",
       "cell": "both compositions resolve ONE key - a host provisions from this string, so the flat kind writes where no daemon reads"
     },
