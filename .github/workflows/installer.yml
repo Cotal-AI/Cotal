@@ -18,7 +18,15 @@ on:
       - 'install/**'
       - '.github/workflows/installer.yml'
 
-concurrency: ${{ github.workflow }}-${{ github.ref }}
+# Same rule as ci.yml. The short form used here before selected `cancel-in-progress: false` for
+# BOTH events, so a PR revision did not supersede its predecessor and the container matrix ran
+# twice, and it selected `queue: single`, which evicted queued main runs. Both halves are now
+# event-specific, which is a deliberate behaviour change on the PR side and not only a queue fix.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Tracks the line above: `queue: max` with `cancel-in-progress: true` is a validation error.
+  queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}
 
 jobs:
   lint:

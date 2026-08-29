@@ -11,7 +11,17 @@ on:
         type: string
         default: ""
 
-concurrency: ${{ github.workflow }}-${{ github.ref }}
+# The release path, so a run is never superseded: a cancelled version run is a merge that silently
+# staged nothing, badged the same as a run somebody tidied up. The short form used here before was
+# not neutral, it selected `queue: single`, which holds ONE pending run and evicts it when the next
+# merge arrives. That is the #976 defect on the workflow that publishes.
+#
+# Neither key is conditional because there is no `pull_request` trigger to distinguish: an
+# expression here would carry a branch no event can reach.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+  queue: max
 
 jobs:
   version:

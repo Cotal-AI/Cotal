@@ -29,10 +29,15 @@ on:
       - main
 
 # Same rule as ci.yml, and for the same reason: a superseded PR run holds the group and starves
-# the run that replaced it, while a merge to main must keep its own verdict. See the note there.
+# the run that replaced it, while a merge to main must keep its own verdict. See the note there,
+# including why `cancel-in-progress: false` on its own evicts a queued run rather than making it
+# wait. This lane is REQUIRED, so an evicted main run leaves a commit with no Windows verdict while
+# ci-ok still reports green.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Tracks the line above: `queue: max` with `cancel-in-progress: true` is a validation error.
+  queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}
 
 jobs:
   # REQUIRED lane — Windows-specific + broker-free, so a red is a real Windows regression.
