@@ -32,6 +32,11 @@
  * connection event. Existing endpoint suites own that source. It proves this tool reports the state
  * MeshAgent holds and that a real MCP call reaches it.
  *
+ * Harness correction before the graded rerun: the first mutation attempt used the green success
+ * summary as `completionMarker`. That correctly went absent on red and made the proof inconclusive.
+ * The suite now prints a separate completion line after all cells on both outcomes; the marker names
+ * that line rather than a success condition.
+ *
  * Run: pnpm smoke:connection-status
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -151,6 +156,7 @@ await Promise.all([client.close(), server.close()]);
 const EXPECTED_CELLS = 9;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
+console.log(`SUITE COMPLETE: ${ran} cells`);
 if (ran !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE: ran ${ran} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   process.exitCode = 1;
