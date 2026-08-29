@@ -38,6 +38,67 @@ const EXTERNAL_CREDENTIAL_FILES = [
   ".local/share/opencode/auth.json",
 ];
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const SKILL_DIGEST = /^sha256:[0-9a-f]{64}$/;
+
+type ManagedSkillsManifest = { skills: Record<string, string> };
+
+function skillDigest(bytes: Buffer): string {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+function managedSkillsManifestPath(home: string): string {
+  return join(home, "cotal-agent-skills.json");
+}
+
+function readManagedSkillsManifest(home: string): ManagedSkillsManifest {
+  const path = managedSkillsManifestPath(home);
+  let raw: string;
+  try {
+    const stats = lstatSync(path);
+    if (!stats.isFile() || stats.isSymbolicLink()) throw new Error(`managed Jcode skills manifest is not a real file: ${path}`);
+    raw = readFileSync(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { skills: {} };
+    throw error;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`Corrupt managed Jcode skills manifest at ${path}`);
+  }
+  const skills = (parsed as { skills?: unknown })?.skills;
+  if (!skills || typeof skills !== "object" || Array.isArray(skills))
+    throw new Error(`Corrupt managed Jcode skills manifest at ${path}`);
+  for (const [name, digest] of Object.entries(skills as Record<string, unknown>))
+    if (name.length > 64 || !SKILL_NAME.test(name) || typeof digest !== "string" || !SKILL_DIGEST.test(digest))
+      throw new Error(`Corrupt managed Jcode skills manifest at ${path}`);
+  return { skills: skills as Record<string, string> };
+}
+
+function writeManagedSkillsManifest(home: string, manifest: ManagedSkillsManifest): void {
+  const path = managedSkillsManifestPath(home);
+  const tmp = `${path}.tmp.${process.pid}`;
+  rmSync(tmp, { force: true });
+  writeFileSync(tmp, JSON.stringify(manifest, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+  renameSync(tmp, path);
+  hardenPrivate(path, "file");
+}
+
+function backupManagedSkill(path: string, bytes: Buffer): void {
+  for (let i = 0; i < 1000; i++) {
+    const backup = i === 0 ? `${path}.bak` : `${path}.bak.${i}`;
+    try {
+      writeFileSync(backup, bytes, { flag: "wx", mode: 0o600 });
+      hardenPrivate(backup, "file");
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+      throw error;
+    }
+  }
+  throw new Error(`could not back up managed Jcode skill ${path}: too many existing backups`);
+}
 
 function assertRelative(relativePath: string): void {
   if (isAbsolute(relativePath) || relativePath.split(/[\\/]+/u).includes(".."))
@@ -175,6 +236,8 @@ export function mirrorJcodeSkills(home: string, sourceDir: string): string[] {
   if (!sourceRootStats.isDirectory() || sourceRootStats.isSymbolicLink())
     throw new Error(`Cotal skills source is not a real directory: ${sourceRoot}`);
   const destinationRoot = join(home, "external", ".agents", "skills");
+  const manifest = readManagedSkillsManifest(home);
+  let manifestChanged = false;
   const names: string[] = [];
   for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
@@ -187,13 +250,20 @@ export function mirrorJcodeSkills(home: string, sourceDir: string): string[] {
     const destination = join(destinationRoot, entry.name, "SKILL.md");
     mirrorParent(home, destination);
     const bytes = readFileSync(source);
+    const digest = skillDigest(bytes);
     try {
       const stats = lstatSync(destination);
       if (stats.isDirectory()) throw new Error(`Jcode managed skill destination is a directory: ${destination}`);
       if (stats.isFile() && !stats.isSymbolicLink() && readFileSync(destination).equals(bytes)) {
+        if (manifest.skills[entry.name] !== digest) {
+          manifest.skills[entry.name] = digest;
+          manifestChanged = true;
+        }
         names.push(entry.name);
         continue;
       }
+      const current = readFileSync(destination);
+      if (manifest.skills[entry.name] !== skillDigest(current)) backupManagedSkill(destination, current);
       rmSync(destination, { force: true });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -213,9 +283,29 @@ export function mirrorJcodeSkills(home: string, sourceDir: string): string[] {
     }
     renameSync(tmp, destination);
     hardenPrivate(destination, "file");
+    if (manifest.skills[entry.name] !== digest) manifestChanged = true;
+    manifest.skills[entry.name] = digest;
     names.push(entry.name);
   }
   if (!names.length) throw new Error(`No Cotal skills found in ${sourceRoot}`);
+  for (const name of Object.keys(manifest.skills)) {
+    if (names.includes(name)) continue;
+    const destination = join(destinationRoot, name, "SKILL.md");
+    try {
+      const stats = lstatSync(destination);
+      if (stats.isDirectory()) throw new Error(`Jcode managed skill destination is a directory: ${destination}`);
+      const current = readFileSync(destination);
+      if (manifest.skills[name] !== skillDigest(current)) backupManagedSkill(destination, current);
+      rmSync(destination);
+      const dir = dirname(destination);
+      if (readdirSync(dir).length === 0) rmdirSync(dir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    delete manifest.skills[name];
+    manifestChanged = true;
+  }
+  if (manifestChanged) writeManagedSkillsManifest(home, manifest);
   return names.sort();
 }
 

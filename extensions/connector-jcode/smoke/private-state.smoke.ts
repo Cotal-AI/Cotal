@@ -71,6 +71,15 @@ try {
   writeFileSync(join(skillSource, "team-topology", "SKILL.md"), "generation-two\n");
   mirrorJcodeSkills(home, skillSource);
   check("managed Jcode skills refresh to the next Cotal generation", readFileSync(managedSkill, "utf8") === "generation-two\n");
+  const retiredSource = join(root, "retired-skills-source");
+  mkdirSync(join(retiredSource, "replacement"), { recursive: true });
+  writeFileSync(join(retiredSource, "replacement", "SKILL.md"), "replacement\n");
+  writeFileSync(managedSkill, "edited-retired\n");
+  mirrorJcodeSkills(home, retiredSource);
+  check("managed Jcode retirement backs up edits and removes only the retired SKILL.md", !lstatSync(join(home, "external", ".agents", "skills", "team-topology", "SKILL.md.bak")).isSymbolicLink() && readFileSync(join(home, "external", ".agents", "skills", "team-topology", "SKILL.md.bak"), "utf8") === "edited-retired\n" && !readFileSync(join(home, "cotal-agent-skills.json"), "utf8").includes("team-topology"));
+  mkdirSync(join(skillSource, "team-topology"), { recursive: true });
+  writeFileSync(join(skillSource, "team-topology", "SKILL.md"), "generation-two\n");
+  mirrorJcodeSkills(home, skillSource);
   const outside = join(root, "outside-skill");
   writeFileSync(outside, "outside\n");
   rmSync(managedSkill);
