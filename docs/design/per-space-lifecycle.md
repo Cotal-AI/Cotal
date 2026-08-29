@@ -75,8 +75,8 @@ by a different operator.
    lifecycle-scoped `teardown` cred, the sole holder of `STREAM.DELETE`.
 6. Re-render and promote `server.conf` from the inventory minus this space, then reload (§4).
 7. Delete the local material keyed to this space: `account.<key>.json` through a new
-   `deleteSpaceAccountAuth` (§7, rejected alternative 7), the `space.<hex>` user-auth state dir, and
-   `manager-instance.<hex>.json`.
+   `deleteSpaceAccountAuth` (§7, rejected alternative 7), the `space.<hex>` user-auth state dir,
+   `manager-instance.<hex>.json`, and the space's `$SYS` creds once those are keyed per space (P7).
 8. Clear the journal entry.
 
 Steps 5 to 7 are individually idempotent, so a re-run after a crash finishes the removal instead of
@@ -133,6 +133,14 @@ everything before it is either free of side effects or idempotently repeatable.
   (`space add`) needs no journal, because its remaining steps are forward-idempotent and `up`
   completes them too. A verb that destroys state (`space rm`) journals what it is doing and refuses
   every other verb on the root until it finishes.
+- One window is observable rather than closed. Between `space rm` steps 6 and 7 the account record
+  is still on disk while the rendered config no longer names it, so `accountInventory` and anything
+  reading it (`cotal status`, the guards) report a phantom tenant that the broker has already
+  stopped trusting. The journal from step 4 is what makes that state legible, and the re-run clears
+  it. A reader that must not see the phantom takes the lock.
+- The journal blocks the root, not just the tenant. A wedged `space rm` refuses
+  `down --preserve-state`, so a sibling's urgent backup waits for the re-run to finish. That is
+  intended: a cut taken mid-removal would capture a store the config no longer describes.
 - Uncertainty refuses. A corrupt account record, an unreadable inventory, an unconfirmed broker
   reload and a live process for the space being removed all stop the verb, in the fail-closed posture
   `assertSingleSpaceBroker` and `soleSpaceOf` already take.
@@ -160,9 +168,10 @@ writer, and it must keep booting the one space it was asked for.
 **Serialization is the root maintenance lock.** `acquireMaintenanceLock` already gives an exclusive,
 owner-recorded, stale-reaping lock per root, and `backup` and `clean` take it. The lock is per root
 rather than per space on purpose: the config, the store and the broker process are shared, so two
-tenants' lifecycle verbs are not independent. Making `up` and `up --rotate-sys` take the same lock
-is prerequisite P2 (§7); until they do, the lock is not yet mutual exclusion over every writer of
-`server.conf`.
+tenants' lifecycle verbs are not independent. `up` already holds it across its own render, and so
+does `up -f`. What escapes it is narrow: a resume re-entry skips acquiring the lock and still reaches
+the render. Closing that is prerequisite P2 (§7); until it lands, the lock is mutual exclusion over
+every writer of `server.conf` except a resumed `up`.
 
 **Promotion is compare-and-set, because the lock is advisory.** A small non-secret
 `broker-config.json` beside `server.conf` records `{ gen, inventoryDigest }`. A verb reads
@@ -170,6 +179,9 @@ generation G, renders, writes `server.conf.next`, re-reads the record, and promo
 only when it still reads G; then it writes G+1 with the new digest. A mismatch refuses and names the
 other operation. The rename is atomic, so a reader sees one whole config or the other; the
 generation check turns a lost or bypassed lock into a loud refusal instead of a silent overwrite.
+The digest is a fingerprint of the tenant set, so any reader of the auth directory can test a guess
+at which spaces a root holds. That directory already holds one `account.<key>.json` per tenant with
+the name recoverable from the key, so the record adds no exposure a reader did not have.
 
 **Broker trust is untouched by tenant verbs.** `space add` and `space rm` never write `broker.json`.
 Broker trust keeps its own compare-and-set, the operator-identity check plus the `gen` successor
@@ -183,12 +195,12 @@ until the confirmation arrives; an unconfirmed reload restores it, decrements no
 generation record is written only after confirmation), and refuses. When no broker is running there
 is nothing to reload and the next `up` loads the promoted config.
 
-**Gating experiment.** Whether `nats-server` picks up an added and a removed MEMORY-resolver account
-on `SIGHUP`, with JetStream enabled and live clients on a sibling account, must be proven by a live
-smoke before any of this is built. It is the one assumption the whole design rests on. If a reload
-cannot add an account, `space add` needs a broker restart, which drops every tenant's connections
-and makes hot provisioning impossible; the fallback is then a directory or URL resolver (rejected
-alternative 3), promoted from fallback to prerequisite.
+**Reload evidence.** The one assumption the whole design rested on was whether `nats-server` picks
+up an added and a removed MEMORY-resolver account on `SIGHUP`, with JetStream enabled and live
+clients on a sibling account. A live spike outside this tree proved both directions, 9 checks of 9,
+probing the cross-space wall on the concrete subjects with positive controls in the same run. So
+`space add` provisions hot, no broker restart is needed, and the directory resolver stays rejected.
+Porting that spike into this tree as the smoke P6 names is later work, not a precondition.
 
 ## 5. System-account creds for a later-added space
 
@@ -200,7 +212,10 @@ space added after first boot cannot mint its `$SYS` users at all. `mintMembershi
 The two creds are not equivalent. The membership observer pins the data account id in its CONNZ and
 connect and disconnect subjects, so it is genuinely per-space and a new space needs its own. The
 connection evictor is `$SYS.REQ.SERVER.*.KICK` with no account scoping, so it is broker-wide and one
-per broker would do, though today one is minted per space at `up`.
+per broker would do, though today one is minted per space at `up`. Both land on root-scoped paths,
+alongside a root-scoped `membership.json` naming one account, so a second space's `up` overwrites the
+first space's observer with one pinned to the wrong data account. Keying those three paths per space
+is prerequisite P7, and `space rm` step 7 can only reap them once it lands.
 
 Without the seed a later-added space has no observer, which degrades membership to traffic-only and
 makes live eviction refuse. `space add` refuses rather than provisioning a second-class tenant.
@@ -216,6 +231,14 @@ produces a fresh one. `space add` refuses with that recovery named: stop the bro
 `up --rotate-sys`, which re-mints every tenant's `$SYS` creds under the successor generation and
 retains the seed going forward. That path is offline and broker-wide by construction, and it
 invalidates full backups taken against the retired chain, which `up --rotate-sys` already says.
+
+That recovery only reaches a root that still holds one space. `rotateSystemCreds` is itself
+`assertSingleSpaceBroker`-guarded, and correctly so today: the rotation retires the system account
+every tenant shares, while the single `$SYS` cred pair it re-mints pins one data account, so on a
+multi-tenant root it would leave every sibling unobservable. A root that has already grown past one
+space therefore hits a refusal where §5 promises a repair. Growing a broker-wide rotation form, one
+that re-mints each tenant's pair under the successor generation and drops the guard, is prerequisite
+P8. Until it lands, retaining the seed is a decision taken at broker creation with no later repair.
 
 ## 6. Out of scope
 
@@ -236,12 +259,17 @@ invalidates full backups taken against the retired chain, which `up --rotate-sys
   booted (§4). Until this lands, every other piece of this design is undone by the next `up`.
 - **P1.** Re-key `auth/creds` by `spaceSegment` so per-agent secrets name their tenant and
   `space rm` can reap them (§2.2).
-- **P2.** Make `up` and `up --rotate-sys` take the root maintenance lock, so it covers every writer
-  of `server.conf` (§4).
+- **P2.** Make a resumed `up` take the root maintenance lock before it renders, which the ordinary
+  and manifest paths already do, so the lock covers every writer of `server.conf` (§4).
 - **P3.** A multi-tenant backup inventory validator (§2.3).
 - **P4.** `deleteSpaceAccountAuth(store, space)`, deleting one tenant's account key and nothing else.
 - **P5.** Retained broker system signing seed behind the multi-space opt-in (§5).
-- **P6.** The reload smoke of §4, before anything else is built.
+- **P6.** Port the §4 reload spike into this tree as a smoke. No longer gating, since the behavior
+  is already proven live.
+- **P7.** Key the `$SYS` cred pair and `membership.json` per space, so two tenants' `up` runs stop
+  overwriting each other and `space rm` can reap them (§5).
+- **P8.** A broker-wide system-account rotation that re-mints every tenant's `$SYS` pair, so §5's
+  named recovery works on the multi-tenant root it is prescribed for (§5).
 
 ## 8. Rejected alternatives
 
@@ -254,7 +282,8 @@ invalidates full backups taken against the retired chain, which `up --rotate-sys
 3. **A directory or URL resolver instead of MEMORY.** It would make adding an account a file drop
    with no whole-broker rewrite, but it adds a second location for trust material and, for the URL
    form, a resolver service to run and secure. Under the lock and the generation check, the rewrite
-   is affordable. Kept as the named fallback if the §4 reload experiment fails.
+   is affordable. The §4 evidence removed the case that would have forced it, so it is rejected
+   rather than held in reserve.
 4. **Persisting `sys.signingSeed` unconditionally.** It would give every single-space install
    broker-admin minting capability at rest for a capability it never uses. Opt-in at broker creation
    keeps the default install where it is.
