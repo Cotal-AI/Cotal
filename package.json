@@ -439,6 +439,7 @@
     "smoke:materialize-concurrency": "pnpm --filter @cotal-ai/workspace... build && tsx packages/workspace/smoke/materialize-concurrency.smoke.ts",
     "smoke:setup-failloud": "pnpm --filter @cotal-ai/workspace... build && tsx implementations/cli/smoke/setup-failloud.smoke.ts",
     "smoke:agent-skills": "pnpm --filter @cotal-ai/workspace... build && tsx implementations/cli/smoke/agent-skills.smoke.ts",
+    "smoke:agent-skills-entry": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/agent-skills-entry.smoke.ts",
     "smoke:ext-seed-help": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/ext-seed-help.smoke.ts",
     "smoke:seed": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/seed.smoke.ts",
     "smoke:seed-tarball:live": "pnpm --filter cotal-ai... build && tsx bin/smoke/seed-tarball-live.smoke.ts",

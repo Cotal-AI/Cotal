@@ -12,9 +12,9 @@ import { homeCotalDir } from "@cotal-ai/workspace";
  * channels from that single source:
  *   1. Claude Code, bundled in the `cotal-skills` plugin, installed from the mesh marketplace at user
  *      scope (real remote update via a release-derived plugin version; see setup.ts).
- *   2. Every other harness (Codex, Cursor, OpenCode, Gemini CLI, Windsurf/Devin) reads the cross-vendor
- *      `~/.agents/skills/` directory convention. No remote index reaches them today, so `cotal setup`
- *      reconciles the files here and `cotal status` reports skew. This module owns that reconcile.
+ *   2. Codex, OpenCode, pi, and Jcode all read the cross-vendor `~/.agents/skills/` user directory.
+ *      The first normal CLI command after install/upgrade, `cotal update`, and `cotal setup` reconcile
+ *      the files here; `cotal status` reports skew without mutating it. This module owns that reconcile.
  *   3. The website Agent Skills discovery index, generated from the same canonical files at build.
  *
  * File-level ownership (the safety model): Cotal owns exactly ONE file per skill it ships,
@@ -36,6 +36,20 @@ export function canonicalSkillsDir(): string {
  *  home dir (not `~/.cotal`), because that is the real path those tools scan. */
 export function agentSkillsHome(): string {
   return join(homedir(), ".agents", "skills");
+}
+
+export type AgentSkillDestination = {
+  id: "agents";
+  label: string;
+  harnesses: readonly string[];
+  root: string;
+};
+
+/** Thin destination registry over one canonical skill bundle. All currently verified harnesses consume
+ * the shared Agent Skills user path, so there is one physical destination. Keeping the adapter explicit
+ * prevents a future harness-specific path from duplicating sources or reconciliation logic. */
+export function agentSkillDestinations(): AgentSkillDestination[] {
+  return [{ id: "agents", label: "Codex · OpenCode · pi · Jcode", harnesses: ["codex", "opencode", "pi", "jcode"], root: agentSkillsHome() }];
 }
 
 // The Agent Skills name grammar: lowercase alphanumerics in hyphen-separated segments, no leading,
@@ -90,6 +104,15 @@ function manifestPath(): string {
   return join(homeCotalDir(), "agent-skills.json");
 }
 
+function assertManifestPathSafe(): void {
+  const root = homeCotalDir();
+  for (const p of [root, manifestPath()]) {
+    if (!existsSync(p)) continue;
+    if (lstatSync(p).isSymbolicLink())
+      throw new Error(`Refusing to manage skills: ownership path ${p} is a symlink. Replace it with a real path, then retry.`);
+  }
+}
+
 type Manifest = { skills: Record<string, string> }; // skill name -> digest Cotal last wrote
 
 /** Read the ownership manifest. Absent bootstraps to empty; a present-but-malformed manifest (bad JSON,
@@ -98,6 +121,7 @@ type Manifest = { skills: Record<string, string> }; // skill name -> digest Cota
  *  must never be trusted to name what we may remove, nor silently forget what we still own. */
 function readManifest(): Manifest {
   const path = manifestPath();
+  assertManifestPathSafe();
   if (!existsSync(path)) return { skills: {} };
   let parsed: unknown;
   try {
@@ -123,6 +147,7 @@ function readManifest(): Manifest {
 /** Write the manifest atomically (temp + rename) so a crash can't leave a half-written ledger. */
 function writeManifest(m: Manifest): void {
   const path = manifestPath();
+  assertManifestPathSafe();
   mkdirSync(dirname(path), { recursive: true });
   writeOwnedFile(path, Buffer.from(JSON.stringify(m, null, 2) + "\n")); // stage-and-rename: its temp is unlinked + `wx`-created, so it can't be a symlink/hard-link clobber vector
 }
@@ -148,19 +173,19 @@ export function canonicalSkillNames(): string[] {
 /** Refuse to touch a skill whose `~/.agents`, `~/.agents/skills`, `<name>` dir, or `<name>/SKILL.md` is
  *  a symlink: Cotal only writes/removes real files under `~/.agents/skills`, so a redirected component
  *  can never make a read, write, or delete land on a file outside it. */
-function assertNoSymlink(name: string): void {
-  for (const p of [join(homedir(), ".agents"), agentSkillsHome(), join(agentSkillsHome(), name), join(agentSkillsHome(), name, "SKILL.md")]) {
+function assertNoSymlink(destination: AgentSkillDestination, name: string): void {
+  for (const p of [dirname(destination.root), destination.root, join(destination.root, name), join(destination.root, name, "SKILL.md")]) {
     let st;
     try {
       st = lstatSync(p);
     } catch {
       continue; // does not exist yet: nothing to follow
     }
-    if (st.isSymbolicLink()) throw new Error(`Refusing to manage skills: ${p} is a symlink. Cotal only writes real files under ~/.agents/skills.`);
+    if (st.isSymbolicLink()) throw new Error(`Refusing to manage skills: ${p} is a symlink. Cotal only writes real files under ${destination.root}.`);
   }
 }
 
-export type AgentSkillsResult = { installed: string[]; backedUp: { name: string; path: string }[]; removed: string[] };
+export type AgentSkillsResult = { installed: string[]; backedUp: { name: string; path: string }[]; removed: string[]; changed: boolean };
 
 /** Reconcile Cotal's authored skills into `~/.agents/skills`, at the file level:
  *  - install/refresh each canonical skill's `SKILL.md` (and only that file, never other files in the
@@ -168,41 +193,58 @@ export type AgentSkillsResult = { installed: string[]; backedUp: { name: string;
  *    current content into a fresh `SKILL.md.bak` slot (created exclusively, never overwriting an
  *    existing/foreign backup) before overwriting, so every divergent edit stays recoverable;
  *  - remove a skill Cotal previously owned that is no longer canonical (retired), but only its
- *    `SKILL.md`, and only when that file is still exactly what we wrote; then drop the dir if it is now
- *    empty. A user's file in the dir, or a copy they have changed, is never removed.
+ *    `SKILL.md`; if the managed copy was edited, preserve it in a fresh backup first. Then drop the dir
+ *    only when empty. A user's or third party's other files in the directory are never removed.
  *  Idempotent; fails loud on a corrupt bundle or manifest. */
 export function installAgentSkills(): AgentSkillsResult {
   const src = canonicalSkillsDir();
   const names = canonicalSkillNames();
-  const home = agentSkillsHome();
+  const destinations = agentSkillDestinations();
+  if (destinations.length !== 1) throw new Error("internal error: the legacy Agent Skills manifest supports exactly one destination");
+  const destination = destinations[0];
+  const home = destination.root;
   const manifest = readManifest();
+  const installed: string[] = [];
   const backedUp: { name: string; path: string }[] = [];
   const removed: string[] = [];
+  let manifestChanged = false;
 
   for (const name of names) {
-    assertNoSymlink(name);
+    assertNoSymlink(destination, name);
     const dir = join(home, name);
     const destFile = join(dir, "SKILL.md");
     const canonical = readFileSync(join(src, name, "SKILL.md"));
+    const canonicalDigest = digest(canonical);
     if (existsSync(destFile)) {
       const cur = readFileSync(destFile);
-      const ours = manifest.skills[name] === digest(cur);
-      if (!ours && digest(cur) !== digest(canonical)) {
+      const currentDigest = digest(cur);
+      if (currentDigest === canonicalDigest && manifest.skills[name] === canonicalDigest) continue;
+      if (currentDigest === canonicalDigest && manifest.skills[name] === undefined) {
+        manifest.skills[name] = canonicalDigest;
+        manifestChanged = true;
+        continue;
+      }
+      const ours = manifest.skills[name] === currentDigest;
+      if (!ours && currentDigest !== canonicalDigest) {
         const path = backupDivergent(destFile, cur); // create a FRESH backup slot (never overwrite a pre-existing/foreign .bak); every divergent edit stays recoverable
         backedUp.push({ name, path });
       }
     }
     mkdirSync(dir, { recursive: true });
     writeOwnedFile(destFile, canonical); // write ONLY our file, via rename (never truncates a hard-linked inode); never delete or replace anything else in the dir
-    manifest.skills[name] = digest(canonical);
+    installed.push(name);
+    if (manifest.skills[name] !== canonicalDigest) manifestChanged = true;
+    manifest.skills[name] = canonicalDigest;
   }
 
   for (const name of Object.keys(manifest.skills)) {
     if (names.includes(name)) continue; // still shipped
-    assertNoSymlink(name);
+    assertNoSymlink(destination, name);
     const dir = join(home, name);
     const destFile = join(dir, "SKILL.md");
-    if (existsSync(destFile) && digest(readFileSync(destFile)) === manifest.skills[name]) {
+    if (existsSync(destFile)) {
+      const current = readFileSync(destFile);
+      if (digest(current) !== manifest.skills[name]) backedUp.push({ name, path: backupDivergent(destFile, current) });
       rmSync(destFile); // remove ONLY our file (not the dir, not a user's files)
       try {
         if (existsSync(dir) && readdirSync(dir).length === 0) rmdirSync(dir); // drop the dir only if now empty (rmdir refuses a non-empty dir)
@@ -211,16 +253,17 @@ export function installAgentSkills(): AgentSkillsResult {
       }
       removed.push(name);
     }
-    // a retired skill the user has since edited, or whose dir holds their files, is left in place
     delete manifest.skills[name];
+    manifestChanged = true;
   }
 
-  writeManifest(manifest);
-  return { installed: names, backedUp, removed };
+  const changed = installed.length > 0 || backedUp.length > 0 || removed.length > 0 || manifestChanged;
+  if (changed) writeManifest(manifest);
+  return { installed, backedUp, removed, changed };
 }
 
 export type SkillSkewState = "current" | "stale" | "missing" | "retired";
-export type SkillSkew = { name: string; state: SkillSkewState };
+export type SkillSkew = { destination: AgentSkillDestination; name: string; state: SkillSkewState };
 
 /** Compare the managed `~/.agents/skills` tree against canonical so `cotal status` can surface drift:
  *  `current` (identical), `stale` (present but differs), `missing` (not dropped), or `retired` (a skill
@@ -229,17 +272,20 @@ export type SkillSkew = { name: string; state: SkillSkewState };
 export function agentSkillsSkew(): SkillSkew[] {
   const src = canonicalSkillsDir();
   const names = canonicalSkillNames();
-  const home = agentSkillsHome();
+  const destinations = agentSkillDestinations();
+  if (destinations.length !== 1) throw new Error("internal error: the legacy Agent Skills manifest supports exactly one destination");
+  const destination = destinations[0];
+  const home = destination.root;
   const out: SkillSkew[] = names.map((name) => {
     const installed = join(home, name, "SKILL.md");
-    if (!existsSync(installed)) return { name, state: "missing" };
+    if (!existsSync(installed)) return { destination, name, state: "missing" };
     const canonical = readFileSync(join(src, name, "SKILL.md"));
-    return { name, state: readFileSync(installed).equals(canonical) ? "current" : "stale" };
+    return { destination, name, state: readFileSync(installed).equals(canonical) ? "current" : "stale" };
   });
   const manifest = readManifest();
   for (const name of Object.keys(manifest.skills)) {
     if (names.includes(name)) continue;
-    if (existsSync(join(home, name, "SKILL.md"))) out.push({ name, state: "retired" });
+    if (existsSync(join(home, name, "SKILL.md"))) out.push({ destination, name, state: "retired" });
   }
   return out;
 }

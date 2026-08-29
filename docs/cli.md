@@ -102,7 +102,8 @@ cotal update [--self]
 | `--self` | off | If a newer release exists, install that exact validated `cotal-ai` version globally and reconcile through the newly installed binary |
 
 Without `--self`, `update` keeps the installed first-party surfaces coherent with the running
-binary: it force-reconciles the four built-in connectors, then reinstalls other `@cotal-ai/*`
+binary: it reconciles the bundled Agent Skill for Codex, OpenCode, pi, and Jcode in
+`~/.agents/skills/`, force-reconciles the built-in connectors, then reinstalls other `@cotal-ai/*`
 operator extensions at the binary's exact version. Each extension runs in an isolated child, so one
 failure cannot poison later replays. It then checks npm; a newer binary is an informational notice
 with `cotal update --self` as the next command, not an automatic install.
@@ -479,7 +480,8 @@ including inside another mesh's project. `status` is a read-only report: machine
 (starting with the installed `cotal-ai` version), the installed extensions and their versions, this
 folder's `.cotal/`, the recorded meshes, and a live snapshot of the selected mesh (roster, channels,
 membership feed). `status` takes `--space` / `--server` to pick the mesh to inspect; it starts
-nothing.
+nothing. It also reports Agent Skill skew for Codex, OpenCode, pi, and Jcode and points stale or
+missing managed files at `cotal update`; it never repairs them itself.
 
 `cotal status --components` adds a fail-loud per-component health pass. It reads **each
 component's own control surface**, rather than treating a PID, a lease, or a successful probe of a

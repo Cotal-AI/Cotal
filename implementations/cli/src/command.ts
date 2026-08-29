@@ -12,6 +12,7 @@ import {
 import { reconcileSeededConnectors } from "./seed/reconcile.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { cliVersion, extensionVersions } from "./lib/version.js";
+import { installAgentSkills } from "./lib/agent-skills.js";
 
 /** Display order for the help groups — an explicit ranking, NOT registration order: modules
  *  self-register on import and the dev runner (tsx) doesn't guarantee entry-import evaluation
@@ -85,6 +86,7 @@ async function seedBoot(registry: Registry, argv: string[]): Promise<boolean> {
     return true;
   }
   if (skipAutoReconcile(argv)) return false;
+  installAgentSkills();
   await reconcileSeededConnectors();
   return false;
 }
@@ -94,6 +96,7 @@ function skipAutoReconcile(argv: string[]): boolean {
   if (name === undefined || name === "help" || name === "-h" || name === "--help" || name === "__complete") return true;
   if (argv.includes("--help") || argv.includes("-h")) return true; // command-specific help must not mutate state
   if (name === "update") return true; // update owns one explicit reconcile; never auto-refresh then force-refresh
+  if (name === "status") return true; // status is a read-only skew probe; it reports the repair instead of performing it
   // The seed is skipped for an INTERNAL CHILD re-exec — the `up`/`spawn` that spawns the delivery
   // daemon / manager / auth service sets COTAL_SKIP_CONNECTOR_SEED=1 in their env AFTER it reconciled,
   // so the child doesn't redo the seed on boot. A USER running the same public command directly (e.g.

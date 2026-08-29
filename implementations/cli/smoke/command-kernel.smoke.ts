@@ -37,6 +37,7 @@ function updateRuntime(opts: {
     parentPid: 99,
     nodePath: "/node",
     version: () => opts.version ?? "0.13.1",
+    reconcileSkills: () => void events.push("skills"),
     reconcile: async () => void events.push("reconcile"),
     extensions: () => opts.extensions ?? [],
     claimUpdatePass: () => {

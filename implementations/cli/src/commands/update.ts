@@ -16,6 +16,7 @@ import { selfArgv } from "../lib/self-exec.js";
 import { cliVersion } from "../lib/version.js";
 import { runSeed, compareSemver } from "../seed/reconcile.js";
 import { c } from "../ui.js";
+import { installAgentSkills } from "../lib/agent-skills.js";
 
 const UPDATE_TARGET_ENV = "COTAL_UPDATE_TARGET_VERSION";
 const UPDATE_PARENT_ENV = "COTAL_UPDATE_PARENT";
@@ -37,6 +38,7 @@ export interface UpdateRuntime {
   readonly parentPid: number;
   readonly nodePath: string;
   version(): string;
+  reconcileSkills(): void;
   reconcile(): Promise<void>;
   extensions(): readonly InstalledExtension[];
   claimUpdatePass(): () => void;
@@ -66,6 +68,7 @@ const runtime: UpdateRuntime = {
   parentPid: process.ppid,
   nodePath: process.execPath,
   version: cliVersion,
+  reconcileSkills: installAgentSkills,
   reconcile: () => runSeed({ force: true }),
   extensions: () => loadExtensionsManifest().extensions,
   claimUpdatePass: () => claimExtensionUpdatePass(),
@@ -132,6 +135,13 @@ async function reconcileCurrent(
   rt: UpdateRuntime,
   finish: (reconciled: boolean) => number,
 ): Promise<number> {
+  rt.out(c.bold("Agent skills"));
+  try {
+    rt.reconcileSkills();
+  } catch (e) {
+    rt.err(c.red(`✗ agent skills: ${message(e)}`));
+    return finish(false);
+  }
   rt.out(c.bold("Built-in connectors"));
   try {
     await rt.reconcile();

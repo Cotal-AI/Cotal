@@ -554,9 +554,9 @@ function claude(...args: string[]): { status: number | null; output: string } {
  *  a re-run after an upgrade brings a deployed install current. */
 function seedAgentSkills(log?: ReturnType<typeof openSetupLog>): AgentSkillsResult {
   const r = installAgentSkills();
-  provenance.wrote("cross-vendor skills", agentSkillsHome());
+  if (r.changed) provenance.wrote("cross-vendor skills", agentSkillsHome());
   log?.line(
-    `agent-skills: installed ${r.installed.join(", ")}` +
+    `agent-skills: ${r.changed ? `installed ${r.installed.join(", ") || "manifest"}` : "current"}` +
       (r.backedUp.length ? `; backed up ${r.backedUp.map((b) => b.path).join(", ")}` : "") +
       (r.removed.length ? `; removed ${r.removed.join(", ")}` : ""),
   );

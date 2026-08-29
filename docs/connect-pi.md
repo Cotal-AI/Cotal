@@ -79,6 +79,10 @@ the seat loud. A deliberate stop/despawn/maintenance cut never restarts it.
 
 ## Install
 
+Pi officially reads Agent Skills from both `~/.pi/agent/skills/` and `~/.agents/skills/`. Cotal uses
+the shared `~/.agents/skills/` path, so no second pi-specific copy is needed. The first normal `cotal`
+command after install or upgrade keeps it current; `cotal update` and `cotal setup` also reconcile it.
+
 ```bash
 npm install -g cotal-ai @earendil-works/pi-coding-agent@0.79.10
 cotal up

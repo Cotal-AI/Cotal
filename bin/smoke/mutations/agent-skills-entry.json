@@ -1,0 +1,27 @@
+{
+  "suite": "implementations/cli/smoke/agent-skills-entry.smoke.ts",
+  "guard": "the real published CLI reconciles bundled Agent Skills on normal startup and through cotal update",
+  "command": "pnpm smoke:agent-skills-entry",
+  "completionMarker": "agent-skills-entry.smoke: all assertions passed",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/agent-skills-entry.json",
+  "mutations": [
+    {
+      "name": "remove the normal-startup Agent Skills hook",
+      "file": "implementations/cli/src/command.ts",
+      "find": "  installAgentSkills();\n  await reconcileSeededConnectors();\n",
+      "replace": "  await reconcileSeededConnectors();\n",
+      "expectRed": "FIRST NORMAL COMMAND: fresh install generation appears",
+      "cell": "FIRST NORMAL COMMAND: fresh install generation appears",
+      "note": "Restores the explicit-setup-only defect: connector seeding still runs, but no cross-harness skill appears on first normal use."
+    },
+    {
+      "name": "remove the explicit update Agent Skills hook",
+      "file": "implementations/cli/src/commands/update.ts",
+      "find": "    rt.reconcileSkills();\n",
+      "replace": "    if (false) rt.reconcileSkills();\n",
+      "expectRed": "UPDATE COMMAND: explicit update reconciles bundled Agent Skills",
+      "cell": "UPDATE COMMAND: explicit update reconciles bundled Agent Skills",
+      "note": "The update entry must own an explicit skill reconciliation because boot deliberately skips update to avoid duplicate passes."
+    }
+  ]
+}

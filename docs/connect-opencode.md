@@ -17,6 +17,10 @@ OpenCode needs no setup step. The picker in `cotal setup` just records that you 
 is no plugin to install; the connector auto-wires at spawn. You only need the `opencode` binary
 on your PATH. (Claude Code, by contrast, installs a plugin because its wake channel needs one.)
 
+OpenCode officially reads user skills from `~/.agents/skills/`. Cotal ships its coordination skill
+inside `cotal-ai` and reconciles the managed copy on the first normal CLI command after install or
+upgrade, plus `cotal update` and `cotal setup`.
+
 ## Spawn it
 
 Same launch grammar as any agent (see [run-a-mesh.md](run-a-mesh.md)):

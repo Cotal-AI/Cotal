@@ -9,7 +9,7 @@
  */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -29,13 +29,14 @@ function freshEnv() {
 }
 
 const lib = await import("../src/lib/agent-skills.js");
-const { agentSkillsHome, canonicalSkillsDir, canonicalSkillNames, installAgentSkills, agentSkillsSkew } = lib;
+const { agentSkillsHome, agentSkillDestinations, canonicalSkillsDir, canonicalSkillNames, installAgentSkills, agentSkillsSkew } = lib;
 
 try {
   const canon = canonicalSkillsDir();
   const name = canonicalSkillNames()[0]; // team-topology today
   const canonicalBytes = readFileSync(join(canon, name, "SKILL.md"));
   const stateOf = (n: string) => agentSkillsSkew().find((s) => s.name === n)?.state;
+  assert.deepEqual(agentSkillDestinations()[0].harnesses, ["codex", "opencode", "pi", "jcode"]);
 
   // --- Block 1: install / backup / retirement / skew -----------------------------------------------
   {
@@ -56,7 +57,7 @@ try {
     // fresh install
     assert.equal(stateOf(name), "missing");
     let r = installAgentSkills();
-    assert.deepEqual([r.installed, r.backedUp, r.removed], [[name], [], []]);
+    assert.deepEqual([r.installed, r.backedUp, r.removed, r.changed], [[name], [], [], true]);
     assert.equal(stateOf(name), "current");
     assert.ok(readFileSync(destFile).equals(canonicalBytes));
 
@@ -76,9 +77,13 @@ try {
     assert.equal(readFileSync(bak, "utf8"), "EDIT-A", "the earlier backup is preserved");
     assert.equal(readFileSync(`${bak}.1`, "utf8"), "EDIT-B", "the latest edit is recoverable in a fresh slot");
 
-    // no-op re-run
+    // no-op re-run: current generation performs no writes, including the ownership manifest
+    const destBefore = lstatSync(destFile).mtimeNs;
+    const manifestBefore = lstatSync(manifest).mtimeNs;
     r = installAgentSkills();
-    assert.deepEqual([r.backedUp, r.removed], [[], []]);
+    assert.deepEqual([r.installed, r.backedUp, r.removed, r.changed], [[], [], [], false]);
+    assert.equal(lstatSync(destFile).mtimeNs, destBefore, "current skill bytes are not rewritten");
+    assert.equal(lstatSync(manifest).mtimeNs, manifestBefore, "current ownership manifest is not rewritten");
 
     // retirement spares a user's file and keeps the dir (round-2 finding: whole-dir rmSync ate user data)
     own("retired-userfile", "ours");
@@ -94,12 +99,13 @@ try {
     assert.ok(r.removed.includes("retired-empty"));
     assert.ok(!existsSync(join(skillsHome, "retired-empty")), "empty retired dir removed");
 
-    // a retired skill the user diverged is left entirely alone
+    // a retired skill the user diverged is backed up, then only the managed SKILL.md is removed
     own("retired-diverged", "ours");
     writeFileSync(join(skillsHome, "retired-diverged", "SKILL.md"), "USER CHANGED");
     r = installAgentSkills();
-    assert.ok(!r.removed.includes("retired-diverged"));
-    assert.ok(existsSync(join(skillsHome, "retired-diverged", "SKILL.md")));
+    assert.ok(r.removed.includes("retired-diverged"));
+    assert.equal(readFileSync(join(skillsHome, "retired-diverged", "SKILL.md.bak"), "utf8"), "USER CHANGED");
+    assert.ok(!existsSync(join(skillsHome, "retired-diverged", "SKILL.md")));
 
     // skew reports a still-present managed retired skill
     own("retired-shown", "x");

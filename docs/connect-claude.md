@@ -36,12 +36,12 @@ coordinating agent teams (today `team-topology`), from one canonical source, on 
   is stamped from the running CLI release, so an upgrade + `cotal setup` runs `claude plugin update` and
   the deployed install actually gets the new skill. `cotal setup` installs it on first run and on repeat
   runs, so upgraders are not left behind.
-- **Every other harness** (Codex, Cursor, OpenCode, Gemini CLI, Windsurf/Devin) reads the cross-vendor
-  `~/.agents/skills/` directory convention, which has no remote index, so `cotal setup` **reconciles** it:
-  it installs/updates each Cotal skill, backs up a copy you have edited to `SKILL.md.bak` before
-  replacing it, and removes a Cotal skill that is no longer shipped. Only skills Cotal owns are touched;
-  your own or third-party skills there are left alone. `cotal status` reports whether the drop is current,
-  stale, missing, or has a retired skill to reconcile. This is the working cross-vendor path.
+- **Codex, OpenCode, pi, and Jcode** all load the verified cross-vendor user path
+  `~/.agents/skills/`. Cotal reconciles its bundled skill there on the first normal CLI command after
+  install or upgrade, and on `cotal update` and `cotal setup`. It backs up an edited managed copy to a
+  fresh `SKILL.md.bak` slot before replacement or retirement and removes retired Cotal files without
+  touching user or third-party files. A current generation performs no writes. `cotal status` reports
+  missing, stale, or retired files with `cotal update` as the repair.
 
 Cotal also generates an [Agent Skills discovery index](https://cotal.ai/.well-known/agent-skills/index.json)
 on cotal.ai, but that RFC is still a draft with no harness consuming it yet, so it is a forward bet,

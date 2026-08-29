@@ -611,3 +611,8 @@ smoke:web-probe-target
 # loopback default when no host is supplied. Appended so every existing shard assignment remains
 # unchanged.
 smoke:web-remote-bind
+# Cotal's bundled Agent Skill is lazily reconciled through the real built CLI on the first normal
+# command after install/upgrade. The isolated-HOME suite also proves update/no-op/backup, corrupt and
+# symlink fail-loud behavior, all four verified harnesses, status skew, and a write-free --version.
+# Appended at the true tail so every existing shard membership remains unchanged.
+smoke:agent-skills-entry

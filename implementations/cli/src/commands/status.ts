@@ -69,9 +69,9 @@ function printExtensions(): void {
   for (const e of exts) row(e.label, c.green(`v${e.version}`) + (e.pkg === e.label ? "" : c.dim(` · ${e.pkg}`)));
 }
 
-/** Cotal's authored skills reach non-Claude harnesses through the cross-vendor `~/.agents/skills`
- *  directory (Codex, Cursor, OpenCode, Gemini CLI, Windsurf). Those harnesses have no remote update, so
- *  surface a stale/missing/retired drop here and point at the fix (`cotal setup` reconciles it). A corrupt
+/** Cotal's authored skills reach Codex, OpenCode, pi, and Jcode through the verified cross-vendor
+ *  `~/.agents/skills` directory. Surface a stale/missing/retired drop here and point at the normal
+ *  explicit repair (`cotal update`; `cotal setup` also reconciles it). A corrupt
  *  skills bundle throws (fail-loud); we render that as a red integrity error rather than "none shipped". */
 function skillsSkewRow(): string {
   let skew;
@@ -82,10 +82,10 @@ function skillsSkewRow(): string {
   }
   const behind = skew.filter((s) => s.state !== "current");
   if (!behind.length) return c.green(`current (${skew.length})`);
-  if (behind.every((s) => s.state === "missing")) return c.dim(`not installed · ${displayCmd()} setup`);
+  if (behind.every((s) => s.state === "missing")) return c.dim(`not installed · ${displayCmd()} update`);
   const retired = behind.filter((s) => s.state === "retired").length;
   const label = retired ? `${behind.length} to reconcile (${retired} retired)` : `${behind.length}/${skew.length} out of date`;
-  return c.yellow(`${label} · ${displayCmd()} setup`);
+  return c.yellow(`${label} · ${displayCmd()} update`);
 }
 
 /** The `cotal-skills` Claude Code plugin (user scope) vs this CLI release: stale means an update didn't
@@ -117,7 +117,7 @@ async function printMachine(): Promise<void> {
   row("Claude skills", claudeSkillsLabel(m.claudeSkills));
   row("Claude", m.agents.claude ? c.green("on PATH") : c.dim("not on PATH"));
   row("OpenCode", m.agents.opencode ? c.green("on PATH") : c.dim("not on PATH"));
-  row("Skills (.agents)", skillsSkewRow());
+  row("Skills (Codex/OpenCode/pi/Jcode)", skillsSkewRow());
   row("Web extension", webExt ? c.green("installed") : c.dim("not installed"));
   row("Web process", web ? c.green(WEB_URL) : c.dim(webExt ? "down" : "not installed"));
 }

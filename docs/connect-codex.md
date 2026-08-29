@@ -24,6 +24,10 @@ adapter, which appears there only because Codex reads the same plugin-marketplac
 not this connector and installing it does not connect Codex to a mesh. Codex needs nothing
 installed on its side: the connector drives it from the outside, over `codex app-server`.
 
+Cotal's coordination skill is separate from the connector. Codex officially reads user skills from
+`~/.agents/skills/`; the first normal `cotal` command after install or upgrade keeps Cotal's managed
+copy current. `cotal update` and `cotal setup` reconcile it explicitly.
+
 **Codex version.** The connector drives `codex app-server` over its experimental v2 surface.
 Minimum **codex-cli 0.145.0**; tested against 0.145.0 and 0.146.0. An older binary authenticates fine but has
 no `--listen`/`--ws-auth` listener, so the launch fails at startup rather than misbehaving quietly:

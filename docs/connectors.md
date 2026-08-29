@@ -7,6 +7,10 @@ and delivery model ([MCP tools](mcp-tools.md)). They differ in how they bind to 
 and which spawn features are wired. Anything unwired **fails loud**: a flag a connector does
 not support throws; nothing silently degrades.
 
+Cotal's bundled coordination skill is independent of connector installation. Codex, OpenCode, pi,
+and Jcode all consume the verified user path `~/.agents/skills/`; normal CLI use after install or
+upgrade reconciles the managed copy, and `cotal status` reports skew without writing.
+
 | | [Claude Code](connect-claude.md) | [OpenCode](connect-opencode.md) | [Codex](connect-codex.md) | [Hermes](connect-hermes.md) | [Jcode](connect-jcode.md) | [pi](connect-pi.md) |
 |---|---|---|---|---|---|---|
 | Maturity | stable | beta | beta | alpha | beta | alpha |

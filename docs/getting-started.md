@@ -43,6 +43,11 @@ too and offers to install the global `cotal` at the end. Declining is fine: the 
 `npx cotal-ai …`, and the background processes `cotal up` starts invoke their own resolved
 path rather than a global `cotal`.
 
+The package also ships Cotal's coordination skill. Codex, OpenCode, pi, and Jcode load it from
+`~/.agents/skills/`. The first normal `cotal` command after an install or upgrade reconciles that
+managed copy to the running CLI generation. `cotal update` and `cotal setup` do the same explicitly;
+`cotal --version`, help, completion, and status probes remain write-free.
+
 Requirements:
 
 - Node 22 or newer. The installer handles this for you; it downloads an official Node build
