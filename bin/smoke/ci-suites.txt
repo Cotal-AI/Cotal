@@ -615,3 +615,6 @@ smoke:web-remote-bind
 # closure from built dist and require every external package in it to be installed by a production
 # dependency field. Appended so every existing shard assignment remains unchanged.
 smoke:manager-runtime-deps
+# Seat provenance rows must stay correct across the three ps presentations; appended so
+# every existing shard assignment remains unchanged.
+smoke:ps-provenance

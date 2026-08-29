@@ -84,6 +84,7 @@
     "smoke:codex-live": "tsx extensions/connector-codex/smoke/codex-live.smoke.ts",
     "smoke:codex-tui-live": "tsx extensions/connector-codex/smoke/codex-tui-live.smoke.ts",
     "smoke:jcode-args": "tsx extensions/connector-jcode/smoke/jcode-args.smoke.ts",
+    "smoke:ps-provenance": "tsx implementations/cli/smoke/agents-provenance.smoke.ts",
     "smoke:jcode-host": "tsx extensions/connector-jcode/smoke/jcode-host.smoke.ts",
     "smoke:jcode-private-state": "tsx extensions/connector-jcode/smoke/private-state.smoke.ts",
     "smoke:jcode-session-resume": "tsx extensions/connector-jcode/smoke/session-resume.smoke.ts",
