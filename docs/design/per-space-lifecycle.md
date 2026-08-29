@@ -233,9 +233,16 @@ The two creds are not equivalent. The membership observer pins the data account 
 connect and disconnect subjects, so it is genuinely per-space and a new space needs its own. The
 connection evictor is `$SYS.REQ.SERVER.*.KICK` with no account scoping, so it is broker-wide and one
 per broker would do, though today one is minted per space at `up`. Both land on root-scoped paths,
-alongside a root-scoped `membership.json` naming one account, so a second space's `up` overwrites the
-first space's observer with one pinned to the wrong data account. Keying those three paths per space
-is prerequisite P7, and `space rm` step 7 can only reap them once it lands.
+alongside a root-scoped `membership.json` naming one account and a root-scoped `membership-rw.creds`
+store key. One tenant's set is all a root can hold, and the way that bites is INHERITANCE, not an
+overwrite. A second space's `up` cannot overwrite the first space's, because `up` refuses a `--space`
+the root does not already hold — at the workspace-root identity check, before any trust write — so on
+an established root the fresh-space branch that mints the bundle never runs at all. On a root that
+already holds two tenants neither space is fresh either, so the only writer that runs is the
+absent-only heal path, which writes what is missing and nothing else. The first tenant to boot
+therefore wins the root-scoped bundle and the second silently runs on it: after the second tenant
+boots, `membership.json` still names the FIRST tenant's data account. Keying those paths per space is
+prerequisite P7, and `space rm` step 7 can only reap them once it lands.
 
 Without the seed a later-added space has no observer, which degrades membership to traffic-only and
 makes live eviction refuse. `space add` refuses rather than provisioning a second-class tenant.
@@ -291,8 +298,8 @@ P8. Until it lands, retaining the seed is a decision taken at broker creation wi
 - **P5.** Retained broker system signing seed behind the multi-space opt-in (§5).
 - **P6.** Port the §4 reload spike into this tree as a smoke. No longer gating, since the behavior
   is already proven live.
-- **P7.** Key the `$SYS` cred pair and `membership.json` per space, so two tenants' `up` runs stop
-  overwriting each other and `space rm` can reap them (§5).
+- **P7.** Key the `$SYS` cred pair, `membership.json` and `membership-rw.creds` per space, so a
+  tenant stops silently running on whichever sibling booted first and `space rm` can reap them (§5).
 - **P8.** A broker-wide system-account rotation that re-mints every tenant's `$SYS` pair, so §5's
   named recovery works on the multi-tenant root it is prescribed for (§5).
 
