@@ -9,6 +9,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
+  agentCredsDir,
   authDir,
   CONNECTION_EVICTOR_CREDS_KIND,
   DELIVERY_CREDS_KIND,
@@ -160,7 +161,12 @@ function inventory(root: string, space: string, sysPub?: string): CredReport[] {
   // and `cotal up` can never disagree about which $SYS creds the trust record authorizes.
   const stale = new Map(sysPub ? staleSystemCreds(root, sysPub, space).map((x) => [x.file, x] as const) : []);
   const reports = fixed.map((f) => report(f.label, f.kind, f.path, sysPub, stale.get(f.label)));
-  const agentDir = join(authDir(root), "creds");
+  // Same posture for the per-agent secrets (P1), and for the same reason: this space's segment
+  // through the choke point, never `join(authDir(root), "creds")`, so an operator running `doctor`
+  // on a root that has not migrated yet sees their agents' creds rather than an empty inventory. It
+  // is also what keeps the report SPACE-scoped now that the dir holds every tenant's segment — a
+  // diagnosis must not name a co-resident tenant's material.
+  const agentDir = agentCredsDir(root, space);
   if (existsSync(agentDir)) {
     for (const f of readdirSync(agentDir).filter((f) => f.endsWith(".creds") && !f.endsWith(".sentinel.creds")).sort()) {
       reports.push(report(basename(f), "agent", join(agentDir, f)));

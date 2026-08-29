@@ -85,7 +85,12 @@ operator.
    `membership.json` and `delivery.creds` — through `reapSpaceMaterial`, which P7 landed ahead of
    this verb. It sweeps every store-backed kind through the seam and then removes THIS space's
    segment dir, never `.cotal/space.*`: unlike `clean`, this runs on a root the other tenants keep
-   using, and it has no raw `.cotal/` sweep behind it to catch a kind the seam loop forgot.
+   using, and it has no raw `.cotal/` sweep behind it to catch a kind the seam loop forgot. The
+   space's per-agent standing secrets go the same way through `reapAgentSecrets`, which P1 landed
+   ahead of this verb for the same reason. That one ENUMERATES rather than sweeping a fixed list of
+   kinds, because P1's set is one file per agent per kind and only the segment records which exist —
+   so it carries an I/O step before its first seam call, and an unreadable segment there is reported
+   like any other failure rather than thrown past step 5.
 8. Clear the journal entry.
 
 Steps 5 to 7 are individually idempotent, so a re-run after a crash finishes the removal instead of
@@ -100,11 +105,20 @@ loads a config without the account, its users are refused. Creds minted under it
 cryptographically valid and would still be honored by a stale broker that never loaded the new
 config, the same qualifier `up --rotate-sys` already prints for retired `$SYS` creds.
 
-The per-agent secret files under `auth/creds` are not deleted, because that directory is
-space-independent today (`agentCredsDir(root)` takes no space) and no file in it names its tenant, so
-reaping one space's would risk a sibling's. They are broker-dead the moment the account leaves the
-resolver, so what remains is disk residue. `space rm` lists the files it is leaving behind, and
-re-keying that directory by `spaceSegment` is prerequisite P1 (§7).
+The per-agent secret files under `auth/creds` are reaped with the rest, now that P1 keys them by
+`spaceSegment` — `auth/creds/space.<hex>/<name>.<kind>`, so every one of them names its tenant and
+one space's can be removed without risking a sibling's. That is also why step 7's precondition
+belongs at step 1. A root still holding pre-P1 files FLAT in `auth/creds` holds material that names
+no tenant, and removing a space is precisely what would make it look owned: on a two-tenant root the
+removal leaves one space in the inventory, which is the condition under which the migration rules
+stop refusing, so the survivor's next `spawn`, `mint` or `doctor auth` moves those files into the
+survivor's segment and the layout then asserts an owner nobody chose. `assertAgentSecretsReapable`
+refuses at step 1 because that is the last moment the evidence that it was a guess still exists.
+
+What the reap does not reach is a hosted composition. It enumerates the segment on disk, because
+`SecretStore` has no list operation and P1's key set is open rather than a fixed list of kinds, so a
+deployment whose agent secrets live only in an injected store reaps them through that store's own
+tenant teardown — the same boundary `clean all`'s agent sweep already draws.
 
 ### 2.3 Per-space artifacts
 
@@ -298,9 +312,11 @@ P8. Until it lands, retaining the seed is a decision taken at broker creation wi
   booted (§4). Landed: `up` renders through `preloadSpaceAccounts`, which re-reads the inventory and
   refuses the render whenever the tenant list is uncertain.
 - **P1.** Re-key `auth/creds` by `spaceSegment` so per-agent secrets name their tenant and
-  `space rm` can reap them (§2.2). Still open: the split auth records (callout, issuer, owner-secret,
-  service-keys) are keyed `auth/<spaceSegment>/…`, but `agentCredsDir(root)` still takes no space, so
-  §2.2's residue and the unreapable per-agent secrets stand.
+  `space rm` can reap them (§2.2). Landed: `agentCredsDir(root, space)` resolves through the shared
+  choke point and moves a pre-P1 flat file into the space's segment on first touch; every key, path
+  and `agentSecretKeyForFile` takes the space from the CALLER's authority rather than from a recorded
+  path; and step 7 reaps one tenant's segment through `reapAgentSecrets` behind the step-1
+  `assertAgentSecretsReapable`.
 - **P2.** Make a resumed `up` take the root maintenance lock before it renders, which the ordinary
   and manifest paths already do, so the lock covers every writer of `server.conf` (§4). Landed: the
   re-entry inherits the recovery's lock rather than taking its own, and hands it to every helper that

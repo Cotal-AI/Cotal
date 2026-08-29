@@ -1180,7 +1180,7 @@ export class Manager {
           // optimisation into the whole guard, and nothing fails at the moment of the change.
           if (a.userOwner || a.terminalizing || !a.seed || !a.secretPaths?.creds) continue;
           try {
-            const stored = await this.secrets.get(agentSecretKeyForFile(a.secretPaths.creds));
+            const stored = await this.secrets.get(agentSecretKeyForFile(a.secretPaths.creds, this.space));
             if (stored === undefined) continue; // no materialized cred (never minted here) - nothing to renew
             const health = inspectCredHealth(stored);
             if (health.state === "healthy") continue;
@@ -2442,7 +2442,7 @@ export class Manager {
     const secrets = this.secrets;
     // LIFECYCLE-KEYED family (SPEC 13.1 name-disjointness on the FS): this incarnation's files
     // embed its uid, so no teardown addressed to another incarnation can ever reach them.
-    const files = agentLifecycleSecretFilePaths(this.workspaceRoot, name, opts.lifecycleUid);
+    const files = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, opts.lifecycleUid);
     const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = files;
     try {
       // The GRANT first — it is the envelope-rule enforcement point (a delegation must sit within
@@ -2475,10 +2475,10 @@ export class Manager {
       // The store holds the source of truth; the bearer re-exec (`--token-file`) and the launch's
       // sentinel handoff read FILES, so materialize both at the canonical paths (under the local
       // FS composition, a byte-identical rewrite of the keys' own locations).
-      await secrets.put(agentSecretKeyForFile(tokenPath), grant.actorToken);
-      await secrets.put(agentSecretKeyForFile(sentinelPath), grant.sentinelCreds);
-      await materializeSecretToFile(secrets, agentSecretKeyForFile(tokenPath), tokenPath);
-      await materializeSecretToFile(secrets, agentSecretKeyForFile(sentinelPath), sentinelPath);
+      await secrets.put(agentSecretKeyForFile(tokenPath, this.space), grant.actorToken);
+      await secrets.put(agentSecretKeyForFile(sentinelPath, this.space), grant.sentinelCreds);
+      await materializeSecretToFile(secrets, agentSecretKeyForFile(tokenPath, this.space), tokenPath);
+      await materializeSecretToFile(secrets, agentSecretKeyForFile(sentinelPath, this.space), sentinelPath);
       rmSync(healthPath, { force: true }); // a fresh start opens a fresh health window
       const bearerCmd = [
         // The manager's own invocation prefix (node + loader flags + the cotal entry) — the agent
@@ -2504,8 +2504,8 @@ export class Manager {
       // may respawn the moment it reads the refusal, and a detached teardown would race (and
       // delete) that fresh spawn's just-provisioned durables.
       await provider.revokeAgent({ dir, owner, actor: name }).catch(() => {});
-      await secrets.delete(agentSecretKeyForFile(tokenPath)).catch(() => {});
-      await secrets.delete(agentSecretKeyForFile(sentinelPath)).catch(() => {});
+      await secrets.delete(agentSecretKeyForFile(tokenPath, this.space)).catch(() => {});
+      await secrets.delete(agentSecretKeyForFile(sentinelPath, this.space)).catch(() => {});
       rmSync(tokenPath, { force: true });
       rmSync(sentinelPath, { force: true });
       rmSync(healthPath, { force: true });
@@ -2641,9 +2641,9 @@ export class Manager {
     // standing `cotal mint` cred, a seeded workstation cred, a pre-split leftover): deleting an
     // unowned same-name file is the exact successor-clobber this ownership discipline removes.
     const secrets = this.secrets;
-    const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, a.name, a.lifecycleUid);
+    const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid);
     if (files.creds) {
-      await secrets.delete(agentSecretKeyForFile(files.creds));
+      await secrets.delete(agentSecretKeyForFile(files.creds, this.space));
       rmSync(files.creds, { force: true });
     }
     if (a.userOwner) {
@@ -2651,8 +2651,8 @@ export class Manager {
       // the agent's standing mint authority, so delete it (next exchange refused, next connect
       // denied) and shred the secret/sentinel/health files. A copied actor token dies here; a
       // still-LIVE connection ends at its bearer-bound JWT expiry (≤ the agent TTL).
-      if (files.actorToken) await secrets.delete(agentSecretKeyForFile(files.actorToken));
-      if (files.sentinelCreds) await secrets.delete(agentSecretKeyForFile(files.sentinelCreds));
+      if (files.actorToken) await secrets.delete(agentSecretKeyForFile(files.actorToken, this.space));
+      if (files.sentinelCreds) await secrets.delete(agentSecretKeyForFile(files.sentinelCreds, this.space));
       for (const f of [files.actorToken, files.sentinelCreds, files.health]) if (f) rmSync(f, { force: true });
       // The ledger row IS the agent's STANDING mint authority (a different store from the auth-plane
       // cred ledger the rail retirement covers): while it lives, a copied actor token can still mint a
@@ -3705,9 +3705,9 @@ export class Manager {
         const secrets = this.secrets;
         // LIFECYCLE-KEYED (SPEC 13.1 on the FS): the incarnation's cred file embeds its uid, so a
         // replayed/stale teardown can never address a same-name successor's credential.
-        credsPath = agentLifecycleSecretFilePaths(this.workspaceRoot, name, lifecycleUid).creds;
-        await secrets.put(agentSecretKeyForFile(credsPath), creds);
-        await materializeSecretToFile(secrets, agentSecretKeyForFile(credsPath), credsPath);
+        credsPath = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, lifecycleUid).creds;
+        await secrets.put(agentSecretKeyForFile(credsPath, this.space), creds);
+        await materializeSecretToFile(secrets, agentSecretKeyForFile(credsPath, this.space), credsPath);
         provisioned = { id: identity.id, name, lifecycleUid, secretPaths: { creds: credsPath } }; // footprint now exists — the finally rolls it back if the spawn throws
       }
       // Personal MCP servers the operator opted to share with manager-spawned agents of this type
@@ -4026,8 +4026,8 @@ export class Manager {
       // layout) or the name-keyed one (a pre-split inventory being carried across the upgrade).
       // Anything else is a foreign path and refused exactly as before.
       const candidates = [
-        resolve(agentLifecycleSecretFilePaths(this.workspaceRoot, entry.name, entry.identity.lifecycleUid).creds),
-        resolve(agentSecretFilePaths(this.workspaceRoot, entry.name).creds),
+        resolve(agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, entry.name, entry.identity.lifecycleUid).creds),
+        resolve(agentSecretFilePaths(this.workspaceRoot, this.space, entry.name).creds),
       ];
       const expected = resolve(entry.identity.credential.path);
       if (!candidates.includes(expected))
@@ -4039,7 +4039,7 @@ export class Manager {
         // composition resolves the key to this same path).
         const st = lstatSync(expected);
         if (!st.isFile() || st.isSymbolicLink()) throw new Error("not a regular non-symlink file");
-        const stored = await this.secrets.get(agentSecretKeyForFile(expected));
+        const stored = await this.secrets.get(agentSecretKeyForFile(expected, this.space));
         if (stored === undefined) throw new Error("the credential is not in the secret store");
         credentialText = stored;
         const actual = idFromCreds(credentialText);
@@ -4066,18 +4066,21 @@ export class Manager {
       // the atomic family closes both: `health` is pinned by PATH EQUALITY (never by file existence,
       // so a transiently-absent health file still validates), and the store reads below key off the
       // RECORDED path, so a foreign path can neither pass the pin nor address a different row.
-      const lifecycleFiles = agentLifecycleSecretFilePaths(this.workspaceRoot, entry.name, entry.identity.lifecycleUid);
-      const legacyFiles = agentSecretFilePaths(this.workspaceRoot, entry.name);
+      // Both triples are derived under THIS manager's space, and the key builder is given
+      // `this.space` rather than reading the segment out of the recorded path: an inventory row is
+      // caller data, and a recorded path may not choose which tenant's material is addressed.
+      const lifecycleFiles = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, entry.name, entry.identity.lifecycleUid);
+      const legacyFiles = agentSecretFilePaths(this.workspaceRoot, this.space, entry.name);
       const recordedToken = resolve(entry.identity.actorToken.path);
       const recordedSentinel = resolve(entry.identity.sentinelCredential.path);
       const recordedHealth = resolve(entry.identity.health.path);
       const matchesFamily = (f: { actorToken: string; sentinelCreds: string; health: string }): boolean =>
         recordedToken === resolve(f.actorToken) && recordedSentinel === resolve(f.sentinelCreds) && recordedHealth === resolve(f.health);
       if (!matchesFamily(lifecycleFiles) && !matchesFamily(legacyFiles))
-        throw new Error(`retained identity references for ${entry.name} are not one manager-owned secret family: all of actor-token, sentinel, and health must be the lifecycle-<uid> triple or the legacy name-keyed triple under ${agentCredsDir(this.workspaceRoot)} (no mixed families, no foreign health path)`);
+        throw new Error(`retained identity references for ${entry.name} are not one manager-owned secret family: all of actor-token, sentinel, and health must be the lifecycle-<uid> triple or the legacy name-keyed triple under ${agentCredsDir(this.workspaceRoot, this.space)} (no mixed families, no foreign health path)`);
       const secrets = this.secrets;
-      const actorToken = await secrets.get(agentSecretKeyForFile(recordedToken));
-      const sentinelCreds = await secrets.get(agentSecretKeyForFile(recordedSentinel));
+      const actorToken = await secrets.get(agentSecretKeyForFile(recordedToken, this.space));
+      const sentinelCreds = await secrets.get(agentSecretKeyForFile(recordedSentinel, this.space));
       if (actorToken === undefined || sentinelCreds === undefined)
         throw new Error("the retained actor token / sentinel credential is not in the secret store");
       const adopted = await provider.validateRetainedAgent({
@@ -4283,7 +4286,7 @@ export class Manager {
       // preserve/resume — without it the adopted cred would die loud at its TTL with no remint.
       let adoptedSeed: string | undefined;
       if (entry.identity.mode === "static") {
-        const stored = await this.secrets.get(agentSecretKeyForFile(resolve(entry.identity.credential.path)));
+        const stored = await this.secrets.get(agentSecretKeyForFile(resolve(entry.identity.credential.path), this.space));
         adoptedSeed = stored === undefined ? undefined : /-----BEGIN USER NKEY SEED-----\s*([A-Z0-9]+)\s*-----END USER NKEY SEED-----/.exec(stored)?.[1];
         if (adoptedSeed === undefined)
           console.error(`! resume ${entry.name}: the adopted credential carries no readable nkey seed - the manager cannot renew it (it dies loud at its exp)`);
@@ -5689,9 +5692,9 @@ export class Manager {
     const opId = retireOpId(a.lifecycleUid);
     const cleanup = async (): Promise<void> => {
       const secrets = this.secrets;
-      const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, a.name, a.lifecycleUid);
+      const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid);
       if (files.creds) {
-        await secrets.delete(agentSecretKeyForFile(files.creds));
+        await secrets.delete(agentSecretKeyForFile(files.creds, this.space));
         rmSync(files.creds, { force: true });
       }
       await this.deprovisionBroker(a);
@@ -5762,8 +5765,8 @@ export class Manager {
     });
     const secrets = this.secrets;
     const credsPath = a.secretPaths!.creds!;
-    await secrets.put(agentSecretKeyForFile(credsPath), creds);
-    await materializeSecretToFile(secrets, agentSecretKeyForFile(credsPath), credsPath);
+    await secrets.put(agentSecretKeyForFile(credsPath, this.space), creds);
+    await materializeSecretToFile(secrets, agentSecretKeyForFile(credsPath, this.space), credsPath);
     console.error(`managed cred renewal ${a.name}: re-signed for the same identity (exp +${MANAGED_STATIC_TTL_SEC}s); the agent endpoint's source re-read adopts it`);
   }
 
@@ -6114,7 +6117,7 @@ export class Manager {
       // FAIL-CLOSED: a failed record is the failure + repair sentence; a missing/malformed or
       // stale record on a live agent is auth-unknown/auth-stale, NEVER silently healthy.
       const health = a.userOwner
-        ? agentAuthState(a.secretPaths?.health ?? agentLifecycleSecretFilePaths(this.workspaceRoot, a.name, a.lifecycleUid).health)
+        ? agentAuthState(a.secretPaths?.health ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid).health)
         : undefined;
       return {
         name: a.name,

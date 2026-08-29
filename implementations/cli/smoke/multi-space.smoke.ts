@@ -50,7 +50,7 @@ const originalCwd = process.cwd();
 await import("../src/index.js"); // register the base local-process lifecycle descriptors
 const { createBrokerAuth, createSpaceAccountAuth, createSpaceAuth, composeSpaceAuth, jwtIssuedAt, mintCreds, newIdentity, rotateSystemAccount, stripSpaceAuth } = await import("@cotal-ai/core");
 const {
-  accountInventory, assertSingleSpaceBroker, authDir, agentCredsDir, brokerAuthPath, hasUserAuthState,
+  accountInventory, assertSingleSpaceBroker, authDir, agentCredsRoot, brokerAuthPath, hasUserAuthState,
   isWorkspaceTargetError, listSpaceAccounts, loadMeshes, loadSpaceAccountAuth, loadSpaceAuth, localProcessPath,
   recordMesh, removeMesh, resolveMeshTarget, saveBrokerAuth, saveSpaceAccountAuth, soleSpaceOf, spaceAccountPath,
   spaceKey, userAuthSpacesOnDisk, userAuthStateDir,
@@ -110,8 +110,11 @@ try {
   check("its account is a flat file beside broker.json", spaceAccountPath(authDir(solo), "solo").startsWith(join(authDir(solo), "account.")));
   check("the account path is not inside the provider's state dir", !spaceAccountPath(authDir(solo), "solo").startsWith(userAuthStateDir(solo, "solo") + sep));
   check('a space named "broker.json" does NOT alias the broker file into user-mode', hasUserAuthState(solo, "broker.json") === false);
-  mkdirSync(agentCredsDir(solo), { recursive: true });
-  writeFileSync(join(agentCredsDir(solo), "x.creds"), "cred");
+  // The non-migrating root (`<auth>/creds`), not this space's segment inside it: the claim under
+  // test is about the DIRECTORY NAME `creds` sitting beside the account records, which is exactly
+  // what P1 relies on staying reserved when it puts a per-space segment underneath.
+  mkdirSync(agentCredsRoot(solo), { recursive: true });
+  writeFileSync(join(agentCredsRoot(solo), "x.creds"), "cred");
   check('a space named "creds" does NOT alias the creds dir into user-mode', hasUserAuthState(solo, "creds") === false);
   const realState = userAuthStateDir(solo, "userspace");
   mkdirSync(realState, { recursive: true });

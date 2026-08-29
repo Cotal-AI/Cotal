@@ -451,6 +451,7 @@
     "smoke:secret-store": "tsx packages/workspace/smoke/secret-store.smoke.ts",
     "smoke:space-auth-store": "tsx packages/workspace/smoke/space-auth-store.smoke.ts",
     "smoke:space-segmentation": "tsx packages/workspace/smoke/space-segmentation.smoke.ts",
+    "smoke:agent-secret-segmentation": "tsx packages/workspace/smoke/agent-secret-segmentation.smoke.ts",
     "smoke:delivery-store-boundary": "tsx implementations/delivery/smoke/delivery-store-boundary.smoke.ts",
     "smoke:sys-injection-evict": "tsx implementations/delivery/smoke/sys-injection-evict.smoke.ts",
     "smoke:sys-repair-honesty": "tsx implementations/delivery/smoke/sys-repair-honesty.smoke.ts",

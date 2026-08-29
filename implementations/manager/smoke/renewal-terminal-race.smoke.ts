@@ -264,7 +264,7 @@ try {
 
     const credsPath = agent.secretPaths?.creds;
     if (!credsPath) throw new Error(`${name}: no managed credential path`);
-    const secretKey = agentSecretKeyForFile(credsPath);
+    const secretKey = agentSecretKeyForFile(credsPath, space);
     const view = await openLifecycleView(name, agent.id, agent.lifecycleUid);
     let pause: ReturnType<PausingSecretStore["armNextPut"]> | undefined;
     try {

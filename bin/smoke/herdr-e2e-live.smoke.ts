@@ -27,7 +27,7 @@ import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, isReachable } from "@cotal-ai/core";
-import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import * as herdr from "../../extensions/herdr/src/driver.js";
 
 const SPACE = `he2e${randomUUID().slice(0, 6)}`;
@@ -154,7 +154,9 @@ check("the pane carries the cotal metadata token",
   (panes()[0]?.tokens as Record<string, string> | undefined)?.cotal === HERDR_SESSION);
 
 // ── the REAL minted credential never reaches herdr ────────────────────────────
-const credsPath = join(authDir(workspaceRoot), "creds", `hagent.${String(ready!.lifecycleUid)}.creds`);
+// The SHIPPED projection, not a restated layout: P1 keys agent secrets per space
+// (auth/creds/space.<hex>/), and this suite's subject is herdr secrecy, not the layout.
+const credsPath = agentLifecycleSecretFilePaths(workspaceRoot, SPACE, "hagent", String(ready!.lifecycleUid)).creds;
 const credsBody = existsSync(credsPath) ? readFileSync(credsPath, "utf8") : "";
 const seed = /(SU[A-Z2-7]{20,})/.exec(credsBody)?.[1] ?? "";
 check("positive control: the agent's creds file exists on disk", credsBody.length > 0, credsPath);
