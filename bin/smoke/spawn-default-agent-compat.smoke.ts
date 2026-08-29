@@ -60,6 +60,14 @@ assert.deepEqual(
   historicalProperties,
   "the frozen prior-manager property set must match the actual pre-defaultAgent contract",
 );
+const historicalSchema = Function(`"use strict"; return (${historicalBlock
+  .replace(/^const SPAWN_INPUT_SCHEMA = /, "")
+  .replace(/ as const;$/, "")})`)() as unknown;
+assert.deepEqual(
+  PRIOR_MANAGER_SPAWN_SCHEMA,
+  historicalSchema,
+  "the frozen prior-manager schema must equal the actual pre-defaultAgent manager contract",
+);
 const priorManagerSpawn = compileContractSchema({ root: PRIOR_MANAGER_SPAWN_SCHEMA });
 
 const args = (agent: string | undefined, callerDefault: string | undefined) =>
