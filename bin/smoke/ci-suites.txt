@@ -684,13 +684,13 @@ smoke:sys-repair-honesty
 # success. Mutation-proofed - bin/smoke/mutations/agent-secret-segmentation.json. Appended; shard
 # assignments unchanged.
 smoke:agent-secret-segmentation
-# Raw NATS transport state is separate from full endpoint readiness. The deterministic suite grades
-# epoch staleness and state contracts; its companion owns a throwaway broker and proves real
-# disconnect/reconnect delivery. Appended so every existing shard assignment remains unchanged.
-smoke:transport-liveness
-smoke:transport-liveness:broker
 # Every workflow reachable by a push to main must QUEUE its runs rather than evict them. #976
 # measured the eviction; #980 fixed ci.yml and three siblings carried the same defect in two
 # spellings, one of them the release workflow. The property is only observable on main after a
 # merge, so it needs a static guard. Appended so every existing shard assignment remains unchanged.
 smoke:workflow-concurrency
+# Raw NATS transport state is separate from full endpoint readiness. The deterministic suite grades
+# epoch staleness and state contracts; its companion owns a throwaway broker and proves real
+# disconnect/reconnect delivery. Appended so every existing shard assignment remains unchanged.
+smoke:transport-liveness
+smoke:transport-liveness:broker
