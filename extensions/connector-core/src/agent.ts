@@ -417,7 +417,6 @@ export class MeshAgent extends EventEmitter {
       this._transportConnected = false;
       this.emit("transport", { connected: false });
     }
-    this.lastConnectionError = undefined;
     // Unconditional: a background self-heal can flip _connected without us, so a `_connected`
     // guard could skip the stop and leak the live connection/heartbeat/supervisor. ep.stop() is
     // idempotent (early-returns once stopped), so calling it when already-down is a noop.

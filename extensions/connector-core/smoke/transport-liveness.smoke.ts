@@ -57,6 +57,16 @@
  *   IN  late endpoint events after stop cannot resurrect either state, for each mutation.
  *   OUT all earlier cells: stopping is false until that final race cell. OUT both issue cells.
  *
+ * M10 reverses the terminal-close readiness/error order.
+ *   IN  terminal close marks readiness false before retaining its diagnostic.
+ *   OUT all transport and stop cells, plus the constructed pre/post-bind issue cells: they do not
+ *       invoke the endpoint supervisor's terminal-close path.
+ *
+ * M11 clears connectionIssue during stop.
+ *   IN  stop preserves the last connection issue for post-mortem diagnosis.
+ *   OUT the terminal ordering cell (it checks before stop), every transport/readiness cell, and the
+ *       constructed pre/post-bind issue cells (their own stop occurs after their assertions).
+ *
  * Harness correction after the first graded run: M2 and M3 changed the discriminant guards to
  * `false &&`, so TypeScript correctly narrowed their bodies to an impossible status and the core
  * build stopped before any cell. The predictions did not change. The operators now keep each guard
@@ -117,6 +127,13 @@ class FakeNc {
   async closed(): Promise<void> { return new Promise(() => {}); }
 }
 
+class ClosingNc extends FakeNc {
+  private resolveClose!: (error?: Error) => void;
+  private readonly closePromise = new Promise<Error | undefined>((resolve) => { this.resolveClose = resolve; });
+  override closed(): Promise<Error | undefined> { return this.closePromise; }
+  finish(error?: Error): void { this.closedFlag = true; this.resolveClose(error); }
+}
+
 const cfg: AgentConfig = {
   space: "transport-liveness",
   name: "transport-agent",
@@ -131,6 +148,8 @@ const cfg: AgentConfig = {
 type EndpointHarness = {
   nc?: FakeNc;
   watchStatus(): void;
+  superviseConnection(): void;
+  reestablishLoop(): Promise<void>;
 };
 type AgentHarness = {
   readonly transportConnected: boolean;
@@ -254,7 +273,28 @@ check(
 );
 await issue.stop();
 
-const EXPECTED_CELLS = 12;
+const terminal = new MeshAgent({ ...cfg, name: "terminal-agent" });
+terminal.ep.emit("connection", { connected: true });
+const terminalNc = new ClosingNc("nats://terminal");
+const terminalEp = terminal.ep as unknown as EndpointHarness;
+terminalEp.nc = terminalNc;
+terminalEp.reestablishLoop = async () => {};
+terminalEp.superviseConnection();
+terminalNc.finish(new Error("terminal socket loss"));
+await tick();
+check(
+  "terminal close marks readiness false BEFORE retaining its matching diagnostic",
+  terminal.connected === false && terminal.connectionIssue?.includes("terminal socket loss") === true,
+  { ready: terminal.connected, issue: terminal.connectionIssue },
+);
+await terminal.stop();
+check(
+  "stop preserves the last connection issue for post-mortem diagnosis",
+  terminal.connectionIssue?.includes("terminal socket loss") === true,
+  terminal.connectionIssue,
+);
+
+const EXPECTED_CELLS = 14;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);

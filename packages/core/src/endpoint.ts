@@ -1081,6 +1081,9 @@ export class CotalEndpoint extends EventEmitter {
     void nc.closed().then((err) => {
       if (this.stopped) return;
       if (this.nc !== nc) return; // epoch-stale — a rebuild already swapped this connection
+      // ORDER IS PART OF THE DIAGNOSTIC CONTRACT. MeshAgent retains endpoint errors only while it is
+      // not bound, so readiness must turn false before the matching terminal-close error is emitted.
+      // Reversing these two lines silently loses the only post-drop reason an agent can report.
       this.emit("connection", { connected: false }); // dropped — report it before the rebuild kicks in
       this.emit(
         "error",

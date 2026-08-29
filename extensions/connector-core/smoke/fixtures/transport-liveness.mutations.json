@@ -3,7 +3,7 @@
   "guard": "raw NATS transport liveness is epoch-safe and separate from full endpoint readiness",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:transport-liveness",
   "progressPattern": "  ✓ ",
-  "completionMarker": "SUITE COMPLETE: 12 cells",
+  "completionMarker": "SUITE COMPLETE: 14 cells",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/fixtures/transport-liveness.mutations.json",
   "why": [
     "The deterministic status queues grade the exact nats.js lifecycle contract without timing a broker outage. The companion broker smoke separately proves real public disconnect and reconnect events reach these paths.",
@@ -90,6 +90,24 @@
       "replace": "      // Readiness events are accepted even after stop.",
       "expectRed": "late endpoint events after stop cannot resurrect readiness or transport",
       "cell": "late endpoint events after stop cannot resurrect readiness or transport",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "terminal close reports its error before readiness becomes false",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      this.emit(\"connection\", { connected: false }); // dropped — report it before the rebuild kicks in\n      this.emit(\n        \"error\",\n        new Error(`mesh connection closed${err ? `: ${(err as Error).message}` : \"\"} - re-establishing`),\n      );",
+      "replace": "      this.emit(\n        \"error\",\n        new Error(`mesh connection closed${err ? `: ${(err as Error).message}` : \"\"} - re-establishing`),\n      );\n      this.emit(\"connection\", { connected: false }); // wrong order: diagnostic sees the old bound state",
+      "expectRed": "terminal close marks readiness false BEFORE retaining its matching diagnostic",
+      "cell": "terminal close marks readiness false BEFORE retaining its matching diagnostic",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "clean stop destroys the last connection issue",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    // Unconditional: a background self-heal can flip _connected without us, so a `_connected`",
+      "replace": "    this.lastConnectionError = undefined;\n    // Unconditional: a background self-heal can flip _connected without us, so a `_connected`",
+      "expectRed": "stop preserves the last connection issue for post-mortem diagnosis",
+      "cell": "stop preserves the last connection issue for post-mortem diagnosis",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]
