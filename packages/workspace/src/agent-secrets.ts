@@ -22,11 +22,13 @@
  * mint beside legacy material nothing will ever reap, which is the residue this series exists to
  * end.
  */
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { assertLifecycleToken } from "@cotal-ai/core";
+import { assertLifecycleToken, type SecretStore } from "@cotal-ai/core";
 import { authDir, spaceFromSegment, spaceSegment } from "./auth-paths.js";
-import { migrateLegacyMaterialIn, type SpaceMaterialComposition } from "./space-segmentation.js";
+import {
+  migrateLegacyMaterialIn, spaceMaterialMigrationRefusal, type SpaceMaterialComposition,
+} from "./space-segmentation.js";
 
 /** `<root>/.cotal/auth/creds` — the PARENT every space's agent-secret segment sits in, and the
  *  directory the pre-P1 layout wrote its files directly into.
@@ -303,10 +305,200 @@ export function agentSecretKeysUnder(root: string): string[] {
     // Only a canonical segment is descended into. A stray subdirectory is not a tenant's material
     // and its contents are nothing this sweep can name a key for.
     if (spaceFromSegment(e.name) === undefined) continue;
-    const dir = join(parent, e.name);
-    if (!existsSync(dir)) continue;
-    for (const file of readdirSync(dir))
-      if (provisionableBase(file, SECRET_SUFFIXES) !== undefined) keys.push(`auth/creds/${e.name}/${file}`);
+    keys.push(...segmentSecretKeys(parent, e.name));
   }
   return keys;
+}
+
+/** The store keys of the secrets materialized in ONE segment — the file→key projection both the
+ *  root-wide sweep above and the per-space reap below run, named once so a reap can never disagree
+ *  with the sweep about which files in a segment are addressable material. */
+function segmentSecretKeys(parent: string, segment: string): string[] {
+  let files;
+  try {
+    files = readdirSync(join(parent, segment));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return []; // no segment → nothing minted here
+    throw e;
+  }
+  const keys: string[] = [];
+  for (const file of files)
+    if (provisionableBase(file, SECRET_SUFFIXES) !== undefined) keys.push(`auth/creds/${segment}/${file}`);
+  return keys;
+}
+
+/**
+ * {@link agentSecretKeysUnder} narrowed to ONE tenant — what `cotal space rm` reaps, and what it can
+ * list before it commits to reaping.
+ *
+ * IT DOES NOT REPORT THE FLAT LEVEL, and that is the whole difference between the two. `clean all`
+ * resets the root, so it must name a pre-P1 file sitting directly in the creds dir or leave it
+ * behind. A per-space reap must NOT: a flat file names no tenant, so attributing it to the tenant
+ * being removed is a guess, and acting on the guess deletes what may be a survivor's live material.
+ * That case is refused up front by {@link assertAgentSecretsReapable} rather than resolved here.
+ *
+ * Migration-free for the same reason as the root-wide sweep: this is a DELETER (§3.1).
+ */
+export function agentSecretKeysForSpace(root: string, space: string): string[] {
+  return segmentSecretKeys(agentCredsRoot(root), spaceSegment(space));
+}
+
+/** The pre-P1 agent-secret files still sitting flat in this root's creds dir — what
+ *  {@link assertAgentSecretsReapable} refuses over.
+ *
+ *  It is {@link legacyAgentSecretFiles} at the one parent that matters, exported rather than
+ *  re-derived so the door and the MIGRATION weigh the same set by construction: the files this
+ *  refuses over are exactly the files the next {@link agentCredsDir} touch would move, which is the
+ *  claim the refusal's text makes. Two implementations of "what counts as legacy" would drift at
+ *  whichever one is not the one someone edits. */
+export function unsegmentedAgentSecrets(root: string): string[] {
+  return legacyAgentSecretFiles(agentCredsRoot(root));
+}
+
+/**
+ * The "what do I do about it" half of the refusal below — ASKED of the shared rule
+ * ({@link spaceMaterialMigrationRefusal}), never assumed, for the reason P7's `migrationRemedy`
+ * records: advice composed from a guess about who is asking hands the operator a command that
+ * cannot succeed.
+ *
+ * It is P1's OWN remedy rather than a call to P7's, because the two series migrate on different
+ * verbs and P7's sentence names the wrong one. `cotal up` moves the five P7 kinds; it never touches
+ * a P1 resolver (the call sites are `spawn`, `mint`, `doctor auth`, the manager and the manifest
+ * ledger), so telling an operator to run `up` and retry would leave these files exactly where they
+ * are. `doctor auth` is named because it is the read-only one: it resolves this space's segment
+ * through {@link agentCredsDir} on every run (`doctor.ts:169`), so it migrates without minting.
+ */
+function agentSecretMigrationRemedy(root: string): string {
+  const refusal = spaceMaterialMigrationRefusal(root);
+  if (!refusal)
+    return "Run `cotal doctor auth` for the sole tenant once to move them into its segment, then retry.";
+  // The multi-tenant branch, which is the one `space rm` actually reaches (§2.2 step 2 refuses the
+  // last tenant, so this precondition is only ever asked on a root holding more than one). There is
+  // no verb to offer: every P1 resolver hits the same rule 4 refusal, and no command can attribute a
+  // file that names no owner. So the remedy is the manual move, stated as one.
+  return (
+    `Migrating them first is not available on this root either: ${refusal.reason}. ` +
+    "Decide which tenant each file belongs to and move it into that tenant's segment " +
+    "(auth/creds/space.<hex>/), or remove it, then retry."
+  );
+}
+
+/**
+ * `cotal space rm` STEP 1'S PRECONDITION for the step 7 agent-secret reap
+ * (`per-space-lifecycle.md` §2.2) — {@link assertSpaceMaterialReapable}'s P1 counterpart, asked at
+ * step 1 for the same reason: step 5 is the point of no return, so a precondition discovered at step
+ * 7 would refuse after the tenant's data is already gone, leave the journal entry that gates every
+ * other verb standing, and fail identically on every re-run of the removal it is supposed to let a
+ * crash finish.
+ *
+ * WHAT IT REFUSES: a root still holding pre-P1 agent secrets flat in `auth/creds`. P7's counterpart
+ * refuses over the same unattributability — the files name no tenant, so reaping around them strands
+ * what may be the departing tenant's and reaping them may take a survivor's — and that argument
+ * applies here unchanged.
+ *
+ * BUT P1'S CASE IS SHARPER, and this is the part that is not a translation of P7's. Those flat files
+ * are inert TODAY only because §2 rule 4 refuses to migrate on a multi-tenant root. Step 7 deletes
+ * the departing tenant's account record; on a two-tenant root that leaves ONE space in the inventory,
+ * which is exactly the condition under which rule 4 stops refusing. So the next `cotal spawn`, `mint`
+ * or `doctor auth` by the survivor resolves {@link agentCredsDir} and MOVES the departed tenant's
+ * secrets into the survivor's segment — where the layout now reads as an assertion that they are the
+ * survivor's. Removing a tenant is what converts material that is legibly unowned into a confident
+ * attribution nobody made, and it does so silently, later, from an unrelated verb. Refusing here is
+ * the only place that can be stopped while the evidence still exists.
+ *
+ * NOT YET CALLED: `cotal space rm` does not exist as a command today (§2.2 designs it; no `space`
+ * verb is implemented). This lands with the material it guards so the verb cannot be written without
+ * it, the same reason {@link assertSpaceMaterialReapable} landed with P7's reap.
+ */
+export function assertAgentSecretsReapable(root: string, space: string, operation: string): void {
+  const present = unsegmentedAgentSecrets(root);
+  if (present.length === 0) return;
+  // The set is OPEN (one file per agent per kind), unlike P7's five named kinds, so an unmigrated
+  // root can hold a great many. Name enough to recognize the material and count the rest.
+  const shown = present.slice(0, 4);
+  const listed = shown.join(", ") + (present.length > shown.length ? `, +${present.length - shown.length} more` : "");
+  throw new Error(
+    `${operation} refuses: this root holds ${present.length} pre-P1 agent secret file(s) directly in auth/creds (${listed}), which name no space. ` +
+    `Removing "${space}" would leave them for a surviving tenant to inherit, and on a two-tenant root it makes that inheritance automatic: ` +
+    "the removal leaves one space in the inventory, which is the condition under which the migration rules stop refusing, " +
+    "so the survivor's next agent-secret touch moves them into the survivor's segment and records an owner nobody chose. " +
+    agentSecretMigrationRemedy(root),
+  );
+}
+
+/**
+ * `cotal space rm` STEP 7 (`per-space-lifecycle.md` §2.2): reap ONE tenant's per-agent standing
+ * secrets — the residue that step used to LIST and leave behind, because before this series the
+ * creds dir named no tenant and reaping one space's would have risked a sibling's.
+ *
+ * IT CANNOT REFUSE, the same contract {@link reapSpaceMaterial} carries and for the same reason: it
+ * runs past step 5's point of no return, where a throw strands the journal entry and recurs
+ * identically on every re-run. Seam failures are returned, not thrown, and the caller must read
+ * `failed` or the material silently survives the tenant. Its precondition is
+ * {@link assertAgentSecretsReapable}, asked at step 1.
+ *
+ * THE ENUMERATION IS ALSO GUARDED, which P7's reap does not need. P7 sweeps a fixed array of four
+ * kinds; this set is OPEN and discovered by reading the segment, so the reap has an I/O step BEFORE
+ * its first seam call, and an unreadable segment there would throw straight out of a function that
+ * has promised not to. It is reported like any other failure instead. (The one input that could
+ * still throw is the space name, encoded once up front before anything has happened — and it comes
+ * from the verb's own inventory read, not from disk.)
+ *
+ * The seam deletes come FIRST and are addressed by the on-disk key, never through
+ * {@link agentCredsDir}: a reaper is a DELETER (§3.1), so it must not migrate material into the path
+ * it is about to remove — and on the multi-tenant root this verb runs on, that migration is the very
+ * mis-attribution the precondition exists to prevent. The store is asked because under a
+ * non-plain-file composition the key is where the material lives; the directory removal after it is
+ * what takes the non-key files in the segment (the `.auth-health.json` runtime state, which is never
+ * a store key) and anything a stray left behind.
+ *
+ * It removes only THIS space's segment, never `auth/creds` itself. That parent is the shared one —
+ * every tenant's segment is a child of it — so the glob-shaped reach a reader arrives at after
+ * seeing a directory removal would take every survivor's live agent secrets and report success.
+ *
+ * WHAT IT DOES NOT REACH: an INJECTED composition. The reap enumerates from the filesystem because
+ * {@link SecretStore} has no list operation and P1's key set is open — there is no fixed array to
+ * sweep the way P7 sweeps its four kinds — so a hosted deployment reaps a tenant's agent secrets
+ * through its own store's teardown. That is the same boundary {@link agentSecretKeysUnder} already
+ * draws for `clean all`, stated here rather than left to be discovered: a `removed` list from a root
+ * with no local segment is empty because there was nothing local, not because a store was checked.
+ */
+export async function reapAgentSecrets(
+  root: string,
+  space: string,
+  secrets: SecretStore,
+): Promise<{ removed: string[]; failed: string[] }> {
+  const removed: string[] = [];
+  const failed: string[] = [];
+  const segment = spaceSegment(space);
+  const dir = join(agentCredsRoot(root), segment);
+
+  let keys: string[] = [];
+  try {
+    keys = agentSecretKeysForSpace(root, space);
+  } catch (e) {
+    failed.push(`${segment}: enumerating this space's agent secrets: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  for (const key of keys) {
+    try {
+      // Idempotent on an absent key by the seam's contract, and the `get` keeps the report honest
+      // rather than claiming a removal for material that was never there.
+      if ((await secrets.get(key)) !== undefined) {
+        await secrets.delete(key);
+        removed.push(`.cotal/${key}`);
+      }
+    } catch (e) {
+      failed.push(`${key}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  try {
+    if (existsSync(dir)) {
+      rmSync(dir, { recursive: true, force: true });
+      removed.push(`.cotal/auth/creds/${segment} (this space's agent secrets)`);
+    }
+  } catch (e) {
+    failed.push(`${segment}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  return { removed, failed };
 }

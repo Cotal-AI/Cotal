@@ -4,7 +4,7 @@
  * Hermetic — no broker, no network. The foundation's own rules are proved next door in
  * space-segmentation.smoke.ts; this asserts what P1 adds on top of it.
  *
- * Four guarantees:
+ * Five guarantees:
  *
  *  1. THE MOVE HAPPENS AT THE CHOKE POINT, PER FILE, AND TAKES THE WHOLE FAMILY. P1's kind set is
  *     OPEN (one file per agent per kind), so rule 2's "one `renameSync`" is per FILE here. The
@@ -31,16 +31,24 @@
  *     inside the sweeper — a `clean all` that leaves an unmigrated root's agent creds on disk and
  *     reports success.
  *
+ *  5. ONE TENANT'S SECRETS CAN BE REAPED, AND ONLY ONE TENANT'S. `space rm` step 7 removes what a
+ *     departing tenant owned without touching a survivor's, cannot refuse (it runs past the point of
+ *     no return), and never migrates — a reap that resolved through the choke point would move a
+ *     pre-P1 flat file INTO the segment it is about to delete and destroy it. Its precondition is
+ *     asked at step 1, where refusing is free, and it refuses over exactly that flat material: the
+ *     removal itself is what would later make an unowned file look owned.
+ *
  * Run: pnpm smoke:agent-secret-segmentation
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createBrokerAuth, createSpaceAccountAuth } from "@cotal-ai/core";
+import { createBrokerAuth, createSpaceAccountAuth, type SecretStore } from "@cotal-ai/core";
 import { authDir, saveBrokerAuth, saveSpaceAccountAuth, spaceSegment } from "../src/auth-paths.js";
 import {
   agentCredsDir, agentCredsKey, agentCredsRoot, agentLifecycleSecretFilePaths, agentSecretFilePaths,
-  agentSecretKeyForFile, agentSecretKeysUnder,
+  agentSecretKeyForFile, agentSecretKeysForSpace, agentSecretKeysUnder, assertAgentSecretsReapable,
+  reapAgentSecrets, unsegmentedAgentSecrets,
 } from "../src/agent-secrets.js";
 
 let pass = 0, fail = 0;
@@ -55,14 +63,15 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 const readIf = (path: string): string | undefined => {
   try { return readFileSync(path, "utf8"); } catch { return undefined; }
 };
-const rejects = (name: string, fn: () => unknown, mustInclude: string[]) => {
+const rejects = (name: string, fn: () => unknown, mustInclude: string[], mustExclude: string[] = []) => {
   try {
     fn();
     check(`${name} (did not throw)`, false);
   } catch (e) {
     const msg = (e as Error).message;
     const missing = mustInclude.filter((s) => !msg.includes(s));
-    check(name, missing.length === 0, { missing, msg });
+    const present = mustExclude.filter((s) => msg.includes(s));
+    check(name, missing.length === 0 && present.length === 0, { missing, present, msg });
   }
 };
 
@@ -230,6 +239,155 @@ try {
   check("the sweep MIGRATED NOTHING — the flat file is still flat",
     existsSync(join(agentCredsRoot(sweep), "legacy-worker.creds")));
   check("a root with no creds dir sweeps empty", agentSecretKeysUnder(mkdtempSync(join(tmpdir(), "cotal-agsec-empty-"))).length === 0);
+
+  console.log("\n6) `space rm` reaps ONE tenant's agent secrets (step 7), and refuses at step 1 where refusing is free");
+  /** One tenant's segment staged POST-P1, with the family the manager owns. Returns the three
+   *  SECRET keys — the health file is written too and is deliberately not among them. */
+  function stageAgentSegment(root: string, space: string, name: string) {
+    const seg = join(agentCredsRoot(root), spaceSegment(space));
+    mkdirSync(seg, { recursive: true });
+    for (const [suffix, body] of [[".creds", "creds"], [".actor-token", "token"], [".sentinel.creds", "sentinel"]])
+      writeFileSync(join(seg, `${name}${suffix}`), `${space}-${name}-${body}`);
+    writeFileSync(join(seg, `${name}.auth-health.json`), "{}");
+    const key = (suffix: string) => `auth/creds/${spaceSegment(space)}/${name}${suffix}`;
+    return { dir: seg, creds: key(".creds"), actorToken: key(".actor-token"), sentinelCreds: key(".sentinel.creds") };
+  }
+  const seedFrom = (keys: string[]) => Object.fromEntries(keys.map((k) => [k, `stored:${k}`]));
+  function memStore(seed: Record<string, string>, failOn?: string) {
+    const m = new Map(Object.entries(seed));
+    return {
+      store: {
+        get: async (k: string) => m.get(k),
+        put: async (k: string, v: string) => void m.set(k, v),
+        delete: async (k: string) => {
+          if (k === failOn) throw new Error("seam is down");
+          m.delete(k);
+        },
+      } satisfies SecretStore,
+      keys: () => [...m.keys()].sort(),
+    };
+  }
+  /** "Cannot throw" is the reap's headline contract, so the cells asserting it must survive a build
+   *  that breaks it: an unguarded `await` on a throwing mutant aborts the run after its cells went
+   *  red but BEFORE the banner, which grades a real kill INCONCLUSIVE. The sentinel carries neither
+   *  a key nor the enumerator's wording, so every cell downstream reads red. */
+  const noThrow = async (fn: () => Promise<{ removed: string[]; failed: string[] }>) => {
+    try { return await fn(); } catch (e) { return { removed: [], failed: [`THREW: ${(e as Error).message}`] }; }
+  };
+
+  // THE PRECONDITION, on the root where the reap has no right answer: files sitting flat in the
+  // creds dir name no tenant, so reaping around them strands what may be the departing tenant's and
+  // reaping them may take a survivor's.
+  const reapBlocked = await makeRoot("reap-blocked", ["alpha", "beta"]);
+  roots.push(reapBlocked);
+  stageAgentSegment(reapBlocked, "alpha", "a-worker");
+  stageFlat(reapBlocked, { "orphan.creds": "UNOWNED", "orphan.auth-health.json": "{}" });
+  rejects("the reap precondition refuses while pre-P1 files sit flat in the creds dir",
+    () => assertAgentSecretsReapable(reapBlocked, "alpha", "`cotal space rm`"),
+    ["2 pre-P1 agent secret file(s) directly in auth/creds", "orphan.creds", "which name no space"]);
+  // P1's refusal is SHARPER than P7's, and the message has to carry the reason or an operator reads
+  // it as mere residue. Those files are inert only because rule 4 refuses on a multi-tenant root;
+  // step 7 deletes the departing tenant's account record, and on a two-tenant root that leaves the
+  // single-tenant condition under which rule 4 stops refusing — so the survivor's next spawn, mint
+  // or `doctor auth` MOVES them into the survivor's segment. The removal is what arms it.
+  rejects("...naming the mechanism that makes the mis-attribution automatic, not just the residue",
+    () => assertAgentSecretsReapable(reapBlocked, "alpha", "`cotal space rm`"),
+    ["the removal leaves one space in the inventory", "records an owner nobody chose"]);
+  // The remedy is ASKED of rule 4 rather than assumed, the `repairAdvice` lesson: on THIS root no
+  // migration is available at all, so offering one would be advice that cannot succeed.
+  rejects("...and offers no migration on the root that refuses one, only the manual move",
+    () => assertAgentSecretsReapable(reapBlocked, "alpha", "`cotal space rm`"),
+    ["not available on this root either", "this root holds 2 spaces (alpha, beta)", "move it into that tenant's segment"],
+    ["cotal doctor auth"]);
+  // POSITIVE CONTROL, and the one cell that grades WHICH verb is named. P7's remedy says `cotal up`;
+  // `up` never touches a P1 resolver (the call sites are spawn, mint, doctor auth, the manager and
+  // the manifest ledger), so reusing that sentence here would hand an operator a command that leaves
+  // these files exactly where they are. `doctor auth` is named because it migrates without minting.
+  const reapSolo = await makeRoot("reap-solo", ["one"]);
+  roots.push(reapSolo);
+  stageFlat(reapSolo, { "orphan.creds": "UNOWNED" });
+  rejects("CONTROL: on a single-tenant root the remedy names the verb that actually moves this material",
+    () => assertAgentSecretsReapable(reapSolo, "one", "`cotal space rm`"),
+    ["Run `cotal doctor auth` for the sole tenant once"], ["cotal up", "not available on this root either"]);
+  check("the door weighs the MIGRATABLE set - health file included, a tenant's segment excluded",
+    unsegmentedAgentSecrets(reapBlocked).slice().sort().join(",") === "orphan.auth-health.json,orphan.creds",
+    unsegmentedAgentSecrets(reapBlocked));
+  // The per-space enumerator is the root-wide sweep MINUS the flat level, and that subtraction is the
+  // whole difference: `clean all` must name a flat file or strand it, a per-space reap must not,
+  // because attributing an unowned file to the tenant being removed is a guess acted on.
+  const blockedKeys = agentSecretKeysForSpace(reapBlocked, "alpha");
+  check("the per-space enumerator reports only this tenant's segment, never the flat level",
+    blockedKeys.length === 3 && blockedKeys.every((k) => k.startsWith(`auth/creds/${spaceSegment("alpha")}/`)), blockedKeys);
+
+  // THE REAP, on the only root shape `space rm` runs on: multi-tenant (§2.2 step 2 refuses the last
+  // tenant) and fully migrated (the precondition above).
+  const reaped = await makeRoot("reaped", ["alpha", "beta"]);
+  roots.push(reaped);
+  const alpha = stageAgentSegment(reaped, "alpha", "a-worker");
+  const beta = stageAgentSegment(reaped, "beta", "b-worker");
+  const alphaKeys = [alpha.creds, alpha.actorToken, alpha.sentinelCreds];
+  const betaKeys = [beta.creds, beta.actorToken, beta.sentinelCreds];
+  check("CONTROL: the precondition passes once nothing is flat",
+    ((): boolean => { try { assertAgentSecretsReapable(reaped, "alpha", "op"); return true; } catch { return false; } })());
+  const reapStore = memStore(seedFrom([...alphaKeys, ...betaKeys]));
+  const first = await noThrow(() => reapAgentSecrets(reaped, "alpha", reapStore.store));
+  check("the reap removes this tenant's whole segment, health file and all", !existsSync(alpha.dir));
+  // The parent `auth/creds` is SHARED — every tenant's segment is a child of it — so a reap that
+  // reached for the parent, or spelled the segment as a glob, would take every survivor's live
+  // material and report success. The reads are guarded because a build that does exactly that leaves
+  // nothing here to read, and an ENOENT out of the assertion would abort before the banner.
+  check("the neighbour tenant's agent secrets are untouched",
+    readIf(join(beta.dir, "b-worker.creds")) === "beta-b-worker-creds" && existsSync(agentCredsRoot(reaped)));
+  check("...and only this tenant's keys left the store",
+    reapStore.keys().join(",") === betaKeys.slice().sort().join(","), reapStore.keys());
+  check("...each removal is reported by the key it removed, and nothing failed",
+    alphaKeys.every((k) => first.removed.includes(`.cotal/${k}`)) &&
+    first.removed.some((r) => r.startsWith(`.cotal/auth/creds/${spaceSegment("alpha")} `)) &&
+    first.failed.length === 0, first);
+  // §2.2 needs steps 5-7 individually idempotent so a re-run after a crash FINISHES the removal.
+  const second = await noThrow(() => reapAgentSecrets(reaped, "alpha", reapStore.store));
+  check("the reap is idempotent: a re-run removes nothing and does not throw",
+    second.removed.length === 0 && second.failed.length === 0, second);
+
+  // A REAPER IS A DELETER (§3.1), so it addresses the on-disk segment and never the choke point.
+  // Here that is worse than the tidiness argument P7 makes: `agentCredsDir` would MOVE the flat file
+  // into the very segment the next line removes, so a reap built on it destroys material the
+  // precondition exists to protect - and on a single-tenant root nothing refuses the move first.
+  const reapTorn = await makeRoot("reap-torn", ["one"]);
+  roots.push(reapTorn);
+  const tornSeg = stageAgentSegment(reapTorn, "one", "worker");
+  stageFlat(reapTorn, { "orphan.creds": "UNOWNED" });
+  const tornStore = memStore(seedFrom([tornSeg.creds, tornSeg.actorToken, tornSeg.sentinelCreds]));
+  const tornResult = await noThrow(() => reapAgentSecrets(reapTorn, "one", tornStore.store));
+  check("a pre-P1 flat file is still flat after the reap",
+    readIf(join(agentCredsRoot(reapTorn), "orphan.creds")) === "UNOWNED" && tornResult.failed.length === 0, tornResult);
+
+  // THE ENUMERATION IS AN I/O STEP P7's REAP DOES NOT HAVE. P7 sweeps a fixed array of four kinds;
+  // P1's key set is open and read off the disk, so there is a `readdirSync` BEFORE the first seam
+  // call, and an unguarded one throws straight out of a function that has promised not to. Staged as
+  // a FILE where the segment belongs, which fails with ENOTDIR rather than the ENOENT the empty case
+  // already returns.
+  const reapUnreadable = await makeRoot("reap-unreadable", ["alpha", "beta"]);
+  roots.push(reapUnreadable);
+  mkdirSync(agentCredsRoot(reapUnreadable), { recursive: true });
+  writeFileSync(join(agentCredsRoot(reapUnreadable), spaceSegment("alpha")), "NOT-A-DIR");
+  const unreadable = await noThrow(() => reapAgentSecrets(reapUnreadable, "alpha", memStore({}).store));
+  check("an unreadable segment is REPORTED, not thrown past the point of no return",
+    unreadable.failed.length === 1 && unreadable.failed[0]?.includes("enumerating this space's agent secrets") === true,
+    unreadable);
+
+  // PAST THE POINT OF NO RETURN A FAILURE IS DATA. A throw here strands the journal entry that gates
+  // every other verb on the root, and recurs identically on the re-run §2.2 relies on to finish the
+  // removal. Same posture, and the same reason, as `reapSpaceMaterial` and `remintDaemonCreds`.
+  const reapFail = await makeRoot("reap-fail", ["alpha", "beta"]);
+  roots.push(reapFail);
+  const failSeg = stageAgentSegment(reapFail, "alpha", "a-worker");
+  const failing = memStore(seedFrom([failSeg.creds, failSeg.actorToken, failSeg.sentinelCreds]), failSeg.actorToken);
+  const partial = await noThrow(() => reapAgentSecrets(reapFail, "alpha", failing.store));
+  check("a seam failure is RETURNED, not thrown",
+    partial.failed.length === 1 && partial.failed[0]?.startsWith(`${failSeg.actorToken}: `) === true, partial.failed);
+  check("...and the rest of the reap still runs - the other keys AND the segment dir",
+    partial.removed.length === 3 && !existsSync(failSeg.dir), partial.removed);
 
   // The banner is printed on BOTH outcomes and names the suite, which is what lets the mutation
   // config declare it as a completion marker: a mutant run that stops early is then INCONCLUSIVE
