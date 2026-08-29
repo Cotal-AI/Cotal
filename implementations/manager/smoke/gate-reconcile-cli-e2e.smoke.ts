@@ -26,7 +26,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
@@ -86,8 +86,14 @@ const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 // THE SEEDED WORKSPACE ROOT the command will resolve from: its own scratch dir, never the
 // operator's. `findCotalRoot()` walks up for a `.cotal/`, so an unanchored cwd would reach the real
 // mesh root — the command runs with cwd set HERE, and this directory is what it must find.
-const ROOT = join(dir, "mesh-root");
-mkdirSync(join(ROOT, ".cotal"), { recursive: true });
+// REALPATH'D, and only after the directory exists (`realpathSync` needs a real target). The daemon
+// pins its scan root from `findCotalRoot()`, which returns a RESOLVED path; where TMPDIR is itself a
+// symlink the literal `join(...)` and the resolved path differ by the link alone, and the root-pin
+// guard below would then refuse a drift that is not one — a false red that says "root drift" while
+// the roots are the same directory.
+const rootPath = join(dir, "mesh-root");
+mkdirSync(join(rootPath, ".cotal"), { recursive: true });
+const ROOT = realpathSync(rootPath);
 
 writeFileSync(
   join(dir, "server.conf"),
@@ -263,10 +269,15 @@ try {
     const cwdBefore = process.cwd();
     try {
       process.chdir(ROOT); // so the root-drift guard is satisfied and the TENANCY guard is what speaks
+      // The WORKSTATION composition (`injected: false`), which is what this smoke exercises: the
+      // $SYS pair resolves through the FS store under `.cotal/`, and `membership.json` is still
+      // cross-checked as the second source. A hosted composition injects its own store instead and
+      // has no such file — that path is covered by the delivery $SYS-injection smoke.
+      const source = { secrets: workspaceSecretStore(ROOT), injected: false };
       const foreignAccount = `A${"B".repeat(55)}`;
       let tenancyErr = "";
       try {
-        await executePrincipalLiveness(SERVERS, { root: ROOT, expectedAccount: foreignAccount }, principalKey(DEV_OWNER, "whoever").key);
+        await executePrincipalLiveness(SERVERS, { root: ROOT, expectedAccount: foreignAccount, source }, principalKey(DEV_OWNER, "whoever").key);
       } catch (e) { tenancyErr = (e as Error).message; }
       check("TENANCY: disk material naming a different account than the daemon authenticates as REFUSES (never a confident sweep of a foreign tenant)",
         /names account/.test(tenancyErr) && tenancyErr.includes(foreignAccount), tenancyErr);
@@ -275,7 +286,7 @@ try {
       // tenant, not every tenant.
       let okErr = "";
       try {
-        await executePrincipalLiveness(SERVERS, { root: ROOT, expectedAccount: auth.account.pub }, principalKey(DEV_OWNER, "whoever").key);
+        await executePrincipalLiveness(SERVERS, { root: ROOT, expectedAccount: auth.account.pub, source }, principalKey(DEV_OWNER, "whoever").key);
       } catch (e) { okErr = (e as Error).message; }
       check("TENANCY control: the correctly-seeded root is accepted and answers (the guard rejects the wrong tenant, not all of them)", okErr === "", okErr);
 
@@ -284,7 +295,7 @@ try {
       process.chdir(cwdBefore);
       let driftErr = "";
       try {
-        await executePrincipalLiveness(SERVERS, { root: ROOT, expectedAccount: auth.account.pub }, principalKey(DEV_OWNER, "whoever").key);
+        await executePrincipalLiveness(SERVERS, { root: ROOT, expectedAccount: auth.account.pub, source }, principalKey(DEV_OWNER, "whoever").key);
       } catch (e) { driftErr = (e as Error).message; }
       check("ROOT DRIFT: a request-time root different from the daemon's start root REFUSES (the scan account cannot follow process.cwd())",
         /is not the one this daemon started in/.test(driftErr), driftErr);

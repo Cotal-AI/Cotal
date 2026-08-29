@@ -34,9 +34,31 @@ export const DELIVERY_CREDS_KEY = "delivery.creds";
  *  result back to the daemon's `membership` component without a hand-copied string. */
 export const MEMBERSHIP_RW_CREDS_KEY = "membership-rw.creds";
 
+/** The `$SYS` CONNZ observer's key — the graph feed's read connection and the account-scoped sweep
+ *  every liveness/eviction verdict is measured against. Same key↔filename discipline as
+ *  {@link DELIVERY_CREDS_KEY}, so `workspaceSecretStore(root)` resolves it to the byte the daemon
+ *  reads today and a local `cotal up` is unchanged.
+ *
+ *  NOT in {@link REMINTABLE_DAEMON_CREDS} and never will be: this is `rotation-renewed`, so no
+ *  persisted seed can re-sign it (the `$SYS` signing seed is discarded at provision). The key exists
+ *  so a HOSTED composition can inject the cred a system-account rotation minted; it does not make
+ *  the cred renewable. See `docs/design/u3-membership-sys-injection.md` §2. */
+export const MEMBERSHIP_OBSERVER_CREDS_KEY = "membership-observer.creds";
+
+/** The `$SYS` KICK-only evictor's key — the write half of live eviction, paired with
+ *  {@link MEMBERSHIP_OBSERVER_CREDS_KEY} by one rotation and read per call.
+ *
+ *  Same `rotation-renewed` posture and the same non-membership of {@link REMINTABLE_DAEMON_CREDS}.
+ *  Its permission (`$SYS.REQ.SERVER.*.KICK`) carries NO account, so unlike the observer it cannot be
+ *  tenancy-checked from its own JWT; its containment is that every cid it is handed comes from the
+ *  observer's account-scoped scan. Keep the two keys spelled together for that reason. */
+export const CONNECTION_EVICTOR_CREDS_KEY = "connection-evictor.creds";
+
 /** The seed-less daemon creds files a renewal owner re-signs. The $SYS files
  *  (membership-observer, connection-evictor) are deliberately ABSENT: they are rotation-renewed —
- *  no persisted seed can re-sign them, by design. */
+ *  no persisted seed can re-sign them, by design. Their store keys are
+ *  {@link MEMBERSHIP_OBSERVER_CREDS_KEY} / {@link CONNECTION_EVICTOR_CREDS_KEY} above — injectable,
+ *  but never re-signable from a persisted seed. */
 export const REMINTABLE_DAEMON_CREDS: ReadonlyArray<{ file: string; profile: Profile }> = [
   { file: DELIVERY_CREDS_KEY, profile: "delivery" },
   { file: MEMBERSHIP_RW_CREDS_KEY, profile: "membership-rw" },
