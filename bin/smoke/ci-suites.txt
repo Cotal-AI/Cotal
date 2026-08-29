@@ -637,11 +637,6 @@ smoke:sys-injection-evict
 # Drives a real broker plus a real auth callout across three arms (no renewal source, healthy source,
 # loud refusal). Appended so every existing shard assignment remains unchanged.
 smoke:expiry-renewal:auth
-# Raw NATS transport state is separate from full endpoint readiness. The deterministic suite grades
-# epoch staleness and state contracts; its companion owns a throwaway broker and proves real
-# disconnect/reconnect delivery. Appended so every existing shard assignment remains unchanged.
-smoke:transport-liveness
-smoke:transport-liveness:broker
 
 # A RESUMED `cotal up` must render server.conf under the root maintenance lock, the way the ordinary
 # and manifest paths do. The re-entry used to drop the recovery's lock and re-take it, leaving the
@@ -662,3 +657,8 @@ smoke:up-adopt-resume-lock:live
 # run at all. The adopt suite above enters through a resume with no artifact and stays green through
 # that break, so neither suite substitutes for the other. Appended; shard assignments unchanged.
 smoke:up-restore-reentry:live
+# Raw NATS transport state is separate from full endpoint readiness. The deterministic suite grades
+# epoch staleness and state contracts; its companion owns a throwaway broker and proves real
+# disconnect/reconnect delivery. Appended so every existing shard assignment remains unchanged.
+smoke:transport-liveness
+smoke:transport-liveness:broker
