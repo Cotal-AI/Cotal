@@ -17,8 +17,8 @@
     {
       "name": "remove the explicit update Agent Skills hook",
       "file": "implementations/cli/src/commands/update.ts",
-      "find": "    rt.reconcileSkills();\n",
-      "replace": "    if (false) rt.reconcileSkills();\n",
+      "find": "    rt.reconcileSkills();",
+      "replace": "    if (false) rt.reconcileSkills();",
       "expectRed": "UPDATE COMMAND: explicit update reconciles bundled Agent Skills",
       "cell": "UPDATE COMMAND: explicit update reconciles bundled Agent Skills",
       "note": "The update entry must own an explicit skill reconciliation because boot deliberately skips update to avoid duplicate passes."
