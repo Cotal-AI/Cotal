@@ -52,6 +52,7 @@ import {
   type LaunchSpec,
   type AgentHandle,
 } from "@cotal-ai/core";
+import { agentCredsDir } from "@cotal-ai/workspace";
 import { bootBroker } from "./_boot-broker.js";
 
 let failures = 0;
@@ -163,7 +164,8 @@ const silentCon: Connector = { ...base, name: "smoke-silent" }; // no eventChann
 registry.register(emitterCon);
 registry.register(silentCon);
 
-const credsDir = join(workspaceRoot, ".cotal", "auth", "creds");
+// This space's agent-secret segment (P1) — where the manager under test files an incarnation.
+const credsDir = agentCredsDir(workspaceRoot, space);
 
 try {
   await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });

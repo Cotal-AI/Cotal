@@ -275,10 +275,15 @@ export function findLedgerByRun(root: string, runId: string): { path: string; le
  *  derives it here through the workspace's single filename source for the kind (the guarded
  *  segment refuses any name that could escape the creds dir), so teardown can never derive a
  *  DIFFERENT path than provisioning wrote: a uid-carrying row maps to the lifecycle-keyed file its
- *  spawn materialized, a pre-split row to the legacy name-keyed one. */
-export function ownedCredPath(root: string, spawnedName: string, lifecycleUid?: string): string {
+ *  spawn materialized, a pre-split row to the legacy name-keyed one.
+ *
+ *  `space` is the ledger's OWN `space` field, the mesh the run provisioned against — which is the
+ *  only space this run can have written agent secrets in, and now (P1) the segment they sit under.
+ *  Passing it keeps the derivation what it already was: teardown resolves the same path the same
+ *  run's spawn wrote, and can never reach into a co-resident tenant's segment. */
+export function ownedCredPath(root: string, space: string, spawnedName: string, lifecycleUid?: string): string {
   assertValidName(spawnedName); // manifest-level refusal first, with the ledger's own phrasing
   return lifecycleUid
-    ? agentLifecycleSecretFilePaths(root, spawnedName, lifecycleUid).creds
-    : agentSecretFilePaths(root, spawnedName).creds;
+    ? agentLifecycleSecretFilePaths(root, space, spawnedName, lifecycleUid).creds
+    : agentSecretFilePaths(root, space, spawnedName).creds;
 }

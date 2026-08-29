@@ -46,7 +46,7 @@ import {
   registry,
   type Connector, type ControlReply, type EpCaller, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
-import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager, type SpawnHooks } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -287,7 +287,10 @@ try {
   check("w2 spawned + joined", acc2.name === "w2", acc2);
   {
     const w2 = M.agents.get("w2")!;
-    const credsPath = w2.secretPaths?.creds ?? join(authDir(workspaceRoot), "creds", `w2.${w2.lifecycleUid}.creds`);
+    // The SHIPPED projection on the fallback too: P1 keys agent secrets per space
+    // (auth/creds/space.<hex>/), so a restated flat layout here would send the fallback
+    // looking where the file no longer is.
+    const credsPath = w2.secretPaths?.creds ?? agentLifecycleSecretFilePaths(workspaceRoot, space, "w2", String(w2.lifecycleUid)).creds;
     check("w2's lifecycle-keyed creds file exists", existsSync(credsPath), credsPath);
     const w2Creds = readFileSync(credsPath, "utf8");
     const w2Nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: w2Creds, tls: false }), maxReconnectAttempts: 0 });

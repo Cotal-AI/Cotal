@@ -150,7 +150,7 @@ const { jetstreamManager } = await import("@nats-io/jetstream");
 const { Kvm } = await import("@nats-io/kv");
 const { encodeUser, fmtCreds } = await import("@nats-io/jwt");
 const { fromPublic, fromSeed } = await import("@nats-io/nkeys");
-const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, agentLifecycleSecretFilePaths, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { agentCredsDir, authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, agentLifecycleSecretFilePaths, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const {
   cotalAuthProvider, establishIdpSession, grantActor, loadAuthServiceInfo,
   managedActorLedgerDir, ledgerRowFilename,
@@ -198,7 +198,9 @@ const dir = userAuthStateDir(root, SPACE);
 // issuer keys, owner secret, service key projection all ride it); the calls below used to omit it,
 // so the provider was reached with `store` undefined. Same workspace-rooted store the CLI composes.
 const store = workspaceSecretStore(root);
-const credsDir = join(authDir(root), "creds");
+// This space's agent-secret segment (P1) — where the CLI and manager actually file an
+// incarnation's family, so a scan for one reads the layout under test.
+const credsDir = agentCredsDir(root, SPACE);
 const coreDist = join(import.meta.dirname, "..", "..", "..", "packages", "core", "dist", "index.js");
 
 // The agent CHILD: a real long-lived node process through the real pty runtime, connecting
@@ -590,7 +592,7 @@ try {
     for (const f of readdirSync(credsDir)) { const m = re.exec(f); if (m) return m[1]; }
     throw new Error(`no incarnation actor-token on disk for ${AGENT} in ${credsDir}`);
   })();
-  const replacementToken = readFileSync(agentLifecycleSecretFilePaths(root, AGENT, succUid).actorToken, "utf8").trim();
+  const replacementToken = readFileSync(agentLifecycleSecretFilePaths(root, SPACE, AGENT, succUid).actorToken, "utf8").trim();
   // BARRIER 2 — lifecycle keying: the replacement's broker resources must be DISTINCT names from
   // the predecessor's, or any stale/replayed cleanup for the retired lifecycle can resolve to the
   // replacement's rows. Holds on this tree: the successor's resources are lifecycle-keyed and
