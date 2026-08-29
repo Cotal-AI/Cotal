@@ -2,7 +2,7 @@
   "suite": "extensions/connector-core/smoke/transport-liveness.smoke.ts",
   "guard": "raw NATS transport liveness is epoch-safe and separate from full endpoint readiness",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:transport-liveness",
-  "progressPattern": "  ✓ ",
+  "progressPattern": "  \u2713 ",
   "completionMarker": "SUITE COMPLETE: 20 cells",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/fixtures/transport-liveness.mutations.json",
   "why": [
@@ -154,6 +154,24 @@
       "replace": "      if (!this.stopped) this.emit(\"error\", e as Error);",
       "expectRed": "a controlled stale status iterator THROW is ignored after the replacement epoch is current",
       "cell": "a controlled stale status iterator THROW is ignored after the replacement epoch is current",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "a terminal close leaves transport reported live",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        if (s.type === \"close\") {\n          this.emit(\"transport\", { connected: false } satisfies TransportState);\n",
+      "replace": "        if (s.type === \"close\") {\n",
+      "expectRed": "current terminal close confirms false with server omitted and is idempotent at MeshAgent",
+      "cell": "current terminal close confirms false with server omitted and is idempotent at MeshAgent",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "stop leaves transport reported live after a clean shutdown",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      this._transportConnected = false;\n      this.emit(\"transport\", { connected: false });\n",
+      "replace": "",
+      "expectRed": "MeshAgent.stop clears both readiness and transport locally",
+      "cell": "MeshAgent.stop clears both readiness and transport locally",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]
