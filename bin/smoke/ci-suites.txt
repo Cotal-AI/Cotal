@@ -627,13 +627,13 @@ smoke:user-auth-launch:live
 # sibling silently. Drives the real CLI against a real broker. Appended so every existing shard
 # assignment remains unchanged.
 smoke:up-multi-space-render:live
-# Raw NATS transport state is separate from full endpoint readiness. The deterministic suite grades
-# epoch staleness and state contracts; its companion owns a throwaway broker and proves real
-# disconnect/reconnect delivery. Appended so every existing shard assignment remains unchanged.
-smoke:transport-liveness
-smoke:transport-liveness:broker
 # The $SYS store-injection eviction edge on a two-tenant live broker: the SecretStore-read
 # credential pair must survive a store eviction without the delivery daemon re-reading a stale
 # pair. Drives the real daemon against a real broker. Appended so every existing shard
 # assignment remains unchanged.
 smoke:sys-injection-evict
+# Raw NATS transport state is separate from full endpoint readiness. The deterministic suite grades
+# epoch staleness and state contracts; its companion owns a throwaway broker and proves real
+# disconnect/reconnect delivery. Appended so every existing shard assignment remains unchanged.
+smoke:transport-liveness
+smoke:transport-liveness:broker
