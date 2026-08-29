@@ -637,3 +637,8 @@ smoke:sys-injection-evict
 # spellings, one of them the release workflow. The property is only observable on main after a
 # merge, so it needs a static guard. Appended so every existing shard assignment remains unchanged.
 smoke:workflow-concurrency
+# A user-mode endpoint whose bearer expires must stop presenting the dead token: pre-fix it re-dialled
+# it on a flat 3s interval forever, one client costing a permanent auth-callout round trip every 3s.
+# Drives a real broker plus a real auth callout across three arms (no renewal source, healthy source,
+# loud refusal). Appended so every existing shard assignment remains unchanged.
+smoke:expiry-renewal:auth
