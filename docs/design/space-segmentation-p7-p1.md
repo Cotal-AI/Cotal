@@ -1,8 +1,8 @@
 # Segmenting root-scoped material per space (P7, then P1)
 
 APPROVED as a plan. The questions the first draft left open are settled in §7. The probe of §6 has
-RUN and its finding is folded in below; series P7 commit 1 (the shared foundation) is implemented,
-and nothing else here is.
+RUN and its finding is folded in below; series P7 commits 1 (the shared foundation) and 2
+(`repairAdvice` honesty) are implemented, and nothing else here is.
 
 P7 and P1 in [per-space-lifecycle](./per-space-lifecycle.md) §7 are one defect in two places: material
 that is per-tenant in MEANING sits at a root-scoped path or store key, so a root holds one tenant's
@@ -222,11 +222,16 @@ idiom in the P1 series.
    guard test, add the choke-point migration helper generalized from `migrateLegacyUserAuthState`
    carrying rules 1 to 4 of §2, and add the `space add` refusal from §2.1. No material moves in this
    commit.
-2. `repairAdvice` honesty (§7.5). `sys-creds.ts:43` prints a repair its own guard refuses on exactly
-   the roots that need it, so it learns the tenant count and stops naming `cotal up --rotate-sys`
-   where that verb cannot run. The §6 probe is PROMOTED to a gated hermetic suite in this same
-   commit, reworked to assert the FIXED advice and the advice↔guard consistency rather than the
-   contradiction it was written to capture.
+2. `repairAdvice` honesty (§7.5). DONE. `sys-creds.ts` printed a repair its own guard refuses on
+   exactly the roots that need it; it now ASKS `assertSingleSpaceBroker` whether the command would
+   run and, where the guard refuses, quotes the refusal and states that no other command mints the
+   pair. Asking the guard rather than counting tenants is the whole of the fix: a count is a second
+   implementation of the single-space rule, and it reads "one" on the corrupt-inventory root where
+   the guard fails closed. `SysCredsSource` became a union so a workstation source cannot exist
+   without the root the question needs. The §6 probe is PROMOTED to a gated hermetic suite in this
+   same commit as `implementations/delivery/smoke/sys-repair-honesty.smoke.ts`, reworked to assert
+   the FIXED advice and the advice↔guard biconditional rather than the contradiction it was written
+   to capture, with a mutation config whose corrupt-root cell is the one a count-based fix fails.
 3. Segment the five P7 kinds behind their resolvers, with the removal-list changes of §5 in the SAME
    commit. `provisionMembershipCreds` (`up.ts:2903`) and `healMembershipDataCreds` (`up.ts:2881`)
    both write through the resolvers, and `REMINTABLE_DAEMON_CREDS` plus the `clean.ts:226` list take
@@ -324,10 +329,12 @@ provisioner). That is why rule 4's refusal states a truth and offers no command.
 
 The form: a two-tenant root built the way `space add` would build one, with the `$SYS` pair absent
 from the start, each of five legs carrying its own positive control so a leg that reads negative
-because the harness never provisioned anything is distinguishable from the finding. The probe lives
-at `implementations/delivery/.probe-p7/` and is promoted to a gated hermetic suite in commit 2 of the
-series, reworked to assert the FIXED advice — as written it asserts the contradiction and would go
-red under the fix.
+because the harness never provisioned anything is distinguishable from the finding. The probe was
+promoted in commit 2 and no longer exists as a probe: it is now
+`implementations/delivery/smoke/sys-repair-honesty.smoke.ts`, gated as `smoke:sys-repair-honesty`,
+holding the same four-root construction turned around to assert the FIXED advice. As the probe was
+written it asserted the contradiction, so it would have gone red under the fix; keeping both would
+have left a red artefact in the tree asserting a defect that no longer exists.
 
 ## 7. Decisions taken
 
@@ -352,7 +359,7 @@ settled by the orchestrator.
 5. **`repairAdvice` honesty is its OWN commit**, series P7 commit 2, ahead of any material move. The
    contradiction §6 found is reachable on main today and is independent of segmentation, so it is not
    held hostage to the kinds moving. The probe is promoted to a gated suite in that same commit, so
-   the fix and the assertion that it holds land together and CI keeps them consistent.
+   the fix and the assertion that it holds land together and CI keeps them consistent. DONE.
 
-Nothing in this plan is open. Series P7 commit 1 (the shared foundation) is implemented; nothing
-else here is.
+Nothing in this plan is open. Series P7 commits 1 (the shared foundation) and 2 (`repairAdvice`
+honesty) are implemented; commits 3 to 5, and all of series P1, are not.

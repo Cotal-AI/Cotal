@@ -273,7 +273,7 @@ try {
       // $SYS pair resolves through the FS store under `.cotal/`, and `membership.json` is still
       // cross-checked as the second source. A hosted composition injects its own store instead and
       // has no such file — that path is covered by the delivery $SYS-injection smoke.
-      const source = { secrets: workspaceSecretStore(ROOT), injected: false };
+      const source = { secrets: workspaceSecretStore(ROOT), injected: false as const, root: ROOT };
       const foreignAccount = `A${"B".repeat(55)}`;
       let tenancyErr = "";
       try {

@@ -33,8 +33,17 @@ export async function startMembership(
 ): Promise<MembershipStart> {
   // `injected` is the composition root's own fact, decided here before any I/O — never inferred by
   // probing the store or sniffing `.cotal/`, which would report "workstation" for a hosted daemon
-  // and emit a CLI repair the host cannot run (design §4.1).
-  const source: SysCredsSource = { secrets: store ?? workspaceSecretStore(findCotalRoot()), injected: store !== undefined };
+  // and emit a CLI repair the host cannot run (design §4.1). The workstation arm carries the root
+  // it resolved, because that is what lets `repairAdvice` ask whether the command it would name is
+  // one this root can actually run; a hosted composition has no root and names no command.
+  // Spelled as a branch, not a `??`, so the root is still resolved ONLY when no store was injected.
+  let source: SysCredsSource;
+  if (store === undefined) {
+    const root = findCotalRoot();
+    source = { secrets: workspaceSecretStore(root), injected: false, root };
+  } else {
+    source = { secrets: store, injected: true };
+  }
 
   const rw = await source.secrets.get(MEMBERSHIP_RW_CREDS_KEY);
   // Ask for both $SYS creds: the observer is REQUIRED, the evictor only feeds the torn-rotation
@@ -85,7 +94,7 @@ export async function startMembership(
   // "Authorization Violation" either way. Shared with the eviction path as of this change — it used
   // to live only here, which left eviction opening a half-rotated pair blind.
   if (sys.evictor !== undefined) {
-    const torn = tornRotationProblem(obsCreds, sys.evictor, repairAdvice(source, [MEMBERSHIP_OBSERVER_CREDS_KEY, CONNECTION_EVICTOR_CREDS_KEY]));
+    const torn = tornRotationProblem(obsCreds, sys.evictor, () => repairAdvice(source, [MEMBERSHIP_OBSERVER_CREDS_KEY, CONNECTION_EVICTOR_CREDS_KEY]));
     if (torn) {
       console.error(`! membership: ${torn}; graph membership degraded, delivery unaffected`);
       return { down: torn };

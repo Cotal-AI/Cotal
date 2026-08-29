@@ -1,5 +1,7 @@
 import { credsClaims, type SecretStore } from "@cotal-ai/core";
-import { CONNECTION_EVICTOR_CREDS_KEY, MEMBERSHIP_OBSERVER_CREDS_KEY } from "@cotal-ai/workspace";
+import {
+  assertSingleSpaceBroker, authDir, CONNECTION_EVICTOR_CREDS_KEY, MEMBERSHIP_OBSERVER_CREDS_KEY,
+} from "@cotal-ai/workspace";
 
 /**
  * THE `$SYS` PAIR, read through the {@link SecretStore} seam and checked before it is used.
@@ -26,10 +28,36 @@ import { CONNECTION_EVICTOR_CREDS_KEY, MEMBERSHIP_OBSERVER_CREDS_KEY } from "@co
 /** The `$SYS` creds' source: the store to read them from, plus whether that store was INJECTED.
  *  `injected` is the composition root's own fact (`store !== undefined` at the runner) — never
  *  inferred by probing the store or sniffing `.cotal/`, both of which report "workstation" for a
- *  hosted daemon and would emit CLI advice a host cannot run (design §4.1). */
-export interface SysCredsSource {
-  secrets: SecretStore;
-  injected: boolean;
+ *  hosted daemon and would emit CLI advice a host cannot run (design §4.1).
+ *
+ *  A UNION rather than a flag plus an optional root, because the workstation arm cannot do its job
+ *  without a root and the hosted arm has none: {@link repairAdvice} must ASK the root whether the
+ *  command it is about to name would run, and a `root?: string` would let a composition build a
+ *  workstation source with no root and silently fall back to advice nobody checked. Same idiom as
+ *  the rest of this module — the unsound call is made impossible to express rather than guarded
+ *  against at runtime. */
+export type SysCredsSource =
+  | { secrets: SecretStore; injected: true; root?: undefined }
+  | { secrets: SecretStore; injected: false; root: string };
+
+/** The broker-wide operation `repairAdvice` would send a workstation operator to, phrased so the
+ *  guard's own refusal reads as a sentence when it is quoted back. */
+const ROTATE_SYS = "re-minting the $SYS pair (`cotal up --rotate-sys`)";
+
+/** Why the rotation would refuse on this root, or `undefined` if it would run.
+ *
+ *  ASKED OF THE GUARD ITSELF, never re-derived from a tenant count read here. The advice is only
+ *  honest if it agrees with the thing that actually refuses, and a second implementation of the
+ *  single-space rule is a second thing to drift. Every throw counts as a refusal, including the
+ *  fail-CLOSED corrupt-inventory one: an operator sent to a command that refuses for a reason this
+ *  function could not read is in exactly the state this check exists to end. */
+function rotationRefusal(root: string): string | undefined {
+  try {
+    assertSingleSpaceBroker(authDir(root), ROTATE_SYS);
+    return undefined;
+  } catch (e) {
+    return (e as Error).message;
+  }
 }
 
 /** Repair advice for missing/unusable `$SYS` material, in the reader's own idiom.
@@ -39,12 +67,33 @@ export interface SysCredsSource {
  *  hosted store it is the mint window plus the key to `put` under, because `cotal up --rotate-sys`
  *  is unactionable there — and emitting it into a hosted log degrades the diagnosis even when the
  *  failure semantics are right. Both halves say the same true thing: the `$SYS` pair can only be
- *  minted while the never-persisted system signing seed is in memory. */
+ *  minted while the never-persisted system signing seed is in memory.
+ *
+ *  THERE IS A THIRD CASE, and until now this function could not see it: on a root hosting several
+ *  spaces the workstation advice names two verbs that BOTH refuse. `cotal up --rotate-sys` and
+ *  `cotal down` are broker-wide and `assertSingleSpaceBroker` turns them away naming the tenants,
+ *  so the operator whose observer is missing is handed a command, runs it, and is refused — with
+ *  the refusal itself explaining that the remedy does not exist yet. That is advice which cannot
+ *  succeed, the same defect `healMembershipDataCreds`'s own comment records, and it was reachable
+ *  on a real root (`docs/design/space-segmentation-p7-p1.md` §6, probe-executed).
+ *
+ *  So the workstation arm consults the guard before naming its command, and where the guard would
+ *  refuse it states the truth instead: the guard's own words, then the reason no other command can
+ *  substitute. NAMING NOTHING IS THE POINT — there is no verb to offer here, and inventing a
+ *  gentler-sounding one would restore the defect.
+ *
+ *  This makes the function read the filesystem on the workstation arm, which is why the callers
+ *  pass it as a THUNK: it is built only on a path that has already failed, never on a healthy one. */
 export function repairAdvice(source: SysCredsSource, keys: readonly string[]): string {
   const named = keys.length ? keys.join(" + ") : "the $SYS pair";
-  return source.injected
-    ? `re-mint the $SYS pair at a system-account rotation (the seed is in memory only at that moment) and \`put\` it under ${named}`
-    : "re-mint it with `cotal down` then `cotal up --rotate-sys`";
+  if (source.injected)
+    return `re-mint the $SYS pair at a system-account rotation (the seed is in memory only at that moment) and \`put\` it under ${named}`;
+  const refusal = rotationRefusal(source.root);
+  if (refusal === undefined) return "re-mint it with `cotal down` then `cotal up --rotate-sys`";
+  return (
+    `${refusal}. There is no other command that mints ${named}: the $SYS signing seed is discarded at provisioning, ` +
+    "so nothing can re-sign it on this root until per-space segmentation lands"
+  );
 }
 
 /** The DATA account an observer cred is scoped to, read out of its own `$SYS.REQ.ACCOUNT.<id>.CONNZ`
@@ -107,8 +156,12 @@ export function observerTenancyProblem(observerCreds: string, expectedAccount: s
  *
  * Shared by both paths as of this change. It previously lived only in the feed, which left eviction
  * — the path that actually kills connections — opening a half-rotated pair blind.
+ *
+ * `advice` is a THUNK because {@link repairAdvice} now reads the root's tenant list: both call sites
+ * sit on a healthy path (`loadCheckedSys` runs per eviction), and eagerly building advice nobody
+ * will read would put a directory listing on every successful call.
  */
-export function tornRotationProblem(observerCreds: string, evictorCreds: string, advice: string): string | undefined {
+export function tornRotationProblem(observerCreds: string, evictorCreds: string, advice: () => string): string | undefined {
   let obsIss: string | undefined, evIss: string | undefined;
   try {
     obsIss = credsClaims(observerCreds).iss;
@@ -119,7 +172,7 @@ export function tornRotationProblem(observerCreds: string, evictorCreds: string,
   if (obsIss === undefined || evIss === undefined || obsIss === evIss) return undefined;
   return (
     `the two $SYS creds are signed by DIFFERENT system accounts (observer ${obsIss.slice(0, 12)}…, evictor ${evIss.slice(0, 12)}…) - ` +
-    `a system-account rotation did not finish, so one of them is broker-dead: ${advice} to land a complete generation`
+    `a system-account rotation did not finish, so one of them is broker-dead: ${advice()} to land a complete generation`
   );
 }
 

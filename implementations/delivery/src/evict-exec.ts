@@ -113,7 +113,7 @@ async function loadCheckedSys(target: ScanTarget, verb: string, need: "observer"
     // The torn-rotation check now covers this path too. It used to exist only in the feed, so
     // eviction could open a half-rotated pair and get a bare "Authorization Violation" from the
     // broker with nothing naming the cause.
-    const torn = tornRotationProblem(observer, sys.evictor, repairAdvice(target.source, [MEMBERSHIP_OBSERVER_CREDS_KEY, CONNECTION_EVICTOR_CREDS_KEY]));
+    const torn = tornRotationProblem(observer, sys.evictor, () => repairAdvice(target.source, [MEMBERSHIP_OBSERVER_CREDS_KEY, CONNECTION_EVICTOR_CREDS_KEY]));
     if (torn) throw new Error(`${verb}: ${torn}. Refusing`);
   }
   return { observer, ...(sys.evictor !== undefined ? { evictor: sys.evictor } : {}) };

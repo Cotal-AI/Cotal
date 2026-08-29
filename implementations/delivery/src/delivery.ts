@@ -176,7 +176,9 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   const scanTarget: ScanTarget = {
     root: scanRoot,
     expectedAccount: accountFromCreds(creds.initial),
-    source: { secrets: store ?? workspaceSecretStore(scanRoot), injected: store !== undefined },
+    source: store === undefined
+      ? { secrets: workspaceSecretStore(scanRoot), injected: false, root: scanRoot }
+      : { secrets: store, injected: true },
   };
   console.error(`• delivery: $SYS sweeps bound to ${join(scanTarget.root, ".cotal")} (account ${scanTarget.expectedAccount})`);
 

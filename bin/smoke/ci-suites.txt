@@ -663,3 +663,9 @@ smoke:up-restore-reentry:live
 # auth-dir siblings the encoder's comment originally claimed — plus the migration choke point's
 # refusals and the `space add` door. Appended; shard assignments unchanged.
 smoke:space-segmentation
+
+# The `$SYS` repair advice names only commands the root can run. The delivery daemon printed `cotal
+# down` + `cotal up --rotate-sys` on multi-tenant roots, where both refuse - advice that cannot
+# succeed, found by the P7 §6 probe and fixed alongside this suite. Hermetic and fast; the property
+# is a biconditional, so the single-tenant arm is graded too. Appended; shard assignments unchanged.
+smoke:sys-repair-honesty
