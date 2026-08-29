@@ -1030,6 +1030,14 @@ export class CotalEndpoint extends EventEmitter {
 
     // Bound and live — covers initial start, manual reconnect, AND background self-heal (every
     // path lands here). The single signal an in-process agent's connected flag tracks.
+    //
+    // The stopped guard: stop() can land in any await above. Both callers tear the fresh
+    // connection back down (tearDownIfStopped), but an event has no undo, so a late
+    // `connection: true` would be the last edge a listener ever sees on a stopped endpoint and
+    // nothing follows it to correct the record. It belongs here rather than in a consumer because
+    // every listener reads the same edge; MeshAgent carries its own `stopping` guard and so was
+    // never the one exposed, which is the point.
+    if (this.stopped) return;
     this.emit("connection", { connected: true });
   }
 

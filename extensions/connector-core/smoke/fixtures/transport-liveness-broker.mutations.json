@@ -1,0 +1,26 @@
+{
+  "suite": "extensions/connector-core/smoke/transport-liveness-broker.smoke.ts",
+  "guard": "real NATS transport edges reach CotalEndpoint and MeshAgent without flapping readiness",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:transport-liveness:broker",
+  "progressPattern": "  \u2713 ",
+  "completionMarker": "SUITE COMPLETE: 8 cells",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/fixtures/transport-liveness-broker.mutations.json",
+  "why": [
+    "The unit transport-liveness suite proves the stop-versus-bind race by replacing connectAndBind",
+    "wholesale, so nothing inside that method is under test there. This suite dials a real broker and",
+    "gates armPlane3, the last await connectAndBind makes before it reports the endpoint live, which",
+    "holds a genuine bind open at its final step while stop() lands. That is the only place the",
+    "emitter's own stopped guard is reachable, so it is the only place it can be proven."
+  ],
+  "mutations": [
+    {
+      "name": "a stop landing mid-bind still announces the connection it then tears down",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (this.stopped) return;\n    this.emit(\"connection\", { connected: true });\n",
+      "replace": "    this.emit(\"connection\", { connected: true });\n",
+      "expectRed": "stop during a REAL initial bind never announces the connection it then tears down",
+      "cell": "stop during a REAL initial bind never announces the connection it then tears down",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    }
+  ]
+}

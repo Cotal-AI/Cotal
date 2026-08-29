@@ -133,6 +133,33 @@ try {
     ready: agent.connected,
     live: agent.transportConnected,
   });
+
+  // stop() racing the INITIAL bind, against a REAL dial. The unit suite proves the state teardown
+  // for this race by replacing connectAndBind wholesale, which leaves everything inside it unproven.
+  // Gating armPlane3, the last await connectAndBind makes before it reports the endpoint live, holds
+  // a real bind open at its final step, so stop() lands mid-bind and the method itself decides
+  // whether to announce a connection that is already being torn down. Listening on the endpoint
+  // rather than on the agent is the point, and it is the load-bearing clause here: MeshAgent
+  // carries its own stopping guard, so its flag stays false either way and only a direct endpoint
+  // listener is exposed to the late edge.
+  const raceAgent = new MeshAgent({ ...cfg, name: `transport-live-race-${port}` });
+  const raceEdges: Array<{ connected: boolean }> = [];
+  raceAgent.ep.on("connection", (event: { connected: boolean }) => raceEdges.push(event));
+  const raceEp = raceAgent.ep as unknown as { armPlane3(): Promise<void> };
+  let bindAtFinalStep = false;
+  let releaseBind: () => void = () => {};
+  const bindGate = new Promise<void>((resolve) => { releaseBind = resolve; });
+  raceEp.armPlane3 = async () => { bindAtFinalStep = true; await bindGate; };
+  const raceStart = raceAgent.start(100).catch(() => {});
+  const reachedFinalStep = await until(() => bindAtFinalStep);
+  await raceAgent.stop();
+  releaseBind();
+  await raceStart;
+  check(
+    "stop during a REAL initial bind never announces the connection it then tears down",
+    reachedFinalStep && !raceEdges.some((event) => event.connected === true) && raceAgent.connected === false,
+    { reachedFinalStep, raceEdges, ready: raceAgent.connected },
+  );
 } finally {
   await agent.stop().catch(() => {});
   broker.kill("SIGKILL");
@@ -141,7 +168,7 @@ try {
   for (const release of releases) release();
 }
 
-const EXPECTED_CELLS = 7;
+const EXPECTED_CELLS = 8;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);
