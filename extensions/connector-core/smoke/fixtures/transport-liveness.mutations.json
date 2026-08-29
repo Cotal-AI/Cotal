@@ -68,7 +68,7 @@
     {
       "name": "post-bind endpoint errors become stale connection issues again",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    if (!this._connected) this.lastConnectionError = error.message;",
+      "find": "    if (!this._connected && !this.stopping) this.lastConnectionError = error.message;",
       "replace": "    this.lastConnectionError = error.message;",
       "expectRed": "a post-bind endpoint error is logged but is NOT presented as the pre-bind connection issue",
       "cell": "a post-bind endpoint error is logged but is NOT presented as the pre-bind connection issue",

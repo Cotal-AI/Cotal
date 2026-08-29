@@ -79,6 +79,12 @@
  *   IN  start rejection after stop cannot replace the post-mortem diagnostic.
  *   OUT every earlier cell: their connectLoop catch is not reached after stop.
  *
+ * Harness correction after the first 14-mutation run: the original M7 literal still named the
+ * pre-review `!_connected` guard. The post-stop fix intentionally widened that same line to
+ * `!_connected && !stopping`, so mutation-proof refused before applying anything. M7 now targets the
+ * final guard and restores the same unconditional-write defect; the other thirteen mutations all
+ * killed their predicted named cells on that run.
+ *
  * Harness correction after the first graded run: M2 and M3 changed the discriminant guards to
  * `false &&`, so TypeScript correctly narrowed their bodies to an impossible status and the core
  * build stopped before any cell. The predictions did not change. The operators now keep each guard
