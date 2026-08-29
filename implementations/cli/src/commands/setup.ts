@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import * as p from "@clack/prompts";
 import { type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { homeCotalDir, installedExtensionVersion, loadExtensionsManifest, manifestExtensionNames, provenance } from "@cotal-ai/workspace";
@@ -585,21 +585,22 @@ function writeDemoAgent(path: string, body: string): void {
 }
 
 /** The default persona `cotal spawn` (no name) launches: a generic mesh agent, seeded once and
- *  then the user's to shape. Unlike the demo team it's never refreshed (seed-if-absent), so any
- *  edits stand; deleting it just means the next `cotal setup` writes a fresh copy.
+ *  then the user's to shape. Unlike the demo team it is not generally refreshed; only the
+ *  byte-exact legacy template below is migrated, so any edit stands. Deleting it means the next
+ *  `cotal setup` writes a fresh copy.
  *
- *  Read scope is split intentionally: the ACTIVE set (`subscribe`) is EMPTY, so a fresh
- *  agent isn't firehosed every channel on the mesh at boot, while the read ACL (`allowSubscribe:
- *  [">"]`) still PERMITS it to read anything — it just has to `cotal_join` a channel to start
- *  receiving it. (`subscribe: [">"]` would auto-subscribe to every channel, the old behavior.) */
-const DEFAULT_AGENT = `---
+ *  Channel scope is split intentionally: the ACTIVE set (`subscribe`) is EMPTY, so a fresh agent
+ *  isn't firehosed every channel on the mesh at boot, while the read and post ACLs permit it to
+ *  join, create, read, and post channels on demand. (`subscribe: [">"]` would auto-subscribe to
+ *  every channel, the old behavior.) */
+export const DEFAULT_AGENT = `---
 name: default_agent
 role: default
 description: An agent on the mesh
 tags: []
 subscribe: []
 allowSubscribe: [">"]
-allowPublish: []
+allowPublish: [">"]
 capabilities: [spawn]
 ---
 
@@ -608,14 +609,40 @@ coordinate as peers rather than working in silos. Use the Cotal tools available 
 your peers and work with them. Edit this file to give yourself a name, role, and purpose.
 `;
 
-/** Seed the default persona if it's missing (idempotent, seed-if-absent). Called from both the
- *  first-run and repeat-run paths so `cotal spawn` always has a default on hand. */
+/** The byte-exact default template shipped before wildcard post permission. Derive it from the
+ *  current body so the fixture cannot drift in unrelated prose or frontmatter. */
+export const LEGACY_DEFAULT_AGENT = DEFAULT_AGENT.replace('allowPublish: [">"]', "allowPublish: []");
+
+/** Return the shipped replacement only for the byte-exact legacy default. Any user edit, including
+ *  whitespace or frontmatter changes, keeps the persona under user ownership. Exported so the
+ *  static template smoke can grade the upgrade decision without touching real setup state. */
+export function migrateLegacyDefaultAgent(current: string): string | undefined {
+  return current === LEGACY_DEFAULT_AGENT ? DEFAULT_AGENT : undefined;
+}
+
+export function reconcileDefaultAgent(path: string): "seeded" | "migrated" | "unchanged" {
+  if (existsSync(path)) {
+    const replacement = migrateLegacyDefaultAgent(readFileSync(path, "utf8"));
+    if (replacement === undefined) return "unchanged";
+    writeFileSync(path, replacement);
+    return "migrated";
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, DEFAULT_AGENT);
+  return "seeded";
+}
+
+/** Seed the default persona if it's missing, or migrate the byte-exact legacy template. Called from
+ *  both first-run and repeat-run paths so new installs and untouched upgrades get the current grant
+ *  while edited personas are never overwritten. */
 function seedDefaultAgent(): void {
   const path = cotalPath("agents", "default.md");
-  if (existsSync(path)) return;
-  mkdirSync(cotalPath("agents"), { recursive: true });
-  writeFileSync(path, DEFAULT_AGENT);
-  provenance.wrote("default persona", path);
+  const result = reconcileDefaultAgent(path);
+  if (result === "migrated") {
+    provenance.wrote("updated default persona permissions", path);
+    return;
+  }
+  if (result === "seeded") provenance.wrote("default persona", path);
 }
 
 /** Seed the guided expert team — david (the engineer), sven (the guide), me (your session) — the
