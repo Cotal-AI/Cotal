@@ -172,9 +172,10 @@ export async function mint(args: ParsedArgs): Promise<void> {
     // kind: store first (the source of truth), then materialize the file consumers read.
     const root = cotalRoot();
     const secrets = workspaceSecretStore(root);
-    out = agentSecretFilePaths(root, name).creds;
-    await secrets.put(agentCredsKey(name), creds);
-    await materializeSecretToFile(secrets, agentCredsKey(name), out);
+    const composition = { injected: false as const, root };
+    out = agentSecretFilePaths(root, auth.space, name).creds;
+    await secrets.put(agentCredsKey(auth.space, name, composition), creds);
+    await materializeSecretToFile(secrets, agentCredsKey(auth.space, name, composition), out);
   }
   console.log(c.green(`✓ minted ${profile} creds for "${name}"${values.provision ? " and provisioned its durables" : ""}`));
   console.log(c.dim(`  id:    ${identity.id}`));

@@ -24,6 +24,7 @@ import { firstFreeName,
   type LaunchSpec,
   type AgentHandle,
 } from "@cotal-ai/core";
+import { agentLifecycleSecretFilePaths } from "@cotal-ai/workspace";
 import { bootBroker } from "./_boot-broker.js";
 
 let failures = 0;
@@ -97,7 +98,7 @@ try {
 
     // Lifecycle-keyed cred file (`<name>.<uid>.creds`) — the reply's uid names this incarnation's file.
     const socratesUid = reply.ok ? String((reply.data as { lifecycleUid?: string }).lifecycleUid ?? "") : "";
-    const acl = credAcl(join(workspaceRoot, ".cotal", "auth", "creds", `socrates.${socratesUid}.creds`));
+    const acl = credAcl(agentLifecycleSecretFilePaths(workspaceRoot, space, "socrates", socratesUid).creds);
     check("read ACL is the persona's review scope", acl.sub.some((s) => s.endsWith(".review")) && acl.sub.some((s) => s.endsWith(".review.>")), acl.sub);
     check("post ACL is the persona's review.> (not default-deny)", acl.pub.some((s) => s.includes(".review.>")), acl.pub);
     check("NOT the silent default (general-only read)", !(acl.sub.length === 1 && acl.sub[0].endsWith(".general")), acl.sub);

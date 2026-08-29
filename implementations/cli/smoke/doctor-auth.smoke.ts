@@ -12,7 +12,7 @@
  * Run: pnpm smoke:doctor-auth
  */
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -24,7 +24,7 @@ import {
   mintMembershipObserverCreds,
   newIdentity,
 } from "@cotal-ai/core";
-import { saveSpaceAuth, spaceAccountPath } from "@cotal-ai/workspace";
+import { saveSpaceAuth, spaceAccountPath, spaceMaterialDir } from "@cotal-ai/workspace";
 import { doctor } from "../src/commands/doctor.js";
 
 let pass = 0,
@@ -119,8 +119,14 @@ try {
     fixed.out.includes("daemon reload not requested by this pass") && !fixed.out.includes("nothing re-signed"),
     fixed.out,
   );
-  const dlvAfter = readFileSync(join(root, ".cotal", "delivery.creds"), "utf8");
-  const rwAfter = readFileSync(join(root, ".cotal", "membership-rw.creds"), "utf8");
+  // Read back at the CANONICAL location, not where the staging put them: the folder above is a
+  // PRE-P7 one (flat), and the first `doctor auth` moved every managed kind into this space's
+  // segment on first touch. Reading the flat path here would report ENOENT on a repair that in fact
+  // succeeded. That the reads below find re-signed material is also the migration's proof.
+  const canonical = (kind: string) => join(spaceMaterialDir(root, auth.space), kind);
+  check("the diagnosis migrated the staged flat material into this space's segment", existsSync(canonical("delivery.creds")) && !existsSync(join(root, ".cotal", "delivery.creds")));
+  const dlvAfter = readFileSync(canonical("delivery.creds"), "utf8");
+  const rwAfter = readFileSync(canonical("membership-rw.creds"), "utf8");
   check("--fix re-signed delivery for the SAME nkey (identity pin)", idFromCreds(dlvAfter) === dlvId.id);
   check("--fix re-signed membership-rw for the SAME nkey", idFromCreds(rwAfter) === rwId.id);
   check("--fix bounded the previously-unbounded membership-rw", inspectCredHealth(rwAfter).state === "healthy", inspectCredHealth(rwAfter));

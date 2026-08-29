@@ -16,8 +16,13 @@
  *
  * Driven through the REAL command, as a subprocess, against a REAL broker:
  *
- *  1. CONTROL - while an ORDINARY `cotal up` is starting, an independent `acquireMaintenanceLock`
- *     on the same root is REFUSED. This proves the probe can see a held lock at all.
+ *  1. CONTROL - an ORDINARY `cotal up` takes the root lock across its render: the lock file
+ *     (exclusive create, the acquire's own arbiter) appears with a live recorded owner - the exact
+ *     state an independent `acquireMaintenanceLock` refuses as held-by-a-live-owner. Observed
+ *     READ-ONLY: an acquiring probe here is itself a live independent owner, and the up's single
+ *     non-retrying acquire (or any of its later lock cycles) landing inside a probe-held window
+ *     kills the boot under observation - measured on CI, and measured again with an
+ *     existence-gated probe racing the up's re-acquire into a wrong-string refusal.
  *  2. `cotal down --preserve-state` leaves a `ready` maintenance journal - the state a bare
  *     `cotal up` recovers by re-entering itself as a resume.
  *  3. SUBJECT - during that resumed `cotal up`, once the journal shows the re-entry is underway,
@@ -131,18 +136,35 @@ try {
   const server = `nats://127.0.0.1:${port}`;
   const space = "alpha";
   const first = run(["up", "--detach", "--space", space, "--server", server]);
-  let refusedDuringOrdinary: string | undefined;
   const firstExit = once(first, "exit");
-  for (let i = 0; i < 3000 && refusedDuringOrdinary === undefined; i++) {
+  // READ-ONLY control - never acquire while the up is running. `tryLock()` ACQUIRES, so a probe
+  // is itself a live independent owner: the up's single non-retrying acquire landing inside a
+  // probe-held window dies with "held by a live owner" (measured on CI - the up's log tail carried
+  // exactly that refusal while the loop reported no lock seen), and gating the probe on the lock
+  // file's existence only moves the race - the up cycles the lock more than once during boot, so
+  // the probe then races the RE-acquire into "another maintenance operation acquired the recovered
+  // lock" (measured locally, 2 of 6 runs). The lock file IS the acquire's arbiter (exclusive
+  // create), so observing it observes the lock: present with a live recorded owner is precisely
+  // the state an independent acquire refuses as held-by-a-live-owner, proven without ever putting
+  // a competing owner in the up's way. A partially-written or just-released file parses red and
+  // the loop simply looks again.
+  const ordinaryLockPath = maintenancePaths(root).lock;
+  let ordinaryOwner: { pid: number; host: string } | undefined;
+  for (let i = 0; i < 3000 && ordinaryOwner === undefined; i++) {
     if (first.exitCode !== null) break;
-    const r = tryLock();
-    if (r.held) refusedDuringOrdinary = r.reason;
-    else await sleep(20);
+    try {
+      ordinaryOwner = (JSON.parse(readFileSync(ordinaryLockPath, "utf8")) as { owner: { pid: number; host: string } }).owner;
+    } catch {
+      await sleep(20);
+    }
   }
-  ok("the probe sees the ordinary up's lock (an independent acquire is refused)",
-    refusedDuringOrdinary !== undefined, logOf(first).slice(-800));
-  ok("…and the refusal is the live-owner refusal, not a corruption",
-    /held by a live owner|recovery is already in progress/.test(refusedDuringOrdinary ?? ""), refusedDuringOrdinary);
+  ok("the ordinary up takes the root lock across its render (lock file present, owner recorded)",
+    ordinaryOwner !== undefined, logOf(first).slice(-800));
+  const ordinaryOwnerAlive = ((): boolean => {
+    try { process.kill(ordinaryOwner!.pid, 0); return true; } catch { return false; }
+  })();
+  ok("…and the recorded owner is a live process - the state an independent acquire is refused as held-by-a-live-owner",
+    ordinaryOwnerAlive, ordinaryOwner);
 
   await Promise.race([firstExit, sleep(300_000)]);
   ok("the ordinary boot exited 0", first.exitCode === 0, logOf(first).slice(-1500));

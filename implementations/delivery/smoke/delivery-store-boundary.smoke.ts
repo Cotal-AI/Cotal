@@ -9,7 +9,7 @@
  * Run: pnpm smoke:delivery-store-boundary
  */
 import type { ParsedArgs, SecretStore } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KEY, runDelivery } from "../src/delivery.js";
+import { DELIVERY_CREDS_KIND, deliveryCredsKey, runDelivery } from "../src/delivery.js";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, detail?: string) => {
@@ -48,10 +48,17 @@ await rejects(
   () => runDelivery(args({ "dev-mint": true }), emptyStore),
   "cannot be combined with an injected secret store",
 );
+// The key it names must be the PER-SPACE one (P7). A hosted composition provisions from this
+// message, so naming the bare kind would send it to put the cred at the pre-P7 flat key — a
+// location this daemon never reads, and a failure whose only symptom is a cred that is simply
+// never found. `{ injected: true }` is the hosted composition: it resolves the key without
+// touching a filesystem the host does not have.
+const hostedKey = deliveryCredsKey("s", { injected: true });
+check("the hosted key is per-space, not the bare kind", hostedKey !== DELIVERY_CREDS_KIND && hostedKey.endsWith(`/${DELIVERY_CREDS_KIND}`), hostedKey);
 await rejects(
   "injected + absent key is a hard error naming the key — never a local mint",
   () => runDelivery(args({ space: "s" }), emptyStore),
-  `no cred in the injected secret store under key "${DELIVERY_CREDS_KEY}"`,
+  `no cred in the injected secret store under key "${hostedKey}"`,
 );
 // Without --dev-mint there is no ambient space derivation either: --space stays required.
 await rejects(

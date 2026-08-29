@@ -85,16 +85,16 @@
     {
       "name": "static retirement leaves the hosted secret-store credential key intact",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    const cleanup = async (): Promise<void> => {\n      const secrets = this.secrets;\n      const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, a.name, a.lifecycleUid);\n      if (files.creds) {\n        await secrets.delete(agentSecretKeyForFile(files.creds));\n        rmSync(files.creds, { force: true });\n      }\n      await this.deprovisionBroker(a);\n    };",
-      "replace": "    const cleanup = async (): Promise<void> => {\n      const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, a.name, a.lifecycleUid);\n      if (files.creds) rmSync(files.creds, { force: true });\n      await this.deprovisionBroker(a);\n    };",
+      "find": "    const cleanup = async (): Promise<void> => {\n      const secrets = this.secrets;\n      const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid);\n      if (files.creds) {\n        await secrets.delete(agentSecretKeyForFile(files.creds, this.space));\n        rmSync(files.creds, { force: true });\n      }\n      await this.deprovisionBroker(a);\n    };",
+      "replace": "    const cleanup = async (): Promise<void> => {\n      const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid);\n      if (files.creds) rmSync(files.creds, { force: true });\n      await this.deprovisionBroker(a);\n    };",
       "expectRed": "the secret-store credential key is deleted",
       "cell": "the secret-store credential key is deleted"
     },
     {
       "name": "static retirement leaves the local credential materialization intact",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    const cleanup = async (): Promise<void> => {\n      const secrets = this.secrets;\n      const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, a.name, a.lifecycleUid);\n      if (files.creds) {\n        await secrets.delete(agentSecretKeyForFile(files.creds));\n        rmSync(files.creds, { force: true });\n      }\n      await this.deprovisionBroker(a);\n    };",
-      "replace": "    const cleanup = async (): Promise<void> => {\n      const secrets = this.secrets;\n      const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, a.name, a.lifecycleUid);\n      if (files.creds) await secrets.delete(agentSecretKeyForFile(files.creds));\n      await this.deprovisionBroker(a);\n    };",
+      "find": "    const cleanup = async (): Promise<void> => {\n      const secrets = this.secrets;\n      const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid);\n      if (files.creds) {\n        await secrets.delete(agentSecretKeyForFile(files.creds, this.space));\n        rmSync(files.creds, { force: true });\n      }\n      await this.deprovisionBroker(a);\n    };",
+      "replace": "    const cleanup = async (): Promise<void> => {\n      const secrets = this.secrets;\n      const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid);\n      if (files.creds) await secrets.delete(agentSecretKeyForFile(files.creds, this.space));\n      await this.deprovisionBroker(a);\n    };",
       "expectRed": "no credential file remains after retirement",
       "cell": "no credential file remains after retirement"
     }

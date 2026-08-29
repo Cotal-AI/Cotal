@@ -52,6 +52,7 @@ import {
   setupSpaceStreams,
 } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { spaceMaterialDir } from "@cotal-ai/workspace";
 import { pickFreePort } from "./_free-port.js";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -105,18 +106,26 @@ async function scenario(tag: string, rogueComponent: "delivery" | "membership"):
   await setupSpaceStreams({ servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
 
   const root = mkdtempSync(join(tmpdir(), `cotal-adopt-fg-${tag}-root-`));
-  mkdirSync(join(root, ".cotal"), { recursive: true });
-  const credsPath = join(root, ".cotal", "delivery.creds");
-  const rwPath = join(root, ".cotal", "membership-rw.creds");
+  // A POST-P7 root: the five kinds live in this space's segment, where a real `up` leaves them.
+  // The rw cred is the one that MUST be here rather than flat. Scenario B rewrites it mid-run to
+  // stage the rogue generation, and the daemon reads it through the kind's resolver, which moves a
+  // flat copy into the segment on its FIRST touch — at boot. A flat rewrite afterwards would land
+  // beside the copy the daemon actually reads, so the daemon would keep serving the TRUSTED cred and
+  // reply `ok:true`: the suite would grade a rogue credential as adopted and call that the defect it
+  // exists to catch, when nothing rogue had reached the daemon at all.
+  const spaceDir = spaceMaterialDir(root, space);
+  mkdirSync(spaceDir, { recursive: true, mode: 0o700 });
+  const credsPath = join(spaceDir, "delivery.creds");
+  const rwPath = join(spaceDir, "membership-rw.creds");
   const dlvId = newIdentity();
   const rwId = newIdentity();
   // Long windows: this repro is about the EXPLICIT path, so no 75% backstop fires mid-run and
   // confuses attribution.
   writeFileSync(credsPath, await mintCreds(auth, dlvId, "delivery", { expiresInSeconds: 600 }), { mode: 0o600 });
   writeFileSync(rwPath, await mintCreds(auth, rwId, "membership-rw", { expiresInSeconds: 600 }), { mode: 0o600 });
-  writeFileSync(join(root, ".cotal", "membership-observer.creds"), obsCreds, { mode: 0o600 });
-  writeFileSync(join(root, ".cotal", "connection-evictor.creds"), evictorCreds, { mode: 0o600 });
-  writeFileSync(join(root, ".cotal", "membership.json"), JSON.stringify({ accountId: auth.account.pub }), { mode: 0o600 });
+  writeFileSync(join(spaceDir, "membership-observer.creds"), obsCreds, { mode: 0o600 });
+  writeFileSync(join(spaceDir, "connection-evictor.creds"), evictorCreds, { mode: 0o600 });
+  writeFileSync(join(spaceDir, "membership.json"), JSON.stringify({ accountId: auth.account.pub }), { mode: 0o600 });
 
   let out = "";
   const daemon = spawn(process.execPath, [cotalJs, "deliver", "--space", space, "--server", servers, "--creds", credsPath], {

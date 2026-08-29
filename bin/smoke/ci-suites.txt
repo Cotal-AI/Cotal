@@ -662,3 +662,31 @@ smoke:up-restore-reentry:live
 # disconnect/reconnect delivery. Appended so every existing shard assignment remains unchanged.
 smoke:transport-liveness
 smoke:transport-liveness:broker
+
+# The space-segmentation foundation (P7/P1 shared design). Hermetic and fast. It asserts the
+# `spaceSegment` collision guarantee over the children of `.cotal/` — a WIDER namespace than the
+# auth-dir siblings the encoder's comment originally claimed — plus the migration choke point's
+# refusals and the `space add` door. Widened with the PER-KIND RESOLVERS: every kind moves on first
+# touch through the one shared body, the hosted arm resolves the same key while moving nothing, the
+# refusals travel OUT through the named wrappers, and the two non-migrating owners (the deleters and
+# the renewal owner) address the same layout the resolvers do. Mutation-proofed —
+# bin/smoke/mutations/space-segmentation.json. Appended; shard assignments unchanged.
+smoke:space-segmentation
+
+# The `$SYS` repair advice names only commands the root can run. The delivery daemon printed `cotal
+# down` + `cotal up --rotate-sys` on multi-tenant roots, where both refuse - advice that cannot
+# succeed, found by the P7 §6 probe and fixed alongside this suite. Hermetic and fast; the property
+# is a biconditional, so the single-tenant arm is graded too. Appended; shard assignments unchanged.
+smoke:sys-repair-honesty
+
+# The per-agent standing secrets' half of that design (series P1). Hermetic and fast, and separate
+# from the suite above because the kind set is OPEN - one file per agent per kind - so rule 2's "one
+# rename" is per FILE here and the family (three secrets plus the non-secret health file the manager
+# weighs with them) must move together. It also grades the one signature change in the series that is
+# not bookkeeping: `agentSecretKeyForFile` takes the space from the CALLER's authority and CHECKS the
+# path against it, so a recorded path cannot hand back a key into a co-resident tenant's material.
+# And it holds the sweep to BOTH levels - every tenant's segment plus any file still flat - because a
+# deleter that reported only the new level would strand an unmigrated root's creds and report
+# success. Mutation-proofed - bin/smoke/mutations/agent-secret-segmentation.json. Appended; shard
+# assignments unchanged.
+smoke:agent-secret-segmentation

@@ -46,6 +46,7 @@ const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: confi
 const childEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
 
 const { establishIdpSession } = await import("../src/index.js");
+const { agentCredsDir } = await import("@cotal-ai/workspace");
 type DeviceLoginPrompt = import("../src/index.js").DeviceLoginPrompt;
 
 let pass = 0, fail = 0;
@@ -136,7 +137,10 @@ agents:
   const deploy = await cotal(["spawn", "-f", manifest], { timeoutMs: 180_000 });
   check("spawn -f exits 0 and launched worker", deploy.status === 0 && /launched worker/.test(deploy.out), deploy.out.slice(-1200));
 
-  const credsDir = join(root, ".cotal", "auth", "creds");
+  // This mesh's own segment (P1), not the bare creds dir: the manager files its incarnations under
+  // the space it supervises, so a scan of the flat level finds nothing and every "gone" check below
+  // would read true before teardown ever ran.
+  const credsDir = agentCredsDir(root, SPACE);
   // The manager files each incarnation's user secrets lifecycle-keyed: `<name>.<uid>.<kind>`. Find
   // the current incarnation's file by prefix (robust to the uid); returns a never-matching sentinel
   // path when none exists, so a post-teardown "gone" check reads false correctly.

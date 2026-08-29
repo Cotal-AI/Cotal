@@ -3,8 +3,12 @@ import { existsSync, lstatSync, readdirSync, realpathSync, renameSync, rmSync } 
 import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 import { clearSpaceHistory, isReachable, registry, resolveAuthProvider, type AuthProvider, type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
 import {
-  DELIVERY_CREDS_KEY,
-  MEMBERSHIP_RW_CREDS_KEY,
+  DELIVERY_CREDS_KIND,
+  MEMBERSHIP_CONFIG_KIND,
+  MEMBERSHIP_RW_CREDS_KIND,
+  segmentedKey,
+  spaceMaterialDir,
+  spaceSegment,
   acquireMaintenanceLock,
   agentSecretKeysUnder,
   assertSingleSpaceBroker,
@@ -223,7 +227,14 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     // ---- the seam deletes, before ANY raw identity removal (see the doc above) ----
     const secrets = workspaceSecretStore(root);
     const failures: string[] = [];
-    for (const key of [DELIVERY_CREDS_KEY, MEMBERSHIP_RW_CREDS_KEY]) {
+    // Both kinds are PER-SPACE as of P7 (§3.1's `(space) => key` shape), and both are swept at BOTH
+    // spellings: the segmented key this space writes today, and the flat pre-P7 key, which a root
+    // `up` has not re-provisioned still holds and which a hosted store re-keyed by P7 may still hold
+    // too. The builders are `segmentedKey`, never the migrating resolvers — a sweep must not move
+    // material into the path it is about to delete, and a §2 rule 3/4 refusal must not fail a reset
+    // over material the reset does not care about.
+    const p7StoreKeys = [DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND].flatMap((kind) => [segmentedKey(kind, space), kind]);
+    for (const key of p7StoreKeys) {
       // Migrated kinds: the store delete is authoritative (idempotent on an absent key). Both went
       // through `store.put` at write time and are read back through the seam, so they must be removed
       // through it too — never a raw rm below (which would leave a non-FS store's copy authoritative).
@@ -237,9 +248,18 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
       }
     }
     // Per-agent standing secrets (static creds / actor tokens / sentinel creds) are migrated
-    // kinds too. Despawn owns the primary delete; this is the crash-residue backstop, enumerated
-    // from the LOCAL creds dir (this surface IS the FS composition, per the doc above). Health
-    // files and unrecognizable strays are runtime state and fall to the raw removal below.
+    // kinds too, per-agent-FILE as of P1. Despawn owns the primary delete; this is the
+    // crash-residue backstop, enumerated from the LOCAL creds dir (this surface IS the FS
+    // composition, per the doc above). Health files and unrecognizable strays are runtime state
+    // and fall to the raw removal below.
+    //
+    // The enumeration is ROOT-WIDE and deliberately not narrowed to `space`, the one sweep here
+    // that is not: `clean all` resets THE ROOT, and P1 made a co-resident tenant's secrets a
+    // sibling segment rather than a separate root — narrowing would silently start stranding
+    // material this command has always removed. It is migration-free for the same reason the P7
+    // sweep above is (never move material into the path you are about to delete), which is why it
+    // reports both the segmented keys and the flat pre-P1 level rather than resolving through
+    // `agentCredsDir`.
     for (const key of agentSecretKeysUnder(root)) {
       try {
         await secrets.delete(key);
@@ -263,18 +283,29 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
         `clean all: secret-store deprovision failed (${failures.join("; ")}) - the local identity was NOT removed; the deletes are idempotent, fix the cause and re-run \`cotal clean all --force\``,
       );
     // Creds/records signed by (or tied to) the space identity: stale the moment it is gone. The
-    // fresh-`up` path re-mints every one of these (keep in sync with `provisionMembershipCreds` in
-    // up.ts); sweeping them keeps `doctor auth` honest in between and guarantees no old-operator
-    // material survives the reset. (`delivery.creds` and `membership-rw.creds` went through the store
-    // above, never a raw rm.) These, the pidfiles, and `run/` are removed BEFORE the space namer, so
-    // that if ANY of them fails to remove — an immutable/locked file EPERMs — auth.json is still
-    // present and a re-run resolves THIS space, not the default.
+    // fresh-`up` path re-mints every one of these; sweeping them keeps `doctor auth` honest in
+    // between and guarantees no old-operator material survives the reset. These, the pidfiles, and
+    // `run/` are removed BEFORE the space namer, so that if ANY of them fails to remove — an
+    // immutable/locked file EPERMs — auth.json is still present and a re-run resolves THIS space,
+    // not the default.
+    //
+    // THE PER-SPACE SEGMENT, ENTIRE (P7 §5). This space's five kinds live under
+    // `.cotal/space.<hex>/`, so the reset removes the directory rather than naming its contents —
+    // which is what ends this list's standing coupling to `provisionMembershipCreds` for those
+    // kinds: a sixth kind added to that provisioner is swept here by construction, not by someone
+    // remembering to add a literal. `delivery.creds` and `membership-rw.creds` are inside it and
+    // went through the store above; the seam deletes are authoritative and their failure already
+    // threw, so by here the dir holds only what a raw rm owns. On a multi-space root this removes
+    // ONLY this space's segment — the other tenants' material is not this reset's to touch.
+    rm(spaceMaterialDir(root, space), `.cotal/${spaceSegment(space)} (this space's material)`);
     for (const f of [
       "manager.delivery-aware",
-      // The $SYS pair by its ONE named source, shared with the rotation writer, so a file added to
-      // that class can never be minted-but-not-swept (the drift this list was already guarding).
+      // The LEGACY FLAT copies of the raw P7 kinds: still present on a root no post-P7 `up` has
+      // touched, and this surface must not leave old-operator $SYS material behind because the
+      // migration had not run yet. The $SYS pair comes from its ONE named source, shared with the
+      // rotation writer, so a file added to that class can never be minted-but-not-swept.
       ...SYSTEM_CREDS_FILES,
-      "membership.json",
+      MEMBERSHIP_CONFIG_KIND,
       "renewal.json",
     ]) rm(join(root, ".cotal", f), `.cotal/${f}`);
     // Crash residue: after a clean `down` none of this exists; after a crash the dead pidfiles and

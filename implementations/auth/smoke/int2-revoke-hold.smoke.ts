@@ -121,7 +121,7 @@ const { jetstreamManager } = await import("@nats-io/jetstream");
 const { Kvm } = await import("@nats-io/kv");
 const { encodeUser, fmtCreds } = await import("@nats-io/jwt");
 const { fromPublic, fromSeed } = await import("@nats-io/nkeys");
-const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, agentLifecycleSecretFilePaths, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { agentCredsDir, authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, agentLifecycleSecretFilePaths, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const {
   cotalAuthProvider, establishIdpSession, grantActor, loadAuthServiceInfo,
   managedActorLedgerDir, ledgerRowFilename,
@@ -169,7 +169,9 @@ const dir = userAuthStateDir(root, SPACE);
 // issuer keys, owner secret, service key projection all ride it); the calls below used to omit it,
 // so the provider was reached with `store` undefined. Same workspace-rooted store the CLI composes.
 const store = workspaceSecretStore(root);
-const credsDir = join(authDir(root), "creds");
+// This space's agent-secret segment (P1) — where the CLI and manager actually file an
+// incarnation's family, so a scan for one reads the layout under test.
+const credsDir = agentCredsDir(root, SPACE);
 const coreDist = join(import.meta.dirname, "..", "..", "..", "packages", "core", "dist", "index.js");
 
 // The agent CHILD: a real long-lived node process through the real pty runtime, connecting
@@ -436,7 +438,7 @@ try {
     for (const f of readdirSync(credsDir)) { const m = re.exec(f); if (m) return m[1]; }
     throw new Error(`no incarnation actor-token on disk for ${AGENT} in ${credsDir}`);
   })();
-  const predActorToken = readFileSync(agentLifecycleSecretFilePaths(root, AGENT, predUid).actorToken, "utf8").trim();
+  const predActorToken = readFileSync(agentLifecycleSecretFilePaths(root, SPACE, AGENT, predUid).actorToken, "utf8").trim();
   check("predecessor actor token captured (models a copied token)", predActorToken.length > 0);
   const exBefore = await agentExchange(AGENT, predActorToken, OWNER);
   check("baseline: the captured actor token exchanges->mints a bearer while the agent is live (200)",
