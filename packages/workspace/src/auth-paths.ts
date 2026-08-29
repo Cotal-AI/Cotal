@@ -897,6 +897,39 @@ export function listSpaceAccounts(dir: string): string[] {
   return accountInventory(dir).spaces;
 }
 
+/** The accounts a broker config must PRELOAD: every tenant this auth dir holds, with `current` first.
+ *
+ *  The MEMORY resolver is a whole-broker map, so the rendered config IS the tenant list - it does not
+ *  add the space being booted to whatever the running broker already trusts, it replaces the set.
+ *  Rendering from the one space a `cotal up` was asked for therefore evicts every sibling silently:
+ *  the broker starts, that space works, and every cred minted under the others is refused with
+ *  nothing printed anywhere. A render reads this, never a single space.
+ *
+ *  `current` comes from the CALLER because the caller's copy can be fresher than the disk - a space
+ *  minted moments ago, or an account whose trust record this same boot just rotated - and rendering
+ *  the stale on-disk copy of the space being booted is the other half of the same bug.
+ *
+ *  Fail-CLOSED on a corrupt record, like the guards above: a file that occupies the account namespace
+ *  but will not validate may be a real tenant, and rendering without it is precisely the silent
+ *  eviction this exists to prevent. */
+export function preloadSpaceAccounts(dir: string, current: SpaceAccountAuth): SpaceAccountAuth[] {
+  const { spaces, corrupt } = accountInventory(dir);
+  if (corrupt.length > 0)
+    throw new Error(
+      `${dir} holds ${corrupt.length} unreadable account record(s) (${corrupt.join(", ")}) - refusing to render a broker config while the tenant list is uncertain: a tenant left out of the config is evicted from the broker. Repair or remove them`,
+    );
+  const siblings = spaces
+    .filter((space) => space !== current.space)
+    .map((space) => {
+      const account = loadSpaceAccountAuth(dir, space);
+      // The inventory validated this record moments ago, so an absent one means it went away between
+      // the two reads. Refusing beats rendering a config that drops it.
+      if (!account) throw new Error(`${spaceAccountPath(dir, space)} disappeared while the broker config was being rendered - re-run the command`);
+      return { space: account.space, account: account.account };
+    });
+  return [{ space: current.space, account: current.account }, ...siblings];
+}
+
 // ---- the split trust records as SecretStore kinds (the signer-bearing seam) ----
 //
 // The trust material is the highest-blast-radius secret kind - whoever holds a space's account
