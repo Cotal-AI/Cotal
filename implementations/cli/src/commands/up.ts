@@ -246,6 +246,11 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       await up({ ...args, values: next });
     } catch (error) {
       pendingRestores.delete(prepared.attemptId);
+      // The one journal writer deliberately NOT handed a lock, and the reason is structural rather
+      // than stylistic: no lock is held in this frame either way. This invocation returns just below
+      // without ever reaching the `startupLock` acquire, and the re-entry that did hold one released
+      // it in its own `finally` on the way out through this very throw. So the helper must take its
+      // own — passing something here would mean passing `undefined`, which reads as an oversight.
       markPreparedRestoreDegraded(prepared.root, prepared.attemptId, (error as Error).message);
       throw error;
     }
