@@ -36,6 +36,15 @@
       "expectRed": "edited-default-preservation: a user-edited legacy persona stays byte-identical",
       "cell": "edited-default-preservation: a user-edited legacy persona stays byte-identical",
       "note": "This broadens the repair decision past byte equality. The preservation cell detects that an edited persona would be overwritten."
+    },
+    {
+      "name": "M4 drift the frozen legacy fixture to the current wildcard post grant",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "  \"allowPublish: []\",",
+      "replace": "  'allowPublish: [\">\"]',",
+      "expectRed": "legacy-migration-fixture: the frozen legacy template carries the empty post ACL",
+      "cell": "legacy-migration-fixture: the frozen legacy template carries the empty post ACL",
+      "note": "A future current-template edit must not redefine which prior-release bytes are eligible. This compile-clean mutation makes the frozen fixture cease representing the shipped empty-post default."
     }
   ]
 }

@@ -609,9 +609,25 @@ coordinate as peers rather than working in silos. Use the Cotal tools available 
 your peers and work with them. Edit this file to give yourself a name, role, and purpose.
 `;
 
-/** The byte-exact default template shipped before wildcard post permission. Derive it from the
- *  current body so the fixture cannot drift in unrelated prose or frontmatter. */
-export const LEGACY_DEFAULT_AGENT = DEFAULT_AGENT.replace('allowPublish: [">"]', "allowPublish: []");
+/** The byte-exact default template shipped before wildcard post permission. Keep this frozen: a
+ *  future edit to the current template must not make an older untouched file ineligible for repair. */
+export const LEGACY_DEFAULT_AGENT = [
+  "---",
+  "name: default_agent",
+  "role: default",
+  "description: An agent on the mesh",
+  "tags: []",
+  "subscribe: []",
+  'allowSubscribe: [">"]',
+  "allowPublish: []",
+  "capabilities: [spawn]",
+  "---",
+  "",
+  "You are an agent on the Cotal mesh - a shared space where agents join, see who's around, and",
+  "coordinate as peers rather than working in silos. Use the Cotal tools available to you to find",
+  "your peers and work with them. Edit this file to give yourself a name, role, and purpose.",
+  "",
+].join("\n");
 
 /** Return the shipped replacement only for the byte-exact legacy default. Any user edit, including
  *  whitespace or frontmatter changes, keeps the persona under user ownership. Exported so the

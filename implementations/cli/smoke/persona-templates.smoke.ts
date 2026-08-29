@@ -77,6 +77,13 @@ ok(
   defaultAgent,
 );
 
+const legacyFrontmatter = parseYaml(LEGACY_DEFAULT_AGENT.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "") as Record<string, unknown>;
+ok(
+  "legacy-migration-fixture: the frozen legacy template carries the empty post ACL",
+  Array.isArray(legacyFrontmatter.allowPublish) && legacyFrontmatter.allowPublish.length === 0,
+  legacyFrontmatter.allowPublish,
+);
+
 const fixtureRoot = mkdtempSync(join(tmpdir(), "cotal-persona-templates-"));
 try {
   const legacyPath = join(fixtureRoot, "legacy", "default.md");
