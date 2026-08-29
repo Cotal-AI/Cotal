@@ -642,3 +642,23 @@ smoke:expiry-renewal:auth
 # spellings, one of them the release workflow. The property is only observable on main after a
 # merge, so it needs a static guard. Appended so every existing shard assignment remains unchanged.
 smoke:workflow-concurrency
+
+# A RESUMED `cotal up` must render server.conf under the root maintenance lock, the way the ordinary
+# and manifest paths do. The re-entry used to drop the recovery's lock and re-take it, leaving the
+# journal naming a resume in flight with the root unlocked - an unserialized rewrite of every
+# tenant's trust. Drives the real CLI against a real broker. Appended so every existing shard
+# assignment remains unchanged.
+smoke:up-resume-render-lock:live
+
+# The other half of that lock hand-off: a resume re-entry INHERITS the recovery's lock, so a resume
+# helper that self-acquires hits the "held by a live owner" refusal - the recorded owner is alive
+# because it is us, which is also why stale-reaping cannot rescue it. Covers the two ADOPT paths,
+# where an `up` recovers by adopting an already-live listener instead of spawning a competitor over
+# the same store. Appended so every existing shard assignment remains unchanged.
+smoke:up-adopt-resume-lock:live
+
+# `up --restore` under that same inherited lock, and the more severe half: the restore-side journal
+# writers self-acquired, so the FIRST of them - the listener bind - refused and the command did not
+# run at all. The adopt suite above enters through a resume with no artifact and stays green through
+# that break, so neither suite substitutes for the other. Appended; shard assignments unchanged.
+smoke:up-restore-reentry:live
