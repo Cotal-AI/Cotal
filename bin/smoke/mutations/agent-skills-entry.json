@@ -2,7 +2,7 @@
   "suite": "implementations/cli/smoke/agent-skills-entry.smoke.ts",
   "guard": "the real published CLI reconciles bundled Agent Skills on normal startup and through cotal update",
   "command": "pnpm smoke:agent-skills-entry",
-  "completionMarker": "agent-skills-entry.smoke: all assertions passed",
+  "completionMarker": "agent-skills-entry.smoke: completed",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/agent-skills-entry.json",
   "mutations": [
     {

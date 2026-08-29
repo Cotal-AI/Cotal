@@ -19,6 +19,7 @@ const canonical = readFileSync(CANON);
 assert.ok(existsSync(BIN), `built binary missing at ${BIN}`);
 
 const created: string[] = [];
+const failures: string[] = [];
 function fresh() {
   const root = mkdtempSync(join(tmpdir(), "cotal-agent-skills-entry-"));
   const home = join(root, "home");
@@ -43,8 +44,11 @@ function c(env: NodeJS.ProcessEnv, ...args: string[]) {
 const sha = (bytes: Buffer | string) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
 function ok(cell: string, condition: unknown, detail = "") {
-  if (!condition) throw new Error(`FAIL ${cell}${detail ? `: ${detail}` : ""}`);
-  console.log(`✓ ${cell}`);
+  if (condition) console.log(`✓ ${cell}`);
+  else {
+    failures.push(cell);
+    console.log(`✗ ${cell}${detail ? `: ${detail}` : ""}`);
+  }
 }
 
 try {
@@ -57,27 +61,35 @@ try {
 
   {
     const e = fresh();
-    assert.equal(c(e.env, "ext", "list").status, 0);
-    const old = "older-cli-generation\n";
-    writeFileSync(e.skill, old);
-    writeFileSync(join(e.cotalHome, "agent-skills.json"), JSON.stringify({ skills: { "team-topology": sha(old) } }, null, 2) + "\n");
-    const r = c(e.env, "ext", "list");
-    ok("NEWER CLI GENERATION: stale managed copy is refreshed", r.status === 0 && readFileSync(e.skill).equals(canonical), r.out);
-    ok("NEWER CLI GENERATION: owned stale copy is not misclassified as a user edit", !existsSync(`${e.skill}.bak`));
+    const initial = c(e.env, "ext", "list");
+    if (initial.status === 0 && existsSync(e.skill)) {
+      const old = "older-cli-generation\n";
+      writeFileSync(e.skill, old);
+      writeFileSync(join(e.cotalHome, "agent-skills.json"), JSON.stringify({ skills: { "team-topology": sha(old) } }, null, 2) + "\n");
+      const r = c(e.env, "ext", "list");
+      ok("NEWER CLI GENERATION: stale managed copy is refreshed", r.status === 0 && existsSync(e.skill) && readFileSync(e.skill).equals(canonical), r.out);
+      ok("NEWER CLI GENERATION: owned stale copy is not misclassified as a user edit", !existsSync(`${e.skill}.bak`));
 
-    writeFileSync(e.skill, "user-edit\n");
-    const edited = c(e.env, "ext", "list");
-    ok("USER EDIT: divergent managed copy is backed up before replacement", edited.status === 0 && readFileSync(`${e.skill}.bak`, "utf8") === "user-edit\n", edited.out);
+      writeFileSync(e.skill, "user-edit\n");
+      const edited = c(e.env, "ext", "list");
+      ok("USER EDIT: divergent managed copy is backed up before replacement", edited.status === 0 && existsSync(`${e.skill}.bak`) && readFileSync(`${e.skill}.bak`, "utf8") === "user-edit\n", edited.out);
+    } else {
+      ok("NEWER CLI GENERATION: stale managed copy is refreshed", false, initial.out || "startup hook did not create the managed skill");
+      ok("NEWER CLI GENERATION: owned stale copy is not misclassified as a user edit", false);
+      ok("USER EDIT: divergent managed copy is backed up before replacement", false, "startup hook did not create the managed skill");
+    }
 
-    const skillBefore = lstatSync(e.skill).mtimeNs;
     const manifest = join(e.cotalHome, "agent-skills.json");
-    const manifestBefore = lstatSync(manifest).mtimeNs;
-    const noop = c(e.env, "ext", "list");
-    ok(
-      "CURRENT GENERATION: normal command performs no skill writes",
-      noop.status === 0 && lstatSync(e.skill).mtimeNs === skillBefore && lstatSync(manifest).mtimeNs === manifestBefore,
-      noop.out,
-    );
+    if (existsSync(e.skill) && existsSync(manifest)) {
+      const skillBefore = lstatSync(e.skill).mtimeNs;
+      const manifestBefore = lstatSync(manifest).mtimeNs;
+      const noop = c(e.env, "ext", "list");
+      ok(
+        "CURRENT GENERATION: normal command performs no skill writes",
+        noop.status === 0 && lstatSync(e.skill).mtimeNs === skillBefore && lstatSync(manifest).mtimeNs === manifestBefore,
+        noop.out,
+      );
+    } else ok("CURRENT GENERATION: normal command performs no skill writes", false, "startup hook did not establish current state");
   }
 
   {
@@ -127,7 +139,11 @@ try {
     ok("STATUS: read-only skew probe does not install skills", !existsSync(e.skill));
   }
 
-  console.log("agent-skills-entry.smoke: all assertions passed");
+  console.log("agent-skills-entry.smoke: completed");
+  if (failures.length) {
+    console.error(`agent-skills-entry.smoke: ${failures.length} failed cell(s): ${failures.join(" | ")}`);
+    process.exitCode = 1;
+  }
 } finally {
   for (const root of created) rmSync(root, { recursive: true, force: true });
 }
