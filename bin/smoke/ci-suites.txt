@@ -618,3 +618,7 @@ smoke:manager-runtime-deps
 # Seat provenance rows must stay correct across the three ps presentations; appended so
 # every existing shard assignment remains unchanged.
 smoke:ps-provenance
+# The real user-auth composition root owns a broker, Better Auth IdP, auth daemon, manager, and
+# CLI subprocesses through grant, exchange, connect, revoke, crash-heal, and teardown. Appended so
+# every existing shard assignment remains unchanged.
+smoke:user-auth-launch:live
