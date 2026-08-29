@@ -47,7 +47,12 @@ function check(name: string, cond: boolean, extra?: unknown): void {
  *  and either deserves a human deciding whether it needs the queue rule, so the numbers are exact
  *  rather than floors. Without them a rename makes every check below vacuously true. */
 const EXPECTED_WORKFLOWS = 6;
-const EXPECTED_PUSH_TO_MAIN = 4;
+const EXPECTED_PUSH_TO_MAIN = 5;
+/** Of those, the ones that declare a concurrency group and therefore CAN evict. `docs.yml` pushes
+ *  to main with no group at all, so its runs are independent and there is nothing to queue. That is
+ *  a valid answer to this problem, not an omission, and counting it separately keeps the difference
+ *  visible instead of letting a future removal of a group look like compliance. */
+const EXPECTED_GROUPED = 4;
 
 /** What a concurrency key can be: absent, a literal, or one of the expressions this repo uses.
  *  `unknown` is deliberately terminal. */
@@ -140,13 +145,19 @@ check(`exactly ${EXPECTED_WORKFLOWS} workflow files (update deliberately if you 
 check(`exactly ${EXPECTED_PUSH_TO_MAIN} of them can be started by a push to main`,
   pushers.length === EXPECTED_PUSH_TO_MAIN, { found: pushers.map((w) => w.file) });
 
-console.log("\nB. every push-to-main workflow queues rather than evicts");
-for (const w of pushers) {
+const grouped = pushers.filter((w) => w.hasConcurrency);
+check(`exactly ${EXPECTED_GROUPED} of those declare a concurrency group, so only those can evict`,
+  grouped.length === EXPECTED_GROUPED, { found: grouped.map((w) => w.file) });
+
+console.log("\nB. every push-to-main workflow that HAS a group queues rather than evicts");
+// A workflow with no group cannot evict: nothing is grouped, so nothing is ever pending behind
+// anything. It is checked above by count rather than waived silently here, so removing a group
+// somewhere else shows up as a moved number rather than as one fewer cell.
+for (const w of grouped) {
   // The short form is the trap `changesets.yml` and `installer.yml` sat in. It reads as a
   // deliberate minimal choice and silently selects `queue: single`, the evicting default.
-  check(`${w.file}: uses the mapping form, so it can carry \`queue\``, w.hasConcurrency && !w.shortForm,
-    { hasConcurrency: w.hasConcurrency, shortForm: w.shortForm });
-  if (w.shortForm || !w.hasConcurrency) continue;
+  check(`${w.file}: uses the mapping form, so it can carry \`queue\``, !w.shortForm, { shortForm: w.shortForm });
+  if (w.shortForm) continue;
 
   const q = w.queue === undefined ? undefined : resolve(w.queue);
   check(`${w.file}: declares \`queue\``, q !== undefined);
