@@ -52,7 +52,8 @@ import {
   getSoleSpaceAuth,
   getSpaceAuth,
   hasUserAuthState,
-  loadSoleSpaceAuth,
+  listSpaceAccounts,
+  preloadSpaceAccounts,
   putSpaceAuth,
   clearCurrent,
   findMesh,
@@ -2140,23 +2141,31 @@ function refuseOpenOverUserState(open: boolean, space: string): void {
  *  A mismatch only exists when the resolved space differs from what the ancestor already hosts.
  *  When the root was merely inherited (cwd has no `.cotal`), honor the new-space intent by making
  *  cwd its own root. Only a folder that itself holds the other space's material refuses.
- *  (When multi-space-per-root lands, that refusal becomes provision-the-new-space instead.) */
+ *  (When multi-space-per-root lands, that refusal becomes provision-the-new-space instead.)
+ *
+ *  The question this asks is "does this root hold the space being booted", NOT "what is THE space of
+ *  this root". A root holding several tenants has no sole space, and asking for one there threw
+ *  before the boot could reach the config render - so a `cotal up --space alpha` against a root that
+ *  legitimately holds alpha and beta refused on ambiguity that its own `--space` had already
+ *  resolved. The tenant list answers the real question without picking. */
 function ensureRootForSpace(_useAuth: boolean, space: string): void {
   const root = cotalRoot();
   const cwd = process.cwd();
-  // What space does this root already host? Prefer auth material; fall back to a live MeshEntry
+  // What spaces does this root already host? Prefer auth material; fall back to a live MeshEntry
   // whose root is this directory (open meshes have no auth dir).
-  const existingAuth = loadSoleSpaceAuth(authDir(root));
-  const existingSpace =
-    existingAuth?.space ??
-    loadMeshes().find((m) => m.root === root || realpathSafe(m.root) === realpathSafe(root))?.space;
-  if (!existingSpace || existingSpace === space) return;
+  const hosted = listSpaceAccounts(authDir(root));
+  if (hosted.includes(space)) return;
+  const existing = hosted.length
+    ? hosted
+    : [loadMeshes().find((m) => m.root === root || realpathSafe(m.root) === realpathSafe(root))?.space].filter((s): s is string => !!s);
+  if (existing.length === 0 || existing.includes(space)) return;
+  const names = existing.map((s) => `"${s}"`).join(", ");
   if (root !== cwd) {
     mkdirSync(join(cwd, ".cotal"), { recursive: true });
-    console.log(c.dim(`nearest mesh root ${root} is space "${existingSpace}" - making this folder its own root for "${space}"`));
+    console.log(c.dim(`nearest mesh root ${root} hosts ${names} - making this folder its own root for "${space}"`));
     return;
   }
-  throw new Error(`this folder is the root of space "${existingSpace}" (${root}/.cotal), so it can't also run "${space}" - drop \`--space\` to run "${existingSpace}", or start "${space}" from a different folder (it becomes that mesh's own root)`);
+  throw new Error(`this folder is the root of ${names} (${root}/.cotal), so it can't also run "${space}" - drop \`--space\` to run ${existing.length === 1 ? names : "one of those"}, or start "${space}" from a different folder (it becomes that mesh's own root)`);
 }
 
 function realpathSafe(p: string): string {
@@ -2701,7 +2710,11 @@ async function authSetup(
   // manager's establisher builds its wsUrl from this; threaded to `supervise --ws-port`.
   const wsPort = await freePort(host);
   const confPath = resolve(dir, "server.conf");
-  writeFileSync(confPath, serverConfig(auth, [auth], { transport, port, storeDir, host, wsPort, wsHost: host, ...(prepared ? { extraAccounts: prepared.extraAccounts } : {}) }));
+  // EVERY tenant of this root, not just the one being booted: `resolver_preload` is a whole-broker
+  // map, so a config rendered from one space evicts the rest silently. `auth` leads the list because
+  // this function's copy can be fresher than the disk (a space created above, or one whose trust
+  // record `--rotate-sys` just replaced). Refuses on an unreadable record rather than dropping it.
+  writeFileSync(confPath, serverConfig(auth, preloadSpaceAccounts(dir, auth), { transport, port, storeDir, host, wsPort, wsHost: host, ...(prepared ? { extraAccounts: prepared.extraAccounts } : {}) }));
   // Ephemeral setup cred: used only to probe reachability, pre-create the space streams/buckets
   // (setupSpaceStreams) and seed the channel registry (seedChannelRegistry) — all within the
   // enumerated `provisioner` scope. No broad `manager` residual for the up path.

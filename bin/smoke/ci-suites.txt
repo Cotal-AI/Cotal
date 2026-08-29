@@ -622,3 +622,8 @@ smoke:ps-provenance
 # CLI subprocesses through grant, exchange, connect, revoke, crash-heal, and teardown. Appended so
 # every existing shard assignment remains unchanged.
 smoke:user-auth-launch:live
+# `cotal up` on a root holding several tenants renders server.conf from the validated inventory: the
+# MEMORY resolver is a whole-broker map, so a config rendered from the one booted space evicts every
+# sibling silently. Drives the real CLI against a real broker. Appended so every existing shard
+# assignment remains unchanged.
+smoke:up-multi-space-render:live

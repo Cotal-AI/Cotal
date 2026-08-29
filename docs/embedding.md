@@ -230,9 +230,11 @@ the auth-service has a broker account to answer on. That account never shares th
 Broker trust and space accounts are separate authorities: `createBrokerAuth` mints the one
 operator + system account a broker trusts, `createSpaceAccountAuth(broker, space)` signs each
 tenant's data account under it, and `serverConfig(broker, spaces, opts)` renders them all into one
-config. A host composition can therefore provision several spaces on one broker today. The `cotal`
-CLI itself still orchestrates one space per root (its `up`/`down` lifecycle refuses broker-wide
-operations on a multi-space root rather than scoping them); the per-space lifecycle is the
+config. A host composition can therefore provision several spaces on one broker today. `cotal up`
+renders that config from every tenant the root's auth directory holds, so booting one space keeps
+the broker trusting its siblings, and it refuses to render at all while any account record is
+unreadable. The rest of the CLI lifecycle is still broker-wide: `down`, `clean` and `backup` refuse
+on a multi-space root rather than scoping to one tenant, and the per-space lifecycle is the
 remaining multi-space operator layer. See
 [Known gaps](#hosted-composition-gaps).
 
@@ -276,8 +278,9 @@ scopes the capability out. None is a wire concern.
    must run under a different uid/container/mount namespace or behind a future remote signer.
 3. **Per-space lifecycle on a shared broker.** The trust layer is multi-space
    (`createBrokerAuth` + `createSpaceAccountAuth` + N-space `serverConfig`, persisted as
-   `broker.json` + `account.<key>.json`), but there is no per-space teardown/backup/restore:
-   the CLI's broker-wide lifecycle verbs refuse on a multi-space root, naming the tenants.
+   `broker.json` + `account.<key>.json`) and `cotal up` renders the whole tenant list, but there is
+   no per-space provisioning verb and no per-space teardown/backup/restore: the CLI's broker-wide
+   lifecycle verbs refuse on a multi-space root, naming the tenants.
    This is the remaining multi-space operator layer.
 4. **A non-Better-Auth production IdP.** The exchange core (`createIdpBridge`) is EdDSA-generic, but
    the stock provider and login client are Better-Auth-endpoint-shaped, `cotalAuthProvider`
