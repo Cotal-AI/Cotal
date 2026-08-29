@@ -115,8 +115,8 @@
       "file": "packages/core/src/endpoint.ts",
       "find": "    if (await this.tearDownIfStopped()) return;\n    // nats.js auto-reconnects transient drops; when it exhausts its attempts and the",
       "replace": "    // nats.js auto-reconnects transient drops; when it exhausts its attempts and the",
-      "expectRed": "stop racing the INITIAL bind tears down resources created after stop began",
-      "cell": "stop racing the INITIAL bind tears down resources created after stop began",
+      "expectRed": "#975: stop racing the INITIAL bind leaves no nc, heartbeat, or armed supervisor",
+      "cell": "#975: stop racing the INITIAL bind leaves no nc, heartbeat, or armed supervisor",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {

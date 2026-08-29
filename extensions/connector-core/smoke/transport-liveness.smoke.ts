@@ -68,7 +68,7 @@
  *       constructed pre/post-bind issue cells (their own stop occurs after their assertions).
  *
  * M12 removes the initial-start post-bind stop fence.
- *   IN  stop racing the INITIAL bind tears down resources created after stop began.
+ *   IN  #975: stop racing the INITIAL bind leaves no nc, heartbeat, or armed supervisor.
  *   OUT every other cell: only the controlled initial-start race creates resources after stop.
  *
  * M13 allows post-stop endpoint errors to overwrite connectionIssue.
@@ -170,6 +170,7 @@ const cfg: AgentConfig = {
 
 type EndpointHarness = {
   nc?: FakeNc;
+  heartbeatTimer?: ReturnType<typeof setInterval>;
   watchStatus(): void;
   superviseConnection(): void;
   reestablishLoop(): Promise<void>;
@@ -329,19 +330,29 @@ const startingEp = starting.ep as unknown as EndpointHarness;
 let releaseBind!: () => void;
 const bindGate = new Promise<void>((resolve) => { releaseBind = resolve; });
 const freshNc = new DrainWitnessNc("nats://fresh-after-stop");
+let supervised = 0;
 startingEp.connectAndBind = async () => {
   await bindGate;
   startingEp.nc = freshNc;
+  startingEp.heartbeatTimer = setInterval(() => {}, 60_000);
 };
+startingEp.superviseConnection = () => { supervised++; };
 const startingPromise = starting.start(1);
 await tick();
 await starting.stop(); // stop fully completes while the initial bind is still parked
 releaseBind();
 await startingPromise;
 check(
-  "stop racing the INITIAL bind tears down resources created after stop began",
-  freshNc.drains === 1 && freshNc.closedFlag === true,
-  { drains: freshNc.drains, closed: freshNc.closedFlag },
+  "#975: stop racing the INITIAL bind leaves no nc, heartbeat, or armed supervisor",
+  freshNc.drains === 1 && freshNc.closedFlag === true && startingEp.nc === undefined &&
+    startingEp.heartbeatTimer === undefined && supervised === 0,
+  {
+    drains: freshNc.drains,
+    closed: freshNc.closedFlag,
+    hasNc: startingEp.nc !== undefined,
+    hasHeartbeat: startingEp.heartbeatTimer !== undefined,
+    supervised,
+  },
 );
 
 const failing = new MeshAgent({ ...cfg, name: "failing-start-agent" });
