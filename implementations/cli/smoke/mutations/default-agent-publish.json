@@ -1,0 +1,50 @@
+{
+  "suite": "implementations/cli/smoke/persona-templates.smoke.ts",
+  "guard": "new defaults can create channels, byte-exact legacy defaults upgrade, and user-edited personas remain untouched",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli typecheck && pnpm smoke:persona-templates",
+  "completionMarker": "persona templates:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/default-agent-publish.json",
+  "why": [
+    "Setup writes the default persona from a literal template rather than through the guarded agent-file writer.",
+    "The mutation is compile-clean and restores the shipped regression: an empty default post ACL under the protocol's default-deny policy.",
+    "The cells check the new-install grant and both sides of the byte-exact migration decision without touching real setup state."
+  ],
+  "mutations": [
+    {
+      "name": "M1 remove the default wildcard post grant",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "subscribe: []\nallowSubscribe: [\">\"]\nallowPublish: [\">\"]\ncapabilities: [spawn]",
+      "replace": "subscribe: []\nallowSubscribe: [\">\"]\nallowPublish: []\ncapabilities: [spawn]",
+      "expectRed": "default-channel-creation: default stays unsubscribed with wildcard read and post ACLs",
+      "cell": "default-channel-creation: default stays unsubscribed with wildcard read and post ACLs",
+      "note": "This is the exact shipped regression. Typecheck remains green, then the static template assertion observes that a fresh default can no longer create or post to a concrete channel."
+    },
+    {
+      "name": "M2 stop recognizing the byte-exact legacy default",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "  return current === LEGACY_DEFAULT_AGENT ? DEFAULT_AGENT : undefined;",
+      "replace": "  return undefined;",
+      "expectRed": "legacy-default-upgrade: the byte-exact legacy template gains wildcard post permission",
+      "cell": "legacy-default-upgrade: the byte-exact legacy template gains wildcard post permission",
+      "note": "This restores the upgrade-path defect while compiling cleanly: an untouched legacy default remains post-denied after setup reruns."
+    },
+    {
+      "name": "M3 migrate every existing default regardless of user edits",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "  return current === LEGACY_DEFAULT_AGENT ? DEFAULT_AGENT : undefined;",
+      "replace": "  return DEFAULT_AGENT;",
+      "expectRed": "edited-default-preservation: a user-edited legacy persona stays byte-identical",
+      "cell": "edited-default-preservation: a user-edited legacy persona stays byte-identical",
+      "note": "This broadens the repair decision past byte equality. The preservation cell detects that an edited persona would be overwritten."
+    },
+    {
+      "name": "M4 drift the frozen legacy fixture to the current wildcard post grant",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "  \"allowPublish: []\",",
+      "replace": "  'allowPublish: [\">\"]',",
+      "expectRed": "legacy-migration-fixture: the frozen legacy template carries the empty post ACL",
+      "cell": "legacy-migration-fixture: the frozen legacy template carries the empty post ACL",
+      "note": "A future current-template edit must not redefine which prior-release bytes are eligible. This compile-clean mutation makes the frozen fixture cease representing the shipped empty-post default."
+    }
+  ]
+}
