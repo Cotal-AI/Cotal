@@ -668,6 +668,12 @@ smoke:up-restore-reentry:live
 # bin/smoke/mutations/space-segmentation.json. Appended; shard assignments unchanged.
 smoke:space-segmentation
 
+# The `$SYS` repair advice names only commands the root can run. The delivery daemon printed `cotal
+# down` + `cotal up --rotate-sys` on multi-tenant roots, where both refuse - advice that cannot
+# succeed, found by the P7 §6 probe and fixed alongside this suite. Hermetic and fast; the property
+# is a biconditional, so the single-tenant arm is graded too. Appended; shard assignments unchanged.
+smoke:sys-repair-honesty
+
 # The per-agent standing secrets' half of that design (series P1). Hermetic and fast, and separate
 # from the suite above because the kind set is OPEN - one file per agent per kind - so rule 2's "one
 # rename" is per FILE here and the family (three secrets plus the non-secret health file the manager
@@ -679,9 +685,3 @@ smoke:space-segmentation
 # success. Mutation-proofed - bin/smoke/mutations/agent-secret-segmentation.json. Appended; shard
 # assignments unchanged.
 smoke:agent-secret-segmentation
-
-# The `$SYS` repair advice names only commands the root can run. The delivery daemon printed `cotal
-# down` + `cotal up --rotate-sys` on multi-tenant roots, where both refuse - advice that cannot
-# succeed, found by the P7 §6 probe and fixed alongside this suite. Hermetic and fast; the property
-# is a biconditional, so the single-tenant arm is graded too. Appended; shard assignments unchanged.
-smoke:sys-repair-honesty
