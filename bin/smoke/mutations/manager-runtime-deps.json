@@ -1,0 +1,41 @@
+{
+  "suite": "bin/smoke/manager-runtime-deps.smoke.ts",
+  "guard": "every external package loaded by the published manager Node entrypoint is installed as a production dependency",
+  "command": "pnpm smoke:manager-runtime-deps",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/manager-runtime-deps.json",
+  "why": [
+    "The 0.33.9 published manager imported three NATS packages from dist while declaring them only as devDependencies.",
+    "The mutations cover both failure modes named by the incident: moving the production dependency block back",
+    "to devDependencies and removing each direct NATS dependency. The graph-derived assertion must name the package."
+  ],
+  "mutations": [
+    {
+      "name": "M1 manager production dependencies move back to devDependencies",
+      "file": "implementations/manager/package.json",
+      "find": "    \"@nats-io/jetstream\": \"^3.4.0\",\n    \"@nats-io/kv\": \"^3.4.0\",\n    \"@nats-io/transport-node\": \"^3.4.0\",\n    \"@xterm/addon-attach\": \"^0.11.0\",\n    \"@xterm/addon-fit\": \"^0.10.0\",\n    \"@xterm/addon-serialize\": \"^0.13.0\",\n    \"@xterm/headless\": \"^5.5.0\",\n    \"@xterm/xterm\": \"^5.5.0\",\n    \"ws\": \"^8.21.0\",\n    \"yaml\": \"^2.9.0\",\n    \"zod\": \"^4.4.3\"\n  },\n  \"devDependencies\": {\n    \"@cotal-ai/smoke-kit\": \"workspace:*\",\n    \"@cotal-ai/connector-core\": \"workspace:*\",",
+      "replace": "    \"@xterm/addon-attach\": \"^0.11.0\",\n    \"@xterm/addon-fit\": \"^0.10.0\",\n    \"@xterm/addon-serialize\": \"^0.13.0\",\n    \"@xterm/headless\": \"^5.5.0\",\n    \"@xterm/xterm\": \"^5.5.0\",\n    \"ws\": \"^8.21.0\",\n    \"yaml\": \"^2.9.0\",\n    \"zod\": \"^4.4.3\"\n  },\n  \"devDependencies\": {\n    \"@cotal-ai/smoke-kit\": \"workspace:*\",\n    \"@cotal-ai/connector-core\": \"workspace:*\",\n    \"@nats-io/jetstream\": \"^3.4.0\",\n    \"@nats-io/kv\": \"^3.4.0\",\n    \"@nats-io/transport-node\": \"^3.4.0\",",
+      "expectRed": "published manager runtime dependency is installed: @nats-io/transport-node"
+    },
+    {
+      "name": "M2 transport-node is removed",
+      "file": "implementations/manager/package.json",
+      "find": "    \"@nats-io/transport-node\": \"^3.4.0\",\n",
+      "replace": "",
+      "expectRed": "published manager runtime dependency is installed: @nats-io/transport-node"
+    },
+    {
+      "name": "M3 kv is removed",
+      "file": "implementations/manager/package.json",
+      "find": "    \"@nats-io/kv\": \"^3.4.0\",\n",
+      "replace": "",
+      "expectRed": "published manager runtime dependency is installed: @nats-io/kv"
+    },
+    {
+      "name": "M4 jetstream is removed",
+      "file": "implementations/manager/package.json",
+      "find": "    \"@nats-io/jetstream\": \"^3.4.0\",\n",
+      "replace": "",
+      "expectRed": "published manager runtime dependency is installed: @nats-io/jetstream"
+    }
+  ]
+}
