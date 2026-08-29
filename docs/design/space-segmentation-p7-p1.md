@@ -1,6 +1,7 @@
 # Segmenting root-scoped material per space (P7, then P1)
 
-Draft plan. Nothing here is implemented, and no implementation starts before this is approved.
+APPROVED as a plan; nothing here is implemented. The three questions the first draft left open are
+settled in §7. The next action is the probe of §6, and implementation waits on its result.
 
 P7 and P1 in [per-space-lifecycle](./per-space-lifecycle.md) §7 are one defect in two places: material
 that is per-tenant in MEANING sits at a root-scoped path or store key, so a root holds one tenant's
@@ -13,7 +14,7 @@ it is §5. §6 is a finding that is NOT yet executed and is a probe before it is
 
 ## 1. The two inventories
 
-P7, the `$SYS` and membership bundle, all at `<root>/.cotal/`:
+P7, the `$SYS`, membership and delivery material, all at `<root>/.cotal/`:
 
 | material | today | writer | class |
 | --- | --- | --- | --- |
@@ -21,6 +22,10 @@ P7, the `$SYS` and membership bundle, all at `<root>/.cotal/`:
 | `connection-evictor.creds` | raw FS, `SYSTEM_CREDS_FILES[1]` | `up.ts:2915`, `system-rotation.ts:127` | `$SYS`, rotation-renewed |
 | `membership-rw.creds` | store key `MEMBERSHIP_RW_CREDS_KEY` | `up.ts:2914`, `up.ts:2886` | DATA account, remintable |
 | `membership.json` | raw FS | `up.ts:2916`, `up.ts:2891` | non-secret account id |
+| `delivery.creds` | store key `DELIVERY_CREDS_KEY` | `delivery-proc.ts:164` | DATA account, remintable |
+
+`delivery.creds` is in this table by the orchestrator's decision on §3.2, which see for why the
+grammar could not have covered one member of `REMINTABLE_DAEMON_CREDS` and not the other.
 
 P1, the per-agent standing secrets, all under `agentCredsDir(root)` = `<root>/.cotal/auth/creds`
 (`auth-paths.ts:241`): `<name>.creds`, `<name>.actor-token`, `<name>.sentinel.creds`, their
@@ -53,14 +58,41 @@ The rules, taken from that prior art and applied to both series:
    and returns the canonical location. No consumer builds the location itself. For P7 this is a new
    resolver per kind; for P1 it is `agentCredsDir` and the key builders, which gain a space.
 2. **The move is a rename**, so it is atomic per kind. A crash leaves each kind wholly legacy or
-   wholly canonical, never half-written.
+   wholly canonical, never half-written. This holds under the local FS composition, where a key IS a
+   path. It does NOT extend to a hosted store, where the same move is a get, put and delete with no
+   atomicity across the three; that is not a gap, because a hosted composition provisions these keys
+   externally and re-keys by the coordinated change of §3.1 rather than by migrating in place. The
+   resolver's migration path is therefore FS-composition only, and must assert that rather than
+   assume it.
 3. **Ambiguity refuses, loudly.** `migrateLegacyUserAuthState` refuses in two cases rather than
    guess (`auth-paths.ts:159` and `:163`): the legacy name is also another space's canonical
    segment, and both locations hold material so neither is provably current. The second applies
    directly to us and is the one that matters: canonical AND legacy both present means a partial
    migration we cannot arbitrate, and it refuses.
+4. **The resolver refuses to migrate on a root holding more than one space**, loudly, naming the
+   remedy. This is the rule that makes the choke point complete on its own, and it does not
+   duplicate §2.1's door.
 
-### 2.1 Half-segmented roots, and why `space add` is the guard
+The reason rule 4 is not redundant is that migration on a multi-tenant root is worse than the defect
+it is trying to end. The root-scoped copy belongs to whichever tenant booted first and nothing
+records which that was, so a resolver that migrates it writes it into the segment of the tenant that
+happens to be BOOTING. That LAUNDERS the inheritance squat into named authority: today the squat is
+ambient and legible as a root-scoped file, afterwards it is a file whose path asserts an owner that
+may be wrong. Manufacturing false attribution is a worse end state than the ambient squat, and it is
+irreversible in a way the squat is not, because the evidence that the attribution was a guess is
+gone once it is written.
+
+Rule 4 also closes a hole §2.1's door cannot. A door is a check at one moment; it cannot hold
+retroactively. A backup of a pre-segmentation multi-tenant root, restored after P7 ships, recreates
+the population at any later date and never passes through `space add` at all. With rule 4 the
+restore path lands in the same refusal at first touch, for free and with no restore-specific code.
+
+The remedy rule 4 names is deliberately left unwritten here: it must not point an operator at a
+repair that itself refuses on a multi-tenant root, which is precisely what the §6 probe is
+predicted to show about `up --rotate-sys`. §7.3 sequences the probe before the foundation commit for
+this reason, so the wording is chosen against a settled fact rather than a prediction.
+
+### 2.1 Half-segmented roots, and the two guards that cover them
 
 A half-segmented root is the state to design against, and the useful observation is that it has two
 distinct causes with different answers.
@@ -82,16 +114,19 @@ rather than left as a hazard. `up` cannot create the second tenant (`ensureRootF
 > `space add` refuses on a root that still holds unmigrated legacy material for any segmented kind,
 > and names the remedy: run `cotal up` for the sole tenant once, which migrates it, then add.
 
-This converts cause two from a state we must arbitrate into a state that cannot be reached, and it
-costs one inventory check in a verb that is already taking the lock and reading the inventory
-(§2.1 step 1). Roots that never grow past one space migrate silently on first touch and never see
-the refusal.
+This keeps cause two from being CREATED, and it costs one inventory check in a verb that is already
+taking the lock and reading the inventory (the lifecycle doc's §2.1 step 1).
 
-An already-multi-tenant root that predates the segmentation is the residual case, and it is small:
-it can only exist if `space add` shipped before the segmentation did. Sequencing `space add` behind
-this refusal means the population is empty by construction, so no repair verb is owed. If `space
-add` has already shipped by the time P7 lands, the refusal above still applies and the operator's
-path is the documented broker-wide one, not a new tool.
+It does not, on its own, keep cause two from being ENCOUNTERED. The door narrows
+it but does NOT empty it: "empty by construction" would hold only for roots that never bypass the
+door, and two populations bypass it. Roots that were already multi-tenant when P7 lands never pass
+through `space add` again, and a backup of such a root can be restored at any later date. Both boot
+straight into the resolver. Rule 4 of §2 is what catches them, which is why that rule and this door
+are one design and neither is sufficient alone: the door keeps NEW unattributable roots from being
+created, rule 4 keeps EXISTING ones from being silently laundered.
+
+Roots that never grow past one space are untouched by both: they migrate on first touch and see no
+refusal.
 
 ## 3. The SecretStore key grammar
 
@@ -112,7 +147,8 @@ is the user-auth state dir, whose contents the auth provider owns and workspace 
 another component enumerates and may prune. So:
 
 - **P7** goes to a NEW per-space area, `.cotal/space.<hex>/`, a sibling of `auth/` and `run/`,
-  holding all four kinds. `membership-rw.creds`'s store key becomes `space.<hex>/membership-rw.creds`.
+  holding all five kinds. The two store keys become `space.<hex>/membership-rw.creds` and
+  `space.<hex>/delivery.creds`.
 - **P1** puts the segment INSIDE the existing creds dir: `.cotal/auth/creds/space.<hex>/<base>.<kind>`,
   key `auth/creds/space.<hex>/<basename>`. This keeps `auth/creds` a reserved sibling of the auth
   dir, which the encoder's collision guarantee names and which `migrateLegacyUserAuthState:133`
@@ -134,26 +170,33 @@ from the same store the daemon reads. Two consequences the implementation must c
    entries become builders of the form `(space) => key`. `remintDaemonCreds` already takes
    `expectedSpace` as a REQUIRED positional, so the space is in hand at every call site and no
    signature grows.
-2. `RemintResult.file` is how a remint result is mapped back to the daemon's `membership` component
-   (`renewal.ts:32-35`). It must keep reporting the KIND, not the segmented key, or that mapping and
-   the operator-facing strings in `doctor auth` silently start printing hex.
+2. `RemintResult.file` is how a remint result is mapped back to a daemon component. The mapping is a
+   literal key comparison — `manager.ts:1147` reads `r.file === DELIVERY_CREDS_KEY` to attribute a
+   fingerprint to `expected.delivery` — so a `file` carrying a segment matches nothing and the
+   manager silently stops attributing renewals. `file` must keep reporting the KIND, not the
+   segmented key, and the same holds for the operator-facing strings in `doctor auth`, which would
+   otherwise start printing hex.
 
 A hosted composition provisions these keys externally, so the re-key is a coordinated change on that
 side. That is the reason the grammar is settled once, here, before either series starts.
 
-### 3.2 `delivery.creds` is in the grammar even though it is out of P7
+### 3.2 `delivery.creds` rides P7
 
 `DELIVERY_CREDS_KEY` sits in the same `REMINTABLE_DAEMON_CREDS` list, at the same root scope, and is
 space-scoped material by the same argument: `remintDaemonCreds`'s own contract validates the store's
 signer against `expectedSpace` because a wrong-space signer would re-sign a cred the space's broker
 rejects (`renewal.ts:89-95`). It carries the same inheritance exposure as `membership-rw.creds`.
 
-P7's scope as briefed is the `$SYS` pair, `membership.json` and `membership-rw.creds`, and this plan
-does not widen it. But the grammar decision above must cover `delivery.creds` explicitly, because
-segmenting one member of a two-member list and not the other is how the grammar splits. **Open for
-the orchestrator:** either `delivery.creds` segments with P7 (one list, one grammar, slightly wider
-commit) or it is named in the doc as a known-unsegmented sibling with its own prerequisite. It should
-not be left unstated.
+P7's scope as briefed was the `$SYS` pair, `membership.json` and `membership-rw.creds`. The
+orchestrator has widened it: **`delivery.creds` segments with P7.** One list, one grammar, one class
+of live material. The alternative, naming it a known-unsegmented sibling with its own prerequisite,
+is strictly worse by the argument above, because it would leave `REMINTABLE_DAEMON_CREDS` holding
+one segmented and one flat key and make the `(space) => key` change of §3.1 a per-entry special case
+rather than a property of the list.
+
+Consequences carried by the P7 series rather than by this plan: the inventory table of §1 gains its
+row (done), the lifecycle doc's §7 P7 entry gains `delivery.creds` alongside the pair, the account id
+and the rw cred, and the removal sites of §5 include the ones that are `delivery.creds`-specific.
 
 ## 4. Two series, P7 first
 
@@ -169,15 +212,19 @@ idiom in the P1 series.
 
 **Series P7**
 
+0. The probe of §6, BEFORE the series starts (§7.3). Its outcome fixes the remedy wording that
+   rules 4 and §2.1 both have to name, so it is a precondition of commit 1 rather than a step in it.
 1. Shared foundation: extend `spaceSegment`'s collision guarantee to the `.cotal/` children with a
-   guard test, add the choke-point migration helper generalized from `migrateLegacyUserAuthState`,
-   and add the `space add` refusal from §2.1. No material moves in this commit.
-2. Segment the four P7 kinds behind their resolvers, with the removal-list changes of §5 in the SAME
+   guard test, add the choke-point migration helper generalized from `migrateLegacyUserAuthState`
+   carrying rules 1 to 4 of §2, and add the `space add` refusal from §2.1. No material moves in this
+   commit.
+2. Segment the five P7 kinds behind their resolvers, with the removal-list changes of §5 in the SAME
    commit. `provisionMembershipCreds` (`up.ts:2903`) and `healMembershipDataCreds` (`up.ts:2881`)
-   both write through the resolvers.
+   both write through the resolvers, and `REMINTABLE_DAEMON_CREDS` plus the `clean.ts:226` list take
+   the `(space) => key` shape of §3.1.
 3. The `space rm` step 7 reap of the now-segmented `$SYS` creds, which §2.2 step 7 of the lifecycle
    doc already promises "once those are keyed per space (P7)".
-4. The probe of §6, if §6 has not already been executed by then.
+4. The lifecycle doc's §7 P7 entry gains `delivery.creds`, per §3.2.
 
 **Series P1**
 
@@ -196,10 +243,18 @@ unreapable, which is the failure P1 and P7 exist to end.
 
 The affected sweepers:
 
+- `clean.ts:226`, the store-seam sweep, which deletes the migrated kinds through the
+  `SecretStore` — a literal two-element list, `[DELIVERY_CREDS_KEY, MEMBERSHIP_RW_CREDS_KEY]`. Both
+  members are now P7 material, so this list is segmented in the P7 series and is the same
+  `(space) => key` change as `REMINTABLE_DAEMON_CREDS` in §3.1. It is a SEPARATE list from the raw
+  one below and is easy to miss, because `clean.ts:268` explains that these two kinds deliberately do
+  NOT appear there.
 - `clean.ts:272-279`, the identity-derived raw removal list, which names `SYSTEM_CREDS_FILES` at
   `:276` and `membership.json` at `:277`. Both become per-space enumerations. The comment at
   `clean.ts:265-268` records a deliberate "keep in sync with `provisionMembershipCreds`" coupling and
   is updated in the same commit, because the coupling it describes is what this constraint enforces.
+- `delivery-proc.ts:211` and `:214`, the daemon-stop deletes of `DELIVERY_CREDS_KEY`, which are
+  `delivery.creds`-specific and are pulled in by the §3.2 widening.
 - `clean.ts:243-250`, the `agentSecretKeysUnder` sweep, for P1.
 - `space rm` step 7 (`per-space-lifecycle.md` §2.2, lines 77-79), which is where a per-space reap
   becomes reachable at all.
@@ -224,18 +279,37 @@ If it holds it is a second, distinct P7 failure mode, and it is the intersection
 than either alone. It stays out of the lifecycle doc until executed, which is why §5 of that doc
 records only the inheritance mode.
 
-The probe, to run before series P7 commit 2: on a two-tenant root built the way `space add` builds
+The probe runs BEFORE series P7 starts, not before its commit 2 (§7.3). The reason is that its
+outcome is an input to the foundation commit rather than a check on it: §2 rule 4 and §2.1 both have
+to name a remedy to an operator on a multi-tenant root, and if the prediction below holds then
+`up --rotate-sys` is not that remedy, because it refuses on exactly the roots being addressed.
+Writing the refusal text first and probing after would mean shipping advice that cannot succeed,
+which is the same defect `healMembershipDataCreds`'s own comment records
+(`mintMembershipObserverCreds` named a rotation as its fix, and the rotation never called the
+provisioner).
+
+The probe: on a two-tenant root built the way `space add` builds
 one, with the `$SYS` pair absent from the start, assert that no `up` of either tenant mints an
 observer, that the delivery daemon reports the incomplete bundle rather than degrading silently, and
 that `up --rotate-sys` refuses with the single-space guard. A positive control in the same run mints
 an observer on a fresh single-tenant root, so a probe that reads all-negative because the harness
 never provisioned anything is distinguishable from the finding.
 
-## 7. Open decisions
+## 7. Decisions taken
 
-1. `delivery.creds`: segment it inside series P7, or name it as a known-unsegmented sibling with its
-   own prerequisite (§3.2).
-2. The `space add` refusal of §2.1 is the load-bearing simplification of the whole migration story.
-   It trades a one-time operator step on a root that is growing to two tenants for the elimination of
-   the unattributable-material case. Confirm that trade is acceptable before it is built on.
-3. Whether the §6 probe runs before series P7 starts or before its commit 2.
+All three were open in the first draft and are now settled by the orchestrator.
+
+1. **`delivery.creds` rides P7** (§3.2). One list, one grammar; the sibling-prerequisite option was
+   rejected because it splits `REMINTABLE_DAEMON_CREDS` across two grammars.
+2. **The `space add` refusal is confirmed** (§2.1), conditional on §2 rule 4 completing it. The
+   condition is the substance of the review: the door alone was claimed to empty the
+   unattributable-material population "by construction", and it does not. It keeps that population
+   from being CREATED; roots already multi-tenant when P7 lands, and backups of them restored
+   afterwards, bypass the door entirely and boot straight into the resolver. Rule 4 catches those,
+   and without it the resolver would launder an ambient inheritance squat into false named
+   attribution, which is worse and irreversible.
+3. **The §6 probe runs before series P7 starts**, not before commit 2, because the remedy wording in
+   rule 4 and §2.1 depends on its outcome.
+
+Nothing in this plan is now open. The next action is the §6 probe; implementation waits on its
+result and on the orchestrator's GO.
