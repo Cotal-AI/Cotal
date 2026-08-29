@@ -122,9 +122,20 @@ try {
   const unreachablePort = await pickFreePort();
   ep.nc!.setServers([`127.0.0.1:${unreachablePort}`]);
   await ep.nc!.reconnect();
+  // The transport clause is load-bearing, not decoration. A terminal close that left transport
+  // true would render as "connecting" to any consumer deriving state from the two flags, so a
+  // permanently dead session would report itself as one still coming up. The stop cell below
+  // proves stop() clears the flag; only this proves a REAL close does, through nc.closed() and
+  // the status iterator rather than a hand-pushed status value.
   check(
-    "a REAL terminal close marks readiness false before exposing its user-visible reason",
-    await until(() => !agent.connected && /mesh connection closed/.test(terminalIssueAtError ?? ""), 30_000),
+    "a REAL terminal close marks readiness false, clears transport, and exposes its user-visible reason",
+    await until(
+      () =>
+        !agent.connected &&
+        !agent.transportConnected &&
+        /mesh connection closed/.test(terminalIssueAtError ?? ""),
+      30_000,
+    ),
     { ready: agent.connected, terminalIssueAtError, latestIssue: agent.connectionIssue, transport },
   );
 
