@@ -14,6 +14,7 @@ import {
   newIdentity,
   spaceBackupInventory,
   type SpaceBackupSelection,
+  mintLifecycleUid,
 } from "@cotal-ai/core";
 import { authDir, loadSoleSpaceAuth } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -179,7 +180,7 @@ async function restoreExactIdTimeoutReplayScenario(): Promise<void> {
     // would be a vacuous 0 === 0 and could not witness a duplicated restore.
     const senderPath = join(root, "sender.creds");
     writeFileSync(senderPath, await mintCreds(auth, newIdentity(), "agent", {
-      allowPublish: ["seeded"], allowSubscribe: ["seeded"],
+      allowPublish: ["seeded"], allowSubscribe: ["seeded"], lifecycleUid: mintLifecycleUid(),
     }), { mode: 0o600 });
     for (const text of seeded)
       must(`seed chat ${JSON.stringify(text)}`, run("send", "msg", "seeded", text, "--space", space, "--server", server, "--creds", senderPath));
