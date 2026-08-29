@@ -403,6 +403,9 @@
     "smoke:clean": "tsx implementations/cli/smoke/clean.smoke.ts",
     "smoke:multi-space": "tsx implementations/cli/smoke/multi-space.smoke.ts",
     "smoke:up-multi-space-render:live": "tsx implementations/cli/smoke/up-multi-space-render-live.smoke.ts",
+    "smoke:up-resume-render-lock:live": "tsx implementations/cli/smoke/up-resume-render-lock-live.smoke.ts",
+    "smoke:up-adopt-resume-lock:live": "tsx implementations/cli/smoke/up-adopt-resume-lock-live.smoke.ts",
+    "smoke:up-restore-reentry:live": "tsx implementations/cli/smoke/up-restore-reentry-live.smoke.ts",
     "smoke:meshes-registry": "tsx implementations/cli/smoke/meshes-registry.smoke.ts",
     "smoke:mesh-root-identity": "tsx implementations/cli/smoke/mesh-root-identity.smoke.ts",
     "smoke:canonical-root-missing": "tsx implementations/cli/smoke/canonical-root-missing.smoke.ts",
@@ -447,7 +450,10 @@
     "smoke:down-manifest-usermode:live": "tsx implementations/auth/smoke/down-manifest-usermode.smoke.ts",
     "smoke:secret-store": "tsx packages/workspace/smoke/secret-store.smoke.ts",
     "smoke:space-auth-store": "tsx packages/workspace/smoke/space-auth-store.smoke.ts",
+    "smoke:space-segmentation": "tsx packages/workspace/smoke/space-segmentation.smoke.ts",
     "smoke:delivery-store-boundary": "tsx implementations/delivery/smoke/delivery-store-boundary.smoke.ts",
+    "smoke:sys-injection-evict": "tsx implementations/delivery/smoke/sys-injection-evict.smoke.ts",
+    "smoke:sys-repair-honesty": "tsx implementations/delivery/smoke/sys-repair-honesty.smoke.ts",
     "smoke:delivery-teardown": "tsx implementations/cli/smoke/delivery-teardown.smoke.ts",
     "smoke:auth-store": "tsx implementations/auth/smoke/auth-store.smoke.ts",
     "smoke:session-caller-grant": "tsx packages/core/smoke/session-caller-grant.smoke.ts",
@@ -507,7 +513,8 @@
     "smoke:web-channel-alias": "tsx implementations/web/smoke/channel-alias.smoke.ts",
     "smoke:web-body-cap": "tsx implementations/web/smoke/body-cap.smoke.ts",
     "smoke:core-history-limit": "tsx packages/core/smoke/history-limit.smoke.ts",
-    "smoke:web-graph-boot": "tsx implementations/web/smoke/graph-boot.smoke.ts"
+    "smoke:web-graph-boot": "tsx implementations/web/smoke/graph-boot.smoke.ts",
+    "smoke:expiry-renewal:auth": "tsx implementations/auth/smoke/expiry-renewal.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/auth": "workspace:*",

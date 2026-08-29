@@ -627,3 +627,49 @@ smoke:user-auth-launch:live
 # sibling silently. Drives the real CLI against a real broker. Appended so every existing shard
 # assignment remains unchanged.
 smoke:up-multi-space-render:live
+# The $SYS store-injection eviction edge on a two-tenant live broker: the SecretStore-read
+# credential pair must survive a store eviction without the delivery daemon re-reading a stale
+# pair. Drives the real daemon against a real broker. Appended so every existing shard
+# assignment remains unchanged.
+smoke:sys-injection-evict
+# A user-mode endpoint whose bearer expires must stop presenting the dead token: pre-fix it re-dialled
+# it on a flat 3s interval forever, one client costing a permanent auth-callout round trip every 3s.
+# Drives a real broker plus a real auth callout across three arms (no renewal source, healthy source,
+# loud refusal). Appended so every existing shard assignment remains unchanged.
+smoke:expiry-renewal:auth
+
+# A RESUMED `cotal up` must render server.conf under the root maintenance lock, the way the ordinary
+# and manifest paths do. The re-entry used to drop the recovery's lock and re-take it, leaving the
+# journal naming a resume in flight with the root unlocked - an unserialized rewrite of every
+# tenant's trust. Drives the real CLI against a real broker. Appended so every existing shard
+# assignment remains unchanged.
+smoke:up-resume-render-lock:live
+
+# The other half of that lock hand-off: a resume re-entry INHERITS the recovery's lock, so a resume
+# helper that self-acquires hits the "held by a live owner" refusal - the recorded owner is alive
+# because it is us, which is also why stale-reaping cannot rescue it. Covers the two ADOPT paths,
+# where an `up` recovers by adopting an already-live listener instead of spawning a competitor over
+# the same store. Appended so every existing shard assignment remains unchanged.
+smoke:up-adopt-resume-lock:live
+
+# `up --restore` under that same inherited lock, and the more severe half: the restore-side journal
+# writers self-acquired, so the FIRST of them - the listener bind - refused and the command did not
+# run at all. The adopt suite above enters through a resume with no artifact and stays green through
+# that break, so neither suite substitutes for the other. Appended; shard assignments unchanged.
+smoke:up-restore-reentry:live
+
+# The space-segmentation foundation (P7/P1 shared design). Hermetic and fast. It asserts the
+# `spaceSegment` collision guarantee over the children of `.cotal/` — a WIDER namespace than the
+# auth-dir siblings the encoder's comment originally claimed — plus the migration choke point's
+# refusals and the `space add` door. Widened with the PER-KIND RESOLVERS: every kind moves on first
+# touch through the one shared body, the hosted arm resolves the same key while moving nothing, the
+# refusals travel OUT through the named wrappers, and the two non-migrating owners (the deleters and
+# the renewal owner) address the same layout the resolvers do. Mutation-proofed —
+# bin/smoke/mutations/space-segmentation.json. Appended; shard assignments unchanged.
+smoke:space-segmentation
+
+# The `$SYS` repair advice names only commands the root can run. The delivery daemon printed `cotal
+# down` + `cotal up --rotate-sys` on multi-tenant roots, where both refuse - advice that cannot
+# succeed, found by the P7 §6 probe and fixed alongside this suite. Hermetic and fast; the property
+# is a biconditional, so the single-tenant arm is graded too. Appended; shard assignments unchanged.
+smoke:sys-repair-honesty

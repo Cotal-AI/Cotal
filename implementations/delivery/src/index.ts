@@ -6,7 +6,7 @@
  * `@cotal-ai/manager` or `@cotal-ai/cli` (one-way tiering).
  */
 import { registry, type Command } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KEY, runDelivery } from "./delivery.js";
+import { DELIVERY_CREDS_KIND, deliveryCredsKey, runDelivery } from "./delivery.js";
 import { runFeedbackIntake } from "./feedback-intake.js";
 
 const deliveryCommands: Command[] = [
@@ -51,5 +51,5 @@ const deliveryCommands: Command[] = [
 
 registry.register(...deliveryCommands);
 
-export { DELIVERY_CREDS_KEY, runDelivery };
+export { DELIVERY_CREDS_KIND, deliveryCredsKey, runDelivery };
 export { runFeedbackIntake };

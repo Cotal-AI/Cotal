@@ -25,7 +25,7 @@ import {
   CotalEndpoint, createSpaceAuth, credsFingerprint, isReachable, mintConnectionEvictorCreds, mintCreds,
   mintMembershipObserverCreds, newIdentity, serverConfig, setupSpaceStreams,
 } from "@cotal-ai/core";
-import { authDir, DELIVERY_CREDS_KEY, remintDaemonCreds, saveSpaceAuth, writeRenewalRecord } from "@cotal-ai/workspace";
+import { authDir, DELIVERY_CREDS_KIND, remintDaemonCreds, saveSpaceAuth, spaceMaterialDir, writeRenewalRecord } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
 
@@ -85,14 +85,23 @@ try {
   mkdirSync(join(root, ".cotal", "auth"), { recursive: true });
   saveSpaceAuth(authDir(root), auth);
   const dlvId = newIdentity();
-  writeFileSync(join(root, ".cotal", "delivery.creds"), await mintCreds(auth, dlvId, "delivery", { expiresInSeconds: 300 }), { mode: 0o600 });
-  writeFileSync(join(root, ".cotal", "membership-rw.creds"), await mintCreds(auth, newIdentity(), "membership-rw", { expiresInSeconds: 600 }), { mode: 0o600 });
-  writeFileSync(join(root, ".cotal", "membership-observer.creds"), obs, { mode: 0o600 });
-  writeFileSync(join(root, ".cotal", "connection-evictor.creds"), evictor, { mode: 0o600 });
-  writeFileSync(join(root, ".cotal", "membership.json"), JSON.stringify({ accountId: auth.account.pub }), { mode: 0o600 });
+  // A POST-P7 root: all five kinds are staged in this space's segment, which is where a real `up`
+  // leaves them. Flat would be a PRE-P7 root, and this suite must not be one — `remintDaemonCreds`
+  // is the renewal owner and deliberately does NOT migrate (`segmentedKey`, not the resolvers), so a
+  // flat staging would make every leg here `skipped: "missing-file"` and the adoption cells would
+  // grade a renewal that never happened. Migration itself is covered where it belongs, on the boot
+  // path, by `sys-rotation-e2e.smoke.ts`.
+  const spaceDir = spaceMaterialDir(root, space);
+  mkdirSync(spaceDir, { recursive: true, mode: 0o700 });
+  const deliveryCredsPath = join(spaceDir, "delivery.creds");
+  writeFileSync(deliveryCredsPath, await mintCreds(auth, dlvId, "delivery", { expiresInSeconds: 300 }), { mode: 0o600 });
+  writeFileSync(join(spaceDir, "membership-rw.creds"), await mintCreds(auth, newIdentity(), "membership-rw", { expiresInSeconds: 600 }), { mode: 0o600 });
+  writeFileSync(join(spaceDir, "membership-observer.creds"), obs, { mode: 0o600 });
+  writeFileSync(join(spaceDir, "connection-evictor.creds"), evictor, { mode: 0o600 });
+  writeFileSync(join(spaceDir, "membership.json"), JSON.stringify({ accountId: auth.account.pub }), { mode: 0o600 });
 
   let out = "";
-  const daemon = spawn(process.execPath, [cotalJs, "deliver", "--space", space, "--server", servers, "--creds", join(root, ".cotal", "delivery.creds")], {
+  const daemon = spawn(process.execPath, [cotalJs, "deliver", "--space", space, "--server", servers, "--creds", deliveryCredsPath], {
     cwd: root, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" },
   });
   daemon.stdout!.on("data", (d: Buffer) => { out += d.toString(); });
@@ -110,7 +119,7 @@ try {
   // HAPPY
   const results = await remintDaemonCreds(root, space);
   const expected: { delivery?: string; membership?: string } = {};
-  for (const r of results.filter((x) => x.ok)) { if (r.file === DELIVERY_CREDS_KEY && r.fingerprint) expected.delivery = r.fingerprint; else if (r.fingerprint) expected.membership = r.fingerprint; }
+  for (const r of results.filter((x) => x.ok)) { if (r.file === DELIVERY_CREDS_KIND && r.fingerprint) expected.delivery = r.fingerprint; else if (r.fingerprint) expected.membership = r.fingerprint; }
   const okReply = await adminReq(ep, "reloadCreds", { expected });
   writeRenewalRecord(root, { ts: new Date().toISOString(), owner: "manager", results, adoption: okReply.ok ? { ok: true, detail: okReply.data } : { ok: false, error: okReply.error, detail: okReply.data } });
   const okData = okReply.data as { delivery?: { brokerAccepted?: unknown }; membership?: { brokerAccepted?: unknown } };
@@ -122,9 +131,9 @@ try {
 
   // REFUSED (the original false-green, now caught)
   const rogueCred = await mintCreds(rogue, dlvId, "delivery", { expiresInSeconds: 300 });
-  writeFileSync(join(root, ".cotal", "delivery.creds"), rogueCred, { mode: 0o600 });
+  writeFileSync(deliveryCredsPath, rogueCred, { mode: 0o600 });
   const refusedReply = await adminReq(ep, "reloadCreds", { expected: { delivery: credsFingerprint(rogueCred) } });
-  writeRenewalRecord(root, { ts: new Date().toISOString(), owner: "manager", results: [{ file: DELIVERY_CREDS_KEY, ok: true }], adoption: refusedReply.ok ? { ok: true, detail: refusedReply.data } : { ok: false, error: refusedReply.error, detail: refusedReply.data } });
+  writeRenewalRecord(root, { ts: new Date().toISOString(), owner: "manager", results: [{ file: DELIVERY_CREDS_KIND, ok: true }], adoption: refusedReply.ok ? { ok: true, detail: refusedReply.data } : { ok: false, error: refusedReply.error, detail: refusedReply.data } });
   check("real daemon REFUSED the rogue re-sign (reply ok:false, no brokerAccepted)", refusedReply.ok === false && (refusedReply.data as { delivery?: { brokerAccepted?: unknown } })?.delivery?.brokerAccepted === undefined, JSON.stringify(refusedReply).slice(0, 300));
   const dRefused = runDoctor(root);
   check("`cotal doctor auth` BINARY exits 1 on the broker-refused renewal (no false green)", dRefused.code === 1, `code=${dRefused.code} ${dRefused.out.slice(-250)}`);

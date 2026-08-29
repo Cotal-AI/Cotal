@@ -45,7 +45,8 @@ are marked; import them with `import type`.
 |---|---|---|
 | `runAuthService(args, store?)` | `@cotal-ai/auth` | boot the auth-service daemon; `store` injects the secret material. |
 | `runDelivery(args, store?)` | `@cotal-ai/delivery` | boot the delivery daemon; `store` injects the scoped `delivery` cred. |
-| `DELIVERY_CREDS_KEY`, `MEMBERSHIP_RW_CREDS_KEY` | `@cotal-ai/workspace` | the secret-store keys the delivery cred and the membership feed's rw cred are read/re-signed under. |
+| `deliveryCredsKey(space, composition)`, `membershipRwCredsKey(space, composition)` | `@cotal-ai/workspace` | build the secret-store keys the delivery cred and the membership feed's rw cred are read/re-signed under. Keys are **per-space**: `space.<hex>/<kind>`. A hosted composition passes `{ injected: true }`. |
+| `DELIVERY_CREDS_KIND`, `MEMBERSHIP_RW_CREDS_KIND` | `@cotal-ai/workspace` | the operator-facing KIND names (`delivery.creds`, `membership-rw.creds`) those keys are built from, and what renewal results report. A kind is **not** a key: putting a cred under the bare kind writes the pre-0.4 flat location, which nothing reads. |
 | `Manager`, `ManagerOptions` *(type)* | `@cotal-ai/manager` | construct and run a supervisor in-process; `ManagerOptions.secretStore` injects the one store it reads/writes every secret through. |
 | `createRuntime`, `Runtime` *(type)* | `@cotal-ai/manager` | resolve the spawn backend (pty built in). |
 
@@ -93,6 +94,21 @@ The runners take a CLI-shaped `ParsedArgs`, not a typed options object, so a hos
 const args: ParsedArgs = { values: { space, server, port: "0" }, positionals: [], raw: [] };
 ```
 
+### Long-lived endpoints take a bearer function
+
+`EndpointOptions.bearer` accepts either a string or a function, and the difference is not stylistic.
+A string is minted once, so when it expires (which it will: callout bearers live minutes) the
+endpoint has nothing to renew with. It will not present the dead token to the broker, since that is
+a guaranteed denial that still costs a full auth-callout round trip. It refuses to reconnect, emits
+`error` saying which case it is in, and retries on a widening backoff until the process
+re-authenticates and rebuilds it.
+
+Pass a **function** for anything that outlives one bearer. That is a renewal source: it is called
+ahead of each expiry and again whenever a reconnect finds the cached bearer dead, and it requires
+explicit `card.owner` and `card.actor`. The first-party surfaces already do this
+(`UserViewAuth.source`, the connector's `agentBearerCommand`). A string bearer is for a short
+one-shot connection.
+
 ## Booting the daemons
 
 ### auth-service
@@ -122,7 +138,8 @@ await runAuthService(
 ### delivery
 
 `runDelivery(args, store?)` runs from a **pre-minted scoped `delivery` cred** and never loads the
-signer. Provide the cred either through the injected store (under `DELIVERY_CREDS_KEY`) or with a
+signer. Provide the cred either through the injected store (under
+`deliveryCredsKey(space, { injected: true })`) or with a
 `--creds` file; the two are mutually exclusive. The daemon re-fetches the cred from the store at 75%
 of its JWT lifetime and fails loud rather than riding to expiry, so **something must re-sign a fresh
 cred into that same store**.
@@ -220,7 +237,8 @@ await setupSpaceStreams({ servers: brokerUrl, space, creds: provisionerCreds });
 // never inferred from the resolution fallback. A daemon-backed space is "durable".
 await ensureDefaultDeliveryClass({ servers: brokerUrl, space, creds: provisionerCreds, deliveryClass: "durable" });
 const deliveryCreds = await mintCreds(auth, newIdentity(), "delivery");
-// put deliveryCreds into your SecretStore under DELIVERY_CREDS_KEY before booting delivery.
+// put deliveryCreds into your SecretStore under deliveryCredsKey(space, { injected: true })
+// (@cotal-ai/workspace) before booting delivery — the key is per-space, not the bare kind.
 ```
 
 Rendering the broker config for a user-auth space is `serverConfig(broker, spaces, { storeDir,

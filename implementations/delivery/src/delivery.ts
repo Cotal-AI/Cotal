@@ -13,43 +13,63 @@ import {
   type ParsedArgs,
   type SecretStore,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KEY, FsSecretStore, authDir, findCotalRoot, loadSpaceAuth, soleSpaceOf, workspaceSecretStore } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, FsSecretStore, authDir, deliveryCredsKey, findCotalRoot, loadSpaceAuth, segmentedKey, soleSpaceOf, workspaceSecretStore } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
 import { executeEviction, executePlaneLiveness, executePrincipalLiveness, type ScanTarget } from "./evict-exec.js";
 
 type Values = Record<string, string | undefined>;
 
-/** Re-exported for hosted compositions: the {@link SecretStore} key a store injected into
- *  {@link runDelivery} must hold the cred under. Defined once in workspace (the key↔filename
- *  convention is the workspace layout's) so the writer, the renewal owner, and this reader can
- *  never drift apart. */
-export { DELIVERY_CREDS_KEY };
+/** Re-exported for hosted compositions: the daemon cred's KIND, and the builder that turns it into
+ *  the {@link SecretStore} key for a space. Defined once in workspace (the layout is the workspace's)
+ *  so the writer, the renewal owner, and this reader can never drift apart. As of P7 the kind is NOT
+ *  the key — the key is per-space — so a hosted store must be keyed with the builder; the flat kind
+ *  is the pre-P7 key and putting there leaves this daemon reading an empty location. */
+export { DELIVERY_CREDS_KIND, deliveryCredsKey };
 
 type CredsSource = { store: SecretStore; key: string; where: string; injected: boolean };
 
-/** Where the daemon's pre-minted cred lives — exactly ONE source, resolved up front: an injected
- *  {@link SecretStore} (a hosted composition), an explicit `--creds <file>` (e.g. a read-only
- *  container mount) as an FS store over that exact file, or the default workstation location.
- *  With an injected store the store is the ONLY credential source: every local-source flag
- *  (`--creds`, `--dev-mint`) is rejected loudly at this boundary — and it runs BEFORE any ambient
- *  read in `runDelivery` — so a hosted composition can never cross back into workstation trust
- *  material (a creds file, the local signer), not even for a space label. `where` is the human
- *  label used in error messages so a local operator still sees a path, not an abstract key. */
-function resolveCredsStore(v: Values, injected?: SecretStore): CredsSource {
+/**
+ * THE ORDERING-CRITICAL HALF of the cred-source decision, split out so it cannot drift below the
+ * ambient reads. With an injected store the store is the ONLY credential source: every local-source
+ * flag (`--creds`, `--dev-mint`) is rejected loudly HERE, before `runDelivery` derives a space —
+ * because that derivation itself reads the local signer under `--dev-mint`. A hosted composition
+ * must never cross back into workstation trust material, not even for a space label, and the space
+ * is now an INPUT to the key, which is exactly the pressure that would otherwise pull the
+ * derivation above this check.
+ */
+function assertNoLocalCredSourceFlags(v: Values, injected?: SecretStore): void {
+  if (!injected) return;
+  const local = ["creds", "dev-mint"].filter((f) => v[f] !== undefined);
+  if (local.length)
+    throw new Error(
+      `delivery: ${local.map((f) => `--${f}`).join(" and ")} cannot be combined with an injected secret store — the store is the cred's only source`,
+    );
+}
+
+/** Where the daemon's pre-minted cred lives — exactly ONE source: an injected {@link SecretStore}
+ *  (a hosted composition), an explicit `--creds <file>` (e.g. a read-only container mount) as an FS
+ *  store over that exact file, or the default workstation location. `where` is the human label used
+ *  in error messages so a local operator still sees a path, not an abstract key.
+ *
+ *  Called AFTER {@link assertNoLocalCredSourceFlags} has settled the injected/local conflict, which
+ *  is what lets it take the derived `space`. The workstation arm goes through the per-kind RESOLVER:
+ *  it is the reader whose "absent" answer sends `ensureDelivery` off to mint, so reading the
+ *  canonical location past an unmigrated cred is how a root ends up with two live delivery creds.
+ *  The injected arm builds the key without touching a filesystem it does not have. `--creds` names
+ *  ONE file and is per-space by the operator's own choice of path, so it is neither segmented nor
+ *  migrated — the store there is rooted at that file's own directory. */
+function resolveCredsStore(v: Values, space: string, injected?: SecretStore): CredsSource {
   if (injected) {
-    const local = ["creds", "dev-mint"].filter((f) => v[f] !== undefined);
-    if (local.length)
-      throw new Error(
-        `delivery: ${local.map((f) => `--${f}`).join(" and ")} cannot be combined with an injected secret store — the store is the cred's only source`,
-      );
-    return { store: injected, key: DELIVERY_CREDS_KEY, where: `secret-store key "${DELIVERY_CREDS_KEY}"`, injected: true };
+    const key = segmentedKey(DELIVERY_CREDS_KIND, space);
+    return { store: injected, key, where: `secret-store key "${key}"`, injected: true };
   }
   if (v.creds !== undefined) {
     const p = resolve(v.creds);
     return { store: new FsSecretStore(dirname(p)), key: basename(p), where: p, injected: false };
   }
   const root = findCotalRoot();
-  return { store: workspaceSecretStore(root), key: DELIVERY_CREDS_KEY, where: join(root, ".cotal", DELIVERY_CREDS_KEY), injected: false };
+  const key = deliveryCredsKey(space, { injected: false, root });
+  return { store: workspaceSecretStore(root), key, where: join(root, ".cotal", key), injected: false };
 }
 
 /** The daemon's scoped `delivery` creds — the PRODUCTION path reads a PRE-MINTED cred through the
@@ -90,7 +110,7 @@ async function loadDeliveryCreds(src: CredsSource, v: Values): Promise<{ initial
   }
   if (src.injected)
     throw new Error(
-      `delivery: no cred in the injected secret store under key "${DELIVERY_CREDS_KEY}" — the hosted composition must put it before starting the daemon (local sources are never consulted when a store is injected)`,
+      `delivery: no cred in the injected secret store under key "${key}" — the hosted composition must put it before starting the daemon (local sources are never consulted when a store is injected). The key is PER-SPACE as of P7; a cred put under the bare kind "${DELIVERY_CREDS_KIND}" is not read here.`,
     );
   if (v["dev-mint"] !== undefined) {
     // Space-blind dev path: the root must name exactly one space (soleSpaceOf fails loud on several).
@@ -121,8 +141,10 @@ async function loadDeliveryCreds(src: CredsSource, v: Values): Promise<{ initial
  *
  * `store` is the hosted-composition seam: a closed composition root calls this export directly and
  * injects its own {@link SecretStore} (KMS/Vault…) holding the daemon cred under
- * {@link DELIVERY_CREDS_KEY} AND the membership feed's rw cred under `membership-rw.creds`; the
- * registered `deliver` command passes none and gets the workstation FS store (or `--creds`). The
+ * {@link deliveryCredsKey}`(space, …)` AND the membership feed's rw cred under the matching
+ * `membership-rw.creds` key — both PER-SPACE as of P7, so the bare kinds are the pre-P7 spelling and
+ * are not read; the registered `deliver` command passes none and gets the workstation FS store (or
+ * `--creds`). The
  * renewal owner's write side (`remintDaemonCreds`) is threaded through the manager's
  * `ManagerOptions.secretStore` too, so a hosted composition renews both daemon kinds end-to-end when
  * the manager and this daemon are handed the SAME store.
@@ -137,13 +159,16 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
         "The partition() seam ships but operating shards>1 needs the channel-prefix grammar — see core-sub-fabric.md.",
     );
 
-  // Resolve the cred source FIRST — before the ambient space derivation below — so an injected
-  // store rejects local-source flags before anything can read the workstation signer.
-  const credsSrc = resolveCredsStore(v, store);
+  // Reject local-source flags FIRST — before the ambient space derivation below — so an injected
+  // store can never reach the workstation signer. The cred KEY is per-space as of P7, so resolving
+  // the source now needs the space that this check must precede; the check is therefore split out
+  // and stays here, ahead of everything ambient.
+  assertNoLocalCredSourceFlags(v, store);
 
   // Space comes from --space (the CLI passes it). Only --dev-mint may derive it from the local signer.
   const space = v.space ?? (v["dev-mint"] !== undefined ? soleSpaceOf(authDir(findCotalRoot())) : undefined);
   if (!space) throw new Error("delivery: --space is required (the scoped creds file does not encode it)");
+  const credsSrc = resolveCredsStore(v, space, store);
   const server = v.server ?? DEFAULT_SERVER;
   const creds = await loadDeliveryCreds(credsSrc, v); // pre-minted scoped cred; NO signer/loadSpaceAuth in this path
   let latestCreds = creds.initial; // freshest renewal — the broker-reachability poll below presents it
@@ -164,10 +189,22 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   // of the WRONG account is indistinguishable from "the principal is gone" — a healthy-looking
   // answer that authorizes eviction and gate reconciliation. Resolving the root per request from
   // `process.cwd()` let that drift; and a daemon started in a foreign mesh root would sweep a
-  // foreign tenant while looking entirely well. So: the root is fixed at start, and the account on
-  // disk is cross-checked against the account this daemon's OWN credential authenticates as — a
-  // fact that does not come from that root, which is what makes it an independent check.
-  const scanTarget: ScanTarget = { root: findCotalRoot(), expectedAccount: accountFromCreds(creds.initial) };
+  // foreign tenant while looking entirely well. So: the root is fixed at start, and the OBSERVER
+  // CRED is cross-checked against the account this daemon's OWN credential authenticates as — two
+  // facts, neither of which comes from that root, which is what makes it an independent check.
+  // The $SYS pair resolves through the SAME injected store, so a hosted composition needs no
+  // `.cotal/` file for it. `injected` is this composition root's own fact — recorded here, where it
+  // is known for certain, rather than inferred later by probing the store or sniffing the
+  // filesystem, both of which report "workstation" for a hosted daemon and would emit a CLI repair
+  // the host cannot run. It selects the REPAIR IDIOM only; failure semantics never fork on it.
+  const scanRoot = findCotalRoot();
+  const scanTarget: ScanTarget = {
+    root: scanRoot,
+    expectedAccount: accountFromCreds(creds.initial),
+    source: store === undefined
+      ? { secrets: workspaceSecretStore(scanRoot), space, injected: false, root: scanRoot }
+      : { secrets: store, space, injected: true },
+  };
   console.error(`• delivery: $SYS sweeps bound to ${join(scanTarget.root, ".cotal")} (account ${scanTarget.expectedAccount})`);
 
   const ep = new CotalEndpoint({
@@ -253,7 +290,13 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     // an arbitrary `--creds` path, whereas membership-rw lives under the workstation `.cotal/` key. With
     // no injected store, startMembership falls back to the workstation FS store.
     // Fail-soft, but never fault-FORGETFUL: whichever way the feed fails to come up, keep the reason.
-    ({ handle: membership, down: membershipDown } = await startMembership({ space, server }, store));
+    // `accountId` is the account THIS daemon's own cred authenticates as (pinned above), not a
+    // `.cotal/membership.json` read: the file was never an independent source (same directory as the
+    // creds, so a wrong root was wrong for both) and a hosted composition has none.
+    ({ handle: membership, down: membershipDown } = await startMembership(
+      { space, server, accountId: scanTarget.expectedAccount },
+      store,
+    ));
   } catch (e) {
     membershipDown = (e as Error).message;
     console.error(`! membership: failed to start (${membershipDown}); graph membership degraded, delivery unaffected`);
