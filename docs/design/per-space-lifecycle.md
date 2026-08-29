@@ -168,10 +168,24 @@ writer, and it must keep booting the one space it was asked for.
 **Serialization is the root maintenance lock.** `acquireMaintenanceLock` already gives an exclusive,
 owner-recorded, stale-reaping lock per root, and `backup` and `clean` take it. The lock is per root
 rather than per space on purpose: the config, the store and the broker process are shared, so two
-tenants' lifecycle verbs are not independent. `up` already holds it across its own render, and so
-does `up -f`. What escapes it is narrow: a resume re-entry skips acquiring the lock and still reaches
-the render. Closing that is prerequisite P2 (§7); until it lands, the lock is mutual exclusion over
-every writer of `server.conf` except a resumed `up`.
+tenants' lifecycle verbs are not independent. Every `up` now holds it across its render — the
+ordinary path, `up -f`, and a resume re-entry alike, which is prerequisite P2 (§7). A re-entry used
+to hold no lock at all and still reach the renderer, so a concurrent `up` could rewrite the
+whole-broker config — every tenant's trust, unserialized — while a resume was mid-flight. The lock is
+now mutual exclusion over every writer of `server.conf`, with no exception.
+
+**A resumed `up` inherits that lock, and must hand it down.** The recovery journals `resume-intent`
+under the lock it already holds, so releasing it for the re-entry to re-acquire would leave exactly
+the window the lock is there to close: the journal in a resume state with the lock free. Inheriting
+in turn makes handing the lock down mandatory rather than tidy. The lock is not reentrant, and it
+cannot stale-reap its way out either, because the recorded owner is alive — it is the caller. A
+helper that self-acquired would take the "held by a live owner" refusal and fail the resume outright.
+So every helper that journals under it takes the lock as a `heldLock` parameter and the re-entry
+passes it, on the restore and the ordinary side alike; the one caller that does not is the
+prepare-failure path, where the lock has genuinely not been taken in that frame and the helper is
+meant to take its own. Audit that by the callee, not by the call site: a site that passes no lock
+says nothing about whether the callee acquires one, and threading only the sites that visibly named
+a lock left `up --restore` dead in its listener bind, on the self-acquiring restore-side writers.
 
 **Promotion is compare-and-set, because the lock is advisory.** A small non-secret
 `broker-config.json` beside `server.conf` records `{ gen, inventoryDigest }`. A verb reads
@@ -260,7 +274,9 @@ P8. Until it lands, retaining the seed is a decision taken at broker creation wi
 - **P1.** Re-key `auth/creds` by `spaceSegment` so per-agent secrets name their tenant and
   `space rm` can reap them (§2.2).
 - **P2.** Make a resumed `up` take the root maintenance lock before it renders, which the ordinary
-  and manifest paths already do, so the lock covers every writer of `server.conf` (§4).
+  and manifest paths already do, so the lock covers every writer of `server.conf` (§4). Landed: the
+  re-entry inherits the recovery's lock rather than taking its own, and hands it to every helper that
+  journals under it.
 - **P3.** A multi-tenant backup inventory validator (§2.3).
 - **P4.** `deleteSpaceAccountAuth(store, space)`, deleting one tenant's account key and nothing else.
 - **P5.** Retained broker system signing seed behind the multi-space opt-in (§5).
