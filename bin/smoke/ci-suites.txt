@@ -611,12 +611,12 @@ smoke:web-probe-target
 # loopback default when no host is supplied. Appended so every existing shard assignment remains
 # unchanged.
 smoke:web-remote-bind
+# The published manager entrypoint directly loads three NATS packages. Derive that runtime import
+# closure from built dist and require every external package in it to be installed by a production
+# dependency field. Appended so every existing shard assignment remains unchanged.
+smoke:manager-runtime-deps
 # Cotal's bundled Agent Skill is lazily reconciled through the real built CLI on the first normal
 # command after install/upgrade. The isolated-HOME suite also proves update/no-op/backup, corrupt and
 # symlink fail-loud behavior, all four verified harnesses, status skew, and a write-free --version.
 # Appended at the true tail so every existing shard membership remains unchanged.
 smoke:agent-skills-entry
-# The published manager entrypoint directly loads three NATS packages. Derive that runtime import
-# closure from built dist and require every external package in it to be installed by a production
-# dependency field. Appended so every existing shard assignment remains unchanged.
-smoke:manager-runtime-deps
