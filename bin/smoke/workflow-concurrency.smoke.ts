@@ -189,5 +189,10 @@ for (const w of all) {
 }
 
 console.log(`\n${fail === 0 ? "WORKFLOW CONCURRENCY SMOKE OK ✅" : "WORKFLOW CONCURRENCY SMOKE FAILED ❌"}  (${pass} passed, ${fail} failed)`);
-if (fail > 0) process.exit(1);
-console.log(`SUITE COMPLETE: ${pass} cells`);
+// Printed on BOTH outcomes, deliberately, and this is not cosmetic. The marker means the suite
+// REACHED ITS END, not that it passed, which is what lets mutation-proof tell a real named red from
+// a run that died in the middle and reddened for an unrelated reason. Gating it on success graded
+// all three mutations INCONCLUSIVE: each was red and correctly named, and each was refused for
+// having stopped early, because the only evidence it had not was the line this print withheld.
+console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
+process.exit(fail === 0 ? 0 : 1);
