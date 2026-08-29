@@ -1138,6 +1138,10 @@ export class CotalEndpoint extends EventEmitter {
       // The manager's liveness-lease handle too: left bound to the old connection, every renew and
       // re-read after a reconnect times out, and the manager reports its lease unknown for good.
       this.managerLeaseKv = undefined;
+      // This is an application-requested epoch teardown, not a transient nats.js blip. The old
+      // status iterator is now stale by construction and its close is epoch-dropped, so this line is
+      // the authoritative raw-liveness edge for the no-nc window until the new watcher seeds true.
+      this.emit("transport", { connected: false } satisfies TransportState);
       this.emit("connection", { connected: false }); // null window opened — not live until the rebind below
       try {
         await oldNc?.drain();

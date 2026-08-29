@@ -136,6 +136,15 @@
       "expectRed": "a start rejection arriving after stop cannot replace the post-mortem diagnostic",
       "cell": "a start rejection arriving after stop cannot replace the post-mortem diagnostic",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "manual rebuild keeps transport true through its no-connection window",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      this.emit(\"transport\", { connected: false } satisfies TransportState);\n      this.emit(\"connection\", { connected: false }); // null window opened — not live until the rebind below",
+      "replace": "      this.emit(\"connection\", { connected: false }); // transport incorrectly stays true through the null window",
+      "expectRed": "cotal_reconnect lowers transport during the rebuild null window",
+      "cell": "cotal_reconnect lowers transport during the rebuild null window",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]
 }

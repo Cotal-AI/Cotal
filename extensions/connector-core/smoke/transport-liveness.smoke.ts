@@ -79,6 +79,11 @@
  *   IN  start rejection after stop cannot replace the post-mortem diagnostic.
  *   OUT every earlier cell: their connectLoop catch is not reached after stop.
  *
+ * M15 removes the manual-rebuild transport=false edge.
+ *   IN  cotal_reconnect lowers transport during the rebuild null window.
+ *   OUT replacement transport restoration (the new watcher still seeds true) and every other cell:
+ *       none enters doRebuild's explicit no-nc window.
+ *
  * Harness correction after the first 14-mutation run: the original M7 literal still named the
  * pre-review `!_connected` guard. The post-stop fix intentionally widened that same line to
  * `!_connected && !stopping`, so mutation-proof refused before applying anything. M7 now targets the
@@ -267,6 +272,37 @@ check(
   { endpointEvents, agentEvents },
 );
 
+console.log("manual rebuild owns an explicit no-transport window:");
+const manual = new MeshAgent({ ...cfg, name: "manual-reconnect-agent" });
+manual.ep.emit("connection", { connected: true });
+const manualEp = manual.ep as unknown as EndpointHarness;
+const manualOld = new FakeNc("nats://manual-old");
+arm(manual, manualOld);
+await tick();
+let releaseRebind!: () => void;
+const rebindGate = new Promise<void>((resolve) => { releaseRebind = resolve; });
+const manualNew = new FakeNc("nats://manual-new");
+manualEp.connectAndBind = async () => {
+  await rebindGate;
+  manualEp.nc = manualNew;
+  manualEp.watchStatus();
+  manual.ep.emit("connection", { connected: true });
+};
+const manualResult = manual.reconnect();
+await tick();
+check(
+  "cotal_reconnect lowers transport during the rebuild null window",
+  manualEp.nc === undefined && manual.connected === false && manual.transportConnected === false,
+  { hasNc: manualEp.nc !== undefined, ready: manual.connected, transport: manual.transportConnected },
+);
+releaseRebind();
+check(
+  "cotal_reconnect restores transport on the replacement epoch",
+  (await manualResult).ok === true && manual.transportConnected === true && manual.connected === true,
+  { ready: manual.connected, transport: manual.transportConnected },
+);
+await manual.stop();
+
 console.log("shutdown and readiness diagnostics are truthful:");
 const stopping = new MeshAgent({ ...cfg, name: "stopping-agent" });
 stopping.ep.emit("connection", { connected: true });
@@ -375,7 +411,7 @@ check(
   failing.connectionIssue,
 );
 
-const EXPECTED_CELLS = 17;
+const EXPECTED_CELLS = 19;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);

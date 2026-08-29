@@ -346,7 +346,7 @@ export class MeshAgent extends EventEmitter {
     return this._transportConnected;
   }
 
-  /** The latest safe diagnostic for a connection that has not become live yet. */
+  /** Latest pre-bind failure. A successful bind clears it; stop preserves it for post-mortem diagnosis. */
   get connectionIssue(): string | undefined {
     return this.lastConnectionError;
   }
