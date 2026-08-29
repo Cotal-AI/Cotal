@@ -22,6 +22,15 @@
       "expectRed": "UPDATE COMMAND: explicit update reconciles bundled Agent Skills",
       "cell": "UPDATE COMMAND: explicit update reconciles bundled Agent Skills",
       "note": "The update entry must own an explicit skill reconciliation because boot deliberately skips update to avoid duplicate passes."
+    },
+    {
+      "name": "restore the setup double-reconcile that erases install provenance",
+      "file": "implementations/cli/src/command.ts",
+      "find": "  if (argv[0] !== \"setup\") installAgentSkills(); // setup reconciles inside its own flow so provenance sees the actual install/refresh\n",
+      "replace": "  installAgentSkills();\n",
+      "expectRed": "SETUP COMMAND: setup owns one skill reconcile and preserves install provenance",
+      "cell": "SETUP COMMAND: setup owns one skill reconcile and preserves install provenance",
+      "note": "Without the setup guard, boot installs the skill first and setup sees a no-op, reporting zero installed skills and losing the write provenance."
     }
   ]
 }

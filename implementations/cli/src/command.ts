@@ -86,7 +86,7 @@ async function seedBoot(registry: Registry, argv: string[]): Promise<boolean> {
     return true;
   }
   if (skipAutoReconcile(argv)) return false;
-  installAgentSkills();
+  if (argv[0] !== "setup") installAgentSkills(); // setup reconciles inside its own flow so provenance sees the actual install/refresh
   await reconcileSeededConnectors();
   return false;
 }

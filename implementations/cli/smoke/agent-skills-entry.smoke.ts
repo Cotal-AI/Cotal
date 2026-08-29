@@ -27,17 +27,22 @@ function fresh() {
   mkdirSync(home);
   mkdirSync(xdg);
   created.push(root);
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
   return {
     root,
     home,
     cotalHome: join(xdg, "cotal"),
-    env: { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, COTAL_HOME: join(xdg, "cotal") },
+    env: { ...env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, COTAL_HOME: join(xdg, "cotal") },
     skill: join(home, ".agents", "skills", "team-topology", "SKILL.md"),
   };
 }
 
 function c(env: NodeJS.ProcessEnv, ...args: string[]) {
-  const r = spawnSync(process.execPath, [BIN, ...args], { encoding: "utf8", env });
+  const cwd = env.COTAL_TEST_CWD || undefined;
+  const childEnv = { ...env };
+  delete childEnv.COTAL_TEST_CWD;
+  const r = spawnSync(process.execPath, [BIN, ...args], { encoding: "utf8", env: childEnv, cwd });
   return { ...r, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 }
 
@@ -57,6 +62,7 @@ try {
     const r = c(e.env, "ext", "list");
     ok("FIRST NORMAL COMMAND: fresh install generation appears", r.status === 0 && existsSync(e.skill) && readFileSync(e.skill).equals(canonical), r.out);
     ok("NAMED HARNESSES: shared destination serves Codex OpenCode pi and Jcode", e.skill.includes(join(".agents", "skills", "team-topology")));
+    ok("ISOLATED ENTRY ENV: child receives no ambient Cotal identity", !Object.keys(e.env).some((key) => key.startsWith("COTAL_") && key !== "COTAL_HOME"));
   }
 
   {
@@ -102,6 +108,16 @@ try {
     const e = fresh();
     const r = c({ ...e.env, COTAL_UPDATE_TARGET_VERSION: VERSION, COTAL_UPDATE_PARENT: String(process.pid) }, "update");
     ok("UPDATE COMMAND: explicit update reconciles bundled Agent Skills", existsSync(e.skill) && readFileSync(e.skill).equals(canonical), r.out);
+  }
+
+  {
+    const e = fresh();
+    const r = c({ ...e.env, COTAL_TEST_CWD: e.root }, "setup", "--yes");
+    ok(
+      "SETUP COMMAND: setup owns one skill reconcile and preserves install provenance",
+      r.status === 0 && existsSync(e.skill) && /Installed 1 cross-vendor skill/.test(r.out),
+      r.out,
+    );
   }
 
   {
