@@ -84,6 +84,11 @@
  *   OUT replacement transport restoration (the new watcher still seeds true) and every other cell:
  *       none enters doRebuild's explicit no-nc window.
  *
+ * M16 removes the epoch check from watchStatus's catch handler.
+ *   IN  stale status iterator THROW is ignored after replacement.
+ *   OUT the stale in-loop status cell (different guard), all ordinary edges, reconnect, stop, and
+ *       diagnostic cells: none makes a replaced iterator reject.
+ *
  * Harness correction after the first 15-mutation run: the completion marker still named the former
  * 17-cell total after the manual-reconnect cells raised the suite to 19. Every mutation printed its
  * predicted novel failure and all 19 cells ran, but the opt-in marker correctly made those runs
@@ -117,19 +122,28 @@ const check = (name: string, cond: boolean, extra?: unknown): void => {
 };
 
 class StatusQueue implements AsyncIterable<Status> {
-  private pending: Array<(value: IteratorResult<Status>) => void> = [];
+  private pending: Array<{
+    resolve: (value: IteratorResult<Status>) => void;
+    reject: (error: Error) => void;
+  }> = [];
   private values: Status[] = [];
   private done = false;
 
   push(value: Status): void {
     const next = this.pending.shift();
-    if (next) next({ value, done: false });
+    if (next) next.resolve({ value, done: false });
     else this.values.push(value);
+  }
+
+  fail(error: Error): void {
+    const next = this.pending.shift();
+    if (next) next.reject(error);
+    else throw new Error("StatusQueue.fail requires a pending iterator read");
   }
 
   close(): void {
     this.done = true;
-    for (const next of this.pending.splice(0)) next({ value: undefined, done: true });
+    for (const next of this.pending.splice(0)) next.resolve({ value: undefined, done: true });
   }
 
   [Symbol.asyncIterator](): AsyncIterator<Status> {
@@ -138,7 +152,7 @@ class StatusQueue implements AsyncIterable<Status> {
         const value = this.values.shift();
         if (value) return Promise.resolve({ value, done: false });
         if (this.done) return Promise.resolve({ value: undefined, done: true });
-        return new Promise<IteratorResult<Status>>((resolve) => this.pending.push(resolve));
+        return new Promise<IteratorResult<Status>>((resolve, reject) => this.pending.push({ resolve, reject }));
       },
     };
   }
@@ -196,12 +210,16 @@ function arm(agent: MeshAgent, nc: FakeNc): void {
   ep.watchStatus();
 }
 
+let unexpected: unknown;
+try {
 console.log("transport lifecycle is separate from full-bind readiness:");
 const agent = new MeshAgent(cfg);
 const endpointEvents: Array<{ connected: boolean; server?: string }> = [];
 const agentEvents: Array<{ connected: boolean; server?: string }> = [];
+const endpointErrors: string[] = [];
 agent.ep.on("transport", (event: { connected: boolean; server?: string }) => endpointEvents.push(event));
 agent.on("transport", (event: { connected: boolean; server?: string }) => agentEvents.push(event));
+agent.ep.on("error", (error: Error) => endpointErrors.push(error.message));
 agent.ep.emit("connection", { connected: true });
 const epoch1 = new FakeNc("nats://epoch-1");
 arm(agent, epoch1);
@@ -259,6 +277,13 @@ check(
   "late disconnect and close from the OLD epoch are ignored after the replacement is current",
   (agent as unknown as AgentHarness).transportConnected === true && agentEvents.length === beforeStale,
   { transport: (agent as unknown as AgentHarness).transportConnected, agentEvents },
+);
+epoch1.queue.fail(new Error("stale iterator failure"));
+await tick();
+check(
+  "a stale status iterator THROW is ignored after the replacement epoch is current",
+  !endpointErrors.includes("stale iterator failure"),
+  { endpointErrors },
 );
 epoch2.queue.push({ type: "disconnect", server: "nats://epoch-2" });
 await tick();
@@ -416,11 +441,16 @@ check(
   failing.connectionIssue,
 );
 
-const EXPECTED_CELLS = 19;
-const ran = pass + fail;
-console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
-console.log(`SUITE COMPLETE: ${ran} cells`);
-if (ran !== EXPECTED_CELLS) {
-  console.log(`SUITE INCOMPLETE: ran ${ran} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
-  process.exitCode = 1;
-} else process.exitCode = fail === 0 ? 0 : 1;
+} catch (error) {
+  unexpected = error;
+} finally {
+  const EXPECTED_CELLS = 20;
+  const ran = pass + fail;
+  if (unexpected !== undefined) console.log(`  UNEXPECTED THROW: ${String(unexpected)}`);
+  console.log(`\n${fail === 0 && unexpected === undefined ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
+  console.log(`SUITE COMPLETE: ${ran} cells`);
+  if (ran !== EXPECTED_CELLS) {
+    console.log(`SUITE INCOMPLETE: ran ${ran} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
+  }
+  process.exitCode = fail === 0 && unexpected === undefined && ran === EXPECTED_CELLS ? 0 : 1;
+}

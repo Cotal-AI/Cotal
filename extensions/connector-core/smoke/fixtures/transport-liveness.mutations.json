@@ -3,7 +3,7 @@
   "guard": "raw NATS transport liveness is epoch-safe and separate from full endpoint readiness",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:transport-liveness",
   "progressPattern": "  ✓ ",
-  "completionMarker": "SUITE COMPLETE: 19 cells",
+  "completionMarker": "SUITE COMPLETE: 20 cells",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/fixtures/transport-liveness.mutations.json",
   "why": [
     "The deterministic status queues grade the exact nats.js lifecycle contract without timing a broker outage. The companion broker smoke separately proves real public disconnect and reconnect events reach these paths.",
@@ -144,6 +144,15 @@
       "replace": "      this.emit(\"connection\", { connected: false }); // transport incorrectly stays true through the null window",
       "expectRed": "cotal_reconnect lowers transport during the rebuild null window",
       "cell": "cotal_reconnect lowers transport during the rebuild null window",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "a stale status iterator rejection is surfaced after its epoch was replaced",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      if (!this.stopped && this.nc === nc) this.emit(\"error\", e as Error);",
+      "replace": "      if (!this.stopped) this.emit(\"error\", e as Error);",
+      "expectRed": "a stale status iterator THROW is ignored after the replacement epoch is current",
+      "cell": "a stale status iterator THROW is ignored after the replacement epoch is current",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]

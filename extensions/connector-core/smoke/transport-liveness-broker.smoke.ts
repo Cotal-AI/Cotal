@@ -63,8 +63,15 @@ const cfg: AgentConfig = {
 const agent = new MeshAgent(cfg);
 const transport: Array<{ connected: boolean; server?: string }> = [];
 const readiness: Array<{ connected: boolean }> = [];
+let terminalIssueAtError: string | undefined;
 agent.on("transport", (event) => transport.push(event));
 agent.on("connection", (event) => readiness.push(event));
+// MeshAgent registered its endpoint error handler in its constructor, before this listener. When the
+// real supervisor emits its terminal error, read the public diagnostic AFTER MeshAgent processed it
+// and BEFORE later re-establish attempts can report a newer pre-bind failure.
+agent.ep.on("error", (error: Error) => {
+  if (/^mesh connection closed/.test(error.message)) terminalIssueAtError = agent.connectionIssue;
+});
 
 try {
   check("the owned throwaway broker starts", await until(() => false, 0) || await (async () => {
@@ -101,6 +108,26 @@ try {
     { transport, readiness, live: agent.transportConnected, ready: agent.connected },
   );
 
+  // Keep the broker down until nats.js exhausts its reconnect attempts and closes the real current
+  // connection. This reaches CotalEndpoint.superviseConnection through nc.closed(), not through a
+  // constructed fake, and observes the MeshAgent diagnostic the user-facing status surface reads.
+  const ep = agent.ep as unknown as {
+    nc?: {
+      setServers(servers: string[]): void;
+      reconnect(): Promise<void>;
+    };
+    reestablishLoop(): Promise<void>;
+  };
+  ep.reestablishLoop = async () => {};
+  const unreachablePort = await pickFreePort();
+  ep.nc!.setServers([`127.0.0.1:${unreachablePort}`]);
+  await ep.nc!.reconnect();
+  check(
+    "a REAL terminal close marks readiness false before exposing its user-visible reason",
+    await until(() => !agent.connected && /mesh connection closed/.test(terminalIssueAtError ?? ""), 30_000),
+    { ready: agent.connected, terminalIssueAtError, latestIssue: agent.connectionIssue, transport },
+  );
+
   await agent.stop();
   check("clean stop clears readiness and transport", agent.connected === false && agent.transportConnected === false, {
     ready: agent.connected,
@@ -114,7 +141,7 @@ try {
   for (const release of releases) release();
 }
 
-const EXPECTED_CELLS = 6;
+const EXPECTED_CELLS = 7;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);
