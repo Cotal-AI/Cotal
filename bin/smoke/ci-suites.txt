@@ -685,3 +685,8 @@ smoke:sys-repair-honesty
 # success. Mutation-proofed - bin/smoke/mutations/agent-secret-segmentation.json. Appended; shard
 # assignments unchanged.
 smoke:agent-secret-segmentation
+# Every workflow reachable by a push to main must QUEUE its runs rather than evict them. #976
+# measured the eviction; #980 fixed ci.yml and three siblings carried the same defect in two
+# spellings, one of them the release workflow. The property is only observable on main after a
+# merge, so it needs a static guard. Appended so every existing shard assignment remains unchanged.
+smoke:workflow-concurrency
