@@ -216,9 +216,11 @@ record*. Step 4 invokes `putSpaceAuth` (`auth-paths.ts:1024-1066`), which also w
 `BROKER_AUTH_KEY`; its `guardBrokerOverwrite` (`auth-paths.ts:1032`) refuses a stale broker
 generation, but two `--rotate-sys` runs racing each other still read-modify-write that record
 outside any inventory CAS. `rotate-sys` therefore remains single-writer **by its own content
-guard**, not by U2's lease, and U2 does not claim otherwise. This is the same seam U3 works in
-(§6 residual 4): a `--rotate-sys`-driven config rewrite invalidates a `configDigest` U2 proved,
-and U2's step-8 digest verification (§3.4) *detects* that but does not prevent it.
+guard**, not by U2's lease, and U2 does not claim otherwise — while the saga is unimplemented.
+§6 residual 4 records the decision that `rotate-sys` acquires the lease when the saga lands.
+This is the same seam U3 works in (§6 residual 4): a `--rotate-sys`-driven config rewrite
+invalidates a `configDigest` U2 proved, and U2's step-8 digest verification (§3.4) *detects* that
+but does not prevent it.
 
 **Bootstrap honesty.** The inventory describes the broker's config and lives *inside* the broker.
 A cold `up` has no broker yet, so there are two regimes and the doc must not pretend otherwise:
@@ -579,9 +581,13 @@ Stated, not silently absorbed.
    (`up.ts:2704` on `origin/main`, U1's `:2717`) against U3's provision window (`up.ts:2825-2842`).
    And the functional collision: **U3's `--rotate-sys`-driven config rewrite invalidates a
    `configDigest` U2 proved, and U2 does not fence it** (§3.2, FILED-2). U2 *detects* it at step 8
-   and refuses; it cannot prevent it. Coordinate on (a) and (b) before implementing, and decide
-   explicitly whether `rotate-sys` should acquire U2's writer lease — U2's position is that it
-   should, and that this is a U3-side change U2 must not make unilaterally.
+   and refuses; it cannot prevent it. Coordinate on (a) and (b) before implementing.
+   **Decided (cross-lane):** `rotate-sys` acquires U2's writer lease, and that is a **U2
+   build-phase item landing with the saga implementation** — the lease is U2's own construct, and
+   until the saga exists there is nothing for an unfenced rotate to invalidate. Today's
+   `rotate-sys` stays guarded by its own `guardBrokerOverwrite` (`auth-paths.ts:1032`) and **U3 is
+   untouched**. When it lands it is a U2-implementation change to the shared path, coordinated with
+   U3's seam at the time it lands — not U3 homework.
 5. **v1 does not need this.** The plan says the control plane serializes adds, so U2 is post-GA
    hardening. Nothing here should be read as blocking P2.
 
