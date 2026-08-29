@@ -164,10 +164,20 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   // of the WRONG account is indistinguishable from "the principal is gone" — a healthy-looking
   // answer that authorizes eviction and gate reconciliation. Resolving the root per request from
   // `process.cwd()` let that drift; and a daemon started in a foreign mesh root would sweep a
-  // foreign tenant while looking entirely well. So: the root is fixed at start, and the account on
-  // disk is cross-checked against the account this daemon's OWN credential authenticates as — a
-  // fact that does not come from that root, which is what makes it an independent check.
-  const scanTarget: ScanTarget = { root: findCotalRoot(), expectedAccount: accountFromCreds(creds.initial) };
+  // foreign tenant while looking entirely well. So: the root is fixed at start, and the OBSERVER
+  // CRED is cross-checked against the account this daemon's OWN credential authenticates as — two
+  // facts, neither of which comes from that root, which is what makes it an independent check.
+  // The $SYS pair resolves through the SAME injected store, so a hosted composition needs no
+  // `.cotal/` file for it. `injected` is this composition root's own fact — recorded here, where it
+  // is known for certain, rather than inferred later by probing the store or sniffing the
+  // filesystem, both of which report "workstation" for a hosted daemon and would emit a CLI repair
+  // the host cannot run. It selects the REPAIR IDIOM only; failure semantics never fork on it.
+  const scanRoot = findCotalRoot();
+  const scanTarget: ScanTarget = {
+    root: scanRoot,
+    expectedAccount: accountFromCreds(creds.initial),
+    source: { secrets: store ?? workspaceSecretStore(scanRoot), injected: store !== undefined },
+  };
   console.error(`• delivery: $SYS sweeps bound to ${join(scanTarget.root, ".cotal")} (account ${scanTarget.expectedAccount})`);
 
   const ep = new CotalEndpoint({
@@ -253,7 +263,13 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     // an arbitrary `--creds` path, whereas membership-rw lives under the workstation `.cotal/` key. With
     // no injected store, startMembership falls back to the workstation FS store.
     // Fail-soft, but never fault-FORGETFUL: whichever way the feed fails to come up, keep the reason.
-    ({ handle: membership, down: membershipDown } = await startMembership({ space, server }, store));
+    // `accountId` is the account THIS daemon's own cred authenticates as (pinned above), not a
+    // `.cotal/membership.json` read: the file was never an independent source (same directory as the
+    // creds, so a wrong root was wrong for both) and a hosted composition has none.
+    ({ handle: membership, down: membershipDown } = await startMembership(
+      { space, server, accountId: scanTarget.expectedAccount },
+      store,
+    ));
   } catch (e) {
     membershipDown = (e as Error).message;
     console.error(`! membership: failed to start (${membershipDown}); graph membership degraded, delivery unaffected`);

@@ -627,3 +627,8 @@ smoke:user-auth-launch:live
 # sibling silently. Drives the real CLI against a real broker. Appended so every existing shard
 # assignment remains unchanged.
 smoke:up-multi-space-render:live
+# The $SYS store-injection eviction edge on a two-tenant live broker: the SecretStore-read
+# credential pair must survive a store eviction without the delivery daemon re-reading a stale
+# pair. Drives the real daemon against a real broker. Appended so every existing shard
+# assignment remains unchanged.
+smoke:sys-injection-evict
