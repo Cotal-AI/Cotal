@@ -1,42 +1,34 @@
 {
   "suite": "extensions/connector-core/smoke/focus-recall-loss.smoke.ts",
-  "guard": "focus-mode cotal_inbox returns each body exactly once when stream recall cannot return it, while replay-on concrete traffic stays stream-recalled",
+  "guard": "focus-mode cotal_inbox preserves unreplayable bodies exactly once, keeps exact ingest-time replay promises across policy revocation, and exposes no public replay-off history bypass",
   "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/connector-core build && pnpm smoke:focus-recall-loss",
   "completionMarker": "ISSUE_977_ACCEPTANCE_COMPLETE",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/focus-recall-loss.json",
   "why": [
-    "The suite drives a real isolated JetStream broker and the public cotal_inbox tool spec, not a stub. Its replay-on concrete control proves the stream-recall instrument returns ambient and mentions; its two claim arms prove replay-off concrete and wildcard-only focus traffic are delivered exactly once through the local pull-only lane.",
-    "Every mutation is compile-clean and aimed at one load-bearing boundary. Reverting the ingest choice restores the filed silent loss. Treating wildcard coverage as concrete restores wildcard loss only. Guessing the cached policy as true destroys replay-off bodies. Removing the pull-only protection lets a late durable copy change delivery class. Removing focus exclusion allows duplication if policy changes after receive.",
-    "The command rebuilds core and connector-core before every run because the workspace resolves package imports through dist. A source mutation without a build is a mutation the suite never executed."
+    "The suite drives a real isolated JetStream broker, the actual MeshAgent receive path, endpoint channel policy, and the public cotal_inbox tool. It covers static replay-off, wildcard-only subscriptions, replay true-to-false during one focus episode, before/after-flip non-duplication, destructive pull, and an ordinary core caller attempting to forge a grant.",
+    "The grant is exact-message and endpoint-minted: a WeakMap binds one opaque token to one delivered channel/id and a WeakSet records only tokens authorized while replay was true. A random public object therefore cannot bypass replay=false. The connector keeps those exact grants only for the active focus episode.",
+    "Every command rebuilds core and connector-core so the mutations reach the dist imports the suite executes."
   ],
   "mutations": [
     {
-      "cell": "replay-off body is retained",
-      "name": "restore unconditional focus ack-drop",
-      "file": "extensions/connector-core/src/agent.ts",
-      "find": "const recallable = item.channel !== undefined && await this.ep.focusRecallable(item.channel);",
-      "replace": "const recallable = true;",
-      "expectRed": "wildcard body must be returned or loss reported"
-    },
-    {
-      "cell": "wildcard body is retained",
-      "name": "treat wildcard coverage as a concrete join",
+      "cell": "replay-off policy is authoritative at ingest",
+      "name": "authorize every delivered concrete body",
       "file": "packages/core/src/endpoint.ts",
-      "find": "if (!isConcreteChannel(channel) || !this.channels.includes(channel)) return false;",
-      "replace": "if (!isConcreteChannel(channel)) return false;",
-      "expectRed": "wildcard body must be returned or loss reported"
-    },
-    {
-      "cell": "replay-off policy is authoritative",
-      "name": "guess replay true instead of reading the registry",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "return (await this.joinPolicyFresh(channel)).replay;",
-      "replace": "return true;",
+      "find": "if (!(await this.joinPolicyFresh(delivered.channel)).replay) return undefined;",
+      "replace": "void delivered.channel;",
       "expectRed": "post-flip local bodies must not duplicate through recall"
     },
     {
+      "cell": "wildcard-only subscription cannot mint a concrete recall grant",
+      "name": "ignore the explicit concrete join requirement",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "if (!delivered || !this.channels.includes(delivered.channel)) return undefined;",
+      "replace": "if (!delivered) return undefined;",
+      "expectRed": "wildcard body must be returned or loss reported"
+    },
+    {
       "cell": "ingest-time replay promise survives a later policy revoke",
-      "name": "recheck only current policy during recall",
+      "name": "drop exact grants before recall",
       "file": "extensions/connector-core/src/agent.ts",
       "find": "grants: [...(this.focusRecallGrants.get(channel) ?? [])],",
       "replace": "grants: [],",
@@ -49,6 +41,14 @@
       "find": "if (!this.focusRecallGrants.has(token)) continue;",
       "replace": "void token;",
       "expectRed": "public recall token must not bypass replay policy"
+    },
+    {
+      "cell": "post-flip locally retained bodies do not duplicate through historical recall",
+      "name": "omit receive-time focus exclusion",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "this.excludeFromFocus(item);\n          this.protectDisposition(item.id, \"pull-only\");",
+      "replace": "this.protectDisposition(item.id, \"pull-only\");",
+      "expectRed": "post-flip local bodies must not duplicate through recall"
     }
   ]
 }
