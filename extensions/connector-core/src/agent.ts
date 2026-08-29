@@ -21,6 +21,7 @@ import {
   type MessageMeta,
   type Presence,
   type PresenceStatus,
+  type TransportState,
   type AttentionMode,
   type ChannelMode,
   type CotalMessage,
@@ -307,7 +308,7 @@ export class MeshAgent extends EventEmitter {
     });
     this.ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => this.ingest(m, d, meta));
     this.ep.on("error", (e: Error) => this.handleEndpointError(e));
-    this.ep.on("transport", (e: { connected: boolean; server?: string }) => {
+    this.ep.on("transport", (e: TransportState) => {
       // nats.js and clean shutdown can both confirm the same edge. A duplicate carries no state
       // change and must not wake consumers or let an old confirmation look like a new outage.
       if (this._transportConnected === e.connected) return;
