@@ -262,6 +262,10 @@ export class MeshAgent extends EventEmitter {
   private recvKeySeq = 0;
   private focusExcludedIds = new Map<string, string>();
   private focusRecallUnsafeChannels = new Set<string>();
+  /** Focus-policy decisions are serial because their authoritative registry read is asynchronous.
+   * Ordinary open/dnd/quiet/muted ingest stays synchronous; only the branch that may ack-drop under
+   * focus enters this chain. */
+  private focusIngestChain: Promise<void> = Promise.resolve();
   private stopping = false;
 
   constructor(config: AgentConfig) {
@@ -303,7 +307,9 @@ export class MeshAgent extends EventEmitter {
         meta: buildMeta(config),
       },
     });
-    this.ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => this.ingest(m, d, meta));
+    this.ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => {
+      void this.ingest(m, d, meta).catch((e) => this.handleEndpointError(e as Error));
+    });
     this.ep.on("error", (e: Error) => this.handleEndpointError(e));
     // The endpoint's (re)binds are the single source of truth for connectedness: this fires on
     // initial start, manual reconnect, AND the background self-heal — so a recovery the endpoint
@@ -419,7 +425,7 @@ export class MeshAgent extends EventEmitter {
 
   // ---- inbox ---------------------------------------------------------------
 
-  private ingest(m: CotalMessage, delivery: Delivery, meta?: MessageMeta): void {
+  private async ingest(m: CotalMessage, delivery: Delivery, meta?: MessageMeta): Promise<void> {
     // #624: an EMPTY id is never a dedup key. The id-keyed coalescing below exists to collapse the
     // copies of ONE message across the live/durable paths, and identity is what makes that safe. A
     // message that carries an empty id asserts no identity (SPEC §5 requires a unique id; the sender
@@ -492,11 +498,48 @@ export class MeshAgent extends EventEmitter {
       const snapshottedPullOnly = !item.mentionsMe && (remembered?.pullOnly ?? cm === "quiet");
       if (cm === "quiet" || snapshottedPullOnly) this.excludeFromFocus(item);
       // Current normal+focus remains the stronger hard gate unless this exact id was previously
-      // received pull-only. classificationUnsafe must not turn focus-dropped traffic into a buffer.
+      // received pull-only. A focus drop is allowed ONLY when the endpoint can prove stream recall
+      // will return this concrete channel. Replay-off channels and wildcard-only subscriptions cannot
+      // keep that promise, so retain their bodies locally as pull-only instead (#977).
       if (cm !== "quiet" && !snapshottedPullOnly && this._attention === "focus") {
-        this.protectDisposition(item.id, "drop");
-        delivery.ack();
-        if (item.mentionsMe) this.emit("mention-wake", item);
+        const decide = async (): Promise<void> => {
+          // Another copy may have completed its decision while this one waited in the chain. Re-run
+          // the id gates inside the serialized region so one logical message still has one outcome.
+          if (key !== undefined && (this.handledIds.has(key) || this.handledIdsPrev.has(key))) {
+            if (delivery.durable) delivery.ack();
+            return;
+          }
+          if (key !== undefined && (this.protectedPullOnlyIds.has(key) || this.protectedDropIds.has(key))) {
+            if (delivery.durable) delivery.ack();
+            return;
+          }
+          const pending = key === undefined ? undefined : this.inbox.find((p) => p.item.id === key);
+          if (pending) {
+            if (delivery.durable) {
+              pending.ack = delivery.ack;
+              this.emit("incoming", pending.item);
+            }
+            return;
+          }
+
+          const recallable = item.channel !== undefined && await this.ep.focusRecallable(item.channel);
+          if (recallable) {
+            this.protectDisposition(item.id, "drop");
+            delivery.ack();
+            if (item.mentionsMe) this.emit("mention-wake", item);
+            return;
+          }
+          // The buffer is the pull path for a body stream recall cannot produce. Exclude its id from
+          // future recall in case a runtime channel edit later makes the concrete channel recallable,
+          // and protect the receive-time classification across live/durable duplicates.
+          this.excludeFromFocus(item);
+          this.protectDisposition(item.id, "pull-only");
+          this.buffer(item, delivery.ack, true);
+          if (item.mentionsMe) this.emit("mention-wake", item);
+        };
+        const run = this.focusIngestChain.then(decide);
+        this.focusIngestChain = run.catch(() => {});
+        await run;
         return;
       }
       // Historical channel ambient is pull-only (#775): a join backfill is context, not instruction.
@@ -999,13 +1042,13 @@ export class MeshAgent extends EventEmitter {
     await this.ep.setAttention(mode);
   }
 
-  /** Focus recall: the channel ambient + @mentions ack-dropped since this agent entered focus,
+  /** Focus recall: the channel ambient + @mentions safely ack-dropped since this agent entered focus,
    *  read back from the chat stream on demand and **replay-gated per channel** (a `replay=off`
-   *  channel yields nothing — recall must not become a history bypass). Items are marked
+   *  channel is retained in the local pull-only buffer instead — recall must not become a history
+   *  bypass). Wildcard-only subscriptions are retained locally for the same reason. Items are marked
    *  `historical` (catch-up framing). `droppedChannels` names channels whose earliest retained
    *  message postdates the focus-watermark — older ambient may have aged out of the per-channel
-   *  window (never-silent). Empty unless in focus. Wildcard subscriptions (`team.>`) are skipped
-   *  (can't Direct-Get a wildcard). */
+   *  window (never-silent). Empty unless in focus. */
   async recallAmbient(): Promise<{ items: InboxItem[]; droppedChannels: string[] }> {
     if (this._attention !== "focus" || this.focusSince === undefined)
       return { items: [], droppedChannels: [] };

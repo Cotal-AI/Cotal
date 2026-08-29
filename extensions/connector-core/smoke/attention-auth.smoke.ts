@@ -6,8 +6,8 @@
  *   - ambient on a replay channel: ack-dropped at ingest (not buffered, no "incoming");
  *   - a channel @-mention: wakes ("mention-wake") but is NOT buffered;
  *   - a DM: buffered (kind="dm") + "incoming";
- *   - recallAmbient: replays the ack-dropped ambient + mention from the replay=on channel as
- *     historical, and gates out the replay=off channel — all via the scoped agent's grants.
+ *   - recallAmbient replays safely dropped replay=on traffic, while replay=off traffic is retained
+ *     locally as pull-only — all via the scoped agent's grants (#977).
  * Run: pnpm smoke:attention:auth
  */
 import { strict as assert } from "node:assert";
@@ -159,14 +159,15 @@ try {
   // ---- prove the replay gate: ambient on a replay=off channel ----
   await pub.multicast("quiet-1", { channel: "quiet-ch" });
   await sleep(400);
-  check("focus ack-drops ambient on replay=off channel too", agent.inboxCount() === 1); // still just the DM
+  check("focus retains replay=off ambient as pull-only", agent.inboxCount() === 2);
+  check("replay=off ambient is in the pull-only lane", agent.peekInbox("pull-only").some((i) => i.text === "quiet-1"));
 
   // ---- recallAmbient: replay-gated catch-up since entering focus ----
   const r = await agent.recallAmbient();
   const texts = r.items.map((i) => i.text);
   check("recall returns ambient + mention from the replay=on channel", texts.includes("ambient-1") && texts.includes("mention-1"));
   check("recalled items are historical", r.items.every((i) => i.historical));
-  check("recall GATES OUT the replay=off channel", !texts.includes("quiet-1"));
+  check("stream recall still gates out the replay=off channel", !texts.includes("quiet-1"));
 
   console.log(`\nAUTH ATTENTION TESTS PASSED ✅  (${pass} checks)`);
   await agent.stop();

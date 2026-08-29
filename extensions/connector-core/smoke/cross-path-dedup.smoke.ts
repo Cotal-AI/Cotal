@@ -213,6 +213,7 @@ try {
     await a2.setChannelMode("ch", "normal");
     (a2 as unknown as { _attention: string })._attention = "focus";
     a2.ep.emit("message", msg("unsafe-focus"), mkDelivery(true, { n: 0 }), meta);
+    await (a2 as unknown as { focusIngestChain: Promise<void> }).focusIngestChain;
     check("normal focus ack-drop still wins under fail-closed classification", !a2.peekInbox().some((i) => i.id === "unsafe-focus"));
 
     await a2.setChannelMode("ch", "quiet");
@@ -235,6 +236,7 @@ try {
     focused.on("error", () => {});
     (focused as unknown as { _attention: string })._attention = "focus";
     focused.ep.emit("message", msg("focus-live"), mkDelivery(false, { n: 0 }), meta);
+    await (focused as unknown as { focusIngestChain: Promise<void> }).focusIngestChain;
     (focused as unknown as { _attention: string })._attention = "open";
     const focusDurable = { n: 0 };
     focused.ep.emit("message", msg("focus-live"), mkDelivery(true, focusDurable), meta);

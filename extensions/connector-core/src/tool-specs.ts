@@ -659,9 +659,10 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           void held;
           return ok(text);
         }
-        // Focus: the live buffer holds only DMs/anycast; the channel ambient + @mentions were
-        // acked-and-dropped at ingest, so pull them back from the channel stream here (replay-gated,
-        // "since you entered focus"). Recall is read-only, so peek only affects the live buffer.
+        // Focus: the live buffer holds DMs/anycast plus channel bodies that could not be safely
+        // recalled (replay-off or wildcard-only subscriptions). Safely dropped replay-on concrete
+        // channel traffic comes back from the stream here, "since you entered focus". Recall is
+        // read-only, so peek only affects the live buffer.
         const recall = await agent.recallAmbient();
         // RECALL HAS TO ADVANCE, or windowing it starves it. Recall is re-derived from an unchanged
         // frontier on every call, so showing its first window and stopping there returned the same

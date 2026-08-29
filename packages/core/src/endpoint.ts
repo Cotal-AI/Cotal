@@ -1906,6 +1906,28 @@ export class CotalEndpoint extends EventEmitter {
     return effectiveReplay(this.channelConfigs.get(channel), this.channelDefaults);
   }
 
+  /** Can focus-mode ingest safely ack this concrete channel message and rely on stream recall?
+   *
+   * Two conditions are both required:
+   *  - this endpoint joined the concrete channel itself, rather than only a wildcard that recall
+   *    cannot Direct-Get as one channel; and
+   *  - the channel's FRESH registry policy permits replay.
+   *
+   * This is deliberately asynchronous and authoritative rather than a cache-only hint. Channel
+   * policy and chat traffic live on different streams, so a runtime replay edit may race the local
+   * watch cache. Returning false on an unreadable policy preserves the body in the connector's local
+   * pull-only buffer; guessing true would destroy the only copy on a promise recall may not keep.
+   */
+  async focusRecallable(channel: string): Promise<boolean> {
+    if (!isConcreteChannel(channel) || !this.channels.includes(channel)) return false;
+    try {
+      return (await this.joinPolicyFresh(channel)).replay;
+    } catch (e) {
+      this.emit("error", e as Error);
+      return false;
+    }
+  }
+
   /** Effective replay window for a channel (per-channel override ?? space default), or undefined
    * for the full retained window. Only meaningful when {@link channelReplay} is true. */
   channelReplayWindow(channel: string): string | undefined {
