@@ -22,7 +22,21 @@
  * It also refuses rather than guesses. An expression it does not recognise is a FAILURE, not a skip,
  * because a skip is how a reader turns into a green that means nothing.
  *
+ * THREE HOLES, NAMED because an unnamed limit gets rediscovered as a surprise. None of them can
+ * produce a pass while a workflow is broken, which is the property that matters, and all three fail
+ * in the safe direction:
+ *
+ *   - JOB-LEVEL `concurrency:` is not read at all. Only the top-level block is. A job that declares
+ *     its own group is outside this guard entirely.
+ *   - `on:` detection is indentation-driven, so a workflow writing its triggers in a shape this
+ *     reader does not follow is misclassified. That moves the population counts in section A rather
+ *     than passing quietly, so the failure is loud and lands on the count cell.
+ *   - The PR half of the rule is unasserted. Section B requires `max` on push and says nothing about
+ *     whether a pull_request supersedes, so a workflow could stop superseding without reddening
+ *     anything here. That is a scope limit of this test, not a defect in the workflows.
+ *
  * Run: pnpm smoke:workflow-concurrency
+ * Prove: pnpm mutation-proof --config bin/smoke/mutations/workflow-concurrency.json
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
