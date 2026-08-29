@@ -1037,6 +1037,11 @@ export class CotalEndpoint extends EventEmitter {
     // nothing follows it to correct the record. It belongs here rather than in a consumer because
     // every listener reads the same edge; MeshAgent carries its own `stopping` guard and so was
     // never the one exposed, which is the point.
+    //
+    // Measured for the start() caller only, by the broker suite's mid-bind cell. doRebuild is
+    // covered by this being one shared unbranched statement both callers await. If this tail ever
+    // becomes caller-aware, or the emit splits per path, that reasoning expires and the rebuild
+    // race needs a cell of its own.
     if (this.stopped) return;
     this.emit("connection", { connected: true });
   }
