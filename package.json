@@ -450,6 +450,7 @@
     "smoke:down-manifest-usermode:live": "tsx implementations/auth/smoke/down-manifest-usermode.smoke.ts",
     "smoke:secret-store": "tsx packages/workspace/smoke/secret-store.smoke.ts",
     "smoke:space-auth-store": "tsx packages/workspace/smoke/space-auth-store.smoke.ts",
+    "smoke:space-segmentation": "tsx packages/workspace/smoke/space-segmentation.smoke.ts",
     "smoke:delivery-store-boundary": "tsx implementations/delivery/smoke/delivery-store-boundary.smoke.ts",
     "smoke:sys-injection-evict": "tsx implementations/delivery/smoke/sys-injection-evict.smoke.ts",
     "smoke:delivery-teardown": "tsx implementations/cli/smoke/delivery-teardown.smoke.ts",

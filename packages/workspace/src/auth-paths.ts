@@ -77,7 +77,16 @@ function isWellFormedUnicode(s: string): boolean {
  *  dir (`broker.json`, `account.<hex>.json`, `server.conf`, `creds/`): none of those start with
  *  `space.`, and the hex body cannot smuggle one in. Consumed by the state dir AND the auth
  *  secret-store key builders; two independently-guarded encoders were the defect generator (one
- *  gains a rule the other doesn't), so keep exactly one. */
+ *  gains a rule the other doesn't), so keep exactly one.
+ *
+ *  The non-collision claim now spans a WIDER namespace than the auth dir. Segmenting the root-scoped
+ *  P7 material puts a `space.<hex>` directly under `.cotal/`, so the guarantee must hold against the
+ *  children of `.cotal/` too (`agents`, `auth`, `nats`, `manifests`, the `*.creds`/`*.pid`/`*.log`
+ *  files, and `auth-service.<spaceKey>.pid`, which is the nearest miss). It does, for the same
+ *  reason: no `.cotal` child begins with `space.`. That held by ACCIDENT until something asserted
+ *  it — `RESERVED_COTAL_CHILDREN` in `space-segmentation.ts` carries the list and
+ *  `smoke:space-segmentation` is the guard, so a future `.cotal` child named `space.*` fails a suite
+ *  instead of silently aliasing a tenant's segment. */
 export function spaceSegment(space: string): string {
   return `space.${spaceKey(space)}`;
 }

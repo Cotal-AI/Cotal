@@ -1,7 +1,8 @@
 # Segmenting root-scoped material per space (P7, then P1)
 
-APPROVED as a plan; nothing here is implemented. The three questions the first draft left open are
-settled in §7. The next action is the probe of §6, and implementation waits on its result.
+APPROVED as a plan. The questions the first draft left open are settled in §7. The probe of §6 has
+RUN and its finding is folded in below; series P7 commit 1 (the shared foundation) is implemented,
+and nothing else here is.
 
 P7 and P1 in [per-space-lifecycle](./per-space-lifecycle.md) §7 are one defect in two places: material
 that is per-tenant in MEANING sits at a root-scoped path or store key, so a root holds one tenant's
@@ -10,7 +11,7 @@ questions, and answering them twice is how the two halves drift. They ship apart
 material behaves differently at runtime.
 
 The shared design is §2 and §3. The separate series are §4. What each segmentation must carry with
-it is §5. §6 is a finding that is NOT yet executed and is a probe before it is a design input.
+it is §5. §6 is the probe, now executed, and its finding is a design input to the refusal wording.
 
 ## 1. The two inventories
 
@@ -87,10 +88,13 @@ retroactively. A backup of a pre-segmentation multi-tenant root, restored after 
 the population at any later date and never passes through `space add` at all. With rule 4 the
 restore path lands in the same refusal at first touch, for free and with no restore-specific code.
 
-The remedy rule 4 names is deliberately left unwritten here: it must not point an operator at a
-repair that itself refuses on a multi-tenant root, which is precisely what the §6 probe is
-predicted to show about `up --rotate-sys`. §7.3 sequences the probe before the foundation commit for
-this reason, so the wording is chosen against a settled fact rather than a prediction.
+The remedy rule 4 names was left unwritten in the draft because it must not point an operator at a
+repair that itself refuses on a multi-tenant root. The §6 probe has now settled that, and the answer
+is that on such a root NO repair command exists to name. So rule 4's refusal states a truth instead
+of issuing an instruction: it names the tenant count, says the root-scoped copy's owner is not
+recorded anywhere, says in as many words that there is no command to offer because
+`up --rotate-sys` is broker-wide and refuses on this root too, and stops. An operator who reads it
+learns the real state rather than being sent to a verb that will refuse them.
 
 ### 2.1 Half-segmented roots, and the two guards that cover them
 
@@ -212,19 +216,24 @@ idiom in the P1 series.
 
 **Series P7**
 
-0. The probe of §6, BEFORE the series starts (§7.3). Its outcome fixes the remedy wording that
-   rules 4 and §2.1 both have to name, so it is a precondition of commit 1 rather than a step in it.
+0. The probe of §6, BEFORE the series starts (§7.3). DONE — its outcome fixed the remedy wording that
+   rule 4 and §2.1 both name, so it was a precondition of commit 1 rather than a step in it.
 1. Shared foundation: extend `spaceSegment`'s collision guarantee to the `.cotal/` children with a
    guard test, add the choke-point migration helper generalized from `migrateLegacyUserAuthState`
    carrying rules 1 to 4 of §2, and add the `space add` refusal from §2.1. No material moves in this
    commit.
-2. Segment the five P7 kinds behind their resolvers, with the removal-list changes of §5 in the SAME
+2. `repairAdvice` honesty (§7.5). `sys-creds.ts:43` prints a repair its own guard refuses on exactly
+   the roots that need it, so it learns the tenant count and stops naming `cotal up --rotate-sys`
+   where that verb cannot run. The §6 probe is PROMOTED to a gated hermetic suite in this same
+   commit, reworked to assert the FIXED advice and the advice↔guard consistency rather than the
+   contradiction it was written to capture.
+3. Segment the five P7 kinds behind their resolvers, with the removal-list changes of §5 in the SAME
    commit. `provisionMembershipCreds` (`up.ts:2903`) and `healMembershipDataCreds` (`up.ts:2881`)
    both write through the resolvers, and `REMINTABLE_DAEMON_CREDS` plus the `clean.ts:226` list take
    the `(space) => key` shape of §3.1.
-3. The `space rm` step 7 reap of the now-segmented `$SYS` creds, which §2.2 step 7 of the lifecycle
+4. The `space rm` step 7 reap of the now-segmented `$SYS` creds, which §2.2 step 7 of the lifecycle
    doc already promises "once those are keyed per space (P7)".
-4. The lifecycle doc's §7 P7 entry gains `delivery.creds`, per §3.2.
+5. The lifecycle doc's §7 P7 entry gains `delivery.creds`, per §3.2.
 
 **Series P1**
 
@@ -260,44 +269,70 @@ The affected sweepers:
   becomes reachable at all.
 - `deleteSpaceAccountAuth` (P4) is adjacent but not blocked by either series and is not pulled in.
 
-## 6. Probe first: does a multi-tenant root end up with NO observer
+## 6. Probe: a multi-tenant root ends up with NO observer and NO reachable repair
 
-**This is a hypothesis, read from the code and NOT executed. It is not a design input until a probe
-settles it, and nothing in §2 to §5 depends on it.**
+**EXECUTED and CONFIRMED**, hermetically, 19 assertions with 5 positive controls. The prediction held
+and the executed form is stronger than the prediction: the product does not merely lack a repair, it
+PRINTS one that its own guard refuses.
 
-The reasoning that produced it: `provisionMembershipCreds` mints the `$SYS` pair only in the
+The delivery daemon's workstation repair advice (`sys-creds.ts:47`) is
+
+> re-mint it with `cotal down` then `cotal up --rotate-sys`
+
+and the guard those two verbs run (`system-rotation.ts:96`) answers, on a two-tenant root:
+
+> a system-account rotation (`cotal up --rotate-sys`) is broker-wide, and this broker hosts 2 spaces
+> (alpha, beta) - it would apply to every one of them, and naming a single space cannot scope it; a
+> per-space form does not exist yet
+
+Both advised verbs refuse, and the refusal names the missing remedy, which is this series. The probe
+also established that the `$SYS` pair has exactly TWO writers in the whole tree —
+`provisionMembershipCreds` (fresh-only, one call site `up.ts:2692`) and `rotateSystemCreds`
+(`system-rotation.ts:126-127`, guarded) — that the daemon REPORTS the incomplete bundle rather than
+degrading silently (`loadSysPair` names both missing keys; `evict-exec.ts:101-108` throws), and that
+`REMINTABLE_DAEMON_CREDS` excludes the pair by design, so the standing renewal owner can never
+repair it either.
+
+One leg was proved structurally rather than dynamically and the substitution is recorded rather than
+glossed: "no `up` of either tenant mints an observer" could not be driven, because both membership
+functions are module-private and the minting path needs a live broker. The exhaustive
+writer-inventory above is the structural equivalent, and it is asserted from source inside the probe
+so drift breaks the probe rather than silently invalidating the claim.
+
+This is a second, distinct P7 failure mode, and it is the intersection of P7 and P8 rather than
+either alone. It stays out of the lifecycle doc, whose §5 records the inheritance mode: the
+advice-contradiction half is being filed upstream separately as a reachable operator-facing bug on
+main today.
+
+The reasoning that produced the hypothesis: `provisionMembershipCreds` mints the `$SYS` pair only in the
 fresh-space branch (`up.ts:2903`, called once at `up.ts:2692`), because the `$SYS` signing seed
 exists only there. `healMembershipDataCreds` (`up.ts:2881`) repairs the DATA half only, by
 construction and by its own comment. So a root whose first tenant was provisioned before the
 membership feature, or whose `$SYS` pair was swept by `clean`, has no minting path: the first tenant
 is not fresh so the provisioner never runs, the second tenant is refused by `up.ts:2233` before it
 could be fresh, and the documented repair `up --rotate-sys` is `assertSingleSpaceBroker`-guarded
-(`system-rotation.ts:96`) and refuses on a multi-tenant root, which is P8. The predicted state is BOTH tenants with no observer and
-no reachable repair.
+(`system-rotation.ts:96`) and refuses on a multi-tenant root, which is P8. The predicted state was
+BOTH tenants with no observer and no reachable repair.
 
-If it holds it is a second, distinct P7 failure mode, and it is the intersection of P7 and P8 rather
-than either alone. It stays out of the lifecycle doc until executed, which is why §5 of that doc
-records only the inheritance mode.
+It ran BEFORE series P7 started, not before its commit 2 (§7.3), because its outcome was an input to
+the foundation commit rather than a check on it: §2 rule 4 and §2.1 both have to name a remedy to an
+operator on a multi-tenant root, and `up --rotate-sys` is not that remedy, because it refuses on
+exactly the roots being addressed. Writing the refusal text first and probing after would have meant
+shipping advice that cannot succeed, which is the same defect `healMembershipDataCreds`'s own comment
+records (`mintMembershipObserverCreds` named a rotation as its fix, and the rotation never called the
+provisioner). That is why rule 4's refusal states a truth and offers no command.
 
-The probe runs BEFORE series P7 starts, not before its commit 2 (§7.3). The reason is that its
-outcome is an input to the foundation commit rather than a check on it: §2 rule 4 and §2.1 both have
-to name a remedy to an operator on a multi-tenant root, and if the prediction below holds then
-`up --rotate-sys` is not that remedy, because it refuses on exactly the roots being addressed.
-Writing the refusal text first and probing after would mean shipping advice that cannot succeed,
-which is the same defect `healMembershipDataCreds`'s own comment records
-(`mintMembershipObserverCreds` named a rotation as its fix, and the rotation never called the
-provisioner).
-
-The probe: on a two-tenant root built the way `space add` builds
-one, with the `$SYS` pair absent from the start, assert that no `up` of either tenant mints an
-observer, that the delivery daemon reports the incomplete bundle rather than degrading silently, and
-that `up --rotate-sys` refuses with the single-space guard. A positive control in the same run mints
-an observer on a fresh single-tenant root, so a probe that reads all-negative because the harness
-never provisioned anything is distinguishable from the finding.
+The form: a two-tenant root built the way `space add` would build one, with the `$SYS` pair absent
+from the start, each of five legs carrying its own positive control so a leg that reads negative
+because the harness never provisioned anything is distinguishable from the finding. The probe lives
+at `implementations/delivery/.probe-p7/` and is promoted to a gated hermetic suite in commit 2 of the
+series, reworked to assert the FIXED advice — as written it asserts the contradiction and would go
+red under the fix.
 
 ## 7. Decisions taken
 
-All three were open in the first draft and are now settled by the orchestrator.
+The first three were open in the first draft; 4 and 5 were opened by the §6 probe's result. All are
+settled by the orchestrator.
 
 1. **`delivery.creds` rides P7** (§3.2). One list, one grammar; the sibling-prerequisite option was
    rejected because it splits `REMINTABLE_DAEMON_CREDS` across two grammars.
@@ -309,7 +344,15 @@ All three were open in the first draft and are now settled by the orchestrator.
    and without it the resolver would launder an ambient inheritance squat into false named
    attribution, which is worse and irreversible.
 3. **The §6 probe runs before series P7 starts**, not before commit 2, because the remedy wording in
-   rule 4 and §2.1 depends on its outcome.
+   rule 4 and §2.1 depends on its outcome. DONE; the outcome is recorded in §6.
+4. **Rule 4's refusal states a truth, not a command.** The probe settled that on a multi-tenant root
+   there is no repair verb to name, so the refusal says that segmentation must land before this
+   material can be reminted here rather than sending an operator to a verb that refuses. Naming an
+   unactionable command is the very defect §6 found in the product; the refusal must not repeat it.
+5. **`repairAdvice` honesty is its OWN commit**, series P7 commit 2, ahead of any material move. The
+   contradiction §6 found is reachable on main today and is independent of segmentation, so it is not
+   held hostage to the kinds moving. The probe is promoted to a gated suite in that same commit, so
+   the fix and the assertion that it holds land together and CI keeps them consistent.
 
-Nothing in this plan is now open. The next action is the §6 probe; implementation waits on its
-result and on the orchestrator's GO.
+Nothing in this plan is open. Series P7 commit 1 (the shared foundation) is implemented; nothing
+else here is.
