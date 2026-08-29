@@ -231,6 +231,8 @@ export class MeshAgent extends EventEmitter {
   private protectedDropIds = new Set<string>();
   private dropUnsafe = false;
   private _connected = false;
+  /** Raw NATS transport liveness, separate from `_connected` (the full Cotal bind/readiness). */
+  private _transportConnected = false;
   /** Latest connection failure, retained until the endpoint binds so a bounded readiness gate can
    * explain why an otherwise healthy host never joined the mesh. */
   private lastConnectionError?: string;
@@ -305,6 +307,13 @@ export class MeshAgent extends EventEmitter {
     });
     this.ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => this.ingest(m, d, meta));
     this.ep.on("error", (e: Error) => this.handleEndpointError(e));
+    this.ep.on("transport", (e: { connected: boolean; server?: string }) => {
+      // nats.js and clean shutdown can both confirm the same edge. A duplicate carries no state
+      // change and must not wake consumers or let an old confirmation look like a new outage.
+      if (this._transportConnected === e.connected) return;
+      this._transportConnected = e.connected;
+      this.emit("transport", e);
+    });
     // The endpoint's (re)binds are the single source of truth for connectedness: this fires on
     // initial start, manual reconnect, AND the background self-heal — so a recovery the endpoint
     // did on its own can't leave us thinking we're offline (which would skip stop() → leak).
@@ -324,6 +333,11 @@ export class MeshAgent extends EventEmitter {
 
   get connected(): boolean {
     return this._connected;
+  }
+
+  /** Whether this session's current NATS transport is live, independent of full endpoint readiness. */
+  get transportConnected(): boolean {
+    return this._transportConnected;
   }
 
   /** The latest safe diagnostic for a connection that has not become live yet. */
@@ -390,6 +404,14 @@ export class MeshAgent extends EventEmitter {
 
   async stop(): Promise<void> {
     this.stopping = true;
+    // stop() is a local terminal fact. Do not wait for an endpoint event that intentionally ignores
+    // its own stopped close, or leave a cleanly stopped session reporting either state as live.
+    this._connected = false;
+    if (this._transportConnected) {
+      this._transportConnected = false;
+      this.emit("transport", { connected: false });
+    }
+    this.lastConnectionError = undefined;
     // Unconditional: a background self-heal can flip _connected without us, so a `_connected`
     // guard could skip the stop and leak the live connection/heartbeat/supervisor. ep.stop() is
     // idempotent (early-returns once stopped), so calling it when already-down is a noop.
@@ -1478,7 +1500,10 @@ export class MeshAgent extends EventEmitter {
    * deduplicating; otherwise every `_71`, `_72`, ... would look like a new fault. */
   private handleEndpointError(error: Error): void {
     const now = Date.now();
-    this.lastConnectionError = error.message;
+    // connectionIssue is the bounded readiness diagnostic documented above: retain failures only
+    // while the endpoint has not bound. Post-bind consumer/permission faults are still logged, but
+    // presenting one as the current connection failure after readiness succeeded is stale and false.
+    if (!this._connected) this.lastConnectionError = error.message;
     const fingerprint = error.message.replace(/oc_[A-Za-z0-9]+_\d+/g, "oc_*");
     const prior = this.endpointErrorLog.get(fingerprint);
     if (prior && now - prior.lastLoggedAt < ENDPOINT_ERROR_LOG_WINDOW_MS) {

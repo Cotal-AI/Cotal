@@ -1,0 +1,246 @@
+/**
+ * TRANSPORT LIVENESS IS NOT ENDPOINT READINESS.
+ *
+ * This suite uses the real CotalEndpoint status watcher and the real MeshAgent listeners, with a
+ * controlled NATS status iterator. No broker is opened. The iterator is the same public contract
+ * nats.js exposes through `nc.status()`, while the controlled epochs make the late-old-connection
+ * race deterministic rather than timing-dependent.
+ *
+ * Reproduction baseline on main 87bee50d, before the fix:
+ *   - transient `disconnect` leaves MeshAgent.connected true and exposes no transport state;
+ *   - a clean MeshAgent.stop() leaves connected true;
+ *   - an endpoint error after a successful bind becomes connectionIssue even though that field's
+ *     contract is pre-bind readiness diagnosis;
+ *   - there is no epoch-safe transport signal, so old-epoch lifecycle events cannot be rejected.
+ *
+ * The existing `connection` event deliberately remains the full-bind readiness signal. The cells
+ * below require it not to flap when raw NATS transport drops and resumes.
+ *
+ * MUTATION LEDGER, predicted before the first graded run. Every mutation walks every cell below.
+ *
+ * M1 removes the endpoint's old-epoch guard.
+ *   IN  late OLD disconnect/close ignored: those events now flip the replacement false.
+ *   OUT initial true: no replacement exists yet. OUT first disconnect and duplicate false: epoch 1
+ *       is current. OUT ignored telemetry, reconnect, current disconnect, current close, stop, and
+ *       both issue cells: none depends on rejecting a replaced connection's iterator.
+ *
+ * M2 drops the NATS `disconnect` edge.
+ *   IN  first disconnect makes transport false; current epoch owns false fails for the same reason.
+ *   OUT duplicate false idempotence: no edge also leaves the event count unchanged. OUT initial true,
+ *       ignored telemetry, reconnect true, stale-old rejection, terminal close, stop, and both issue
+ *       cells: their sources are unchanged. The terminal-close cell gets its false from close itself.
+ *
+ * M3 drops the NATS `reconnect` edge.
+ *   IN  reconnect restores transport true.
+ *   OUT initial true, first/duplicate disconnect, ignored telemetry, stale OLD rejection, current
+ *       disconnect and close, stop, and both issue cells. Arming epoch 2 explicitly restores true,
+ *       so the stale-old cell does not depend on the earlier reconnect edge.
+ *
+ * M4 removes the explicit initial transport=true.
+ *   IN  initial true.
+ *   OUT every other cell. The later explicit reconnect restores epoch 1, epoch 2 is armed while the
+ *       state is already true, and the remaining edges and issue/stop contracts do not require the
+ *       initial publication.
+ *
+ * M5 removes MeshAgent's duplicate-state guard.
+ *   IN  duplicate false idempotence. IN current terminal close idempotence. OUT every value cell:
+ *       duplicate delivery changes event count, not the final boolean. OUT issue cells.
+ *
+ * M6 removes MeshAgent.stop's readiness clear.
+ *   IN  stop clears both states. OUT every preceding transport cell and both issue cells.
+ *
+ * M7 restores unconditional connectionIssue writes.
+ *   IN  post-bind error is not presented as connectionIssue. OUT pre-bind retention (both versions
+ *       retain it) and every transport/stop cell.
+ *
+ * Run: pnpm smoke:transport-liveness
+ */
+import type { Status } from "@nats-io/nats-core";
+import { MeshAgent } from "../src/agent.js";
+import type { AgentConfig } from "../src/config.js";
+
+const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+let pass = 0;
+let fail = 0;
+const check = (name: string, cond: boolean, extra?: unknown): void => {
+  if (cond) { pass++; console.log(`  \u2713 ${name}`); }
+  else { fail++; console.log(`  \u2717 FAIL: ${name}`, extra ?? ""); }
+};
+
+class StatusQueue implements AsyncIterable<Status> {
+  private pending: Array<(value: IteratorResult<Status>) => void> = [];
+  private values: Status[] = [];
+  private done = false;
+
+  push(value: Status): void {
+    const next = this.pending.shift();
+    if (next) next({ value, done: false });
+    else this.values.push(value);
+  }
+
+  close(): void {
+    this.done = true;
+    for (const next of this.pending.splice(0)) next({ value: undefined, done: true });
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<Status> {
+    return {
+      next: () => {
+        const value = this.values.shift();
+        if (value) return Promise.resolve({ value, done: false });
+        if (this.done) return Promise.resolve({ value: undefined, done: true });
+        return new Promise<IteratorResult<Status>>((resolve) => this.pending.push(resolve));
+      },
+    };
+  }
+}
+
+class FakeNc {
+  readonly queue = new StatusQueue();
+  closedFlag = false;
+  constructor(readonly server: string) {}
+  status(): AsyncIterable<Status> { return this.queue; }
+  getServer(): string { return this.server; }
+  isClosed(): boolean { return this.closedFlag; }
+  async drain(): Promise<void> { this.closedFlag = true; this.queue.push({ type: "close" }); this.queue.close(); }
+  async closed(): Promise<void> { return new Promise(() => {}); }
+}
+
+const cfg: AgentConfig = {
+  space: "transport-liveness",
+  name: "transport-agent",
+  servers: "nats://127.0.0.1:1",
+  kind: "agent",
+  tls: false,
+  subscribe: [],
+  allowSubscribe: [],
+  allowPublish: [],
+};
+
+type EndpointHarness = {
+  nc?: FakeNc;
+  watchStatus(): void;
+};
+type AgentHarness = {
+  readonly transportConnected: boolean;
+};
+
+function arm(agent: MeshAgent, nc: FakeNc): void {
+  const ep = agent.ep as unknown as EndpointHarness;
+  ep.nc = nc;
+  ep.watchStatus();
+}
+
+console.log("transport lifecycle is separate from full-bind readiness:");
+const agent = new MeshAgent(cfg);
+const endpointEvents: Array<{ connected: boolean; server?: string }> = [];
+const agentEvents: Array<{ connected: boolean; server?: string }> = [];
+agent.ep.on("transport", (event: { connected: boolean; server?: string }) => endpointEvents.push(event));
+agent.on("transport", (event: { connected: boolean; server?: string }) => agentEvents.push(event));
+agent.ep.emit("connection", { connected: true });
+const epoch1 = new FakeNc("nats://epoch-1");
+arm(agent, epoch1);
+await tick();
+check(
+  "arming status publishes an explicit initial transport=true with the real server",
+  (agent as unknown as AgentHarness).transportConnected === true &&
+    endpointEvents[0]?.connected === true && endpointEvents[0]?.server === "nats://epoch-1",
+  { transport: (agent as unknown as AgentHarness).transportConnected, endpointEvents },
+);
+
+epoch1.queue.push({ type: "disconnect", server: "nats://epoch-1" });
+await tick();
+check(
+  "a NATS disconnect makes transport false WITHOUT flapping full-bind readiness",
+  (agent as unknown as AgentHarness).transportConnected === false && agent.connected === true,
+  { transport: (agent as unknown as AgentHarness).transportConnected, ready: agent.connected },
+);
+const afterFirstFalse = agentEvents.length;
+epoch1.queue.push({ type: "disconnect", server: "nats://epoch-1" });
+await tick();
+check(
+  "a duplicate transport=false is idempotent at MeshAgent",
+  agentEvents.length === afterFirstFalse,
+  { agentEvents },
+);
+epoch1.queue.push({ type: "reconnecting" });
+epoch1.queue.push({ type: "staleConnection" });
+epoch1.queue.push({ type: "forceReconnect" });
+epoch1.queue.push({ type: "update", added: ["nats://other"] });
+await tick();
+check(
+  "reconnecting and precursor or informational statuses emit no transport edge",
+  agentEvents.length === afterFirstFalse,
+  { agentEvents },
+);
+epoch1.queue.push({ type: "reconnect", server: "nats://epoch-1" });
+await tick();
+check(
+  "the distinguishable NATS reconnect edge restores transport without another readiness event",
+  (agent as unknown as AgentHarness).transportConnected === true && agent.connected === true &&
+    agentEvents.at(-1)?.connected === true,
+  { transport: (agent as unknown as AgentHarness).transportConnected, ready: agent.connected, agentEvents },
+);
+
+console.log("old connection epochs cannot overwrite a healthy replacement:");
+const epoch2 = new FakeNc("nats://epoch-2");
+arm(agent, epoch2);
+await tick();
+const beforeStale = agentEvents.length;
+epoch1.queue.push({ type: "disconnect", server: "nats://epoch-1" });
+epoch1.queue.push({ type: "close" });
+await tick();
+check(
+  "late disconnect and close from the OLD epoch are ignored after the replacement is current",
+  (agent as unknown as AgentHarness).transportConnected === true && agentEvents.length === beforeStale,
+  { transport: (agent as unknown as AgentHarness).transportConnected, agentEvents },
+);
+epoch2.queue.push({ type: "disconnect", server: "nats://epoch-2" });
+await tick();
+check(
+  "the CURRENT epoch still owns transport=false",
+  (agent as unknown as AgentHarness).transportConnected === false && agentEvents.at(-1)?.server === "nats://epoch-2",
+  { transport: (agent as unknown as AgentHarness).transportConnected, agentEvents },
+);
+const beforeClose = agentEvents.length;
+epoch2.queue.push({ type: "close" });
+await tick();
+check(
+  "current terminal close confirms false with server omitted and is idempotent at MeshAgent",
+  endpointEvents.at(-1)?.connected === false && !("server" in endpointEvents.at(-1)!) &&
+    agentEvents.length === beforeClose,
+  { endpointEvents, agentEvents },
+);
+
+console.log("shutdown and readiness diagnostics are truthful:");
+const stopping = new MeshAgent({ ...cfg, name: "stopping-agent" });
+stopping.ep.emit("connection", { connected: true });
+arm(stopping, new FakeNc("nats://stop"));
+await tick();
+await stopping.stop();
+check(
+  "MeshAgent.stop clears both readiness and transport locally",
+  stopping.connected === false && (stopping as unknown as AgentHarness).transportConnected === false,
+  { ready: stopping.connected, transport: (stopping as unknown as AgentHarness).transportConnected },
+);
+
+const issue = new MeshAgent({ ...cfg, name: "issue-agent" });
+issue.ep.emit("error", new Error("pre-bind refused"));
+check("a pre-bind endpoint error is retained for readiness diagnosis", issue.connectionIssue === "pre-bind refused", issue.connectionIssue);
+issue.ep.emit("connection", { connected: true });
+issue.ep.emit("error", new Error("post-bind consumer reset"));
+check(
+  "a post-bind endpoint error is logged but is NOT presented as the pre-bind connection issue",
+  issue.connectionIssue === undefined,
+  issue.connectionIssue,
+);
+await issue.stop();
+
+const EXPECTED_CELLS = 11;
+const ran = pass + fail;
+console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
+console.log(`SUITE COMPLETE: ${ran} cells`);
+if (ran !== EXPECTED_CELLS) {
+  console.log(`SUITE INCOMPLETE: ran ${ran} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
+  process.exitCode = 1;
+} else process.exitCode = fail === 0 ? 0 : 1;

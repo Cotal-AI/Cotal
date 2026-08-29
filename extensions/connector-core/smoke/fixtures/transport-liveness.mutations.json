@@ -1,0 +1,78 @@
+{
+  "suite": "extensions/connector-core/smoke/transport-liveness.smoke.ts",
+  "guard": "raw NATS transport liveness is epoch-safe and separate from full endpoint readiness",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:transport-liveness",
+  "progressPattern": "  ✓ ",
+  "completionMarker": "SUITE COMPLETE: 11 cells",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/fixtures/transport-liveness.mutations.json",
+  "why": [
+    "The deterministic status queues grade the exact nats.js lifecycle contract without timing a broker outage. The companion broker smoke separately proves real public disconnect and reconnect events reach these paths.",
+    "Core is rebuilt before each run and after every restore because connector-core resolves @cotal-ai/core through dist. Connector-core's agent source is imported relatively by the suite.",
+    "The full predicted kill sets, including every exclusion, are recorded in the suite header before this config is run."
+  ],
+  "mutations": [
+    {
+      "name": "old status iterators may overwrite the current connection epoch",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        if (this.nc !== nc) continue;",
+      "replace": "        if (false) continue;",
+      "expectRed": "late disconnect and close from the OLD epoch are ignored after the replacement is current",
+      "cell": "late disconnect and close from the OLD epoch are ignored after the replacement is current",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "disconnect status no longer produces a transport edge",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        if (s.type === \"disconnect\") {",
+      "replace": "        if (false && s.type === \"disconnect\") {",
+      "expectRed": "a NATS disconnect makes transport false WITHOUT flapping full-bind readiness",
+      "cell": "a NATS disconnect makes transport false WITHOUT flapping full-bind readiness",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "reconnect status no longer restores transport",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        if (s.type === \"reconnect\") {",
+      "replace": "        if (false && s.type === \"reconnect\") {",
+      "expectRed": "the distinguishable NATS reconnect edge restores transport without another readiness event",
+      "cell": "the distinguishable NATS reconnect edge restores transport without another readiness event",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "status watcher does not publish its explicit initial live state",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    this.emit(\"transport\", { connected: true, server: nc.getServer() } satisfies TransportState);",
+      "replace": "    void nc;",
+      "expectRed": "arming status publishes an explicit initial transport=true with the real server",
+      "cell": "arming status publishes an explicit initial transport=true with the real server",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "MeshAgent forwards duplicate transport states",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      if (this._transportConnected === e.connected) return;",
+      "replace": "      if (false) return;",
+      "expectRed": "a duplicate transport=false is idempotent at MeshAgent",
+      "cell": "a duplicate transport=false is idempotent at MeshAgent",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "clean stop leaves full-bind readiness true",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    this._connected = false;\n    if (this._transportConnected) {",
+      "replace": "    if (this._transportConnected) {",
+      "expectRed": "MeshAgent.stop clears both readiness and transport locally",
+      "cell": "MeshAgent.stop clears both readiness and transport locally",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "post-bind endpoint errors become stale connection issues again",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (!this._connected) this.lastConnectionError = error.message;",
+      "replace": "    this.lastConnectionError = error.message;",
+      "expectRed": "a post-bind endpoint error is logged but is NOT presented as the pre-bind connection issue",
+      "cell": "a post-bind endpoint error is logged but is NOT presented as the pre-bind connection issue",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    }
+  ]
+}

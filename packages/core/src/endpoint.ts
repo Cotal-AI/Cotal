@@ -239,12 +239,22 @@ export interface ChannelMember {
   live: boolean;
 }
 
+/** Raw NATS transport liveness for the endpoint's CURRENT connection epoch. This is deliberately
+ *  separate from the `connection` event, which means the full Cotal bind is ready. */
+export interface TransportState {
+  connected: boolean;
+  /** The server nats.js named for this edge. Omitted when the runtime supplied none. */
+  server?: string;
+}
+
 /**
  * Events: "message" (CotalMessage), "presence" (PresenceEvent), "roster" (Presence[]), "error" (Error),
  * "connection" ({ connected: boolean }) — true on every successful (re)bind (initial start, manual
  * reconnect, AND background self-heal), false the moment the connection drops (rebuild null window /
  * terminal close). Lets an in-process agent track connectedness off the endpoint's own (re)binds
- * instead of an imperative flag the self-heal path can't reach.
+ * instead of an imperative flag the self-heal path can't reach; "transport" ({ connected, server? })
+ * is the lower-level NATS socket edge, true before the full bind finishes and false during an internal
+ * nats.js reconnect without changing `connection` readiness.
  *
  * Callers MUST attach an "error" listener before `start()`: async faults (incl. NATS
  * permission denials, surfaced via `watchStatus`) are emitted as "error", and Node throws
@@ -2559,9 +2569,25 @@ export class CotalEndpoint extends EventEmitter {
    * denial is never mistaken for absence (which already has a benign cause: MCP reconnect).
    */
   private watchStatus(): void {
-    if (!this.nc) return;
+    const nc = this.nc;
+    if (!nc) return;
     void (async () => {
-      for await (const s of this.nc!.status()) {
+      for await (const s of nc.status()) {
+        // A rebuild can replace `this.nc` before the old iterator finishes. Late disconnect/close
+        // from that old epoch says nothing about the replacement and must not flip its liveness.
+        if (this.nc !== nc) continue;
+        if (s.type === "disconnect") {
+          this.emit("transport", { connected: false, server: s.server } satisfies TransportState);
+          continue;
+        }
+        if (s.type === "reconnect") {
+          this.emit("transport", { connected: true, server: s.server } satisfies TransportState);
+          continue;
+        }
+        if (s.type === "close") {
+          this.emit("transport", { connected: false } satisfies TransportState);
+          continue;
+        }
         if (s.type !== "error") continue;
         // Suppress the EXPECTED permission violation from a manager-free join we're confirming: an
         // out-of-ACL `nc.subscribe` is refused async on its chat subject, which joinChannel catches
@@ -2571,8 +2597,12 @@ export class CotalEndpoint extends EventEmitter {
         this.emit("error", describeStatusError(s.error));
       }
     })().catch((e) => {
-      if (!this.stopped) this.emit("error", e as Error);
+      if (!this.stopped && this.nc === nc) this.emit("error", e as Error);
     });
+    // The transport is already live when connect() returns, while the Cotal bind below is still in
+    // progress. Seed this contract explicitly rather than requiring consumers to combine it with the
+    // later, differently-scoped `connection:true` event.
+    this.emit("transport", { connected: true, server: nc.getServer() } satisfies TransportState);
   }
 
   /** The error message for a guard that finds the endpoint unbound: "reconnecting" during a
