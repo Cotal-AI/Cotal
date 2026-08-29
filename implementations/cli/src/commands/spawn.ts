@@ -227,6 +227,37 @@ export function spawnRequiredExtensions(_args: ParsedArgs): readonly ExtensionRe
 /** Comma-list flag → string[] (shared by both spawn modes). */
 const splitFlag = (v?: string) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : undefined);
 
+/** Build the exact detached request object that is validated before it reaches the wire. */
+export function detachedSpawnArgs(
+  values: FlagValues<typeof spawnFlags>,
+  ref: string,
+  managerConfigRef: string | undefined,
+  events: boolean | undefined,
+  launchOptions: Record<string, string> | undefined,
+  callerDefault: string | undefined = defaultAgentOverride(),
+): Record<string, unknown> {
+  return {
+    name: ref,
+    identity: values.name,
+    role: values.role,
+    // Keep an explicit flag and the caller's default separate so a persona pin can outrank the
+    // default. Omit the new field when it cannot affect resolution, preserving older closed schemas.
+    ...(values.agent !== undefined ? { agent: values.agent } : callerDefault !== undefined ? { defaultAgent: callerDefault } : {}),
+    config: managerConfigRef,
+    model: values.model,
+    variant: values.variant,
+    launchOptions,
+    cwd: values.cwd,
+    resume: values.resume,
+    prompt: values.prompt,
+    shareTools: values["share-tools"],
+    subscribe: splitFlag(values.subscribe),
+    allowSubscribe: splitFlag(values["allow-subscribe"]),
+    allowPublish: splitFlag(values["allow-publish"]),
+    events,
+  };
+}
+
 /** The `--detach` mode: hand the launch to the running manager over the control plane. One grammar
  *  with the foreground path; the persona file is resolved (and is the access default) manager-side,
  *  overridden by the same flags, which ride the `start` op. Replaces the removed `cotal start`. */
@@ -251,33 +282,18 @@ async function spawnDetached(
   );
   provenance.read("mesh", `${t.space} (${t.server})`);
   console.error(c.dim("waiting for it to join the mesh (the manager replies on a real outcome - join, exit, or ~30s) …"));
-  const reply = await askManager(t.space, t.server, "start", {
-    name: ref,
-    identity: values.name,
-    role: values.role,
-    // #869: keep an explicit `--agent` and the invoking operator's COTAL_DEFAULT_AGENT in separate
-    // fields. Collapsing them made the env default indistinguishable from a flag, so it beat the
-    // persona pin; dropping the env instead changed detached semantics whenever the manager's own
-    // environment differed. The manager applies flag > file > caller default > manager default.
-    agent: values.agent,
-    defaultAgent: defaultAgentOverride(),
-    config: managerConfigRef,
-    model: values.model,
-    variant: values.variant,
-    launchOptions,
-    cwd: values.cwd,
-    resume: values.resume, // host-local session id; the manager preflights connector resume support
-    prompt: values.prompt,
-    shareTools: values["share-tools"],
-    subscribe: splitFlag(values.subscribe),
-    allowSubscribe: splitFlag(values["allow-subscribe"]),
-    allowPublish: splitFlag(values["allow-publish"]),
-    // Tri-state: true (--events), false (--no-events, explicit), absent → manager default.
+  const reply = await askManager(t.space, t.server, "start", detachedSpawnArgs(
+    values,
+    ref,
+    managerConfigRef,
     events,
+    launchOptions,
+  ), t.auth, "owner", START_TIMEOUT_MS, {
     // #159 B1: the manager replies only on a REAL outcome (presence join / process exit / ~30s
     // readiness backstop) — the start request must outlive that window, not the 5s op default.
     // `--on <instance>` pins the spawn to that exact manager instance (P2 item 3 multi-manager).
-  }, t.auth, "owner", START_TIMEOUT_MS, { instanceId: on });
+    instanceId: on,
+  });
   failIfNotOk(reply);
   const d = reply.data as { name: string; role?: string; agent: string; mode: string };
   console.log(

@@ -415,6 +415,7 @@
     "smoke:down-target": "tsx implementations/cli/smoke/down-target.smoke.ts",
     "smoke:flag-inventory": "tsx bin/smoke/flag-inventory.smoke.ts",
     "smoke:persona-agent": "tsx bin/smoke/persona-agent.smoke.ts",
+    "smoke:spawn-default-agent-compat": "tsx bin/smoke/spawn-default-agent-compat.smoke.ts",
     "smoke:start-overrides": "tsx implementations/manager/smoke/start-overrides.smoke.ts",
     "smoke:launch-parity": "tsx bin/smoke/launch-parity.smoke.ts",
     "smoke:seat-env-scope": "tsx bin/smoke/seat-env-scope.smoke.ts",
