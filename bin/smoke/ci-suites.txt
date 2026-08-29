@@ -632,6 +632,12 @@ smoke:up-multi-space-render:live
 # pair. Drives the real daemon against a real broker. Appended so every existing shard
 # assignment remains unchanged.
 smoke:sys-injection-evict
+# A user-mode endpoint whose bearer expires must stop presenting the dead token: pre-fix it re-dialled
+# it on a flat 3s interval forever, one client costing a permanent auth-callout round trip every 3s.
+# Drives a real broker plus a real auth callout across three arms (no renewal source, healthy source,
+# loud refusal). Appended so every existing shard assignment remains unchanged.
+smoke:expiry-renewal:auth
+
 # A RESUMED `cotal up` must render server.conf under the root maintenance lock, the way the ordinary
 # and manifest paths do. The re-entry used to drop the recovery's lock and re-take it, leaving the
 # journal naming a resume in flight with the root unlocked - an unserialized rewrite of every

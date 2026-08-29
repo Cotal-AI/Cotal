@@ -511,7 +511,8 @@
     "smoke:web-channel-alias": "tsx implementations/web/smoke/channel-alias.smoke.ts",
     "smoke:web-body-cap": "tsx implementations/web/smoke/body-cap.smoke.ts",
     "smoke:core-history-limit": "tsx packages/core/smoke/history-limit.smoke.ts",
-    "smoke:web-graph-boot": "tsx implementations/web/smoke/graph-boot.smoke.ts"
+    "smoke:web-graph-boot": "tsx implementations/web/smoke/graph-boot.smoke.ts",
+    "smoke:expiry-renewal:auth": "tsx implementations/auth/smoke/expiry-renewal.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/auth": "workspace:*",
