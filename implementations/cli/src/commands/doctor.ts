@@ -10,10 +10,15 @@ import {
 } from "@cotal-ai/core";
 import {
   authDir,
+  CONNECTION_EVICTOR_CREDS_KIND,
+  DELIVERY_CREDS_KIND,
   findCotalRoot,
   getSoleSpaceAuth,
   getSpaceAuth,
   hasUserAuthState,
+  MEMBERSHIP_OBSERVER_CREDS_KIND,
+  MEMBERSHIP_RW_CREDS_KIND,
+  migrateLegacyCotalMaterial,
   readRenewalRecord,
   remintDaemonCreds,
   spaceAccountPath,
@@ -79,7 +84,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   const signerPath = existsSync(acctPath) ? acctPath : join(authDir(root), "auth.json");
   console.log(`  space ${auth.space}${userMode ? " · user-auth" : ""} · signer ${c.green("present")} (${signerPath})`);
 
-  let reports = inventory(root, auth.sys.pub);
+  let reports = inventory(root, auth.space, auth.sys.pub);
   let problems = reports.filter((r) => r.problem);
 
   // --fix: the one safe local repair — re-sign the remintable daemon files (same nkeys), exactly
@@ -103,7 +108,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
       : undefined;
     writeRenewalRecord(root, { ts: new Date().toISOString(), owner: "doctor --fix", results, adoption });
     for (const r of results.filter((x) => !x.ok && !x.skipped)) console.error(c.red(`  ✗ ${r.file}: ${r.error}`));
-    reports = inventory(root, auth.sys.pub);
+    reports = inventory(root, auth.space, auth.sys.pub);
     problems = reports.filter((r) => r.problem);
   }
 
@@ -138,17 +143,22 @@ function isRemintable(kind: CredentialKind): boolean {
 /** Inspect every managed credential file for this folder. Missing files are noted (with how they
  *  get provisioned) but only EXISTING-but-bad material is a problem — process presence is `cotal
  *  status`'s job; this surface owns credential health. */
-function inventory(root: string, sysPub?: string): CredReport[] {
-  const cotal = (f: string) => join(root, ".cotal", f);
+function inventory(root: string, space: string, sysPub?: string): CredReport[] {
+  // Through the choke point, not a hand-composed `.cotal/<file>` (P7 §2 rule 1). The four kinds are
+  // per-space now, and a diagnosis that read the canonical location past an unmigrated copy would
+  // report every one of them "missing" on a root `up` has not re-provisioned — the worst possible
+  // answer from the surface an operator reaches for when something is already wrong. The LABEL stays
+  // the kind, which is what the operator reads and what `staleSystemCreds` keys its answer by.
+  const at = (kind: string) => migrateLegacyCotalMaterial(root, space, kind);
   const fixed: Array<{ label: string; kind: CredentialKind; path: string }> = [
-    { label: "delivery.creds", kind: "delivery", path: cotal("delivery.creds") },
-    { label: "membership-rw.creds", kind: "membership-rw", path: cotal("membership-rw.creds") },
-    { label: "membership-observer.creds", kind: "membership-observer", path: cotal("membership-observer.creds") },
-    { label: "connection-evictor.creds", kind: "connection-evictor", path: cotal("connection-evictor.creds") },
+    { label: DELIVERY_CREDS_KIND, kind: "delivery", path: at(DELIVERY_CREDS_KIND) },
+    { label: MEMBERSHIP_RW_CREDS_KIND, kind: "membership-rw", path: at(MEMBERSHIP_RW_CREDS_KIND) },
+    { label: MEMBERSHIP_OBSERVER_CREDS_KIND, kind: "membership-observer", path: at(MEMBERSHIP_OBSERVER_CREDS_KIND) },
+    { label: CONNECTION_EVICTOR_CREDS_KIND, kind: "connection-evictor", path: at(CONNECTION_EVICTOR_CREDS_KIND) },
   ];
   // Ask the staleness question ONCE, through the same helper the boot path uses, so `doctor auth`
   // and `cotal up` can never disagree about which $SYS creds the trust record authorizes.
-  const stale = new Map(sysPub ? staleSystemCreds(root, sysPub).map((x) => [x.file, x] as const) : []);
+  const stale = new Map(sysPub ? staleSystemCreds(root, sysPub, space).map((x) => [x.file, x] as const) : []);
   const reports = fixed.map((f) => report(f.label, f.kind, f.path, sysPub, stale.get(f.label)));
   const agentDir = join(authDir(root), "creds");
   if (existsSync(agentDir)) {

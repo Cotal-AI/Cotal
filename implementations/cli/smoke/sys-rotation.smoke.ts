@@ -44,7 +44,7 @@ import {
   newIdentity,
   serverConfig,
 } from "@cotal-ai/core";
-import { getSpaceAuth, putSpaceAuth, rotateSystemCreds, staleSystemCreds, SYSTEM_CREDS_FILES, workspaceSecretStore } from "@cotal-ai/workspace";
+import { getSpaceAuth, putSpaceAuth, rotateSystemCreds, spaceMaterialDir, staleSystemCreds, SYSTEM_CREDS_FILES, workspaceSecretStore } from "@cotal-ai/workspace";
 import { doctor } from "../src/commands/doctor.js";
 import { up } from "../src/commands/up.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
@@ -70,9 +70,14 @@ const root = mkdtempSync(join(tmpdir(), "cotal-sysrot-"));
 // (and reason about) the developer's or runner's real meshes.
 process.env.COTAL_HOME = mkdtempSync(join(tmpdir(), "cotal-sysrot-home-"));
 const cotal = (f: string) => join(root, ".cotal", f);
-const obsPath = cotal(SYSTEM_CREDS_FILES[0]);
-const evPath = cotal(SYSTEM_CREDS_FILES[1]);
+// P7: the $SYS pair is per-SPACE material, so it lives under `.cotal/space.<hex>/`, not flat. Staged
+// crash states below are written HERE, at the canonical location, on purpose: a flat write beside an
+// already-segmented pair is the §2 rule 3 ambiguity, which refuses loudly and would report a
+// staging bug as a rotation defect.
+const obsPath = join(spaceMaterialDir(root, SPACE), SYSTEM_CREDS_FILES[0]);
+const evPath = join(spaceMaterialDir(root, SPACE), SYSTEM_CREDS_FILES[1]);
 mkdirSync(join(root, ".cotal", "auth"), { recursive: true });
+mkdirSync(spaceMaterialDir(root, SPACE), { recursive: true, mode: 0o700 }); // the segment `up` would have made
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -294,7 +299,11 @@ try {
     multiRefusal = (e as Error).message;
   }
   check("rotating a 2-tenant root refuses and names both spaces", multiRefusal.includes("broker-wide") && multiRefusal.includes("tenant-b"), multiRefusal);
-  check("the refusal left the existing $SYS cred untouched", readFileSync(join(multiRoot, ".cotal", SYSTEM_CREDS_FILES[0]), "utf8") === obsBefore);
+  // Read at the FLAT path it was staged at, which under P7 makes this check say more than it used to:
+  // the refusal must leave the cred not just unrotated but UNMOVED. §2 rule 4 refuses to migrate a
+  // root holding more than one space for the same reason this rotation refuses — one segment's move
+  // would be made on behalf of a neighbour nobody asked about.
+  check("the refusal left the existing $SYS cred untouched (not rotated, not migrated)", readFileSync(join(multiRoot, ".cotal", SYSTEM_CREDS_FILES[0]), "utf8") === obsBefore);
   const multiGen = (await getSpaceAuth(multiStore, "tenant-a"))?.gen ?? 0;
   check("the refusal did NOT advance the broker generation", multiGen === 0, multiGen);
   rmSync(multiRoot, { recursive: true, force: true });
@@ -365,21 +374,21 @@ try {
   //     file-vs-file comparison cannot see, which is why the record is the oracle.
   writeFileSync(obsPath, livePreObserver, { mode: 0o600 });
   writeFileSync(evPath, oldEv, { mode: 0o600 });
-  const bothStale = staleSystemCreds(root, liveSys);
+  const bothStale = staleSystemCreds(root, liveSys, SPACE);
   check("record-only crash: BOTH creds reported stale", bothStale.length === 2, bothStale.map((x) => x.file));
   check("record-only crash: they agree with EACH OTHER (so a pair check would miss it)", credsClaims(livePreObserver).iss === credsClaims(oldEv).iss);
 
   // (b) crash BETWEEN the two writes: observer current, evictor retired.
   writeFileSync(obsPath, goodObs, { mode: 0o600 });
-  const oneStale = staleSystemCreds(root, liveSys);
+  const oneStale = staleSystemCreds(root, liveSys, SPACE);
   check("one-file crash: exactly the un-written cred is reported stale", oneStale.length === 1 && oneStale[0].file === SYSTEM_CREDS_FILES[1], oneStale);
 
   // (c) the complete generation: nothing stale.
   writeFileSync(evPath, goodEv, { mode: 0o600 });
-  check("a complete generation reports nothing stale", staleSystemCreds(root, liveSys).length === 0);
+  check("a complete generation reports nothing stale", staleSystemCreds(root, liveSys, SPACE).length === 0);
   // (d) an unreadable file cannot be shown to match, so it is not assumed to.
   writeFileSync(evPath, "not a creds file", { mode: 0o600 });
-  const corrupt = staleSystemCreds(root, liveSys);
+  const corrupt = staleSystemCreds(root, liveSys, SPACE);
   check("an unreadable $SYS cred is reported stale with no issuer", corrupt.length === 1 && corrupt[0].iss === undefined, corrupt);
   writeFileSync(evPath, goodEv, { mode: 0o600 });
 
@@ -517,7 +526,7 @@ try {
   // fresh credential" on a loaded machine. Retry the POSITIVE assertion only, and bound it: if the
   // rotation were broken this cred would never be accepted, so waiting cannot manufacture a pass;
   // it only stops the boot's timing from being mistaken for a rotation defect.
-  const rotatedObs = readFileSync(join(liveRoot, ".cotal", SYSTEM_CREDS_FILES[0]), "utf8");
+  const rotatedObs = readFileSync(join(spaceMaterialDir(liveRoot, SPACE), SYSTEM_CREDS_FILES[0]), "utf8");
   let rotatedAccepted = false;
   for (let i = 0; i < 25 && !rotatedAccepted; i++) {
     rotatedAccepted = await liveConnect(rotatedObs);
