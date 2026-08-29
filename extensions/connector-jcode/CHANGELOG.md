@@ -1,5 +1,31 @@
 # @cotal-ai/connector-jcode
 
+## 0.36.0
+
+## 0.35.0
+
+### Minor Changes
+
+- d457d7f: Show each managed seat's model and requested variant in the default `cotal ps` view, and expose Jcode's declared local model catalog without presenting configured effort tiers as provider-verified capabilities.
+
+## 0.34.0
+
+## 0.33.9
+
+## 0.33.8
+
+## 0.33.7
+
+## 0.33.6
+
+## 0.33.5
+
+## 0.33.4
+
+## 0.33.3
+
+## 0.33.2
+
 ## 0.33.1
 
 ## 0.33.0

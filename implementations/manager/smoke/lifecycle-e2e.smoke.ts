@@ -34,7 +34,7 @@ import {
 import type { Connector, LaunchOpts, LaunchSpec } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
 import { registry } from "@cotal-ai/core";
-import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
+import { agentCredsDir, agentLifecycleSecretFilePaths, authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -88,7 +88,7 @@ const uidOf = (name: string): string =>
 const aclPresent = (id: string, uid: string) => inspect(async (_j, nc) => (await readAcl(await openAclRegistry(nc, space), localPrincipal(id), uid)) !== undefined);
 // Lifecycle-keyed (`<name>.<uid>.creds`): the manager's spawn files the incarnation's cred under
 // its uid, never the bare name (that's the standing-cred namespace).
-const credsFile = (name: string, uid: string) => join(authDir(workspaceRoot), "creds", `${name}.${uid}.creds`);
+const credsFile = (name: string, uid: string) => agentLifecycleSecretFilePaths(workspaceRoot, space, name, uid).creds;
 /** Poll until `f()` matches `want`, up to `ms`. */
 async function until(f: () => Promise<boolean>, want: boolean, ms = 8000): Promise<boolean> {
   const end = Date.now() + ms;
@@ -201,7 +201,7 @@ try {
   await wait(2500);
   // The failed spawn's uid never came back, so sweep by prefix: no `bad1.<uid>.creds` (nor any
   // other `bad1.`-based secret) may remain.
-  check("bad1 creds file not left behind", !readdirSync(join(authDir(workspaceRoot), "creds")).some((f) => f.startsWith("bad1.")));
+  check("bad1 creds file not left behind", !readdirSync(agentCredsDir(workspaceRoot, space)).some((f) => f.startsWith("bad1.")));
 
   // 3b — UNCERTAIN: a process that runs but never joins presence → neither started nor failed within the
   // backstop → {ok:false} uncertain, and the agent is KEPT (not deprovisioned; it may still be booting).

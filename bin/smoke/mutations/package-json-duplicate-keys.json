@@ -1,0 +1,22 @@
+{
+  "suite": "bin/smoke/gate-inventory.smoke.ts",
+  "guard": "the root package manifest contains no duplicate object keys, because JSON.parse silently hides every copy except the last",
+  "command": "pnpm smoke:gate-inventory",
+  "completionMarker": "GATE INVENTORY",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/package-json-duplicate-keys.json",
+  "why": [
+    "Every esbuild invocation warned that smoke:jcode-retry-policy appeared twice in package.json,",
+    "but the gate inventory parsed the manifest with JSON.parse and therefore saw a unique map: the",
+    "same instrument erased the defect before auditing it. TypeScript's JSON AST preserves every",
+    "property, so the gated inventory can now fail on the source manifest rather than its lossy map."
+  ],
+  "mutations": [
+    {
+      "name": "D1 restore the duplicate JCode retry-policy script",
+      "file": "package.json",
+      "find": "    \"smoke:jcode-provider-disconnect\": \"tsx extensions/connector-jcode/smoke/jcode-provider-disconnect.smoke.ts\",\n    \"smoke:jcode-live\": \"tsx extensions/connector-jcode/smoke/jcode-live.smoke.ts\",",
+      "replace": "    \"smoke:jcode-provider-disconnect\": \"tsx extensions/connector-jcode/smoke/jcode-provider-disconnect.smoke.ts\",\n    \"smoke:jcode-retry-policy\": \"tsx extensions/connector-jcode/smoke/retry-policy.smoke.ts\",\n    \"smoke:jcode-live\": \"tsx extensions/connector-jcode/smoke/jcode-live.smoke.ts\",",
+      "expectRed": "root package JSON has 1 duplicate object key(s)"
+    }
+  ]
+}

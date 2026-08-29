@@ -64,7 +64,7 @@ import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
 import { askManager, failIfNotOk, onInstanceOrExit, resolveControlTarget, START_TIMEOUT_MS } from "../lib/control.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonas } from "../lib/personas.js";
 import { spawnManifest } from "./spawn-manifest.js";
-import { extensionNames } from "../ext-loader.js";
+import { extensionNames, materializeExtension } from "../ext-loader.js";
 
 /** Completion for `cotal spawn` — `--space <TAB>` lists the running meshes, and the first positional
  *  is a persona from the mesh this spawn would target. Resolved OFFLINE (registry + `current`, no
@@ -224,14 +224,22 @@ export const spawnFlags = [
 ] as const satisfies readonly FlagSpec[];
 
 /** Foreground `cotal spawn` resolves its `--agent` connector from the registry (spawn.ts below); on
- *  the published binary nothing static-imports connectors, so declare the resolved one as a required
- *  extension and `runCli` materializes it first (seeded or `ext add`ed), failing loud if absent. The
- *  `-f` manifest launch preflights every type via `preflightConnectors`, and `--detach` resolves the
- *  connector manager-side, so both skip this. */
-export function spawnRequiredExtensions(args: ParsedArgs): readonly ExtensionRef[] {
-  const v = args.values as FlagValues<typeof spawnFlags>;
-  if (v.file || v.detach) return [];
-  return [{ kind: "connector", name: v.agent ?? defaultAgentType("claude") }];
+ *  the published binary nothing static-imports connectors, so the resolved one is materialized as a
+ *  required extension (seeded or `ext add`ed), failing loud if absent. The `-f` manifest launch
+ *  preflights every type via `preflightConnectors`, and `--detach` resolves the connector
+ *  manager-side, so both skip this.
+ *
+ *  #869: the persona file's `agent:` pin participates — flag > file > COTAL_DEFAULT_AGENT > default
+ *  — but the pin is only knowable from the TARGET mesh's root, which `resolveTargetOrExit` owns and
+ *  this pre-parse hook cannot reach without duplicating the five-tier target precedence. An earlier
+ *  revision read the persona from the cwd walk here; that made a spawn from a cwd outside the
+ *  target pre-materialize the WRONG connector, and a wrong pre-materialization hard-aborts the
+ *  command (materializeExtension throws on an uninstalled extension) before the body ever loads
+ *  the correct persona. The materialization is therefore DEFERRED into the spawn body, immediately
+ *  after the authoritative persona load and before registry.resolve — one resolver, one root, and
+ *  the hook stays root-free exactly as it was before #869. */
+export function spawnRequiredExtensions(_args: ParsedArgs): readonly ExtensionRef[] {
+  return [];
 }
 
 /** Comma-list flag → string[] (shared by both spawn modes). */
@@ -265,7 +273,12 @@ async function spawnDetached(
     name: ref,
     identity: values.name,
     role: values.role,
-    agent: values.agent ?? defaultAgentOverride(),
+    // #869: keep an explicit `--agent` and the invoking operator's COTAL_DEFAULT_AGENT in separate
+    // fields. Collapsing them made the env default indistinguishable from a flag, so it beat the
+    // persona pin; dropping the env instead changed detached semantics whenever the manager's own
+    // environment differed. The manager applies flag > file > caller default > manager default.
+    agent: values.agent,
+    defaultAgent: defaultAgentOverride(),
     config: managerConfigRef,
     model: values.model,
     variant: values.variant,
@@ -364,6 +377,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // selected `current` mesh, a local project, or the registry's only running mesh.
   const target = await resolveTargetOrExit({ server: values.server, space: values.space });
   const { space, server, auth } = target;
+  const composition = { injected: false as const, root: target.root };
 
   const defaultPersona = defaultPersonaOverride();
   // Where the config lives: --config, else the positional <persona>, else COTAL_DEFAULT_PERSONA
@@ -426,7 +440,20 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   if (target.source === "registry" || target.source === "current")
     console.error(c.dim(`→ joining mesh ${space} (${server}) as ${name}`));
 
-  const agentType = values.agent ?? defaultAgentType("claude");
+  const agentType = values.agent ?? def.agent ?? defaultAgentType("claude");
+  // Materialize the connector HERE, after the authoritative persona load (#869): the harness choice
+  // (flag > persona pin > env > default) is only final once the target root has supplied the file.
+  // On the published binary nothing static-imports connectors, so this import-from-manifest is what
+  // puts the chosen one in the registry before the resolve below; an uninstalled connector fails
+  // loud with its install hint. Doing this in `spawnRequiredExtensions` (pre-parse, pre-target)
+  // instead would need a SECOND root resolution that can disagree with this one — the regression a
+  // cold read of this PR caught — so the hook stays root-free and the materialization lives here.
+  try {
+    await materializeExtension({ kind: "connector", name: agentType });
+  } catch (e) {
+    console.error(c.red(`✗ ${(e as Error).message}`));
+    process.exit(1);
+  }
   let connector: Connector;
   try {
     connector = registry.resolve<Connector>("connector", agentType);
@@ -556,9 +583,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // Store first (the source of truth), then materialize — the child's launch reads this FILE.
     // The CLI is the local FS composition (byte-identical), same posture as the manager's spawn.
     const secrets = workspaceSecretStore(target.root);
-    credsPath = agentSecretFilePaths(target.root, name).creds;
-    await secrets.put(agentCredsKey(name), creds);
-    await materializeSecretToFile(secrets, agentCredsKey(name), credsPath);
+    credsPath = agentSecretFilePaths(target.root, space, name).creds;
+    await secrets.put(agentCredsKey(space, name, composition), creds);
+    await materializeSecretToFile(secrets, agentCredsKey(space, name, composition), credsPath);
     id = identity.id;
     provenance.wrote(`creds for ${name} (auth mode)`, credsPath);
   }
@@ -586,7 +613,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     retired = true;
     // The store delete is the authoritative removal; the rmSync clears the FS materialization
     // (byte-identical locally). Best-effort-loud, like the broker teardown below.
-    await workspaceSecretStore(target.root).delete(agentCredsKey(name)).catch((e) =>
+    await workspaceSecretStore(target.root).delete(agentCredsKey(space, name, composition)).catch((e) =>
       console.error(`! retire: dropping ${name}'s cred from the secret store failed: ${(e as Error).message}`));
     rmSync(credsPath, { force: true });
     console.error(`  ↩ retired creds for ${name} (${why})`);
@@ -749,6 +776,7 @@ async function provisionRemoteUserForeground(
   const { space } = target;
   const dir = userAuthStateDir(target.root, space);
   const store = workspaceSecretStore(target.root);
+  const composition = { injected: false as const, root: target.root };
   const fail = (msg: string): never => {
     console.error(c.red(`✗ ${msg}`));
     process.exit(1);
@@ -775,14 +803,14 @@ async function provisionRemoteUserForeground(
   const checked = checkRemoteAgentMaterial(body, name);
   if (!checked.ok) return fail(checked.message);
   const material = checked.material;
-  const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = agentSecretFilePaths(target.root, name);
+  const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = agentSecretFilePaths(target.root, space, name);
   try {
     // Land both secrets 0600 through the store, exactly as the local path does — the bearer
     // re-exec and the launch handoff read FILES.
-    await store.put(agentActorTokenKey(name), material.actorToken);
-    await store.put(agentSentinelCredsKey(name), material.sentinelCreds);
-    await materializeSecretToFile(store, agentActorTokenKey(name), tokenPath);
-    await materializeSecretToFile(store, agentSentinelCredsKey(name), sentinelPath);
+    await store.put(agentActorTokenKey(space, name, composition), material.actorToken);
+    await store.put(agentSentinelCredsKey(space, name, composition), material.sentinelCreds);
+    await materializeSecretToFile(store, agentActorTokenKey(space, name, composition), tokenPath);
+    await materializeSecretToFile(store, agentSentinelCredsKey(space, name, composition), sentinelPath);
     rmSync(healthPath, { force: true });
     provenance.wrote(`remote actor material ${material.owner}.${name} (user mode)`, tokenPath);
     // The bearer preflight — the same one-shot proof the local path runs, pointed at the pinned
@@ -813,16 +841,16 @@ async function provisionRemoteUserForeground(
       // Local shred only. The remote row and its durables belong to the mesh's lifecycle; this
       // machine has no authority to retire them and must not pretend otherwise.
       cleanup: async () => {
-        await store.delete(agentActorTokenKey(name)).catch(() => {});
-        await store.delete(agentSentinelCredsKey(name)).catch(() => {});
+        await store.delete(agentActorTokenKey(space, name, composition)).catch(() => {});
+        await store.delete(agentSentinelCredsKey(space, name, composition)).catch(() => {});
         rmSync(tokenPath, { force: true });
         rmSync(sentinelPath, { force: true });
         rmSync(healthPath, { force: true });
       },
     };
   } catch (e) {
-    await store.delete(agentActorTokenKey(name)).catch(() => {});
-    await store.delete(agentSentinelCredsKey(name)).catch(() => {});
+    await store.delete(agentActorTokenKey(space, name, composition)).catch(() => {});
+    await store.delete(agentSentinelCredsKey(space, name, composition)).catch(() => {});
     rmSync(tokenPath, { force: true });
     rmSync(sentinelPath, { force: true });
     rmSync(healthPath, { force: true });
@@ -845,6 +873,7 @@ async function provisionUserForeground(
   const { space, server } = target;
   const dir = userAuthStateDir(target.root, space);
   const store = workspaceSecretStore(target.root);
+  const composition = { injected: false as const, root: target.root };
   const fail = (msg: string): never => {
     console.error(c.red(`✗ ${msg}`));
     process.exit(1);
@@ -866,7 +895,7 @@ async function provisionUserForeground(
   const publish = eventGrant ? [...(opts.allowPublish ?? []), eventGrant] : (opts.allowPublish ?? []);
   const infra = await getSpaceAuth(store, space); // cross-check the bundle names the space we resolved this root for
   if (!infra) return fail(`space "${space}" has user-auth state but no trust record under ${authDir(target.root)} (expected ${spaceAccountPath(authDir(target.root), space)} or the legacy auth.json) - re-run \`cotal up --user-auth\` here`);
-  const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = agentSecretFilePaths(target.root, name);
+  const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = agentSecretFilePaths(target.root, space, name);
   try {
     // The GRANT first — it is the envelope-rule enforcement point (a delegation must sit within
     // the spawner's own grant), so a refused delegation exits here with zero broker footprint —
@@ -915,10 +944,10 @@ async function provisionUserForeground(
     // The store holds the source of truth; the bearer re-exec (`--token-file`) and the launch's
     // sentinel handoff read FILES — materialize both at the canonical paths (byte-identical
     // rewrites under this, the local FS, composition).
-    await store.put(agentActorTokenKey(name), grant.actorToken);
-    await store.put(agentSentinelCredsKey(name), grant.sentinelCreds);
-    await materializeSecretToFile(store, agentActorTokenKey(name), tokenPath);
-    await materializeSecretToFile(store, agentSentinelCredsKey(name), sentinelPath);
+    await store.put(agentActorTokenKey(space, name, composition), grant.actorToken);
+    await store.put(agentSentinelCredsKey(space, name, composition), grant.sentinelCreds);
+    await materializeSecretToFile(store, agentActorTokenKey(space, name, composition), tokenPath);
+    await materializeSecretToFile(store, agentSentinelCredsKey(space, name, composition), sentinelPath);
     rmSync(healthPath, { force: true });
     provenance.wrote(`actor grant ${owner}.${name} (user mode)`, tokenPath);
     const bearerCmd = [
@@ -948,8 +977,8 @@ async function provisionUserForeground(
       // teardown the rollback path below runs on a failed preflight.
       cleanup: async () => {
         await provider.revokeAgent({ dir, owner, actor: name });
-        await store.delete(agentActorTokenKey(name));
-        await store.delete(agentSentinelCredsKey(name));
+        await store.delete(agentActorTokenKey(space, name, composition));
+        await store.delete(agentSentinelCredsKey(space, name, composition));
         rmSync(tokenPath, { force: true });
         rmSync(sentinelPath, { force: true });
         rmSync(healthPath, { force: true });
@@ -963,8 +992,8 @@ async function provisionUserForeground(
     // Roll back EVERYTHING this attempt materialized, including the broker footprint the durable
     // provisioning above created — a refused spawn leaves no row, no secret, no orphaned durables.
     await provider.revokeAgent({ dir, owner, actor: name }).catch(() => {});
-    await store.delete(agentActorTokenKey(name)).catch(() => {});
-    await store.delete(agentSentinelCredsKey(name)).catch(() => {});
+    await store.delete(agentActorTokenKey(space, name, composition)).catch(() => {});
+    await store.delete(agentSentinelCredsKey(space, name, composition)).catch(() => {});
     rmSync(tokenPath, { force: true });
     rmSync(sentinelPath, { force: true });
     rmSync(healthPath, { force: true });

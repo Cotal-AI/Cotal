@@ -1,5 +1,87 @@
 # @cotal-ai/runtime
 
+## 0.36.0
+
+### Patch Changes
+
+- Updated dependencies [7c5995b]
+  - @cotal-ai/core@0.36.0
+  - @cotal-ai/lang@0.36.0
+
+## 0.35.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.35.0
+- @cotal-ai/lang@0.35.0
+
+## 0.34.0
+
+### Patch Changes
+
+- Updated dependencies [22c3182]
+  - @cotal-ai/core@0.34.0
+  - @cotal-ai/lang@0.34.0
+
+## 0.33.9
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.9
+- @cotal-ai/lang@0.33.9
+
+## 0.33.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.8
+- @cotal-ai/lang@0.33.8
+
+## 0.33.7
+
+### Patch Changes
+
+- Updated dependencies [576ac7d]
+  - @cotal-ai/core@0.33.7
+  - @cotal-ai/lang@0.33.7
+
+## 0.33.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.6
+- @cotal-ai/lang@0.33.6
+
+## 0.33.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.5
+- @cotal-ai/lang@0.33.5
+
+## 0.33.4
+
+### Patch Changes
+
+- Updated dependencies [1858932]
+  - @cotal-ai/core@0.33.4
+  - @cotal-ai/lang@0.33.4
+
+## 0.33.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.3
+- @cotal-ai/lang@0.33.3
+
+## 0.33.2
+
+### Patch Changes
+
+- Updated dependencies [ffdde4d]
+  - @cotal-ai/core@0.33.2
+  - @cotal-ai/lang@0.33.2
+
 ## 0.33.1
 
 ### Patch Changes

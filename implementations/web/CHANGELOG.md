@@ -1,5 +1,31 @@
 # @cotal-ai/web
 
+## 0.36.0
+
+## 0.35.0
+
+## 0.34.0
+
+### Patch Changes
+
+- 9e4e4ed: Add an explicit concrete host option for remote web dashboard binding, launch, readiness, Origin checks, and status probes while preserving the loopback default.
+
+## 0.33.9
+
+## 0.33.8
+
+## 0.33.7
+
+## 0.33.6
+
+## 0.33.5
+
+## 0.33.4
+
+## 0.33.3
+
+## 0.33.2
+
 ## 0.33.1
 
 ### Patch Changes

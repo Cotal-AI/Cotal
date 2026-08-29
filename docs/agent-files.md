@@ -38,13 +38,14 @@ Authoritative shape: [`agent-file.ts`](../packages/core/src/agent-file.ts).
 | `kind` | `agent` \| `endpoint` | Participation class; default `agent`. |
 | `description` | string | One-line summary → `card.description`. |
 | `tags` | string[] | Capability tags → `card.tags`. |
-| `subscribe` | string[] | The **active read set**: channels subscribed at boot (mutable at runtime via join/leave). Must be ⊆ `allowSubscribe`. **Omitted ⇒ no channels**: an agent reads exactly what it lists, and one that lists none joins none (still reachable by DM, anycast and presence). List `general` if you want it. |
+| `subscribe` | string[] | The **active read set**: channels subscribed at boot (mutable at runtime via join/leave). Must be ⊆ `allowSubscribe`. **Omitted ⇒ no channels**: an agent reads what it lists, and one that lists none joins none (still reachable by DM, anycast and presence). List `general` if you want it. |
 | `allowSubscribe` | string[] | The **read ACL**: channels it *may* read. Wildcard subtrees allowed (`team.>`). Omitted ⇒ same as `subscribe`. |
 | `allowPublish` | string[] | The **post ACL**: channels it may publish to. **Omitted ⇒ deny**; posting is the dangerous capability, declare it explicitly. |
 | `quiet` | string[] | Per-channel attention *default*: ambient stays buffered and pull-only until `cotal_inbox`; `@mention`s remain automatic. Concrete channels within the read ACL. |
 | `muted` | string[] | Per-channel attention *default*: dropped on receive, `@mentions` included. |
 | `model` | string | Model override handed to the agent CLI (Claude: `opus` / full id; OpenCode: `provider/model`). |
 | `variant` | string | Connector-defined model variant (e.g. an OpenCode variant, see `cotal models`). |
+| `agent` | string | The connector/harness this persona pins (`claude`, `jcode`, and so on). Precedence: explicit `--agent` > this field > `COTAL_DEFAULT_AGENT` > the product default, the same shape as `model`/`variant`, so the env var stays a *default* and cannot beat a deliberate per-persona pin. A value naming an unregistered connector fails the spawn loudly (no silent fallback). |
 | `launchOptions` | map | Opaque per-connector launch options forwarded **raw** to the harness (Claude flags, OpenCode agent config; Hermes and pi have no option surface and fail loud). A CLI `--opt key=value` overrides a key set here. See [run a mesh](run-a-mesh.md#spawning-agents). |
 | `capabilities` | string[] | Control-plane capabilities minted into the cred. `spawn` grants the privileged control subject (spawn / named stop / persona definition), default-deny when absent, enforced by the broker, not a handler. On a per-user-auth mesh, `role:<r>` additionally lets the agent delegate role `r` when spawning ([identity & auth](identity-and-auth.md)); `admin` is never a persona capability. |
 | `owner` | string | **Policy, not content**: set once by `definePersona` (owner = creator); only the owner (or admin) may redefine the file over the wire. Never write it by hand. |
@@ -53,9 +54,9 @@ Authoritative shape: [`agent-file.ts`](../packages/core/src/agent-file.ts).
 The three channel verbs on one card, with the common recipes:
 [Channels & permissions](channels-and-permissions.md). Attention semantics (`quiet` /
 `muted` are one-way *defaults*; the runtime toggle is per-instance and resets on restart):
-[Connect Claude](connect-claude.md#attention-how-much-traffic-wakes-you).
+[Connect Claude](connect-claude.md#attention).
 
-## Discovery and resolution
+## Persona lookup
 
 - **By name.** A launcher resolves a bare name to `.cotal/agents/<name>.md` (project
   catalog). This is a directory convention, not an HTTP well-known; mesh discovery stays
@@ -64,9 +65,10 @@ The three channel verbs on one card, with the common recipes:
   `COTAL_LINK` carries the *where*; the joined session reads its card straight from the
   file. Individual `COTAL_*` vars still override it ([config](config.md)).
 - **Defaults.** A bare `cotal spawn` uses the `default` persona
-  (`COTAL_DEFAULT_PERSONA` changes the fallback); the harness comes from `--agent` /
-  `COTAL_DEFAULT_AGENT`, else Claude. An explicit flag always wins over the file
-  ([run a mesh](run-a-mesh.md)).
+  (`COTAL_DEFAULT_PERSONA` changes the fallback); the harness comes from `--agent` > the persona's
+  `agent:` pin > the invoking CLI's `COTAL_DEFAULT_AGENT` > the manager's own environment, else
+  Claude. An explicit flag always wins over the file, and the file wins over either environment
+  default, including detached spawns ([run a mesh](run-a-mesh.md)).
 
 Every launcher consumes the file the same way; they differ only in how they run the spec:
 
@@ -79,7 +81,7 @@ Every launcher consumes the file the same way; they differ only in how they run 
 shared some other way. The demo ships committed examples under
 [`examples/01-lateral-coordination/agents/`](../examples/01-lateral-coordination/agents/).
 
-## Personas: short contracts, not titles
+## Persona purpose
 
 Expert-persona prompts ("you are a world-class…") do not reliably improve accuracy. Keep
 the body to what the agent *does* and how it *coordinates*; a persona that needs facts
@@ -98,9 +100,8 @@ slot, so a peer cannot grant itself a capability by redefining a file.
 and then it goes to that channel only. A peer that did not ask for the persona has no way
 to judge whether spawning it is wanted, and a broadcast soliciting spawns from an
 unfamiliar principal is a thing a peer should be suspicious of, so announcing belongs on
-the channel your team is working on rather than `general`. Announcing did carry a little
-discovery — a bare name, to whoever happened to be listening — but nothing durable: no
-prompt, model, or role, and a peer joining later never saw it. No path a peer can
+the channel your team is working on rather than `general`. The old announcement carried limited discovery. Peers already listening saw the bare name, but
+no prompt, model, or role. Peers joining later saw nothing. No path a peer can
 deliberately consult is affected: `cotal personas list` reads the catalog within a
 workspace, and `cotal_spawn` on a name that does not exist fails loud.
 

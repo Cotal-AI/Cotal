@@ -120,7 +120,7 @@ try {
   const a = M.agents.get("worker")!;
   const credsPath = a.secretPaths?.creds;
   check("fixture: the spawn recorded a credential path", typeof credsPath === "string" && existsSync(credsPath), credsPath);
-  const credKey = agentSecretKeyForFile(credsPath!);
+  const credKey = agentSecretKeyForFile(credsPath!, space);
 
   // ── SITE renewManagedStaticCred: the re-sign must WRITE through the seam ──────────────────────
   console.log("A. the managed-cred re-sign writes through the injected store");

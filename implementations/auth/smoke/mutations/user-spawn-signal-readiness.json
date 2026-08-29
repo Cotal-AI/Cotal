@@ -1,0 +1,31 @@
+{
+  "suite": "implementations/auth/smoke/user-spawn.smoke.ts",
+  "guard": "the synthetic status-walk child installs its signal handlers before the parent sends SIGUSR1 or SIGUSR2",
+  "command": "pnpm smoke:user-spawn:live",
+  "completionMarker": "USER-SPAWN SMOKE",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/user-spawn-signal-readiness.json",
+  "why": [
+    "Manager.startAgent can expose a PID before the node child has registered its SIGUSR handlers.",
+    "Sending SIGUSR2 in that window takes the default terminate action; the next signal used to throw",
+    "ESRCH and abort the entire suite. A child-written marker is the actual readiness event, and every",
+    "signal send is a named cell so an unexpected death remains legible."
+  ],
+  "mutations": [
+    {
+      "name": "the child never records that its signal handlers are armed",
+      "file": "implementations/auth/smoke/user-spawn.smoke.ts",
+      "find": ";fs.writeFileSync(process.env.E2E_OFFLINE_READY,'ready',{flag:'wx',mode:0o600});",
+      "replace": ";",
+      "expectRed": "precondition: kappa installed its signal handlers before the status walk",
+      "cell": "precondition: kappa installed its signal handlers before the status walk"
+    },
+    {
+      "name": "the working/waiting signal handler is absent despite the readiness marker",
+      "file": "implementations/auth/smoke/user-spawn.smoke.ts",
+      "find": "process.on('SIGUSR2',()=>{ep.setStatus(seq[Math.min(phase++,seq.length-1)]).catch(()=>{});});",
+      "replace": "",
+      "expectRed": "precondition: kappa remained alive to receive the waiting status signal",
+      "cell": "precondition: kappa remained alive to receive the waiting status signal"
+    }
+  ]
+}

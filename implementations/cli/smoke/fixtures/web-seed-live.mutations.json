@@ -1,0 +1,19 @@
+{
+  "suite": "implementations/cli/smoke/web-seed-live.smoke.ts",
+  "guard": "The live web seed-drop proof writes chat history through a self-scoped operator credential, not a provisioner credential whose least-privilege grant has no chat publish row.",
+  "command": "pnpm --filter @cotal-ai/core... build && pnpm smoke:web-seed:live",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/fixtures/web-seed-live.mutations.json",
+  "why": [
+    "The provisioner still creates streams and registry state, but it deliberately cannot publish chat. Seeding history with it crashes on a broker permission violation before the purge behavior is tested.",
+    "The operator profile is the production self-scoped message surface. The named cell waits for asynchronous permission errors so this distinction fails legibly rather than as an unhandled event."
+  ],
+  "mutations": [
+    {
+      "name": "W1 seed history with a provisioner credential that cannot publish chat",
+      "file": "implementations/cli/smoke/web-seed-live.smoke.ts",
+      "find": "  const publisherCreds = await mintCreds(auth, newIdentity(), \"operator\");",
+      "replace": "  const publisherCreds = await mintCreds(auth, newIdentity(), \"provisioner\");",
+      "expectRed": "operator publisher seeds #ops without broker permission violations"
+    }
+  ]
+}

@@ -31,6 +31,7 @@ import { getSpaceAuth, workspaceSecretStore } from "../../workspace/src/index.js
 import { pickFreePort } from "./_free-port.js";
 import { assertEphemeralBroker, scrubAmbientBrokerEnv } from "./_ephemeral-only.js";
 import { foreignRootFor, killManagerAtRoot, makeScratch } from "../../../bin/smoke/_scratch.js";
+import { assertSmokeSandboxDown, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 
 // FENCE LAYER 4, FIRST STATEMENT OF THE SUITE. This operator environment carries the LIVE broker in
 // COTAL_SERVERS (and live COTAL_CREDS / COTAL_SPACE). This suite spawns the real `cotal` binary,
@@ -46,15 +47,17 @@ const cleanScratch = (e: unknown): never => {
   rmSync(scratch, { recursive: true, force: true });
   throw new Error(`fixture setup failed (scratch removed): ${(e as Error).message}`, { cause: e });
 };
-let home!: string, root!: string, SERVER!: string;
+let home!: string, root!: string, configDir!: string, SERVER!: string, sandbox!: SmokeSandboxAnchor;
 try {
   home = mkdtempSync(join(scratch, "home-"));
+  configDir = join(home, "xdg");
   process.env.COTAL_HOME = home;
+  process.env.XDG_CONFIG_HOME = configDir;
   root = mkdtempSync(join(scratch, "root-"));
   // Anchor BEFORE any product command: `findCotalRoot` walks to `/`, so without this the child
   // resolves to whatever ancestor owns a `.cotal` — under $HOME that is the live credential store,
   // under /tmp it is the one every unanchored tree on this box shares.
-  mkdirSync(join(root, ".cotal"), { recursive: true });
+  sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
   SERVER = `nats://127.0.0.1:${await pickFreePort()}`;
 } catch (e) { cleanScratch(e); }
 assertEphemeralBroker(SERVER);
@@ -69,7 +72,9 @@ const check = (n: string, v: boolean, x?: unknown) => { v ? (pass++, console.log
 type Run = { status: number | null; out: string; timedOut: boolean; signal: NodeJS.Signals | null; launchError?: string };
 function cotal(args: string[], timeoutMs = 120_000): Promise<Run> {
   return new Promise((res) => {
-    const child = spawn("npx", ["tsx", BIN, ...args], { cwd: root, env: { ...process.env, COTAL_HOME: home }, stdio: ["ignore", "pipe", "pipe"] });
+    const options = { cwd: root, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir }, stdio: ["ignore", "pipe", "pipe"] as const };
+    assertSmokeSandboxDown(sandbox, args, options);
+    const child = spawn("npx", ["tsx", BIN, ...args], options);
     let out = "", timedOut = false, settled = false, exited = false;
     let status: number | null = null, signal: NodeJS.Signals | null = null, drain: NodeJS.Timeout | undefined;
     const done = (r: Run) => { if (settled) return; settled = true; clearTimeout(cmd); clearTimeout(drain); res(r); };

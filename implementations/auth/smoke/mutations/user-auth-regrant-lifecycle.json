@@ -1,0 +1,88 @@
+{
+  "suite": "implementations/auth/smoke/user-auth-launch.smoke.ts",
+  "guard": "Interactive actor re-grants and revokes retire the current lifecycle through the auth authority plane before rotating or deleting the row, and the legacy static control is a real lifecycle-bound credential.",
+  "command": "pnpm build && pnpm smoke:user-auth-launch:live",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/user-auth-regrant-lifecycle.json",
+  "why": [
+    "A copied elevated-view bearer must die across a whole-row authorization update. The CLI therefore retires the current lifecycle through the capability-gated loopback auth route before grantActor rotates the row; issuance never performs takeover as a side effect.",
+    "Revoke uses the same retirement before deleting the row, so a later grant can create a real successor instead of colliding with an active predecessor head.",
+    "The old-static refusal controls must still use a credential shape current core would mint; a pre-lifecycle agent stub can fail before the user-mode guard and falsely confirm the policy.",
+    "A rotated row can remain unused while the authority head still names its retired predecessor. A second re-grant must treat that current uid as not started rather than conflict with a lifecycle that is already terminal.",
+    "The retirement endpoint is a same-user loopback operator surface: browser origins and callers without the per-start capability must be rejected before any ledger or authority state is touched.",
+    "The request shape and current ledger row bind the operation to one exact actor incarnation. Unknown fields or a non-current lifecycle uid must not turn retirement into a takeover primitive.",
+    "If the daemon cannot confirm retirement, re-grant must fail before grantActor writes anything. Treating a transport failure as a no-op would rotate the row without fencing the predecessor."
+  ],
+  "mutations": [
+    {
+      "name": "R1 interactive re-grant preserves the predecessor UID instead of retiring and rotating it",
+      "file": "implementations/auth/src/commands.ts",
+      "find": "      if (current?.lifecycleUid) {\n        await retireInteractiveActorLifecycle(dir, current, \"re-grant\");\n        const refreshed = findInteractiveActor(dir, owner, actor);\n        if (refreshed?.lifecycleUid !== current.lifecycleUid)\n          throw new Error(`cannot re-grant \"${owner}/${actor}\": the actor row changed while its predecessor retired. Nothing was overwritten; re-read \\`cotal actor list\\` and retry.`);\n      }\n      const row = grantActor(dir, {\n        owner,\n        actor,",
+      "replace": "      const row = grantActor(dir, {\n        owner,\n        actor,\n        lifecycleUid: current?.lifecycleUid,",
+      "expectRed": "copied elevated bearer is refused after re-grant rotates its lifecycle",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "R2 the legacy static control mints a pre-lifecycle agent credential",
+      "file": "implementations/auth/smoke/user-auth-launch.smoke.ts",
+      "find": "      lifecycleUid: oldStaticUid,\n      allowSubscribe: [\"general\"],",
+      "replace": "      allowSubscribe: [\"general\"],",
+      "expectRed": "the legacy static-agent control is a lifecycle-bound credential, not a pre-cut stub"
+    },
+    {
+      "name": "R3 actor revoke deletes the row without retiring its current lifecycle",
+      "file": "implementations/auth/src/commands.ts",
+      "find": "      await retireInteractiveActorLifecycle(dir, current, \"revoke\");",
+      "replace": "",
+      "expectRed": "user-mode send works again after the heal",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "R4 a retired predecessor is treated as a foreign conflict for an unused successor row",
+      "file": "implementations/auth/src/service.ts",
+      "find": "        if (head.mapping.state === \"retired\")\n          return { retired: false, lifecycleUid, notStarted: true };",
+      "replace": "",
+      "expectRed": "an unused successor can be re-granted again after its predecessor retired",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "R5 the private retirement route accepts a browser-origin request",
+      "file": "implementations/auth/src/service.ts",
+      "find": "  if (req.headers.origin !== undefined) return send(res, 403, { error: \"browser-origin requests are not served here\" });\n  if (!/^application\\/json\\b/.test(req.headers[\"content-type\"] ?? \"\"))\n    return send(res, 415, { error: \"content-type must be application/json\" });\n  if (req.headers.authorization !== `Bearer ${ctx.cap}`)",
+      "replace": "  if (!/^application\\/json\\b/.test(req.headers[\"content-type\"] ?? \"\"))\n    return send(res, 415, { error: \"content-type must be application/json\" });\n  if (req.headers.authorization !== `Bearer ${ctx.cap}`)",
+      "expectRed": "interactive lifecycle retirement refuses browser-origin requests",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "R6 the private retirement route accepts a caller without the operator capability",
+      "file": "implementations/auth/src/service.ts",
+      "find": "  if (req.headers.authorization !== `Bearer ${ctx.cap}`)\n    return send(res, 401, { error: \"missing/invalid exchange capability - interactive lifecycle retirement is a loopback operator action\" });",
+      "replace": "",
+      "expectRed": "interactive lifecycle retirement refuses a missing operator capability",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "R7 the private retirement body accepts an unknown operation field",
+      "file": "implementations/auth/src/service.ts",
+      "find": "  for (const key of Object.keys(body))\n    if (!INTERACTIVE_RETIRE_KEYS.has(key))\n      return send(res, 400, { error: `interactive lifecycle retirement carries the unknown field \"${key}\"` });",
+      "replace": "",
+      "expectRed": "interactive lifecycle retirement body is closed",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "R8 the private retirement route does not bind the request to the current row UID",
+      "file": "implementations/auth/src/service.ts",
+      "find": "  if (row.lifecycleUid !== lifecycleUid)\n    return send(res, 409, { error: `interactive actor \"${owner}/${actor}\" is current at lifecycle ${row.lifecycleUid ?? \"<missing>\"}, not ${lifecycleUid}` });",
+      "replace": "",
+      "expectRed": "interactive lifecycle retirement refuses a UID other than the current actor row",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "R9 a retirement transport failure is treated as success and the row rotates anyway",
+      "file": "implementations/auth/src/commands.ts",
+      "find": "  } catch (error) {\n    throw new Error(`cannot ${operation} \"${row.owner}/${row.actor}\": its lifecycle retirement could not reach the auth service (${error instanceof Error ? error.message : String(error)}). The actor row was not changed; recover with \\`cotal up\\`, then retry.`);\n  }",
+      "replace": "  } catch {\n    return;\n  }",
+      "expectRed": "re-grant with a dead auth service is refused before changing the row",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    }
+  ]
+}

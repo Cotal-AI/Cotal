@@ -21,11 +21,11 @@
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 // @ts-expect-error - plain .mjs helper, shared with bin/smoke/shard.mjs so the chain has one parser.
 import { readCiSuites, ciChainBody } from "./ci-suites.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const SCRIPT_RE = /(smoke:[A-Za-z0-9:_-]+)/g;
 
 /**
  * Suites deliberately not run by any automated path, each with the reason it is excluded.
@@ -77,51 +77,21 @@ const UNGATED: Record<string, string> = {
   // it shows up in production; and it shares no assumption with the redactor, which itself encodes
   // a belief about which fields matter and could be wrong in the same direction as the mapper.
   "smoke:agui-map:real": "names an operator's own uncommittable session JSONL (COTAL_AGUI_SESSION); the fixture arm is gated as smoke:agui-map",
-  // Known-red or documented flakes: debt with a fuse, counted as such. Gating them would make the
-  // gate lie; leaving them unmarked made the list unable to say how much debt it held.
-  "smoke:channels": `${BROKEN} documented timing flake + fixed-port cleanup leak`,
-  // EXPECTED RED BY DESIGN. It reproduces an OPEN defect (renewManagedStaticCred reads the
-  // terminal latch at entry, then does four awaits before two writes that retirement cleanup has
-  // already deleted, leaving a valid credential and an `active` durable row for a retired
-  // lifecycle). Gating a known red is how a chain teaches its readers to skim reds, which is the
-  // most expensive habit a gate can pick up.
-  //
-  // Originally written up as "a decision rather than debt", and it is marked BROKEN anyway. The
-  // decision is about not gating it TODAY; the entry still ends when the product defect is fixed,
-  // and its own reason says so. That is a fuse, and a fuse nobody counts is how the entry above it
-  // lasted six weeks. Being red for a good reason is still being red.
-  "smoke:renewal-terminal-race": `${BROKEN} reproduction of an open defect; gate when the fix lands`,
   // Full-stack live suites: boot a real broker + install tree, too slow/stateful for the PR gate.
   "smoke:manager-singleton:live": "full live stack", "smoke:seed-tarball:live": "packs a tarball",
   // `smoke:user-spawn:live` left this list when it was gated: it had thrown at section B1e on a
   // missing explicit `tls` and stopped after 14 of its 66 cells, and being ungated is why nobody
   // heard about it. "Too slow for the gate" was 105 seconds.
-  "smoke:user-auth-launch:live": "full live stack",
-  "smoke:web-seed:live": "full live stack",
-  // NOT dead, despite the obvious reading. v0.4 removed the MANAGER's ctl tiers, not the ctl rail:
-  // `ctl.delivery` survives as the delivery daemon's carve-out, still built by subjects.ts and still
-  // served by endpoint.ts (CONTROL_DELIVERY / CONTROL_DELIVERY_ADMIN). This suite pins the security
-  // properties of that LIVE rail - that the broker forge-locks the subject's identity slots to the
-  // connection's minted grant, and that serveControl's guards reject a payload disagreeing with the
-  // subject. It is ungated because it needs a real user-auth broker plus a real callout, not because
-  // it is obsolete. Deleting it would drop a security proof for shipped code.
-  "smoke:ctl-trust:live": "needs a real user-auth broker + callout; pins the LIVE ctl.delivery rail",
-  // The bare `smoke` script — `tsx packages/core/smoke.ts`, documented in AGENTS.md as the core
-  // smoke entry point, and reached by nothing. Invisible to this file until the audited set stopped
-  // filtering on `smoke:`, and found by a second independent derivation rather than by this check.
-  "smoke": "UNTRIAGED",
   // Untriaged debt. These are the ones that should shrink.
   "smoke:attention": "UNTRIAGED",
-  "smoke:attention:auth": "UNTRIAGED", "smoke:channel-attention": "UNTRIAGED",
-  "smoke:channel-attention:auth": "UNTRIAGED", "smoke:delivery-boot-retry:auth": "UNTRIAGED",
+  "smoke:attention:auth": "UNTRIAGED",
+ "smoke:delivery-boot-retry:auth": "UNTRIAGED",
   "smoke:delivery-broker-coupling": "UNTRIAGED", "smoke:delivery-old-manager": "UNTRIAGED",
-  "smoke:feedback": "UNTRIAGED", "smoke:install": "UNTRIAGED",
-  "smoke:lifecycle-files": "UNTRIAGED", "smoke:manager-console": "UNTRIAGED", "smoke:manifest-launch": "UNTRIAGED",
-  "smoke:members": "UNTRIAGED", "smoke:membership": "UNTRIAGED",
+  "smoke:feedback": "UNTRIAGED",
+  "smoke:lifecycle-files": "UNTRIAGED", "smoke:manager-console": "UNTRIAGED",
   "smoke:plane3-activation:auth": "UNTRIAGED",
-  "smoke:plane3-gate:auth": "UNTRIAGED", "smoke:presence-scrub": "UNTRIAGED",
-  "smoke:self-serve-join-coverage:auth": "UNTRIAGED", "smoke:send": "UNTRIAGED",
-  "smoke:start-model": "UNTRIAGED",
+  "smoke:plane3-gate:auth": "UNTRIAGED",
+  "smoke:self-serve-join-coverage:auth": "UNTRIAGED",
 };
 
 /**
@@ -138,13 +108,43 @@ const UNGATED: Record<string, string> = {
  */
 const CITED_IN_PLAN = new Set([
   "smoke:auth", "smoke:channel-attention", "smoke:channel-attention:auth", "smoke:channels",
-  "smoke:ctl-trust:live", "smoke:doctor-auth", "smoke:install", "smoke:ledger",
+  "smoke:doctor-auth", "smoke:install", "smoke:ledger",
   "smoke:manifest-launch", "smoke:members", "smoke:membership-feed:auth", "smoke:presence-scrub",
-  "smoke:start-model", "smoke:static-lifecycle", "smoke:user-auth-launch:live",
-  "smoke:user-spawn:live", "smoke:web-seed:live",
+  "smoke:start-model", "smoke:static-lifecycle",
+  "smoke:user-spawn:live",
 ]);
 
-const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as { scripts: Record<string, string> };
+const packagePath = join(ROOT, "package.json");
+const packageText = readFileSync(packagePath, "utf8");
+const packageSource = ts.parseJsonText(packagePath, packageText);
+
+/** JSON.parse silently keeps the final value of a duplicate object key. Walk TypeScript's JSON AST,
+ *  which preserves every property, so a duplicate script cannot hide behind the same parsed map the
+ *  inventory is auditing. Recurse through every object: the invariant belongs to the manifest, not
+ *  only today's `scripts` shape. */
+function duplicateObjectKeys(node: ts.Node, path = "$"): string[] {
+  if (ts.isArrayLiteralExpression(node))
+    return node.elements.flatMap((element, index) => duplicateObjectKeys(element, `${path}[${index}]`));
+  if (!ts.isObjectLiteralExpression(node)) return [];
+  const seen = new Set<string>();
+  const duplicates: string[] = [];
+  for (const property of node.properties) {
+    if (!ts.isPropertyAssignment(property)) continue;
+    const name =
+      ts.isStringLiteral(property.name) || ts.isNumericLiteral(property.name)
+        ? property.name.text
+        : property.name.getText(packageSource);
+    const next = `${path}.${name}`;
+    if (seen.has(name)) duplicates.push(next);
+    else seen.add(name);
+    duplicates.push(...duplicateObjectKeys(property.initializer, next));
+  }
+  return duplicates;
+}
+
+const rootExpression = (packageSource.statements[0] as ts.ExpressionStatement | undefined)?.expression;
+const duplicatePackageKeys = rootExpression ? duplicateObjectKeys(rootExpression) : [];
+const pkg = JSON.parse(packageText) as { scripts: Record<string, string> };
 // THE AUDITED SET INCLUDES THE BARE `smoke` SCRIPT. An earlier version filtered on `smoke:` and so
 // could not see `"smoke": "tsx packages/core/smoke.ts"` — a real suite that nothing runs, invisible
 // to the audit BY CONSTRUCTION. Found by a second, independent derivation, not by this file.
@@ -202,6 +202,15 @@ const staleAllowlist = Object.keys(UNGATED).filter((s) => !all.has(s) || reached
 let fail = 0;
 console.log(`gate inventory: ${all.size} smoke scripts, ${all.size - ungated.length} reached, ${ungated.length} not run by anything\n`);
 
+if (duplicatePackageKeys.length) {
+  fail++;
+  console.log(`  ✗ FAIL: root package JSON has ${duplicatePackageKeys.length} duplicate object key(s):`);
+  for (const key of duplicatePackageKeys) console.log(`      ${key}`);
+  console.log(`    JSON.parse keeps only the last value, so every downstream inventory sees a false unique map.`);
+} else {
+  console.log(`  ✓ root package JSON has no duplicate object keys`);
+}
+
 if (unexplained.length) {
   fail++;
   console.log(`  ✗ FAIL: ${unexplained.length} suite(s) exist but nothing runs them, and they are not in UNGATED:`);
@@ -255,8 +264,8 @@ for (const name of Object.keys(pkg.scripts))
       else if (!(target in scripts)) dangling.push([name, `${target} (absent from ${pkgName})`]);
       continue;
     }
-    for (const m of segment.matchAll(SCRIPT_RE))
-      if (m[1] !== name && !(m[1] in pkg.scripts)) dangling.push([name, m[1]]);
+    for (const target of suitesIn(segment))
+      if (target !== name && !(target in pkg.scripts)) dangling.push([name, target]);
   }
 if (dangling.length) {
   fail++;
@@ -272,8 +281,12 @@ if (dangling.length) {
 // gate quietly running less than it says. An empty chain is the sharp one: `smoke:ci` would exit 0
 // in seconds and every branch would read green.
 const chain = readCiSuites() as string[];
+const missingChainEntries = chain.filter((suite) => !(suite in pkg.scripts));
 const dupes = [...new Set(chain.filter((s, i) => chain.indexOf(s) !== i))].sort();
-if (chain.length < 2) {
+if (missingChainEntries.length) {
+  fail++;
+  console.log(`  ✗ FAIL: bin/smoke/ci-suites.txt names ${missingChainEntries.length} missing script(s): ${missingChainEntries.join(", ")}`);
+} else if (chain.length < 2) {
   fail++;
   console.log(`  ✗ FAIL: bin/smoke/ci-suites.txt holds ${chain.length} suite(s) — a chain that runs nothing exits 0`);
 } else if (dupes.length) {

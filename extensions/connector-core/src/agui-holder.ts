@@ -22,11 +22,12 @@ import type { AguiEmitter } from "./agui.js";
 /**
  * Holds at most one {@link AguiEmitter}, started on first adopt.
  *
- * `T` is the connector's source record type; the holder never inspects one. It owns exactly three
- * things — WHEN the emitter starts, that it starts AT MOST ONCE, and that everything touching it is
- * serialized — and deliberately owns no policy about what an event means or how a frame is built.
+ * `T` is the connector's source record type; the holder never inspects one. It owns four things —
+ * WHEN the emitter starts, that it starts AT MOST ONCE, that everything touching it is serialized,
+ * and carrying the first adopt's opaque context to the connector-owned factory — and deliberately
+ * owns no policy about what that context, an event, or a frame means.
  */
-export class AguiEmitterHolder<T> {
+export class AguiEmitterHolder<T, StartContext = undefined> {
   private emitter?: AguiEmitter<T>;
   /** The path this holder is BOUND to. Set before `starting`, so a second path is refused even
    *  while the first start is still in flight. */
@@ -54,9 +55,11 @@ export class AguiEmitterHolder<T> {
   private chain: Promise<void> = Promise.resolve();
 
   /**
-   * @param startEmitter Builds and starts the emitter for an adopted path. Injected rather than
-   *   assembled here: the WAL location, the source, and the record mapper are all connector
-   *   decisions, and a holder that made them would be a second place they are decided.
+   * @param startEmitter Builds and starts the emitter for an adopted path. `context` is the opaque
+   *   value supplied with the FIRST adopt (if any); the holder only carries it, while the connector
+   *   decides what it means. Injected rather than assembled here: the WAL location, the source, and
+   *   the record mapper are all connector decisions, and a holder that made them would be a second
+   *   place they are decided.
    * @param onError Where a failure goes. Required, and not defaulted to a swallow: this class runs
    *   behind a hook that must not throw, so the only way a failure reaches a human is if the caller
    *   is made to say where it goes.
@@ -68,7 +71,7 @@ export class AguiEmitterHolder<T> {
    *   already closed, and the emitter would refuse the batch.
    */
   constructor(
-    private readonly startEmitter: (path: string) => Promise<AguiEmitter<T>>,
+    private readonly startEmitter: (path: string, context: StartContext | undefined) => Promise<AguiEmitter<T>>,
     private readonly onError: (e: Error) => void,
     private readonly onRunClosed?: (runId: string) => void,
   ) {}
@@ -127,8 +130,11 @@ export class AguiEmitterHolder<T> {
    *
    * Synchronous and non-throwing by contract, because a hook calls it. The work lands on the chain.
    */
-  adopt(path: unknown): void {
-    this.enqueue(() => this.ensureStarted(path).then(() => undefined));
+  adopt(path: unknown, context?: StartContext): void {
+    // Capture the context in THIS queued operation. A shared mutable slot would let a later hook
+    // overwrite the first session's startup fact while the connector-owned factory is still waiting
+    // on its own async preconditions.
+    this.enqueue(() => this.ensureStarted(path, context).then(() => undefined));
   }
 
   /**
@@ -178,7 +184,7 @@ export class AguiEmitterHolder<T> {
     });
   }
 
-  private async ensureStarted(path: unknown): Promise<AguiEmitter<T> | undefined> {
+  private async ensureStarted(path: unknown, context?: StartContext): Promise<AguiEmitter<T> | undefined> {
     if (this.dead) return undefined;
     if (typeof path !== "string" || path.length === 0) return undefined;
 
@@ -239,7 +245,7 @@ export class AguiEmitterHolder<T> {
         // What this file does own is the bracket interleave, and it is OPEN: two emitters would
         // each keep their own bracket machine and nothing detects the interleave. That is the
         // stated writer-cardinality limit.
-        this.emitter = await this.startEmitter(path);
+        this.emitter = await this.startEmitter(path, context);
         return this.emitter;
       } catch (e) {
         this.die(e as Error);

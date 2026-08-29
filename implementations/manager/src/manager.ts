@@ -8,7 +8,6 @@ import {
   CotalEndpoint,
   DEFAULT_SERVER,
   DEV_OWNER,
-  MANAGER_LEASE_TTL_MS,
   MANAGER_LEASE_RENEW_MS,
   STANDING_RENEWABLE_TTL_SEC,
   agentFilePath,
@@ -45,7 +44,7 @@ import {
   controlServiceSubject,
   eventChannelPrincipal,
 } from "@cotal-ai/core";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KEY, findCotalRoot, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KEY, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, findCotalRoot, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SecretStore, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -425,6 +424,9 @@ export interface StartAgentOpts {
   name: string;
   /** Connector / agent type — resolved from the registry. Defaults to `COTAL_DEFAULT_AGENT`, else `"cotal"`. */
   agent?: string;
+  /** Detached caller's default connector, kept separate from an explicit flag so the persona file
+   *  can outrank it. Imperative control requests only; direct and manifest launches omit it. */
+  defaultAgent?: string;
   role?: string;
   /** Explicit agent-file path that overrides the `name` ref for *which file to load* (identity still
    *  comes from that file's `name:`). The file must exist. */
@@ -551,10 +553,12 @@ interface ManagedAgent {
   suppressCleanup?: boolean;
   /** The F5 TERMINALIZING latch (Unit B): flipped SYNCHRONOUSLY before the first await on every
    *  stop/despawn path (stopHandle + freeSlot are the chokepoints). Once set, this principal's
-   *  control ops refuse (the membership gate) and no further credential is minted for it
-   *  (renewal + the slot's own durable phase both refuse) — closing the freeSlot→retiring window
-   *  in-process, not just by `agents.delete` ordering. */
+   *  control ops refuse and no later renewal is admitted. A renewal already admitted drains before
+   *  the durable terminal begins, so its row and material are included in revocation and cleanup. */
   terminalizing?: boolean;
+  /** The one renewal admitted before terminalization. Retirement drains it before revocation and
+   *  cleanup; callers arriving after the latch never join it. */
+  staticCredentialRenewal?: Promise<void>;
 }
 
 
@@ -675,6 +679,8 @@ function foreignEventChannels(channels: readonly string[], owner: string, actor:
     return p !== null && !(p.owner === owner && p.actor === actor);
   });
 }
+
+type LeaseState = "held" | "held-unrenewed" | "gone" | "taken" | "unknown";
 
 export class Manager {
   private readonly space: string;
@@ -820,19 +826,9 @@ export class Manager {
   private leaseInfo?: Omit<ManagerLeaseInfo, "since">;
   private leaseRevision?: number;
   private leaseTimer?: ReturnType<typeof setInterval>;
-  /** When this instance last knew the key's TTL had been REFRESHED: a successful acquire or renew, or
-   *  a re-read showing the revision moved past the one we held (our write landed, only its ack was
-   *  lost). The gap since then is the only thing bounding how long we may keep serving with no answer
-   *  at all, so it must track the last TTL-refreshing WRITE and not the last successful observation.
-   *  A re-read at the same revision is deliberately NOT a refresh: it proves the key exists at that
-   *  instant, while the key still expires when the last landed write said it would.
-   *
-   *  MONOTONIC (`performance.now`), not wall clock, because it is only ever read as an ELAPSED time.
-   *  `Date.now` steps on an NTP correction or a suspend/resume, and a backward step would shorten the
-   *  measured gap and let this instance serve past the TTL with no proof it still holds the key. The
-   *  initial value is `-Infinity` so "never refreshed" reads as an infinite gap and fails closed,
-   *  rather than as a small one at process start when a monotonic clock is still near zero. */
-  private leaseConfirmedAt = Number.NEGATIVE_INFINITY;
+  /** What the last renew tick learned about this instance's key. Only a CHANGE of state is printed
+   *  (see {@link noteLease}), so an outage of hours is one line going in and one line coming out. */
+  private leaseState: LeaseState = "held";
   /** A renew is in flight. The tick must not start a second one: both would read the same cached
    *  revision, so whichever lands second CASes against a sequence the first already moved. */
   private leaseRenewInFlight = false;
@@ -1054,11 +1050,11 @@ export class Manager {
     // second workspace root) has a distinct id ⇒ a distinct key ⇒ it coexists; the create THROWS only
     // when the SAME instance id is already live (a same-root double-start, or a restart racing the
     // crashed predecessor's not-yet-expired key), and we REFUSE loud. A crashed holder's key auto-expires
-    // (bucket TTL). Losing this key later stops THIS instance only, never the space (security pin 6).
+    // (bucket TTL). Losing the key LATER never ends this process: the renew loop puts it back or keeps
+    // retrying ({@link renewLease}).
     this.leaseInfo = { holder: this.ep.ref().id, instanceId: this.managerInstanceId, runtime: this.runtime.kind, root: resolve(this.workspaceRoot), pid: process.pid };
     try {
       this.leaseRevision = await this.ep.acquireManagerLease(this.leaseInfo);
-      this.leaseConfirmedAt = performance.now();
     } catch (e) {
       // Our OWN instance id already holds a live key ⇒ refuse. Anything else (e.g. a KV/JS error) is a
       // real failure to surface, not a silent "held" — keep the cause so it isn't misread as a conflict.
@@ -1148,8 +1144,8 @@ export class Manager {
         // re-signed) so its reply proves it adopted THIS generation, not merely re-read some file.
         const expected: { delivery?: string; membership?: string } = {};
         for (const r of resigned) {
-          if (r.file === DELIVERY_CREDS_KEY && r.fingerprint) expected.delivery = r.fingerprint;
-          else if (r.file === MEMBERSHIP_RW_CREDS_KEY && r.fingerprint) expected.membership = r.fingerprint;
+          if (r.file === DELIVERY_CREDS_KIND && r.fingerprint) expected.delivery = r.fingerprint;
+          else if (r.file === MEMBERSHIP_RW_CREDS_KIND && r.fingerprint) expected.membership = r.fingerprint;
         }
         try {
           const reply = await this.ep.requestDeliveryAdmin("reloadCreds", { expected }, DELIVERY_ADMIN_RELOAD_TIMEOUT_MS);
@@ -1184,7 +1180,7 @@ export class Manager {
           // optimisation into the whole guard, and nothing fails at the moment of the change.
           if (a.userOwner || a.terminalizing || !a.seed || !a.secretPaths?.creds) continue;
           try {
-            const stored = await this.secrets.get(agentSecretKeyForFile(a.secretPaths.creds));
+            const stored = await this.secrets.get(agentSecretKeyForFile(a.secretPaths.creds, this.space));
             if (stored === undefined) continue; // no materialized cred (never minted here) - nothing to renew
             const health = inspectCredHealth(stored);
             if (health.state === "healthy") continue;
@@ -1275,10 +1271,17 @@ export class Manager {
    *  attempt it. An absent file is the unprovisioned space, reported by the daemon that needs it. */
   private warnOnSystemCredExpiry(): void {
     for (const file of SYSTEM_CREDS_FILES) {
-      const path = join(this.workspaceRoot, ".cotal", file);
-      if (!existsSync(path)) continue;
       let health: CredHealth;
       try {
+        // The pair is PER-SPACE as of P7, so the location comes from the resolver and never from a
+        // path built here (§2 rule 1). Building `.cotal/<kind>` instead would not warn on a wrong
+        // file — it would silently warn on NOTHING, for every provisioned root, forever, which is
+        // exactly the signal #338 added this for. The resolver may also refuse (§2 rules 3, 4); that
+        // refusal is caught with the unreadable case for the reason on the tin — the daemon that
+        // NEEDS the pair resolves it through the same function and reports it loudly there, so a
+        // diagnostic pass has nothing to add by crashing renewal.
+        const path = join(this.workspaceRoot, ".cotal", spaceMaterialKey(file, this.space, { injected: false, root: this.workspaceRoot }));
+        if (!existsSync(path)) continue;
         health = inspectCredHealth(readFileSync(path, "utf8"));
       } catch {
         continue; // an unreadable $SYS file is the daemon's loud failure, not a renewal-pass crash
@@ -1650,15 +1653,13 @@ export class Manager {
     };
   }
 
-  /** Tear down every managed agent's footprint — the shared teardown for EVERY manager-exit path (#159
-   *  B2): graceful {@link stop} AND the fail-closed lease-loss exit ({@link renewLease}). A manager exit is
+  /** Tear down every managed agent's footprint on a graceful {@link stop} (#159 B2). A manager exit is
    *  a mass agent-exit, and without this its agents' footprints (creds files + `dm_`/`dlv_` durables + ACL
    *  rows) would orphan exactly as the per-agent exit path prevents. Hard-stop each child (an exit has no
    *  time for the graceful grace window) and AWAIT its deprovision — bounded per agent (`withTimeout`) and
    *  best-effort (`allSettled` + a loud log), so one slow/failed teardown can neither hang nor abort exit.
    *  The creds file is dropped even if the broker teardown fails (see {@link deprovision}). Deliberately
-   *  touches NEITHER the lease NOR the endpoints — the caller owns those (and lease loss must NOT release
-   *  the key, which may now belong to a replacement holder). */
+   *  touches NEITHER the lease NOR the endpoints — the caller owns those. */
   private async teardownManagedAgents(): Promise<void> {
     const managed = [...this.agents.values()];
     for (const a of managed) {
@@ -1729,11 +1730,8 @@ export class Manager {
    * deadline — on every `cotal ps`, `stop` and `attach` in that space, for good. A manager that is
    * shutting down is the one participant that KNOWS it is going away, so it says so.
    *
-   * ONLY THE GRACEFUL PATH. `failClosedOnLeaseLoss` deliberately does not come here: a lost lease
-   * means this instance may already have been superseded, and the successor persists the SAME
-   * instanceId, so deregistering there could delete a live successor's registration. The delete is
-   * additionally revision-pinned inside {@link deregisterServiceInstance}, so even that race removes
-   * nothing — this is the second fence, not the only one.
+   * The delete is revision-pinned inside {@link deregisterServiceInstance}, so a successor that
+   * persists the SAME instanceId and has already re-registered loses nothing to a slow stop here.
    *
    * Best-effort and LOUD, matching every other teardown step: a broker that is already gone must not
    * turn a stop into a failure, but a registration that survives a stop is the exact defect this
@@ -1762,8 +1760,8 @@ export class Manager {
   }
 
   /** Stop the v0.4 service-endpoint serve loop (drain subscriptions, await in-flight handlers)
-   *  and drop its dedicated connection. Best-effort by design — both exit paths (graceful stop,
-   *  lease-loss fail-close) must complete their remaining teardown even if the broker is gone. */
+   *  and drop its dedicated connection. Best-effort so a graceful stop completes its remaining
+   *  teardown even when the broker is gone. */
   private async stopServiceServe(): Promise<void> {
     const s = this.serviceServe;
     if (!s) return;
@@ -1772,85 +1770,86 @@ export class Manager {
     try { await s.nc.drain(); } catch { try { s.nc.close(); } catch { /* best effort */ } }
   }
 
-  /** Refresh THIS instance's liveness lease before the bucket TTL expires it.
+  /** Keep this instance's liveness key fresh, and NEVER end the process over it.
    *
-   *  A FAILED RENEW IS NOT A LOST LEASE, and the difference is the whole shape of this method. The CAS
-   *  renew throws for reasons that prove entirely different things, and one of them proves nothing at
-   *  all: a request that gets NO ANSWER within its deadline does not establish that the write failed,
-   *  that the key expired, or that anyone else took it. It may even have LANDED, with only the
-   *  acknowledgement lost. Terminating on it kills a healthy manager and takes its agents with it.
+   *  A renew that throws is a question, not a verdict: the request may have timed out with the write
+   *  landed and only its acknowledgement lost, the key may have expired during a stall, or a same-id
+   *  process may hold it. The verdict comes from RE-READING the key ({@link reconcileLease}), and each
+   *  answer has one response, none of which is exiting:
+   *  - `held`: adopt the broker's revision and carry on.
+   *  - `gone`: the key expired or was released while this process was still here, so put it back. The
+   *    create is atomic, so a same-id process that got there first shows up as `taken` next tick.
+   *  - `taken`: a different process holds this instance's key. Say so, once, and keep serving. The
+   *    registration takeover is what fences a superseded serve family at the broker, and which of the
+   *    two processes goes is the operator's call, not this one's.
+   *  - `unknown`: the broker could not be asked. Keep serving and ask again next tick, for as long as it
+   *    takes. A manager that cannot reach its broker gains nothing by ending itself, and the seats it
+   *    holds lose everything (a pty child dies with its parent).
    *
-   *  So the renew failing is a question, not a verdict, and the verdict comes from RE-READING the key
-   *  ({@link CotalEndpoint.readOwnManagerLease}, which separates "it is gone" from "I could not find
-   *  out"). We fail closed on PROOF — the key is absent, or it is present and holds someone else — and
-   *  otherwise keep serving, adopting whatever revision the broker actually has.
-   *
-   *  WHEN NO ANSWER IS AVAILABLE AT ALL, the bound is time, not attempts: past one whole TTL with no
-   *  renew that LANDED, the key may have expired and been re-acquired, so this instance can no longer
-   *  claim to hold it and fails closed on that ground, said plainly. A re-read answering "still yours,
-   *  same revision" IS an answer and we keep serving on it, but it did not touch the key, so it buys
-   *  no time — reading a key is not refreshing it. Inside the TTL the budget affords another
-   *  renew-and-re-read pair ({@link MANAGER_LEASE_RENEW_MS}), which is what makes waiting safe.
-   *
-   *  FAILING CLOSED IS FOR THIS INSTANCE ONLY: stop serving + tear down OUR managed agents + exit, so a
-   *  stalled instance can't keep double-processing under a key a same-id restart may re-acquire. Keyed
-   *  per instance, so it NEVER frees or touches a sibling manager's key and NEVER freezes the space
-   *  (security pin 6) — the sibling keeps serving. We do NOT re-acquire (a same-id restart may already
-   *  be live) and do NOT release the key (it may be the restart's). */
+   *  This replaces a fail-close that ended the process one tick past the lease TTL with no answer, which
+   *  on a live mesh turned a ten-second broker or KV outage into a manager outage that lasted until an
+   *  operator noticed. */
   private async renewLease(): Promise<void> {
     // A renew that runs long must not be overlapped by the next tick: both would CAS against the same
     // cached revision, so whichever lands second is refused over a sequence the first legitimately
-    // moved — a conflict this instance manufactured itself.
+    // moved, a conflict this instance manufactured itself.
     if (this.leaseRenewInFlight) return;
     this.leaseRenewInFlight = true;
     try {
       if (!this.leaseInfo || this.leaseRevision === undefined) return;
       try {
         this.leaseRevision = await this.ep.renewManagerLease(this.leaseInfo, this.leaseRevision);
-        this.leaseConfirmedAt = performance.now();
+        this.noteLease("held", `renews its liveness lease again (revision ${this.leaseRevision})`);
         return;
       } catch (renewError) {
         const why = (renewError as Error).message;
         const verdict = await this.reconcileLease();
-        if (verdict.kind === "held") {
-          // WHETHER THIS REFILLS THE BUDGET TURNS ON ONE THING: did our write land? It did, with only
-          // its acknowledgement lost, exactly when the stored revision has moved past the one we hold.
-          // That write is what restarted the key's TTL, so only it may reset the clock below.
-          //
-          // A re-read at the SAME revision proves the key exists AT THAT INSTANT and nothing more. Our
-          // write did not land, the TTL was not restarted, and the key still expires when the last
-          // landed write said it would. Resetting the clock here would measure the budget from the last
-          // OBSERVATION rather than from the last TTL-refreshing write, and the budget would then
-          // outlive the key: a streak of same-revision re-reads keeps refilling it, and if reads then
-          // stop answering too, this instance goes on serving for a further whole TTL after the key has
-          // actually expired and a same-id restart has taken it. Serving on a key we can still SEE is
-          // right; buying more time to serve on a key we cannot see is not.
-          const landed = verdict.revision > this.leaseRevision;
-          this.leaseRevision = verdict.revision;
-          if (landed) this.leaseConfirmedAt = performance.now();
-          console.error(`! manager instance ${this.managerInstanceId} could not renew its liveness lease for space "${this.space}" (${why}) - the key is still ours at revision ${verdict.revision}${landed ? ", and that renew had in fact landed" : ", though this renew did not land, so the key's TTL was not restarted"}, so this instance keeps serving`);
-          return;
-        }
-        if (verdict.kind === "unknown") {
-          const since = performance.now() - this.leaseConfirmedAt;
-          if (since < MANAGER_LEASE_TTL_MS) {
-            console.error(`! manager instance ${this.managerInstanceId} could not renew its liveness lease for space "${this.space}" (${why}) and could not re-read it either (${verdict.why}) - that proves nothing about the key, and its lease was last refreshed ${Math.round(since)}ms ago, so this instance keeps serving and will retry`);
+        switch (verdict.kind) {
+          case "held":
+            // The re-read is the broker's truth about the revision: adopt it, whether our write landed
+            // with its acknowledgement lost (revision moved) or never landed (revision unchanged).
+            this.leaseRevision = verdict.revision;
+            this.noteLease("held-unrenewed", `could not renew its liveness lease (${why}) but the key is still its own at revision ${verdict.revision}; serving, retrying`);
+            return;
+          case "gone": {
+            // The key being gone is a fact before the re-acquire is attempted, so a successful
+            // re-acquire is a change of state (gone to held) and prints, every time it happens.
+            const before = this.leaseState;
+            this.leaseState = "gone";
+            try {
+              this.leaseRevision = await this.ep.acquireManagerLease(this.leaseInfo);
+              this.noteLease("held", `found its liveness lease key gone (renew: ${why}) and re-acquired it at revision ${this.leaseRevision}`);
+            } catch (e) {
+              this.leaseState = before;
+              this.noteLease("gone", `found its liveness lease key gone (renew: ${why}) and could not re-acquire it yet (${(e as Error).message}); serving, retrying`);
+            }
             return;
           }
-          return await this.failClosedOnLeaseLoss(`its lease key ${Number.isFinite(since) ? `has not been refreshed for ${Math.round(since)}ms, longer than the ${MANAGER_LEASE_TTL_MS}ms lease TTL` : "was never refreshed"}, so this instance can no longer prove it holds it (renew: ${why}; re-read: ${verdict.why})`);
+          case "taken":
+            this.noteLease("taken", `finds its liveness lease key held by ${verdict.by}, not by this process (renew: ${why}); serving, retrying. Two processes claim manager instance ${this.managerInstanceId}: stop one of them`);
+            return;
+          case "unknown":
+            this.noteLease("unknown", `could not renew its liveness lease (${why}) or re-read it (${verdict.why}); serving, retrying until the broker answers`);
+            return;
         }
-        return await this.failClosedOnLeaseLoss(verdict.kind === "gone"
-          ? `its lease key is GONE from the bucket - expired or released (renew: ${why})`
-          : `its lease key is now held by ${verdict.by} and not by this process (renew: ${why})`);
       }
     } finally {
       this.leaseRenewInFlight = false;
     }
   }
 
+  /** Print `what` only when the lease state CHANGES. The renew ticks every few seconds, so a long
+   *  outage would otherwise print the same line thousands of times; an operator needs the line going
+   *  in and the line coming out, with the instance and the space on both. */
+  private noteLease(state: LeaseState, what: string): void {
+    if (state === this.leaseState) return;
+    this.leaseState = state;
+    console.error(`${state === "held" ? "✓" : "!"} manager instance ${this.managerInstanceId} ${what} (space "${this.space}")`);
+  }
+
   /** What the broker actually says about THIS instance's lease key, right now. `unknown` is a first-class
    *  answer and never collapses into `gone`: not being able to look is not the same fact as looking and
-   *  finding nothing, and only the latter may end a manager. */
+   *  finding nothing. */
   private async reconcileLease(): Promise<
     | { kind: "held"; revision: number }
     | { kind: "gone" }
@@ -1868,67 +1867,6 @@ export class Manager {
     // identity both PERSIST across restart by design, so neither can tell the two processes apart.
     if (current.info.pid !== process.pid) return { kind: "taken", by: `pid ${current.info.pid} (${current.info.runtime}, root ${current.info.root})` };
     return { kind: "held", revision: current.revision };
-  }
-
-  /**
-   * Release ownership of every managed agent WITHOUT stopping it and WITHOUT deprovisioning its
-   * footprint — the child disposition for an exit this instance did not choose.
-   *
-   * WHY THIS IS NOT {@link teardownManagedAgents}. Losing the argument about who may SERVE a space
-   * is not a finding about whether these agents should die. The two were one act on the lease-loss
-   * path, so a supervisor that could not reach the broker for a lease TTL killed every seat it held
-   * and revoked their credentials. That is the wrong conclusion drawn from a connectivity fact, and
-   * on a live mesh it is reached over a timeout the very next retry would have cleared.
-   *
-   * WHAT IT LEAVES BEHIND, AND WHY THAT IS SAFE. Each agent is marked `suppressCleanup` before it
-   * leaves the map, so no later call site in this process can select it for deprovision, and its
-   * credential, durables and broker footprint outlive us. That is EXACTLY the state an abrupt death
-   * leaves (SIGKILL, OOM, power loss), which the next manager's static reconcile sweep already
-   * recovers by terminalizing an active slot with no live managed owner. The difference is that
-   * this one is announced.
-   *
-   * WHAT IT DOES NOT CLAIM. Detaching does not make a child outlive the process. A `node-pty` child
-   * dies when its spawning process exits, measured, and no manager-side policy changes that; only a
-   * runtime whose child is owned elsewhere (tmux/herdr/cmux) actually survives. This method removes
-   * the manager's DELIBERATE kill and revoke, which is the half the manager controls.
-   */
-  private detachManagedAgents(reason: string): void {
-    const managed = [...this.agents.values()];
-    for (const a of managed) {
-      // Set BEFORE the map delete: the flag is what every deprovision call site filters on, and an
-      // agent that left the map without it is one a concurrent path could still select.
-      a.suppressCleanup = true;
-      this.agents.delete(a.name);
-    }
-    if (managed.length === 0) return;
-    const seats = managed.map((a) => `${a.name} (${a.id}${a.handle.pid !== undefined ? `, pid ${a.handle.pid}` : ""})`).join(", ");
-    console.error(
-      `! manager instance ${this.managerInstanceId} detached ${managed.length} managed agent(s) - ${reason}\n` +
-        `  Left running and NOT stopped by this manager; their credentials and durables are RETAINED, not revoked: ${seats}\n` +
-        `  A child owned by this process (the pty runtime) still dies with it; a child owned elsewhere (tmux/herdr/cmux) keeps running.\n` +
-        `  NEXT: start a manager for space "${this.space}" - its reconcile sweep recovers any seat whose child did not survive.`,
-    );
-  }
-
-  /** Stop serving and end this process, naming what was PROVED rather than what merely failed. */
-  private async failClosedOnLeaseLoss(proof: string): Promise<never> {
-    console.error(`! manager instance ${this.managerInstanceId} lost its liveness lease for space "${this.space}": ${proof} - shutting down THIS instance (its serving only; siblings keep the space)`);
-    if (this.leaseTimer) clearInterval(this.leaseTimer);
-    // DETACH rather than tear down — but ONLY from the active state. A cut that has committed and
-    // not finalized still has an inventory the successor will replay, and children left running
-    // would be spawned a SECOND time under the same identities; that window keeps the retained stop
-    // (which stops the child but does not deprovision it). Do NOT release the lease key (it may
-    // belong to the replacement holder). Best-effort, like ep/attach.
-    try {
-      if (this.maintenanceState === "active" && !this.resumeRequired) this.detachManagedAgents(`lease loss: ${proof}`);
-      else await this.stopRetainedAgentsOnExit();
-    } catch { /* best effort */ }
-    await this.stopServiceServe();
-    await this.stopGoalWriter();
-    await this.stopSessionPlane();
-    try { await this.ep.stop(); } catch { /* best effort */ }
-    try { await this.attach.stop(); } catch { /* best effort */ }
-    process.exit(1);
   }
 
   private async opFinalizeResume(rawArgs: unknown): Promise<ControlReply> {
@@ -2402,7 +2340,8 @@ export class Manager {
    *  never swallowed silently. Being the single stop chokepoint, guarding here covers all callers at once. */
   private stopHandle(a: ManagedAgent, graceful: boolean): void {
     // The F5 TERMINALIZING latch (Unit B): flipped SYNCHRONOUSLY, before any await anywhere on
-    // this stop path — from here this principal's control ops refuse and no credential renews.
+    // this stop path — later renewals refuse, while an already-admitted renewal drains before the
+    // durable terminal begins.
     a.terminalizing = true;
     try {
       if (graceful && process.platform === "win32" && a.control) controlShutdown(a.control);
@@ -2503,7 +2442,7 @@ export class Manager {
     const secrets = this.secrets;
     // LIFECYCLE-KEYED family (SPEC 13.1 name-disjointness on the FS): this incarnation's files
     // embed its uid, so no teardown addressed to another incarnation can ever reach them.
-    const files = agentLifecycleSecretFilePaths(this.workspaceRoot, name, opts.lifecycleUid);
+    const files = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, opts.lifecycleUid);
     const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = files;
     try {
       // The GRANT first — it is the envelope-rule enforcement point (a delegation must sit within
@@ -2536,10 +2475,10 @@ export class Manager {
       // The store holds the source of truth; the bearer re-exec (`--token-file`) and the launch's
       // sentinel handoff read FILES, so materialize both at the canonical paths (under the local
       // FS composition, a byte-identical rewrite of the keys' own locations).
-      await secrets.put(agentSecretKeyForFile(tokenPath), grant.actorToken);
-      await secrets.put(agentSecretKeyForFile(sentinelPath), grant.sentinelCreds);
-      await materializeSecretToFile(secrets, agentSecretKeyForFile(tokenPath), tokenPath);
-      await materializeSecretToFile(secrets, agentSecretKeyForFile(sentinelPath), sentinelPath);
+      await secrets.put(agentSecretKeyForFile(tokenPath, this.space), grant.actorToken);
+      await secrets.put(agentSecretKeyForFile(sentinelPath, this.space), grant.sentinelCreds);
+      await materializeSecretToFile(secrets, agentSecretKeyForFile(tokenPath, this.space), tokenPath);
+      await materializeSecretToFile(secrets, agentSecretKeyForFile(sentinelPath, this.space), sentinelPath);
       rmSync(healthPath, { force: true }); // a fresh start opens a fresh health window
       const bearerCmd = [
         // The manager's own invocation prefix (node + loader flags + the cotal entry) — the agent
@@ -2565,8 +2504,8 @@ export class Manager {
       // may respawn the moment it reads the refusal, and a detached teardown would race (and
       // delete) that fresh spawn's just-provisioned durables.
       await provider.revokeAgent({ dir, owner, actor: name }).catch(() => {});
-      await secrets.delete(agentSecretKeyForFile(tokenPath)).catch(() => {});
-      await secrets.delete(agentSecretKeyForFile(sentinelPath)).catch(() => {});
+      await secrets.delete(agentSecretKeyForFile(tokenPath, this.space)).catch(() => {});
+      await secrets.delete(agentSecretKeyForFile(sentinelPath, this.space)).catch(() => {});
       rmSync(tokenPath, { force: true });
       rmSync(sentinelPath, { force: true });
       rmSync(healthPath, { force: true });
@@ -2615,8 +2554,9 @@ export class Manager {
 
   private freeSlot(a: ManagedAgent, floor: boolean, cause: FreeSlotCause, acceptedBeforeFence = false): void {
     if (this.agents.get(a.name) !== a) return; // already freed (exit raced despawn, etc.)
+    // F5 latch (Unit B): also covers exit/reap paths that never rode stopHandle.
     this.logSeatReaped(a, cause);
-    a.terminalizing = true; // F5 latch (Unit B): also covers exit/reap paths that never rode stopHandle
+    a.terminalizing = true;
     this.agents.delete(a.name);
     if (a.restart?.sessionStatePath) rmSync(a.restart.sessionStatePath, { force: true });
     // P2 item 6 (pin 4): end any live §13.6 attach session bound to THIS incarnation with the honest
@@ -2701,9 +2641,9 @@ export class Manager {
     // standing `cotal mint` cred, a seeded workstation cred, a pre-split leftover): deleting an
     // unowned same-name file is the exact successor-clobber this ownership discipline removes.
     const secrets = this.secrets;
-    const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, a.name, a.lifecycleUid);
+    const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid);
     if (files.creds) {
-      await secrets.delete(agentSecretKeyForFile(files.creds));
+      await secrets.delete(agentSecretKeyForFile(files.creds, this.space));
       rmSync(files.creds, { force: true });
     }
     if (a.userOwner) {
@@ -2711,8 +2651,8 @@ export class Manager {
       // the agent's standing mint authority, so delete it (next exchange refused, next connect
       // denied) and shred the secret/sentinel/health files. A copied actor token dies here; a
       // still-LIVE connection ends at its bearer-bound JWT expiry (≤ the agent TTL).
-      if (files.actorToken) await secrets.delete(agentSecretKeyForFile(files.actorToken));
-      if (files.sentinelCreds) await secrets.delete(agentSecretKeyForFile(files.sentinelCreds));
+      if (files.actorToken) await secrets.delete(agentSecretKeyForFile(files.actorToken, this.space));
+      if (files.sentinelCreds) await secrets.delete(agentSecretKeyForFile(files.sentinelCreds, this.space));
       for (const f of [files.actorToken, files.sentinelCreds, files.health]) if (f) rmSync(f, { force: true });
       // The ledger row IS the agent's STANDING mint authority (a different store from the auth-plane
       // cred ledger the rail retirement covers): while it lives, a copied actor token can still mint a
@@ -3173,6 +3113,8 @@ export class Manager {
       return Promise.resolve({ ok: false, error: "resume: session id must not be empty" });
     if (args.variant !== undefined && !String(args.variant).trim())
       return Promise.resolve({ ok: false, error: "variant: must not be empty" });
+    if (args.defaultAgent !== undefined && !String(args.defaultAgent).trim())
+      return Promise.resolve({ ok: false, error: "defaultAgent: must not be empty" });
     // Opaque launch options, when present, must be a mapping — a raw control message could send a
     // scalar/array (the CLI never does). Core doesn't interpret the keys; the connector validates them.
     if (args.launchOptions !== undefined && (typeof args.launchOptions !== "object" || args.launchOptions === null || Array.isArray(args.launchOptions)))
@@ -3197,6 +3139,7 @@ export class Manager {
       {
         name: String(args.name ?? "").trim(),
         agent: args.agent ? String(args.agent) : undefined,
+        defaultAgent: args.defaultAgent ? String(args.defaultAgent) : undefined,
         role: args.role ? String(args.role) : undefined,
         config: args.config ? String(args.config) : undefined,
         identity: args.identity ? String(args.identity) : undefined,
@@ -3406,7 +3349,42 @@ export class Manager {
       const refErr = this.nameError(ref);
       if (refErr) return { ok: false, error: refErr };
     }
-    const agent = opts.agent ?? defaultAgentType(DEFAULT_CONNECTOR);
+
+    // Resolve the persona file (fail loud — NO silent default-ACL fallback). A missing persona used
+    // to mint DEFAULT creds (read `general` only, default-deny publish, no capabilities), so a
+    // typo'd / renamed / spawned-by-display-name agent became live with silently-wrong ACLs — a
+    // behavioral/security bug. Fail loud instead, matching `cotal spawn` (loadAgentFile throws).
+    // This runs BEFORE the connector resolution below: the file's `agent:` pin participates in the
+    // harness choice (flag > file > COTAL_DEFAULT_AGENT > default, #869), which is impossible if the
+    // connector is materialized first. Still synchronous (existsSync/readFileSync), so the capacity/
+    // reserve span below stays atomic.
+    let configPath: string;
+    if (opts.config) {
+      configPath = agentFilePath(this.workspaceRoot, opts.config);
+      if (!existsSync(configPath)) return { ok: false, error: `agent file not found: ${configPath}` };
+    } else {
+      configPath = agentFilePath(this.workspaceRoot, ref);
+      if (!existsSync(configPath))
+        return { ok: false, error: `no persona "${ref}" - ${configPath} not found; create it or pass --config (see \`cotal personas list\`)` };
+    }
+
+    // Load the persona ONCE, here, ahead of the connector choice. The file's `agent:` pin feeds the
+    // harness resolution below; the identity/ACL profile block later consumes the SAME def (no second
+    // load). A manifest launch (`resolved`) materializes its own transient persona and the file is
+    // NOT its authority, so its def (and its agent pin) is deliberately not consulted here — the
+    // manifest's own `agent:` field drove the launch object already.
+    let def: AgentDef | undefined;
+    if (!opts.resolved) {
+      try {
+        def = loadAgentFile(configPath);
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    }
+    // Harness precedence (#869): --agent flag > persona file `agent:` > detached caller default >
+    // this manager's COTAL_DEFAULT_AGENT > DEFAULT_CONNECTOR. Both environment values are defaults,
+    // never overrides: neither may beat a deliberate per-persona pin.
+    const agent = opts.agent ?? def?.agent ?? opts.defaultAgent ?? defaultAgentType(DEFAULT_CONNECTOR);
 
     // Materialize the requested connector up front — the ONE async step in the spawn path (a lazy
     // `cotal ext` manifest import on the published binary). It runs BEFORE the capacity/reserve span
@@ -3431,20 +3409,6 @@ export class Manager {
     const cooling = this.coolingCount(); // prune expired stamps, then count live cooling slots
     if (this.agents.size + this.reserved.size + cooling >= MAX_AGENTS)
       return { ok: false, error: `at capacity (${MAX_AGENTS} agents incl. in-flight + cooling); despawn one or wait` };
-
-    // Resolve the persona file (fail loud — NO silent default-ACL fallback). A missing persona used
-    // to mint DEFAULT creds (read `general` only, default-deny publish, no capabilities), so a
-    // typo'd / renamed / spawned-by-display-name agent became live with silently-wrong ACLs — a
-    // behavioral/security bug. Fail loud instead, matching `cotal spawn` (loadAgentFile throws).
-    let configPath: string;
-    if (opts.config) {
-      configPath = agentFilePath(this.workspaceRoot, opts.config);
-      if (!existsSync(configPath)) return { ok: false, error: `agent file not found: ${configPath}` };
-    } else {
-      configPath = agentFilePath(this.workspaceRoot, ref);
-      if (!existsSync(configPath))
-        return { ok: false, error: `no persona "${ref}" - ${configPath} not found; create it or pass --config (see \`cotal personas list\`)` };
-    }
 
     // Harness preflight before reserving a slot or minting — a missing `claude`/`opencode` binary
     // fails here with a clear name, not obscurely at process spawn. No fallback. All synchronous, so
@@ -3491,12 +3455,9 @@ export class Manager {
       prompt = r.prompt; // the guard above rejected an imperative prompt — one source
 
     } else {
-      let def: AgentDef;
-      try {
-        def = loadAgentFile(configPath);
-      } catch (e) {
-        return { ok: false, error: (e as Error).message };
-      }
+      // `def` was loaded once above the connector resolution (#869 ordering); consume it here.
+      // `resolved` is the only path that skips the load, and this is its opposite branch.
+      if (!def) return { ok: false, error: "internal: persona definition missing at launch profile" };
       // Identity: the `--name` override wins over the file's `name:` — foreground parity (there,
       // `requested = values.name ?? def.name`). The override is minted into the creds and rides
       // COTAL_NAME below, so the presence identity and its credential can't diverge.
@@ -3744,9 +3705,9 @@ export class Manager {
         const secrets = this.secrets;
         // LIFECYCLE-KEYED (SPEC 13.1 on the FS): the incarnation's cred file embeds its uid, so a
         // replayed/stale teardown can never address a same-name successor's credential.
-        credsPath = agentLifecycleSecretFilePaths(this.workspaceRoot, name, lifecycleUid).creds;
-        await secrets.put(agentSecretKeyForFile(credsPath), creds);
-        await materializeSecretToFile(secrets, agentSecretKeyForFile(credsPath), credsPath);
+        credsPath = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, lifecycleUid).creds;
+        await secrets.put(agentSecretKeyForFile(credsPath, this.space), creds);
+        await materializeSecretToFile(secrets, agentSecretKeyForFile(credsPath, this.space), credsPath);
         provisioned = { id: identity.id, name, lifecycleUid, secretPaths: { creds: credsPath } }; // footprint now exists — the finally rolls it back if the spawn throws
       }
       // Personal MCP servers the operator opted to share with manager-spawned agents of this type
@@ -4065,8 +4026,8 @@ export class Manager {
       // layout) or the name-keyed one (a pre-split inventory being carried across the upgrade).
       // Anything else is a foreign path and refused exactly as before.
       const candidates = [
-        resolve(agentLifecycleSecretFilePaths(this.workspaceRoot, entry.name, entry.identity.lifecycleUid).creds),
-        resolve(agentSecretFilePaths(this.workspaceRoot, entry.name).creds),
+        resolve(agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, entry.name, entry.identity.lifecycleUid).creds),
+        resolve(agentSecretFilePaths(this.workspaceRoot, this.space, entry.name).creds),
       ];
       const expected = resolve(entry.identity.credential.path);
       if (!candidates.includes(expected))
@@ -4078,7 +4039,7 @@ export class Manager {
         // composition resolves the key to this same path).
         const st = lstatSync(expected);
         if (!st.isFile() || st.isSymbolicLink()) throw new Error("not a regular non-symlink file");
-        const stored = await this.secrets.get(agentSecretKeyForFile(expected));
+        const stored = await this.secrets.get(agentSecretKeyForFile(expected, this.space));
         if (stored === undefined) throw new Error("the credential is not in the secret store");
         credentialText = stored;
         const actual = idFromCreds(credentialText);
@@ -4105,18 +4066,21 @@ export class Manager {
       // the atomic family closes both: `health` is pinned by PATH EQUALITY (never by file existence,
       // so a transiently-absent health file still validates), and the store reads below key off the
       // RECORDED path, so a foreign path can neither pass the pin nor address a different row.
-      const lifecycleFiles = agentLifecycleSecretFilePaths(this.workspaceRoot, entry.name, entry.identity.lifecycleUid);
-      const legacyFiles = agentSecretFilePaths(this.workspaceRoot, entry.name);
+      // Both triples are derived under THIS manager's space, and the key builder is given
+      // `this.space` rather than reading the segment out of the recorded path: an inventory row is
+      // caller data, and a recorded path may not choose which tenant's material is addressed.
+      const lifecycleFiles = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, entry.name, entry.identity.lifecycleUid);
+      const legacyFiles = agentSecretFilePaths(this.workspaceRoot, this.space, entry.name);
       const recordedToken = resolve(entry.identity.actorToken.path);
       const recordedSentinel = resolve(entry.identity.sentinelCredential.path);
       const recordedHealth = resolve(entry.identity.health.path);
       const matchesFamily = (f: { actorToken: string; sentinelCreds: string; health: string }): boolean =>
         recordedToken === resolve(f.actorToken) && recordedSentinel === resolve(f.sentinelCreds) && recordedHealth === resolve(f.health);
       if (!matchesFamily(lifecycleFiles) && !matchesFamily(legacyFiles))
-        throw new Error(`retained identity references for ${entry.name} are not one manager-owned secret family: all of actor-token, sentinel, and health must be the lifecycle-<uid> triple or the legacy name-keyed triple under ${agentCredsDir(this.workspaceRoot)} (no mixed families, no foreign health path)`);
+        throw new Error(`retained identity references for ${entry.name} are not one manager-owned secret family: all of actor-token, sentinel, and health must be the lifecycle-<uid> triple or the legacy name-keyed triple under ${agentCredsDir(this.workspaceRoot, this.space)} (no mixed families, no foreign health path)`);
       const secrets = this.secrets;
-      const actorToken = await secrets.get(agentSecretKeyForFile(recordedToken));
-      const sentinelCreds = await secrets.get(agentSecretKeyForFile(recordedSentinel));
+      const actorToken = await secrets.get(agentSecretKeyForFile(recordedToken, this.space));
+      const sentinelCreds = await secrets.get(agentSecretKeyForFile(recordedSentinel, this.space));
       if (actorToken === undefined || sentinelCreds === undefined)
         throw new Error("the retained actor token / sentinel credential is not in the secret store");
       const adopted = await provider.validateRetainedAgent({
@@ -4322,7 +4286,7 @@ export class Manager {
       // preserve/resume — without it the adopted cred would die loud at its TTL with no remint.
       let adoptedSeed: string | undefined;
       if (entry.identity.mode === "static") {
-        const stored = await this.secrets.get(agentSecretKeyForFile(resolve(entry.identity.credential.path)));
+        const stored = await this.secrets.get(agentSecretKeyForFile(resolve(entry.identity.credential.path), this.space));
         adoptedSeed = stored === undefined ? undefined : /-----BEGIN USER NKEY SEED-----\s*([A-Z0-9]+)\s*-----END USER NKEY SEED-----/.exec(stored)?.[1];
         if (adoptedSeed === undefined)
           console.error(`! resume ${entry.name}: the adopted credential carries no readable nkey seed - the manager cannot renew it (it dies loud at its exp)`);
@@ -5719,13 +5683,18 @@ export class Manager {
    *  clears (ABA-guarded by uid). A PRE-UNIT-B lifecycle (no slot row — spawned before the
    *  durable registry existed) has nothing to terminalize: its footprint teardown runs directly
    *  and the hold clears, the honest upgrade path. */
-  private async driveStaticRetirement(a: { id: string; name: string; lifecycleUid: string; secretPaths?: ManagedAgent["secretPaths"] }): Promise<void> {
+  private async driveStaticRetirement(a: { id: string; name: string; lifecycleUid: string; secretPaths?: ManagedAgent["secretPaths"]; staticCredentialRenewal?: Promise<void> }): Promise<void> {
+    // A renewal that published its flight before the synchronous terminal latch is accepted work.
+    // Drain it before the durable terminal enumerates credential ids and before cleanup deletes its
+    // material; a failed renewal must not block retirement because it may still have staged an id.
+    const acceptedRenewal = a.staticCredentialRenewal;
+    if (acceptedRenewal) await acceptedRenewal.catch(() => {});
     const opId = retireOpId(a.lifecycleUid);
     const cleanup = async (): Promise<void> => {
       const secrets = this.secrets;
-      const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, a.name, a.lifecycleUid);
+      const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid);
       if (files.creds) {
-        await secrets.delete(agentSecretKeyForFile(files.creds));
+        await secrets.delete(agentSecretKeyForFile(files.creds, this.space));
         rmSync(files.creds, { force: true });
       }
       await this.deprovisionBroker(a);
@@ -5760,42 +5729,28 @@ export class Manager {
    *  identity with the SAME scope (recorded on the managed row at spawn) and a fresh bounded
    *  exp, ledger the new credentialId (slot record first, then the row, then the file — a
    *  credential is never materialized before its ledger row exists), and re-sign the SAME
-   *  lifecycle-keyed file the agent endpoint's source seam re-reads. Never advances the epoch,
-   *  never routes through any barrier (renewal is the THIRD transition). */
+   *  lifecycle-keyed file the agent endpoint's source seam re-reads. Never advances the epoch;
+   *  renewal remains the THIRD transition. */
   private async renewManagedStaticCred(a: ManagedAgent): Promise<void> {
     if (!this.auth || !a.seed || !a.secretPaths?.creds) throw new Error("renewManagedStaticCred: not a renewable managed-static agent");
-    // THIS CHECK IS THE AUTHORITATIVE ONE. The renewal sweep's own `a.terminalizing` filter is an
-    // optimisation that has already-awaited by the time it matters; removing or weakening this line
-    // promotes that filter into the whole guard, with nothing failing at the moment of the change.
-    //
-    // CONFIRMED, OPEN, AND UNGATED. This check runs at ENTRY and there are FOUR awaits before the
-    // two writes below (`secrets.put` and `materializeSecretToFile`). A despawn landing in that
-    // window latches `terminalizing` and the retirement cleanup deletes exactly those two things —
-    // same secret key, same path — so an in-flight renewal RE-CREATES a valid bounded credential
-    // after teardown removed it, and `appendStaticCredentialRow` lands in the window too, which is
-    // the worse half: a stale file is recoverable by re-running cleanup, a durable credential row
-    // is the journal asserting the credential is legitimate.
-    //
-    // Reproduced by `smoke:renewal-terminal-race` (`renewal-terminal-race.smoke.ts`), which asserts
-    // the DURABLE ROW rather than the file — the file is timing-dependent, the row is a KV read.
-    // That suite is deliberately NOT in `smoke:ci`: it is expected RED until this is fixed, and
-    // gating a known red trains readers to treat the gate as noisy. So the absence of a red here
-    // is not evidence this is closed; run that suite.
-    //
-    // Reproduced on the FIRST attempt that reached the race, and that suite cannot produce a second:
-    // the alias frees only when teardown completes, and the defect is that teardown does not, so
-    // every later attempt is refused at spawn. That is a limit of the probe, NOT of the world — a
-    // FRESH ALIAS PER ATTEMPT makes a rate measurable. Do not read hits-over-attempts off that file
-    // as written; it is a number that is not a count.
-    //
-    // The fix is to make the WRITES conditional on the same latch the teardown orders against,
-    // never to retry: the correct outcome is "no credential", never "a credential minted later".
+    // Admission is synchronous. An accepted renewal publishes its flight before its first caller can
+    // terminalize the agent; terminalization rejects later callers and drains this flight before the
+    // durable terminal starts, giving renewal-before-terminal and terminal-before-renewal one order.
     if (a.terminalizing) throw new Error("renewManagedStaticCred: the lifecycle is terminalizing; no credential is minted after the terminal begins");
+    if (a.staticCredentialRenewal) return a.staticCredentialRenewal;
+    const renewal = this.driveManagedStaticCredRenewal(a).finally(() => {
+      if (a.staticCredentialRenewal === renewal) a.staticCredentialRenewal = undefined;
+    });
+    a.staticCredentialRenewal = renewal;
+    return renewal;
+  }
+
+  private async driveManagedStaticCredRenewal(a: ManagedAgent): Promise<void> {
     const exp = Math.floor(Date.now() / 1000) + MANAGED_STATIC_TTL_SEC;
     // The SAME permission scope the spawn minted (recorded on the managed row): allowSubscribe/
     // allowPublish/role/capabilities are the JWT-shaping inputs; `subscribe` (the active read
     // set) shapes durable membership only and is not a mint input.
-    const creds = await mintCreds(this.auth, { id: a.id, seed: a.seed }, "agent", {
+    const creds = await mintCreds(this.auth!, { id: a.id, seed: a.seed! }, "agent", {
       allowSubscribe: a.launch.allowSubscribe,
       allowPublish: a.launch.allowPublish,
       role: a.role,
@@ -5809,8 +5764,9 @@ export class Manager {
       await appendStaticCredentialRow(t, { lifecycleUid: a.lifecycleUid, credentialId, holderPrincipal: principalKey(DEV_OWNER, a.id).key, exp });
     });
     const secrets = this.secrets;
-    await secrets.put(agentSecretKeyForFile(a.secretPaths.creds), creds);
-    await materializeSecretToFile(secrets, agentSecretKeyForFile(a.secretPaths.creds), a.secretPaths.creds);
+    const credsPath = a.secretPaths!.creds!;
+    await secrets.put(agentSecretKeyForFile(credsPath, this.space), creds);
+    await materializeSecretToFile(secrets, agentSecretKeyForFile(credsPath, this.space), credsPath);
     console.error(`managed cred renewal ${a.name}: re-signed for the same identity (exp +${MANAGED_STATIC_TTL_SEC}s); the agent endpoint's source re-read adopts it`);
   }
 
@@ -6161,7 +6117,7 @@ export class Manager {
       // FAIL-CLOSED: a failed record is the failure + repair sentence; a missing/malformed or
       // stale record on a live agent is auth-unknown/auth-stale, NEVER silently healthy.
       const health = a.userOwner
-        ? agentAuthState(a.secretPaths?.health ?? agentLifecycleSecretFilePaths(this.workspaceRoot, a.name, a.lifecycleUid).health)
+        ? agentAuthState(a.secretPaths?.health ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid).health)
         : undefined;
       return {
         name: a.name,

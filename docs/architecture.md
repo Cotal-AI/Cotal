@@ -9,7 +9,7 @@ blocks. Identity, transport, storage, and discovery compose from proven pieces (
 JetStream, JWT/nkeys) rather than being reinvented. Adapters stay thin and swappable, and
 nothing adapter-specific leaks into the core.
 
-## Influences: A2A
+## A2A influence
 
 Cotal reuses A2A's vocabulary and shapes so it stays interoperable rather than siloed, and
 implements them over NATS/JetStream.
@@ -28,7 +28,7 @@ presence a bare pub/sub layer leaves to the app.
 Identity is an A2A `AgentCard` whose instance id is shaped to later become a **DID**
 (`did:key`) so authenticity can survive an untrusted relay ([roadmap](roadmap.md)).
 
-## One wire, mapped onto NATS
+## NATS mapping
 
 The messaging plane rides three subject kinds, with the sender encoded in the subject
 itself, where the server can police it, rather than in a self-asserted payload field
@@ -62,7 +62,7 @@ Whether any of this *requires* NATS is answered in
 [transport vs protocol](transport.md): the contract is transport-agnostic; NATS/JetStream
 is the reference binding.
 
-## Package layout: one-way tiers
+## Package layout
 
 ```
 examples ──→ implementations ──→ workspace ──→ core ←(peer)── extensions
@@ -108,10 +108,10 @@ extension removal reserves that same path so startup cannot cross uninstall.
 
 Beyond the app-bound connectors, `@cotal-ai/pi` is a **host-native plugin**: a pi extension
 loaded into the user's own pi (CLI or SDK-embedded), placing a Cotal endpoint inside the
-session's process and driving its run loop off the inbox — see
+session's process and driving its run loop off the inbox. See
 [connect-pi](connect-pi.md).
 
-## Connectors: four surfaces, one runtime
+## Connector runtime
 
 Every coding-agent integration exposes the same four surfaces:
 
@@ -138,7 +138,7 @@ supervisor rebuilds it (rebuilds are serialized and coalesced), and unacked in-f
 messages redeliver on the rebound durables, so nothing is lost across the gap. A manual
 `/reconnect` is the human-invoked counterpart.
 
-## Manager: a supervisor, not an orchestrator
+## Manager supervision
 
 The CLI does not spawn agents itself; a long-lived **manager** owns their lifecycle,
 asked over the mesh. The manager is not a privileged control plane: it is an ordinary
@@ -190,23 +190,21 @@ laterally; the manager only births and configures them.
   the same flag); an untargeted spawn rides class anycast and the acceptance records which
   instance took it. `ps` and `status` scatter across every registered instance and label a
   non-answering one as registered with no answer within the deadline, never dropping it.
-- **A manager holds a liveness lease, and only proof ends it.** Each instance keeps its own key
-  in the space's manager bucket and refreshes it several times over inside the key's TTL. A
-  refresh that gets *no answer* is not a lost lease: it proves nothing about the key, and the
-  write may even have landed with only the acknowledgement lost. So the manager re-reads the key
-  before deciding. It keeps serving when the key is still its own, adopting whatever revision the
-  broker actually has, and shuts itself down only on proof: the key is gone, or it now holds a
-  different process. Going longer than the TTL with no refresh that *landed* is its own reason
-  to stop, and it says so in those words. That window runs from the last write that actually
-  restarted the key's TTL: a re-read that finds the key unchanged is a real answer and the
-  manager keeps serving on it, but reading a key does not refresh it, so it buys no extra time.
-  Either way that stops one instance, never the space; a sibling manager keeps serving.
+- **A manager holds a liveness lease, and nothing about it ends the process.** Each instance
+  keeps its own key in the space's manager bucket and refreshes it several times over inside the
+  key's TTL. A refresh that fails is a question, not a verdict, so the manager re-reads the key
+  before deciding what to do. If the key is still its own it adopts the broker's revision and
+  carries on. If the key is gone (it expired during a stall) it puts it back. If another process
+  holds it, it says so and keeps serving; which of the two goes is the operator's call. If the
+  broker cannot be asked at all it keeps serving and asks again, for as long as that takes. A
+  manager that cannot reach its broker gains nothing by ending itself, and the seats it holds
+  lose everything. Each change of state is one line in `manager.log`, not one line per tick.
 - **Attach is a mesh session.** The console and dashboard discover agents over the **mesh**
   (presence, `ps`). `cotal attach` no longer hands back a `127.0.0.1` URL: it redeems a
   one-use, holder-bound session offer, and the terminal bytes stream over the mesh on
   core-NATS session subjects scoped to the two parties, with backpressure surfaced as an
-  explicit drop notice rather than silent loss. That is also how attach reaches a manager on
-  another machine — through the broker, not by dialing the manager's own socket. A late
+  explicit drop notice rather than silent loss. Attach reaches managers on other machines through
+  the broker. The manager's own socket stays private. A late
   attach still repaints the full screen from a replayed snapshot of a headless terminal
   mirror (including alternate-screen TUIs). If the manager restarts, its successor refuses
   the old session and the client surfaces "manager restarted; re-attach".
@@ -235,7 +233,7 @@ presence (invisible to peers) while watching everyone else's. All three surfaces
 shared render-agnostic model, so no surface re-implements wire semantics. The guide is
 [watch a mesh](watch-a-mesh.md); the model is [MeshView](mesh-view.md).
 
-## Names, roles, instances
+## Addressing
 
 Three identity layers, in increasing permanence
 ([SPEC §2](../SPEC.md#2-identity), [§6](../SPEC.md#6-presence-and-discovery)):

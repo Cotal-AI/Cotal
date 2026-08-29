@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import * as p from "@clack/prompts";
 import { type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
@@ -610,21 +610,22 @@ function writeDemoAgent(path: string, body: string): void {
 }
 
 /** The default persona `cotal spawn` (no name) launches: a generic mesh agent, seeded once and
- *  then the user's to shape. Unlike the demo team it's never refreshed (seed-if-absent), so any
- *  edits stand; deleting it just means the next `cotal setup` writes a fresh copy.
+ *  then the user's to shape. Unlike the demo team it is not generally refreshed; only the
+ *  byte-exact legacy template below is migrated, so any edit stands. Deleting it means the next
+ *  `cotal setup` writes a fresh copy.
  *
- *  Read scope is split intentionally: the ACTIVE set (`subscribe`) is EMPTY, so a fresh
- *  agent isn't firehosed every channel on the mesh at boot, while the read ACL (`allowSubscribe:
- *  [">"]`) still PERMITS it to read anything — it just has to `cotal_join` a channel to start
- *  receiving it. (`subscribe: [">"]` would auto-subscribe to every channel, the old behavior.) */
-const DEFAULT_AGENT = `---
+ *  Channel scope is split intentionally: the ACTIVE set (`subscribe`) is EMPTY, so a fresh agent
+ *  isn't firehosed every channel on the mesh at boot, while the read and post ACLs permit it to
+ *  join, create, read, and post channels on demand. (`subscribe: [">"]` would auto-subscribe to
+ *  every channel, the old behavior.) */
+export const DEFAULT_AGENT = `---
 name: default_agent
 role: default
 description: An agent on the mesh
 tags: []
 subscribe: []
 allowSubscribe: [">"]
-allowPublish: []
+allowPublish: [">"]
 capabilities: [spawn]
 ---
 
@@ -632,6 +633,45 @@ You are an agent on the Cotal mesh - a shared space where agents join, see who's
 coordinate as peers rather than working in silos. Use the Cotal tools available to you to find
 your peers and work with them. Edit this file to give yourself a name, role, and purpose.
 `;
+
+/** The byte-exact default template shipped before wildcard post permission. Keep this frozen: a
+ *  future edit to the current template must not make an older untouched file ineligible for repair. */
+export const LEGACY_DEFAULT_AGENT = [
+  "---",
+  "name: default_agent",
+  "role: default",
+  "description: An agent on the mesh",
+  "tags: []",
+  "subscribe: []",
+  'allowSubscribe: [">"]',
+  "allowPublish: []",
+  "capabilities: [spawn]",
+  "---",
+  "",
+  "You are an agent on the Cotal mesh - a shared space where agents join, see who's around, and",
+  "coordinate as peers rather than working in silos. Use the Cotal tools available to you to find",
+  "your peers and work with them. Edit this file to give yourself a name, role, and purpose.",
+  "",
+].join("\n");
+
+/** Return the shipped replacement only for the byte-exact legacy default. Any user edit, including
+ *  whitespace or frontmatter changes, keeps the persona under user ownership. Exported so the
+ *  static template smoke can grade the upgrade decision without touching real setup state. */
+export function migrateLegacyDefaultAgent(current: string): string | undefined {
+  return current === LEGACY_DEFAULT_AGENT ? DEFAULT_AGENT : undefined;
+}
+
+export function reconcileDefaultAgent(path: string): "seeded" | "migrated" | "unchanged" {
+  if (existsSync(path)) {
+    const replacement = migrateLegacyDefaultAgent(readFileSync(path, "utf8"));
+    if (replacement === undefined) return "unchanged";
+    writeFileSync(path, replacement);
+    return "migrated";
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, DEFAULT_AGENT);
+  return "seeded";
+}
 
 /**
  * WHERE a seeded persona has to land: the catalog `cotal spawn` will actually READ.
@@ -741,26 +781,24 @@ function announceSeedDestination(dest: SeedDestination): void {
   );
 }
 
-/** Seed the default persona if it's missing (idempotent, seed-if-absent), into the catalog `cotal
- *  spawn` actually reads. Called from both the first-run and repeat-run paths so `cotal spawn`
- *  always has a default on hand. Returns the destination so the caller can report the ABSOLUTE
- *  path it wrote — a relative `.cotal/agents/default.md` is precisely what let a seed into the
- *  wrong root pass for a seed into the right one. */
+/** Seed the default persona if it's missing, or migrate the byte-exact legacy template, in the
+ *  catalog `cotal spawn` actually reads. Called from both first-run and repeat-run paths so new
+ *  installs and untouched upgrades get the current grant while edited personas are never
+ *  overwritten. Returns the destination so the caller can report the ABSOLUTE path it wrote. */
 function seedDefaultAgent(dest: SeedDestination = seedDestination()): SeedDestination {
   seedDefaultAgentInto(dest.dir);
   return dest;
 }
 
-/** The write itself, seam-exported for the smoke: seed-if-absent into an explicit catalog dir. */
+/** The write itself, seam-exported for the smoke: reconcile into an explicit catalog directory. */
 export function seedDefaultAgentInto(dir: string): void {
   const path = join(dir, "default.md");
-  if (existsSync(path)) return;
-  // The mesh may have been registered against a brand-new, EMPTY root — no `.cotal` under it, let
-  // alone a `.cotal/agents`. `recursive` builds the whole chain, so "the resolved root has no
-  // agents dir at all" seeds exactly like an established one rather than throwing ENOENT.
-  mkdirSync(dir, { recursive: true }); // dir is the mesh's `.cotal/agents` catalog
-  writeFileSync(path, DEFAULT_AGENT);
-  provenance.wrote("default persona", path);
+  const result = reconcileDefaultAgent(path);
+  if (result === "migrated") {
+    provenance.wrote("updated default persona permissions", path);
+    return;
+  }
+  if (result === "seeded") provenance.wrote("default persona", path);
 }
 
 /** Seed the guided expert team — david (the engineer), sven (the guide), me (your session) — the

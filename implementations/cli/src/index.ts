@@ -214,7 +214,7 @@ const baseCommands: Command[] = [
     positionals: "<name>",
     flags: [
       { name: "profile", type: "string", value: "<agent|observer|admin>", description: "cred profile (default agent)" },
-      { name: "out", type: "string", value: "<path>", description: "output path (default .cotal/auth/creds/<name>.creds)" },
+      { name: "out", type: "string", value: "<path>", description: "output path (default .cotal/auth/creds/space.<key>/<name>.creds)" },
       { name: "signer", type: "boolean", description: "emit a stripped account-signing file instead" },
       { name: "force", type: "boolean", description: "with --signer: overwrite an existing file" },
       { name: "allow-subscribe", type: "string", value: "<a,b>", description: "agent profile: read ACL override (comma-separated); refused off it" },
@@ -477,9 +477,11 @@ const baseProcesses: LocalProcess[] = [
 registry.register(...baseCommands, ...baseProcesses);
 
 export { runCli } from "./command.js";
+export { setInstalledExtensionsEnabled } from "./ext-loader.js";
 export { c, statusBadge } from "./ui.js";
 // The full spawn grammar, for the composition root's launch-parity smoke (grammar ⊆ start-op ⊆ MCP).
 export { spawnFlags } from "./commands/spawn.js";
+export { spawnRequiredExtensions } from "./commands/spawn.js";
 export { updateFlags } from "./commands/update.js";
 // The launch-client timeout + the manifest launch client, for the same smoke: every launch door
 // must outlive the manager's readiness wait (#159 B1).

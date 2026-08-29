@@ -20,6 +20,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { webProbeTarget } from "../src/commands/status.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -44,6 +45,19 @@ for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key
 env.COTAL_HOME = home;
 env.COTAL_SKIP_CONNECTOR_SEED = "1";
 
+const remoteProbe = webProbeTarget("node cotal web --host 192.0.2.10 --port 8123 --no-open");
+check("the CLI status probe uses the explicit dashboard host and port",
+  !("refused" in remoteProbe) && remoteProbe.url.href === "http://192.0.2.10:8123/api/meta", remoteProbe);
+const defaultProbe = webProbeTarget("node cotal web --no-open");
+check("the CLI status probe preserves loopback defaults when --host and --port are absent",
+  !("refused" in defaultProbe) && defaultProbe.url.href === "http://127.0.0.1:7799/api/meta", defaultProbe);
+const wildcardProbe = webProbeTarget("node cotal web --host 0.0.0.0");
+check("the CLI status probe refuses a wildcard process host rather than probing a guessed address",
+  "refused" in wildcardProbe && wildcardProbe.refused.includes("invalid process host"), wildcardProbe);
+const wildcardAliasProbe = webProbeTarget("node cotal web --host 0");
+check("the CLI status probe refuses a canonical wildcard alias",
+  "refused" in wildcardAliasProbe && wildcardAliasProbe.refused.includes("invalid process host"), wildcardAliasProbe);
+
 async function freePort(): Promise<number> {
   const server = createServer();
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -65,6 +79,16 @@ async function portOpen(port: number): Promise<boolean> {
 
 function cli(...args: string[]) {
   return spawnSync(TSX, [CLI, ...args], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
+}
+
+/** The old-surface fact under comparison, excluding unrelated process-wide advisories whose
+ * presence depends on whether this particular subprocess crossed an approximate CPU threshold. */
+function oldManagerAnswer(text: string): string | undefined {
+  return text
+    .replace(/\x1b\[[0-9;]*m/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => /failed-precondition: the service registry for "manager"|no manager reachable/i.test(line));
 }
 
 async function waitForFile(path: string): Promise<void> {
@@ -157,7 +181,15 @@ try {
   const oldAbsentText = `${oldAbsent.stdout}${oldAbsent.stderr}`;
   check("REPRO control: existing ps gives the same manager-service answer when absent",
     oldAbsent.status !== 0 && /service registry.*stream not found|no manager reachable/i.test(oldAbsentText), oldAbsentText);
-  check("REPRO is indistinguishable on the old surface", oldPresent.status === oldAbsent.status && oldPresentText === oldAbsentText, { oldPresentText, oldAbsentText });
+  const oldPresentAnswer = oldManagerAnswer(oldPresentText);
+  const oldAbsentAnswer = oldManagerAnswer(oldAbsentText);
+  check(
+    "REPRO is indistinguishable on the old surface",
+    oldPresent.status === oldAbsent.status &&
+      oldPresentAnswer !== undefined &&
+      oldPresentAnswer === oldAbsentAnswer,
+    { oldPresentAnswer, oldAbsentAnswer, oldPresentText, oldAbsentText },
+  );
 
   const absent = cli("status", "--components", "--space", SPACE, "--server", server);
   const absentText = `${absent.stdout}${absent.stderr}`;

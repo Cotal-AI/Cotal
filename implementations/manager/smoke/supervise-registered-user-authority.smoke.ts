@@ -40,7 +40,7 @@ if (subcommand === "auth-service") {
   process.exit(0);
 }
 
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -104,45 +104,129 @@ const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const space = `registered-manager-${Math.random().toString(36).slice(2, 10)}`;
 const brokerPort = await pickFreePort();
-const publicPort = await pickFreePort();
 const server = `nats://127.0.0.1:${brokerPort}`;
 const clientId = "registered-manager-smoke";
 const hostDir = userAuthStateDir(hostRoot, space);
 const participantDir = userAuthStateDir(participantRoot, space);
 const hostStore = workspaceSecretStore(hostRoot);
 const participantStore = workspaceSecretStore(participantRoot);
-let authService: ReturnType<typeof spawn> | undefined;
-let broker: ReturnType<typeof spawn> | undefined;
+const authDiagnosticCap = 32 * 1024;
+const closedChildren = new WeakSet<ChildProcess>();
+let authService: ChildProcess | undefined;
+let authServiceDiagnostics = Buffer.alloc(0);
+let authServiceSpawnError: Error | undefined;
+let broker: ChildProcess | undefined;
 let idpServer: ReturnType<typeof createServer> | undefined;
 let endpoint: CotalEndpoint | undefined;
+let storeDir: string | undefined;
 
-function spawnAuthService(): ReturnType<typeof spawn> {
+function trackChild(child: ChildProcess): ChildProcess {
+  child.once("close", () => closedChildren.add(child));
+  return child;
+}
+
+function appendAuthDiagnostic(chunk: Buffer | string): void {
+  const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+  const combined = authServiceDiagnostics.length === 0
+    ? bytes
+    : Buffer.concat([authServiceDiagnostics, bytes]);
+  let start = Math.max(0, combined.length - authDiagnosticCap);
+  // Never begin the retained suffix in the middle of a valid UTF-8 code point. Dropping the
+  // partial prefix keeps both the byte cap and the rendered diagnostic honest.
+  while (start < combined.length && (combined[start]! & 0xc0) === 0x80) start++;
+  authServiceDiagnostics = combined.subarray(start);
+}
+
+function authServiceFailure(child: ChildProcess, reason: string): Error {
+  const state = authServiceSpawnError
+    ? `spawn error: ${authServiceSpawnError.message}`
+    : child.exitCode !== null
+      ? `exit ${child.exitCode}`
+      : child.signalCode !== null
+        ? `signal ${child.signalCode}`
+        : child.pid === undefined
+          ? "no pid"
+          : `pid ${child.pid} still running`;
+  const diagnostics = authServiceDiagnostics.toString("utf8").trim();
+  return new Error(`${reason}; child ${state}${diagnostics === "" ? "" : `\nauth-service output (last ${authDiagnosticCap} bytes):\n${diagnostics}`}`);
+}
+
+function spawnAuthService(): ChildProcess {
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
   env.COTAL_HOME = participantHome;
-  return spawn(process.execPath, [...process.execArgv, self, "auth-service", "--space", space, "--server", server, "--exchange-public-port", String(publicPort)], {
+  authServiceDiagnostics = Buffer.alloc(0);
+  authServiceSpawnError = undefined;
+  const child = spawn(process.execPath, [...process.execArgv, self, "auth-service", "--space", space, "--server", server, "--exchange-public-port", "0"], {
     cwd: hostRoot,
     env,
-    stdio: "ignore",
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  child.stdout?.on("data", appendAuthDiagnostic);
+  child.stderr?.on("data", appendAuthDiagnostic);
+  child.once("error", (error) => {
+    authServiceSpawnError = error;
+    appendAuthDiagnostic(`[spawn error] ${error.message}\n`);
+  });
+  return trackChild(child);
 }
 
-async function awaitAuthService(timeoutMs = 15_000): Promise<{ url: string; publicUrl?: string; pid: number }> {
+async function awaitAuthService(child: ChildProcess, timeoutMs = 60_000): Promise<{ url: string; publicUrl?: string; pid: number }> {
   const end = Date.now() + timeoutMs;
   while (Date.now() < end) {
+    if (authServiceSpawnError || child.exitCode !== null || child.signalCode !== null)
+      throw authServiceFailure(child, "auth service exited before readiness");
     const info = loadAuthServiceInfo(hostDir);
     if (info) {
       try {
         process.kill(info.pid, 0);
-        if ((await fetch(`${info.url}/health`)).ok) return info;
+        const remaining = Math.max(1, end - Date.now());
+        if ((await fetch(`${info.url}/health`, { signal: AbortSignal.timeout(Math.min(1_000, remaining)) })).ok) return info;
       } catch { /* still booting */ }
     }
     await wait(100);
   }
-  throw new Error(`auth service did not become ready at ${hostDir}`);
+  throw authServiceFailure(child, `auth service did not become ready at ${hostDir} within ${timeoutMs}ms`);
+}
+
+async function awaitChildClose(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (closedChildren.has(child)) return true;
+  return new Promise((resolve) => {
+    const onClose = () => { clearTimeout(timer); resolve(true); };
+    const timer = setTimeout(() => { child.off("close", onClose); resolve(false); }, timeoutMs);
+    child.once("close", onClose);
+  });
+}
+
+async function stopChild(child: ChildProcess | undefined): Promise<boolean> {
+  if (!child || closedChildren.has(child)) return true;
+  if (child.exitCode === null && child.signalCode === null) {
+    try { child.kill("SIGTERM"); } catch { /* already gone */ }
+  }
+  if (await awaitChildClose(child, 3_000)) return true;
+  try { child.kill("SIGKILL"); } catch { /* already gone */ }
+  return awaitChildClose(child, 3_000);
 }
 
 try {
+  const asciiHead = "ascii-head-marker";
+  const asciiTail = "ascii-tail-marker";
+  appendAuthDiagnostic(Buffer.from(`${asciiHead}${"a".repeat(authDiagnosticCap * 2)}${asciiTail}`));
+  const asciiDiagnostic = authServiceDiagnostics.toString("utf8");
+  check("diagnostic retention is capped in bytes for ASCII output",
+    authServiceDiagnostics.length <= authDiagnosticCap && !asciiDiagnostic.includes(asciiHead) && asciiDiagnostic.includes(asciiTail));
+
+  authServiceDiagnostics = Buffer.alloc(0);
+  const utf8Head = "utf8-head-marker";
+  const utf8Tail = "utf8-tail-marker";
+  appendAuthDiagnostic(Buffer.from(`${utf8Head}${"€".repeat(authDiagnosticCap)}${utf8Tail}`));
+  const utf8Diagnostic = authServiceDiagnostics.toString("utf8");
+  check("diagnostic retention is capped in bytes for multibyte UTF-8 output",
+    authServiceDiagnostics.length <= authDiagnosticCap &&
+      Buffer.byteLength(utf8Diagnostic) <= authDiagnosticCap &&
+      !utf8Diagnostic.includes(utf8Head) && utf8Diagnostic.includes(utf8Tail));
+  authServiceDiagnostics = Buffer.alloc(0);
+
   mkdirSync(join(hostRoot, ".cotal"), { recursive: true });
   mkdirSync(join(participantRoot, ".cotal"), { recursive: true });
 
@@ -181,14 +265,14 @@ try {
   });
   check("host provider prepared user-auth state against the real IdP", Boolean(preparedHost));
 
-  const storeDir = mkdtempSync(join(tmpdir(), "cotal-registered-manager-js-"));
+  storeDir = mkdtempSync(join(tmpdir(), "cotal-registered-manager-js-"));
   writeFileSync(join(hostRoot, "server.conf"), serverConfig(auth, [auth], {
     transport: { kind: "plaintext" },
     port: brokerPort,
     storeDir,
     extraAccounts: preparedHost.extraAccounts,
   }));
-  broker = spawn("nats-server", ["-c", join(hostRoot, "server.conf")], { stdio: "ignore" });
+  broker = trackChild(spawn("nats-server", ["-c", join(hostRoot, "server.conf")], { stdio: "ignore" }));
   let brokerReady = false;
   for (let tries = 0; tries < 50 && broker.exitCode === null; tries++) {
     try {
@@ -207,7 +291,7 @@ try {
   await setupSpaceStreams({ servers: server, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
 
   authService = spawnAuthService();
-  const service = await awaitAuthService();
+  const service = await awaitAuthService(authService);
   check("host auth service exposes a public exchange", typeof service.publicUrl === "string" && service.publicUrl.startsWith("http://127.0.0.1:"), service);
 
   const signup = await idp.api.signUpEmail({
@@ -292,21 +376,31 @@ try {
   }
   check("remote signed-in bearer cannot read manager service records (no endpoint-registration authority)", refusal.length > 0 && /permission|authorization|responders/i.test(refusal), refusal);
 
-  console.log(`\nSUPERVISE REGISTERED USER AUTHORITY REPRO ${fail === 0 ? "RED OBSERVED ✅" : "FAILED"} (${pass} passed, ${fail} failed)`);
 } catch (error) {
   fail++;
   console.log("  ✗ FAIL: harness threw", error instanceof Error ? error.stack ?? error.message : String(error));
 } finally {
   await endpoint?.stop().catch(() => {});
-  try { authService?.kill("SIGTERM"); } catch { /* already gone */ }
-  try { broker?.kill("SIGTERM"); } catch { /* already gone */ }
-  await wait(200);
-  idpServer?.close();
-  rmSync(participantHome, { recursive: true, force: true });
-  rmSync(participantRoot, { recursive: true, force: true });
-  rmSync(hostRoot, { recursive: true, force: true });
+  const authStopped = await stopChild(authService);
+  const brokerStopped = await stopChild(broker);
+  idpServer?.closeAllConnections();
+  await new Promise<void>((resolve) => {
+    if (!idpServer) { resolve(); return; }
+    idpServer.close(() => resolve());
+  });
+  check("teardown stops both owned daemons before removing scratch state", authStopped && brokerStopped, {
+    auth: { exitCode: authService?.exitCode, signalCode: authService?.signalCode },
+    broker: { exitCode: broker?.exitCode, signalCode: broker?.signalCode },
+  });
+  if (authStopped && brokerStopped) {
+    rmSync(participantHome, { recursive: true, force: true });
+    rmSync(participantRoot, { recursive: true, force: true });
+    rmSync(hostRoot, { recursive: true, force: true });
+    if (storeDir) rmSync(storeDir, { recursive: true, force: true });
+  }
   if (previousHome === undefined) delete process.env.COTAL_HOME;
   else process.env.COTAL_HOME = previousHome;
 }
 
-process.exit(fail === 0 ? 0 : 1);
+console.log(`\nSUPERVISE REGISTERED USER AUTHORITY REPRO ${fail === 0 ? "RED OBSERVED ✅" : "FAILED"} (${pass} passed, ${fail} failed)`);
+process.exitCode = fail === 0 ? 0 : 1;

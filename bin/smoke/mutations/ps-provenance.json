@@ -1,0 +1,54 @@
+{
+  "suite": "implementations/cli/smoke/agents-provenance.smoke.ts",
+  "guard": "default cotal ps treats the model and requested variant as seat identity while keeping an omitted request absent",
+  "command": "pnpm smoke:ps-provenance",
+  "completionMarker": "PS PROVENANCE SMOKE PASSED",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/ps-provenance.json",
+  "why": [
+    "The helper under test is the same expression printAgentRow feeds into the default human row, so these cells grade the real renderer seam rather than rebuilding its inputs in a parallel formatter.",
+    "The positive and absent variant cells are separate because omission is meaningful provenance: one seat requested high and another requested nothing. A default tier is never inferred.",
+    "The variant-without-model cell preserves the independent rendering invariant already held by --wide and --json."
+  ],
+  "mutations": [
+    {
+      "name": "the default identity drops the model back behind --wide",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "  if (r.model) parts.push(`${r.model}${r.variant ? ` (${r.variant})` : \"\"}`);",
+      "replace": "  if (r.model) void r.model;",
+      "expectRed": "default ps identity includes the model and requested variant",
+      "cell": "default ps identity includes the model and requested variant"
+    },
+    {
+      "name": "the default identity hides the requested variant",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "  if (r.model) parts.push(`${r.model}${r.variant ? ` (${r.variant})` : \"\"}`);",
+      "replace": "  if (r.model) parts.push(r.model);",
+      "expectRed": "default ps identity includes the model and requested variant",
+      "cell": "default ps identity includes the model and requested variant"
+    },
+    {
+      "name": "a requested variant without a model is silently discarded",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "  else if (r.variant) parts.push(`variant ${r.variant}`);",
+      "replace": "  else if (r.variant) void r.variant;",
+      "expectRed": "default ps identity preserves a requested variant without a model",
+      "cell": "default ps identity preserves a requested variant without a model"
+    },
+    {
+      "name": "wide output repeats provenance already shown in the compact identity",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "  const facts: string[] = [];",
+      "replace": "  const facts: string[] = [\"model duplicated (variant duplicated)\"];",
+      "expectRed": "wide facts do not repeat model or requested variant from the identity row",
+      "cell": "wide facts do not repeat model or requested variant from the identity row"
+    },
+    {
+      "name": "the human model catalog drops the inline declared-tier caveat",
+      "file": "implementations/cli/src/commands/models.ts",
+      "find": "  const label = declared ? \"variants (declared, not provider-verified)\" : \"variants\";",
+      "replace": "  const label = \"variants\";",
+      "expectRed": "declared Jcode caveat appears where variants print",
+      "cell": "declared Jcode caveat appears where variants print"
+    }
+  ]
+}

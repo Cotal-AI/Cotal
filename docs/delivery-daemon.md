@@ -9,7 +9,7 @@ that member has actually seen it. The delivery daemon is the server-side compone
 it. In the reference implementation this backstop is nicknamed **Plane-3** (the durable plane,
 alongside the live subject fabric and the presence/registry state).
 
-The backstop is a **delivery contract, not a fixed layout**: [SPEC §8](../SPEC.md#8-nats--jetstream-binding)
+The backstop defines a **delivery contract** while leaving the storage layout open: [SPEC §8](../SPEC.md#8-nats--jetstream-binding)
 makes the daemon's store, writer, reader, and registry reference-implementation detail. What is
 normative is the [§4](../SPEC.md#4-delivery-modes) guarantee it upholds (`durable` is
 at-least-once for current members within retention) and the [§9](../SPEC.md#9-nats--jetstream-security-and-authorization)
@@ -21,7 +21,7 @@ read checks it must apply. A conformant deployment may realize the backstop diff
   eligible member's private durable store. For an `@mention` on a *`live`* channel it also writes
   a copy for each mentioned peer authorized to read that channel, which is how a mention reaches
   an authorized peer who isn't currently joined ([SPEC §4](../SPEC.md#4-delivery-modes)). Fan-out
-  is routing, not an authorization decision.
+  handles routing; authorization remains with the broker policy.
 - **Trusted reader.** It pulls each pending entry, re-checks that the member is still allowed to
   read it, and hands the authorized copy to the member over an at-least-once channel (its inbox),
   keeping the entry pending until the member confirms it was surfaced. A crash between handing off
@@ -58,13 +58,13 @@ same durables).
 
 It inherits the mesh's transport on **every** launch, including the relaunch a bare `cotal up`
 performs when the daemon is missing. A TLS-required mesh always starts it with TLS demanded, so it
-refuses a plaintext listener rather than upgrading on the server's unauthenticated greeting — it
+refuses a plaintext listener rather than upgrading on the server's unauthenticated greeting. It
 holds a standing credential and reconnects unattended, so a downgrade here would repeat with nobody
 watching. See [transport.md](transport.md).
 
 `cotal up` reports the daemon **only when it is actually serving**. If a daemon it started exits
-without taking the single-flight lease — another daemon holds it, or a crashed holder's lease has
-not expired yet — `up` says so and exits non-zero instead of printing a healthy control plane over a
+without taking the single-flight lease because another daemon holds it, or because a crashed
+holder's lease has not expired yet. `up` says so and exits non-zero instead of printing a healthy control plane over a
 daemon that is not there. The daemon writes its own reason to `.cotal/delivery.log`.
 
 **Open dev mode has no delivery daemon.** Open mode is deliberately **live-only**: there is no

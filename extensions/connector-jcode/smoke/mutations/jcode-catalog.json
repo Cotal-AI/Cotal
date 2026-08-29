@@ -1,0 +1,94 @@
+{
+  "suite": "extensions/connector-jcode/smoke/jcode-args.smoke.ts",
+  "guard": "the Jcode connector exposes enabled config catalogs, labels declared efforts as non-authoritative, and fails loud on unusable declarations",
+  "command": "pnpm smoke:jcode-args",
+  "completionMarker": "JCODE ARGS SMOKE PASSED",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/jcode-catalog.json",
+  "why": [
+    "The suite calls the connector's actual listModels implementation through its exported function, using JCODE_HOME exactly as the Jcode SDK resolves the operator config that private instances inherit.",
+    "Declared effort metadata is deliberately not a provider capability claim. The provider remains authoritative at launch, so the mutation grades the explicit false authority marker rather than whether a tier string appears.",
+    "An enabled catalog with no entries is not the same as no catalog support. The fail-loud cell prevents the manager from silently degrading that broken declaration into an empty or unsupported row."
+  ],
+  "mutations": [
+    {
+      "name": "the connector drops the Jcode config catalog hook",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "  listModels: listJcodeModels,",
+      "replace": "  listModels: undefined,",
+      "expectRed": "feeds the declared catalog into the connector hook",
+      "cell": "feeds the declared catalog into the connector hook"
+    },
+    {
+      "name": "declared reasoning efforts are falsely advertised as authoritative",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "                  authoritative: false,",
+      "replace": "                  authoritative: true,",
+      "expectRed": "labels declared reasoning efforts as non-authoritative",
+      "cell": "labels declared reasoning efforts as non-authoritative"
+    },
+    {
+      "name": "an enabled provider with no model entries silently becomes an empty catalog",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "    if (!Array.isArray(config.models))\n      throw new Error(`jcode model catalog provider ${provider} enables model_catalog but has no [[providers.${provider}.models]] entries`);",
+      "replace": "    if (!Array.isArray(config.models)) config.models = [];",
+      "expectRed": "fails loud when an enabled provider declares no model entries",
+      "cell": "fails loud when an enabled provider declares no model entries"
+    },
+    {
+      "name": "malformed effort metadata is silently discarded",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "  if (!Array.isArray(value) || value.some((item) => typeof item !== \"string\" || !item.trim()))\n    throw new Error(\"reasoning_efforts must be an array of non-empty strings\");",
+      "replace": "  if (!Array.isArray(value) || value.some((item) => typeof item !== \"string\" || !item.trim())) return undefined;",
+      "expectRed": "fails loud on malformed declared effort metadata",
+      "cell": "fails loud on malformed declared effort metadata"
+    },
+    {
+      "name": "an unreadable Jcode config silently becomes an empty catalog",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "    throw new Error(`jcode model catalog could not read Jcode config: unreadable${code ? ` (${code})` : \"\"}`);",
+      "replace": "    return { source: \"declared Jcode config\", models: [] };",
+      "expectRed": "unreadable catalog failure hides the Jcode home",
+      "cell": "unreadable catalog failure hides the Jcode home"
+    },
+    {
+      "name": "the unreadable-config failure discloses the absolute Jcode home",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "    throw new Error(`jcode model catalog could not read Jcode config: unreadable${code ? ` (${code})` : \"\"}`);",
+      "replace": "    throw new Error(`jcode model catalog could not read ${path}: unreadable${code ? ` (${code})` : \"\"}`);",
+      "expectRed": "unreadable catalog failure hides the Jcode home",
+      "cell": "unreadable catalog failure hides the Jcode home"
+    },
+    {
+      "name": "the malformed-TOML failure discloses the absolute Jcode home",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "    throw new Error(\"jcode model catalog could not parse Jcode config: malformed TOML\");",
+      "replace": "    throw new Error(`jcode model catalog could not parse ${path}: malformed TOML`);",
+      "expectRed": "malformed TOML failure hides the Jcode home",
+      "cell": "malformed TOML failure hides the Jcode home"
+    },
+    {
+      "name": "the missing-providers failure discloses the absolute Jcode home",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "    throw new Error(\"jcode model catalog has no [providers] table in Jcode config\");",
+      "replace": "    throw new Error(`jcode model catalog at ${path} has no [providers] table`);",
+      "expectRed": "missing providers failure hides the Jcode home",
+      "cell": "missing providers failure hides the Jcode home"
+    },
+    {
+      "name": "the no-enabled-provider failure discloses the absolute Jcode home",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "    throw new Error(\"jcode model catalog has no provider with model_catalog = true in Jcode config\");",
+      "replace": "    throw new Error(`jcode model catalog at ${path} has no provider with model_catalog = true`);",
+      "expectRed": "no enabled provider failure hides the Jcode home",
+      "cell": "no enabled provider failure hides the Jcode home"
+    },
+    {
+      "name": "the empty-enabled-catalog failure discloses the absolute Jcode home",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "    throw new Error(`jcode model catalog enabled ${enabledProviders} provider(s) in Jcode config but declared no models`);",
+      "replace": "    throw new Error(`jcode model catalog at ${path} enabled ${enabledProviders} provider(s) but declared no models`);",
+      "expectRed": "empty enabled catalog failure hides the Jcode home",
+      "cell": "empty enabled catalog failure hides the Jcode home"
+    }
+  ]
+}

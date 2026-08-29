@@ -12,6 +12,7 @@ import {
 } from "@cotal-ai/core";
 import { getSpaceAuth } from "./auth-paths.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
+import { DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, segmentedKey } from "./space-segmentation.js";
 
 /**
  * D5 slice 5 class-2 standing renewal — the RENEWAL OWNER'S half, shared by the manager (the
@@ -22,27 +23,32 @@ import { workspaceSecretStore } from "./secret-store-fs.js";
  * implementations never import each other.
  */
 
-/** The canonical secret-store key of the delivery daemon's scoped cred — by the FS convention the
- *  key IS the filename under `.cotal/`. The single source for every tier (the CLI writer, the
- *  delivery daemon reader, this renewal owner): a hand-copied drifted literal would silently split
- *  the kind across two store entries with no compile error. Lives in workspace because the
- *  key↔filename convention is the workspace layout's; implementations never import each other. */
-export const DELIVERY_CREDS_KEY = "delivery.creds";
-
-/** The membership feed's data-account rw cred key — the same key↔filename discipline as
- *  {@link DELIVERY_CREDS_KEY}. Named (not a bare literal) so the renewal owner can map a remint
- *  result back to the daemon's `membership` component without a hand-copied string. */
-export const MEMBERSHIP_RW_CREDS_KEY = "membership-rw.creds";
-
-/** The seed-less daemon creds files a renewal owner re-signs. The $SYS files
- *  (membership-observer, connection-evictor) are deliberately ABSENT: they are rotation-renewed —
- *  no persisted seed can re-sign them, by design. */
-export const REMINTABLE_DAEMON_CREDS: ReadonlyArray<{ file: string; profile: Profile }> = [
-  { file: DELIVERY_CREDS_KEY, profile: "delivery" },
-  { file: MEMBERSHIP_RW_CREDS_KEY, profile: "membership-rw" },
+/** The seed-less daemon creds a renewal owner re-signs. The $SYS kinds (membership-observer,
+ *  connection-evictor) are deliberately ABSENT: they are rotation-renewed — no persisted seed can
+ *  re-sign them, by design. Their keys are {@link membershipObserverCredsKey} /
+ *  {@link connectionEvictorCredsKey} — injectable, but never re-signable from a persisted seed.
+ *
+ *  `key` is a `(space) => key` BUILDER, not a literal, because these kinds are now per-space (§3.1):
+ *  one entry no longer names one location. `kind` stays beside it because that is what a
+ *  {@link RemintResult} reports and what an operator reads — see {@link RemintResult.file}.
+ *
+ *  The builders are {@link segmentedKey}, NOT the migrating per-kind resolvers: see that function for
+ *  why the renewal owner is one of the two owners that must not move material. */
+export const REMINTABLE_DAEMON_CREDS: ReadonlyArray<{
+  kind: string;
+  key: (space: string) => string;
+  profile: Profile;
+}> = [
+  { kind: DELIVERY_CREDS_KIND, key: (space) => segmentedKey(DELIVERY_CREDS_KIND, space), profile: "delivery" },
+  { kind: MEMBERSHIP_RW_CREDS_KIND, key: (space) => segmentedKey(MEMBERSHIP_RW_CREDS_KIND, space), profile: "membership-rw" },
 ];
 
 export interface RemintResult {
+  /** THE KIND, never the segmented key. A remint result is mapped back to a daemon component by
+   *  literal comparison against the kind (`manager.ts:1147` attributes a fingerprint to
+   *  `expected.delivery` that way), so a `file` carrying a `space.<hex>/` prefix would match nothing
+   *  and the manager would silently stop attributing renewals. It is also what `doctor auth` prints,
+   *  which would otherwise start showing an operator hex. */
   file: string;
   /** true = re-signed; false = failed (see error); undefined ok with `skipped` = file absent. */
   ok: boolean;
@@ -61,7 +67,10 @@ export interface RemintResult {
  *  The manager — the D5 standing-renewal owner, and a hosted-path caller (manager.ts calls this
  *  unconditionally) — passes the SAME store it gives the daemon (its `ManagerOptions.secretStore`),
  *  so a hosted composition re-signs into the store the daemon renews from, never a divergent one; no
- *  store means the local workspace FS composition (keys = the filenames under `.cotal/`).
+ *  store means the local workspace FS composition (keys = the paths under `.cotal/`).
+ *
+ *  The creds are PER-SPACE as of P7, so every store op is addressed by the entry's
+ *  `key(expectedSpace)` builder (§3.1) while every RESULT still reports the entry's `kind`.
  *
  *  `expectedSpace` (the caller's known space — the manager's `this.space`, doctor's resolved space) is
  *  a REQUIRED positional and is validated against the store's signer: the daemon creds are SPACE-SCOPED,
@@ -103,13 +112,17 @@ export async function remintDaemonCreds(
     auth = await getSpaceAuth(s, expectedSpace);
   } catch (e) {
     // Wrong-space / malformed signer: fail every file, DO NOT overwrite the last-good creds.
-    return REMINTABLE_DAEMON_CREDS.map(({ file }) => ({ file, ok: false, error: (e as Error).message }));
+    return REMINTABLE_DAEMON_CREDS.map(({ kind }) => ({ file: kind, ok: false, error: (e as Error).message }));
   }
-  if (!auth) return REMINTABLE_DAEMON_CREDS.map(({ file }) => ({ file, ok: false, skipped: "no-auth" as const }));
+  if (!auth) return REMINTABLE_DAEMON_CREDS.map(({ kind }) => ({ file: kind, ok: false, skipped: "no-auth" as const }));
   const results: RemintResult[] = [];
-  for (const { file, profile } of REMINTABLE_DAEMON_CREDS) {
+  for (const { kind, key, profile } of REMINTABLE_DAEMON_CREDS) {
+    // The KIND is what the result reports (see `RemintResult.file`); the per-space KEY is what the
+    // store is addressed by. Read and write MUST use the same one — a get on the key and a put on
+    // the kind would re-sign the live cred into a dead flat location and leave the live one to expire.
+    const file = kind;
     try {
-      const current = await s.get(file);
+      const current = await s.get(key(expectedSpace));
       if (current === undefined) {
         results.push({ file, ok: false, skipped: "missing-file" });
         continue;
@@ -138,7 +151,7 @@ export async function remintDaemonCreds(
         results.push({ file, ok: false, error: `${why} - last-good cred preserved` });
         continue;
       }
-      await s.put(file, next);
+      await s.put(key(expectedSpace), next);
       results.push({ file, ok: true, fingerprint: credsFingerprint(next) });
     } catch (e) {
       results.push({ file, ok: false, error: (e as Error).message });

@@ -14,6 +14,7 @@
  * Run: pnpm smoke:readiness:live   (build first — imports @cotal-ai/* dist)
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -49,6 +50,7 @@ import type { Connector } from "@cotal-ai/core";
 
 let pass = 0;
 const kids: ChildProcess[] = [];
+let releaseBroker: (() => void) | undefined;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
   if (!cond) throw new Error(`FAIL: ${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
   pass++;
@@ -145,8 +147,10 @@ let mgr: InstanceType<typeof Manager> | undefined;
 let driver: InstanceType<typeof MeshAgent> | undefined;
 let ep: InstanceType<typeof CotalEndpoint> | undefined;
 try {
-  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), "cotal-readiness-js-"))], { stdio: "ignore" });
+  const brokerStore = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}readiness-js-`));
+  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", brokerStore], { stdio: "ignore" });
   kids.push(broker);
+  releaseBroker = teardownOnSignal(broker, brokerStore);
   for (let i = 0; i < 50; i++) {
     if ((await probeConnect(SERVER, { timeoutMs: 400 })).ok) break;
     await sleep(100);
@@ -322,4 +326,5 @@ try {
     k.kill("SIGKILL");
     return awaitExit(k);
   }));
+  releaseBroker?.();
 }

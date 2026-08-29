@@ -1,5 +1,76 @@
 # @cotal-ai/example-05-scale-showcase
 
+## 0.0.18
+
+### Patch Changes
+
+- Updated dependencies [7c5995b]
+  - @cotal-ai/core@0.36.0
+
+## 0.0.17
+
+### Patch Changes
+
+- @cotal-ai/core@0.35.0
+
+## 0.0.16
+
+### Patch Changes
+
+- Updated dependencies [22c3182]
+  - @cotal-ai/core@0.34.0
+
+## 0.0.15
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.9
+
+## 0.0.14
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.8
+
+## 0.0.13
+
+### Patch Changes
+
+- Updated dependencies [576ac7d]
+  - @cotal-ai/core@0.33.7
+
+## 0.0.12
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.6
+
+## 0.0.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.5
+
+## 0.0.10
+
+### Patch Changes
+
+- Updated dependencies [1858932]
+  - @cotal-ai/core@0.33.4
+
+## 0.0.9
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.3
+
+## 0.0.8
+
+### Patch Changes
+
+- Updated dependencies [ffdde4d]
+  - @cotal-ai/core@0.33.2
+
 ## 0.0.7
 
 ### Patch Changes

@@ -460,6 +460,8 @@ export class CotalEndpoint extends EventEmitter {
   private backoffResolve?: () => void;
   private backoffTimer?: ReturnType<typeof setTimeout>;
   private readonly retryMs = 3000;
+  /** Consecutive failed rebuilds, driving {@link nextRetryDelayMs}. Reset on every success. */
+  private retryAttempt = 0;
 
   /** The connection's authenticated nkey — dev: the creds' identity; user mode: the per-connection
    *  ephemeral. Distinct from the {@link owner}+{@link actor} principal: it names the CONNECTION (the
@@ -890,6 +892,20 @@ export class CotalEndpoint extends EventEmitter {
       const stale = !this.currentCreds || credsRenewalDelayMs(this.currentCreds) <= 0;
       if (stale) await this.refreshCreds(!this.currentCreds);
     }
+    // Never dial with material we can already prove is dead. The refresh above is best-effort (a
+    // failed renewal emits and retries rather than throwing, so a dead auth service does not
+    // instantly drop a still-live mesh), which used to leave the connect below presenting an
+    // EXPIRED bearer: a guaranteed denial that still costs a full auth-callout round trip, repeated
+    // by the reestablish loop at a flat rate for as long as the process lives. Refuse here instead.
+    // The loop's capped backoff paces the retries and re-enters this method, so a renewal that
+    // starts working reconnects on its own; an endpoint with no bearer source cannot renew at all,
+    // and says so.
+    if (this.userMode && this.currentBearer && bearerExpiryMs(this.currentBearer) <= Date.now())
+      throw new Error(
+        this.bearerSource
+          ? "this endpoint's user bearer has expired and renewal through the auth exchange is failing - not presenting the expired token to the broker; retrying with backoff"
+          : "this endpoint's user bearer has expired and it holds no bearer source to renew it - re-authenticate and rebuild the endpoint (construct it with a bearer FUNCTION for standing renewal)",
+      );
     this.nc = await dialerFor(this.servers)({
       servers: this.servers,
       // In USER MODE the connection `name` carries the client-chosen inbox nonce (= connId) the callout
@@ -1118,6 +1134,9 @@ export class CotalEndpoint extends EventEmitter {
       this.aclKv = undefined;
       this.membershipFeedKv = undefined;
       this.deliveryKv = undefined;
+      // The manager's liveness-lease handle too: left bound to the old connection, every renew and
+      // re-read after a reconnect times out, and the manager reports its lease unknown for good.
+      this.managerLeaseKv = undefined;
       this.emit("connection", { connected: false }); // null window opened — not live until the rebind below
       try {
         await oldNc?.drain();
@@ -1135,9 +1154,24 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
+  /** The ceiling {@link nextRetryDelayMs} grows to. A failure that outlives a couple of retries is
+   *  a standing one (a down broker, a credential nothing can renew), and retrying it every few
+   *  seconds forever is what turns one stuck client into a permanent flat load on the broker and its
+   *  auth callout. */
+  private static readonly RETRY_BACKOFF_CAP_MS = 60_000;
+
+  /** The wait before the next rebuild attempt: {@link retryMs}, doubling per consecutive failure up
+   *  to {@link RETRY_BACKOFF_CAP_MS}. The FIRST retry still waits exactly retryMs, so a transient
+   *  drop recovers as fast as it always did; only a failure that repeats gets paced. */
+  private nextRetryDelayMs(): number {
+    const delay = Math.min(this.retryMs * 2 ** this.retryAttempt, CotalEndpoint.RETRY_BACKOFF_CAP_MS);
+    this.retryAttempt++;
+    return delay;
+  }
+
   /** Rebuild with backoff until it sticks or we're stopped. Interruptible: a manual
    *  {@link reconnect} kicks the backoff so the next attempt runs immediately instead of
-   *  awaiting the full retryMs. One loop at a time ({@link reestablishing}); concurrent
+   *  awaiting the full delay. One loop at a time ({@link reestablishing}); concurrent
    *  triggers coalesce via {@link rebuild}. */
   private async reestablishLoop(): Promise<void> {
     if (this.reestablishing) return;
@@ -1146,12 +1180,14 @@ export class CotalEndpoint extends EventEmitter {
       while (!this.stopped) {
         try {
           await this.rebuild();
+          this.retryAttempt = 0; // reconnected — the next drop starts from retryMs again
           return; // success — re-armed; the supervisor re-triggers on the next terminal close
         } catch (e) {
           if (!this.stopped) this.emit("error", e as Error);
+          const delay = this.nextRetryDelayMs();
           await new Promise<void>((resolve) => {
             this.backoffResolve = resolve;
-            this.backoffTimer = setTimeout(resolve, this.retryMs);
+            this.backoffTimer = setTimeout(resolve, delay);
           });
         }
       }

@@ -15,6 +15,9 @@ if (process.env.COTAL_WEB_SMOKE_REJECT_HISTORY === "1") {
   CotalEndpoint.prototype.channelHistory = async () => { throw new Error("timeout"); };
 }
 
+if (process.env.COTAL_WEB_SMOKE_HANG_DMS === "1")
+  CotalEndpoint.prototype.dmHistory = () => new Promise(() => {});
+
 const raw = process.argv.slice(2);
 const values: Record<string, string | boolean> = {};
 for (let i = 0; i < raw.length; i++) {

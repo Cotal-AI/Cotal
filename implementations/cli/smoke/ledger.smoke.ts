@@ -22,6 +22,7 @@ import {
   type MeshLedger,
 } from "../src/lib/manifest/ledger.js";
 import { realDirNoSymlink, unlinkFileNoFollow } from "@cotal-ai/core";
+import { spaceSegment } from "@cotal-ai/workspace";
 
 let failures = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
@@ -92,9 +93,13 @@ function writeRaw(name: string, body: unknown): string {
 
 // --- cred path is DERIVED from the known auth root, never stored --------------------------------
 {
-  const p = ownedCredPath(root, "scout-2");
-  check("cred path under <root>/.cotal/auth/creds", p === join(root, ".cotal", "auth", "creds", "scout-2.creds"), p);
-  throws("traversal spawned name refused", () => ownedCredPath(root, "../../etc/x"));
+  // The space is the LEDGER's own — the mesh this run provisioned against, and as of P1 the segment
+  // its agent secrets sit under. Derived here the same way teardown derives it, so the path this
+  // asserts is the one `down -f` resolves.
+  const p = ownedCredPath(root, "demo", "scout-2");
+  check("cred path under <root>/.cotal/auth/creds/<space segment>",
+    p === join(root, ".cotal", "auth", "creds", spaceSegment("demo"), "scout-2.creds"), p);
+  throws("traversal spawned name refused", () => ownedCredPath(root, "demo", "../../etc/x"));
 }
 
 // --- findLedgerByHash / findLedgerByRun: fail-not-guess -----------------------------------------

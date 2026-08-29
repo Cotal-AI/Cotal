@@ -1,7 +1,6 @@
 import { existsSync, lstatSync, readFileSync, readdirSync, renameSync, statSync } from "node:fs";
-import { join, dirname, resolve, basename } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import {
-  assertLifecycleToken,
   composeSpaceAuth,
   jwtIssuedAt,
   mkSecretDir,
@@ -23,6 +22,12 @@ import {
  *
  * Deliberately explicit-root/path APIs: no ambient `findAndMint()` that fuses root discovery with
  * signing. File modes (0700 dirs / 0600 files) and the no-arbitrary-delete posture are preserved.
+ *
+ * The per-agent standing secrets used to live here too. Series P1 keys them per space, which makes
+ * that surface depend on `space-segmentation.ts` — which depends on THIS module — so it moved up to
+ * `agent-secrets.ts` rather than inverting the dependency. `creds` still appears here twice, as the
+ * one sibling of the auth dir that neither the legacy-state migration nor the user-auth enumeration
+ * treats as a space; that is what lets a tenant's agent-secret segment live inside it.
  */
 
 const AUTH_FILE = "auth.json";
@@ -77,7 +82,16 @@ function isWellFormedUnicode(s: string): boolean {
  *  dir (`broker.json`, `account.<hex>.json`, `server.conf`, `creds/`): none of those start with
  *  `space.`, and the hex body cannot smuggle one in. Consumed by the state dir AND the auth
  *  secret-store key builders; two independently-guarded encoders were the defect generator (one
- *  gains a rule the other doesn't), so keep exactly one. */
+ *  gains a rule the other doesn't), so keep exactly one.
+ *
+ *  The non-collision claim now spans a WIDER namespace than the auth dir. Segmenting the root-scoped
+ *  P7 material puts a `space.<hex>` directly under `.cotal/`, so the guarantee must hold against the
+ *  children of `.cotal/` too (`agents`, `auth`, `nats`, `manifests`, the `*.creds`/`*.pid`/`*.log`
+ *  files, and `auth-service.<spaceKey>.pid`, which is the nearest miss). It does, for the same
+ *  reason: no `.cotal` child begins with `space.`. That held by ACCIDENT until something asserted
+ *  it — `RESERVED_COTAL_CHILDREN` in `space-segmentation.ts` carries the list and
+ *  `smoke:space-segmentation` is the guard, so a future `.cotal` child named `space.*` fails a suite
+ *  instead of silently aliasing a tenant's segment. */
 export function spaceSegment(space: string): string {
   return `space.${spaceKey(space)}`;
 }
@@ -231,151 +245,6 @@ export function userAuthSpacesOnDisk(dir: string): string[] {
     }
   }
   return [...out];
-}
-
-// ---- per-agent standing secrets (static creds / actor token / sentinel creds) ----
-
-/** The dir every per-agent standing secret materializes under (`<root>/.cotal/auth/creds`) —
- *  space-INDEPENDENT today (one root serves one space); multi-space-per-root re-keys this layout
- *  as a caller change, same as {@link userAuthStateDir}'s note. */
-export function agentCredsDir(root: string): string {
-  return join(authDir(root), "creds");
-}
-
-/** THE per-agent file segment — the single guarded encoder under every agent-secret key AND path
- *  (the {@link spaceSegment} posture: one encoder, guarded before any key or path exists). The
- *  alphabet is the manager's spawn-name discipline (`manager.nameError`); the CLI's `--name`
- *  override historically had no such guard, so a path-hostile name is refused HERE, before it can
- *  address a key or file outside the creds dir. */
-export function agentSecretSegment(name: string): string {
-  if (!/^[A-Za-z0-9_-]+$/.test(name))
-    throw new Error(`unsafe agent name ${JSON.stringify(name)} for secret material (allowed: letters, digits, _ -)`);
-  return name;
-}
-
-// One filename source per kind — the store key and the materialized path project the SAME name,
-// so the two can never drift apart (the `DELIVERY_CREDS_KEY` lesson, per kind).
-const agentFile = {
-  creds: (base: string) => `${base}.creds`,
-  actorToken: (base: string) => `${base}.actor-token`,
-  sentinelCreds: (base: string) => `${base}.sentinel.creds`,
-};
-
-/** The per-INCARNATION filename base `<name>.<lifecycleUid>` (SPEC 13.1 naming discipline brought
- *  to the FS): an endpoint-provisioned incarnation's secret family embeds its lifecycle UID, so a
- *  stale or replayed teardown for a retired incarnation addresses names a same-alias successor
- *  never uses. The separator is a `.` — a character {@link agentSecretSegment} REFUSES in a
- *  standing name — so the two families are STRUCTURALLY disjoint: no legal standing alias can
- *  spell an incarnation base (`worker-<uid>` the standing name maps to `worker-<uid>.creds`;
- *  `worker` at that uid maps to `worker.<uid>.creds`). Disjointness is grammar, not uid entropy —
- *  a standing alias is chosen, not sampled, so entropy alone guarantees nothing. Standing
- *  OPERATOR secrets (`cotal mint`, setup-seeded creds) stay on the name-keyed builders below —
- *  they have no lifecycle. */
-function agentIncarnationBase(name: string, lifecycleUid: string): string {
-  return `${agentSecretSegment(name)}.${assertLifecycleToken(lifecycleUid)}`;
-}
-
-/** Canonical {@link SecretStore} keys of the per-agent standing secrets, mirroring today's
- *  `.cotal/auth/creds/<name>.<kind>` layout byte-for-byte under the workspace FS composition.
- *  `<name>.creds` is the static-auth scoped cred; the actor token + sentinel cred are the
- *  user-mode pair a spawn mints. The transient `<name>.auth-health.json` is runtime state, NOT a
- *  secret kind — it stays plain-file. */
-export const agentCredsKey = (name: string): string => `auth/creds/${agentFile.creds(agentSecretSegment(name))}`;
-export const agentActorTokenKey = (name: string): string => `auth/creds/${agentFile.actorToken(agentSecretSegment(name))}`;
-export const agentSentinelCredsKey = (name: string): string => `auth/creds/${agentFile.sentinelCreds(agentSecretSegment(name))}`;
-
-/** Lifecycle-keyed {@link SecretStore} keys of one INCARNATION's secret family — the
- *  per-incarnation counterparts of the standing name-keyed keys above, for any endpoint that
- *  provisions managed lifecycles (the manager is the first client; delivery and future endpoints
- *  ride the same seam). See {@link agentIncarnationBase} for why the uid is embedded. */
-export const agentLifecycleCredsKey = (name: string, lifecycleUid: string): string =>
-  `auth/creds/${agentFile.creds(agentIncarnationBase(name, lifecycleUid))}`;
-export const agentLifecycleActorTokenKey = (name: string, lifecycleUid: string): string =>
-  `auth/creds/${agentFile.actorToken(agentIncarnationBase(name, lifecycleUid))}`;
-export const agentLifecycleSentinelCredsKey = (name: string, lifecycleUid: string): string =>
-  `auth/creds/${agentFile.sentinelCreds(agentIncarnationBase(name, lifecycleUid))}`;
-
-/** The FS materialization paths of one agent's secret family (plus its non-secret health file) —
- *  built from the SAME filename source as the key builders. These are the paths subprocesses read
- *  (the bearer re-exec's `--token-file`, a launch's creds handoff), never an alternate source of
- *  truth: under the local FS composition each path IS its key's storage location. */
-export function agentSecretFilePaths(root: string, name: string): {
-  creds: string; actorToken: string; sentinelCreds: string; health: string;
-} {
-  const dir = agentCredsDir(root);
-  const base = agentSecretSegment(name);
-  return {
-    creds: join(dir, agentFile.creds(base)),
-    actorToken: join(dir, agentFile.actorToken(base)),
-    sentinelCreds: join(dir, agentFile.sentinelCreds(base)),
-    health: join(dir, `${base}.auth-health.json`),
-  };
-}
-
-/** The lifecycle-keyed FS materialization paths of one INCARNATION's secret family (plus its
- *  non-secret health file) — same projection rule as {@link agentSecretFilePaths}, built from the
- *  {@link agentIncarnationBase} so a retired incarnation's teardown can never address a same-alias
- *  successor's files. */
-export function agentLifecycleSecretFilePaths(root: string, name: string, lifecycleUid: string): {
-  creds: string; actorToken: string; sentinelCreds: string; health: string;
-} {
-  const dir = agentCredsDir(root);
-  const base = agentIncarnationBase(name, lifecycleUid);
-  return {
-    creds: join(dir, agentFile.creds(base)),
-    actorToken: join(dir, agentFile.actorToken(base)),
-    sentinelCreds: join(dir, agentFile.sentinelCreds(base)),
-    health: join(dir, `${base}.auth-health.json`),
-  };
-}
-
-/** The store key of a materialized agent-secret FILE — `auth/creds/<basename>`, the same projection
- *  the builders above apply, for callers that hold a RECORDED path (a resume inventory, a manifest
- *  ledger) rather than the (name, uid) coordinates: under mixed generations the recorded path is
- *  the truth, and its key must be derived from the SAME filename, never re-derived from the name
- *  alone (which would silently address a different generation's row). Refuses a filename that no
- *  valid provisioning could have written. */
-/** The exact filename-base grammar the two builder families can produce — a standing name
- *  ({@link agentSecretSegment}'s alphabet, no `.`) or an incarnation base `<name>.<uid>`
- *  ({@link agentIncarnationBase}). Anything else is a stray no valid provisioning wrote. */
-const PROVISIONABLE_BASE = /^[A-Za-z0-9_-]+(\.[a-z0-9]{26,32})?$/;
-
-export function agentSecretKeyForFile(path: string): string {
-  const file = basename(path);
-  for (const suffix of [".sentinel.creds", ".actor-token", ".creds"]) {
-    if (!file.endsWith(suffix)) continue;
-    const base = file.slice(0, -suffix.length);
-    if (!PROVISIONABLE_BASE.test(base))
-      throw new Error(`"${file}" is not a provisionable agent-secret filename (a standing name, or <name>.<lifecycleUid>)`);
-    return `auth/creds/${file}`;
-  }
-  throw new Error(`"${file}" is not an agent-secret filename (expected a .creds / .actor-token / .sentinel.creds suffix)`);
-}
-
-/** Enumerate the store keys of every per-agent standing secret currently materialized under this
- *  root — the reset/backstop sweep (`clean all`; despawn owns the primary delete). Deliberately
- *  filename-driven over the LOCAL creds dir: this surface is the FS composition (a hosted reset
- *  rides its own store), and a file only maps to a key if a valid spawn could have written it —
- *  health files and strays are left to the caller's raw cleanup. */
-export function agentSecretKeysUnder(root: string): string[] {
-  let entries: string[];
-  try {
-    entries = readdirSync(agentCredsDir(root));
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return []; // no creds dir → nothing minted
-    throw e;
-  }
-  const keys: string[] = [];
-  // Longest suffix first: `<name>.sentinel.creds` must never parse as `<name>.sentinel` + `.creds`.
-  for (const file of entries) {
-    for (const suffix of [".sentinel.creds", ".actor-token", ".creds"]) {
-      if (!file.endsWith(suffix)) continue;
-      const base = file.slice(0, -suffix.length);
-      if (PROVISIONABLE_BASE.test(base)) keys.push(`auth/creds/${file}`);
-      break; // longest match decides; a rejected base is a stray either way
-    }
-  }
-  return keys;
 }
 
 /** Materialize a store secret into a 0600 file for a process that can only read files — the
@@ -897,6 +766,39 @@ export function listSpaceAccounts(dir: string): string[] {
   return accountInventory(dir).spaces;
 }
 
+/** The accounts a broker config must PRELOAD: every tenant this auth dir holds, with `current` first.
+ *
+ *  The MEMORY resolver is a whole-broker map, so the rendered config IS the tenant list - it does not
+ *  add the space being booted to whatever the running broker already trusts, it replaces the set.
+ *  Rendering from the one space a `cotal up` was asked for therefore evicts every sibling silently:
+ *  the broker starts, that space works, and every cred minted under the others is refused with
+ *  nothing printed anywhere. A render reads this, never a single space.
+ *
+ *  `current` comes from the CALLER because the caller's copy can be fresher than the disk - a space
+ *  minted moments ago, or an account whose trust record this same boot just rotated - and rendering
+ *  the stale on-disk copy of the space being booted is the other half of the same bug.
+ *
+ *  Fail-CLOSED on a corrupt record, like the guards above: a file that occupies the account namespace
+ *  but will not validate may be a real tenant, and rendering without it is precisely the silent
+ *  eviction this exists to prevent. */
+export function preloadSpaceAccounts(dir: string, current: SpaceAccountAuth): SpaceAccountAuth[] {
+  const { spaces, corrupt } = accountInventory(dir);
+  if (corrupt.length > 0)
+    throw new Error(
+      `${dir} holds ${corrupt.length} unreadable account record(s) (${corrupt.join(", ")}) - refusing to render a broker config while the tenant list is uncertain: a tenant left out of the config is evicted from the broker. Repair or remove them`,
+    );
+  const siblings = spaces
+    .filter((space) => space !== current.space)
+    .map((space) => {
+      const account = loadSpaceAccountAuth(dir, space);
+      // The inventory validated this record moments ago, so an absent one means it went away between
+      // the two reads. Refusing beats rendering a config that drops it.
+      if (!account) throw new Error(`${spaceAccountPath(dir, space)} disappeared while the broker config was being rendered - re-run the command`);
+      return { space: account.space, account: account.account };
+    });
+  return [{ space: current.space, account: current.account }, ...siblings];
+}
+
 // ---- the split trust records as SecretStore kinds (the signer-bearing seam) ----
 //
 // The trust material is the highest-blast-radius secret kind - whoever holds a space's account
@@ -992,7 +894,7 @@ export async function getSpaceAuth(store: SecretStore, space: string): Promise<S
     return composeSpaceAuth(broker, account);
   } catch {
     throw new Error(
-      `the trust records (${BROKER_AUTH_KEY} + ${accountKey}) failed trust-chain validation for space "${space}" - the store holds an account this broker's operator did not sign; repair or replace it`,
+      `the trust records (${BROKER_AUTH_KEY} + ${accountKey}) failed trust-chain validation for space "${space}" - the store values are corrupt, mismatched, or outside one broker/account trust chain; repair or replace them`,
     );
   }
 }

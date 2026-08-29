@@ -12,7 +12,8 @@ import {
   type PlaneLivenessResult,
   type PrincipalLivenessResult,
 } from "@cotal-ai/core";
-import { findCotalRoot } from "@cotal-ai/workspace";
+import { CONNECTION_EVICTOR_CREDS_KIND, findCotalRoot, membershipConfigPath, MEMBERSHIP_OBSERVER_CREDS_KIND } from "@cotal-ai/workspace";
+import { loadSysPair, observerTenancyProblem, repairAdvice, tornRotationProblem, type SysCredsSource } from "./sys-creds.js";
 
 
 /**
@@ -28,9 +29,17 @@ import { findCotalRoot } from "@cotal-ai/workspace";
  *
  * Two independent guards, because either alone leaves a real case open:
  *  - the root is PINNED AT DAEMON START, so it cannot drift with `process.cwd()` between requests;
- *  - the account on disk is CROSS-CHECKED against the account the daemon's own credential
+ *  - the OBSERVER CRED is CROSS-CHECKED against the account the daemon's own credential
  *    authenticates as. Pinning alone cannot notice a daemon that started in the wrong root to
- *    begin with; the tenancy check can, because the credential is not read from that root.
+ *    begin with; the tenancy check can, because neither side of it is read from that root.
+ *
+ * The second guard used to compare `.cotal/membership.json` against `expectedAccount`. It now
+ * compares the OBSERVER'S OWN CONNZ PERMISSION against it (`sys-creds.ts`), which is strictly
+ * stronger: the file sat in the same directory as the creds, so a wrong root was wrong for both, and
+ * its independence came from `expectedAccount` being derived from the cred anyway — the cred was
+ * always the real authority and the file was the thing being checked. The disk file is still read as
+ * a SECOND source on the workstation path, where the root genuinely can drift; it is no longer
+ * required, and a hosted composition has none.
  *
  * A mismatch REFUSES LOUD and names both sides. Note the asymmetry that makes this necessary: an
  * observer scoped to account A with accountId B under-reports (broker-denied → `unknown`, safe),
@@ -42,26 +51,76 @@ export interface ScanTarget {
   root: string;
   /** The account the daemon's own delivery credential authenticates as. */
   expectedAccount: string;
+  /** Where the $SYS pair is read from, and whether that store was injected (hosted) — the latter
+   *  selects the repair idiom only, never the failure semantics. */
+  source: SysCredsSource;
 }
 
-function resolveScan(target: ScanTarget, verb: string): { dir: string; accountId: string } {
+/**
+ * Pin check + the WORKSTATION-ONLY second source.
+ *
+ * The account to sweep is `target.expectedAccount` — the daemon's own credential, pinned at start.
+ * `membership.json` is no longer consulted for it. On the workstation path the file is still
+ * cross-checked WHEN PRESENT, because there a wrong root is a real, enumerated failure mode
+ * (see the cases above) and a second independent-ish source costs nothing. It is no longer
+ * REQUIRED: its absence is not an error, and a hosted composition never has one.
+ */
+function resolveScan(target: ScanTarget, verb: string): { accountId: string } {
   const live = findCotalRoot();
   if (live !== target.root)
     throw new Error(
       `${verb}: the mesh root resolved at this request (${live}) is not the one this daemon started in (${target.root}); ` +
       "the scan account would be read from a different workspace than the one this daemon serves. Refusing — a sweep of the wrong account looks exactly like a dead principal",
     );
-  const dir = join(target.root, ".cotal");
-  const cfgPath = join(dir, "membership.json");
-  if (!existsSync(cfgPath)) throw new Error(`${verb}: ${cfgPath} is missing, so the account to scan is unknown`);
-  const accountId = (JSON.parse(readFileSync(cfgPath, "utf8")) as { accountId?: string }).accountId;
-  if (!accountId) throw new Error(`${verb}: ${cfgPath} has no accountId`);
-  if (accountId !== target.expectedAccount)
+  if (!target.source.injected) {
+    // Through the kind's resolver (P7 §2 rule 1), not a hand-composed `.cotal/membership.json`:
+    // the file is per-space now, and reading the canonical location past an unmigrated copy would
+    // silently drop this second source — turning a wrong-root refusal into a confident sweep.
+    // `target.source.space` is the space the daemon started in, pinned with the rest of the source.
+    const cfgPath = membershipConfigPath(target.root, target.source.space);
+    if (existsSync(cfgPath)) {
+      // A malformed file on a path that no longer needs it must not take eviction down; only a file
+      // that names a DIFFERENT account is evidence of the drift this check exists to catch.
+      let onDisk: string | undefined;
+      try { onDisk = (JSON.parse(readFileSync(cfgPath, "utf8")) as { accountId?: string }).accountId; }
+      catch { onDisk = undefined; }
+      if (onDisk !== undefined && onDisk !== target.expectedAccount)
+        throw new Error(
+          `${verb}: ${cfgPath} names account ${onDisk}, but this daemon's own credential authenticates as ${target.expectedAccount}. ` +
+          "That disk material belongs to a different mesh, and sweeping it would return a confident, WRONG answer (a complete sweep of the wrong account is indistinguishable from a gone principal). Refusing — start the daemon from the workspace root whose account it serves",
+        );
+    }
+  }
+  return { accountId: target.expectedAccount };
+}
+
+/** Read the $SYS material for one verb and run every pre-connect check, or THROW.
+ *
+ *  Fail-loud is the whole posture here (design §4.2): a missing key is a REFUSAL, full stop. In
+ *  particular a missing evictor must NOT silently fall back to deny-new-only inside the executor —
+ *  that posture is the CALLER's documented degradation, reached by handling this refusal, never
+ *  something the executor may choose on its own. And absence (`undefined` per the `SecretStore`
+ *  contract) is the only thing treated as "not provisioned": a `get()` that throws is a refusal,
+ *  not an absence, and propagates untouched from `loadSysPair`. */
+async function loadCheckedSys(target: ScanTarget, verb: string, need: "observer" | "both"): Promise<{ observer: string; evictor?: string }> {
+  const sys = await loadSysPair(target.source, need);
+  if (sys.missing.length)
     throw new Error(
-      `${verb}: ${cfgPath} names account ${accountId}, but this daemon's own credential authenticates as ${target.expectedAccount}. ` +
-      "That disk material belongs to a different mesh, and sweeping it would return a confident, WRONG answer (a complete sweep of the wrong account is indistinguishable from a gone principal). Refusing — start the daemon from the workspace root whose account it serves",
+      `${verb}: the $SYS ${need === "both" ? "observer/evictor creds are" : "observer creds are"} not provisioned here ` +
+      `(missing ${sys.missing.join(", ")}; a space created before live eviction) - ${repairAdvice(target.source, sys.missing)}. ` +
+      "Until then removal is deny-new-only (durable reauth)",
     );
-  return { dir, accountId };
+  const observer = sys.observer as string;
+  const tenancy = observerTenancyProblem(observer, target.expectedAccount);
+  if (tenancy) throw new Error(`${verb}: ${tenancy}. Refusing`);
+  if (sys.evictor !== undefined) {
+    // The torn-rotation check now covers this path too. It used to exist only in the feed, so
+    // eviction could open a half-rotated pair and get a bare "Authorization Violation" from the
+    // broker with nothing naming the cause.
+    const torn = tornRotationProblem(observer, sys.evictor, () => repairAdvice(target.source, [MEMBERSHIP_OBSERVER_CREDS_KIND, CONNECTION_EVICTOR_CREDS_KIND]));
+    if (torn) throw new Error(`${verb}: ${torn}. Refusing`);
+  }
+  return { observer, ...(sys.evictor !== undefined ? { evictor: sys.evictor } : {}) };
 }
 
 /**
@@ -82,17 +141,12 @@ export async function executeEviction(server: string, target: ScanTarget, princi
   const parsed = parsePrincipalKey(principal);
   if (!parsed || !isPrincipalOwnerToken(parsed.owner))
     throw new Error(`evictPrincipal: "${principal}" is not a real owner.actor principal (owner must be \`local\` or a derived \`u_…\` token — the only shapes CONNZ attribution can surface)`);
-  const { dir, accountId } = resolveScan(target, "evictPrincipal");
-  const obsPath = join(dir, "membership-observer.creds");
-  const evPath = join(dir, "connection-evictor.creds");
-  if (!existsSync(obsPath) || !existsSync(evPath))
-    throw new Error(
-      "evictPrincipal: the $SYS observer/evictor creds are not provisioned here (a space created before live eviction); mint them with `cotal down` then `cotal up --rotate-sys`. Until then removal is deny-new-only (durable reauth)",
-    );
+  const { accountId } = resolveScan(target, "evictPrincipal");
+  const sys = await loadCheckedSys(target, "evictPrincipal", "both");
   return evictDeniedPrincipalWithCreds({
     servers: server,
-    observerCreds: readFileSync(obsPath, "utf8"),
-    evictorCreds: readFileSync(evPath, "utf8"),
+    observerCreds: sys.observer,
+    evictorCreds: sys.evictor as string,
     accountId,
     principal,
   });
@@ -106,6 +160,11 @@ export async function executeEviction(server: string, target: ScanTarget, princi
  * connection tuples; anything else refuses loudly. A space provisioned before the observer existed
  * refuses with the regeneration step — the auth plane treats that refusal as UNKNOWN and never
  * reclaims over it (fail-closed).
+ *
+ * Asks for the observer ONLY, so the KICK cred is not even read into this process's memory on a
+ * read-only path. The cost is that the torn-rotation check cannot run here (it needs both halves);
+ * that is safe rather than a gap — a torn pair whose observer is the stale half is refused by the
+ * broker, and this path reads any refusal as UNKNOWN, which is already fail-closed.
  */
 export async function executePlaneLiveness(server: string, target: ScanTarget, query: unknown): Promise<PlaneLivenessResult> {
   const q = query as Partial<PlaneLivenessQuery> | undefined;
@@ -113,15 +172,11 @@ export async function executePlaneLiveness(server: string, target: ScanTarget, q
       Object.keys(q).some((k) => k !== "ledger" && k !== "records") || // closed top-level shape
       !isPlaneConnTuple(q.ledger) || !isPlaneConnTuple(q.records))
     throw new Error("planeConnLiveness: the query must be exactly { ledger, records } connection tuples ({ serverId, cid, userNkey }); refusing a malformed or wider query");
-  const { dir, accountId } = resolveScan(target, "planeConnLiveness");
-  const obsPath = join(dir, "membership-observer.creds");
-  if (!existsSync(obsPath))
-    throw new Error(
-      "planeConnLiveness: the $SYS observer creds are not provisioned here (a space created before live observation); mint them with `cotal down` then `cotal up --rotate-sys`",
-    );
+  const { accountId } = resolveScan(target, "planeConnLiveness");
+  const sys = await loadCheckedSys(target, "planeConnLiveness", "observer");
   return observePlaneLivenessWithCreds({
     servers: server,
-    observerCreds: readFileSync(obsPath, "utf8"),
+    observerCreds: sys.observer,
     accountId,
     query: { ledger: q.ledger, records: q.records },
   });
@@ -131,7 +186,7 @@ export async function executePlaneLiveness(server: string, target: ScanTarget, q
  * The delivery daemon's FREEZE-HOLDER LIVENESS probe (#391, on the privileged delivery-admin rail):
  * answer whether ONE principal still holds a live connection, via the $SYS CONNZ observer cred
  * (opened per call; READ-ONLY — the KICK evictor cred never enters this path, and is not even read
- * from disk here).
+ * from the store here).
  *
  * This is the READ half of {@link executeEviction}, and it exists because the write half cannot
  * serve as its own precheck: a repair that must REFUSE while the holder is alive would, using
@@ -151,15 +206,11 @@ export async function executePrincipalLiveness(server: string, target: ScanTarge
   const parsed = parsePrincipalKey(wanted);
   if (!parsed || !isPrincipalOwnerToken(parsed.owner))
     throw new Error(`principalLiveness: "${wanted}" is not a real owner.actor principal (owner must be \`local\` or a derived \`u_…\` token — the only shapes CONNZ attribution can surface)`);
-  const { dir, accountId } = resolveScan(target, "principalLiveness");
-  const obsPath = join(dir, "membership-observer.creds");
-  if (!existsSync(obsPath))
-    throw new Error(
-      "principalLiveness: the $SYS observer creds are not provisioned here (a space created before live observation); mint them with `cotal down` then `cotal up --rotate-sys`",
-    );
+  const { accountId } = resolveScan(target, "principalLiveness");
+  const sys = await loadCheckedSys(target, "principalLiveness", "observer");
   return observePrincipalLivenessWithCreds({
     servers: server,
-    observerCreds: readFileSync(obsPath, "utf8"),
+    observerCreds: sys.observer,
     accountId,
     principal: wanted,
   });

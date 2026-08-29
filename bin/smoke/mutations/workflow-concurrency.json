@@ -1,0 +1,56 @@
+{
+  "suite": "bin/smoke/workflow-concurrency.smoke.ts",
+  "guard": "every workflow a push to main can start either queues its runs or has no concurrency group at all, and no workflow can reach the queue:max plus cancel-in-progress:true pairing that fails validation",
+  "command": "pnpm smoke:workflow-concurrency",
+  "completionMarker": "SUITE COMPLETE",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/workflow-concurrency.json",
+  "why": [
+    "The property this suite guards is only observable on main AFTER a merge: a pull_request run",
+    "evaluates the PR branch of every expression and never touches the main grouping. So the suite",
+    "cannot be validated by the pull request that changes it, and CI going green proves nothing",
+    "about it. That is the whole reason the guard is static, and it is also why the guard itself",
+    "needs mutation proof rather than a green run.",
+    "",
+    "The three mutations are the three ways this has actually gone wrong or could go wrong silently.",
+    "",
+    "M1 restores the short `concurrency: <string>` form. This is the shape changesets.yml and",
+    "installer.yml sat in, and it is the dangerous one precisely because it reads as a deliberate",
+    "minimal choice while selecting cancel-in-progress false and queue single, the evicting",
+    "defaults. A reader scanning for a wrong VALUE finds nothing to object to.",
+    "",
+    "M2 forces queue to a literal max where cancel-in-progress is still event-conditional. On",
+    "pull_request that resolves to max plus true, which is a workflow VALIDATION error, so the file",
+    "stops running rather than misbehaving. It is checked per event because both keys are",
+    "conditional and no per-file glance can see a combination that only one event produces.",
+    "",
+    "M3 replaces the expression with a form the reader does not know. It must FAIL rather than be",
+    "skipped. A reader that silently ignores what it cannot parse is how a guard turns into a green",
+    "that means nothing, which is the failure mode this repo has hit more than once."
+  ],
+  "mutations": [
+    {
+      "name": "changesets.yml goes back to the short concurrency form",
+      "file": ".github/workflows/changesets.yml",
+      "find": "concurrency:\n  group: ${{ github.workflow }}-${{ github.ref }}\n  cancel-in-progress: false\n  queue: max\n",
+      "replace": "concurrency: ${{ github.workflow }}-${{ github.ref }}\n",
+      "expectRed": "changesets.yml: uses the mapping form",
+      "cell": "uses the mapping form, so it can carry"
+    },
+    {
+      "name": "windows.yml queue becomes a literal max, pairing with cancel-in-progress true on pull_request",
+      "file": ".github/workflows/windows.yml",
+      "find": "  queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}\n",
+      "replace": "  queue: max\n",
+      "expectRed": "windows.yml: on pull_request, not (queue=max AND cancel-in-progress=true)",
+      "cell": "not (queue=max AND cancel-in-progress=true)"
+    },
+    {
+      "name": "installer.yml queue uses an expression form the reader does not recognise",
+      "file": ".github/workflows/installer.yml",
+      "find": "  queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}\n",
+      "replace": "  queue: ${{ github.ref == 'refs/heads/main' && 'max' || 'single' }}\n",
+      "expectRed": "installer.yml: `queue` is a form this check understands",
+      "cell": "is a form this check understands"
+    }
+  ]
+}

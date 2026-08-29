@@ -517,12 +517,11 @@ smoke:jcode-retry-policy
 smoke:seat-exit-cause
 smoke:empty-id-ingest
 smoke:hermes-empty-id
-# A manager that may no longer SERVE must not destroy the agents it was serving. The lease-loss exit
-# path did both in one act: it hard-stopped every managed child and deprovisioned its credential and
-# durables. Stopping serving is the right conclusion there; killing the seats is a separate act that
-# a connectivity fact does not license. Four occurrences on the live space "main" reached the
-# neighbouring branch and survived only because the lease re-read answered.
-smoke:detach-not-teardown
+# A manager never ends its own process over its liveness lease. The old fail-close turned a ten-second
+# broker or KV outage into a manager outage that lasted until an operator noticed (netcup, 2026-08-27,
+# ten hours). This entry replaces `smoke:detach-not-teardown` IN PLACE, at the same index, so no other
+# suite changes shard; the in-process half of the guard is here, the wire half is `smoke:lease-renew`.
+smoke:lease-loss-keeps-serving
 # Appended at the end per this file's own rule: the cell has no ordering dependency, and appending
 # is what keeps two branches adding suites from conflicting. It is the end-to-end half of a guard
 # whose ingest half runs earlier as `smoke:cross-path-dedup`: that one drives hand-built deliveries
@@ -546,6 +545,153 @@ smoke:session-channels
 smoke:jcode-private-lifecycle
 smoke:hook-load-emitter-race
 smoke:spawn-name-actor
+
+# Claude writes a positional startup prompt before SessionStart reaches the connector. A generic
+# fresh adopt then parks after the only run opener and all later assistant/tool records map to zero.
+# `source: startup` reads this genuinely-new session from byte zero; resume/fork/clear/compact still
+# adopt retained history at the current boundary, and a recovered WAL cursor always wins. Appended
+# because this suite has no ordering dependency and append-only additions preserve shard membership.
+smoke:claude-start-source
+# Claude can fire SessionStart before the MCP process binds its local control socket. The real relay
+# must survive that first refusal inside its existing two-second budget, then deliver exactly once;
+# an absent connector still fails open at the deadline. Appended to preserve every existing shard.
+smoke:hook-relay-startup
+# Restore recreates excluded endpoint infrastructure through the production creation seam. That
+# needs UPDATE on the records KV hardening step, but no restored message stream may inherit UPDATE;
+# the infrastructure credential's exact subset is gated independently from the live restore cycle.
+# Appended so existing shard membership stays stable.
+smoke:isolated-infrastructure-scope
+# Channel registry/replay now uses OS-assigned ports, polls positive readiness, and awaits broker
+# teardown. Four concurrent real-broker runs pass without port collision or stale state; append to
+# preserve every existing shard assignment.
+smoke:channels
+# A managed-static renewal accepted before terminalization publishes an in-flight barrier; the
+# terminal drains it before durable revocation and file cleanup, while arrivals after the latch are
+# refused. Four fresh lifecycles drive both orderings against a real JWT broker and journal.
+# Appended to preserve every existing shard assignment.
+smoke:renewal-terminal-race
+# The one-shot send smoke now owns an OS-assigned open broker, passes that address to its receiver
+# and every real CLI subprocess, and resolves the repository's actual bin/cotal.ts entry. Concurrent
+# runs therefore share neither port nor state. Appended to preserve every existing shard assignment.
+smoke:send
+# Membership feature coverage now owns an OS-assigned open broker, provisions each unique space
+# through setupSpaceStreams, tears it down through deleteSpace, and uses only current token-safe ids.
+# Concurrent runs share neither port nor space. Appended to preserve every existing shard assignment.
+smoke:membership
+# These seven self-contained suites are cited by the shipped plan as executable evidence. Each owns
+# or needs no broker, passed serially and in six-way shard-like overlap, and was previously run by
+# nothing. Appended as one debt slice so every existing shard assignment remains unchanged.
+smoke:channel-attention
+smoke:channel-attention:auth
+smoke:install
+smoke:manifest-launch
+smoke:members
+smoke:presence-scrub
+smoke:start-model
+# The bare core smoke now owns an OS-assigned broker and a production-provisioned unique space. It
+# drives explicit live channels, lifecycle-scoped offline DM restart delivery, pre-activation DM
+# exclusion, presence, and open-mode membership semantics, then awaits broker teardown. Appended so
+# every existing shard assignment remains unchanged.
+smoke
+# The callout-minted control-trust proof owns a JWT broker and two user principals, then proves
+# payload, same-owner subject, cross-owner subject, and reply-lane forgeries all fail on the shipped
+# delivery control rail. Appended to preserve every existing shard assignment.
+smoke:ctl-trust:live
+# The static-auth dashboard seed-drop proof owns a JWT broker and registered workspace, seeds chat
+# through the operator profile, then proves its pre-minted channel-purger can purge while admin
+# cannot. Appended to preserve every existing shard assignment.
+smoke:web-seed:live
+# The persona harness reachability proof drives foreground and detached spawn through a throwaway
+# broker, including a caller-only COTAL_DEFAULT_AGENT crossing into an already-running manager.
+# Appended to preserve every existing shard assignment.
+smoke:persona-agent
+# The web component probe parses the recorded process command and refuses unrelated PIDs,
+# wildcard hosts, and invalid ports instead of guessing at the dashboard default. Appended so
+# every existing shard assignment remains unchanged.
+smoke:web-probe-target
+# The web runtime binds the requested remote host, rejects wildcard public URLs, and keeps the
+# loopback default when no host is supplied. Appended so every existing shard assignment remains
+# unchanged.
+smoke:web-remote-bind
+# The published manager entrypoint directly loads three NATS packages. Derive that runtime import
+# closure from built dist and require every external package in it to be installed by a production
+# dependency field. Appended so every existing shard assignment remains unchanged.
+smoke:manager-runtime-deps
+# Seat provenance rows must stay correct across the three ps presentations; appended so
+# every existing shard assignment remains unchanged.
+smoke:ps-provenance
+# The real user-auth composition root owns a broker, Better Auth IdP, auth daemon, manager, and
+# CLI subprocesses through grant, exchange, connect, revoke, crash-heal, and teardown. Appended so
+# every existing shard assignment remains unchanged.
+smoke:user-auth-launch:live
+# `cotal up` on a root holding several tenants renders server.conf from the validated inventory: the
+# MEMORY resolver is a whole-broker map, so a config rendered from the one booted space evicts every
+# sibling silently. Drives the real CLI against a real broker. Appended so every existing shard
+# assignment remains unchanged.
+smoke:up-multi-space-render:live
+# The $SYS store-injection eviction edge on a two-tenant live broker: the SecretStore-read
+# credential pair must survive a store eviction without the delivery daemon re-reading a stale
+# pair. Drives the real daemon against a real broker. Appended so every existing shard
+# assignment remains unchanged.
+smoke:sys-injection-evict
+# A user-mode endpoint whose bearer expires must stop presenting the dead token: pre-fix it re-dialled
+# it on a flat 3s interval forever, one client costing a permanent auth-callout round trip every 3s.
+# Drives a real broker plus a real auth callout across three arms (no renewal source, healthy source,
+# loud refusal). Appended so every existing shard assignment remains unchanged.
+smoke:expiry-renewal:auth
+
+# A RESUMED `cotal up` must render server.conf under the root maintenance lock, the way the ordinary
+# and manifest paths do. The re-entry used to drop the recovery's lock and re-take it, leaving the
+# journal naming a resume in flight with the root unlocked - an unserialized rewrite of every
+# tenant's trust. Drives the real CLI against a real broker. Appended so every existing shard
+# assignment remains unchanged.
+smoke:up-resume-render-lock:live
+
+# The other half of that lock hand-off: a resume re-entry INHERITS the recovery's lock, so a resume
+# helper that self-acquires hits the "held by a live owner" refusal - the recorded owner is alive
+# because it is us, which is also why stale-reaping cannot rescue it. Covers the two ADOPT paths,
+# where an `up` recovers by adopting an already-live listener instead of spawning a competitor over
+# the same store. Appended so every existing shard assignment remains unchanged.
+smoke:up-adopt-resume-lock:live
+
+# `up --restore` under that same inherited lock, and the more severe half: the restore-side journal
+# writers self-acquired, so the FIRST of them - the listener bind - refused and the command did not
+# run at all. The adopt suite above enters through a resume with no artifact and stays green through
+# that break, so neither suite substitutes for the other. Appended; shard assignments unchanged.
+smoke:up-restore-reentry:live
+
+# The space-segmentation foundation (P7/P1 shared design). Hermetic and fast. It asserts the
+# `spaceSegment` collision guarantee over the children of `.cotal/` — a WIDER namespace than the
+# auth-dir siblings the encoder's comment originally claimed — plus the migration choke point's
+# refusals and the `space add` door. Widened with the PER-KIND RESOLVERS: every kind moves on first
+# touch through the one shared body, the hosted arm resolves the same key while moving nothing, the
+# refusals travel OUT through the named wrappers, and the two non-migrating owners (the deleters and
+# the renewal owner) address the same layout the resolvers do. Mutation-proofed —
+# bin/smoke/mutations/space-segmentation.json. Appended; shard assignments unchanged.
+smoke:space-segmentation
+
+# The `$SYS` repair advice names only commands the root can run. The delivery daemon printed `cotal
+# down` + `cotal up --rotate-sys` on multi-tenant roots, where both refuse - advice that cannot
+# succeed, found by the P7 §6 probe and fixed alongside this suite. Hermetic and fast; the property
+# is a biconditional, so the single-tenant arm is graded too. Appended; shard assignments unchanged.
+smoke:sys-repair-honesty
+
+# The per-agent standing secrets' half of that design (series P1). Hermetic and fast, and separate
+# from the suite above because the kind set is OPEN - one file per agent per kind - so rule 2's "one
+# rename" is per FILE here and the family (three secrets plus the non-secret health file the manager
+# weighs with them) must move together. It also grades the one signature change in the series that is
+# not bookkeeping: `agentSecretKeyForFile` takes the space from the CALLER's authority and CHECKS the
+# path against it, so a recorded path cannot hand back a key into a co-resident tenant's material.
+# And it holds the sweep to BOTH levels - every tenant's segment plus any file still flat - because a
+# deleter that reported only the new level would strand an unmigrated root's creds and report
+# success. Mutation-proofed - bin/smoke/mutations/agent-secret-segmentation.json. Appended; shard
+# assignments unchanged.
+smoke:agent-secret-segmentation
+# Every workflow reachable by a push to main must QUEUE its runs rather than evict them. #976
+# measured the eviction; #980 fixed ci.yml and three siblings carried the same defect in two
+# spellings, one of them the release workflow. The property is only observable on main after a
+# merge, so it needs a static guard. Appended so every existing shard assignment remains unchanged.
+smoke:workflow-concurrency
 
 # `cotal setup` seeds into the catalog `cotal spawn` READS, and names that directory absolutely.
 # setup wrote through a cwd-derived root while spawn loads from the resolved mesh's, so where those

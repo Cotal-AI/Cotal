@@ -112,7 +112,7 @@ const { connect: rawConnect } = await import("@nats-io/transport-node");
 const { Kvm } = await import("@nats-io/kv");
 const { createHash } = await import("node:crypto");
 const { decodeJwt } = await import("jose");
-const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, workspaceSecretStore, agentLifecycleSecretFilePaths } = await import("@cotal-ai/workspace");
+const { agentCredsDir, authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, workspaceSecretStore, agentLifecycleSecretFilePaths } = await import("@cotal-ai/workspace");
 const {
   cotalAuthProvider, establishIdpSession, fetchIdpJwt, grantActor, loadCalloutAuth, loadAuthServiceInfo,
   actorLedgerDir, managedActorLedgerDir, ledgerRowFilename, deriveOwnerForIdpSubject, loadOwnerSecret, loadPinnedIdp,
@@ -165,7 +165,9 @@ const SPACE = `uspawn-${Math.floor(Math.random() * 1e6)}`;
 const CLIENT_ID = "cotal-cli";
 const dir = userAuthStateDir(root, SPACE); // the provider's space-scoped state dir (ledger, pin, discovery)
 const store = workspaceSecretStore(root); // the secret kinds ride the seam, keyed auth/<space>/…
-const credsDir = join(authDir(root), "creds");
+// This space's agent-secret segment (P1) — where the CLI and manager actually file an
+// incarnation's family, so a scan for one reads the layout under test.
+const credsDir = agentCredsDir(root, SPACE);
 // The manager files each incarnation's user secrets lifecycle-keyed (`<name>.<uid>.<kind>`).
 // Recover the uid from the token/sentinel already on disk, then derive the whole family (so a
 // not-yet-written health file still resolves to the right path); `noIncFiles` asserts a name has NO
@@ -175,12 +177,13 @@ const incUid = (name: string): string => {
   for (const f of readdirSync(credsDir)) { const m = re.exec(f); if (m) return m[1]; }
   throw new Error(`no incarnation secret on disk for ${name} in ${credsDir}`);
 };
-const incFiles = (name: string) => agentLifecycleSecretFilePaths(root, name, incUid(name));
+const incFiles = (name: string) => agentLifecycleSecretFilePaths(root, SPACE, name, incUid(name));
 const noIncFiles = (name: string): boolean => {
   const re = new RegExp(`^${name}\\.[a-z0-9]{26,32}\\.`);
   return !readdirSync(credsDir).some((f) => re.test(f));
 };
 const coreDist = join(import.meta.dirname, "..", "..", "..", "packages", "core", "dist", "index.js");
+const offlineSignalReady = join(root, ".e2e-offline-signal-ready");
 
 // The agent CHILD: a REAL long-lived node process through the REAL pty runtime, connecting USER-MODE
 // with a bearer SOURCE (execs COTAL_BEARER_CMD for each token) + the sentinel creds — the exact wire
@@ -253,7 +256,7 @@ registry.register(e2eQuietCon);
 // assertions instead of racing the manager's readiness wait.
 const CHILD_OFFLINE = CHILD.replace(
   "setInterval(()=>{},1000);",
-  "setInterval(()=>{},1000);const seq=['working','waiting'];let phase=0;process.on('SIGUSR2',()=>{ep.setStatus(seq[Math.min(phase++,seq.length-1)]).catch(()=>{});});process.on('SIGUSR1',()=>{ep.setStatus('offline').catch(()=>{});});",
+  "setInterval(()=>{},1000);const seq=['working','waiting'];let phase=0;process.on('SIGUSR2',()=>{ep.setStatus(seq[Math.min(phase++,seq.length-1)]).catch(()=>{});});process.on('SIGUSR1',()=>{ep.setStatus('offline').catch(()=>{});});fs.writeFileSync(process.env.E2E_OFFLINE_READY,'ready',{flag:'wx',mode:0o600});",
 );
 const e2eOfflineCon: Connector = {
   kind: "connector",
@@ -269,6 +272,7 @@ const e2eOfflineCon: Connector = {
       COTAL_SPACE: o.space,
       COTAL_NAME: o.name,
       COTAL_SERVERS: o.servers ?? "",
+      E2E_OFFLINE_READY: offlineSignalReady,
       ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
     },
   }),
@@ -601,6 +605,8 @@ try {
   // carry. Signalling rather than timing keeps the flip ordered after the manager's readiness wait
   // instead of racing it.
   const offlineReply: ControlReply = await manager.startAgent({ name: "kappa", agent: "e2e-offline", owner: OWNER });
+  const signalHandlersReady = await until(() => existsSync(offlineSignalReady), 5_000);
+  check("precondition: kappa installed its signal handlers before the status walk", signalHandlersReady, offlineSignalReady);
   const signalPid = psList(mgr).find((a) => a.name === "kappa")?.pid;
   // One row walks the rest of the union. A review found the hole at `offline`, having found an
   // earlier one at `idle`, and the shape of both is the same: a rewrite of a status no row carries
@@ -608,8 +614,13 @@ try {
   // `PresenceStatus` that a joined row can reach and records what the projection carried for it.
   const carried: Record<string, string> = { idle: meshOf("alpha") };
   for (const want of ["working", "waiting", "offline"] as const) {
-    if (signalPid) process.kill(signalPid, want === "offline" ? "SIGUSR1" : "SIGUSR2");
-    const reached = await until(() => rosterOf("kappa") === want);
+    let signalSent = false;
+    if (signalHandlersReady && signalPid) {
+      try { process.kill(signalPid, want === "offline" ? "SIGUSR1" : "SIGUSR2"); signalSent = true; }
+      catch { /* named below; a dead child is a failed precondition, never an opaque ESRCH abort */ }
+    }
+    check(`precondition: kappa remained alive to receive the ${want} status signal`, signalSent);
+    const reached = signalSent && await until(() => rosterOf("kappa") === want);
     carried[want] = reached ? meshOf("kappa") : `the roster never reached ${want} (it says ${rosterOf("kappa")})`;
   }
   check(

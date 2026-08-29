@@ -14,8 +14,10 @@ import {
   newIdentity,
   spaceBackupInventory,
   type SpaceBackupSelection,
+  mintLifecycleUid,
 } from "@cotal-ai/core";
 import { authDir, loadSoleSpaceAuth } from "@cotal-ai/workspace";
+import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { BACKUP_MANIFEST_FORMAT, type BackupManifest } from "../../implementations/cli/src/lib/backup-artifact.js";
 
 const freePort = () => new Promise<number>((resolvePort, reject) => {
@@ -77,11 +79,17 @@ function assertValidManifest(directory: string, space: string, selection: SpaceB
 async function backupStageFaultScenario(): Promise<void> {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-faults-stages-root-")));
   const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-faults-stages-home-")));
+  const configDir = join(home, "xdg");
+  const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = "backup_faults_stages";
-  const env = { ...process.env, COTAL_HOME: home };
-  const run = (...args: string[]) => spawnSync(tsx, [cliPath, ...args], { cwd: root, env, encoding: "utf8", timeout: 240_000 });
+  const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
+  const run = (...args: string[]) => {
+    const options = { cwd: root, env, encoding: "utf8" as const, timeout: 240_000 };
+    assertSmokeSandboxDown(sandbox, args, options);
+    return spawnSync(tsx, [cliPath, ...args], options);
+  };
   const must = (label: string, result: ReturnType<typeof run>) => {
     assert.equal(result.status, 0, `stages ${label}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
   };
@@ -143,12 +151,18 @@ const RESTORE_FAULTS = [
 async function restoreExactIdTimeoutReplayScenario(): Promise<void> {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-faults-replay-root-")));
   const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-faults-replay-home-")));
+  const configDir = join(home, "xdg");
+  const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
   const artifact = join(root, "full-backup");
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = "backup_faults_replay";
-  const env = { ...process.env, COTAL_HOME: home };
-  const run = (...args: string[]) => spawnSync(tsx, [cliPath, ...args], { cwd: root, env, encoding: "utf8", timeout: 240_000 });
+  const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
+  const run = (...args: string[]) => {
+    const options = { cwd: root, env, encoding: "utf8" as const, timeout: 240_000 };
+    assertSmokeSandboxDown(sandbox, args, options);
+    return spawnSync(tsx, [cliPath, ...args], options);
+  };
   const must = (label: string, result: ReturnType<typeof run>) => {
     assert.equal(result.status, 0, `replay ${label}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
   };
@@ -166,7 +180,7 @@ async function restoreExactIdTimeoutReplayScenario(): Promise<void> {
     // would be a vacuous 0 === 0 and could not witness a duplicated restore.
     const senderPath = join(root, "sender.creds");
     writeFileSync(senderPath, await mintCreds(auth, newIdentity(), "agent", {
-      allowPublish: ["seeded"], allowSubscribe: ["seeded"],
+      allowPublish: ["seeded"], allowSubscribe: ["seeded"], lifecycleUid: mintLifecycleUid(),
     }), { mode: 0o600 });
     for (const text of seeded)
       must(`seed chat ${JSON.stringify(text)}`, run("send", "msg", "seeded", text, "--space", space, "--server", server, "--creds", senderPath));

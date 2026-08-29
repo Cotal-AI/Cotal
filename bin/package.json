@@ -1,6 +1,6 @@
 {
   "name": "cotal-ai",
-  "version": "0.33.1",
+  "version": "0.36.0",
   "description": "Cotal — lateral agent coordination over NATS. Run `npx cotal-ai` for the CLI.",
   "license": "Apache-2.0",
   "keywords": [
@@ -33,7 +33,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
     "seeded-connectors": "node scripts/copy-seeded-connectors.mjs",
     "prepack": "node scripts/copy-seeded-connectors.mjs",

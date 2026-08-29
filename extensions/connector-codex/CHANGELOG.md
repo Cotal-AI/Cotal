@@ -1,5 +1,31 @@
 # @cotal-ai/connector-codex
 
+## 0.36.0
+
+## 0.35.0
+
+## 0.34.0
+
+## 0.33.9
+
+### Patch Changes
+
+- a497dfc: Recover Codex event streams after broker outages without losing pending bracket state or the outage backlog.
+
+## 0.33.8
+
+## 0.33.7
+
+## 0.33.6
+
+## 0.33.5
+
+## 0.33.4
+
+## 0.33.3
+
+## 0.33.2
+
 ## 0.33.1
 
 ## 0.33.0

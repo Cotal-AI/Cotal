@@ -1,0 +1,31 @@
+{
+  "suite": "packages/workspace/smoke/space-auth-store.smoke.ts",
+  "guard": "split trust-record failures use one accurate non-material diagnostic and never echo hostile stored bytes",
+  "command": "pnpm smoke:space-auth-store",
+  "completionMarker": "SPACE-AUTH-STORE SMOKE",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/trust-store-diagnostic.json",
+  "why": [
+    "The SecretStore wrapper deliberately hides low-level JWT/parser detail, but its old fallback",
+    "claimed every composition failure meant the operator did not sign the account. A malformed JWT",
+    "is corruption, not that specific binding failure. The unit plants a literal JWT canary and",
+    "requires one accurate generic cause while also proving the stored bytes remain absent."
+  ],
+  "mutations": [
+    {
+      "name": "the wrapper returns to the inaccurate operator-signing-only diagnosis",
+      "file": "packages/workspace/src/auth-paths.ts",
+      "find": "      `the trust records (${BROKER_AUTH_KEY} + ${accountKey}) failed trust-chain validation for space \"${space}\" - the store values are corrupt, mismatched, or outside one broker/account trust chain; repair or replace them`,",
+      "replace": "      `the trust records (${BROKER_AUTH_KEY} + ${accountKey}) failed trust-chain validation for space \"${space}\" - the store holds an account this broker's operator did not sign; repair or replace it`,",
+      "expectRed": "a malformed split account JWT reports an accurate generic trust failure without echoing stored bytes",
+      "cell": "a malformed split account JWT reports an accurate generic trust failure without echoing stored bytes"
+    },
+    {
+      "name": "the generic wrapper echoes the hostile stored account JWT",
+      "file": "packages/workspace/src/auth-paths.ts",
+      "find": "      `the trust records (${BROKER_AUTH_KEY} + ${accountKey}) failed trust-chain validation for space \"${space}\" - the store values are corrupt, mismatched, or outside one broker/account trust chain; repair or replace them`,",
+      "replace": "      `the trust records (${BROKER_AUTH_KEY} + ${accountKey}) failed trust-chain validation for space \"${space}\" - the store values are corrupt, mismatched, or outside one broker/account trust chain; repair or replace them; stored account JWT=${account.account.jwt}` ,",
+      "expectRed": "a malformed split account JWT reports an accurate generic trust failure without echoing stored bytes",
+      "cell": "a malformed split account JWT reports an accurate generic trust failure without echoing stored bytes"
+    }
+  ]
+}

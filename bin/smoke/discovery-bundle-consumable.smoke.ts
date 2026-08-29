@@ -68,6 +68,7 @@ if (SUBCOMMAND === "auth-service") {
 type ChildProcess = import("node:child_process").ChildProcess;
 
 const { spawn } = await import("node:child_process");
+const { SMOKE_BROKER_TOKEN, teardownOnSignal } = await import("@cotal-ai/smoke-kit");
 const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
 const { createRequire } = await import("node:module");
 const { tmpdir } = await import("node:os");
@@ -119,6 +120,34 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+async function stopOwned(child: ChildProcess | undefined, group = false): Promise<void> {
+  if (!child) return;
+  const alive = (): boolean => {
+    if (!group) return child.exitCode === null && child.signalCode === null;
+    if (child.pid === undefined) return false;
+    try {
+      process.kill(-child.pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const signal = (name: NodeJS.Signals): void => {
+    try {
+      if (group && child.pid !== undefined) process.kill(-child.pid, name);
+      else child.kill(name);
+    } catch {
+      /* already gone */
+    }
+  };
+  if (!alive()) return;
+  signal("SIGTERM");
+  for (let i = 0; i < 60 && alive(); i++) await wait(50);
+  if (alive()) signal("SIGKILL");
+  for (let i = 0; i < 100 && alive(); i++) await wait(50);
+  if (alive()) throw new Error(`owned ${group ? "process group" : "process"} did not exit before teardown`);
+}
+
 const PORT = await pickFreePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = `dbc-${Math.floor(Math.random() * 1e6)}`;
@@ -128,6 +157,7 @@ const dir = userAuthStateDir(root, SPACE);
 const store = workspaceSecretStore(root);
 
 let broker: ChildProcess | undefined;
+let releaseBroker: (() => void) | undefined;
 let authChild: ChildProcess | undefined;
 let jsDir: string | undefined;
 const idpSrv = createServer((req, res) => handler!(req, res));
@@ -162,12 +192,13 @@ try {
   const expectedCallout = await loadCalloutAuth(store, SPACE);
   if (!expectedCallout) throw new Error("prepared callout material was not persisted");
 
-  jsDir = mkdtempSync(join(tmpdir(), "cotal-dbc-js-"));
+  jsDir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}dbc-js-`));
   writeFileSync(
     join(root, "server.conf"),
     serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: jsDir, extraAccounts: prepared.extraAccounts }),
   );
   broker = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
+  releaseBroker = teardownOnSignal(broker, jsDir);
   let up = false;
   for (let i = 0; i < 50 && !up; i++) { up = await isReachable(SERVER); if (!up) await wait(200); }
   check("user-auth broker is reachable", up);
@@ -178,7 +209,7 @@ try {
     process.execPath,
     [...process.execArgv, SELF, "auth-service", "--space", SPACE, "--server", SERVER,
      "--exchange-public-port", String(publicPort), "--exchange-public-url", PUBLIC_URL],
-    { cwd: root, env: childEnv, stdio: "ignore" },
+    { cwd: root, env: childEnv, stdio: "ignore", detached: true },
   );
   {
     const end = Date.now() + 20000;
@@ -273,12 +304,12 @@ try {
   const EXPECTED = 11;
   if (pass + fail !== EXPECTED)
     throw new Error(`expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped; update EXPECTED deliberately`);
-  if (fail > 0) process.exit(1);
+  if (fail > 0) process.exitCode = 1;
 } finally {
-  authChild?.kill("SIGTERM");
-  broker?.kill("SIGTERM");
-  idpSrv.close();
-  await wait(300);
+  await stopOwned(authChild, true);
+  await stopOwned(broker);
+  releaseBroker?.();
+  if (idpSrv.listening) await new Promise<void>((resolveClose) => idpSrv.close(() => resolveClose()));
   if (jsDir) rmSync(jsDir, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });

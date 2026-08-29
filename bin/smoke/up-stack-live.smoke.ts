@@ -21,6 +21,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { renderDetachedSummary } from "../../implementations/cli/src/lib/up-report.js";
+import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 // Ephemeral OS-assigned port: no fixed-port collision across back-to-back / concurrent runs.
 const freePort = (): Promise<number> =>
@@ -40,7 +41,13 @@ const home = mkdtempSync(join(tmpdir(), "cotal-upstack-home-"));
 const root = mkdtempSync(join(tmpdir(), "cotal-upstack-root-"));
 const autoRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-auto-"));
 const occupantRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-occupant-"));
-const env = { ...process.env, COTAL_HOME: home };
+const configDir = join(home, "xdg");
+const anchors = new Map([
+  [root, recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir })],
+  [autoRoot, recordSmokeSandbox({ root: autoRoot, cotalHome: home, xdgConfigHome: configDir })],
+  [occupantRoot, recordSmokeSandbox({ root: occupantRoot, cotalHome: home, xdgConfigHome: configDir })],
+]);
+const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -48,7 +55,12 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
   pass++;
   console.log(`  ✓ ${name}`);
 };
-const cli = (...args: string[]) => spawnSync(TSX, [CLI, ...args], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+const cliIn = (cwd: string, ...args: string[]) => {
+  const options = { cwd, env, encoding: "utf8" as const, timeout: 120_000 };
+  assertSmokeSandboxDown(anchors.get(cwd), args, options);
+  return spawnSync(TSX, [CLI, ...args], options);
+};
+const cli = (...args: string[]) => cliIn(root, ...args);
 const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const alive = (pid: number) => {
@@ -67,7 +79,6 @@ const portOpenAt = (port: number) =>
     s.setTimeout(400, () => { s.destroy(); res(false); });
   });
 const portOpen = () => portOpenAt(PORT);
-const cliIn = (cwd: string, ...args: string[]) => spawnSync(TSX, [CLI, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
 
 const pids: number[] = [];
 let startedOccupant = false;
@@ -178,9 +189,9 @@ try {
 
   console.log(`\nUP-STACK LIVE SMOKE OK ✅ (${pass} checks)`);
 } finally {
-  spawnSync(TSX, [CLI, "down"], { cwd: root, env, encoding: "utf8" });
-  spawnSync(TSX, [CLI, "down"], { cwd: autoRoot, env, encoding: "utf8" });
-  if (startedOccupant) spawnSync(TSX, [CLI, "down"], { cwd: occupantRoot, env, encoding: "utf8" });
+  cliIn(root, "down");
+  cliIn(autoRoot, "down");
+  if (startedOccupant) cliIn(occupantRoot, "down");
   for (const p of pids) if (alive(p)) { try { process.kill(p, "SIGTERM"); } catch { /* gone */ } }
   rmSync(home, { recursive: true, force: true });
   for (const d of [root, autoRoot, occupantRoot]) rmSync(d, { recursive: true, force: true });

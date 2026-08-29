@@ -1,5 +1,94 @@
 # @cotal-ai/connector-core
 
+## 0.36.0
+
+## 0.35.0
+
+### Minor Changes
+
+- c5948e6: Seed the default persona with wildcard channel read and post ACLs while keeping its active
+  subscription set empty. A fresh default agent can now join and create channels on demand without
+  receiving every channel at boot. Repeat setup also upgrades the byte-exact legacy default while
+  leaving every edited persona unchanged. The guided demo personas retain their existing `welcome`
+  scope.
+
+  This is a minor release because packages are pre-1.0 and the shipped security default broadens the
+  default persona's broker-enforced publish authority. The connector-core bump ships the updated
+  version-matched operator docs bundle.
+
+- d457d7f: Show each managed seat's model and requested variant in the default `cotal ps` view, and expose Jcode's declared local model catalog without presenting configured effort tiers as provider-verified capabilities.
+
+## 0.34.0
+
+### Minor Changes
+
+- 22c3182: Honor the persona file's `agent:` frontmatter when picking the spawn harness. The key existed in
+  half the fleet's personas but no code path read it: it swept into the verbatim `meta` bag, and both
+  launch paths resolved the connector before the persona file was loaded, so `COTAL_DEFAULT_AGENT`
+  silently beat a deliberate per-persona pin (a `jcode` persona ran `claude` with no complaint).
+
+  The harness now resolves once, on every spawn path, as: explicit `--agent` flag > persona `agent:` >
+  `COTAL_DEFAULT_AGENT` > the product default. That is the precedence `model:` and `variant:` already
+  have, keeping the env var a _default_ rather than an override. On `--detach` the CLI now threads
+  an explicit flag and the caller's environment default as separate control fields. The manager loads
+  the persona file before resolving its connector and applies the same precedence while preserving
+  the invoking operator's default when its own environment differs. A pin naming an unregistered
+  connector fails the spawn loudly with the connector install hint (no silent fallback).
+
+  `saveAgentFile` round-trips the field, so a runtime `cotal_persona` redefine preserves a pin.
+  Docs updated (`agent-files.md`, `connectors.md`, `cli.md`, `config.md`).
+
+## 0.33.9
+
+### Patch Changes
+
+- a497dfc: Recover Codex event streams after broker outages without losing pending bracket state or the outage backlog.
+
+## 0.33.8
+
+## 0.33.7
+
+## 0.33.6
+
+### Patch Changes
+
+- 7e250a3: Keep Claude lifecycle hooks inside their existing bounded relay window when the connector control socket has not bound yet, and wait boundedly for a new startup transcript that the retained `SessionStart` can precede.
+
+## 0.33.5
+
+## 0.33.4
+
+### Patch Changes
+
+- 2151b4a: Preserve the first Claude event run when a startup prompt is written before `SessionStart`, while resumed, forked, cleared, compacted, and recovered sessions keep their no-history-replay cursor behavior.
+- 5aa8a56: Rewrite the Cotal documentation in a direct, human voice. The pass removes em dashes, filler words, list-style headings, and slogan-shaped contrasts; updates links after the heading changes; and applies the same voice to the generated MCP tool catalog and the bundled `cotal_docs` index. A docs voice check now protects the mechanical rules.
+
+## 0.33.3
+
+### Patch Changes
+
+- 9e86dcc: `cotal_spawn` now accepts an optional kickoff `prompt` and forwards it through the manager as the new peer's first turn.
+
+  A peer spawned through the MCP tool previously had no way to receive an initial prompt even though the manager's `spawn` command already supported one. The process joined the roster, and a later DM produced a successful `claude/channel` notification, but a pristine Claude session did not start its first model turn from that notification. The peer therefore stayed idle and never answered. Callers can now pass the task with the spawn itself, matching `cotal spawn --prompt` while keeping prompt-less launches idle by choice.
+
+## 0.33.2
+
+### Patch Changes
+
+- 8e212a6: Fix two defects that each, independently, left the AG-UI event plane permanently silent.
+
+  The lifecycle hooks were declared with a split `command`/`args` shape the host schema does not
+  have, so the host ran `node` with no script and every hook silently never fired — taking presence,
+  peer-message surfacing and the emitter's lazy start with it. The manifest now uses the single-string
+  command form, with the interpolated plugin root quoted so paths containing a space still work. The
+  plugin directory is also passed on both launch shapes; it was missing from the `--prompt` shape,
+  which is how hosted agents start.
+
+  Separately, the emitter set itself up before the endpoint had bound. With `--prompt` the first hook
+  beats the first bind, the holder failed terminally, and one line of stderr was the only trace for
+  the rest of the session. The emitter now awaits a bounded `whenConnected()` before setup, and that
+  wait fails past its window rather than resolving as if connected.
+
 ## 0.33.1
 
 ## 0.33.0

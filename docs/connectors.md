@@ -14,7 +14,7 @@ not support throws; nothing silently degrades.
 | Install | `cotal setup` | none, just `opencode` on PATH | seeded with the CLI; needs an authenticated `codex` on PATH | BYO `uv` + `hermes-agent` 0.16; Unix only | seeded with the CLI; needs `jcode` 0.78.1+ on PATH | pi 0.79.10 (one copied file for interactive/SDK) |
 | Watch the real TUI | ✓ | ✓ | ✓ (attached to the mesh-driven thread) | ✗ (headless gateway) | ✓ (attached to the managed Jcode session) | ✓ |
 | Inbound delivery | hook drain at turn start + idle-wake nudge | injected as a turn | wakes a turn; directed messages steer the live turn | fresh agent per message | injected as a Harness API turn | steered into the live turn |
-| Mid-turn steering | ✗ | ✗ | ✓ (directed messages) | — | ✗ | ✓ |
+| Mid-turn steering | ✗ | ✗ | ✓ (directed messages) | none | ✗ | ✓ |
 | Session resume (`--resume`) | ✓ (forks) | ✗ ([#154](https://github.com/Cotal-AI/Cotal/issues/154)) | ✗ (a resumed thread has no MCP tools upstream) | ✗ | ✗ (private Harness API instance) | ✗ |
 | Tool-sharing (`--share-tools`) | ✓ (scoped opt-in) | ✗ (inherits your servers wholesale) | ✗ (isolated per-agent `CODEX_HOME`) | ✗ | ✗ (private MCP configuration) | ✗ |
 | Models | `--model` | `--model` + catalog (`cotal models`) + `--variant` | `--model` + catalog (`cotal models`) + `--variant` (reasoning effort) | any provider, via env | `--model` + `--variant` (reasoning effort) | `--model` |
@@ -29,7 +29,7 @@ at turn boundaries, and a research-preview channel that only wakes an idle sessi
 no plugin runtime either and its MCP client cannot wake an idle session, so the connector runs
 a host-mode peer over Codex's own app-server protocol (the one the Codex TUI runs on): real
 wake, mid-turn steer, and the `cotal_*` tools served from the host over a loopback MCP endpoint
-— which is also what keeps them working on a turn typed into the attached Codex TUI. Hermes runs a
+This also keeps them working on a turn typed into the attached Codex TUI. Hermes runs a
 native plugin inside its Python gateway, bridged to the connector over a local socket; the
 gateway model starts a fresh agent per inbound message, so there is no live turn to steer. Jcode's
 stable Harness API is a Unix-socket NDJSON bridge: the connector starts one private instance,
@@ -38,3 +38,10 @@ creates one session, and calls its documented stdio MCP configuration from a pri
 Each guide covers spawn forms, model selection, and the exact limits: [Claude
 Code](connect-claude.md) · [OpenCode](connect-opencode.md) · [Codex](connect-codex.md) ·
 [Hermes](connect-hermes.md) · [Jcode](connect-jcode.md) · [pi](connect-pi.md).
+
+**Picking the harness at spawn.** Which connector runs a persona resolves once, everywhere:
+explicit `--agent` flag > the persona file's `agent:` frontmatter > `COTAL_DEFAULT_AGENT` > the
+product default (Claude). `COTAL_DEFAULT_AGENT` is a *default*, never an override: a persona that
+pins its harness runs on it even when the operator's environment names another. A pin naming an
+unregistered connector fails the spawn loudly rather than silently falling back (see
+[agent files](agent-files.md)).

@@ -46,7 +46,7 @@ import {
   registry,
   type Connector, type ControlReply, type EpCaller, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
-import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager, type SpawnHooks } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -203,7 +203,7 @@ try {
       return { ok: true, data: { name: String(opts.name), id: "x", role: "worker", agent: "e2e-stub", mode: "fake", lifecycleUid: uid } };
     };
     const fields = {
-      agent: "e2e-stub", role: "worker", config: "cfg.md", identity: "idfile", model: "m1", variant: "high",
+      agent: "e2e-stub", defaultAgent: "caller-default", role: "worker", config: "cfg.md", identity: "idfile", model: "m1", variant: "high",
       launchOptions: { flag: "v", n: 2 }, resume: "sess-1", cwd: "/tmp/x", prompt: "hello",
       subscribe: ["general"], allowSubscribe: ["general", "task"], allowPublish: ["general"], shareTools: "all",
     };
@@ -223,6 +223,9 @@ try {
     const rEmpty = await A.call("spawn", { name: "wp1", resume: "" });
     check("an empty resume refuses through the shared deep validation",
       rEmpty.reply.ok === false && String(rEmpty.reply.error?.message ?? "").includes("session id must not be empty"), rEmpty.reply);
+    const rEmptyDefault = await A.call("spawn", { name: "wp1", defaultAgent: "   " });
+    check("an empty detached caller default refuses through the shared deep validation",
+      rEmptyDefault.reply.ok === false && String(rEmptyDefault.reply.error?.message ?? "").includes("defaultAgent: must not be empty"), rEmptyDefault.reply);
   }
 
   console.log("3. real lifecycle over ep.one: spawn -> ps/inspect -> targeted despawn");
@@ -284,7 +287,10 @@ try {
   check("w2 spawned + joined", acc2.name === "w2", acc2);
   {
     const w2 = M.agents.get("w2")!;
-    const credsPath = w2.secretPaths?.creds ?? join(authDir(workspaceRoot), "creds", `w2.${w2.lifecycleUid}.creds`);
+    // The SHIPPED projection on the fallback too: P1 keys agent secrets per space
+    // (auth/creds/space.<hex>/), so a restated flat layout here would send the fallback
+    // looking where the file no longer is.
+    const credsPath = w2.secretPaths?.creds ?? agentLifecycleSecretFilePaths(workspaceRoot, space, "w2", String(w2.lifecycleUid)).creds;
     check("w2's lifecycle-keyed creds file exists", existsSync(credsPath), credsPath);
     const w2Creds = readFileSync(credsPath, "utf8");
     const w2Nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: w2Creds, tls: false }), maxReconnectAttempts: 0 });

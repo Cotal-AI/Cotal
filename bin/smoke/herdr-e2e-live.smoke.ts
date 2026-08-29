@@ -27,7 +27,7 @@ import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, isReachable } from "@cotal-ai/core";
-import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import * as herdr from "../../extensions/herdr/src/driver.js";
 
 const SPACE = `he2e${randomUUID().slice(0, 6)}`;
@@ -63,12 +63,14 @@ catch {
 // ── recorded identities, for teardown by exact name ────────────────────────────
 let srvPid: number | undefined;
 let mgrPid: number | undefined;
+let realMgrPid: number | undefined;
 let scratch: string | undefined;
 let cleaned = false;
 function cleanup() {
   if (cleaned) return;
   cleaned = true;
   if (mgrPid !== undefined) { try { process.kill(mgrPid, "SIGKILL"); } catch { /* gone */ } }
+  if (realMgrPid !== undefined) { try { process.kill(realMgrPid, "SIGKILL"); } catch { /* gone */ } }
   try { herdr.stopSession(HERDR_SESSION); } catch { /* not running */ }
   try { execFileSync("herdr", ["session", "delete", HERDR_SESSION], { stdio: "ignore" }); } catch { /* gone */ }
   if (srvPid !== undefined) { try { process.kill(srvPid); } catch { /* gone */ } }
@@ -152,7 +154,9 @@ check("the pane carries the cotal metadata token",
   (panes()[0]?.tokens as Record<string, string> | undefined)?.cotal === HERDR_SESSION);
 
 // ── the REAL minted credential never reaches herdr ────────────────────────────
-const credsPath = join(authDir(workspaceRoot), "creds", `hagent.${String(ready!.lifecycleUid)}.creds`);
+// The SHIPPED projection, not a restated layout: P1 keys agent secrets per space
+// (auth/creds/space.<hex>/), and this suite's subject is herdr secrecy, not the layout.
+const credsPath = agentLifecycleSecretFilePaths(workspaceRoot, SPACE, "hagent", String(ready!.lifecycleUid)).creds;
 const credsBody = existsSync(credsPath) ? readFileSync(credsPath, "utf8") : "";
 const seed = /(SU[A-Z2-7]{20,})/.exec(credsBody)?.[1] ?? "";
 check("positive control: the agent's creds file exists on disk", credsBody.length > 0, credsPath);
@@ -170,10 +174,19 @@ check("pane scrollback does NOT contain the agent's nkey seed", seed.length > 20
 
 // ── THE headline claim: kill the manager, the agent lives ─────────────────────
 console.log("\n  … SIGKILL the manager and watch the agent:\n");
+// `child.pid` is the tsx WRAPPER; the Manager lives in the process the child reports as
+// managerPid. Killing only the wrapper leaves a live orphaned manager — which, since the
+// manager stopped ending its process over a lost liveness lease, serves forever and holds
+// this suite's stdio pipes open, so the suite goes green and then never exits (the CI hang).
+// The survival claim is only about the REAL manager dying, so kill and assert on that pid.
+realMgrPid = Number(ready!.managerPid);
+check("the child reported the real manager pid", realMgrPid > 0, String(ready!.managerPid));
 check("the agent is running before the kill", alive(agentPid));
-process.kill(mgrPid!, "SIGKILL");
-const managerDead = await until(() => !alive(mgrPid!), 15_000);
+process.kill(realMgrPid, "SIGKILL");
+try { process.kill(mgrPid!, "SIGKILL"); } catch { /* wrapper already followed its child down */ }
+const managerDead = await until(() => !alive(realMgrPid!), 15_000);
 mgrPid = undefined; // no longer ours to kill in teardown
+realMgrPid = undefined;
 check("the manager process is really dead", managerDead);
 // Give any process-group signal that WOULD have killed the agent time to land.
 await wait(3_000);
@@ -189,4 +202,6 @@ check("the agent process exits with its pane", await until(() => !alive(agentPid
 console.log(`\n────────────────────────────────────────────────`);
 console.log(`\n${pass} passed, ${fail} failed  (${pass + fail} cells ran)\n`);
 cleanup();
-if (fail > 0) process.exit(1);
+// Exit explicitly: a verdict has been printed and teardown has run, so nothing a leaked
+// handle might still reference is allowed to keep this process (and a CI job) alive.
+process.exit(fail > 0 ? 1 : 0);

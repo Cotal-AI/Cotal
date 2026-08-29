@@ -1,5 +1,125 @@
 # @cotal-ai/cli
 
+## 0.36.0
+
+### Patch Changes
+
+- 7c5995b: Key per-tenant material per space instead of per root. The five root-scoped kinds (the `$SYS` cred pair, `membership.json`, `membership-rw.creds`, `delivery.creds`) and every per-agent standing secret now live under `space.<hex>/` segments, migrated on first touch through one choke point that refuses — loudly, with an honest remedy — on any root it cannot show to hold a single tenant. `space rm`'s step-7 reaps land with their step-1 preconditions ahead of the verb itself. Also: the delivery daemon's `$SYS` repair advice now asks the guard instead of printing commands that refuse on the roots that need them, expired user bearers stop being re-presented on reconnect (with the retry bounded), and `agentSecretKeyForFile` takes the caller's space and checks the recorded path against it, so a stored path can no longer address another tenant's material.
+- Updated dependencies [7c5995b]
+  - @cotal-ai/core@0.36.0
+  - @cotal-ai/workspace@0.36.0
+
+## 0.35.0
+
+### Minor Changes
+
+- c5948e6: Seed the default persona with wildcard channel read and post ACLs while keeping its active
+  subscription set empty. A fresh default agent can now join and create channels on demand without
+  receiving every channel at boot. Repeat setup also upgrades the byte-exact legacy default while
+  leaving every edited persona unchanged. The guided demo personas retain their existing `welcome`
+  scope.
+
+  This is a minor release because packages are pre-1.0 and the shipped security default broadens the
+  default persona's broker-enforced publish authority. The connector-core bump ships the updated
+  version-matched operator docs bundle.
+
+- d457d7f: Show each managed seat's model and requested variant in the default `cotal ps` view, and expose Jcode's declared local model catalog without presenting configured effort tiers as provider-verified capabilities.
+
+### Patch Changes
+
+- 4919a53: Render the broker config from the validated tenant inventory, so `cotal up` on a root that holds several spaces keeps every sibling account trusted instead of silently evicting it, and refuses to render while any account record is unreadable.
+- Updated dependencies [4919a53]
+  - @cotal-ai/workspace@0.35.0
+  - @cotal-ai/core@0.35.0
+
+## 0.34.0
+
+### Minor Changes
+
+- 22c3182: Honor the persona file's `agent:` frontmatter when picking the spawn harness. The key existed in
+  half the fleet's personas but no code path read it: it swept into the verbatim `meta` bag, and both
+  launch paths resolved the connector before the persona file was loaded, so `COTAL_DEFAULT_AGENT`
+  silently beat a deliberate per-persona pin (a `jcode` persona ran `claude` with no complaint).
+
+  The harness now resolves once, on every spawn path, as: explicit `--agent` flag > persona `agent:` >
+  `COTAL_DEFAULT_AGENT` > the product default. That is the precedence `model:` and `variant:` already
+  have, keeping the env var a _default_ rather than an override. On `--detach` the CLI now threads
+  an explicit flag and the caller's environment default as separate control fields. The manager loads
+  the persona file before resolving its connector and applies the same precedence while preserving
+  the invoking operator's default when its own environment differs. A pin naming an unregistered
+  connector fails the spawn loudly with the connector install hint (no silent fallback).
+
+  `saveAgentFile` round-trips the field, so a runtime `cotal_persona` redefine preserves a pin.
+  Docs updated (`agent-files.md`, `connectors.md`, `cli.md`, `config.md`).
+
+### Patch Changes
+
+- 9e4e4ed: Add an explicit concrete host option for remote web dashboard binding, launch, readiness, Origin checks, and status probes while preserving the loopback default.
+- Updated dependencies [22c3182]
+  - @cotal-ai/core@0.34.0
+  - @cotal-ai/workspace@0.34.0
+
+## 0.33.9
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.9
+- @cotal-ai/workspace@0.33.9
+
+## 0.33.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.8
+- @cotal-ai/workspace@0.33.8
+
+## 0.33.7
+
+### Patch Changes
+
+- 576ac7d: Account for endpoint-plane streams in backup validation and space teardown, grant their deletion only to the ephemeral teardown credential, and recreate their canonical empty infrastructure during restore.
+- Updated dependencies [576ac7d]
+- Updated dependencies [7119b4c]
+  - @cotal-ai/core@0.33.7
+  - @cotal-ai/workspace@0.33.7
+
+## 0.33.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.6
+- @cotal-ai/workspace@0.33.6
+
+## 0.33.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.5
+- @cotal-ai/workspace@0.33.5
+
+## 0.33.4
+
+### Patch Changes
+
+- Updated dependencies [1858932]
+  - @cotal-ai/core@0.33.4
+  - @cotal-ai/workspace@0.33.4
+
+## 0.33.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.3
+- @cotal-ai/workspace@0.33.3
+
+## 0.33.2
+
+### Patch Changes
+
+- Updated dependencies [ffdde4d]
+  - @cotal-ai/core@0.33.2
+  - @cotal-ai/workspace@0.33.2
+
 ## 0.33.1
 
 ### Patch Changes

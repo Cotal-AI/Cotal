@@ -16,7 +16,7 @@ import {
   type LaunchOpts,
   type LaunchSpec,
 } from "@cotal-ai/core";
-import { authDir, agentLifecycleSecretFilePaths } from "@cotal-ai/workspace";
+import { agentCredsDir, agentLifecycleSecretFilePaths } from "@cotal-ai/workspace";
 import { Manager, type ManagerResumeIdentity, type ManagerResumeAgent, type ManagerResumeInventory } from "../src/manager.js";
 import { MAX_RESUME_CONTROL_BYTES } from "../src/resume.js";
 
@@ -620,6 +620,7 @@ let openInventory: ManagerResumeAgent;
   const committed = await control(manager, "admin", "commitResume", { attemptId: "lease_gap" });
   const ep = (manager as unknown as { ep: Record<string, unknown> }).ep;
   ep.renewManagerLease = async () => { throw new Error("simulated lease loss"); };
+  ep.readOwnManagerLease = async () => { throw new Error("simulated broker silence"); };
   (manager as unknown as { leaseInfo: unknown; leaseRevision: number }).leaseInfo = {
     holder: "local.manager", runtime: "fake", root, pid: process.pid,
   };
@@ -635,7 +636,7 @@ let openInventory: ManagerResumeAgent;
   } finally {
     (process as unknown as { exit: typeof process.exit }).exit = originalExit;
   }
-  check("lease loss after commit-before-finalize exits fail-closed and stops the child", committed.ok && exitCode === 1 && handle.stops === 1, `${exitCode}/${handle.stops}`);
+  check("lease loss after commit-before-finalize ends nothing: no exit, and the child keeps running", committed.ok && exitCode === undefined && handle.stops === 0, `${exitCode}/${handle.stops}`);
   check("lease loss after commit-before-finalize preserves retained footprint", deprovisions === 0, deprovisions);
 }
 
@@ -822,7 +823,10 @@ let openInventory: ManagerResumeAgent;
 {
   const auth = await createSpaceAuth("preserve-smoke");
   const identity = newIdentity();
-  const credsDir = join(authDir(root), "creds");
+  // The manager's own space segment (P1), not the bare creds dir: the resume path resolves through
+  // the migrating choke point, so material staged flat would MOVE under the manager's feet and the
+  // recorded path this entry carries would stop resolving mid-scenario.
+  const credsDir = agentCredsDir(root, "preserve-smoke");
   mkdirSync(credsDir, { recursive: true });
   const credsPath = join(credsDir, "static-worker.creds");
   const retainedCreds = await mintCreds(auth, identity, "agent", { lifecycleUid: uidFor(identity.id) });
@@ -895,7 +899,7 @@ let openInventory: ManagerResumeAgent;
 {
   const manager = managerWith((name) => fakeHandle(name));
   (manager as unknown as { userMode: boolean }).userMode = true;
-  const credsDir = join(authDir(root), "creds");
+  const credsDir = agentCredsDir(root, "preserve-smoke");
   mkdirSync(credsDir, { recursive: true });
   const actorTokenPath = join(credsDir, "worker.actor-token");
   const sentinelPath = join(credsDir, "worker.sentinel.creds");
@@ -950,7 +954,7 @@ let openInventory: ManagerResumeAgent;
   //     files exist and each is individually manager-owned, but they are not ONE family; the pin
   //     refuses the mix (the old per-file OR-pin accepted it).
   {
-    const lifecycleActor = agentLifecycleSecretFilePaths(root, "worker", uidFor("userworker")).actorToken;
+    const lifecycleActor = agentLifecycleSecretFilePaths(root, "preserve-smoke", "worker", uidFor("userworker")).actorToken;
     writeFileSync(lifecycleActor, "retained-token", { mode: 0o600 });
     const mixed: ManagerResumeAgent = { ...entry, identity: { ...entry.identity, actorToken: { kind: "file", path: lifecycleActor, sha256: digest(lifecycleActor) } } };
     let mixedSpawns = 0;

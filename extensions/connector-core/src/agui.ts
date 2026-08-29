@@ -1454,9 +1454,14 @@ export class AguiEmitter<T> {
     if (!p) return;
     if (p.state === "acked") {
       await this.wal.fold();
+      this.brackets = AguiBrackets.restore(p.brackets);
       return;
     }
+    // The retried frame was accepted by a PREVIOUS process and is not fed through this instance's
+    // machine again. Folding promotes its bracket snapshot on disk; promote the same snapshot here
+    // or this emitter continues from the pre-pending state and rejects the next legal event.
     await this.attempt({ id: p.id, E: p.E, body: p.body, retry: true });
+    this.brackets = AguiBrackets.restore(p.brackets);
   }
 
   /**

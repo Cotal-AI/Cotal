@@ -15,7 +15,7 @@ re-implements the wire. Pick by where you are:
 
 The console ships with the CLI; the web dashboard is an extension (`cotal setup` installs it).
 
-## `cotal console`: the terminal view
+## Terminal console
 
 `cotal console` auto-selects its renderer: a real TTY gets the lazygit-style Ink TUI; a pipe or
 `--plain` gets the line stream. Both read from one invisible observer over the space.
@@ -51,7 +51,7 @@ tiles strip, and toggleable lenses:
 The stream is line-oriented, so the signals stay out of it; it is just a timestamped log of
 presence changes and messages, ready for `grep`.
 
-## `cotal web`: the browser dashboard
+## Web dashboard
 
 The dashboard ships inside `cotal-ai` as the `@cotal-ai/web` extension and is seeded automatically on
 first run (like the built-in connectors), so `cotal web` is there out of the box and tracks your CLI
@@ -63,27 +63,31 @@ version on upgrade. If a seeded copy is damaged, `cotal ext seed --repair` resto
 cotal web --space main                       # opens http://cotal.localhost:7799/
 cotal web --space main --detach              # background; stop with cotal down web
 cotal web --space main --port 8080 --no-open
+cotal web --space main --host 192.0.2.10      # explicit remote bind and browser address
 cotal web --space main --creds ./admin.creds # use a cred you minted yourself
 ```
 
 Flags: `--space` (default `main`), `--server` (the mesh's broker, resolved from the registry),
-`--port` (default `7799`), `--detach` (run in the background), `--no-open` (skip auto-launching the
-browser), `--creds` (override the self-minted cred). It binds loopback only. Detached mode waits for
-the real HTTP server before returning, logs to `<mesh-root>/.cotal/web.log`, and is stopped by
+`--host` (HTTP bind and browser host, default `127.0.0.1`), `--port` (default `7799`), `--detach`
+(run in the background), `--no-open` (skip auto-launching the browser), `--creds` (override the
+self-minted cred). Remote exposure requires an explicit concrete `--host`; wildcard addresses
+`0.0.0.0` and `::` are refused because neither is a browser destination. Detached mode waits for
+the real HTTP server at the selected host before returning, logs to `<mesh-root>/.cotal/web.log`, and is stopped by
 `cotal down web` or bare `cotal down`. It requires a recorded mesh root; after `cotal up` records the
 mesh, it can be launched from any directory. The branded URL `http://cotal.localhost:7799/` resolves
 to loopback with no DNS setup in Chrome, Firefox, and Edge; Safari may not resolve `*.localhost`,
-so use `http://127.0.0.1:7799`. A custom `--port` uses the plain loopback address.
+so use `http://127.0.0.1:7799`. A custom `--port` uses the plain loopback address. An explicit
+`--host` is also the advertised address and the only allowed browser Origin for that process.
 
 **The link is single-use, and the surface authenticates the caller.** Starting the dashboard prints a
 URL carrying a one-time token; opening it exchanges the token for a session cookie and the token is
 then spent. Binding loopback keeps other *hosts* out, but it never kept out other *processes* on your
-machine, nor a page in your own browser posting to `http://127.0.0.1:7799` — so the token is what
+machine, nor a page in your own browser posting to `http://127.0.0.1:7799`, so the token is what
 makes the session yours. Requests without it are refused with the reason named (`unauthenticated`,
 `launch-token-already-used`, or `cross-origin`) rather than silently returning nothing.
 
 Practical consequences: open the printed link in the browser you want to use it in, because the
-token is spent on first use — re-opening it **in another browser or profile** is refused with
+token is spent on first use. Re-opening it **in another browser or profile** is refused with
 `launch-token-already-used`. (In the browser that already holds the session, re-opening the link
 still works: the session is checked before the spent token, so the page loads on the session you
 already have.) If you lose the line, the link is also written to `<mesh-root>/.cotal/web.session`,
@@ -111,7 +115,7 @@ DMs), the selected content in the centre, the NEEDS-YOU lane always on the right
   filter chips, and pause), the roster (status as shape *and* colour, role, a one-line activity,
   and the agent's harness: claude / opencode / hermes), and the golden-signal tiles
   (working / waiting / idle / offline / oldest-unattended).
-- **Channel view**: one channel's message list, members folded into the header.
+- **Channel view**: one channel's message list, members shown in the header.
 - **Direct messages**: a per-peer roll-up (one row per peer, not the n² pair list); expand a peer
   for its conversations.
 - **Agent Detail.** A per-agent drill-down rendered from the peer's card: name, role, the harness
@@ -122,9 +126,9 @@ DMs), the selected content in the centre, the NEEDS-YOU lane always on the right
   Membership is **broker-sourced and authoritative**, reconstructed by the delivery daemon from
   the broker's connection view unioned with the durable-members registry, so *silent* subscribers
   show too. A header pill reports the feed as *live*, *stale*, *traffic-only* (no daemon, e.g.
-  open mode; the graph then degrades to traffic-derived spokes), or *unreadable* — the last
+  open mode, where the graph degrades to traffic-derived spokes), or *unreadable*. The last
   meaning the read itself did not answer, which is a fact about the viewer rather than about the
-  mesh, and is kept distinct from *traffic-only* for exactly that reason. A **hide-offline** control
+  mesh, and is kept distinct from *traffic-only* for that reason. A **hide-offline** control
   collapses durable-but-away members. The live feed opens as the page loads rather than after it, so
   the pill reports the connection honestly from the first moment instead of sitting in its down
   state for as long as the first read takes. What the feed says outranks the page's own startup reads: a
@@ -161,7 +165,7 @@ and `-`, or a `*` or `>` where the mesh reads a whole subtree. Anything else is 
 quietly rewritten, because the wire rewrites what it cannot use and two different names would then
 be one channel. That matters most on the delete button: a name that had to be rewritten would have
 purged a channel you did not name, while the answer showed you the name you typed. Delete takes no
-wildcard at all, so the one destructive control names exactly one channel.
+wildcard at all, so the one destructive control names one channel.
 
 The delete request itself is capped at 8 KiB, which is far more than a channel name can be and far
 less than a machine can spend. A larger body is refused with a `413` naming the limit, the server
@@ -189,7 +193,7 @@ Every surface is a read-only observer; what it *sees* depends on its credential:
   whole space: chat, DMs, and anycast (`dmVisible: true`).
 - **`console --plain`** deliberately narrows to the chat subtree, so DMs and anycast stay
   confidential in a line log even under an admin cred.
-- An explicit **`--creds`** scopes any surface to exactly what that cred allows; a chat-only
+- An explicit **`--creds`** limits each surface to the credential's grants; a chat-only
   observer cred hides the DM lens.
 
 See [identity and auth](identity-and-auth.md) for the observer vs admin scopes, and

@@ -382,10 +382,10 @@ try {
   check("GET /jwks is served on the public face", publicJwks.status === 200);
   check("…with the exact cache contract max-age=300", publicJwks.headers.get("cache-control") === "max-age=300");
   let notFound = 0;
-  for (const p of ["/", "/exchange/", "/manager-service-authority/", "/admin", "/views", "/actor", "/ledger", "/health/", "/.well-known/", "/..%2f", "/toString", "/constructor"]) {
+  for (const p of ["/", "/exchange/", "/manager-service-authority/", "/interactive-lifecycle/retire", "/admin", "/views", "/actor", "/ledger", "/health/", "/.well-known/", "/..%2f", "/toString", "/constructor"]) {
     if ((await get(`${PUBLIC}${p}`)).status === 404) notFound++;
   }
-  check("every non-route path 404s on the public face (12/12, incl. prototype-chain probes)", notFound === 12, { notFound });
+  check("every non-route path 404s on the public face (13/13, incl. private retirement + prototype-chain probes)", notFound === 13, { notFound });
   check("GET at /exchange is refused (POST only)", (await get(`${PUBLIC}/exchange`)).status === 405);
   check("POST at /jwks is refused (GET only)", (await post(`${PUBLIC}/jwks`, {})).status === 405);
 

@@ -1,5 +1,76 @@
 # @cotal-ai/core
 
+## 0.36.0
+
+### Patch Changes
+
+- 7c5995b: Key per-tenant material per space instead of per root. The five root-scoped kinds (the `$SYS` cred pair, `membership.json`, `membership-rw.creds`, `delivery.creds`) and every per-agent standing secret now live under `space.<hex>/` segments, migrated on first touch through one choke point that refuses — loudly, with an honest remedy — on any root it cannot show to hold a single tenant. `space rm`'s step-7 reaps land with their step-1 preconditions ahead of the verb itself. Also: the delivery daemon's `$SYS` repair advice now asks the guard instead of printing commands that refuse on the roots that need them, expired user bearers stop being re-presented on reconnect (with the retry bounded), and `agentSecretKeyForFile` takes the caller's space and checks the recorded path against it, so a stored path can no longer address another tenant's material.
+
+## 0.35.0
+
+## 0.34.0
+
+### Minor Changes
+
+- 22c3182: Honor the persona file's `agent:` frontmatter when picking the spawn harness. The key existed in
+  half the fleet's personas but no code path read it: it swept into the verbatim `meta` bag, and both
+  launch paths resolved the connector before the persona file was loaded, so `COTAL_DEFAULT_AGENT`
+  silently beat a deliberate per-persona pin (a `jcode` persona ran `claude` with no complaint).
+
+  The harness now resolves once, on every spawn path, as: explicit `--agent` flag > persona `agent:` >
+  `COTAL_DEFAULT_AGENT` > the product default. That is the precedence `model:` and `variant:` already
+  have, keeping the env var a _default_ rather than an override. On `--detach` the CLI now threads
+  an explicit flag and the caller's environment default as separate control fields. The manager loads
+  the persona file before resolving its connector and applies the same precedence while preserving
+  the invoking operator's default when its own environment differs. A pin naming an unregistered
+  connector fails the spawn loudly with the connector install hint (no silent fallback).
+
+  `saveAgentFile` round-trips the field, so a runtime `cotal_persona` redefine preserves a pin.
+  Docs updated (`agent-files.md`, `connectors.md`, `cli.md`, `config.md`).
+
+## 0.33.9
+
+## 0.33.8
+
+## 0.33.7
+
+### Patch Changes
+
+- 576ac7d: Account for endpoint-plane streams in backup validation and space teardown, grant their deletion only to the ephemeral teardown credential, and recreate their canonical empty infrastructure during restore.
+
+## 0.33.6
+
+## 0.33.5
+
+## 0.33.4
+
+### Patch Changes
+
+- 1858932: The manager no longer ends its own process over its liveness lease. A renew that fails is re-read; a key still its own is adopted, a gone key is re-acquired, a key held by another process is reported and served through, and a broker that cannot be asked is retried for as long as it takes. Each change of state is one line in `manager.log`. The fail-close that took a manager and every pty seat it held down one tick past the lease TTL is removed, together with the detach-on-lease-loss path it needed. The endpoint also drops its manager-lease KV handle when it rebuilds a closed connection; before, every renew after a reconnect ran on the dead handle and timed out for good.
+
+## 0.33.3
+
+## 0.33.2
+
+### Patch Changes
+
+- ffdde4d: Fix the second spawn of any persona being unmintable under per-user auth.
+
+  In user mode the allocated agent name IS the mesh actor, and the principal grammar reserves `-` as
+  the separator of the JetStream-name form, so it is rejected inside a token. The spawn auto-numbering
+  scheme appended its counter with exactly that character: the second live instance of a persona was
+  named `<base>-2` and could never be granted. It numbers with `_` now.
+
+  The failure was invisible outside per-user auth, because static/open mode keys the actor on the
+  freshly minted nkey rather than on the name — so it fired only on hosted meshes, only from the
+  second spawn onward, and looked like a problem with one persona's name rather than with numbering.
+
+  The name rule itself now lives in one exported predicate (`spawnNameError`) that both the manager's
+  name door and the numbering are checked against, and whose narrow half delegates to the shipped
+  token validator instead of restating its alphabet. In user mode a name that could never become an
+  actor is refused where it is chosen, rather than at mint. Static/open mode keeps the looser rule, so
+  an existing `my-agent` persona still spawns across an upgrade.
+
 ## 0.33.1
 
 ## 0.33.0

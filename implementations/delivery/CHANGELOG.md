@@ -1,5 +1,90 @@
 # @cotal-ai/delivery
 
+## 0.36.0
+
+### Patch Changes
+
+- 7c5995b: Key per-tenant material per space instead of per root. The five root-scoped kinds (the `$SYS` cred pair, `membership.json`, `membership-rw.creds`, `delivery.creds`) and every per-agent standing secret now live under `space.<hex>/` segments, migrated on first touch through one choke point that refuses — loudly, with an honest remedy — on any root it cannot show to hold a single tenant. `space rm`'s step-7 reaps land with their step-1 preconditions ahead of the verb itself. Also: the delivery daemon's `$SYS` repair advice now asks the guard instead of printing commands that refuse on the roots that need them, expired user bearers stop being re-presented on reconnect (with the retry bounded), and `agentSecretKeyForFile` takes the caller's space and checks the recorded path against it, so a stored path can no longer address another tenant's material.
+- Updated dependencies [7c5995b]
+  - @cotal-ai/core@0.36.0
+  - @cotal-ai/workspace@0.36.0
+
+## 0.35.0
+
+### Patch Changes
+
+- Updated dependencies [4919a53]
+  - @cotal-ai/workspace@0.35.0
+  - @cotal-ai/core@0.35.0
+
+## 0.34.0
+
+### Patch Changes
+
+- Updated dependencies [22c3182]
+  - @cotal-ai/core@0.34.0
+  - @cotal-ai/workspace@0.34.0
+
+## 0.33.9
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.9
+- @cotal-ai/workspace@0.33.9
+
+## 0.33.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.8
+- @cotal-ai/workspace@0.33.8
+
+## 0.33.7
+
+### Patch Changes
+
+- Updated dependencies [576ac7d]
+- Updated dependencies [7119b4c]
+  - @cotal-ai/core@0.33.7
+  - @cotal-ai/workspace@0.33.7
+
+## 0.33.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.6
+- @cotal-ai/workspace@0.33.6
+
+## 0.33.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.5
+- @cotal-ai/workspace@0.33.5
+
+## 0.33.4
+
+### Patch Changes
+
+- Updated dependencies [1858932]
+  - @cotal-ai/core@0.33.4
+  - @cotal-ai/workspace@0.33.4
+
+## 0.33.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.3
+- @cotal-ai/workspace@0.33.3
+
+## 0.33.2
+
+### Patch Changes
+
+- Updated dependencies [ffdde4d]
+  - @cotal-ai/core@0.33.2
+  - @cotal-ai/workspace@0.33.2
+
 ## 0.33.1
 
 ### Patch Changes

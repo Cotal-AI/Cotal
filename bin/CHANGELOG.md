@@ -1,5 +1,157 @@
 # cotal-ai
 
+## 0.36.0
+
+### Patch Changes
+
+- Updated dependencies [7c5995b]
+  - @cotal-ai/core@0.36.0
+  - @cotal-ai/workspace@0.36.0
+  - @cotal-ai/delivery@0.36.0
+  - @cotal-ai/cli@0.36.0
+  - @cotal-ai/manager@0.36.0
+  - @cotal-ai/connector-core@0.36.0
+  - @cotal-ai/auth@0.36.0
+
+## 0.35.0
+
+### Patch Changes
+
+- Updated dependencies [c5948e6]
+- Updated dependencies [d457d7f]
+- Updated dependencies [4919a53]
+  - @cotal-ai/cli@0.35.0
+  - @cotal-ai/connector-core@0.35.0
+  - @cotal-ai/workspace@0.35.0
+  - @cotal-ai/manager@0.35.0
+  - @cotal-ai/auth@0.35.0
+  - @cotal-ai/delivery@0.35.0
+  - @cotal-ai/core@0.35.0
+
+## 0.34.0
+
+### Patch Changes
+
+- Updated dependencies [9e4e4ed]
+- Updated dependencies [53b70cc]
+- Updated dependencies [22c3182]
+- Updated dependencies [de00f4a]
+  - @cotal-ai/cli@0.34.0
+  - @cotal-ai/manager@0.34.0
+  - @cotal-ai/core@0.34.0
+  - @cotal-ai/connector-core@0.34.0
+  - @cotal-ai/auth@0.34.0
+  - @cotal-ai/delivery@0.34.0
+  - @cotal-ai/workspace@0.34.0
+
+## 0.33.9
+
+### Patch Changes
+
+- Updated dependencies [a497dfc]
+  - @cotal-ai/connector-core@0.33.9
+  - @cotal-ai/manager@0.33.9
+  - @cotal-ai/core@0.33.9
+  - @cotal-ai/workspace@0.33.9
+  - @cotal-ai/cli@0.33.9
+  - @cotal-ai/delivery@0.33.9
+  - @cotal-ai/auth@0.33.9
+
+## 0.33.8
+
+### Patch Changes
+
+- Updated dependencies [4ca18bb]
+  - @cotal-ai/manager@0.33.8
+  - @cotal-ai/core@0.33.8
+  - @cotal-ai/workspace@0.33.8
+  - @cotal-ai/cli@0.33.8
+  - @cotal-ai/delivery@0.33.8
+  - @cotal-ai/connector-core@0.33.8
+  - @cotal-ai/auth@0.33.8
+
+## 0.33.7
+
+### Patch Changes
+
+- Updated dependencies [576ac7d]
+- Updated dependencies [7119b4c]
+  - @cotal-ai/core@0.33.7
+  - @cotal-ai/cli@0.33.7
+  - @cotal-ai/workspace@0.33.7
+  - @cotal-ai/connector-core@0.33.7
+  - @cotal-ai/auth@0.33.7
+  - @cotal-ai/delivery@0.33.7
+  - @cotal-ai/manager@0.33.7
+
+## 0.33.6
+
+### Patch Changes
+
+- Updated dependencies [7e250a3]
+  - @cotal-ai/connector-core@0.33.6
+  - @cotal-ai/manager@0.33.6
+  - @cotal-ai/core@0.33.6
+  - @cotal-ai/workspace@0.33.6
+  - @cotal-ai/cli@0.33.6
+  - @cotal-ai/delivery@0.33.6
+  - @cotal-ai/auth@0.33.6
+
+## 0.33.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.33.5
+- @cotal-ai/workspace@0.33.5
+- @cotal-ai/cli@0.33.5
+- @cotal-ai/manager@0.33.5
+- @cotal-ai/delivery@0.33.5
+- @cotal-ai/connector-core@0.33.5
+- @cotal-ai/auth@0.33.5
+
+## 0.33.4
+
+### Patch Changes
+
+- 1858932: The manager no longer ends its own process over its liveness lease. A renew that fails is re-read; a key still its own is adopted, a gone key is re-acquired, a key held by another process is reported and served through, and a broker that cannot be asked is retried for as long as it takes. Each change of state is one line in `manager.log`. The fail-close that took a manager and every pty seat it held down one tick past the lease TTL is removed, together with the detach-on-lease-loss path it needed. The endpoint also drops its manager-lease KV handle when it rebuilds a closed connection; before, every renew after a reconnect ran on the dead handle and timed out for good.
+- Updated dependencies [2151b4a]
+- Updated dependencies [5aa8a56]
+- Updated dependencies [1858932]
+  - @cotal-ai/connector-core@0.33.4
+  - @cotal-ai/manager@0.33.4
+  - @cotal-ai/core@0.33.4
+  - @cotal-ai/auth@0.33.4
+  - @cotal-ai/cli@0.33.4
+  - @cotal-ai/delivery@0.33.4
+  - @cotal-ai/workspace@0.33.4
+
+## 0.33.3
+
+### Patch Changes
+
+- Updated dependencies [9e86dcc]
+  - @cotal-ai/connector-core@0.33.3
+  - @cotal-ai/manager@0.33.3
+  - @cotal-ai/core@0.33.3
+  - @cotal-ai/workspace@0.33.3
+  - @cotal-ai/cli@0.33.3
+  - @cotal-ai/delivery@0.33.3
+  - @cotal-ai/auth@0.33.3
+
+## 0.33.2
+
+### Patch Changes
+
+- Updated dependencies [8e212a6]
+- Updated dependencies [ffdde4d]
+  - @cotal-ai/connector-core@0.33.2
+  - @cotal-ai/core@0.33.2
+  - @cotal-ai/manager@0.33.2
+  - @cotal-ai/auth@0.33.2
+  - @cotal-ai/cli@0.33.2
+  - @cotal-ai/delivery@0.33.2
+  - @cotal-ai/workspace@0.33.2
+
 ## 0.33.1
 
 ### Patch Changes

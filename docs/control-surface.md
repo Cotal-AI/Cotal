@@ -15,8 +15,8 @@ rows its callers grant it, and serves over a scoped credential.
 ## The `ep` rails
 
 One kind, `ep`, carries every request under a mode token that says where the request
-routes, never which verb it is (the verb rides the envelope): `one` (queue-group anycast,
-exactly one class member), `all` (scatter, every instance), and `inst` (one instance by its
+routes, never which verb it is (the verb rides the envelope): `one` (queue-group
+anycast, one and only one class member), `all` (scatter, every instance), and `inst` (one instance by its
 stable address). Replies come back on a `reply` rail keyed to the serving instance and its
 epoch. Around these sit the sibling planes the composites use: per-goal events, timers,
 sessions, and the journal that holds durable facts. Every request carries the caller as
@@ -37,7 +37,7 @@ credentials key on the lifecycle uid, not the reusable name, which is what lets 
 supervised restart recover the same lifecycle instead of minting a new one. See
 [SPEC §13.1](../SPEC.md#131-lifecycle-identity) and [identity & auth](identity-and-auth.md).
 
-## Discovery: describe and invoke
+## Service discovery
 
 No client has compile-time knowledge of any endpoint's commands. `cotal describe
 <endpoint>` resolves a registered endpoint's command set off the wire: the reserved
@@ -82,7 +82,7 @@ that in fact succeeded mints a duplicate. A committer that supplies no diagnosis
 "the success signal did not arrive within the readiness deadline". The agent's own eventual
 state is then observable on its presence record.
 
-## Instance addressing and scatter
+## Instance routing
 
 A space can run more than one manager. Each manager persists a stable logical instance id
 across restarts and advances its process epoch when it comes back, so callers address a
@@ -96,7 +96,7 @@ the whole id, because `--on` takes nothing else.
 The resolve and the invoke are separate trips through the same anycast queue, so in a
 multi-manager space an unpinned call can land on an instance the caller did not resolve. Every
 call carries the incarnation it resolved against, and a manager that is not that incarnation
-**refuses before running the command** — so the failure an operator sees says the command did
+**refuses before running the command**, so the failure an operator sees says the command did
 not run, and re-issuing it cannot duplicate the effect. That is the difference that matters for
 a mutation: the older behaviour detected the mismatch on the reply, after the manager had
 already acted, and could only tell you to go and check. `--on` still matters for reaching a
@@ -125,11 +125,11 @@ unreachable, still surfaced, and the scatter is still not complete.
 The probe is supplied by the **caller**, not invented by the scatter. Asking about an instance is
 a publish on that instance's rail, and a credential that holds no row for it is refused by the
 broker asynchronously, while the publish itself returns normally. A refused probe is therefore
-silent, and silence is exactly what a live but slow instance looks like. Only the layer that
+silent, and silence is what a live but slow instance looks like. Only the layer that
 minted the credential knows which ids it may ask about, so that layer asks about those and no
 others, and prints any refusal the broker raises anyway rather than letting it expire into a
-timeout. `cotal ps` freezes the class on its first connection, re-mints an instrument pinned to
-exactly the frozen ids, and scatters on a second.
+timeout. `cotal ps` freezes the class on its first connection, re-mints an instrument pinned only
+to the frozen ids, and scatters on a second.
 
 This does not help against an instance that is **connected but not answering**. A hung manager
 holds its subscriptions, so it is indistinguishable from a slow one, and it still costs the full
@@ -138,16 +138,19 @@ deadline. That is the correct result, not a gap in the probe.
 ### Deregistration
 
 A probe makes a dead registration cheap to skip; it does not remove it. Removal is the
-registration's own exit, and there are exactly two routes to it, both explicit
+registration's own exit, and there are two explicit routes to it
 ([SPEC §13.5](../SPEC.md#135-verbs): a deleted `svc` spec *is* the deregistration).
 
-A manager that stops cleanly deletes its own two records keys as part of stopping, so an instance
-that was shut down leaves no row behind. This is a **graceful stop** only. A manager that loses
-its lease tears down fail-closed and deliberately does not deregister: it is not the authority on
-its own record at that point, and the incarnation that took the lease from it is. A restart that
-died *mid-registration* is a different residue: the issuance gate stays frozen under that op. The
-successor completes the dead registration on boot when the freeze-holder is affirmatively gone
-under a complete CONNZ sweep (the same composition as [`cotal reconcile-gate`](cli.md#reconcile-gate)),
+A manager that stops cleanly removes its own registration if it still owns the recorded revision,
+so an ordinary shutdown leaves no stale row. Lease trouble is not an exit path. A manager that
+cannot renew or read its lease keeps serving, stays registered, and retries. If another process
+holds the same instance key, it logs the conflict and keeps serving until an operator stops one of
+them. The revision-pinned deregistration leaves a successor's registration alone.
+
+A restart that died *mid-registration* is a different residue: the issuance gate stays frozen under
+that op. The successor completes the dead registration on boot when the freeze-holder is
+affirmatively gone under a complete CONNZ sweep (the same composition as
+[`cotal reconcile-gate`](cli.md#reconcile-gate)),
 then runs its normal takeover. It does not invent a TTL and it does not start a new freeze over a
 still-held one.
 
@@ -211,8 +214,8 @@ from "not right now". See [cli.md](cli.md#input).
 ## Grants
 
 There is no broad control credential. A caller holds one capability row per command it is
-allowed to send, and minting maps each named capability to exactly the request subjects it
-needs, nothing wider. The manager serves over a scoped serve credential that can answer and
+allowed to send, and minting maps each named capability to the request subjects it needs and no
+others. The manager serves over a scoped serve credential that can answer and
 reply but cannot, for instance, write another endpoint's records or forge a goal terminal;
 the goal-fact writer and the session writer are separate, narrowly scoped credentials the
 broker fences by subject. Authorization is checked at the serving boundary, and for actions

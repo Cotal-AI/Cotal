@@ -15,7 +15,7 @@ import {
   rmSync,
   realpathSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
   isReachable,
   DEFAULT_SERVER,
@@ -52,13 +52,19 @@ import {
   getSoleSpaceAuth,
   getSpaceAuth,
   hasUserAuthState,
-  loadSoleSpaceAuth,
+  listSpaceAccounts,
+  preloadSpaceAccounts,
   putSpaceAuth,
   clearCurrent,
   findMesh,
   getCurrent,
   loadMeshes,
-  MEMBERSHIP_RW_CREDS_KEY,
+  connectionEvictorCredsKey,
+  membershipConfigPath,
+  membershipObserverCredsKey,
+  membershipRwCredsKey,
+  MEMBERSHIP_CONFIG_KIND,
+  MEMBERSHIP_RW_CREDS_KIND,
   recordMesh,
   meshesForRoot,
   removeMesh,
@@ -88,6 +94,7 @@ import {
   retireOrdinaryResume,
   sameStoreIdentity,
   type JsonValue,
+  type MaintenanceLock,
   type ManagerCommitEvidence,
   type ManagerFinalizeEvidence,
   type ProcessOwner,
@@ -187,7 +194,22 @@ export function upComplete(argv: string[]): CompletionResult {
   return { items, directive: items.length ? "nofiles" : "default" };
 }
 
-export async function up(args: ParsedArgs): Promise<void> {
+/** `inheritedLock` is the root maintenance lock a recovery re-entry hands down (see the re-entry
+ *  below). Ownership transfers with it: this call releases it at its own release point. */
+export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock): Promise<void> {
+  if (!inheritedLock) return await runUp(args);
+  // A re-entry owns the inherited lock from the moment it is called, but `runUp` only adopts it
+  // part-way in — an early refusal (an unusable `--runtime`, say) throws before that. Release it
+  // here in exactly that case, so a refused re-entry never leaves the root locked for the reaper.
+  let adopted = false;
+  try {
+    return await runUp(args, inheritedLock, () => { adopted = true; });
+  } finally {
+    if (!adopted) releaseMaintenanceLock(inheritedLock);
+  }
+}
+
+async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?: () => void): Promise<void> {
   const values = args.values as {
     server?: string; "store-dir"?: string; space?: string; open?: boolean; "user-auth"?: boolean; idp?: string;
     "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean; "advertised-server"?: string; "agent-provisioning-url"?: string;
@@ -229,6 +251,11 @@ export async function up(args: ParsedArgs): Promise<void> {
       await up({ ...args, values: next });
     } catch (error) {
       pendingRestores.delete(prepared.attemptId);
+      // The one journal writer deliberately NOT handed a lock, and the reason is structural rather
+      // than stylistic: no lock is held in this frame either way. This invocation returns just below
+      // without ever reaching the `startupLock` acquire, and the re-entry that did hold one released
+      // it in its own `finally` on the way out through this very throw. So the helper must take its
+      // own — passing something here would mean passing `undefined`, which reads as an oversight.
       markPreparedRestoreDegraded(prepared.root, prepared.attemptId, (error as Error).message);
       throw error;
     }
@@ -255,6 +282,9 @@ export async function up(args: ParsedArgs): Promise<void> {
     const lock = acquireMaintenanceLock(root);
     let pending: PendingOrdinaryResume | undefined;
     let recoveredRestore: PreparedRestore | undefined;
+    // Set only at the moment the lock is passed to a re-entry, which then owns releasing it. Any
+    // other exit from this block — including a throw after `pending` was built — still releases.
+    let handedOff = false;
     try {
       const journal = readMaintenanceJournal(root);
       if (journal?.state === "restore-ready") {
@@ -394,53 +424,60 @@ export async function up(args: ParsedArgs): Promise<void> {
       } else if (journal) {
         throw new Error(`cotal up is refused while maintenance state is ${journal.state}; follow the recorded recovery`);
       }
+      // The re-entries run INSIDE this block, under the lock the journal was just written with, and
+      // inherit it rather than letting it drop. Releasing here and re-acquiring in the nested `up`
+      // left the journal reading `resume-intent` with the lock free — the window a concurrent `up`
+      // could render the whole-broker server.conf through (design doc §4, P2).
+      if (recoveredRestore) {
+        handedOff = true;
+        try {
+          await up({
+            ...args,
+            values: {
+              ...values,
+              __restoreAttempt: recoveredRestore.attemptId,
+              space: recoveredRestore.space,
+              server: recoveredRestore.server,
+              host: recoveredRestore.host,
+              "store-dir": recoveredRestore.targetPath,
+              runtime: recoveredRestore.runtime,
+              detach: recoveredRestore.detached,
+              open: recoveredRestore.mode === "open",
+              "user-auth": recoveredRestore.mode === "user",
+            },
+          }, lock);
+        } catch (error) {
+          // The nested `up` released the inherited lock on its way out, so this takes its own.
+          markPendingResumeDegraded(recoveredRestore.attemptId, error instanceof Error ? error.message : String(error));
+          throw error;
+        }
+        return;
+      }
+      if (pending) {
+        handedOff = true;
+        try {
+          await up({
+            ...args,
+            values: {
+              ...values,
+              __ordinaryResumeAttempt: pending.attemptId,
+              space: pending.space,
+              server: pending.server,
+              "store-dir": pending.storeDir,
+              runtime: pending.runtime,
+              detach: pending.detached,
+              open: pending.mode === "open",
+              "user-auth": pending.mode === "user",
+            },
+          }, lock);
+        } catch (error) {
+          markPendingResumeDegraded(pending.attemptId, error instanceof Error ? error.message : String(error));
+          throw error;
+        }
+        return;
+      }
     } finally {
-      releaseMaintenanceLock(lock);
-    }
-    if (recoveredRestore) {
-      try {
-        await up({
-          ...args,
-          values: {
-            ...values,
-            __restoreAttempt: recoveredRestore.attemptId,
-            space: recoveredRestore.space,
-            server: recoveredRestore.server,
-            host: recoveredRestore.host,
-            "store-dir": recoveredRestore.targetPath,
-            runtime: recoveredRestore.runtime,
-            detach: recoveredRestore.detached,
-            open: recoveredRestore.mode === "open",
-            "user-auth": recoveredRestore.mode === "user",
-          },
-        });
-      } catch (error) {
-        markPendingResumeDegraded(recoveredRestore.attemptId, error instanceof Error ? error.message : String(error));
-        throw error;
-      }
-      return;
-    }
-    if (pending) {
-      try {
-        await up({
-          ...args,
-          values: {
-            ...values,
-            __ordinaryResumeAttempt: pending.attemptId,
-            space: pending.space,
-            server: pending.server,
-            "store-dir": pending.storeDir,
-            runtime: pending.runtime,
-            detach: pending.detached,
-            open: pending.mode === "open",
-            "user-auth": pending.mode === "user",
-          },
-        });
-      } catch (error) {
-        markPendingResumeDegraded(pending.attemptId, error instanceof Error ? error.message : String(error));
-        throw error;
-      }
-      return;
+      if (!handedOff) releaseMaintenanceLock(lock);
     }
   }
   const wantUser = Boolean(values["user-auth"]);
@@ -572,14 +609,41 @@ export async function up(args: ParsedArgs): Promise<void> {
   // recourse) instead of a silent fallback in a detached child. No fallbacks. (`pty`/unset: no-op.)
   if (values.runtime) await preflightRuntime(values.runtime);
   const resumeAttempt = values.__restoreAttempt ?? values.__ordinaryResumeAttempt;
-  let startupLock = resumeAttempt ? undefined : acquireMaintenanceLock(cotalRoot());
+  // Held for EVERY `up`, resume re-entry included. A re-entry used to hold no lock at all and still
+  // reach the renderer below, so a concurrent `cotal up` could rewrite the whole-broker server.conf
+  // — every tenant's trust, unserialized — while a resume was mid-flight (design doc §4, P2). A
+  // re-entry INHERITS the recovery's lock rather than taking its own: the recovery journals
+  // `resume-intent` under that lock, so releasing it to re-acquire here would leave exactly the
+  // window the probe catches — the journal already in a resume state with the lock free.
+  //
+  // Inheriting makes handing this lock down MANDATORY, not tidy: the lock is not reentrant, and it
+  // cannot stale-reap its way out either, because the recorded owner is alive — it is us. A helper
+  // that self-acquired would take the "held by a live owner" refusal and fail the resume outright.
+  // So EVERY helper below that journals under this lock takes it as a parameter, on both the restore
+  // and the ordinary side: the two ADOPT paths (proven-restore and proven-ordinary listeners, which
+  // recover by adopting an already-live listener rather than spawning a competitor), the spawn-path
+  // listener binds (detached and foreground, restore and ordinary), the dead-listener replacement,
+  // `completeResumeActivation` and the manager-commit / activation / degraded writers it calls.
+  //
+  // Read that list as a rule, not an inventory. The trap is that a call site with no lock ARGUMENT
+  // says nothing about whether the CALLEE acquires: the restore-side writers took no parameter and
+  // self-acquired, so handing the lock to the sites that visibly named it left `up --restore` dead
+  // on its first pass — it died in the listener bind, before any of the seams. If you add a helper
+  // that journals, give it `heldLock` and hand it down from here; do not audit by call-site shape.
+  // The one caller that does NOT pass it is the prepare-failure path above, where the lock has
+  // genuinely not been taken yet in this frame and the helper is meant to take its own.
+  let startupLock: MaintenanceLock | undefined = inheritedLock ?? acquireMaintenanceLock(cotalRoot());
+  onAdopt?.(); // from here the release below owns it, inherited or not
   const releaseStartupLock = () => {
     if (!startupLock) return;
     releaseMaintenanceLock(startupLock);
     startupLock = undefined;
   };
   try {
-    if (startupLock) assertOrdinaryUpAllowed(cotalRoot(), values["store-dir"] ? resolve(values["store-dir"]) : cotalPath("nats"));
+    // Gated on the ATTEMPT, not on holding the lock. The lock is now always held, and this refuses
+    // whenever a journal exists — which is precisely the state a resume re-entry is in, so gating
+    // it on the lock would refuse the very resume the lock is here to protect.
+    if (!resumeAttempt) assertOrdinaryUpAllowed(cotalRoot(), values["store-dir"] ? resolve(values["store-dir"]) : cotalPath("nats"));
     let server = values.server ?? DEFAULT_SERVER;
     const host = values.host ?? "127.0.0.1";
     // `--host` is the BIND address; `server` is the URL the readiness probe, the mesh registry, and
@@ -595,7 +659,7 @@ export async function up(args: ParsedArgs): Promise<void> {
         throw new Error(`restore attempt ${resumeAttempt} re-entry has no bound listener proof; preserving recovery state`);
       const ownerStatus = localProcessOwnerStatus(restoredAttempt.listenerProof.processOwner);
       if (ownerStatus === "alive") {
-        await resumeProvenRestoreListener(restoredAttempt);
+        await resumeProvenRestoreListener(restoredAttempt, startupLock);
         return;
       }
       if (ownerStatus === "unknown")
@@ -604,13 +668,13 @@ export async function up(args: ParsedArgs): Promise<void> {
         throw new Error(`restore attempt ${resumeAttempt} is manager-committed but its bound listener is dead; preserving the commit token and retained suppression`);
       if (await isReachable(restoredAttempt.server))
         throw new Error(`restore attempt ${resumeAttempt} refuses the occupied foreign listener at ${restoredAttempt.server}`);
-      replacePreparedDeadRestoreListener(restoredAttempt);
+      replacePreparedDeadRestoreListener(restoredAttempt, startupLock);
     }
     const ordinaryAttempt = resumeAttempt ? pendingOrdinaryResumes.get(resumeAttempt) : undefined;
     if (ordinaryAttempt?.adoptProof) {
       // The recovered attempt's exact bound listener is alive: prove it over the wire and adopt it
       // instead of spawning a competitor over the same store.
-      await resumeProvenOrdinaryListener(ordinaryAttempt);
+      await resumeProvenOrdinaryListener(ordinaryAttempt, startupLock);
       return;
     }
     if (ordinaryAttempt?.journalState === "resume-committed")
@@ -852,14 +916,14 @@ export async function up(args: ParsedArgs): Promise<void> {
         boundListener: {
           serverName: restored.serverName,
           serverNonce: restored.serverNonce,
-          onSpawn: (pid: number, startedAt: string) => bindSpawnedRestoreListener(restored, pid, startedAt),
+          onSpawn: (pid: number, startedAt: string) => bindSpawnedRestoreListener(restored, pid, startedAt, startupLock),
           verify: async () => { await provePreparedRestoreListener(restored); },
         },
       } : ordinaryAttempt ? {
         boundListener: {
           serverName: ordinaryAttempt.serverName,
           serverNonce: ordinaryAttempt.serverNonce,
-          onSpawn: (pid: number, startedAt: string) => bindSpawnedOrdinaryResumeListener(ordinaryAttempt, pid, startedAt),
+          onSpawn: (pid: number, startedAt: string) => bindSpawnedOrdinaryResumeListener(ordinaryAttempt, pid, startedAt, startupLock),
           verify: async () => { await verifySpawnedOrdinaryListener(ordinaryAttempt); },
         },
       } : {}),
@@ -879,6 +943,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       controlPlane && authService,
       !authService ? "normal listener started but the user-auth service is unavailable" : "normal listener started but the control plane is degraded",
       server,
+      startupLock,
     );
     return;
   }
@@ -931,14 +996,14 @@ export async function up(args: ParsedArgs): Promise<void> {
   if (child.pid) writeFileSync(cotalPath("nats.pid"), String(child.pid));
   if (restored && process.env.COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_SPAWN === "1") process.exit(87);
   if (restored) try {
-    bindSpawnedRestoreListener(restored, child.pid ?? 0, listenerStartedAt);
+    bindSpawnedRestoreListener(restored, child.pid ?? 0, listenerStartedAt, startupLock);
   } catch (error) {
     await stopUnboundRestoreListener(child);
     removeMatchingNatsPid(child.pid ?? 0);
     throw error;
   }
   if (ordinaryAttempt) try {
-    bindSpawnedOrdinaryResumeListener(ordinaryAttempt, child.pid ?? 0, listenerStartedAt);
+    bindSpawnedOrdinaryResumeListener(ordinaryAttempt, child.pid ?? 0, listenerStartedAt, startupLock);
   } catch (error) {
     await stopUnboundRestoreListener(child);
     removeMatchingNatsPid(child.pid ?? 0);
@@ -996,7 +1061,9 @@ export async function up(args: ParsedArgs): Promise<void> {
   if (!ready) {
     child.kill("SIGTERM");
     const reason = `nats-server did not become ready at ${server}`;
-    markPendingResumeDegraded(resumeAttempt ?? "", reason);
+    // `startupLock` is already released by here on this path (and the helper then takes its own);
+    // passed anyway so the call stays correct if the release above ever moves.
+    markPendingResumeDegraded(resumeAttempt ?? "", reason, startupLock);
     throw new Error(reason);
   }
   if (restored) await provePreparedRestoreListener(restored);
@@ -1054,6 +1121,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       controlPlane && svc.ok,
       !svc.ok ? "normal listener started but the user-auth service is unavailable" : "normal listener started but the control plane is degraded",
       server,
+      startupLock,
     );
     activationFinished = true;
   }
@@ -1086,10 +1154,10 @@ function assertOrdinaryUpAllowed(root: string, storeDir?: string): void {
   throw new Error(`cotal up is refused while maintenance state is ${maintenance.state}; follow the recorded restore recovery`);
 }
 
-function markPendingResumeDegraded(attemptId: string, reason: string): void {
+function markPendingResumeDegraded(attemptId: string, reason: string, heldLock?: MaintenanceLock): void {
   const ordinary = pendingOrdinaryResumes.get(attemptId);
   if (ordinary) {
-    const lock = acquireMaintenanceLock(ordinary.root);
+    const lock = heldLock ?? acquireMaintenanceLock(ordinary.root);
     try {
       const journal = readMaintenanceJournal(ordinary.root);
       if (journal && (journal.state === "resume-intent" || journal.state === "resume-active"))
@@ -1099,12 +1167,12 @@ function markPendingResumeDegraded(attemptId: string, reason: string): void {
           paths: [journal.source.path],
         }]);
     } finally {
-      releaseMaintenanceLock(lock);
+      if (!heldLock) releaseMaintenanceLock(lock);
     }
     return;
   }
   const restored = pendingRestores.get(attemptId);
-  if (restored) markPreparedRestoreDegraded(restored.root, restored.attemptId, reason);
+  if (restored) markPreparedRestoreDegraded(restored.root, restored.attemptId, reason, heldLock);
 }
 
 async function resumeControlAuth(root: string, mode: "open" | "auth" | "user"): Promise<ControlAuth> {
@@ -1161,12 +1229,12 @@ async function stopUnboundRestoreListener(child: ChildProcess): Promise<void> {
     throw new Error(`unbound restore listener process ${child.pid ?? "unknown"} did not exit`);
 }
 
-function bindSpawnedRestoreListener(prepared: PreparedRestore, pid: number, startedAt: string): void {
-  bindRestoreListenerOwner(prepared, restoreListenerOwner(pid, prepared.serverNonce, startedAt));
+function bindSpawnedRestoreListener(prepared: PreparedRestore, pid: number, startedAt: string, heldLock?: MaintenanceLock): void {
+  bindRestoreListenerOwner(prepared, restoreListenerOwner(pid, prepared.serverNonce, startedAt), heldLock);
 }
 
-function bindRestoreListenerOwner(prepared: PreparedRestore, processOwner: ProcessOwner): void {
-  bindPreparedRestoreListener(prepared, processOwner);
+function bindRestoreListenerOwner(prepared: PreparedRestore, processOwner: ProcessOwner, heldLock?: MaintenanceLock): void {
+  bindPreparedRestoreListener(prepared, processOwner, heldLock);
   if (process.env.COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_BIND === "1") process.exit(86);
 }
 
@@ -1281,9 +1349,9 @@ async function provePreparedRestoreListener(prepared: PreparedRestore): Promise<
   return proof;
 }
 
-function bindSpawnedOrdinaryResumeListener(pending: PendingOrdinaryResume, pid: number, startedAt: string): void {
+function bindSpawnedOrdinaryResumeListener(pending: PendingOrdinaryResume, pid: number, startedAt: string, heldLock?: MaintenanceLock): void {
   if (!Number.isInteger(pid) || pid <= 0) throw new Error("resume listener spawn returned no pid");
-  const lock = acquireMaintenanceLock(pending.root);
+  const lock = heldLock ?? acquireMaintenanceLock(pending.root);
   try {
     const journal = readMaintenanceJournal(pending.root);
     if (!journal || !("ordinaryResume" in journal) || journal.ordinaryResume.attemptId !== pending.attemptId)
@@ -1297,7 +1365,7 @@ function bindSpawnedOrdinaryResumeListener(pending: PendingOrdinaryResume, pid: 
       target: journal.source,
     });
   } finally {
-    releaseMaintenanceLock(lock);
+    if (!heldLock) releaseMaintenanceLock(lock);
   }
 }
 
@@ -1368,7 +1436,7 @@ async function verifySpawnedOrdinaryListener(pending: PendingOrdinaryResume): Pr
     throw new Error(`resume attempt ${pending.attemptId} spawned listener reports a foreign NATS server name`);
 }
 
-async function resumeProvenOrdinaryListener(pending: PendingOrdinaryResume): Promise<void> {
+async function resumeProvenOrdinaryListener(pending: PendingOrdinaryResume, heldLock?: MaintenanceLock): Promise<void> {
   await proveOrdinaryResumeListener(pending);
   const svc = await ensureRecoveredUserAuth(pending);
   // Read the recorded exposure BEFORE re-recording: `recordOurMesh` writes the entry whole, so a
@@ -1397,6 +1465,7 @@ async function resumeProvenOrdinaryListener(pending: PendingOrdinaryResume): Pro
     controlPlane && svc.ok,
     !svc.ok ? "adopted resume listener has no user-auth service" : "adopted resume listener has a degraded control plane",
     pending.server,
+    heldLock,
   );
 }
 
@@ -1417,7 +1486,7 @@ async function ensureRecoveredUserAuth(
   return startUserAuthService(prepared.space, prepared.server, { prepared: provider, stateDir });
 }
 
-async function resumeProvenRestoreListener(prepared: PreparedRestore): Promise<void> {
+async function resumeProvenRestoreListener(prepared: PreparedRestore, heldLock?: MaintenanceLock): Promise<void> {
   await provePreparedRestoreListener(prepared);
   const svc = await ensureRecoveredUserAuth(prepared);
   // Same ordering constraint as the pending-adopt path above: capture the recorded exposure before
@@ -1446,6 +1515,7 @@ async function resumeProvenRestoreListener(prepared: PreparedRestore): Promise<v
     controlPlane && svc.ok,
     !svc.ok ? "proven restore listener has no user-auth service" : "proven restore listener has a degraded control plane",
     prepared.server,
+    heldLock,
   );
 }
 
@@ -1454,6 +1524,7 @@ async function completeResumeActivation(
   healthy: boolean,
   reason: string,
   server: string,
+  heldLock?: MaintenanceLock,
 ): Promise<void> {
   if (!attemptId) return;
   const ordinary = pendingOrdinaryResumes.get(attemptId);
@@ -1461,7 +1532,7 @@ async function completeResumeActivation(
   const pending = ordinary ?? restored;
   if (!pending) throw new Error(`resume activation lost attempt context ${attemptId}`);
   if (!healthy) {
-    markPendingResumeDegraded(attemptId, reason);
+    markPendingResumeDegraded(attemptId, reason, heldLock);
     throw new Error(reason);
   }
   let journal = readMaintenanceJournal(pending.root);
@@ -1478,9 +1549,9 @@ async function completeResumeActivation(
     if (!("ordinaryResume" in journal) || journal.ordinaryResume.attemptId !== attemptId)
       throw new Error(`ordinary resume journal does not match attempt ${attemptId}`);
     if (journal.state === "resume-retired") {
-      const lock = acquireMaintenanceLock(ordinary!.root);
+      const lock = heldLock ?? acquireMaintenanceLock(ordinary!.root);
       try { consumeRetiredMaintenance(lock); }
-      finally { releaseMaintenanceLock(lock); }
+      finally { if (!heldLock) releaseMaintenanceLock(lock); }
       pendingOrdinaryResumes.delete(attemptId);
       return;
     }
@@ -1507,7 +1578,7 @@ async function completeResumeActivation(
     if (!ready.unanswered) break;
     if (Date.now() >= readinessDeadline) {
       const why = ready.error ?? "no manager answered within the readiness deadline";
-      markPendingResumeDegraded(attemptId, why);
+      markPendingResumeDegraded(attemptId, why, heldLock);
       throw new Error(why);
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 150));
@@ -1529,12 +1600,12 @@ async function completeResumeActivation(
   if (!resumed.ok) {
     const detail = resumed.data ? ` (${JSON.stringify(resumed.data)})` : "";
     const message = `${resumed.error ?? "retained-agent resume failed"}${detail}`;
-    markPendingResumeDegraded(attemptId, message);
+    markPendingResumeDegraded(attemptId, message, heldLock);
     throw new Error(message);
   }
   if (restored && process.env.COTAL_SMOKE_EXIT_AFTER_RESUME_PRESERVED === "1") process.exit(88);
   if (ordinary && !managerCommit) {
-    const lock = acquireMaintenanceLock(ordinary.root);
+    const lock = heldLock ?? acquireMaintenanceLock(ordinary.root);
     try {
       const current = readMaintenanceJournal(ordinary.root);
       if (current?.state !== "resume-active") {
@@ -1547,7 +1618,7 @@ async function completeResumeActivation(
       }
       ordinary.journalState = "resume-active";
     } finally {
-      releaseMaintenanceLock(lock);
+      if (!heldLock) releaseMaintenanceLock(lock);
     }
   }
   if (!managerCommit) {
@@ -1562,26 +1633,26 @@ async function completeResumeActivation(
     );
     if (!committed.ok) {
       const message = committed.error ?? "manager resume commit failed";
-      markPendingResumeDegraded(attemptId, message);
+      markPendingResumeDegraded(attemptId, message, heldLock);
       throw new Error(message);
     }
     if (!isManagerCommitResult(committed.data, attemptId)) {
       const message = `manager resume commit returned invalid awaiting-finalize evidence for attempt ${attemptId}`;
-      markPendingResumeDegraded(attemptId, message);
+      markPendingResumeDegraded(attemptId, message, heldLock);
       throw new Error(message);
     }
     managerCommit = committed.data;
     if (ordinary) {
-      const lock = acquireMaintenanceLock(ordinary.root);
+      const lock = heldLock ?? acquireMaintenanceLock(ordinary.root);
       try {
         recordOrdinaryResumeManagerCommit(lock, managerCommit);
         ordinary.journalState = "resume-committed";
         ordinary.managerCommit = managerCommit;
       } finally {
-        releaseMaintenanceLock(lock);
+        if (!heldLock) releaseMaintenanceLock(lock);
       }
     } else {
-      recordPreparedRestoreManagerCommit(restored!, managerCommit);
+      recordPreparedRestoreManagerCommit(restored!, managerCommit, heldLock);
     }
     if (process.env.COTAL_SMOKE_EXIT_AFTER_RESUME_COMMIT === "1") process.exit(89);
   } else {
@@ -1627,17 +1698,17 @@ async function completeResumeActivation(
   if (process.env.COTAL_SMOKE_EXIT_AFTER_RESUME_FINALIZE === "1") process.exit(91);
 
   if (ordinary) {
-    const lock = acquireMaintenanceLock(ordinary.root);
+    const lock = heldLock ?? acquireMaintenanceLock(ordinary.root);
     try {
       retireOrdinaryResume(lock, finalizeEvidence);
       consumeRetiredMaintenance(lock);
     } finally {
-      releaseMaintenanceLock(lock);
+      if (!heldLock) releaseMaintenanceLock(lock);
     }
     pendingOrdinaryResumes.delete(attemptId);
   } else {
     restored!.managerCommit = managerCommit;
-    markPreparedRestoreActive(restored!, finalizeEvidence);
+    markPreparedRestoreActive(restored!, finalizeEvidence, heldLock);
     restored!.cleanupStage();
     pendingRestores.delete(attemptId);
   }
@@ -2140,23 +2211,31 @@ function refuseOpenOverUserState(open: boolean, space: string): void {
  *  A mismatch only exists when the resolved space differs from what the ancestor already hosts.
  *  When the root was merely inherited (cwd has no `.cotal`), honor the new-space intent by making
  *  cwd its own root. Only a folder that itself holds the other space's material refuses.
- *  (When multi-space-per-root lands, that refusal becomes provision-the-new-space instead.) */
+ *  (When multi-space-per-root lands, that refusal becomes provision-the-new-space instead.)
+ *
+ *  The question this asks is "does this root hold the space being booted", NOT "what is THE space of
+ *  this root". A root holding several tenants has no sole space, and asking for one there threw
+ *  before the boot could reach the config render - so a `cotal up --space alpha` against a root that
+ *  legitimately holds alpha and beta refused on ambiguity that its own `--space` had already
+ *  resolved. The tenant list answers the real question without picking. */
 function ensureRootForSpace(_useAuth: boolean, space: string): void {
   const root = cotalRoot();
   const cwd = process.cwd();
-  // What space does this root already host? Prefer auth material; fall back to a live MeshEntry
+  // What spaces does this root already host? Prefer auth material; fall back to a live MeshEntry
   // whose root is this directory (open meshes have no auth dir).
-  const existingAuth = loadSoleSpaceAuth(authDir(root));
-  const existingSpace =
-    existingAuth?.space ??
-    loadMeshes().find((m) => m.root === root || realpathSafe(m.root) === realpathSafe(root))?.space;
-  if (!existingSpace || existingSpace === space) return;
+  const hosted = listSpaceAccounts(authDir(root));
+  if (hosted.includes(space)) return;
+  const existing = hosted.length
+    ? hosted
+    : [loadMeshes().find((m) => m.root === root || realpathSafe(m.root) === realpathSafe(root))?.space].filter((s): s is string => !!s);
+  if (existing.length === 0 || existing.includes(space)) return;
+  const names = existing.map((s) => `"${s}"`).join(", ");
   if (root !== cwd) {
     mkdirSync(join(cwd, ".cotal"), { recursive: true });
-    console.log(c.dim(`nearest mesh root ${root} is space "${existingSpace}" - making this folder its own root for "${space}"`));
+    console.log(c.dim(`nearest mesh root ${root} hosts ${names} - making this folder its own root for "${space}"`));
     return;
   }
-  throw new Error(`this folder is the root of space "${existingSpace}" (${root}/.cotal), so it can't also run "${space}" - drop \`--space\` to run "${existingSpace}", or start "${space}" from a different folder (it becomes that mesh's own root)`);
+  throw new Error(`this folder is the root of ${names} (${root}/.cotal), so it can't also run "${space}" - drop \`--space\` to run ${existing.length === 1 ? names : "one of those"}, or start "${space}" from a different folder (it becomes that mesh's own root)`);
 }
 
 function realpathSafe(p: string): string {
@@ -2615,7 +2694,7 @@ async function authSetup(
   if (!auth) {
     auth = await createSpaceAuth(space);
     await putSpaceAuth(store, auth); // strips the $SYS seed at rest, but leaves the in-memory `auth` intact …
-    await provisionMembershipCreds(auth, cotalRoot()); // … so the observer can still be minted here (fresh-space only)
+    await provisionMembershipCreds(auth, cotalRoot(), space); // … so the observer can still be minted here (fresh-space only)
     // A fresh space's $SYS material was just minted from the seed that only exists in this branch, so
     // the ASK is already satisfied, so say so rather than rotating a one-second-old account, and never
     // report a rotation that did not happen.
@@ -2651,7 +2730,7 @@ async function authSetup(
     console.log(c.dim("  NOTE: full backups taken before this rotation can no longer be restored (they are bound to the retired trust chain) - take a fresh `cotal backup` once the mesh is up."));
   }
   // The DATA half of the membership bundle, on EVERY path — see healMembershipDataCreds.
-  await healMembershipDataCreds(auth, cotalRoot());
+  await healMembershipDataCreds(auth, cotalRoot(), space);
   // The $SYS creds must be signed by the system account THIS boot is about to put in `server.conf`.
   // A rotation that committed the trust record and then died leaves them stale, unexpired, and
   // broker-dead and, crash-before-either-write, stale in a way that no comparison between the two
@@ -2664,7 +2743,7 @@ async function authSetup(
   // same pair, so booting here would silently downgrade revocation to deny-new for the life of the
   // mesh. The repo's posture is to throw rather than degrade, and the recovery is one command that
   // this message names.
-  const stale = staleSystemCreds(cotalRoot(), auth.sys.pub);
+  const stale = staleSystemCreds(cotalRoot(), auth.sys.pub, space);
   if (stale.length)
     throw new Error(
       `${stale.map((x) => `${x.file} (signed by ${x.iss ? `${x.iss.slice(0, 12)}…` : "an unreadable issuer"})`).join(", ")} ` +
@@ -2701,7 +2780,11 @@ async function authSetup(
   // manager's establisher builds its wsUrl from this; threaded to `supervise --ws-port`.
   const wsPort = await freePort(host);
   const confPath = resolve(dir, "server.conf");
-  writeFileSync(confPath, serverConfig(auth, [auth], { transport, port, storeDir, host, wsPort, wsHost: host, ...(prepared ? { extraAccounts: prepared.extraAccounts } : {}) }));
+  // EVERY tenant of this root, not just the one being booted: `resolver_preload` is a whole-broker
+  // map, so a config rendered from one space evicts the rest silently. `auth` leads the list because
+  // this function's copy can be fresher than the disk (a space created above, or one whose trust
+  // record `--rotate-sys` just replaced). Refuses on an unreadable record rather than dropping it.
+  writeFileSync(confPath, serverConfig(auth, preloadSpaceAccounts(dir, auth), { transport, port, storeDir, host, wsPort, wsHost: host, ...(prepared ? { extraAccounts: prepared.extraAccounts } : {}) }));
   // Ephemeral setup cred: used only to probe reachability, pre-create the space streams/buckets
   // (setupSpaceStreams) and seed the channel registry (seedChannelRegistry) — all within the
   // enumerated `provisioner` scope. No broad `manager` residual for the up path.
@@ -2800,18 +2883,26 @@ async function assertRootBrokerStopped(root: string): Promise<void> {
  *  its own error text — advice that could not succeed. Healing here fixes both spellings at once:
  *  the ordinary `up` repairs the data half with no rotation at all, and a rotation now repairs it
  *  too, because this runs after both branches converge. */
-async function healMembershipDataCreds(auth: SpaceAuth, root: string): Promise<void> {
+async function healMembershipDataCreds(auth: SpaceAuth, root: string, space: string): Promise<void> {
   try {
     const store = workspaceSecretStore(root);
+    // THE RESOLVERS, not the bare kinds (P7 §2 rule 1). Both reads below are absent-means-MINT, which
+    // is precisely why the location must be resolved through the choke point: a canonical read on a
+    // root whose material is still flat answers "absent" and mints a SECOND live cred beside the one
+    // the running daemons hold. `up` is a workstation composition by construction, so the resolver
+    // gets the FS arm and moves the material on this first touch.
+    const composition = { injected: false as const, root };
+    const rwKey = membershipRwCredsKey(space, composition);
     const wrote: string[] = [];
-    if ((await store.get(MEMBERSHIP_RW_CREDS_KEY)) === undefined) {
-      await store.put(MEMBERSHIP_RW_CREDS_KEY, await mintCreds(auth, newIdentity(), "membership-rw"));
-      wrote.push(MEMBERSHIP_RW_CREDS_KEY);
+    if ((await store.get(rwKey)) === undefined) {
+      await store.put(rwKey, await mintCreds(auth, newIdentity(), "membership-rw"));
+      wrote.push(MEMBERSHIP_RW_CREDS_KIND); // the KIND is what an operator reads, never the segmented key
     }
-    if (!existsSync(cotalPath("membership.json"))) {
-      mkSecretDir(cotalPath()); // harden .cotal/ before the file lands, as the fresh path does
-      writeSecretFile(cotalPath("membership.json"), JSON.stringify({ accountId: auth.account.pub }));
-      wrote.push("membership.json");
+    const configPath = membershipConfigPath(root, space);
+    if (!existsSync(configPath)) {
+      mkSecretDir(dirname(configPath)); // harden the per-space dir before the file lands, as the fresh path does
+      writeSecretFile(configPath, JSON.stringify({ accountId: auth.account.pub }));
+      wrote.push(MEMBERSHIP_CONFIG_KIND);
     }
     if (wrote.length)
       console.log(c.dim(`• membership: provisioned ${wrote.join(" + ")} - the data-account half needs no system-account rotation`));
@@ -2822,7 +2913,7 @@ async function healMembershipDataCreds(auth: SpaceAuth, root: string): Promise<v
   }
 }
 
-async function provisionMembershipCreds(auth: SpaceAuth, root: string): Promise<void> {
+async function provisionMembershipCreds(auth: SpaceAuth, root: string, space: string): Promise<void> {
   try {
     const observer = await mintMembershipObserverCreds(auth, newIdentity());
     const rw = await mintCreds(auth, newIdentity(), "membership-rw");
@@ -2831,11 +2922,19 @@ async function provisionMembershipCreds(auth: SpaceAuth, root: string): Promise<
     // close a revoked/removed principal's live connections. A space without it degrades to
     // deny-new-only (durable reauth) — surfaced loudly by the removal path, never silent.
     const evictor = await mintConnectionEvictorCreds(auth, newIdentity());
-    mkSecretDir(cotalPath()); // harden .cotal/ before the creds land (born under a private ACL, no race)
-    writeSecretFile(cotalPath(SYSTEM_CREDS_FILES[0]), observer);
-    await workspaceSecretStore(root).put(MEMBERSHIP_RW_CREDS_KEY, rw); // migrated kind: through the seam (0600 FS put)
-    writeSecretFile(cotalPath(SYSTEM_CREDS_FILES[1]), evictor);
-    writeSecretFile(cotalPath("membership.json"), JSON.stringify({ accountId: auth.account.pub }));
+    // All four land through the per-kind resolvers (P7 §2 rule 1), and all four through the store's
+    // `put`, which is the same `mkSecretDir` + atomic write the raw `writeSecretFile` did — the
+    // difference being that it hardens the PER-SPACE dir the material now lives in rather than
+    // `.cotal/` itself. This is the fresh-space branch, so nothing is there to migrate; it calls the
+    // resolvers anyway because a kind with two write paths is a kind that grows two layouts.
+    const composition = { injected: false as const, root };
+    const store = workspaceSecretStore(root);
+    await store.put(membershipObserverCredsKey(space, composition), observer);
+    await store.put(membershipRwCredsKey(space, composition), rw);
+    await store.put(connectionEvictorCredsKey(space, composition), evictor);
+    const configPath = membershipConfigPath(root, space);
+    mkSecretDir(dirname(configPath));
+    writeSecretFile(configPath, JSON.stringify({ accountId: auth.account.pub }));
   } catch (e) {
     console.error(c.dim(`• broker-sourced membership not provisioned: ${(e as Error).message}`));
   }

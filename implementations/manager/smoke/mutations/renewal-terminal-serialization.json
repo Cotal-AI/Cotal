@@ -1,0 +1,102 @@
+{
+  "suite": "implementations/manager/smoke/renewal-terminal-race.smoke.ts",
+  "guard": "a managed-static credential renewal accepted before terminalization is drained before the terminal revokes and cleans its family, while a later renewal is refused by the synchronous latch",
+  "command": "pnpm smoke:renewal-terminal-race",
+  "completionMarker": "RENEWAL-TERMINAL RACE SMOKE",
+  "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/renewal-terminal-serialization.json",
+  "why": [
+    "The fixture uses a direct-renew/despawn lifecycle and a production-sweep/natural-exit lifecycle against a real JWT broker. An in-memory SecretStore collaborator pauses each renewal after a distinct credential id and active row are durably recorded but before materialization.",
+    "",
+    "The terminal must stay behind that accepted flight. After release, the smoke waits for the original hold to clear without re-driving it, then independently proves slot, gate, head, the renewal row, every row state, hosted-store deletion, and local-file deletion."
+  ],
+  "mutations": [
+    {
+      "name": "retirement no longer drains the renewal accepted before its latch",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    const acceptedRenewal = a.staticCredentialRenewal;\n    if (acceptedRenewal) await acceptedRenewal.catch(() => {});",
+      "replace": "    void a.staticCredentialRenewal;",
+      "expectRed": "the durable terminal does not pass an accepted renewal still in flight",
+      "cell": "the durable terminal does not pass an accepted renewal still in flight"
+    },
+    {
+      "name": "the accepted renewal is not published for terminalization to drain",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    a.staticCredentialRenewal = renewal;\n    return renewal;",
+      "replace": "    return renewal;",
+      "expectRed": "renewal publishes its accepted flight",
+      "cell": "renewal publishes its accepted flight"
+    },
+    {
+      "name": "a post-latch renewal joins the older accepted flight instead of refusing",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (a.terminalizing) throw new Error(\"renewManagedStaticCred: the lifecycle is terminalizing; no credential is minted after the terminal begins\");\n    if (a.staticCredentialRenewal) return a.staticCredentialRenewal;",
+      "replace": "    if (a.staticCredentialRenewal) return a.staticCredentialRenewal;\n    if (a.terminalizing) throw new Error(\"renewManagedStaticCred: the lifecycle is terminalizing; no credential is minted after the terminal begins\");",
+      "expectRed": "a renewal arriving after the terminal latch is refused",
+      "cell": "a renewal arriving after the terminal latch is refused"
+    },
+    {
+      "name": "a settled renewal keeps occupying the per-agent single-flight slot forever",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (a.staticCredentialRenewal === renewal) a.staticCredentialRenewal = undefined;",
+      "replace": "      void a.staticCredentialRenewal;",
+      "expectRed": "a settled renewal releases its single-flight slot",
+      "cell": "a settled renewal releases its single-flight slot"
+    },
+    {
+      "name": "the synchronous terminal admission check is deleted",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (a.terminalizing) throw new Error(\"renewManagedStaticCred: the lifecycle is terminalizing; no credential is minted after the terminal begins\");",
+      "replace": "    void a.terminalizing;",
+      "expectRed": "a renewal arriving after the terminal latch is refused",
+      "cell": "a renewal arriving after the terminal latch is refused"
+    },
+    {
+      "name": "the active static terminal no longer revokes its recorded credential rows",
+      "file": "implementations/manager/src/static-lifecycle.ts",
+      "find": "  if (headNow.mapping.state !== \"retired\")\n    await headBeginRetirement(t, { owner: args.owner, actor: args.actor, lifecycleUid: args.lifecycleUid, opId: args.opId });\n  await revokeStaticCredentialRows(t, args.lifecycleUid, slot.row.credentialIds, hooks.log);\n  await hooks.cleanup();",
+      "replace": "  if (headNow.mapping.state !== \"retired\")\n    await headBeginRetirement(t, { owner: args.owner, actor: args.actor, lifecycleUid: args.lifecycleUid, opId: args.opId });\n  await hooks.cleanup();",
+      "expectRed": "no credential row remains active after retirement",
+      "cell": "no credential row remains active after retirement"
+    },
+    {
+      "name": "natural process exit no longer closes the terminal latch in freeSlot",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    this.logSeatReaped(a, cause);\n    a.terminalizing = true;\n    this.agents.delete(a.name);",
+      "replace": "    this.logSeatReaped(a, cause);\n    void a.terminalizing;\n    this.agents.delete(a.name);",
+      "expectRed": "racer_exit: the terminal latch closes synchronously",
+      "cell": "racer_exit: the terminal latch closes synchronously"
+    },
+    {
+      "name": "renewal no longer records its credential id or active ledger row",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: a.id, lifecycleUid: a.lifecycleUid, alias: a.name }, async (t) => {\n      await recordSlotCredential(t, DEV_OWNER, a.name, a.lifecycleUid, credentialId);\n      await appendStaticCredentialRow(t, { lifecycleUid: a.lifecycleUid, credentialId, holderPrincipal: principalKey(DEV_OWNER, a.id).key, exp });\n    });",
+      "replace": "    void credentialId;",
+      "expectRed": "renewal records exactly one new credential id",
+      "cell": "renewal records exactly one new credential id"
+    },
+    {
+      "name": "the production renewal sweep no longer enters managed-static renewal",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "            await this.renewManagedStaticCred(a);",
+      "replace": "            void a;",
+      "expectRed": "racer_exit: renewal records exactly one new credential id",
+      "cell": "racer_exit: renewal records exactly one new credential id"
+    },
+    {
+      "name": "static retirement leaves the hosted secret-store credential key intact",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    const cleanup = async (): Promise<void> => {\n      const secrets = this.secrets;\n      const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid);\n      if (files.creds) {\n        await secrets.delete(agentSecretKeyForFile(files.creds, this.space));\n        rmSync(files.creds, { force: true });\n      }\n      await this.deprovisionBroker(a);\n    };",
+      "replace": "    const cleanup = async (): Promise<void> => {\n      const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid);\n      if (files.creds) rmSync(files.creds, { force: true });\n      await this.deprovisionBroker(a);\n    };",
+      "expectRed": "the secret-store credential key is deleted",
+      "cell": "the secret-store credential key is deleted"
+    },
+    {
+      "name": "static retirement leaves the local credential materialization intact",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    const cleanup = async (): Promise<void> => {\n      const secrets = this.secrets;\n      const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid);\n      if (files.creds) {\n        await secrets.delete(agentSecretKeyForFile(files.creds, this.space));\n        rmSync(files.creds, { force: true });\n      }\n      await this.deprovisionBroker(a);\n    };",
+      "replace": "    const cleanup = async (): Promise<void> => {\n      const secrets = this.secrets;\n      const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid);\n      if (files.creds) await secrets.delete(agentSecretKeyForFile(files.creds, this.space));\n      await this.deprovisionBroker(a);\n    };",
+      "expectRed": "no credential file remains after retirement",
+      "cell": "no credential file remains after retirement"
+    }
+  ]
+}

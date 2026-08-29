@@ -4,13 +4,10 @@
  * The shape this proves is the whole point, so it is worth stating before the code. An always-on
  * box runs the broker AND the control plane (delivery daemon + manager). Another machine holds the
  * space's trust material, registers the mesh, and from then on its agents are ordinary peers.
- * It elects no lease and runs no daemon, which is not a limitation we tolerate but the design.
- * The reason is the renew-failure path, not exclusivity: a manager holds a PER-INSTANCE lease
- * (`acquireManagerLease` CAS-creates `managerLeaseKey(instanceId)`, and a second instance coexists
- * on its own key rather than being refused) with a 10s bucket TTL (`MANAGER_LEASE_TTL_MS`), and
- * losing it is fail-closed: the manager tears down every managed agent and exits. So a laptop
- * holding one would destroy its own agents on any network blip. Hosting agents on a joined machine
- * is Track A2, not this.
+ * It elects no lease and runs no daemon. Joining is the participant path: it installs the trust
+ * material and registry record needed to connect agents to a control plane hosted elsewhere. It does
+ * not confer manager or delivery authority on the joining machine. Hosting a control plane on that
+ * machine is Track A2, outside this test.
  *
  * The two machines are simulated by two roots with two separate COTAL_HOME registries, because a
  * single-home test would silently share the registry and hide exactly the asymmetry under test.

@@ -16,6 +16,7 @@
  * Run: pnpm smoke:spawn-detach:live   (build first — bin/cotal.ts subprocess checks run dist)
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -51,6 +52,7 @@ import type { Command, Connector, ControlReply, LaunchOpts, SessionGrant } from 
 
 let pass = 0;
 const kids: ChildProcess[] = [];
+let releaseBroker: (() => void) | undefined;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
   if (!cond) throw new Error(`FAIL: ${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
   pass++;
@@ -142,8 +144,10 @@ let mgr: InstanceType<typeof Manager> | undefined;
 try {
   // Real broker (open mode — authed control ops are covered by smoke:control-auth; this e2e is
   // about the CLI↔manager grammar) + registry entry so the CLI resolver finds the mesh.
-  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), "cotal-detach-js-"))], { stdio: "ignore" });
+  const brokerStore = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}detach-js-`));
+  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", brokerStore], { stdio: "ignore" });
   kids.push(broker);
+  releaseBroker = teardownOnSignal(broker, brokerStore);
   for (let i = 0; i < 50; i++) {
     if ((await probeConnect(SERVER, { timeoutMs: 400 })).ok) break;
     await sleep(100);
@@ -193,26 +197,24 @@ try {
   const psOut = await capture(() => run("ps", ["--space", SPACE]));
   ok("ps lists the detached agent under its OVERRIDDEN identity", /bard/.test(psOut) && !/poet/.test(psOut), psOut);
 
-  // B2 (#651): the same rows, three presentations. BARE is exactly today's output: one line per
-  // seat, NO facts line (a wide line leaking into the default would be a regression, not
-  // enrichment). WIDE adds the dim facts line with the facts the launch actually pinned (model +
-  // variant rode part A's flags; pid is a real number; the uid/instance/host attribute the seat).
+  // B2 (#651, #905): the same rows, three presentations. BARE is one compact identity line per
+  // seat, including model and optional requested variant. WIDE adds one dim line of EXTRA operational
+  // facts without repeating that identity; pid is real and uid/instance/host attribute the seat.
   // JSON is the manager's row verbatim, one line, parseable, fields equal to what the launch sent.
   const psBare2 = await capture(() => run("ps", ["--space", SPACE]));
-  ok("bare ps stays compact: one line per seat, no facts line", psBare2.trim().split("\n").length === 1 && !/model /.test(psBare2), psBare2);
+  ok("bare ps stays compact and includes model plus requested variant identity",
+    psBare2.trim().split("\n").length === 1 && /e2e · fancy \(high\) · pty/.test(psBare2), psBare2);
   const psWide = await capture(() => run("ps", ["--space", SPACE, "--wide"]));
-  ok("ps --wide adds one facts line with the recorded per-seat facts",
-    /model fancy \(high\)/.test(psWide) && /pid \d+/.test(psWide) && /uid [a-z0-9]{26,}/.test(psWide) && /instance [a-z0-9]{26,}/.test(psWide) && /host /.test(psWide), psWide);
+  ok("ps --wide adds operational facts without duplicating model or requested variant",
+    /e2e · fancy \(high\) · pty/.test(psWide) && !/\n[^\n]*model fancy \(high\)/.test(psWide) && /pid \d+/.test(psWide) && /uid [a-z0-9]{26,}/.test(psWide) && /instance [a-z0-9]{26,}/.test(psWide) && /host /.test(psWide), psWide);
   const psJson = await capture(() => run("ps", ["--space", SPACE, "--json"]));
   let jsonRow: Record<string, unknown> | undefined;
   try { jsonRow = JSON.parse(psJson.trim().split("\n").find((l) => l.includes("bard")) ?? ""); } catch { /* graded below */ }
   ok("ps --json emits the manager's row verbatim, one JSON line",
     jsonRow !== undefined && jsonRow.name === "bard" && jsonRow.model === "fancy" && jsonRow.variant === "high" && typeof jsonRow.pid === "number" && typeof jsonRow.lifecycleUid === "string" && typeof jsonRow.cwd === "string", psJson);
 
-  // B3 (#651 fix): a variant WITHOUT a model survives to --wide. A persona that pins only a variant
-  // records it independently (no model), and the --wide render must show it standalone rather than
-  // drop it because a model is absent. Before the fix, printWideFacts nested variant inside
-  // `if (r.model)`, so --json carried the variant but --wide silently lost it - a recorded fact gone.
+  // B3 (#651, #905): a variant WITHOUT a model survives in the compact identity and JSON. The wide
+  // continuation must not repeat it now that provenance lives in the identity row.
   writeFileSync(join(workspaceRoot, ".cotal", "agents", "lutist.md"), "---\nname: lutist\nrole: writer\nvariant: high\n---\nYou play.\n");
   await capture(() => run("spawn", ["lutist", "--detach", "--agent", "e2e", "--space", SPACE, "--name", "lutist"]));
   let lutWide = "";
@@ -220,11 +222,12 @@ try {
     lutWide = await capture(() => run("ps", ["--space", SPACE, "--wide"]));
     if (!/lutist/.test(lutWide)) await sleep(250);
   }
-  // The wide facts render on the DIM CONTINUATION line right after the seat's name line.
+  // The identity is on the seat line; operational wide facts are on the continuation immediately after.
   const lutLines = lutWide.split("\n");
   const lutIdx = lutLines.findIndex((l) => /lutist/.test(l));
   const lutFacts = lutIdx >= 0 ? (lutLines[lutIdx + 1] ?? "") : "";
-  ok("ps --wide shows a variant-without-model as a standalone variant fact", /variant high/.test(lutFacts) && !/model /.test(lutFacts), lutWide);
+  ok("ps --wide keeps a variant-without-model in identity and out of operational facts",
+    lutIdx >= 0 && /e2e · variant high · pty/.test(lutLines[lutIdx] ?? "") && !/variant high|model /.test(lutFacts), lutWide);
   const lutJsonOut = await capture(() => run("ps", ["--space", SPACE, "--json"]));
   let lutJson: Record<string, unknown> | undefined;
   try { lutJson = JSON.parse(lutJsonOut.trim().split("\n").find((l) => l.includes("lutist")) ?? ""); } catch { /* graded below */ }
@@ -357,4 +360,5 @@ try {
     k.kill("SIGKILL");
     return awaitExit(k);
   }));
+  releaseBroker?.();
 }
