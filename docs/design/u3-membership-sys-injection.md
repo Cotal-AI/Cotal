@@ -65,13 +65,28 @@ Gap 1 is a *reader* gap. It is closable without weakening the writer's guard by 
 
 ## 2. What is injected
 
-Two new keys in `packages/workspace/src/renewal.ts`, beside `DELIVERY_CREDS_KEY` (`:30`) and
+Two **new** keys in `packages/workspace/src/renewal.ts`, beside `DELIVERY_CREDS_KEY` (`:30`) and
 `MEMBERSHIP_RW_CREDS_KEY` (`:35`):
 
 ```ts
 export const MEMBERSHIP_OBSERVER_CREDS_KEY = "membership-observer.creds";
 export const CONNECTION_EVICTOR_CREDS_KEY  = "connection-evictor.creds";
 ```
+
+> **These constants do not exist in the tree today — this design introduces them.** What exists is
+> `SYSTEM_CREDS_FILES` (`system-rotation.ts:47`), a **positional** `as const` array of the same two
+> filenames, consumed by index: `SYSTEM_CREDS_FILES[0]` is the observer and `[1]` the evictor at
+> `up.ts:2835,2837`, `system-rotation.ts:126-127`, `clean.ts:276`, `manager.ts:1273` and four CLI
+> smokes. Those are raw root-scoped **FS paths**, not `SecretStore` keys: today's tree has no store
+> binding for this pair at all. Both readings are correct at different times — the positional array
+> is the writer's current spelling, and these named constants are the reader-side store binding this
+> design adds. A reader should not mistake them for existing code, and a second lane should not
+> re-spell either one.
+>
+> The two spellings coexist deliberately: the named keys supersede the positional array **on the read
+> path only**, and §3 leaves the array in place for the writer sites this design does not touch.
+> Index-based access is exactly what makes a positional array unsafe to share across lanes — `[0]`
+> and `[1]` carry no meaning at the call site — which is the second reason the reader gets names.
 
 The key **is** the filename, the same key↔filename convention `SYSTEM_CREDS_FILES` already fixes
 (`system-rotation.ts:47`). This is load-bearing, not cosmetic: `workspaceSecretStore(root)` is
@@ -155,6 +170,34 @@ The rule: when the store is injected, the message names the **missing key** and 
 incantation the host cannot run. Emitting workstation advice into a hosted log is a degradation of
 the diagnosis even when the failure semantics are right.
 
+**The detection mechanism, stated (F2).** "Is the store injected?" is answered by the *parameter*,
+not by probing the store, and specifically not by sniffing the filesystem:
+
+```ts
+const injected = store !== undefined;                  // the runner's own seam
+const secrets  = store ?? workspaceSecretStore(root);  // the existing line, unchanged
+```
+
+`startMembership(opts, store?)` and `runDelivery(args, store?)` already take the store as an optional
+argument whose *absence* is precisely "workstation": the existing `store ?? workspaceSecretStore(root)`
+(`membership.ts:37`) is that same fact, read one line later. So the flag is free and exact — it is a
+property of the composition root, decided before any I/O.
+
+Three alternatives are rejected because each infers hosting from evidence that does not carry it:
+
+- `instanceof FsSecretStore` — a host may legitimately wrap or subclass the FS store (a caching or
+  auditing decorator), and delivery must not depend on the concrete class of an injected seam.
+- `existsSync(join(root, ".cotal"))` — the directory exists on a hosted box too (the mesh registry
+  and auth state live there per `embedding.md`), so this reports "workstation" for a hosted daemon
+  and emits exactly the unactionable advice the rule forbids.
+- probing `store.get()` for a workstation-only key — an I/O round trip against a KMS to decide the
+  *wording of an error message*, on a path already degraded.
+
+The rule applies to the **repair clause only**. The diagnosis half — which key is missing, and the
+observer/evictor vs data-account split of §4.1 — is identical in both compositions and must not fork:
+one message builder, two repair tails. `down` still carries the whole string to the adoption reply
+(`delivery.ts:206-209`), so a hosted adoption reply is store-aware for free.
+
 ### 4.2 The eviction and liveness path stays fail-loud
 
 `executeEviction` (`evict-exec.ts:88-91`), `executePlaneLiveness` (`:118-121`) and
@@ -194,13 +237,37 @@ observations make the replacement strictly stronger than what it replaces:
 Proposed replacement, both paths:
 
 ```
-accountId := expectedAccount                        // from the daemon's own delivery cred
-assert accountOf(observer.pub.allow CONNZ subject) == accountId   // intrinsic, broker-enforced
+accountId := expectedAccount                              // from the daemon's own delivery cred
+assert connzAccountOf(observer) == accountId              // local, pre-connect, names both sides
 ```
+
+**Two mechanisms, not one (F4).** The earlier phrasing called this single assert "intrinsic,
+broker-enforced", which conflates two independent things and oversells the assert. Stated correctly:
+
+1. **The daemon's local check** — decoding the observer's own JWT and reading the account out of its
+   `pub.allow` CONNZ subject. This is a *local* read of a signed document. It runs **before any
+   connection**, and its whole value is the **diagnosis**: it refuses naming both accounts, at the
+   daemon, in one line.
+2. **The broker's enforcement** — the observer physically cannot publish `$SYS.REQ.ACCOUNT.<other>.CONNZ`,
+   because the permission is in the JWT the broker validates. This needs no cooperation from the
+   daemon and holds even if check 1 were deleted.
+
+The safety property rests on **2**; **1** exists so the failure is legible instead of arriving as a
+bare "Authorization Violation" (the same argument §4.1 makes for the expiry pre-check). Saying the
+assert *is* broker-enforced would credit the daemon's own code with a guarantee the broker supplies —
+precisely the confusion that lets a later refactor delete the broker-side reasoning as redundant.
+"Intrinsic" survives and is the accurate word: no adjacent file is consulted.
+
+Measured, not asserted: a freshly minted observer carries
+`nats.pub.allow = ["$SYS.REQ.ACCOUNT.<DATA account pub>.CONNZ"]`, and that id is byte-equal to the
+`nats.issuer_account` that `accountFromCreds` returns from the daemon's own delivery cred — so the
+two sides of the assert are the same kind of id, which is the thing that actually had to be true.
+Note `credsClaims` (`identity.ts:122`) *returns* the full payload at runtime but **declares** only
+`{sub,iat,exp,name,iss}`; the accessor is a typing gap to close, not a decoder to write.
 
 This catches everything the file check caught (a store handing back a foreign tenant's observer) and
 one thing it did not: an observer whose *permissions* disagree with the `membership.json` sitting
-next to it. On the workstation path the disk cross-check at `:55-58` is **kept as well** — there the
+next to it. On the workstation path the disk cross-check at `:54-58` is **kept as well** — there the
 root genuinely can drift (`:24-27` enumerates the cases), so it is a real second source and costs
 nothing.
 
@@ -278,30 +345,86 @@ is exactly what a broken test also produces. Each carries an in-cell positive co
 operation with the *correct* material must succeed in the same process, so "refused" is distinguished
 from "never worked". A cell that cannot state its positive control does not ship.
 
+**The smoke's cwd is `mkdtemp`-pinned (F1).** Every cell's meaning depends on it. `findCotalRoot()`
+walks *upward* from `process.cwd()`, and `resolveScan` (`evict-exec.ts:48-53`) compares that live
+walk against the root pinned at daemon start. A smoke run from inside this repo resolves the
+**repository's own** `.cotal/`, which is the one directory guaranteed to contain exactly the
+`$SYS` files and `membership.json` the gate exists to prove absent. Cells 5 and 8 would then pass
+against the developer's workstation state rather than the injected store — the precise
+false-pass this gate is built to exclude, and one that gets *more* likely as the design succeeds,
+since a correct implementation is silent about where the bytes came from.
+
+So: each tenant gets its own `mkdtemp()` root, `process.chdir()` into it before `runDelivery`, and
+the smoke **asserts** `findCotalRoot() === thatRoot` before cell 1 — a one-line precondition that
+fails loudly rather than letting the walk escape. Roots are removed on exit, including on failure.
+That precondition is itself a positive control: it proves the harness can tell the two roots apart,
+so a later "no `.cotal` files" assertion means the store served the bytes and not that the test
+looked in an empty directory.
+
 Local regression: `pnpm smoke:auth` and the existing delivery smokes must pass unchanged, since §2
 claims the workstation path is byte-for-byte identical. That claim is the migration's whole safety
 argument, so it is tested, not asserted.
 
-Environment note: this lane's box has `nats-server v2.11.4`; F4 measured against 2.14.5. The smoke
-pins and prints its server version, and the gate is run on the F4 version before the node is called
-done.
+Environment note: this lane's box currently has `nats-server v2.12.12` (an earlier revision of this
+doc recorded 2.11.4; the box moved). F4 measured against **2.14.5**, and 2.14.5 is what the gate
+runs on — neither box version counts as the gate. The smoke pins and prints its server version, and
+refuses rather than silently proving the property on whatever binary is first on `PATH`.
 
 ## 7. Boundaries with adjacent lanes
 
 - **U1 (per-space lifecycle).** `docs/design/per-space-lifecycle.md` §2.1 step 5 commits
   `account.<key>.json` "then the `$SYS` cred files". That step is the write side of exactly these
-  two artifacts. Boundary: **U3 owns the keys and the reader; U1 owns the lifecycle verb.** If U3
-  lands first, `space add` step 5 writes through `store.put(<key>, …)` and inherits hosting for
-  free; if U1 lands first, U3 rewrites that one step. Neither blocks the other. Both must be told the
-  key names once, so they cannot be spelled twice.
-- **U2 (resolver-inventory-CAS).** No overlap. U2 is about concurrent *space adds* racing on the
-  broker inventory; U3 never writes broker config, never enumerates, and adds no ordering
-  requirement. The one adjacency worth a line: if U2 introduces a generation/CAS discipline over the
-  inventory, the torn-rotation check in §4.3 is the same *class* of problem (a two-write commit
-  observed half-applied) and should reuse U2's vocabulary rather than invent a second one.
+  two artifacts. Boundary, **decided**: **U3 owns the two key names and the reader; U1 owns the
+  lifecycle verb.** Neither owns both halves, and the seam between them is the two constants of §2.
+
+  **Sequencing, decided (not "neither blocks the other").** U3 lands the store seam and the two
+  named constants **first**; U1's **P7** (per-space keying) then builds *through* that seam and
+  **imports these constants rather than re-spelling either filename**, and U1's **P8** follows P7.
+  This replaces the earlier symmetric "if U1 lands first, U3 rewrites that one step" — that framing
+  was written when the constants were assumed to exist. They do not (§2), so there is nothing for U1
+  to build through until U3 lands, and a U1-first order would force U1 to invent the names U3 then
+  has to reconcile. The ordering is a consequence of §2's "these are new", not a scheduling
+  preference. U1's acceptance sentences for P7/P8 are held by `default_agent`; U3 does not need them
+  to land its own half, which is the point of the split.
+
+- **U2 (resolver-inventory-CAS).** **Not "no overlap" — a real adjacency, on the writer side.** An
+  earlier revision of this section claimed no overlap; that is true at the *wire* level and too
+  strong everywhere else, so it is withdrawn here rather than left standing.
+
+  Two shared surfaces, measured: both lanes touch the **`extraAccounts` slot** of
+  `serverConfig(…)` and the **same `up.ts` provisioning path** — U2 at the config render
+  (`up.ts:2704`), U3 at the `$SYS` mint window (`up.ts:2825-2842`). And `--rotate-sys` is an
+  **unfenced config writer**: `rotateSystemCreds` returns a successor bundle from which `server.conf`
+  **must** be re-rendered (`up.ts:2634` and its comment), through that same `extraAccounts` render.
+  Once both lanes land, that rewrite would invalidate U2's `configDigest` provenance — the
+  unfenced-writer adjacency U2's review FILED. Coordination, matching U2's §6 residual 4:
+  **`--rotate-sys` must eventually write through U2's fenced saga once it exists.**
+
+  One attribution correction, so the residual is charged to the right lane: **U3 does not introduce
+  or modify that config writer.** Re-rendering `server.conf` on rotation is today's behavior of
+  `up --rotate-sys`, and §1.2 and §5 both keep `rotateSystemCreds` explicitly out of U3's scope —
+  §3's rotation row changes only where the *cred bytes* land, never the config render. The adjacency
+  is real and worth naming here; it is not a defect this design creates, and U3 landing first neither
+  worsens nor repairs it.
+
+  The torn-rotation check in §4.3 remains the same *class* of problem as U2's inventory CAS (a
+  two-write commit observed half-applied) and should reuse U2's vocabulary rather than invent a
+  second one. **Named forward reference:** U2's vocabulary section, path and section number to be
+  filled in from U2's post-verdict commit (U2 is folding two blockers; `default_agent` supplies the
+  citation). This stays an explicit unresolved reference rather than a guessed one — a wrong section
+  number here would be copied forward by exactly the lanes it is meant to align.
+
 - **P2 (space-provisioner).** P2's gate already names "per-space membership/`$SYS` semantics on a
   shared broker" as an F4 residual (`CLOUD-PLAN.md:155-156`). U3 is the upstream half that makes
   P2's version composable. P2 should not carry a private fork of this reader.
+
+  **Sequencing within one provision (F3).** P2 composes two mint windows that are ordered and not
+  interchangeable: U2's **inventory-account mint** must commit its inventory record *before* U3's
+  **`$SYS` mint window** runs, because the observer's permissions pin the DATA account id (§2.1(2))
+  and therefore cannot be minted until that account is the committed one — an observer minted against
+  an account the inventory later renames or loses to a CAS retry is broker-dead in exactly the
+  §4.3 way, and is unrecoverable without a system-account rotation since the `$SYS` seed is gone by
+  then (§8.1).
 
 ## 8. Residuals, named
 
