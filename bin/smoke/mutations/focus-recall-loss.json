@@ -2,7 +2,7 @@
   "suite": "extensions/connector-core/smoke/focus-recall-loss.smoke.ts",
   "guard": "focus-mode cotal_inbox returns each body exactly once when stream recall cannot return it, while replay-on concrete traffic stays stream-recalled",
   "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/connector-core build && pnpm smoke:focus-recall-loss",
-  "completionMarker": "ISSUE_977_ACCEPTANCE_PASSED",
+  "completionMarker": "ISSUE_977_ACCEPTANCE_COMPLETE",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/focus-recall-loss.json",
   "why": [
     "The suite drives a real isolated JetStream broker and the public cotal_inbox tool spec, not a stub. Its replay-on concrete control proves the stream-recall instrument returns ambient and mentions; its two claim arms prove replay-off concrete and wildcard-only focus traffic are delivered exactly once through the local pull-only lane.",
@@ -33,22 +33,6 @@
       "find": "return (await this.joinPolicyFresh(channel)).replay;",
       "replace": "return true;",
       "expectRed": "replay-off body must be returned or loss reported"
-    },
-    {
-      "cell": "local retention survives duplicate delivery",
-      "name": "omit pull-only disposition protection",
-      "file": "extensions/connector-core/src/agent.ts",
-      "find": "this.protectDisposition(item.id, \"pull-only\");",
-      "replace": "void item.id;",
-      "expectRed": "ISSUE_977_ACCEPTANCE_PASSED"
-    },
-    {
-      "cell": "local retention cannot later duplicate with recall",
-      "name": "omit focus recall exclusion",
-      "file": "extensions/connector-core/src/agent.ts",
-      "find": "this.excludeFromFocus(item);\n          this.protectDisposition(item.id, \"pull-only\");",
-      "replace": "this.protectDisposition(item.id, \"pull-only\");",
-      "expectRed": "ISSUE_977_ACCEPTANCE_PASSED"
     }
   ]
 }

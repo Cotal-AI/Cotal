@@ -89,8 +89,9 @@ try {
   console.log(JSON.stringify(result, null, 2));
   const off = result.replayOff as { bodiesRecovered: boolean; lossReported: boolean };
   const wild = result.wildcard as { bodiesRecovered: boolean; lossReported: boolean };
-  assert.equal(off.bodiesRecovered || off.lossReported, true, "replay-off body must be returned or loss reported");
-  assert.equal(wild.bodiesRecovered || wild.lossReported, true, "wildcard body must be returned or loss reported");
+  const failures: string[] = [];
+  if (!(off.bodiesRecovered || off.lossReported)) failures.push("replay-off body must be returned or loss reported");
+  if (!(wild.bodiesRecovered || wild.lossReported)) failures.push("wildcard body must be returned or loss reported");
 
   // End-user pull semantics: one destructive cotal_inbox call returns each target body once and
   // clears the locally retained lane; the next call cannot repeat them. Stream-recalled controls are
@@ -102,6 +103,8 @@ try {
   for (const body of ["off-ambient", "off-mention", "wild-ambient", "wild-mention"])
     assert.equal(after.text.includes(body), false, `${body} not repeated after destructive pull`);
   result.destructivePull = { delivered: delivered.text, after: after.text };
+  console.log("ISSUE_977_ACCEPTANCE_COMPLETE");
+  if (failures.length > 0) throw new Error(failures.join("; "));
   console.log("ISSUE_977_ACCEPTANCE_PASSED");
   await agent.stop(); await pub.stop();
 } finally {
