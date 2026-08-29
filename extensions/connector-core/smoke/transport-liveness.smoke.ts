@@ -354,6 +354,11 @@ check(
     supervised,
   },
 );
+// Test-harness cleanup only. Under the deliberate #975 mutation the product leaves this interval and
+// nc live, which is the named failure above. Clear/close them after observing so the suite reaches its
+// terminal marker and mutation-proof can grade the red instead of timing out on the leaked resource.
+if (startingEp.heartbeatTimer) clearInterval(startingEp.heartbeatTimer);
+if (!freshNc.closedFlag) await freshNc.drain();
 
 const failing = new MeshAgent({ ...cfg, name: "failing-start-agent" });
 let rejectStart!: (error: Error) => void;
