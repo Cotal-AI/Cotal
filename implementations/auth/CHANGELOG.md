@@ -1,5 +1,14 @@
 # @cotal-ai/auth
 
+## 0.34.0
+
+### Patch Changes
+
+- de00f4a: Retire an interactive actor lifecycle through the local auth authority plane before `cotal actor grant` rotates it or `actor revoke` removes it, so copied bearers are invalidated and later grants can create a real successor.
+- Updated dependencies [22c3182]
+  - @cotal-ai/core@0.34.0
+  - @cotal-ai/workspace@0.34.0
+
 ## 0.33.9
 
 ### Patch Changes
