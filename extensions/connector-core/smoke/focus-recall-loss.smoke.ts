@@ -98,10 +98,10 @@ try {
   // read-only but advance their cursor when delivered, so they also disappear from the second reply.
   const delivered = await inbox.run(agent, cfg, { peek: false });
   for (const body of ["off-ambient", "off-mention", "wild-ambient", "wild-mention"])
-    assert.equal(delivered.text.split(body).length - 1, 1, `${body} delivered exactly once`);
+    if (delivered.text.split(body).length - 1 !== 1) failures.push(`${body} delivered exactly once`);
   const after = await inbox.run(agent, cfg, { peek: false });
   for (const body of ["off-ambient", "off-mention", "wild-ambient", "wild-mention"])
-    assert.equal(after.text.includes(body), false, `${body} not repeated after destructive pull`);
+    if (after.text.includes(body)) failures.push(`${body} not repeated after destructive pull`);
   result.destructivePull = { delivered: delivered.text, after: after.text };
   console.log("ISSUE_977_ACCEPTANCE_COMPLETE");
   if (failures.length > 0) throw new Error(failures.join("; "));
