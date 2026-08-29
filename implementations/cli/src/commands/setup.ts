@@ -120,7 +120,7 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
   // Cotal's own skills, for the non-Claude harnesses, via the cross-vendor `.agents/skills` convention.
   const skills = seedAgentSkills(log);
   p.log.success(
-    `Installed ${skills.installed.length} cross-vendor skill${skills.installed.length !== 1 ? "s" : ""} (${skills.installed.join(", ")}) to ~/.agents/skills; read by Codex, Cursor, OpenCode, Gemini CLI, and Windsurf`,
+    `Installed ${skills.installed.length} cross-vendor skill${skills.installed.length !== 1 ? "s" : ""} (${skills.installed.join(", ")}) to ~/.agents/skills; read by Codex, OpenCode, pi, and Jcode`,
   );
   if (skills.backedUp.length)
     p.log.warn(`Backed up your edited copy before refreshing: ${skills.backedUp.map((b) => `${b.name} -> ${b.path}`).join(", ")} (Cotal manages only its own skills under ~/.agents/skills).`);
@@ -547,9 +547,9 @@ function claude(...args: string[]): { status: number | null; output: string } {
   return { status: r.status, output: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim() };
 }
 
-/** Reconcile Cotal's authored skills into the cross-vendor `~/.agents/skills` directory that Codex,
- *  Cursor, OpenCode, Gemini CLI, and Windsurf/Devin all read. Unlike the Claude Code plugin, these
- *  harnesses have no remote install/update path, so `cotal setup` reconciles the files (install/refresh,
+/** Reconcile Cotal's authored skills into the verified cross-vendor `~/.agents/skills` directory for
+ *  Codex, OpenCode, pi, and operator-run Jcode. Managed Jcode mirrors the same canonical bytes into
+ *  its private JCODE_HOME at launch. `cotal setup` reconciles the user files (install/refresh,
  *  back up a user's edited copy, remove a retired Cotal skill) and `cotal status` reports skew. Idempotent;
  *  a re-run after an upgrade brings a deployed install current. */
 function seedAgentSkills(log?: ReturnType<typeof openSetupLog>): AgentSkillsResult {

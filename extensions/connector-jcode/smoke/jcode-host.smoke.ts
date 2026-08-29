@@ -38,6 +38,9 @@ const tsx = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
 const shimDir = join(root, "bin");
 const shim = join(shimDir, "jcode");
 const log = join(root, "fake.jsonl");
+const skillSource = join(root, "cotal-skills", "skills");
+mkdirSync(join(skillSource, "team-topology"), { recursive: true });
+writeFileSync(join(skillSource, "team-topology", "SKILL.md"), "---\nname: team-topology\ndescription: managed Jcode skill fixture\n---\nfixture\n");
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
 const hosts: ChildProcess[] = [];
 
@@ -288,6 +291,7 @@ try {
       COTAL_ALLOW_PUBLISH: "team",
       COTAL_QUIET: "team",
       COTAL_JCODE_HOME: root,
+      COTAL_JCODE_SKILLS: skillSource,
       COTAL_JCODE_TUI: "0",
       COTAL_MODEL: "fake-model",
       COTAL_VARIANT: "high",
@@ -312,6 +316,10 @@ try {
   // the seat mid-turn five minutes later. The seat's version is fixed at spawn time.
   check("host pins the seat binary against background self-update", argv.env?.JCODE_NO_AUTO_UPDATE === "1", argv.env);
   const managedHome = join(root, ".cotal", "jcode", "jcodehost-jcodepeer-3276792e8714");
+  check(
+    "managed Jcode private home receives the canonical Cotal skill bytes",
+    readFileSync(join(managedHome, "external", ".agents", "skills", "team-topology", "SKILL.md"), "utf8").includes("managed Jcode skill fixture"),
+  );
   check("host copies auth mirror rather than linking it", lstatSync(join(managedHome, "auth.json")).isFile() && !lstatSync(join(managedHome, "auth.json")).isSymbolicLink());
   check("host copied auth mirror is owner-only", (statSync(join(managedHome, "auth.json")).mode & 0o777) === 0o600);
 
@@ -404,6 +412,7 @@ try {
       COTAL_ALLOW_SUBSCRIBE: "team",
       COTAL_ALLOW_PUBLISH: "team",
       COTAL_JCODE_HOME: root,
+      COTAL_JCODE_SKILLS: skillSource,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: join(root, "race-control.sock"),
       COTAL_CONTROL_TOKEN: "race-control-token",
@@ -438,6 +447,7 @@ try {
       COTAL_ALLOW_SUBSCRIBE: "team",
       COTAL_ALLOW_PUBLISH: "team",
       COTAL_JCODE_HOME: root,
+      COTAL_JCODE_SKILLS: skillSource,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: join(root, "absent-control.sock"),
       COTAL_CONTROL_TOKEN: "absent-control-token",
@@ -476,6 +486,7 @@ try {
       COTAL_ALLOW_SUBSCRIBE: "team",
       COTAL_ALLOW_PUBLISH: "team",
       COTAL_JCODE_HOME: root,
+      COTAL_JCODE_SKILLS: skillSource,
       COTAL_JCODE_TUI: "0",
       COTAL_MODEL: "fake-model",
       COTAL_VARIANT: "xhigh",
@@ -534,6 +545,7 @@ try {
       COTAL_ALLOW_SUBSCRIBE: "team",
       COTAL_ALLOW_PUBLISH: "team",
       COTAL_JCODE_HOME: root,
+      COTAL_JCODE_SKILLS: skillSource,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: join(root, "outage-control.sock"),
       COTAL_CONTROL_TOKEN: "outage-control-token",
@@ -590,6 +602,8 @@ try {
       COTAL_ALLOW_SUBSCRIBE: "team",
       COTAL_ALLOW_PUBLISH: "team",
       COTAL_JCODE_HOME: root,
+      COTAL_JCODE_SKILLS: skillSource,
+      COTAL_JCODE_SKILLS: skillSource,
       COTAL_JCODE_TUI: "1",
       COTAL_CONTROL_SOCKET: join(root, "tui-control.sock"),
       COTAL_CONTROL_TOKEN: "tui-control-token",
@@ -622,6 +636,7 @@ try {
       COTAL_ALLOW_SUBSCRIBE: "team",
       COTAL_ALLOW_PUBLISH: "team",
       COTAL_JCODE_HOME: root,
+      COTAL_JCODE_SKILLS: skillSource,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: join(root, "blocked-control.sock"),
       COTAL_CONTROL_TOKEN: "blocked-control-token",
@@ -653,6 +668,7 @@ try {
       COTAL_ALLOW_SUBSCRIBE: "team",
       COTAL_ALLOW_PUBLISH: "team",
       COTAL_JCODE_HOME: root,
+      COTAL_JCODE_SKILLS: skillSource,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: join(root, "refused-control.sock"),
       COTAL_CONTROL_TOKEN: "refused-control-token",

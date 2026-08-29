@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, controlEndpoint, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 
@@ -49,6 +49,10 @@ export const jcodeConnector: Connector = {
       COTAL_NAME: opts.name,
       COTAL_CONTROL_SOCKET: control.path,
       COTAL_JCODE_HOME: opts.workspaceRoot ?? process.cwd(),
+      COTAL_JCODE_SKILLS: join(
+        import.meta.dirname,
+        ...(FROM_BUILD ? ["cotal-skills", "skills"] : ["..", "..", "..", "implementations", "cli", "cotal-skills", "skills"]),
+      ),
     };
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;

@@ -6,7 +6,7 @@ import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { JcodeClient, launchInstance, type ApiEvent, type LaunchedInstance } from "@1jehuang/jcode-sdk";
 import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
-import { mirrorJcodeCredentials, shortSocketHome } from "./private-state.js";
+import { mirrorJcodeCredentials, mirrorJcodeSkills, shortSocketHome } from "./private-state.js";
 import { captureProcessIdentity, launchIdentityEnv, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
 import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
 import { bareModelId, describeRoute } from "./route-identity.js";
@@ -228,10 +228,13 @@ export async function runJcodeHost(): Promise<void> {
   const cwd = process.cwd();
   assertNoProjectMcpConfig(cwd);
   const home = privateAgentHome(config.space, config.name);
+  const skillSource = process.env.COTAL_JCODE_SKILLS?.trim();
+  if (!skillSource) throw new Error("COTAL_JCODE_SKILLS is not set — the connector must carry the canonical Cotal skills bundle");
   // SDK 1.1.0 has no socket-path launch option: it derives `run/jcode-api.sock` below jcodeHome.
   // The managed home stays in the workspace, but this private short alias keeps that fixed API
   // path below AF_UNIX's platform limit. Failure is fatal; a long-path fallback is the reported bug.
   mirrorJcodeCredentials(home);
+  mirrorJcodeSkills(home, skillSource);
   const socketHome = shortSocketHome(home);
   const relay = relayEndpoint(config.space, config.name);
 

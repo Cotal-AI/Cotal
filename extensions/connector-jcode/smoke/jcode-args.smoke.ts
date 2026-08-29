@@ -43,6 +43,7 @@ try {
   check("declares a bounded three-minute bootstrap window", jcodeConnector.readinessTimeoutMs === 180_000, jcodeConnector.readinessTimeoutMs);
   check("forwards mesh identity", base.env?.COTAL_SPACE === "space" && base.env?.COTAL_NAME === "seat");
   check("pins private state to the launch directory", base.env?.COTAL_JCODE_HOME === process.cwd());
+  check("carries the canonical Cotal skills bundle into the private host", base.env?.COTAL_JCODE_SKILLS?.endsWith("/cotal-skills/skills") === true, base.env);
   check("drops ordinary operator env unless explicitly allowed", base.env?.UNRELATED_JCODE_ENV_CANARY === undefined);
   const allowed = jcodeConnector.buildLaunch({ space: "space", name: "seat", envAllow: ["UNRELATED_JCODE_ENV_CANARY"] });
   check("inherits explicitly allowed operator env", allowed.env?.UNRELATED_JCODE_ENV_CANARY === "inherited");

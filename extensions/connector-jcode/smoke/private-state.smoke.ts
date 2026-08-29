@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mirrorJcodeCredentials, shortSocketHome } from "../src/private-state.js";
+import { mirrorJcodeCredentials, mirrorJcodeSkills, shortSocketHome } from "../src/private-state.js";
 
 let pass = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
@@ -62,6 +62,25 @@ try {
   writeFileSync(direct, "rotated-token", { mode: 0o600 });
   mirrorJcodeCredentials(home, sources);
   check("credential copies refresh on every launch", readFileSync(copiedDirect, "utf8") === "rotated-token");
+
+  const skillSource = join(root, "skills-source");
+  const managedSkill = join(home, "external", ".agents", "skills", "team-topology", "SKILL.md");
+  mkdirSync(join(skillSource, "team-topology"), { recursive: true });
+  writeFileSync(join(skillSource, "team-topology", "SKILL.md"), "generation-one\n");
+  check("managed Jcode skills mirror from the canonical source", mirrorJcodeSkills(home, skillSource).join(",") === "team-topology" && readFileSync(managedSkill, "utf8") === "generation-one\n");
+  writeFileSync(join(skillSource, "team-topology", "SKILL.md"), "generation-two\n");
+  mirrorJcodeSkills(home, skillSource);
+  check("managed Jcode skills refresh to the next Cotal generation", readFileSync(managedSkill, "utf8") === "generation-two\n");
+  const outside = join(root, "outside-skill");
+  writeFileSync(outside, "outside\n");
+  rmSync(managedSkill);
+  symlinkSync(outside, managedSkill);
+  mirrorJcodeSkills(home, skillSource);
+  check("managed Jcode skill refresh replaces a planted symlink without touching its target", !lstatSync(managedSkill).isSymbolicLink() && readFileSync(managedSkill, "utf8") === "generation-two\n" && readFileSync(outside, "utf8") === "outside\n");
+  const sourceLink = join(root, "skills-source-link");
+  symlinkSync(skillSource, sourceLink, "dir");
+  assert.throws(() => mirrorJcodeSkills(home, sourceLink), /not a real directory/);
+  check("managed Jcode skills refuse a symlinked canonical source root", true);
 
   console.log(`\nJCODE PRIVATE STATE SMOKE PASSED (${pass} checks)`);
 } finally {

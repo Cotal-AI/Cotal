@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { copyFileSync, lstatSync, mkdirSync, readdirSync, rmSync, rmdirSync, statSync, symlinkSync, type Dirent } from "node:fs";
+import { closeSync, copyFileSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, rmdirSync, statSync, symlinkSync, writeFileSync, type Dirent } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { userAppConfigDir, userJcodeHome } from "@1jehuang/jcode-sdk";
@@ -37,6 +37,7 @@ const EXTERNAL_CREDENTIAL_FILES = [
   ".openclaw/credentials/oauth.json",
   ".local/share/opencode/auth.json",
 ];
+const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 function assertRelative(relativePath: string): void {
   if (isAbsolute(relativePath) || relativePath.split(/[\\/]+/u).includes(".."))
@@ -160,6 +161,62 @@ export function mirrorJcodeCredentials(home: string, sources = credentialSources
       copyCredentialFile(home, join(sources.externalHome, relativePath), join("external", relativePath));
     }
   }
+}
+
+/** Mirror the running Cotal generation's canonical skills into the private JCODE_HOME sandbox.
+ * Jcode resolves the shared user convention beneath `$JCODE_HOME/external/.agents/skills`, so a
+ * managed seat cannot see the operator-level `~/.agents/skills` drop directly. The connector copies
+ * the same CLI-owned bytes before every private launch, replacing only Cotal's named `SKILL.md`
+ * entries. No operator or third-party private-home files are removed. */
+export function mirrorJcodeSkills(home: string, sourceDir: string): string[] {
+  privateDirectory(home);
+  const sourceRoot = resolve(sourceDir);
+  const sourceRootStats = lstatSync(sourceRoot);
+  if (!sourceRootStats.isDirectory() || sourceRootStats.isSymbolicLink())
+    throw new Error(`Cotal skills source is not a real directory: ${sourceRoot}`);
+  const destinationRoot = join(home, "external", ".agents", "skills");
+  const names: string[] = [];
+  for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    if (entry.name.length > 64 || !SKILL_NAME.test(entry.name))
+      throw new Error(`Cotal skill dir ${JSON.stringify(entry.name)} has an illegal name`);
+    const source = join(sourceRoot, entry.name, "SKILL.md");
+    const sourceStats = lstatSync(source);
+    if (!sourceStats.isFile() || sourceStats.isSymbolicLink())
+      throw new Error(`Cotal skill ${JSON.stringify(entry.name)} has no real SKILL.md at ${source}`);
+    const destination = join(destinationRoot, entry.name, "SKILL.md");
+    mirrorParent(home, destination);
+    const bytes = readFileSync(source);
+    try {
+      const stats = lstatSync(destination);
+      if (stats.isDirectory()) throw new Error(`Jcode managed skill destination is a directory: ${destination}`);
+      if (stats.isFile() && !stats.isSymbolicLink() && readFileSync(destination).equals(bytes)) {
+        names.push(entry.name);
+        continue;
+      }
+      rmSync(destination, { force: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const tmp = `${destination}.tmp.${process.pid}`;
+    rmSync(tmp, { force: true });
+    let fd: number;
+    try {
+      fd = openSync(tmp, "wx", 0o600);
+    } catch (error) {
+      throw new Error(`refusing to stage Jcode managed skill at ${tmp}: ${(error as Error).message}`);
+    }
+    try {
+      writeFileSync(fd, bytes);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, destination);
+    hardenPrivate(destination, "file");
+    names.push(entry.name);
+  }
+  if (!names.length) throw new Error(`No Cotal skills found in ${sourceRoot}`);
+  return names.sort();
 }
 
 export interface ShortSocketHome {

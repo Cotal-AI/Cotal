@@ -26,6 +26,11 @@ If an older Cotal installation is missing the connector, run `cotal ext seed --r
 `cotal ext add @cotal-ai/connector-jcode`). This connector intentionally uses the released
 binary's `api-bridge` command; it does not require a Rust checkout.
 
+Jcode normally reads user Agent Skills from `~/.agents/skills/`. A managed Cotal seat uses a private
+`JCODE_HOME`, so the connector mirrors Cotal's canonical skill bytes into that sandbox before every
+launch. Operator-run and managed Jcode sessions therefore receive the same Cotal generation without
+sharing transcripts, credentials, or other Jcode state.
+
 ## Spawn it
 
 ```bash
