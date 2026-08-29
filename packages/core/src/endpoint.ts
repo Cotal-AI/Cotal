@@ -2663,6 +2663,12 @@ export class CotalEndpoint extends EventEmitter {
     // The transport is already live when connect() returns, while the Cotal bind below is still in
     // progress. Seed this contract explicitly rather than requiring consumers to combine it with the
     // later, differently-scoped `connection:true` event.
+    //
+    // The same stopped race as the readiness emit at the end of connectAndBind, and it reaches here
+    // FIRST: connectAndBind calls watchStatus right after the dial, so a stop() landing while the
+    // dial is still pending has this seed fire on an endpoint that is already stopped. Measured
+    // through a real pending dial, a stopped endpoint announced a live transport it never had.
+    if (this.stopped) return;
     this.emit("transport", { connected: true, server: nc.getServer() } satisfies TransportState);
   }
 

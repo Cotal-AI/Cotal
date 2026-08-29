@@ -9,6 +9,7 @@
  * Run: pnpm smoke:transport-liveness:broker
  */
 import { spawn, type ChildProcess } from "node:child_process";
+import { createServer, connect as netConnect, type Socket } from "node:net";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -163,6 +164,54 @@ try {
     reachedFinalStep && !raceEdges.some((event) => event.connected === true) && raceAgent.connected === false,
     { reachedFinalStep, raceEdges, ready: raceAgent.connected },
   );
+
+  // A sibling of the readiness race, raised in review. watchStatus seeds `transport: true` as soon as
+  // the dial returns, and connectAndBind calls it long before the bind finishes, so a stop() landing
+  // while the dial is still in flight can have that seed fire on an endpoint that is already stopped.
+  // Proven through a real dial rather than a stub: a TCP proxy accepts the client socket and holds it,
+  // so the dial is genuinely pending while stop() runs, then pipes to the real broker so the handshake
+  // completes for real. Nothing in the endpoint is replaced for this cell.
+  let releaseDial: () => void = () => {};
+  const dialGate = new Promise<void>((resolve) => { releaseDial = resolve; });
+  let dialArrived = false;
+  const dialSockets: Socket[] = [];
+  const proxy = createServer((client) => {
+    dialArrived = true;
+    dialSockets.push(client);
+    client.on("error", () => {});
+    void dialGate.then(() => {
+      const upstream = netConnect(port, "127.0.0.1", () => {
+        client.pipe(upstream);
+        upstream.pipe(client);
+      });
+      dialSockets.push(upstream);
+      upstream.on("error", () => client.destroy());
+    });
+  });
+  const proxyPort = await pickFreePort();
+  await new Promise<void>((resolve) => proxy.listen(proxyPort, "127.0.0.1", () => resolve()));
+
+  const dialAgent = new MeshAgent({
+    ...cfg,
+    name: `transport-live-dial-${port}`,
+    servers: `nats://127.0.0.1:${proxyPort}`,
+  });
+  const dialEdges: Array<{ connected: boolean }> = [];
+  dialAgent.ep.on("transport", (event: { connected: boolean }) => dialEdges.push(event));
+  const dialStart = dialAgent.start(100).catch(() => {});
+  const sawPendingDial = await until(() => dialArrived, 30_000);
+  await dialAgent.stop();
+  const edgesBeforeRelease = dialEdges.length;
+  releaseDial();
+  await dialStart;
+  await sleep(750);
+  check(
+    "stop during a pending dial never seeds transport live afterwards",
+    sawPendingDial && edgesBeforeRelease === 0 && !dialEdges.some((event) => event.connected === true),
+    { sawPendingDial, edgesBeforeRelease, dialEdges },
+  );
+  for (const socket of dialSockets) socket.destroy();
+  await new Promise<void>((resolve) => proxy.close(() => resolve()));
 } finally {
   await agent.stop().catch(() => {});
   broker.kill("SIGKILL");
@@ -171,7 +220,7 @@ try {
   for (const release of releases) release();
 }
 
-const EXPECTED_CELLS = 8;
+const EXPECTED_CELLS = 9;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);
