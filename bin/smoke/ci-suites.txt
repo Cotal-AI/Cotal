@@ -615,11 +615,6 @@ smoke:web-remote-bind
 # closure from built dist and require every external package in it to be installed by a production
 # dependency field. Appended so every existing shard assignment remains unchanged.
 smoke:manager-runtime-deps
-# Raw NATS transport state is separate from full endpoint readiness. The deterministic suite grades
-# epoch staleness and state contracts; its companion owns a throwaway broker and proves real
-# disconnect/reconnect delivery. Appended so every existing shard assignment remains unchanged.
-smoke:transport-liveness
-smoke:transport-liveness:broker
 # Seat provenance rows must stay correct across the three ps presentations; appended so
 # every existing shard assignment remains unchanged.
 smoke:ps-provenance
@@ -632,3 +627,8 @@ smoke:user-auth-launch:live
 # sibling silently. Drives the real CLI against a real broker. Appended so every existing shard
 # assignment remains unchanged.
 smoke:up-multi-space-render:live
+# Raw NATS transport state is separate from full endpoint readiness. The deterministic suite grades
+# epoch staleness and state contracts; its companion owns a throwaway broker and proves real
+# disconnect/reconnect delivery. Appended so every existing shard assignment remains unchanged.
+smoke:transport-liveness
+smoke:transport-liveness:broker
