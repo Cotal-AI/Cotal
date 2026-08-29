@@ -98,6 +98,9 @@ try {
   await pub.multicast("flip-after-mention", { channel: "flip-ch", mentions: ["otto"] });
   assert.equal(await until(() => wakes.some((i) => i.text === "flip-after-mention")), true, "post-flip mention wakes");
   await sleep(250);
+  // Flip back on before recall. Stream recall is now allowed generally, so the receive-time
+  // exclusions are the only thing preventing the locally retained post-off bodies from duplicating.
+  await seedChannelRegistry({ servers, space, file: { channels: { "flip-ch": { replay: true } } } });
   const flipRecall = await agent.recallAmbient();
   const flipInbox = await inbox.run(agent, cfg, { peek: true });
   const flipBodies = ["flip-before-ambient", "flip-before-mention", "flip-after-ambient", "flip-after-mention"];

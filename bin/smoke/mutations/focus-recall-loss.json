@@ -36,10 +36,10 @@
     },
     {
       "cell": "opaque exact-message grants cannot become a public history bypass",
-      "name": "trust arbitrary caller-supplied grant objects",
+      "name": "treat any caller-supplied grant object as replay authority",
       "file": "packages/core/src/endpoint.ts",
-      "find": "if (!this.focusRecallGrants.has(token)) continue;",
-      "replace": "void token;",
+      "find": "if (policy.replay || grantedIds.has(msg.id)) collected.push(authenticatedMessage(msg, parsed));",
+      "replace": "if (policy.replay || grantedIds.has(msg.id) || (opts.grants?.length ?? 0) > 0) collected.push(authenticatedMessage(msg, parsed));",
       "expectRed": "public recall token must not bypass replay policy"
     },
     {
