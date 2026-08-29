@@ -1,5 +1,5 @@
 import { inspectCredHealth, startMembershipFeed, type MembershipFeedHandle, type SecretStore } from "@cotal-ai/core";
-import { CONNECTION_EVICTOR_CREDS_KEY, findCotalRoot, MEMBERSHIP_OBSERVER_CREDS_KEY, MEMBERSHIP_RW_CREDS_KEY, workspaceSecretStore } from "@cotal-ai/workspace";
+import { CONNECTION_EVICTOR_CREDS_KIND, findCotalRoot, membershipRwCredsKey, MEMBERSHIP_OBSERVER_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, workspaceSecretStore } from "@cotal-ai/workspace";
 import { loadSysPair, observerTenancyProblem, repairAdvice, tornRotationProblem, type SysCredsSource } from "./sys-creds.js";
 
 /**
@@ -33,17 +33,30 @@ export async function startMembership(
 ): Promise<MembershipStart> {
   // `injected` is the composition root's own fact, decided here before any I/O — never inferred by
   // probing the store or sniffing `.cotal/`, which would report "workstation" for a hosted daemon
-  // and emit a CLI repair the host cannot run (design §4.1).
-  const source: SysCredsSource = { secrets: store ?? workspaceSecretStore(findCotalRoot()), injected: store !== undefined };
+  // and emit a CLI repair the host cannot run (design §4.1). The workstation arm carries the root
+  // it resolved, because that is what lets `repairAdvice` ask whether the command it would name is
+  // one this root can actually run; a hosted composition has no root and names no command.
+  // Spelled as a branch, not a `??`, so the root is still resolved ONLY when no store was injected.
+  let source: SysCredsSource;
+  if (store === undefined) {
+    const root = findCotalRoot();
+    source = { secrets: workspaceSecretStore(root), space: opts.space, injected: false, root };
+  } else {
+    source = { secrets: store, space: opts.space, injected: true };
+  }
 
-  const rw = await source.secrets.get(MEMBERSHIP_RW_CREDS_KEY);
+  // Through the per-kind resolver (P7 §2 rule 1) — the source's arms ARE the composition it takes.
+  // The rw cred is absent-means-MINT on the `up` side, so reading the canonical location past an
+  // unmigrated copy would report the bundle incomplete and let the next `up` mint a second one.
+  const rwKey = membershipRwCredsKey(opts.space, source);
+  const rw = await source.secrets.get(rwKey);
   // Ask for both $SYS creds: the observer is REQUIRED, the evictor only feeds the torn-rotation
   // check below. A space with no evictor still runs a perfectly good feed (eviction refuses on its
   // own path, loudly), so its absence must not take the feed down.
   const sys = await loadSysPair(source, "both");
   const missing = [
-    rw === undefined ? MEMBERSHIP_RW_CREDS_KEY : undefined,
-    ...sys.missing.filter((k) => k !== CONNECTION_EVICTOR_CREDS_KEY),
+    rw === undefined ? MEMBERSHIP_RW_CREDS_KIND : undefined,
+    ...sys.missing.filter((k) => k !== CONNECTION_EVICTOR_CREDS_KIND),
   ].filter((f): f is string => f !== undefined);
   if (missing.length) {
     // Name the missing piece AND a repair that reaches it. The bundle has two halves with two
@@ -53,14 +66,14 @@ export async function startMembership(
     // the data account, whose seed IS persisted, so a plain `cotal up` heals it — that is what
     // `healMembershipDataCreds` in `up` does, on every path rather than only a fresh space.
     // Only the REPAIR tail forks on `injected`; this diagnosis half is identical in both.
-    const sysMissing = missing.filter((m) => m === MEMBERSHIP_OBSERVER_CREDS_KEY);
+    const sysMissing = missing.filter((m) => m === MEMBERSHIP_OBSERVER_CREDS_KIND);
     const down =
-      missing.length === 1 && missing[0] === MEMBERSHIP_OBSERVER_CREDS_KEY
-        ? `the $SYS observer cred is missing (key "${MEMBERSHIP_OBSERVER_CREDS_KEY}") - ${repairAdvice(source, sysMissing)}`
+      missing.length === 1 && missing[0] === MEMBERSHIP_OBSERVER_CREDS_KIND
+        ? `the $SYS observer cred is missing (kind "${MEMBERSHIP_OBSERVER_CREDS_KIND}") - ${repairAdvice(source, sysMissing)}`
         : `the membership bundle is incomplete here (missing ${missing.join(", ")}) - ${
             sysMissing.length === 0
               ? source.injected
-                ? `re-sign the data-account half into the store under ${MEMBERSHIP_RW_CREDS_KEY} (no rotation needed)`
+                ? `re-sign the data-account half into the store under ${rwKey} (no rotation needed)`
                 : "run `cotal up` to provision the data-account half (no rotation needed)"
               : `the $SYS-signed creds can only be re-minted while the system account is being provisioned: ${repairAdvice(source, sysMissing)}`
           }`;
@@ -85,7 +98,7 @@ export async function startMembership(
   // "Authorization Violation" either way. Shared with the eviction path as of this change — it used
   // to live only here, which left eviction opening a half-rotated pair blind.
   if (sys.evictor !== undefined) {
-    const torn = tornRotationProblem(obsCreds, sys.evictor, repairAdvice(source, [MEMBERSHIP_OBSERVER_CREDS_KEY, CONNECTION_EVICTOR_CREDS_KEY]));
+    const torn = tornRotationProblem(obsCreds, sys.evictor, () => repairAdvice(source, [MEMBERSHIP_OBSERVER_CREDS_KIND, CONNECTION_EVICTOR_CREDS_KIND]));
     if (torn) {
       console.error(`! membership: ${torn}; graph membership degraded, delivery unaffected`);
       return { down: torn };
@@ -101,8 +114,8 @@ export async function startMembership(
   if (obs.state === "expired" || obs.state === "unreadable") {
     const down =
       obs.state === "expired"
-        ? `the $SYS observer cred (key "${MEMBERSHIP_OBSERVER_CREDS_KEY}") EXPIRED ${new Date((obs.exp ?? 0) * 1000).toISOString()} and the broker denies it - it is rotation-renewed, so nothing re-signs it: ${repairAdvice(source, [MEMBERSHIP_OBSERVER_CREDS_KEY])} (agents, creds and data are untouched)`
-        : `the $SYS observer cred (key "${MEMBERSHIP_OBSERVER_CREDS_KEY}") is unreadable (${obs.error})`;
+        ? `the $SYS observer cred (kind "${MEMBERSHIP_OBSERVER_CREDS_KIND}") EXPIRED ${new Date((obs.exp ?? 0) * 1000).toISOString()} and the broker denies it - it is rotation-renewed, so nothing re-signs it: ${repairAdvice(source, [MEMBERSHIP_OBSERVER_CREDS_KIND])} (agents, creds and data are untouched)`
+        : `the $SYS observer cred (kind "${MEMBERSHIP_OBSERVER_CREDS_KIND}") is unreadable (${obs.error})`;
     console.error(`! membership: ${down}; graph membership degraded, delivery unaffected`);
     return { down };
   }
@@ -118,9 +131,9 @@ export async function startMembership(
     // preflight-proves each candidate the manager re-signs into the store (D5 slice 5). The daemon
     // never sees the signer; the manager owns the re-sign.
     rwCreds: async () => {
-      const cur = await source.secrets.get(MEMBERSHIP_RW_CREDS_KEY);
+      const cur = await source.secrets.get(rwKey);
       if (cur === undefined)
-        throw new Error(`membership: the scoped rw cred is gone (key "${MEMBERSHIP_RW_CREDS_KEY}") — restore it (locally: re-run \`cotal up\`) before the current JWT expires`);
+        throw new Error(`membership: the scoped rw cred is gone (kind "${MEMBERSHIP_RW_CREDS_KIND}") — restore it (locally: re-run \`cotal up\`) before the current JWT expires`);
       return cur;
     },
     intervalMs,

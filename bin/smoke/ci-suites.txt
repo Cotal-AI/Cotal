@@ -662,3 +662,19 @@ smoke:up-restore-reentry:live
 # spellings, one of them the release workflow. The property is only observable on main after a
 # merge, so it needs a static guard. Appended so every existing shard assignment remains unchanged.
 smoke:workflow-concurrency
+
+# The space-segmentation foundation (P7/P1 shared design). Hermetic and fast. It asserts the
+# `spaceSegment` collision guarantee over the children of `.cotal/` — a WIDER namespace than the
+# auth-dir siblings the encoder's comment originally claimed — plus the migration choke point's
+# refusals and the `space add` door. Widened with the PER-KIND RESOLVERS: every kind moves on first
+# touch through the one shared body, the hosted arm resolves the same key while moving nothing, the
+# refusals travel OUT through the named wrappers, and the two non-migrating owners (the deleters and
+# the renewal owner) address the same layout the resolvers do. Mutation-proofed —
+# bin/smoke/mutations/space-segmentation.json. Appended; shard assignments unchanged.
+smoke:space-segmentation
+
+# The `$SYS` repair advice names only commands the root can run. The delivery daemon printed `cotal
+# down` + `cotal up --rotate-sys` on multi-tenant roots, where both refuse - advice that cannot
+# succeed, found by the P7 §6 probe and fixed alongside this suite. Hermetic and fast; the property
+# is a biconditional, so the single-tenant arm is graded too. Appended; shard assignments unchanged.
+smoke:sys-repair-honesty

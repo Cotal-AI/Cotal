@@ -44,7 +44,7 @@ import {
   controlServiceSubject,
   eventChannelPrincipal,
 } from "@cotal-ai/core";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KEY, findCotalRoot, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KEY, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, findCotalRoot, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SecretStore, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -1144,8 +1144,8 @@ export class Manager {
         // re-signed) so its reply proves it adopted THIS generation, not merely re-read some file.
         const expected: { delivery?: string; membership?: string } = {};
         for (const r of resigned) {
-          if (r.file === DELIVERY_CREDS_KEY && r.fingerprint) expected.delivery = r.fingerprint;
-          else if (r.file === MEMBERSHIP_RW_CREDS_KEY && r.fingerprint) expected.membership = r.fingerprint;
+          if (r.file === DELIVERY_CREDS_KIND && r.fingerprint) expected.delivery = r.fingerprint;
+          else if (r.file === MEMBERSHIP_RW_CREDS_KIND && r.fingerprint) expected.membership = r.fingerprint;
         }
         try {
           const reply = await this.ep.requestDeliveryAdmin("reloadCreds", { expected }, DELIVERY_ADMIN_RELOAD_TIMEOUT_MS);
@@ -1271,10 +1271,17 @@ export class Manager {
    *  attempt it. An absent file is the unprovisioned space, reported by the daemon that needs it. */
   private warnOnSystemCredExpiry(): void {
     for (const file of SYSTEM_CREDS_FILES) {
-      const path = join(this.workspaceRoot, ".cotal", file);
-      if (!existsSync(path)) continue;
       let health: CredHealth;
       try {
+        // The pair is PER-SPACE as of P7, so the location comes from the resolver and never from a
+        // path built here (§2 rule 1). Building `.cotal/<kind>` instead would not warn on a wrong
+        // file — it would silently warn on NOTHING, for every provisioned root, forever, which is
+        // exactly the signal #338 added this for. The resolver may also refuse (§2 rules 3, 4); that
+        // refusal is caught with the unreadable case for the reason on the tin — the daemon that
+        // NEEDS the pair resolves it through the same function and reports it loudly there, so a
+        // diagnostic pass has nothing to add by crashing renewal.
+        const path = join(this.workspaceRoot, ".cotal", spaceMaterialKey(file, this.space, { injected: false, root: this.workspaceRoot }));
+        if (!existsSync(path)) continue;
         health = inspectCredHealth(readFileSync(path, "utf8"));
       } catch {
         continue; // an unreadable $SYS file is the daemon's loud failure, not a renewal-pass crash

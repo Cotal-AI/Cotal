@@ -69,8 +69,8 @@ import {
   grantActor, ledgerAclResolver, ledgerAuthorizeConnect, revokeActor, startAuthCallout,
 } from "@cotal-ai/auth";
 import {
-  CONNECTION_EVICTOR_CREDS_KEY, DELIVERY_CREDS_KEY, findCotalRoot,
-  MEMBERSHIP_OBSERVER_CREDS_KEY, MEMBERSHIP_RW_CREDS_KEY,
+  connectionEvictorCredsKey, CONNECTION_EVICTOR_CREDS_KIND, deliveryCredsKey, findCotalRoot,
+  membershipObserverCredsKey, MEMBERSHIP_OBSERVER_CREDS_KIND, membershipRwCredsKey, spaceMaterialDir,
 } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { runDelivery } from "../src/delivery.js";
@@ -162,6 +162,16 @@ const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const spaceA = `u3gate-a-${randomUUID().slice(0, 8)}`;
 const spaceB = `u3gate-b-${randomUUID().slice(0, 8)}`;
+// THE HOSTED COMPOSITION's keys (P7). Every kind is per-space, and this store has no filesystem
+// behind it, so the composition is `{ injected: true }`: the key is resolved and NOTHING is migrated
+// (rule 2's move is filesystem-only). Putting under the bare kind instead would write the pre-P7
+// flat key, which the daemon does not read — a suite that did so would stage a mesh that cannot boot
+// and grade the failure as a behaviour red.
+const hosted = { injected: true as const };
+const DELIVERY_KEY_A = deliveryCredsKey(spaceA, hosted);
+const MEMBERSHIP_RW_KEY_A = membershipRwCredsKey(spaceA, hosted);
+const OBSERVER_KEY_A = membershipObserverCredsKey(spaceA, hosted);
+const EVICTOR_KEY_A = connectionEvictorCredsKey(spaceA, hosted);
 const broker = await createBrokerAuth("u3gate");
 const accA = await createSpaceAccountAuth(broker, spaceA);
 const accB = await createSpaceAccountAuth(broker, spaceB);
@@ -269,14 +279,19 @@ try {
 
   // ---------- CELL 8 (before): nothing on disk to read ----------
   const SYS_FILES = ["membership-observer.creds", "connection-evictor.creds", "membership.json", "delivery.creds", "membership-rw.creds"];
-  const onDisk = () => [rootA, rootB].flatMap((r) => SYS_FILES.filter((f) => existsSync(join(r, ".cotal", f))).map((f) => join(r, ".cotal", f)));
+  // BOTH spellings are swept, because P7 moved where a workstation composition would write: a scan
+  // of the flat names alone would report "nothing on disk" for a daemon that had just written the
+  // whole set into `.cotal/space.<hex>/`, which is exactly the leak this cell exists to catch.
+  const onDisk = () => [rootA, rootB].flatMap((r) =>
+    [join(r, ".cotal"), spaceMaterialDir(r, spaceA), spaceMaterialDir(r, spaceB)].flatMap((d) =>
+      SYS_FILES.filter((f) => existsSync(join(d, f))).map((f) => join(d, f))));
   check("cell 8 (before): no $SYS creds and no membership.json exist under either tenant root", onDisk().length === 0, onDisk());
 
   // ---------- boot delivery for A from the INJECTED store, and nothing else ----------
-  await storeA.put(DELIVERY_CREDS_KEY, await mintCreds(authA, newIdentity(), "delivery"));
-  await storeA.put(MEMBERSHIP_RW_CREDS_KEY, await mintCreds(authA, newIdentity(), "membership-rw"));
-  await storeA.put(MEMBERSHIP_OBSERVER_CREDS_KEY, observerA);
-  await storeA.put(CONNECTION_EVICTOR_CREDS_KEY, evictorA);
+  await storeA.put(DELIVERY_KEY_A, await mintCreds(authA, newIdentity(), "delivery"));
+  await storeA.put(MEMBERSHIP_RW_KEY_A, await mintCreds(authA, newIdentity(), "membership-rw"));
+  await storeA.put(OBSERVER_KEY_A, observerA);
+  await storeA.put(EVICTOR_KEY_A, evictorA);
 
   realLog("  · booting runDelivery(args, storeA) in-process (its output is teed below, prefixed │)");
   teeConsole();
@@ -349,14 +364,14 @@ try {
   const id3 = newIdentity();
   const v3b = await connectVictim(await mintCreds(authA, id3, "operator"), id3.id);
   const principal3 = principalKey(DEV_OWNER, id3.id).key;
-  await storeA.put(MEMBERSHIP_OBSERVER_CREDS_KEY, observerB);
+  await storeA.put(OBSERVER_KEY_A, observerB);
   const c3 = await evict(principal3);
   check("cell 3: a FOREIGN-tenant observer is refused, naming both accounts — never a confident gone",
     c3.ok === false && (c3.error ?? "").includes(accB.account.pub) && (c3.error ?? "").includes(accA.account.pub), JSON.stringify(c3));
   check("cell 3: the refusal is not a disguised success (no verifiedGone in the reply)", c3.ok === false && c3.ev.verifiedGone === undefined, JSON.stringify(c3));
   check("cell 3: the victim is STILL LIVE after the refusal (nothing was swept, nothing was kicked)", !v3b.closed());
   // POSITIVE CONTROL — the same operation, the correct observer, same process.
-  await storeA.put(MEMBERSHIP_OBSERVER_CREDS_KEY, observerA);
+  await storeA.put(OBSERVER_KEY_A, observerA);
   const c3ok = await evict(principal3);
   check("cell 3 CONTROL: with A's own observer restored, the SAME eviction succeeds (the refusal was the tenancy check, not a broken path)",
     c3ok.ok === true && (c3ok.ev.kicked ?? 0) >= 1 && c3ok.ev.verifiedGone === true, JSON.stringify(c3ok));
@@ -366,25 +381,25 @@ try {
   const id4 = newIdentity();
   const v4 = await connectVictim(await mintCreds(authA, id4, "operator"), id4.id);
   const principal4 = principalKey(DEV_OWNER, id4.id).key;
-  await storeA.delete(CONNECTION_EVICTOR_CREDS_KEY);
+  await storeA.delete(EVICTOR_KEY_A);
   const c4 = await evict(principal4);
   check("cell 4: a missing evictor key REFUSES LOUD naming the key (fail-loud; the caller reads UNKNOWN, never gone)",
-    c4.ok === false && (c4.error ?? "").includes(CONNECTION_EVICTOR_CREDS_KEY), JSON.stringify(c4));
+    c4.ok === false && (c4.error ?? "").includes(CONNECTION_EVICTOR_CREDS_KIND) && (c4.error ?? "").includes(EVICTOR_KEY_A), JSON.stringify(c4));
   check("cell 4 (F2/§4.1): the repair names the STORE idiom, not a CLI command the host cannot run",
     /put/.test(c4.error ?? "") && !/cotal up/.test(c4.error ?? ""), c4.error);
   check("cell 4: the victim is STILL LIVE (a refusal never kills)", !v4.closed());
   // POSITIVE CONTROL — restore the key, same eviction, same process.
-  await storeA.put(CONNECTION_EVICTOR_CREDS_KEY, evictorA);
+  await storeA.put(EVICTOR_KEY_A, evictorA);
   const c4ok = await evict(principal4);
   check("cell 4 CONTROL: with the evictor key restored, the SAME eviction succeeds and kicks",
     c4ok.ok === true && (c4ok.ev.kicked ?? 0) >= 1 && c4ok.ev.verifiedGone === true, JSON.stringify(c4ok));
   check("cell 4 CONTROL: that victim's connection actually dropped", await until(() => v4.closed(), 5000));
 
   // ---------- CELL 5: the observer key is GONE — the FEED degrades, Plane-3 does not ----------
-  await storeA.delete(MEMBERSHIP_OBSERVER_CREDS_KEY);
+  await storeA.delete(OBSERVER_KEY_A);
   const feedDown = await startMembership({ space: spaceA, server: SERVERS, accountId: accA.account.pub }, storeA);
   check("cell 5: a missing observer key degrades the feed SOFTLY with a {down} naming the key (never a throw, never a silent feed)",
-    feedDown.handle === undefined && (feedDown.down ?? "").includes(MEMBERSHIP_OBSERVER_CREDS_KEY), JSON.stringify(feedDown.down));
+    feedDown.handle === undefined && (feedDown.down ?? "").includes(MEMBERSHIP_OBSERVER_CREDS_KIND) && (feedDown.down ?? "").includes(OBSERVER_KEY_A), JSON.stringify(feedDown.down));
   check("cell 5 (F2/§4.1): the feed's repair also names the STORE idiom", /put/.test(feedDown.down ?? "") && !/cotal up/.test(feedDown.down ?? ""), feedDown.down);
   // Plane-3 is a SEPARATE contract: the feed being down must not touch delivery.
   const stillServing = await admin("noSuchOp"); // a refusal that PROVES the responder is alive
@@ -393,7 +408,7 @@ try {
   check("cell 5: the delivery lease is still READY (fail-SOFT is scoped to the feed, not the daemon)",
     await waitForDeliveryLease({ servers: SERVERS, space: spaceA, creds: await mintCreds(authA, probe5, "delivery"), id: probe5.id, holder: undefined }));
   // POSITIVE CONTROL — restore the key, the SAME call, same process.
-  await storeA.put(MEMBERSHIP_OBSERVER_CREDS_KEY, observerA);
+  await storeA.put(OBSERVER_KEY_A, observerA);
   const feedUp = await startMembership({ space: spaceA, server: SERVERS, accountId: accA.account.pub }, storeA);
   check("cell 5 CONTROL: with the observer key restored, the SAME call starts a real feed (the {down} was the missing key, not a broken path)",
     feedUp.handle !== undefined, JSON.stringify(feedUp.down));
@@ -411,7 +426,7 @@ try {
   const id7 = newIdentity();
   const v7 = await connectVictim(await mintCreds(authA, id7, "operator"), id7.id);
   const principal7 = principalKey(DEV_OWNER, id7.id).key;
-  await storeA.put(CONNECTION_EVICTOR_CREDS_KEY, tornEvictorA);
+  await storeA.put(EVICTOR_KEY_A, tornEvictorA);
   const c7 = await evict(principal7);
   check("cell 7 (eviction path): a torn $SYS pair refuses, naming DIFFERENT system accounts — the gap this change closes",
     c7.ok === false && /DIFFERENT system accounts/i.test(c7.error ?? ""), JSON.stringify(c7));
@@ -420,7 +435,7 @@ try {
   check("cell 7 (feed path): the same torn pair takes the feed down with the same diagnosis (one shared helper, two postures)",
     feedTorn.handle === undefined && /DIFFERENT system accounts/i.test(feedTorn.down ?? ""), JSON.stringify(feedTorn.down));
   // POSITIVE CONTROL — restore the intact pair, both paths, same process.
-  await storeA.put(CONNECTION_EVICTOR_CREDS_KEY, evictorA);
+  await storeA.put(EVICTOR_KEY_A, evictorA);
   const c7ok = await evict(principal7);
   check("cell 7 CONTROL: with an intact generation restored, the SAME eviction succeeds and kicks",
     c7ok.ok === true && (c7ok.ev.kicked ?? 0) >= 1 && c7ok.ev.verifiedGone === true, JSON.stringify(c7ok));

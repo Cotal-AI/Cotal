@@ -47,7 +47,7 @@ import {
   newIdentity,
   standaloneConnectOpts,
 } from "@cotal-ai/core";
-import { getSpaceAuth, MEMBERSHIP_RW_CREDS_KEY, putSpaceAuth, SYSTEM_CREDS_FILES, workspaceSecretStore } from "@cotal-ai/workspace";
+import { getSpaceAuth, MEMBERSHIP_RW_CREDS_KIND, putSpaceAuth, spaceMaterialDir, SYSTEM_CREDS_FILES, workspaceSecretStore } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
@@ -88,8 +88,14 @@ const root = mkdtempSync(join(tmpdir(), `cotal-sysrot-e2e-${RUN}-`));
 const CONFIG = join(HOME, "xdg");
 const sandbox = recordSmokeSandbox({ root, cotalHome: HOME, xdgConfigHome: CONFIG });
 const cotalPath = (f: string) => join(root, ".cotal", f);
-const obsPath = cotalPath(SYSTEM_CREDS_FILES[0]);
-const evPath = cotalPath(SYSTEM_CREDS_FILES[1]);
+// The mesh this suite stages is PRE-P7: a 30-day-old root whose material is still flat. That is the
+// honest input, and it makes the first boot's migration part of what this e2e covers — so the
+// STAGING paths are the legacy flat ones and every path read after a boot is the canonical
+// segmented one. Nothing here writes flat after a boot: a flat file beside a segmented one is the
+// §2 rule 3 ambiguity, and it refuses loudly.
+const legacyPath = cotalPath;
+const obsPath = join(spaceMaterialDir(root, SPACE), SYSTEM_CREDS_FILES[0]);
+const evPath = join(spaceMaterialDir(root, SPACE), SYSTEM_CREDS_FILES[1]);
 const deliveryLog = cotalPath("delivery.log");
 mkdirSync(join(root, ".cotal", "auth"), { recursive: true });
 
@@ -194,19 +200,20 @@ try {
   const auth = await createSpaceAuth(SPACE);
   await putSpaceAuth(store, auth);
   const deadAt = Math.floor(Date.now() / 1000) - 3600;
-  writeFileSync(obsPath, await mintMembershipObserverCreds(auth, newIdentity(), { expiresAt: deadAt }), { mode: 0o600 });
-  writeFileSync(evPath, await mintConnectionEvictorCreds(auth, newIdentity(), { expiresAt: deadAt }), { mode: 0o600 });
+  writeFileSync(legacyPath(SYSTEM_CREDS_FILES[0]), await mintMembershipObserverCreds(auth, newIdentity(), { expiresAt: deadAt }), { mode: 0o600 });
+  writeFileSync(legacyPath(SYSTEM_CREDS_FILES[1]), await mintConnectionEvictorCreds(auth, newIdentity(), { expiresAt: deadAt }), { mode: 0o600 });
   // The rest of the membership bundle, exactly as a `cotal up` that CREATED this space left it: the
   // reported mesh had a feed that ran for weeks, so the file set must be complete or the daemon stops
   // at "not provisioned here" and never reaches the expiry it is supposed to report.
-  writeFileSync(cotalPath("membership.json"), JSON.stringify({ accountId: auth.account.pub }), { mode: 0o600 });
-  await store.put(MEMBERSHIP_RW_CREDS_KEY, await mintCreds(auth, newIdentity(), "membership-rw"));
+  writeFileSync(legacyPath("membership.json"), JSON.stringify({ accountId: auth.account.pub }), { mode: 0o600 });
+  // The bare KIND is the pre-P7 flat key, which is exactly the legacy shape being staged.
+  await store.put(MEMBERSHIP_RW_CREDS_KIND, await mintCreds(auth, newIdentity(), "membership-rw"));
   // Two DATA-account creds minted before any rotation. The whole safety claim of the repair is that
   // these keep working, so they are minted here, once, and never re-minted.
   const preAgent = await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: mintLifecycleUid() });
   const preReader = await mintCreds(auth, newIdentity(), "provisioner");
-  const expiredObs = readFileSync(obsPath, "utf8");
-  const expiredEv = readFileSync(evPath, "utf8");
+  const expiredObs = readFileSync(legacyPath(SYSTEM_CREDS_FILES[0]), "utf8");
+  const expiredEv = readFileSync(legacyPath(SYSTEM_CREDS_FILES[1]), "utf8");
 
   // ── 1) the mesh as the reporter found it ───────────────────────────────────────────────────────
   console.log("\n1) an auth mesh whose $SYS pair is past its horizon");
@@ -220,6 +227,12 @@ try {
   // ...and the diagnosis, which used to be a bare "Authorization Violation" naming nothing.
   check("the daemon names the EXPIRED $SYS cred, not just a dead feed", /! membership:.*EXPIRED/s.test(tail1), tail1.slice(-400));
   check("the daemon names the repair that works", /--rotate-sys/.test(tail1), tail1.slice(-400));
+  // P7, through the real binary on a real pre-P7 root: the first boot MOVED the flat pair into this
+  // space's segment. Both halves matter — a copy that left the flat file behind is the §2 rule 3
+  // ambiguity the next reader refuses on, and it is invisible if only the new location is asserted.
+  check("the boot migrated the legacy $SYS pair into `.cotal/space.<hex>/`", existsSync(obsPath) && existsSync(evPath));
+  check("...and left no flat copy behind", !existsSync(legacyPath(SYSTEM_CREDS_FILES[0])) && !existsSync(legacyPath(SYSTEM_CREDS_FILES[1])));
+  check("the migration is byte-preserving (a move, not a re-mint)", readFileSync(obsPath, "utf8") === expiredObs && readFileSync(evPath, "utf8") === expiredEv);
   const doc1 = cotal(["doctor", "auth"]);
   check("`cotal doctor auth` exits 1 on the expired pair", doc1.code === 1, `code=${doc1.code} ${doc1.out.slice(-300)}`);
   check("`cotal doctor auth` names both $SYS files as EXPIRED", doc1.out.includes(SYSTEM_CREDS_FILES[0]) && doc1.out.includes(SYSTEM_CREDS_FILES[1]) && /EXPIRED/.test(doc1.out), doc1.out.slice(-400));
