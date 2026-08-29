@@ -68,13 +68,29 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * The ambient environment with every `COTAL_` key stripped, then this smoke's own sandbox put back.
+ *
+ * A suite can be run from a mesh-joined session, and that environment carries a live credential path
+ * and a live broker URL. The child here is the real `cotal` CLI, which DOES read connection material,
+ * so spreading `process.env` in unfiltered points it at the CALLER's mesh instead of this sandbox —
+ * and it would pass while doing it, which is the failure mode worth naming: not a red, a false green.
+ * Strip first, then re-add the one variable the children are meant to see.
+ * Enforced by bin/smoke/suite-ambient-env.smoke.ts.
+ */
+const sandboxEnv = (() => {
+  const copy = { ...process.env };
+  for (const key of Object.keys(copy)) if (key.startsWith("COTAL_")) delete copy[key];
+  return { ...copy, COTAL_HOME: home };
+})();
+
 const output = new WeakMap<ChildProcess, () => string>();
 const logOf = (cp: ChildProcess) => output.get(cp)?.() ?? "";
 
 function run(args: string[]): ChildProcess {
   const cp = spawn(TSX, [CLI, ...args], {
     cwd: root,
-    env: { ...process.env, COTAL_HOME: home },
+    env: sandboxEnv,
     stdio: ["ignore", "pipe", "pipe"],
   });
   kids.push(cp);

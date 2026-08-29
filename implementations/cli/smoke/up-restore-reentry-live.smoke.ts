@@ -64,7 +64,21 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-const baseEnv = { ...process.env, COTAL_HOME: home };
+/**
+ * The ambient environment with every `COTAL_` key stripped, then this smoke's own sandbox put back.
+ *
+ * A suite can be run from a mesh-joined session, and that environment carries a live credential path
+ * and a live broker URL. The child here is the real `cotal` CLI, which DOES read connection material,
+ * so spreading `process.env` in unfiltered points it at the CALLER's mesh instead of this sandbox —
+ * and it would pass while doing it, which is the failure mode worth naming: not a red, a false green.
+ * Strip first, then re-add the one variable the children are meant to see.
+ * Enforced by bin/smoke/suite-ambient-env.smoke.ts.
+ */
+const baseEnv = (() => {
+  const copy = { ...process.env };
+  for (const key of Object.keys(copy)) if (key.startsWith("COTAL_")) delete copy[key];
+  return { ...copy, COTAL_HOME: home };
+})();
 
 /** Blocking `cotal <args>`, the way an operator runs it. */
 function runSync(args: string[], extraEnv: Record<string, string> = {}) {
