@@ -189,7 +189,22 @@ export function upComplete(argv: string[]): CompletionResult {
   return { items, directive: items.length ? "nofiles" : "default" };
 }
 
-export async function up(args: ParsedArgs): Promise<void> {
+/** `inheritedLock` is the root maintenance lock a recovery re-entry hands down (see the re-entry
+ *  below). Ownership transfers with it: this call releases it at its own release point. */
+export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock): Promise<void> {
+  if (!inheritedLock) return await runUp(args);
+  // A re-entry owns the inherited lock from the moment it is called, but `runUp` only adopts it
+  // part-way in — an early refusal (an unusable `--runtime`, say) throws before that. Release it
+  // here in exactly that case, so a refused re-entry never leaves the root locked for the reaper.
+  let adopted = false;
+  try {
+    return await runUp(args, inheritedLock, () => { adopted = true; });
+  } finally {
+    if (!adopted) releaseMaintenanceLock(inheritedLock);
+  }
+}
+
+async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?: () => void): Promise<void> {
   const values = args.values as {
     server?: string; "store-dir"?: string; space?: string; open?: boolean; "user-auth"?: boolean; idp?: string;
     "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean; "advertised-server"?: string; "agent-provisioning-url"?: string;
@@ -257,6 +272,9 @@ export async function up(args: ParsedArgs): Promise<void> {
     const lock = acquireMaintenanceLock(root);
     let pending: PendingOrdinaryResume | undefined;
     let recoveredRestore: PreparedRestore | undefined;
+    // Set only at the moment the lock is passed to a re-entry, which then owns releasing it. Any
+    // other exit from this block — including a throw after `pending` was built — still releases.
+    let handedOff = false;
     try {
       const journal = readMaintenanceJournal(root);
       if (journal?.state === "restore-ready") {
@@ -396,53 +414,60 @@ export async function up(args: ParsedArgs): Promise<void> {
       } else if (journal) {
         throw new Error(`cotal up is refused while maintenance state is ${journal.state}; follow the recorded recovery`);
       }
+      // The re-entries run INSIDE this block, under the lock the journal was just written with, and
+      // inherit it rather than letting it drop. Releasing here and re-acquiring in the nested `up`
+      // left the journal reading `resume-intent` with the lock free — the window a concurrent `up`
+      // could render the whole-broker server.conf through (design doc §4, P2).
+      if (recoveredRestore) {
+        handedOff = true;
+        try {
+          await up({
+            ...args,
+            values: {
+              ...values,
+              __restoreAttempt: recoveredRestore.attemptId,
+              space: recoveredRestore.space,
+              server: recoveredRestore.server,
+              host: recoveredRestore.host,
+              "store-dir": recoveredRestore.targetPath,
+              runtime: recoveredRestore.runtime,
+              detach: recoveredRestore.detached,
+              open: recoveredRestore.mode === "open",
+              "user-auth": recoveredRestore.mode === "user",
+            },
+          }, lock);
+        } catch (error) {
+          // The nested `up` released the inherited lock on its way out, so this takes its own.
+          markPendingResumeDegraded(recoveredRestore.attemptId, error instanceof Error ? error.message : String(error));
+          throw error;
+        }
+        return;
+      }
+      if (pending) {
+        handedOff = true;
+        try {
+          await up({
+            ...args,
+            values: {
+              ...values,
+              __ordinaryResumeAttempt: pending.attemptId,
+              space: pending.space,
+              server: pending.server,
+              "store-dir": pending.storeDir,
+              runtime: pending.runtime,
+              detach: pending.detached,
+              open: pending.mode === "open",
+              "user-auth": pending.mode === "user",
+            },
+          }, lock);
+        } catch (error) {
+          markPendingResumeDegraded(pending.attemptId, error instanceof Error ? error.message : String(error));
+          throw error;
+        }
+        return;
+      }
     } finally {
-      releaseMaintenanceLock(lock);
-    }
-    if (recoveredRestore) {
-      try {
-        await up({
-          ...args,
-          values: {
-            ...values,
-            __restoreAttempt: recoveredRestore.attemptId,
-            space: recoveredRestore.space,
-            server: recoveredRestore.server,
-            host: recoveredRestore.host,
-            "store-dir": recoveredRestore.targetPath,
-            runtime: recoveredRestore.runtime,
-            detach: recoveredRestore.detached,
-            open: recoveredRestore.mode === "open",
-            "user-auth": recoveredRestore.mode === "user",
-          },
-        });
-      } catch (error) {
-        markPendingResumeDegraded(recoveredRestore.attemptId, error instanceof Error ? error.message : String(error));
-        throw error;
-      }
-      return;
-    }
-    if (pending) {
-      try {
-        await up({
-          ...args,
-          values: {
-            ...values,
-            __ordinaryResumeAttempt: pending.attemptId,
-            space: pending.space,
-            server: pending.server,
-            "store-dir": pending.storeDir,
-            runtime: pending.runtime,
-            detach: pending.detached,
-            open: pending.mode === "open",
-            "user-auth": pending.mode === "user",
-          },
-        });
-      } catch (error) {
-        markPendingResumeDegraded(pending.attemptId, error instanceof Error ? error.message : String(error));
-        throw error;
-      }
-      return;
+      if (!handedOff) releaseMaintenanceLock(lock);
     }
   }
   const wantUser = Boolean(values["user-auth"]);
@@ -574,14 +599,26 @@ export async function up(args: ParsedArgs): Promise<void> {
   // recourse) instead of a silent fallback in a detached child. No fallbacks. (`pty`/unset: no-op.)
   if (values.runtime) await preflightRuntime(values.runtime);
   const resumeAttempt = values.__restoreAttempt ?? values.__ordinaryResumeAttempt;
-  let startupLock = resumeAttempt ? undefined : acquireMaintenanceLock(cotalRoot());
+  // Held for EVERY `up`, resume re-entry included. A re-entry used to hold no lock at all and still
+  // reach the renderer below, so a concurrent `cotal up` could rewrite the whole-broker server.conf
+  // — every tenant's trust, unserialized — while a resume was mid-flight (design doc §4, P2). A
+  // re-entry INHERITS the recovery's lock rather than taking its own: the recovery journals
+  // `resume-intent` under that lock, so releasing it to re-acquire here would leave exactly the
+  // window the probe catches — the journal already in a resume state with the lock free. The resume
+  // helpers that journal under it are handed this lock rather than re-acquiring one that is not
+  // reentrant.
+  let startupLock: MaintenanceLock | undefined = inheritedLock ?? acquireMaintenanceLock(cotalRoot());
+  onAdopt?.(); // from here the release below owns it, inherited or not
   const releaseStartupLock = () => {
     if (!startupLock) return;
     releaseMaintenanceLock(startupLock);
     startupLock = undefined;
   };
   try {
-    if (startupLock) assertOrdinaryUpAllowed(cotalRoot(), values["store-dir"] ? resolve(values["store-dir"]) : cotalPath("nats"));
+    // Gated on the ATTEMPT, not on holding the lock. The lock is now always held, and this refuses
+    // whenever a journal exists — which is precisely the state a resume re-entry is in, so gating
+    // it on the lock would refuse the very resume the lock is here to protect.
+    if (!resumeAttempt) assertOrdinaryUpAllowed(cotalRoot(), values["store-dir"] ? resolve(values["store-dir"]) : cotalPath("nats"));
     let server = values.server ?? DEFAULT_SERVER;
     const host = values.host ?? "127.0.0.1";
     // `--host` is the BIND address; `server` is the URL the readiness probe, the mesh registry, and
@@ -861,7 +898,7 @@ export async function up(args: ParsedArgs): Promise<void> {
         boundListener: {
           serverName: ordinaryAttempt.serverName,
           serverNonce: ordinaryAttempt.serverNonce,
-          onSpawn: (pid: number, startedAt: string) => bindSpawnedOrdinaryResumeListener(ordinaryAttempt, pid, startedAt),
+          onSpawn: (pid: number, startedAt: string) => bindSpawnedOrdinaryResumeListener(ordinaryAttempt, pid, startedAt, startupLock),
           verify: async () => { await verifySpawnedOrdinaryListener(ordinaryAttempt); },
         },
       } : {}),
@@ -881,6 +918,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       controlPlane && authService,
       !authService ? "normal listener started but the user-auth service is unavailable" : "normal listener started but the control plane is degraded",
       server,
+      startupLock,
     );
     return;
   }
@@ -940,7 +978,7 @@ export async function up(args: ParsedArgs): Promise<void> {
     throw error;
   }
   if (ordinaryAttempt) try {
-    bindSpawnedOrdinaryResumeListener(ordinaryAttempt, child.pid ?? 0, listenerStartedAt);
+    bindSpawnedOrdinaryResumeListener(ordinaryAttempt, child.pid ?? 0, listenerStartedAt, startupLock);
   } catch (error) {
     await stopUnboundRestoreListener(child);
     removeMatchingNatsPid(child.pid ?? 0);
@@ -998,7 +1036,9 @@ export async function up(args: ParsedArgs): Promise<void> {
   if (!ready) {
     child.kill("SIGTERM");
     const reason = `nats-server did not become ready at ${server}`;
-    markPendingResumeDegraded(resumeAttempt ?? "", reason);
+    // `startupLock` is already released by here on this path (and the helper then takes its own);
+    // passed anyway so the call stays correct if the release above ever moves.
+    markPendingResumeDegraded(resumeAttempt ?? "", reason, startupLock);
     throw new Error(reason);
   }
   if (restored) await provePreparedRestoreListener(restored);
@@ -1056,6 +1096,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       controlPlane && svc.ok,
       !svc.ok ? "normal listener started but the user-auth service is unavailable" : "normal listener started but the control plane is degraded",
       server,
+      startupLock,
     );
     activationFinished = true;
   }

@@ -632,3 +632,9 @@ smoke:up-multi-space-render:live
 # pair. Drives the real daemon against a real broker. Appended so every existing shard
 # assignment remains unchanged.
 smoke:sys-injection-evict
+# A RESUMED `cotal up` must render server.conf under the root maintenance lock, the way the ordinary
+# and manifest paths do. The re-entry used to drop the recovery's lock and re-take it, leaving the
+# journal naming a resume in flight with the root unlocked - an unserialized rewrite of every
+# tenant's trust. Drives the real CLI against a real broker. Appended so every existing shard
+# assignment remains unchanged.
+smoke:up-resume-render-lock:live

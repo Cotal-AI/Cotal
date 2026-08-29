@@ -2,12 +2,17 @@
  * LIVE PROBE (P2): a RESUMED `cotal up` must render `server.conf` under the ROOT MAINTENANCE LOCK,
  * the way the ordinary and manifest paths already do.
  *
- * `up` takes the lock at its start - except on a resume re-entry: `startupLock` is left undefined
- * when `__restoreAttempt`/`__ordinaryResumeAttempt` is set, because the OUTER recovery block already
- * held it. But that outer block RELEASES the lock in its `finally` before it re-enters `up`, so the
- * resumed boot runs the whole render (`authSetup` -> `serverConfig` -> `server.conf`) with no lock
- * held at all. The MEMORY resolver config is a whole-broker map, so an unlocked render is an
- * unserialized rewrite of every tenant's trust: exactly what the lock exists to prevent.
+ * `up` used to take the lock at its start EXCEPT on a resume re-entry: `startupLock` was left
+ * undefined when `__restoreAttempt`/`__ordinaryResumeAttempt` was set, on the reasoning that the
+ * OUTER recovery block already held it. But that outer block RELEASED the lock in its `finally`
+ * before re-entering `up`, so the resumed boot ran the whole render (`authSetup` -> `serverConfig`
+ * -> `server.conf`) with no lock held at all. The MEMORY resolver config is a whole-broker map, so
+ * an unlocked render is an unserialized rewrite of every tenant's trust: exactly what the lock
+ * exists to prevent.
+ *
+ * The re-entry now INHERITS the recovery's lock instead of dropping and re-taking it, which is what
+ * closes the window: the journal is written `resume-intent` under that same lock, so there is no
+ * instant where a resume is in flight and the root is unlocked. This probe guards that.
  *
  * Driven through the REAL command, as a subprocess, against a REAL broker:
  *
@@ -16,8 +21,10 @@
  *  2. `cotal down --preserve-state` leaves a `ready` maintenance journal - the state a bare
  *     `cotal up` recovers by re-entering itself as a resume.
  *  3. SUBJECT - during that resumed `cotal up`, once the journal shows the re-entry is underway,
- *     the same `acquireMaintenanceLock` SUCCEEDS, and `server.conf` is then rewritten while this
- *     probe holds the lock. Both are the finding: the resumed render is not serialized.
+ *     the same `acquireMaintenanceLock` must be REFUSED, and `server.conf` must NOT be rewritten
+ *     while this probe holds the lock. Either one succeeding is the finding: the resumed render
+ *     would not be serialized. The acquire is judged by re-reading the journal WHILE holding the
+ *     lock, so a resume that merely finished mid-check is not mistaken for a gap.
  *
  * Sandboxes COTAL_HOME under a scratch base with proven-clean `.cotal` ancestry; kills only its own
  * children. Needs `nats-server` on PATH.
@@ -150,20 +157,33 @@ try {
   // otherwise a lucky early acquire would just be racing the outer block, not observing the gap.
   let acquiredDuringResume = false;
   let seenState = "none";
+  let gapState = "none";
   for (let i = 0; i < 1500; i++) {
     if (resumed.exitCode !== null) break;
     const state = journalState();
     if (state.startsWith("resume-")) {
       seenState = state;
-      const r = tryLock();
-      if (!r.held) { acquiredDuringResume = true; break; }
+      // Acquire and RE-READ the journal while still HOLDING it. Reading the state and then probing
+      // the lock as two separate steps cannot tell a real gap from a resume that simply finished in
+      // between: the resume's last act (`retireOrdinaryResume` -> `consumeRetiredMaintenance`) runs
+      // under the lock and removes the journal, so that benign ending would otherwise be reported as
+      // a `resume-retired` gap. A real gap is the journal STILL naming a resume in flight while this
+      // probe owns the root lock.
+      let taken: ReturnType<typeof acquireMaintenanceLock> | undefined;
+      try { taken = acquireMaintenanceLock(root); } catch { taken = undefined; }
+      if (taken) {
+        const during = journalState();
+        releaseMaintenanceLock(taken);
+        if (during.startsWith("resume-")) { gapState = during; acquiredDuringResume = true; break; }
+      }
     }
     await sleep(20);
   }
   ok("the re-entry was reached (journal moved to a resume state)",
     seenState.startsWith("resume-"), { seenState, log: logOf(resumed).slice(-1200) });
   ok("the root maintenance lock is HELD across the resumed render",
-    !acquiredDuringResume, { seenState, note: "an independent acquire succeeded mid-resume" });
+    !acquiredDuringResume,
+    { seenState, gapState, note: "an independent acquire succeeded while the journal still named a resume in flight" });
 
   // Hold the lock for real and watch whether the resumed boot renders anyway. A resumed `up` that
   // took the lock could not reach its render while this is held.
