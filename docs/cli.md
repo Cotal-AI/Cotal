@@ -572,8 +572,14 @@ cotal models [--agent <connector>] [--refresh]
 | `--refresh` | off | Ask the connector to refresh its provider cache |
 
 Asks the running manager for each connector's model catalog (model ids plus their variants)
-for connectors that expose one (OpenCode today; a connector without a catalog says so). Pick a
-result with `cotal spawn --model <provider/model> --variant <v>`.
+for connectors that expose one. OpenCode and Codex query harness/provider surfaces; Jcode reads
+providers that enable `model_catalog = true` in the operator Jcode `config.toml`. Jcode's listed
+effort tiers render as `variants (declared, not provider-verified)`, and launch can still refuse one.
+A connector without a catalog says so. Pick a result with `cotal spawn --model <id> --variant <v>`,
+where `<id>` is the model id as the catalog printed it. OpenCode and Codex ids are the full
+`provider/model`; Jcode ids are bare (`opus-5`, not `cliproxy/opus-5`), because the provider is
+selected by the operator's Jcode config and a prefixed id is refused at launch with the bare form
+named.
 
 ## endpoints
 
@@ -619,17 +625,24 @@ cotal attach --name <n> [--on <instance>] [--no-reconnect] [--space <s>]
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
 | `--name <n>` | none | Managed agent to stop / attach (required) |
 | `--on <instance>` | class anycast (`ps`: class scatter) | Pin to one manager instance id (multi-manager space); takes the whole id as `ps` prints it, not a prefix. An empty value (`--on ""`, an unset shell variable) is refused, never treated as absent |
-| `--wide` (`ps`) | off | After each seat's compact row, print the per-seat facts the manager already records: model pin (and variant), `cwd`, `pid`, spawner, lifecycle uid, and the owning manager's instance id and host. A fact the manager did not record (no model pinned, or a runtime that owns no real process) prints nothing, never a placeholder |
+| `--wide` (`ps`) | off | After each seat's compact row, print extra operational facts the manager records: `cwd`, `pid`, spawner, lifecycle uid, and the owning manager's instance id and host. Model and requested variant stay in the identity row rather than printing twice. A fact the manager did not record (for example a runtime with no real process) prints nothing, never a placeholder |
 | `--json` (`ps`) | off | Machine-readable: one JSON object per seat per line, copied unchanged from the manager row. Instance headers and errors go to stderr, so stdout contains only rows. Mutually exclusive with `--wide` |
 | `--no-reconnect` (`attach`) | off | End the attach when its session ends, instead of re-establishing it. For scripts that want one run and one exit code |
 
-These are operator clients over the running manager's control plane. `ps` prints two facts per
-managed agent, because they answer different questions: the process fact from the manager's own
-runtime handle (`running` with its uptime, or `exited` with how long it ran), and the mesh fact from
-the roster (`idle` / `working` / `waiting` / `mesh offline`, or `not in roster` when the seat has no
-presence row at all: a seat that has not joined yet, or one that never did). A seat can be `running` and `mesh offline` at once: the process is alive and
-its presence has lapsed. On a user-auth mesh `ps` also renders each managed agent's last
-credential-refresh outcome, fail-closed.
+The human `ps` row is presentation text and is not a stable parsing target. Scripts use `--json`,
+which is the machine-readable row contract.
+
+These are operator clients over the running manager's control plane. The default row includes the
+connector, model pin, optional requested variant, and runtime as operational descriptors for the
+managed row. They do not make a shared display name a unique protocol identity; use `--json` when
+unambiguous owner+actor attribution is required. An omitted variant means no override was requested;
+Cotal does not invent an effective provider default it cannot observe. `ps` also prints two state
+facts per managed agent, because they answer different questions: the process fact from the manager's
+own runtime handle (`running` with its uptime, or `exited` with how long it ran), and the mesh fact
+from the roster (`idle` / `working` / `waiting` / `mesh offline`, or `not in roster` when the seat has
+no presence row at all: a seat that has not joined yet, or one that never did). A seat can be
+`running` and `mesh offline` at once: the process is alive and its presence has lapsed. On a user-auth
+mesh `ps` also renders each managed agent's last credential-refresh outcome, fail-closed.
 
 **Mode split (chosen up front, never try-scatter-then-degrade):**
 
