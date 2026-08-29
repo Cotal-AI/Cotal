@@ -32,14 +32,14 @@
       "file": "extensions/connector-core/src/agent.ts",
       "find": "grants: [...(this.focusRecallGrants.get(channel) ?? [])],",
       "replace": "grants: [],",
-      "expectRed": "policy-flip bodies must all be returned"
+      "expectRed": "pre-flip grants must survive replay revocation"
     },
     {
       "cell": "opaque exact-message grants cannot become a public history bypass",
       "name": "treat any caller-supplied grant object as replay authority",
       "file": "packages/core/src/endpoint.ts",
-      "find": "if (policy.replay || grantedIds.has(msg.id)) collected.push(authenticatedMessage(msg, parsed));",
-      "replace": "if (policy.replay || grantedIds.has(msg.id) || (opts.grants?.length ?? 0) > 0) collected.push(authenticatedMessage(msg, parsed));",
+      "find": "if (!this.focusRecallGrants.has(token)) continue;",
+      "replace": "const claimed = (token as { id?: string }).id; if (claimed) grantedIds.add(claimed);",
       "expectRed": "public recall token must not bypass replay policy"
     },
     {

@@ -98,6 +98,8 @@ try {
   await pub.multicast("flip-after-mention", { channel: "flip-ch", mentions: ["otto"] });
   assert.equal(await until(() => wakes.some((i) => i.text === "flip-after-mention")), true, "post-flip mention wakes");
   await sleep(250);
+  // While replay is still off, only the exact ingest-time grants can return the pre-flip bodies.
+  const flipWhileOff = await agent.recallAmbient();
   // Flip back on before recall. Stream recall is now allowed generally, so the receive-time
   // exclusions are the only thing preventing the locally retained post-off bodies from duplicating.
   await seedChannelRegistry({ servers, space, file: { channels: { "flip-ch": { replay: true } } } });
@@ -105,16 +107,19 @@ try {
   const flipInbox = await inbox.run(agent, cfg, { peek: true });
   const flipBodies = ["flip-before-ambient", "flip-before-mention", "flip-after-ambient", "flip-after-mention"];
   result.policyFlip = {
+    recallWhileOff: flipWhileOff.items.map((i) => i.text),
     recallTexts: flipRecall.items.map((i) => i.text), inboxText: flipInbox.text,
     allBodiesRecovered: flipBodies.every((body) => flipInbox.text.includes(body)),
+    preFlipRecoveredWhileOff: ["flip-before-ambient", "flip-before-mention"].every((body) => flipWhileOff.items.some((i) => i.text === body)),
     postFlipNotDuplicatedByRecall: !flipRecall.items.some((i) => i.text.startsWith("flip-after-")),
   };
 
   // The exact-message grant is not a public history bypass. A random object passed by an ordinary
   // core caller cannot authorize a replay-off read, even when the message is retained in CHAT.
-  await pub.multicast("public-bypass-body", { channel: "quiet-ch" });
+  const publicBypassMsg = await pub.multicast("public-bypass-body", { channel: "quiet-ch" });
   await sleep(250);
-  const bypass = await agent.ep.recallChannel("quiet-ch", 0, { grants: [{}] });
+  // A random caller can name the real id in an object, but cannot mint an endpoint-recognised token.
+  const bypass = await agent.ep.recallChannel("quiet-ch", 0, { grants: [{ id: publicBypassMsg.id }] });
   result.publicBypass = { bodies: bypass.messages.map((m) => m.parts.map((p) => p.kind === "text" ? p.text : "").join("")) };
 
   console.log(JSON.stringify(result, null, 2));
@@ -123,8 +128,9 @@ try {
   const failures: string[] = [];
   if (!(off.bodiesRecovered || off.lossReported)) failures.push("replay-off body must be returned or loss reported");
   if (!(wild.bodiesRecovered || wild.lossReported)) failures.push("wildcard body must be returned or loss reported");
-  const flip = result.policyFlip as { allBodiesRecovered: boolean; postFlipNotDuplicatedByRecall: boolean };
+  const flip = result.policyFlip as { allBodiesRecovered: boolean; preFlipRecoveredWhileOff: boolean; postFlipNotDuplicatedByRecall: boolean };
   if (!flip.allBodiesRecovered) failures.push("policy-flip bodies must all be returned");
+  if (!flip.preFlipRecoveredWhileOff) failures.push("pre-flip grants must survive replay revocation");
   if (!flip.postFlipNotDuplicatedByRecall) failures.push("post-flip local bodies must not duplicate through recall");
   if ((result.publicBypass as { bodies: string[] }).bodies.includes("public-bypass-body")) failures.push("public recall token must not bypass replay policy");
 
