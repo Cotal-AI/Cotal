@@ -234,6 +234,10 @@ export class MeshAgent extends EventEmitter {
   private _connected = false;
   /** Raw NATS transport liveness, separate from `_connected` (the full Cotal bind/readiness). */
   private _transportConnected = false;
+  /** Wall-clock time of the latest inbox drain that actually committed at least one delivery.
+   *  This is measured only after the backing acknowledgements succeed, never inferred from a read
+   *  attempt or from an empty inbox. */
+  private _lastInboxDrainedAt?: number;
   /** Latest connection failure, retained until the endpoint binds so a bounded readiness gate can
    * explain why an otherwise healthy host never joined the mesh. */
   private lastConnectionError?: string;
@@ -349,6 +353,11 @@ export class MeshAgent extends EventEmitter {
   /** Latest pre-bind failure. A successful bind clears it; stop preserves it for post-mortem diagnosis. */
   get connectionIssue(): string | undefined {
     return this.lastConnectionError;
+  }
+
+  /** The latest successful, non-empty inbox drain in this session. */
+  get lastInboxDrainedAt(): number | undefined {
+    return this._lastInboxDrainedAt;
   }
 
   /** Wait for the endpoint's real post-bind connection signal. `start()` deliberately stays
@@ -749,7 +758,9 @@ export class MeshAgent extends EventEmitter {
     // acking only the selected — silent loss by selection. Identity removes exactly what was taken.
     const taken = new Set(selected);
     this.inbox = this.inbox.filter((p) => !taken.has(p));
-    return this.commitPending(selected);
+    const items = this.commitPending(selected);
+    if (items.length) this._lastInboxDrainedAt = Date.now();
+    return items;
   }
 
   /** Ack exact surfaced deliveries without assuming they still form the physical inbox prefix.
@@ -771,6 +782,7 @@ export class MeshAgent extends EventEmitter {
     }
     this.inbox = this.inbox.filter((p) => !present.has(p.item.recvKey));
     const items = this.commitPending(selected);
+    if (items.length) this._lastInboxDrainedAt = Date.now();
     for (const id of requested) {
       // A MINTED key (an id-less delivery) is never handled-authority: its wire id is "", which
       // markHandled already refuses, so skipping it here is the same at-least-once stance rather

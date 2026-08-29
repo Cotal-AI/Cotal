@@ -548,6 +548,31 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       },
     },
     {
+      name: "cotal_connection_status",
+      title: "Cotal: connection status",
+      description:
+        "Report this session's live mesh connection state, latest connection issue, buffered inbox count, " +
+        "and the time of its latest successful non-empty inbox drain when one has occurred. Read-only and local: " +
+        "it reads this session's MeshAgent directly and does not call the manager or the broker.",
+      run(agent) {
+        const issue = agent.connectionIssue;
+        const lastDrainedAt = agent.lastInboxDrainedAt;
+        return ok(
+          JSON.stringify(
+            {
+              connected: agent.connected,
+              degraded: !agent.connected && issue !== undefined,
+              bufferedCount: agent.inboxCount(),
+              ...(issue !== undefined ? { connectionIssue: issue } : {}),
+              ...(lastDrainedAt !== undefined ? { lastDrainedAt: new Date(lastDrainedAt).toISOString() } : {}),
+            },
+            null,
+            2,
+          ),
+        );
+      },
+    },
+    {
       name: "cotal_docs",
       title: "Cotal: read the docs (version-exact)",
       description:
