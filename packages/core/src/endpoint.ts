@@ -388,6 +388,10 @@ export class CotalEndpoint extends EventEmitter {
   /** Live local cache of the channel registry (key = channel token), kept by a KV watch. */
   private readonly channelConfigs = new Map<string, ChannelConfig>();
   private channelDefaults: ChannelDefaults = {};
+  /** Opaque live-delivery tokens and the subset authorized while replay was true. Weak keys mean a
+   * focus episode dropping its references releases the records without an explicit retention cap. */
+  private readonly focusRecallTokens = new WeakMap<object, { channel: string; id: string }>();
+  private readonly focusRecallGrants = new WeakSet<object>();
   /** Per-subscription join watermark: the stream frontier captured when a channel was joined.
    *  The tail ack-drops chat messages with `seq <= watermark` (suppresses pre-join history for
    *  a lagging joiner + dedups the backfill overlap). Keyed by the subscription pattern (may be
@@ -1906,25 +1910,20 @@ export class CotalEndpoint extends EventEmitter {
     return effectiveReplay(this.channelConfigs.get(channel), this.channelDefaults);
   }
 
-  /** Can focus-mode ingest safely ack this concrete channel message and rely on stream recall?
-   *
-   * Two conditions are both required:
-   *  - this endpoint joined the concrete channel itself, rather than only a wildcard that recall
-   *    cannot Direct-Get as one channel; and
-   *  - the channel's FRESH registry policy permits replay.
-   *
-   * This is deliberately asynchronous and authoritative rather than a cache-only hint. Channel
-   * policy and chat traffic live on different streams, so a runtime replay edit may race the local
-   * watch cache. Returning false on an unreadable policy preserves the body in the connector's local
-   * pull-only buffer; guessing true would destroy the only copy on a promise recall may not keep.
-   */
-  async focusRecallable(channel: string): Promise<boolean> {
-    if (!isConcreteChannel(channel) || !this.channels.includes(channel)) return false;
+  /** Authorize one exact message delivered by this endpoint for focus recall. A wildcard-only
+   * subscription is ineligible because recall cannot read its concrete leaf as the joined scope.
+   * Policy is read fresh; failure preserves the body locally in the connector. */
+  async authorizeFocusRecall(token: object | undefined): Promise<object | undefined> {
+    if (!token) return undefined;
+    const delivered = this.focusRecallTokens.get(token);
+    if (!delivered || !this.channels.includes(delivered.channel)) return undefined;
     try {
-      return (await this.joinPolicyFresh(channel)).replay;
+      if (!(await this.joinPolicyFresh(delivered.channel)).replay) return undefined;
+      this.focusRecallGrants.add(token);
+      return token;
     } catch (e) {
       this.emit("error", e as Error);
-      return false;
+      return undefined;
     }
   }
 
@@ -3622,7 +3621,9 @@ export class CotalEndpoint extends EventEmitter {
         const msg = authenticatedChannelMessage(raw.msg, raw.channel);
         if (msg.from?.id === this.card.id) { m.ack(); continue; } // own echo (defensive)
         const delivery: Delivery = { ack: () => m.ack(), nak: () => m.nak(), durable: true };
-        this.emit("message", msg, delivery, { historical: false, kind: "channel" } satisfies MessageMeta);
+        this.emit("message", msg, delivery, {
+          historical: false, kind: "channel", focusRecallToken: this.newFocusRecallToken(raw.channel, msg.id),
+        } satisfies MessageMeta);
       }
     })().catch((e) => { if (!this.stopped) this.emit("error", e as Error); });
   }
@@ -3899,6 +3900,7 @@ export class CotalEndpoint extends EventEmitter {
         this.emit("message", authenticatedMessage(msg, parsed), delivery, {
           historical: false,
           kind: kindFromParsed(parsed.kind),
+          ...(parsed.kind === "chat" ? { focusRecallToken: this.newFocusRecallToken(parsed.rest, msg.id) } : {}),
         } satisfies MessageMeta);
       }
     })().catch((e) => {
@@ -3963,6 +3965,7 @@ export class CotalEndpoint extends EventEmitter {
         this.emit("message", authenticatedMessage(msg, parsed), delivery, {
           historical: false,
           kind: kindFromParsed(parsed.kind),
+          focusRecallToken: this.newFocusRecallToken(parsed.rest, msg.id),
         } satisfies MessageMeta);
       },
     });
@@ -4185,19 +4188,18 @@ export class CotalEndpoint extends EventEmitter {
   async recallChannel(
     channel: string,
     sinceSeq: number,
-    opts: { replayEligible?: boolean } = {},
+    opts: { grants?: readonly object[] } = {},
   ): Promise<{ messages: CotalMessage[]; dropped: boolean }> {
     if (!this.jsm) throw new Error(this.notLiveMsg());
     if (!isConcreteChannel(channel)) return { messages: [], dropped: false };
-    // A focus receiver may already have ack-dropped a live body after an authoritative replay=true
-    // read. A later registry edit cannot revoke the only remaining copy of that body. The connector
-    // carries that ingest-time eligibility for the focus episode; absent it, use today's policy and
-    // keep the ordinary replay gate. This is NOT general history bypass: the read starts at the focus
-    // watermark and the connector excludes every body it retained locally after replay turned off.
-    if (opts.replayEligible !== true) {
-      const policy = await this.joinPolicyFresh(channel);
-      if (!policy.replay) return { messages: [], dropped: false };
+    const grantedIds = new Set<string>();
+    for (const token of opts.grants ?? []) {
+      if (!this.focusRecallGrants.has(token)) continue;
+      const delivered = this.focusRecallTokens.get(token);
+      if (delivered?.channel === channel) grantedIds.add(delivered.id);
     }
+    const policy = await this.joinPolicyFresh(channel);
+    if (!policy.replay && grantedIds.size === 0) return { messages: [], dropped: false };
     const subject = chatSubject(this.space, "*", "*", channel);
     let raw: JsMsg[];
     try {
@@ -4218,10 +4220,16 @@ export class CotalEndpoint extends EventEmitter {
       if (!isUsableMessageId(msg.id)) continue; // malformed envelope (SPEC sec 5) — recall skips
       const parsed = parseSubject(sm.subject);
       if (!parsed || msg.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner) || msg.from.id === this.card.id) continue;
-      collected.push(authenticatedMessage(msg, parsed));
+      if (policy.replay || grantedIds.has(msg.id)) collected.push(authenticatedMessage(msg, parsed));
     }
     const dropped = await this.channelDropped(subject, sinceSeq);
     return { messages: collected, dropped };
+  }
+
+  private newFocusRecallToken(channel: string, id: string): object {
+    const token = {};
+    this.focusRecallTokens.set(token, { channel, id });
+    return token;
   }
 
   /** Did focus recall on `subject` miss ambient that aged out past the watermark? Ambient is only

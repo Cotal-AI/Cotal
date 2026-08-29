@@ -38,9 +38,17 @@
       "cell": "ingest-time replay promise survives a later policy revoke",
       "name": "recheck only current policy during recall",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "replayEligible: this.focusRecallEligibleChannels.has(channel),",
-      "replace": "replayEligible: false,",
+      "find": "grants: [...(this.focusRecallGrants.get(channel) ?? [])],",
+      "replace": "grants: [],",
       "expectRed": "policy-flip bodies must all be returned"
+    },
+    {
+      "cell": "opaque exact-message grants cannot become a public history bypass",
+      "name": "trust arbitrary caller-supplied grant objects",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "if (!this.focusRecallGrants.has(token)) continue;",
+      "replace": "void token;",
+      "expectRed": "public recall token must not bypass replay policy"
     }
   ]
 }

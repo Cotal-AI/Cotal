@@ -107,6 +107,13 @@ try {
     postFlipNotDuplicatedByRecall: !flipRecall.items.some((i) => i.text.startsWith("flip-after-")),
   };
 
+  // The exact-message grant is not a public history bypass. A random object passed by an ordinary
+  // core caller cannot authorize a replay-off read, even when the message is retained in CHAT.
+  await pub.multicast("public-bypass-body", { channel: "quiet-ch" });
+  await sleep(250);
+  const bypass = await agent.ep.recallChannel("quiet-ch", 0, { grants: [{}] });
+  result.publicBypass = { bodies: bypass.messages.map((m) => m.parts.map((p) => p.kind === "text" ? p.text : "").join("")) };
+
   console.log(JSON.stringify(result, null, 2));
   const off = result.replayOff as { bodiesRecovered: boolean; lossReported: boolean };
   const wild = result.wildcard as { bodiesRecovered: boolean; lossReported: boolean };
@@ -116,6 +123,7 @@ try {
   const flip = result.policyFlip as { allBodiesRecovered: boolean; postFlipNotDuplicatedByRecall: boolean };
   if (!flip.allBodiesRecovered) failures.push("policy-flip bodies must all be returned");
   if (!flip.postFlipNotDuplicatedByRecall) failures.push("post-flip local bodies must not duplicate through recall");
+  if ((result.publicBypass as { bodies: string[] }).bodies.includes("public-bypass-body")) failures.push("public recall token must not bypass replay policy");
 
   // End-user pull semantics: one destructive cotal_inbox call returns each target body once and
   // clears the locally retained lane; the next call cannot repeat them. Stream-recalled controls are

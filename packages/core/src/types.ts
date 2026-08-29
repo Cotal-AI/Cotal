@@ -364,6 +364,10 @@ export interface MessageMeta {
    *  `to`, but it cannot publish on your private DM subject — so directedness rides this,
    *  never the payload. */
   kind: "channel" | "dm" | "anycast";
+  /** Opaque proof that this endpoint delivered one exact live channel message. Connector focus
+   * handling may ask core to authorize THIS message for later recall; callers cannot forge a token
+   * that core's private WeakMap recognises, and a token never authorizes any other history. */
+  focusRecallToken?: object;
 }
 
 /**

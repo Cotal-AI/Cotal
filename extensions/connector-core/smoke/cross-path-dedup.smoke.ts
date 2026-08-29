@@ -212,7 +212,8 @@ try {
 
     await a2.setChannelMode("ch", "normal");
     (a2 as unknown as { _attention: string })._attention = "focus";
-    a2.ep.emit("message", msg("unsafe-focus"), mkDelivery(true, { n: 0 }), meta);
+    (a2.ep as unknown as { authorizeFocusRecall(token: object | undefined): Promise<object | undefined> }).authorizeFocusRecall = async (token) => token;
+    a2.ep.emit("message", msg("unsafe-focus"), mkDelivery(true, { n: 0 }), { ...meta, focusRecallToken: {} });
     await (a2 as unknown as { focusIngestChain: Promise<void> }).focusIngestChain;
     check("normal focus ack-drop still wins under fail-closed classification", !a2.peekInbox().some((i) => i.id === "unsafe-focus"));
 
@@ -235,7 +236,8 @@ try {
     const focused = new MeshAgent({ ...cfg, id: "focus_transition" });
     focused.on("error", () => {});
     (focused as unknown as { _attention: string })._attention = "focus";
-    focused.ep.emit("message", msg("focus-live"), mkDelivery(false, { n: 0 }), meta);
+    (focused.ep as unknown as { authorizeFocusRecall(token: object | undefined): Promise<object | undefined> }).authorizeFocusRecall = async (token) => token;
+    focused.ep.emit("message", msg("focus-live"), mkDelivery(false, { n: 0 }), { ...meta, focusRecallToken: {} });
     await (focused as unknown as { focusIngestChain: Promise<void> }).focusIngestChain;
     (focused as unknown as { _attention: string })._attention = "open";
     const focusDurable = { n: 0 };
@@ -339,6 +341,26 @@ try {
     check("pending durable-leave on an UNSEEN channel is surfaced in cotal_channels (not omitted)", ghost !== undefined, rows.map((r) => r.channel));
     check("...as durableUnclosed + not joined + messages 0", ghost?.durableUnclosed === true && ghost?.joined === false && ghost?.messages === 0, ghost);
     check("a normal listed channel is NOT marked durableUnclosed", rows.find((r) => r.channel === "seen")?.durableUnclosed === false, rows);
+  }
+
+  // ── Focus exit while an authoritative policy read is pending: the stale focus decision must not
+  //    ack-drop after focus has ended. This is the asynchronous race found by #977's second review. ──
+  {
+    const a2 = new MeshAgent({ ...cfg, id: "focus_exit_policy_race" });
+    a2.on("error", () => {});
+    (a2 as unknown as { _attention: string; focusEpisode: number })._attention = "focus";
+    let release!: (token: object | undefined) => void;
+    const gate = new Promise<object | undefined>((resolve) => { release = resolve; });
+    (a2.ep as unknown as { authorizeFocusRecall(token: object | undefined): Promise<object | undefined> }).authorizeFocusRecall = () => gate;
+    const race = { ...msg("focus-exit-race"), channel: "ch" };
+    a2.ep.emit("message", race, mkDelivery(false, { n: 0 }), { ...meta, focusRecallToken: {} });
+    await Promise.resolve();
+    (a2 as unknown as { _attention: string; focusEpisode: number })._attention = "open";
+    (a2 as unknown as { focusEpisode: number }).focusEpisode++;
+    release({});
+    await (a2 as unknown as { focusIngestChain: Promise<void> }).focusIngestChain;
+    check("focus exit during policy read preserves the body in the current open lane",
+      a2.peekInbox("automatic").some((i) => i.id === "focus-exit-race"));
   }
 
   console.log(`\nCROSS-PATH DEDUP SMOKE OK ✅  (${pass} passed, 0 failed)`);
