@@ -48,10 +48,17 @@ interface Run {
   stdout: string;
   stderr: string;
 }
+// The harness itself may run inside a supervised seat whose environment carries operational
+// COTAL_* state — COTAL_SKIP_CONNECTOR_SEED in particular suppresses the very auto-seed under
+// test — so the CLI under test always gets a COTAL_*-scrubbed base env. Cells that need a
+// COTAL_* var (the forged-marker cells) inject it deliberately on top.
+const HOST_ENV: Record<string, string | undefined> = Object.fromEntries(
+  Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_")),
+);
 function cotal(cfg: string, args: string[], extraEnv: Record<string, string> = {}): Run {
   const r = spawnSync("node", [BIN, ...args], {
     encoding: "utf8",
-    env: { ...process.env, XDG_CONFIG_HOME: cfg, ...extraEnv },
+    env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg, ...extraEnv },
   });
   return { status: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
@@ -139,7 +146,7 @@ check("path spec: a registry name is NOT a path (versioned)", !isPathSpec("conne
   // BEFORE the connect attempt, so the connectors appear regardless of the connect outcome — poll the
   // manifest on disk (not `ext list`, which would itself seed) and kill the daemon once they exist.
   const child = spawn("node", [BIN, "supervise", "--space", "seedsmoke", "--server", "nats://127.0.0.1:59998"], {
-    env: { ...process.env, XDG_CONFIG_HOME: cfg },
+    env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg },
     stdio: "ignore",
   });
   const deadline = Date.now() + 90000;
@@ -399,7 +406,7 @@ check("path spec: a registry name is NOT a path (versioned)", !isPathSpec("conne
   const cfg = track(freshCfg());
   const boot = (): Promise<{ code: number; err: string }> =>
     new Promise((resolve) => {
-      const p = spawn("node", [BIN, "ext", "list"], { env: { ...process.env, XDG_CONFIG_HOME: cfg } });
+      const p = spawn("node", [BIN, "ext", "list"], { env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg } });
       let err = "";
       p.stderr.on("data", (d) => (err += d.toString()));
       p.on("close", (code) => resolve({ code: code ?? -1, err }));
@@ -424,7 +431,7 @@ if (process.platform !== "win32") {
   const linkDir = track(mkdtempSync(join(tmpdir(), "cotal-seed-binlink-")));
   const link = join(linkDir, "cotal");
   symlinkSync(BIN, link);
-  const r = spawnSync("node", [link, "ext", "list"], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: cfg } });
+  const r = spawnSync("node", [link, "ext", "list"], { encoding: "utf8", env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg } });
   const out = r.stdout ?? "";
   const names = ["claude", "opencode", "codex", "hermes", "jcode", "pi"].filter((n) => out.includes(`connector:${n}`));
   if (names.length !== 6) console.log(`[diag] symlinked boot status=${r.status}\n--stdout--\n${out}\n--stderr--\n${r.stderr}`);
