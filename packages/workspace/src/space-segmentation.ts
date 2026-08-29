@@ -14,8 +14,8 @@
  * canonical read on an unmigrated root reads absent and mints a SECOND live cred beside the one the
  * daemons are using.
  *
- * NOTHING IS SEGMENTED YET. This commit adds the choke point and its guarantees; the per-kind
- * resolvers that move material come next in the series.
+ * The choke point is {@link migrateLegacyCotalMaterial}; the per-kind resolvers built on it are at
+ * the bottom of this file, and they are what every consumer of the five P7 kinds calls.
  */
 import { existsSync, readdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
@@ -48,13 +48,50 @@ export const RESERVED_COTAL_CHILDREN: readonly string[] = [
   "setup.log",
 ];
 
+/** The delivery daemon's scoped cred — the KIND, i.e. the basename its location ends in and the
+ *  name every operator-facing string spells. Its store key is `space.<hex>/delivery.creds`, built by
+ *  {@link deliveryCredsKey}; the bare kind is also the LEGACY root-scoped key this series migrates
+ *  away from, which is why one constant serves both (a second literal is how the two would drift).
+ *  Lives in workspace because the key↔filename convention is the workspace layout's; implementations
+ *  never import each other. */
+export const DELIVERY_CREDS_KIND = "delivery.creds";
+
+/** The membership feed's data-account rw cred kind — same discipline as {@link DELIVERY_CREDS_KIND}.
+ *  Named (not a bare literal) so the renewal owner can map a remint result back to the daemon's
+ *  `membership` component without a hand-copied string. */
+export const MEMBERSHIP_RW_CREDS_KIND = "membership-rw.creds";
+
+/** The `$SYS` CONNZ observer's kind — the graph feed's read connection and the account-scoped sweep
+ *  every liveness/eviction verdict is measured against.
+ *
+ *  NOT in `REMINTABLE_DAEMON_CREDS` and never will be: this is `rotation-renewed`, so no persisted
+ *  seed can re-sign it (the `$SYS` signing seed is discarded at provision). The key exists so a
+ *  HOSTED composition can inject the cred a system-account rotation minted; it does not make the
+ *  cred renewable. See `docs/design/u3-membership-sys-injection.md` §2. */
+export const MEMBERSHIP_OBSERVER_CREDS_KIND = "membership-observer.creds";
+
+/** The `$SYS` KICK-only evictor's kind — the write half of live eviction, paired with
+ *  {@link MEMBERSHIP_OBSERVER_CREDS_KIND} by one rotation and read per call.
+ *
+ *  Same `rotation-renewed` posture and the same non-membership of `REMINTABLE_DAEMON_CREDS`. Its
+ *  permission (`$SYS.REQ.SERVER.*.KICK`) carries NO account, so unlike the observer it cannot be
+ *  tenancy-checked from its own JWT; its containment is that every cid it is handed comes from the
+ *  observer's account-scoped scan. Keep the two spelled together for that reason. */
+export const CONNECTION_EVICTOR_CREDS_KIND = "connection-evictor.creds";
+
+/** The DATA account id the CONNZ/event subjects pin — non-secret, but kept 0600 beside the creds.
+ *  The only P7 kind with no store reader: it is read raw by the eviction path's workstation
+ *  cross-check, so its resolver returns a PATH ({@link membershipConfigPath}) and has no hosted arm
+ *  at all. */
+export const MEMBERSHIP_CONFIG_KIND = "membership.json";
+
 /** The P7 kinds' ROOT-SCOPED locations — the legacy layout this series retires. The two store keys
  *  (`membership-rw.creds`, `delivery.creds`) appear as plain names because under the local FS
  *  composition a key IS a path under `.cotal/`; see {@link migrateLegacyCotalMaterial} on why the
  *  migration is FS-composition-only. `delivery.creds` is here by the §3.2 widening. */
 export const P7_LEGACY_MATERIAL: readonly string[] = [
-  "membership-observer.creds", "connection-evictor.creds", "membership-rw.creds",
-  "membership.json", "delivery.creds",
+  MEMBERSHIP_OBSERVER_CREDS_KIND, CONNECTION_EVICTOR_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND,
+  MEMBERSHIP_CONFIG_KIND, DELIVERY_CREDS_KIND,
 ];
 
 /**
@@ -173,4 +210,98 @@ export function assertNoUnsegmentedLegacyMaterial(root: string, operation: strin
     "Adding a second tenant now would make that material unattributable - it belongs to the space that booted first, and nothing on disk records which that was. " +
     "Run `cotal up` for the sole tenant once to migrate it into its own segment, then add.",
   );
+}
+
+/**
+ * WHICH COMPOSITION IS ASKING — the one input the per-kind resolvers below cannot infer.
+ *
+ * A UNION, not a `root?: string`, for the reason `SysCredsSource` is one (`sys-creds.ts`): the two
+ * arms answer differently and the workstation arm cannot do its job without a root. Rule 2's
+ * migration is FILESYSTEM-ONLY, so a hosted caller must get the canonical key and no rename; a
+ * workstation caller must get the migration, because skipping it is not a cosmetic miss — the kinds
+ * have absent-means-mint writers (`up.ts:2885`, `up.ts:2889`), so a canonical read on an unmigrated
+ * root reads ABSENT and mints a SECOND live cred beside the one the daemons are using. An optional
+ * root would let a workstation caller silently take the hosted answer and land in exactly that
+ * state. Requiring the root on that arm makes the unsound call impossible to express instead.
+ *
+ * `injected` is always the composition root's own fact — never inferred by probing the store or
+ * sniffing `.cotal/`, both of which report "workstation" for a hosted daemon.
+ */
+export type SpaceMaterialComposition =
+  | { injected: true; root?: undefined }
+  | { injected: false; root: string };
+
+/**
+ * The KEY SHAPE alone — `space.<hex>/<kind>` — resolving nothing and moving nothing.
+ *
+ * THE ONE SPELLING of the segmented key, so {@link spaceMaterialKey} and the two owners below cannot
+ * drift into two layouts. It is exported for the owners that must NOT move material, and there are
+ * exactly two kinds of those:
+ *
+ *  - DELETERS. `clean`'s store-seam sweep names the keys it is about to remove; migrating material
+ *    into the path it will then delete is work done to undo itself, and on the refusal paths (§2
+ *    rules 3 and 4) it would fail the sweep for material the sweep does not care about.
+ *  - THE RENEWAL OWNER. {@link REMINTABLE_DAEMON_CREDS}'s `(space) => key` builders (§3.1) feed
+ *    `remintDaemonCreds`, which has NO absent-means-mint path — its absence case is a loud
+ *    `skipped: "missing-file"`, never a second cred — and which may hold an INJECTED store while
+ *    still being handed a workstation `root` it does not own (`manager.ts:870` defaults the store,
+ *    so `store !== undefined` is not the hosted fact there). The hazard rule 1 exists to stop is not
+ *    reachable from it, and `up`'s provisioners migrate before any daemon exists to renew.
+ *
+ * Every other caller wants {@link spaceMaterialKey}: reaching for this one to skip a migration is
+ * the read-fallback the design forbids.
+ */
+export function segmentedKey(kind: string, space: string): string {
+  return `${spaceSegment(space)}/${kind}`;
+}
+
+/**
+ * THE PER-KIND RESOLVER (§2 rule 1), generic over the kind: the canonical store key for `kind` in
+ * `space`, having migrated a legacy root-scoped copy into it first on the FS composition.
+ *
+ * The named per-kind wrappers below are the surface callers use; this is the one body they share, so
+ * "migrate on first touch" cannot exist for four kinds and be forgotten for the fifth. Under the
+ * local FS composition the returned key IS the path under `.cotal/` that
+ * {@link migrateLegacyCotalMaterial} just moved the material to — the two agree by construction
+ * rather than by two spellings of the same layout.
+ */
+export function spaceMaterialKey(kind: string, space: string, composition: SpaceMaterialComposition): string {
+  if (!composition.injected) migrateLegacyCotalMaterial(composition.root, space, kind);
+  return segmentedKey(kind, space);
+}
+
+/** {@link DELIVERY_CREDS_KIND}'s key for `space` — see {@link spaceMaterialKey}. */
+export function deliveryCredsKey(space: string, composition: SpaceMaterialComposition): string {
+  return spaceMaterialKey(DELIVERY_CREDS_KIND, space, composition);
+}
+
+/** {@link MEMBERSHIP_RW_CREDS_KIND}'s key for `space` — see {@link spaceMaterialKey}. */
+export function membershipRwCredsKey(space: string, composition: SpaceMaterialComposition): string {
+  return spaceMaterialKey(MEMBERSHIP_RW_CREDS_KIND, space, composition);
+}
+
+/** {@link MEMBERSHIP_OBSERVER_CREDS_KIND}'s key for `space` — see {@link spaceMaterialKey}. */
+export function membershipObserverCredsKey(space: string, composition: SpaceMaterialComposition): string {
+  return spaceMaterialKey(MEMBERSHIP_OBSERVER_CREDS_KIND, space, composition);
+}
+
+/** {@link CONNECTION_EVICTOR_CREDS_KIND}'s key for `space` — see {@link spaceMaterialKey}. */
+export function connectionEvictorCredsKey(space: string, composition: SpaceMaterialComposition): string {
+  return spaceMaterialKey(CONNECTION_EVICTOR_CREDS_KIND, space, composition);
+}
+
+/** {@link MEMBERSHIP_CONFIG_KIND}'s PATH for `space`, migrated on first touch.
+ *
+ *  A path and not a key, and it takes a bare `root` rather than a {@link SpaceMaterialComposition},
+ *  because this kind has no hosted arm to choose between: it is read raw by the eviction path's
+ *  workstation-only cross-check (`evict-exec.ts:76`) and a hosted composition never has one. */
+export function membershipConfigPath(root: string, space: string): string {
+  return migrateLegacyCotalMaterial(root, space, MEMBERSHIP_CONFIG_KIND);
+}
+
+/** The per-space area itself, `<root>/.cotal/space.<hex>/` — for the enumerating callers (the
+ *  `clean` sweep) that remove a tenant's whole segment rather than one kind of it. Resolves NOTHING
+ *  and migrates NOTHING: a sweeper must not move material it is about to delete. */
+export function spaceMaterialDir(root: string, space: string): string {
+  return join(cotalDir(root), spaceSegment(space));
 }

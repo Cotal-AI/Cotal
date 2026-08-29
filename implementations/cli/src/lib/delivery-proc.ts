@@ -7,16 +7,21 @@ import {
   newIdentity,
   waitForDeliveryLease,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KEY, authDir, findCotalRoot, getSoleSpaceAuth, listSpaceAccounts, parsePid, probeLiveness, type LivenessProbe, workspaceSecretStore } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, authDir, deliveryCredsKey, findCotalRoot, getSoleSpaceAuth, listSpaceAccounts, parsePid, probeLiveness, segmentedKey, type LivenessProbe, workspaceSecretStore } from "@cotal-ai/workspace";
 import { selfArgv } from "./self-exec.js";
 import { resolveSpace } from "./status.js";
 import { cotalPath } from "./paths.js";
 import { MANAGER_PID_PATH, ensureManager, managerHasDeliveryMarker, managerLiveness, stopManager, type SignalFn } from "./manager-proc.js";
 
 const PID_PATH = () => cotalPath("delivery.pid");
-// The daemon's cred goes through the secret-store seam; the shared key (== the filename, so the
-// file stays `.cotal/delivery.creds`) comes from workspace — never a hand-copied literal.
+// The daemon's cred goes through the secret-store seam; its key comes from workspace's per-kind
+// resolver (P7 §2 rule 1) — never a hand-composed path or a copied literal. The kind is per-SPACE
+// now, so the file is `.cotal/space.<hex>/delivery.creds`.
 const credsStore = () => workspaceSecretStore(findCotalRoot());
+/** The keys a teardown must clear for this space: the segmented one this CLI writes, and the flat
+ *  pre-P7 one a root no post-P7 `up` has touched still holds. Built with {@link segmentedKey}, not
+ *  the migrating resolver — a deleter must not move material into the path it is about to remove. */
+const deliveryCredsKeysToClear = (space: string) => [segmentedKey(DELIVERY_CREDS_KIND, space), DELIVERY_CREDS_KIND];
 
 /** `tls` is the broker's transport decision, propagated to the daemon's argv. It is not optional
  *  information the daemon can do without: it cannot derive the transport itself (see the note at
@@ -161,7 +166,11 @@ export async function ensureDelivery(o: Opts = {}, probe: LivenessProbe = probeL
   if (deliveryState !== "alive") {
     // The store's put hardens `.cotal/` first (the cred is born under a private ACL, no race) and
     // lands it atomically — same path and bytes as before the seam.
-    await credsStore().put(DELIVERY_CREDS_KEY, creds);
+    // Through the per-kind RESOLVER (not `segmentedKey`): this is the absent-means-mint writer for
+    // the kind, so on a root whose cred is still flat the material must move here, before the put —
+    // otherwise the daemon that is about to start reads the canonical location, finds nothing, and
+    // this write lands a SECOND live delivery cred beside the one the flat file still holds.
+    await credsStore().put(deliveryCredsKey(space, { injected: false, root: findCotalRoot() }), creds);
     launched = startDeliveryDetached({ ...o, space, server });
   }
   // ALWAYS wait for the daemon to be READY (lease flipped ready AFTER it bound ctl.delivery) before
@@ -206,12 +215,16 @@ export async function stopDelivery(probe: LivenessProbe = probeLiveness, signal?
   // (a blocked path, a store error) must still propagate loudly, but it must not leave behind a
   // pidfile for a process that is definitely gone. delivery-teardown.smoke.ts pins exactly that
   // combination, and caught this when the first version of this fix ordered them the other way.
+  const keys = deliveryCredsKeysToClear(resolveSpace(process.cwd()));
+  const dropCreds = async (): Promise<void> => {
+    for (const k of keys) await credsStore().delete(k);
+  };
   const removeRecords = async (): Promise<void> => {
     rmSync(p, { force: true });
-    await credsStore().delete(DELIVERY_CREDS_KEY);
+    await dropCreds();
   };
   if (!existsSync(p)) {
-    await credsStore().delete(DELIVERY_CREDS_KEY); // no pid recorded: no live daemon to strand
+    await dropCreds(); // no pid recorded: no live daemon to strand
     return;
   }
   const raw = readFileSync(p, "utf8").trim();

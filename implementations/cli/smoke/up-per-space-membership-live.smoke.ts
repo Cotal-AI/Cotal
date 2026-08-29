@@ -64,7 +64,7 @@ for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete pro
 process.env.COTAL_HOME = home;
 
 const { composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, mintCreds, newIdentity } = await import("@cotal-ai/core");
-const { authDir, saveBrokerAuth, saveSpaceAccountAuth } = await import("@cotal-ai/workspace");
+const { authDir, saveBrokerAuth, saveSpaceAccountAuth, spaceMaterialDir } = await import("@cotal-ai/workspace");
 
 const WT = resolvePath(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -123,8 +123,13 @@ async function bootThenStop(port: number, space: string, creds: string): Promise
   return cp;
 }
 
-const membershipAccount = (): string | undefined => {
-  const p = join(root, ".cotal", "membership.json");
+/** The data account THIS TENANT's bundle names. Per-space as of P7, so the probe reads the tenant's
+ *  own segment: reading `.cotal/membership.json` would now find nothing for either tenant and both
+ *  cells below would go green on `undefined === undefined`, which is the false pass this probe
+ *  exists to rule out. `spaceMaterialDir` resolves and migrates nothing — the probe must observe the
+ *  layout `up` produced, never nudge it. */
+const membershipAccount = (space: string): string | undefined => {
+  const p = join(spaceMaterialDir(root, space), "membership.json");
   if (!existsSync(p)) return undefined;
   return (JSON.parse(readFileSync(p, "utf8")) as { accountId?: string }).accountId;
 };
@@ -155,25 +160,33 @@ try {
   ok("a fresh space on a root that already has a broker REFUSES (non-zero)", stranger.exitCode !== 0, { code: stranger.exitCode });
   ok("…refusing at the ROOT-IDENTITY check, naming the tenants this folder already holds",
     /this folder is the root of/.test(sErr) && /alpha/.test(sErr) && /beta/.test(sErr), sErr.slice(-400));
+  // Checked at BOTH spellings, and in gamma's own segment: after P7 the provisioner writes into
+  // `.cotal/space.<hex>/`, so the flat check alone would pass on a refusal that had in fact written.
   ok("…so `provisionMembershipCreds` never ran: no $SYS observer was written",
-    !existsSync(join(root, ".cotal", "membership-observer.creds")));
+    ![join(root, ".cotal"), spaceMaterialDir(root, "gamma"), spaceMaterialDir(root, "alpha"), spaceMaterialDir(root, "beta")]
+      .some((d) => existsSync(join(d, "membership-observer.creds"))));
 
   console.log("\n2) the reachable defect: two EXISTING tenants share one root-scoped bundle");
   const port = await freePort();
   await bootThenStop(port, "alpha", alphaCreds);
-  const afterAlpha = membershipAccount();
+  const afterAlpha = membershipAccount("alpha");
   ok("alpha's boot wrote membership.json naming ALPHA's data account",
     afterAlpha === alpha.account.pub, { got: afterAlpha, want: alpha.account.pub });
 
   const port2 = await freePort();
   await bootThenStop(port2, "beta", betaCreds);
-  const afterBeta = membershipAccount();
+  const afterBeta = membershipAccount("beta");
 
   // THE P7 ASSERTION. Stated as the property P7 must establish, so it goes green when P7 lands.
   ok("after beta's boot, the bundle beta runs on names BETA's data account, not its sibling's",
     afterBeta === beta.account.pub,
     { got: afterBeta, alpha: alpha.account.pub, beta: beta.account.pub,
       note: "root-scoped membership.json: the first tenant to boot wins it and the second inherits it" });
+  // ...and alpha's is UNDISTURBED. The one-sided cell above also passes if beta's boot simply
+  // OVERWROTE the shared bundle in the other direction, which is the same defect with the tenants
+  // swapped. Segmentation is the claim that both are true at once.
+  ok("…and alpha's bundle still names ALPHA: segmentation, not a swapped inheritance",
+    membershipAccount("alpha") === alpha.account.pub, { got: membershipAccount("alpha"), want: alpha.account.pub });
 
   console.log(`\nP7 PROBE OK ✅  (${pass} passed) - P7 is CLOSED if this is green`);
 } catch (e) {

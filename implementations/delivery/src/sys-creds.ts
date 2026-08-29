@@ -1,6 +1,7 @@
 import { credsClaims, type SecretStore } from "@cotal-ai/core";
 import {
-  assertSingleSpaceBroker, authDir, CONNECTION_EVICTOR_CREDS_KEY, MEMBERSHIP_OBSERVER_CREDS_KEY,
+  assertSingleSpaceBroker, authDir, connectionEvictorCredsKey, CONNECTION_EVICTOR_CREDS_KIND,
+  membershipObserverCredsKey, MEMBERSHIP_OBSERVER_CREDS_KIND, segmentedKey,
 } from "@cotal-ai/workspace";
 
 /**
@@ -25,20 +26,25 @@ import {
  * exactly the refactor `docs/design/u3-membership-sys-injection.md` §4 exists to prevent.
  */
 
-/** The `$SYS` creds' source: the store to read them from, plus whether that store was INJECTED.
- *  `injected` is the composition root's own fact (`store !== undefined` at the runner) — never
- *  inferred by probing the store or sniffing `.cotal/`, both of which report "workstation" for a
- *  hosted daemon and would emit CLI advice a host cannot run (design §4.1).
+/** The `$SYS` creds' source: the store to read them from, the SPACE they are scoped to, and whether
+ *  that store was INJECTED. `injected` is the composition root's own fact (`store !== undefined` at
+ *  the runner) — never inferred by probing the store or sniffing `.cotal/`, both of which report
+ *  "workstation" for a hosted daemon and would emit CLI advice a host cannot run (design §4.1).
  *
  *  A UNION rather than a flag plus an optional root, because the workstation arm cannot do its job
  *  without a root and the hosted arm has none: {@link repairAdvice} must ASK the root whether the
  *  command it is about to name would run, and a `root?: string` would let a composition build a
  *  workstation source with no root and silently fall back to advice nobody checked. Same idiom as
  *  the rest of this module — the unsound call is made impossible to express rather than guarded
- *  against at runtime. */
+ *  against at runtime. The two arms are exactly workspace's `SpaceMaterialComposition`, which is
+ *  what {@link loadSysPair} hands the per-kind resolvers.
+ *
+ *  `space` joined it in P7: the pair is per-space material now, so a source that named only a store
+ *  and a root no longer names a location. It is on BOTH arms because both need it — the workstation
+ *  arm to migrate and read, the hosted arm to build the key it tells an operator to `put` under. */
 export type SysCredsSource =
-  | { secrets: SecretStore; injected: true; root?: undefined }
-  | { secrets: SecretStore; injected: false; root: string };
+  | { secrets: SecretStore; space: string; injected: true; root?: undefined }
+  | { secrets: SecretStore; space: string; injected: false; root: string };
 
 /** The broker-wide operation `repairAdvice` would send a workstation operator to, phrased so the
  *  guard's own refusal reads as a sentence when it is quoted back. */
@@ -84,10 +90,16 @@ function rotationRefusal(root: string): string | undefined {
  *
  *  This makes the function read the filesystem on the workstation arm, which is why the callers
  *  pass it as a THUNK: it is built only on a path that has already failed, never on a healthy one. */
-export function repairAdvice(source: SysCredsSource, keys: readonly string[]): string {
-  const named = keys.length ? keys.join(" + ") : "the $SYS pair";
+export function repairAdvice(source: SysCredsSource, kinds: readonly string[]): string {
+  const named = kinds.length ? kinds.join(" + ") : "the $SYS pair";
+  // The hosted arm names a KEY to `put` under, so it must name the SEGMENTED one — the kind alone is
+  // the pre-P7 key and putting there would leave the daemon still reading an empty location. The
+  // workstation arm names a command, not a key, so it keeps the kinds an operator recognises.
+  // Non-migrating on purpose: this builds a STRING for a store the process cannot reach.
   if (source.injected)
-    return `re-mint the $SYS pair at a system-account rotation (the seed is in memory only at that moment) and \`put\` it under ${named}`;
+    return `re-mint the $SYS pair at a system-account rotation (the seed is in memory only at that moment) and \`put\` it under ${
+      kinds.length ? kinds.map((k) => segmentedKey(k, source.space)).join(" + ") : "the $SYS pair's per-space keys"
+    }`;
   const refusal = rotationRefusal(source.root);
   if (refusal === undefined) return "re-mint it with `cotal down` then `cotal up --rotate-sys`";
   return (
@@ -199,11 +211,19 @@ export interface SysPair {
  *  replaces: a hosted store re-keyed by a rotation is picked up on the next eviction with no daemon
  *  restart. No renewal timer is added, and none is wanted — these stay `rotation-renewed`. */
 export async function loadSysPair(source: SysCredsSource, need: SysCredsNeed): Promise<SysPair> {
-  const observer = await source.secrets.get(MEMBERSHIP_OBSERVER_CREDS_KEY);
-  const evictor = need === "both" ? await source.secrets.get(CONNECTION_EVICTOR_CREDS_KEY) : undefined;
+  // The per-kind RESOLVERS (P7 §2 rule 1). The source's two arms ARE the composition they take, so
+  // a workstation daemon moves a legacy flat pair on this first touch and a hosted one never
+  // touches a filesystem. Reading the canonical location WITHOUT that move is the failure the
+  // resolver exists to stop: it answers `undefined`, which every caller here treats as "not
+  // provisioned", and sends an operator to a rotation for creds that are sitting on the same disk.
+  const observer = await source.secrets.get(membershipObserverCredsKey(source.space, source));
+  const evictor = need === "both" ? await source.secrets.get(connectionEvictorCredsKey(source.space, source)) : undefined;
+  // Reported as KINDS, never the segmented keys: `missing` is read by operators and compared
+  // against by callers (`membership.ts` filters the evictor out of its own diagnosis by name), and
+  // a `space.<hex>/` prefix would break both. The hosted arm's `put` key is named by `repairAdvice`.
   const missing = [
-    observer === undefined ? MEMBERSHIP_OBSERVER_CREDS_KEY : undefined,
-    need === "both" && evictor === undefined ? CONNECTION_EVICTOR_CREDS_KEY : undefined,
+    observer === undefined ? MEMBERSHIP_OBSERVER_CREDS_KIND : undefined,
+    need === "both" && evictor === undefined ? CONNECTION_EVICTOR_CREDS_KIND : undefined,
   ].filter((k): k is string => k !== undefined);
   return { ...(observer !== undefined ? { observer } : {}), ...(evictor !== undefined ? { evictor } : {}), missing };
 }

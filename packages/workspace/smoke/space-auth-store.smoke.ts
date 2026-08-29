@@ -29,7 +29,14 @@ import { fileURLToPath } from "node:url";
 import { createSpaceAuth, identityFromCreds, mintCreds, mintLifecycleUid, newIdentity, stripSpaceAuth, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
 import { authDir, BROKER_AUTH_KEY, brokerAuthPath, deleteSpaceAuth, getSpaceAuth, loadSpaceAuth, putSpaceAuth, saveSpaceAuth, SPACE_AUTH_KEY, spaceAccountKey, spaceAccountPath } from "../src/auth-paths.js";
 import { workspaceSecretStore } from "../src/secret-store-fs.js";
-import { DELIVERY_CREDS_KEY, remintDaemonCreds } from "../src/renewal.js";
+import { remintDaemonCreds } from "../src/renewal.js";
+import { DELIVERY_CREDS_KIND, segmentedKey } from "../src/space-segmentation.js";
+
+// P7: the cred is per-space, so the STORE is addressed by the segmented key while a RESULT still
+// reports the bare KIND (`RemintResult.file`). The two are deliberately different strings here — a
+// suite that used one for both would pass against a renewal owner that read and wrote the same
+// wrong one.
+const DELIVERY_KEY = segmentedKey(DELIVERY_CREDS_KIND, "seam-space");
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -123,11 +130,11 @@ try {
   // ---- 3. renewal split-authority fix: re-sign INTO the injected store, disk stays empty ----
   const deliveryId = newIdentity();
   const initialDelivery = await mintCreds(auth, deliveryId, "delivery");
-  await mem.put(DELIVERY_CREDS_KEY, initialDelivery);
+  await mem.put(DELIVERY_KEY, initialDelivery);
   const results = await remintDaemonCreds(root, space, mem); // root's disk is empty; the signer MUST come from `mem`
-  const delivery = results.find((r) => r.file === DELIVERY_CREDS_KEY);
+  const delivery = results.find((r) => r.file === DELIVERY_CREDS_KIND);
   check("remintDaemonCreds re-signed the delivery cred from the injected-store signer", delivery?.ok === true, delivery);
-  const resigned = mem.map.get(DELIVERY_CREDS_KEY)!;
+  const resigned = mem.map.get(DELIVERY_KEY)!;
   check("the re-signed cred was written back INTO the injected store", isCreds(resigned));
   check("the daemon identity is preserved across the re-sign", identityFromCreds(resigned).id === deliveryId.id);
   check("renewal NEVER wrote the signer to disk (still absent)", !signerOnDisk());
@@ -136,10 +143,10 @@ try {
   // overwrite the last-good daemon cred with one this space's broker rejects (looking freshly
   // renewed). remintDaemonCreds with the WRONG expected space fails every file and leaves the cred
   // byte-for-byte intact.
-  const beforeWrong = mem.map.get(DELIVERY_CREDS_KEY)!;
+  const beforeWrong = mem.map.get(DELIVERY_KEY)!;
   const wrongSpace = await remintDaemonCreds(root, "not-this-space", mem);
   check("cross-space signer is REFUSED (every file ok:false, none re-signed)", wrongSpace.every((r) => r.ok === false));
-  check("the last-good delivery cred is NOT overwritten by a wrong-space signer", mem.map.get(DELIVERY_CREDS_KEY) === beforeWrong);
+  check("the last-good delivery cred is NOT overwritten by a wrong-space signer", mem.map.get(DELIVERY_KEY) === beforeWrong);
   // ---- FINDING-6/6b/doctor regression: NEVER overwrite the last-good with an UNPROVEN cred ----
   // Proof = a broker PREFLIGHT (manager) OR AUTHORITY CONTINUITY (same account signer as the last-good).
   // A same-label ALTERNATE account (full OR stripped) is neither ⇒ refused — this is the availability
@@ -150,10 +157,10 @@ try {
   const seed6 = async (signer: SpaceAuth) => {
     const st = new MemStore();
     await st.put(SPACE_AUTH_KEY, JSON.stringify(signer));
-    await st.put(DELIVERY_CREDS_KEY, lastGoodA);
+    await st.put(DELIVERY_KEY, lastGoodA);
     return st;
   };
-  const deliveryOf = (r: Awaited<ReturnType<typeof remintDaemonCreds>>) => r.find((x) => x.file === DELIVERY_CREDS_KEY);
+  const deliveryOf = (r: Awaited<ReturnType<typeof remintDaemonCreds>>) => r.find((x) => x.file === DELIVERY_CREDS_KIND);
 
   // (1) CONTINUOUS signer (same account A), NO preflight → re-signs (offline authority continuity)
   for (const [label, signer] of [["full", auth], ["stripped", stripSpaceAuth(auth)]] as const) {
@@ -165,12 +172,12 @@ try {
     const st = await seed6(signer);
     const r = await remintDaemonCreds(root, space, st);
     check(`a same-label ALTERNATE-account ${label} signer WITHOUT a preflight is REFUSED`, deliveryOf(r)?.ok === false);
-    check(`...and does NOT overwrite the last-good (${label})`, st.map.get(DELIVERY_CREDS_KEY) === lastGoodA);
+    check(`...and does NOT overwrite the last-good (${label})`, st.map.get(DELIVERY_KEY) === lastGoodA);
   }
   // (3) with a preflight, the BROKER proof is authoritative for every candidate (manager-hosted path)
   const stripB = await seed6(stripSpaceAuth(authB));
   const rej = await remintDaemonCreds(root, space, stripB, { preflight: async () => false });
-  check("a preflight REFUSAL preserves the last-good", deliveryOf(rej)?.ok === false && stripB.map.get(DELIVERY_CREDS_KEY) === lastGoodA);
+  check("a preflight REFUSAL preserves the last-good", deliveryOf(rej)?.ok === false && stripB.map.get(DELIVERY_KEY) === lastGoodA);
   check("a preflight ACCEPT re-signs (broker-proven renewal)", deliveryOf(await remintDaemonCreds(root, space, stripB, { preflight: async () => true }))?.ok === true);
 
   // The negative: with NO store and an empty disk, the signer is genuinely unreachable → no-auth.

@@ -263,7 +263,7 @@ export function agentSecretSegment(name: string): string {
 }
 
 // One filename source per kind — the store key and the materialized path project the SAME name,
-// so the two can never drift apart (the `DELIVERY_CREDS_KEY` lesson, per kind).
+// so the two can never drift apart (the `delivery.creds` lesson, per kind).
 const agentFile = {
   creds: (base: string) => `${base}.creds`,
   actorToken: (base: string) => `${base}.actor-token`,

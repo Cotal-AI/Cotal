@@ -12,7 +12,7 @@ import {
   type PlaneLivenessResult,
   type PrincipalLivenessResult,
 } from "@cotal-ai/core";
-import { CONNECTION_EVICTOR_CREDS_KEY, findCotalRoot, MEMBERSHIP_OBSERVER_CREDS_KEY } from "@cotal-ai/workspace";
+import { CONNECTION_EVICTOR_CREDS_KIND, findCotalRoot, membershipConfigPath, MEMBERSHIP_OBSERVER_CREDS_KIND } from "@cotal-ai/workspace";
 import { loadSysPair, observerTenancyProblem, repairAdvice, tornRotationProblem, type SysCredsSource } from "./sys-creds.js";
 
 
@@ -73,7 +73,11 @@ function resolveScan(target: ScanTarget, verb: string): { accountId: string } {
       "the scan account would be read from a different workspace than the one this daemon serves. Refusing — a sweep of the wrong account looks exactly like a dead principal",
     );
   if (!target.source.injected) {
-    const cfgPath = join(target.root, ".cotal", "membership.json");
+    // Through the kind's resolver (P7 §2 rule 1), not a hand-composed `.cotal/membership.json`:
+    // the file is per-space now, and reading the canonical location past an unmigrated copy would
+    // silently drop this second source — turning a wrong-root refusal into a confident sweep.
+    // `target.source.space` is the space the daemon started in, pinned with the rest of the source.
+    const cfgPath = membershipConfigPath(target.root, target.source.space);
     if (existsSync(cfgPath)) {
       // A malformed file on a path that no longer needs it must not take eviction down; only a file
       // that names a DIFFERENT account is evidence of the drift this check exists to catch.
@@ -113,7 +117,7 @@ async function loadCheckedSys(target: ScanTarget, verb: string, need: "observer"
     // The torn-rotation check now covers this path too. It used to exist only in the feed, so
     // eviction could open a half-rotated pair and get a bare "Authorization Violation" from the
     // broker with nothing naming the cause.
-    const torn = tornRotationProblem(observer, sys.evictor, () => repairAdvice(target.source, [MEMBERSHIP_OBSERVER_CREDS_KEY, CONNECTION_EVICTOR_CREDS_KEY]));
+    const torn = tornRotationProblem(observer, sys.evictor, () => repairAdvice(target.source, [MEMBERSHIP_OBSERVER_CREDS_KIND, CONNECTION_EVICTOR_CREDS_KIND]));
     if (torn) throw new Error(`${verb}: ${torn}. Refusing`);
   }
   return { observer, ...(sys.evictor !== undefined ? { evictor: sys.evictor } : {}) };

@@ -25,7 +25,7 @@ await import("../src/index.js"); // register the base local-process lifecycle de
 const { clean, liveMeshProcess, removeLocalState } = await import("../src/commands/clean.js");
 const { down, pidfileState } = await import("../src/commands/down.js");
 const { isReachable } = await import("@cotal-ai/core");
-const { findCotalRoot, getCurrent, loadMeshes, recordMesh, removeMesh, setCurrent } = await import("@cotal-ai/workspace");
+const { findCotalRoot, getCurrent, loadMeshes, recordMesh, removeMesh, setCurrent, spaceMaterialDir, spaceSegment } = await import("@cotal-ai/workspace");
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -140,6 +140,36 @@ try {
   check("all: personas survive", existsSync(join(allRoot, ".cotal", "agents", "default.md")));
   check("all: logs are left alone", existsSync(join(allRoot, ".cotal", "nats.log")));
   check("all: reports what it removed", removedAll.length >= 9, removedAll);
+
+  // --- P7 §5: the segment is swept BY IDENTITY, not by a list of literals ---------------------
+  // This list used to name each derived cred, so it was a hand-kept copy of the set
+  // `provisionMembershipCreds` writes, and the two drifted apart every time a kind was added — a
+  // cred minted by `up` and never swept by the reset survives an operator's "full local reset" and
+  // is then re-adopted by the next boot under the OLD identity. As of P7 those kinds live in this
+  // space's own segment and the reset removes the DIRECTORY, which ends the coupling by
+  // construction. The sixth file below is the whole proof: it is named in no list anywhere in this
+  // repo, including `DERIVED` above, and it must still be gone.
+  const segRoot = meshRoot();
+  const segDir = spaceMaterialDir(segRoot, "demo"); // `demo` is the space meshRoot's auth.json names
+  mkdirSync(segDir, { recursive: true });
+  for (const f of [...DERIVED, "a-kind-no-list-names.creds"]) writeFileSync(join(segDir, f), "x");
+  // A SECOND tenant's segment on the same root. `clean all` resets ONE space, so a sweep spelled
+  // `.cotal/space.*` — the obvious shape, and the one a reader reaches for after seeing the
+  // directory removal — would take a neighbour's live material with it and report success.
+  const neighbourDir = spaceMaterialDir(segRoot, "neighbour");
+  mkdirSync(neighbourDir, { recursive: true });
+  writeFileSync(join(neighbourDir, "delivery.creds"), "x");
+  const removedSeg = await removeLocalState(segRoot, { includeAuth: true });
+  check("P7: `all` removes this space's segment entirely", !existsSync(segDir));
+  check("P7: ...including a kind NO removal list names (swept by construction, not by literal)",
+    !existsSync(join(segDir, "a-kind-no-list-names.creds")));
+  check("P7: the operator is told the segment went, by name", removedSeg.some((r) => r.includes(spaceSegment("demo"))), removedSeg);
+  check("P7: the OTHER tenant's segment is untouched (a reset owns one space, not the root)",
+    existsSync(join(neighbourDir, "delivery.creds")));
+  // The legacy FLAT copies still go too: a root no post-P7 `up` has touched keeps old-operator $SYS
+  // material at the pre-P7 spelling, and a reset that swept only the segment would leave it.
+  for (const f of DERIVED) check(`P7: the legacy flat ${f} is swept as well`, !existsSync(join(segRoot, ".cotal", f)));
+  rmSync(segRoot, { recursive: true, force: true });
 
   // --- HIGH-3: the space-NAMER (auth.json) dies LAST, after every fallible cleanup ------------
   // If a late removal fails (an immutable/locked derived file, pidfile, or run/ artifact), auth.json

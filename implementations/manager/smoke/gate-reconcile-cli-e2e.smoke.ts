@@ -273,7 +273,10 @@ try {
       // $SYS pair resolves through the FS store under `.cotal/`, and `membership.json` is still
       // cross-checked as the second source. A hosted composition injects its own store instead and
       // has no such file — that path is covered by the delivery $SYS-injection smoke.
-      const source = { secrets: workspaceSecretStore(ROOT), injected: false as const, root: ROOT };
+      // The `space` is part of the source as of P7: all five kinds are per-space, so the pair AND
+      // the cross-checked config are addressed inside THIS tenant's segment. A tenancy guard reading
+      // a root-wide location would be checking a file that belongs to whichever tenant wrote last.
+      const source = { secrets: workspaceSecretStore(ROOT), space, injected: false as const, root: ROOT };
       const foreignAccount = `A${"B".repeat(55)}`;
       let tenancyErr = "";
       try {
