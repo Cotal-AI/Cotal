@@ -30,7 +30,7 @@
       "name": "the downgrade comparison is disabled, so an older binary writes its generation over a newer store",
       "file": "implementations/cli/src/seed/reconcile.ts",
       "find": "    isValidSemver(storeGeneration) &&\n    isStrictlyNewer(storeGeneration, generation)",
-      "replace": "    isValidSemver(storeGeneration) &&\n    false",
+      "replace": "    isValidSemver(storeGeneration) &&\n    isStrictlyNewer(storeGeneration, generation) && false",
       "expectRed": "✗ FAIL: downgrade: an older binary REFUSES a store stamped newer",
       "cell": "✗ FAIL: downgrade: an older binary REFUSES a store stamped newer"
     },
