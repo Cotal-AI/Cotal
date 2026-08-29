@@ -89,6 +89,7 @@ import {
   retireOrdinaryResume,
   sameStoreIdentity,
   type JsonValue,
+  type MaintenanceLock,
   type ManagerCommitEvidence,
   type ManagerFinalizeEvidence,
   type ProcessOwner,
@@ -1087,10 +1088,10 @@ function assertOrdinaryUpAllowed(root: string, storeDir?: string): void {
   throw new Error(`cotal up is refused while maintenance state is ${maintenance.state}; follow the recorded restore recovery`);
 }
 
-function markPendingResumeDegraded(attemptId: string, reason: string): void {
+function markPendingResumeDegraded(attemptId: string, reason: string, heldLock?: MaintenanceLock): void {
   const ordinary = pendingOrdinaryResumes.get(attemptId);
   if (ordinary) {
-    const lock = acquireMaintenanceLock(ordinary.root);
+    const lock = heldLock ?? acquireMaintenanceLock(ordinary.root);
     try {
       const journal = readMaintenanceJournal(ordinary.root);
       if (journal && (journal.state === "resume-intent" || journal.state === "resume-active"))
@@ -1100,7 +1101,7 @@ function markPendingResumeDegraded(attemptId: string, reason: string): void {
           paths: [journal.source.path],
         }]);
     } finally {
-      releaseMaintenanceLock(lock);
+      if (!heldLock) releaseMaintenanceLock(lock);
     }
     return;
   }
@@ -1282,9 +1283,9 @@ async function provePreparedRestoreListener(prepared: PreparedRestore): Promise<
   return proof;
 }
 
-function bindSpawnedOrdinaryResumeListener(pending: PendingOrdinaryResume, pid: number, startedAt: string): void {
+function bindSpawnedOrdinaryResumeListener(pending: PendingOrdinaryResume, pid: number, startedAt: string, heldLock?: MaintenanceLock): void {
   if (!Number.isInteger(pid) || pid <= 0) throw new Error("resume listener spawn returned no pid");
-  const lock = acquireMaintenanceLock(pending.root);
+  const lock = heldLock ?? acquireMaintenanceLock(pending.root);
   try {
     const journal = readMaintenanceJournal(pending.root);
     if (!journal || !("ordinaryResume" in journal) || journal.ordinaryResume.attemptId !== pending.attemptId)
@@ -1298,7 +1299,7 @@ function bindSpawnedOrdinaryResumeListener(pending: PendingOrdinaryResume, pid: 
       target: journal.source,
     });
   } finally {
-    releaseMaintenanceLock(lock);
+    if (!heldLock) releaseMaintenanceLock(lock);
   }
 }
 
@@ -1455,6 +1456,7 @@ async function completeResumeActivation(
   healthy: boolean,
   reason: string,
   server: string,
+  heldLock?: MaintenanceLock,
 ): Promise<void> {
   if (!attemptId) return;
   const ordinary = pendingOrdinaryResumes.get(attemptId);
@@ -1462,7 +1464,7 @@ async function completeResumeActivation(
   const pending = ordinary ?? restored;
   if (!pending) throw new Error(`resume activation lost attempt context ${attemptId}`);
   if (!healthy) {
-    markPendingResumeDegraded(attemptId, reason);
+    markPendingResumeDegraded(attemptId, reason, heldLock);
     throw new Error(reason);
   }
   let journal = readMaintenanceJournal(pending.root);
@@ -1479,9 +1481,9 @@ async function completeResumeActivation(
     if (!("ordinaryResume" in journal) || journal.ordinaryResume.attemptId !== attemptId)
       throw new Error(`ordinary resume journal does not match attempt ${attemptId}`);
     if (journal.state === "resume-retired") {
-      const lock = acquireMaintenanceLock(ordinary!.root);
+      const lock = heldLock ?? acquireMaintenanceLock(ordinary!.root);
       try { consumeRetiredMaintenance(lock); }
-      finally { releaseMaintenanceLock(lock); }
+      finally { if (!heldLock) releaseMaintenanceLock(lock); }
       pendingOrdinaryResumes.delete(attemptId);
       return;
     }
@@ -1508,7 +1510,7 @@ async function completeResumeActivation(
     if (!ready.unanswered) break;
     if (Date.now() >= readinessDeadline) {
       const why = ready.error ?? "no manager answered within the readiness deadline";
-      markPendingResumeDegraded(attemptId, why);
+      markPendingResumeDegraded(attemptId, why, heldLock);
       throw new Error(why);
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 150));
@@ -1530,12 +1532,12 @@ async function completeResumeActivation(
   if (!resumed.ok) {
     const detail = resumed.data ? ` (${JSON.stringify(resumed.data)})` : "";
     const message = `${resumed.error ?? "retained-agent resume failed"}${detail}`;
-    markPendingResumeDegraded(attemptId, message);
+    markPendingResumeDegraded(attemptId, message, heldLock);
     throw new Error(message);
   }
   if (restored && process.env.COTAL_SMOKE_EXIT_AFTER_RESUME_PRESERVED === "1") process.exit(88);
   if (ordinary && !managerCommit) {
-    const lock = acquireMaintenanceLock(ordinary.root);
+    const lock = heldLock ?? acquireMaintenanceLock(ordinary.root);
     try {
       const current = readMaintenanceJournal(ordinary.root);
       if (current?.state !== "resume-active") {
@@ -1548,7 +1550,7 @@ async function completeResumeActivation(
       }
       ordinary.journalState = "resume-active";
     } finally {
-      releaseMaintenanceLock(lock);
+      if (!heldLock) releaseMaintenanceLock(lock);
     }
   }
   if (!managerCommit) {
@@ -1563,23 +1565,23 @@ async function completeResumeActivation(
     );
     if (!committed.ok) {
       const message = committed.error ?? "manager resume commit failed";
-      markPendingResumeDegraded(attemptId, message);
+      markPendingResumeDegraded(attemptId, message, heldLock);
       throw new Error(message);
     }
     if (!isManagerCommitResult(committed.data, attemptId)) {
       const message = `manager resume commit returned invalid awaiting-finalize evidence for attempt ${attemptId}`;
-      markPendingResumeDegraded(attemptId, message);
+      markPendingResumeDegraded(attemptId, message, heldLock);
       throw new Error(message);
     }
     managerCommit = committed.data;
     if (ordinary) {
-      const lock = acquireMaintenanceLock(ordinary.root);
+      const lock = heldLock ?? acquireMaintenanceLock(ordinary.root);
       try {
         recordOrdinaryResumeManagerCommit(lock, managerCommit);
         ordinary.journalState = "resume-committed";
         ordinary.managerCommit = managerCommit;
       } finally {
-        releaseMaintenanceLock(lock);
+        if (!heldLock) releaseMaintenanceLock(lock);
       }
     } else {
       recordPreparedRestoreManagerCommit(restored!, managerCommit);
@@ -1628,12 +1630,12 @@ async function completeResumeActivation(
   if (process.env.COTAL_SMOKE_EXIT_AFTER_RESUME_FINALIZE === "1") process.exit(91);
 
   if (ordinary) {
-    const lock = acquireMaintenanceLock(ordinary.root);
+    const lock = heldLock ?? acquireMaintenanceLock(ordinary.root);
     try {
       retireOrdinaryResume(lock, finalizeEvidence);
       consumeRetiredMaintenance(lock);
     } finally {
-      releaseMaintenanceLock(lock);
+      if (!heldLock) releaseMaintenanceLock(lock);
     }
     pendingOrdinaryResumes.delete(attemptId);
   } else {
