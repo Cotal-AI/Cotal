@@ -604,9 +604,17 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // — every tenant's trust, unserialized — while a resume was mid-flight (design doc §4, P2). A
   // re-entry INHERITS the recovery's lock rather than taking its own: the recovery journals
   // `resume-intent` under that lock, so releasing it to re-acquire here would leave exactly the
-  // window the probe catches — the journal already in a resume state with the lock free. The resume
-  // helpers that journal under it are handed this lock rather than re-acquiring one that is not
-  // reentrant.
+  // window the probe catches — the journal already in a resume state with the lock free.
+  //
+  // Inheriting makes handing this lock down MANDATORY, not tidy: the lock is not reentrant, and it
+  // cannot stale-reap its way out either, because the recorded owner is alive — it is us. A helper
+  // that self-acquired would take the "held by a live owner" refusal and fail the resume outright.
+  // So every site below that journals under it is handed `startupLock`: both ADOPT paths (the
+  // proven-restore and proven-ordinary listeners, which recover by adopting an already-live listener
+  // rather than spawning a competitor), both `bindSpawnedOrdinaryResumeListener` calls on the spawn
+  // path (detached and foreground), and the `completeResumeActivation` call that closes each of
+  // those two spawn paths. The one caller that does NOT pass it is the failure path below, where
+  // `startupLock` has genuinely been released already and the helper is meant to take its own.
   let startupLock: MaintenanceLock | undefined = inheritedLock ?? acquireMaintenanceLock(cotalRoot());
   onAdopt?.(); // from here the release below owns it, inherited or not
   const releaseStartupLock = () => {
@@ -634,7 +642,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         throw new Error(`restore attempt ${resumeAttempt} re-entry has no bound listener proof; preserving recovery state`);
       const ownerStatus = localProcessOwnerStatus(restoredAttempt.listenerProof.processOwner);
       if (ownerStatus === "alive") {
-        await resumeProvenRestoreListener(restoredAttempt);
+        await resumeProvenRestoreListener(restoredAttempt, startupLock);
         return;
       }
       if (ownerStatus === "unknown")
@@ -649,7 +657,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     if (ordinaryAttempt?.adoptProof) {
       // The recovered attempt's exact bound listener is alive: prove it over the wire and adopt it
       // instead of spawning a competitor over the same store.
-      await resumeProvenOrdinaryListener(ordinaryAttempt);
+      await resumeProvenOrdinaryListener(ordinaryAttempt, startupLock);
       return;
     }
     if (ordinaryAttempt?.journalState === "resume-committed")
@@ -1411,7 +1419,7 @@ async function verifySpawnedOrdinaryListener(pending: PendingOrdinaryResume): Pr
     throw new Error(`resume attempt ${pending.attemptId} spawned listener reports a foreign NATS server name`);
 }
 
-async function resumeProvenOrdinaryListener(pending: PendingOrdinaryResume): Promise<void> {
+async function resumeProvenOrdinaryListener(pending: PendingOrdinaryResume, heldLock?: MaintenanceLock): Promise<void> {
   await proveOrdinaryResumeListener(pending);
   const svc = await ensureRecoveredUserAuth(pending);
   // Read the recorded exposure BEFORE re-recording: `recordOurMesh` writes the entry whole, so a
@@ -1440,6 +1448,7 @@ async function resumeProvenOrdinaryListener(pending: PendingOrdinaryResume): Pro
     controlPlane && svc.ok,
     !svc.ok ? "adopted resume listener has no user-auth service" : "adopted resume listener has a degraded control plane",
     pending.server,
+    heldLock,
   );
 }
 
@@ -1460,7 +1469,7 @@ async function ensureRecoveredUserAuth(
   return startUserAuthService(prepared.space, prepared.server, { prepared: provider, stateDir });
 }
 
-async function resumeProvenRestoreListener(prepared: PreparedRestore): Promise<void> {
+async function resumeProvenRestoreListener(prepared: PreparedRestore, heldLock?: MaintenanceLock): Promise<void> {
   await provePreparedRestoreListener(prepared);
   const svc = await ensureRecoveredUserAuth(prepared);
   // Same ordering constraint as the pending-adopt path above: capture the recorded exposure before
@@ -1489,6 +1498,7 @@ async function resumeProvenRestoreListener(prepared: PreparedRestore): Promise<v
     controlPlane && svc.ok,
     !svc.ok ? "proven restore listener has no user-auth service" : "proven restore listener has a degraded control plane",
     prepared.server,
+    heldLock,
   );
 }
 

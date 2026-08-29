@@ -638,3 +638,10 @@ smoke:sys-injection-evict
 # tenant's trust. Drives the real CLI against a real broker. Appended so every existing shard
 # assignment remains unchanged.
 smoke:up-resume-render-lock:live
+
+# The other half of that lock hand-off: a resume re-entry INHERITS the recovery's lock, so a resume
+# helper that self-acquires hits the "held by a live owner" refusal - the recorded owner is alive
+# because it is us, which is also why stale-reaping cannot rescue it. Covers the two ADOPT paths,
+# where an `up` recovers by adopting an already-live listener instead of spawning a competitor over
+# the same store. Appended so every existing shard assignment remains unchanged.
+smoke:up-adopt-resume-lock:live
