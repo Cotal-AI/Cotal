@@ -84,6 +84,11 @@
  *   OUT replacement transport restoration (the new watcher still seeds true) and every other cell:
  *       none enters doRebuild's explicit no-nc window.
  *
+ * Harness correction after the first 15-mutation run: the completion marker still named the former
+ * 17-cell total after the manual-reconnect cells raised the suite to 19. Every mutation printed its
+ * predicted novel failure and all 19 cells ran, but the opt-in marker correctly made those runs
+ * inconclusive. The marker now matches the final suite total; no mutation or prediction changed.
+ *
  * Harness correction after the first 14-mutation run: the original M7 literal still named the
  * pre-review `!_connected` guard. The post-stop fix intentionally widened that same line to
  * `!_connected && !stopping`, so mutation-proof refused before applying anything. M7 now targets the
