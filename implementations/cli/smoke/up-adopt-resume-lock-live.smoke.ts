@@ -113,6 +113,21 @@ try {
   console.log("1) CONTROL: an interrupted resume leaves a committed journal and a LIVE listener");
   const first = runSync(["up", "--detach", "--open", "--server", server, "--space", space]);
   ok("the ordinary boot exited 0", first.status === 0, `${first.stdout ?? ""}${first.stderr ?? ""}`.slice(-1200));
+
+  // The cut describes the manager over the ep rails, so it must not be taken until the manager has
+  // finished registering there. `up --detach` returns ~2s BEFORE that registration lands (measured,
+  // 3/3 on an idle box), and a describe issued into the gap can miss the registration and then wait
+  // out its whole 10s deadline rather than retry - a refusal reproduced 1-in-4 with no load at all.
+  // A registry write is the cheapest question that only answers once the manager is there. A rail
+  // that never answers is a broken fixture, not the residual, so this waits rather than reporting
+  // the cut's refusal as the finding.
+  let railsUp = false;
+  for (let i = 0; i < 30 && !railsUp; i++) {
+    if (runSync(["channels", "set", "railprobe", "--desc", "rails", "--space", space]).status === 0) railsUp = true;
+    else await sleep(5_000);
+  }
+  ok("the manager answers on the ep rails before the cut", railsUp);
+
   const cut = runSync(["down", "--preserve-state"]);
   ok("the cut exited 0", cut.status === 0, `${cut.stdout ?? ""}${cut.stderr ?? ""}`.slice(-1200));
 
