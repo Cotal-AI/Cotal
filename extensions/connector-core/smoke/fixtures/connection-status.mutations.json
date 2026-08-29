@@ -3,7 +3,7 @@
   "guard": "cotal_connection_status reports MeshAgent's live state through the registered MCP route",
   "command": "pnpm smoke:connection-status",
   "progressPattern": "  ✓ ",
-  "completionMarker": "PASS: 9 passed, 0 failed",
+  "completionMarker": "SUITE COMPLETE: 9 cells",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/fixtures/connection-status.mutations.json",
   "why": [
     "The mutation changes the status source itself to a constant. The named cell reaches the tool through a real MCP client and stages the source true, so it can only stay green if the route reports that source rather than assuming a value.",
