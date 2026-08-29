@@ -35,6 +35,13 @@ dashboard, and the manager) and for anything down it prints the exact command to
 (`cotal up --detach`, `cotal web`, `cotal supervise`). Displaying state never depends on it; setup
 still launches nothing.
 
+The seeded `default` persona has an empty active `subscribe` set and wildcard
+`allowSubscribe`/`allowPublish` ACLs. A fresh agent receives no channel traffic until it joins a
+channel, but can join, create, read, and post to channels on demand. The guided demo personas keep
+their existing `welcome` read and post scope. Repeat setup replaces the prior default template only
+when its bytes still match the shipped legacy body with `allowPublish: []`; any user edit makes the
+file ineligible and leaves it byte-identical.
+
 Steps run in-process via `runSteps`
 ([`lib/steps.ts`](../implementations/cli/src/lib/steps.ts)). A step can be `optional` (asked
 Y/n), carry a `confirm` consent prompt, or be `live` (it draws its own pane via
