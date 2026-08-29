@@ -1,0 +1,199 @@
+/**
+ * LIVE PROBE (P2): a RESUMED `cotal up` must render `server.conf` under the ROOT MAINTENANCE LOCK,
+ * the way the ordinary and manifest paths already do.
+ *
+ * `up` takes the lock at its start - except on a resume re-entry: `startupLock` is left undefined
+ * when `__restoreAttempt`/`__ordinaryResumeAttempt` is set, because the OUTER recovery block already
+ * held it. But that outer block RELEASES the lock in its `finally` before it re-enters `up`, so the
+ * resumed boot runs the whole render (`authSetup` -> `serverConfig` -> `server.conf`) with no lock
+ * held at all. The MEMORY resolver config is a whole-broker map, so an unlocked render is an
+ * unserialized rewrite of every tenant's trust: exactly what the lock exists to prevent.
+ *
+ * Driven through the REAL command, as a subprocess, against a REAL broker:
+ *
+ *  1. CONTROL - while an ORDINARY `cotal up` is starting, an independent `acquireMaintenanceLock`
+ *     on the same root is REFUSED. This proves the probe can see a held lock at all.
+ *  2. `cotal down --preserve-state` leaves a `ready` maintenance journal - the state a bare
+ *     `cotal up` recovers by re-entering itself as a resume.
+ *  3. SUBJECT - during that resumed `cotal up`, once the journal shows the re-entry is underway,
+ *     the same `acquireMaintenanceLock` SUCCEEDS, and `server.conf` is then rewritten while this
+ *     probe holds the lock. Both are the finding: the resumed render is not serialized.
+ *
+ * Sandboxes COTAL_HOME under a scratch base with proven-clean `.cotal` ancestry; kills only its own
+ * children. Needs `nats-server` on PATH.
+ * Run: pnpm smoke:up-resume-render-lock:live
+ */
+import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { createServer, type AddressInfo } from "node:net";
+import { join, resolve as resolvePath } from "node:path";
+import { makeScratch, assertScratchHeld } from "../../../bin/smoke/_scratch.js";
+
+const freePort = (): Promise<number> =>
+  new Promise((res, rej) => {
+    const s = createServer();
+    s.on("error", rej);
+    s.listen(0, "127.0.0.1", () => {
+      const p = (s.address() as AddressInfo).port;
+      s.close(() => res(p));
+    });
+  });
+
+const scratch = makeScratch("cotal-up-resume-lock-");
+const home = mkdtempSync(join(scratch, "home-"));
+const root = mkdtempSync(join(scratch, "root-"));
+process.env.COTAL_HOME = home;
+
+const { acquireMaintenanceLock, authDir, maintenancePaths, readMaintenanceJournal, releaseMaintenanceLock } =
+  await import("@cotal-ai/workspace");
+
+const WT = resolvePath(import.meta.dirname, "..", "..", "..");
+const CLI = join(WT, "bin", "cotal.ts");
+const TSX = join(WT, "node_modules", ".bin", "tsx");
+
+let pass = 0;
+const kids: ChildProcess[] = [];
+const ok = (name: string, cond: boolean, extra?: unknown) => {
+  if (!cond) throw new Error(`FAIL: ${name}${extra !== undefined ? ` - ${JSON.stringify(extra)}` : ""}`);
+  pass++;
+  console.log(`  ✓ ${name}`);
+};
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+const output = new WeakMap<ChildProcess, () => string>();
+const logOf = (cp: ChildProcess) => output.get(cp)?.() ?? "";
+
+function run(args: string[]): ChildProcess {
+  const cp = spawn(TSX, [CLI, ...args], {
+    cwd: root,
+    env: { ...process.env, COTAL_HOME: home },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  kids.push(cp);
+  let log = "";
+  cp.stdout?.on("data", (b: Buffer) => { log += b.toString(); });
+  cp.stderr?.on("data", (b: Buffer) => { log += b.toString(); });
+  output.set(cp, () => log);
+  return cp;
+}
+
+/** One independent attempt at the root lock, from a LIVE owner (this probe process). */
+function tryLock(): { held: true } | { held: false; reason: string } {
+  try {
+    const lock = acquireMaintenanceLock(root);
+    releaseMaintenanceLock(lock);
+    return { held: false, reason: "acquired" };
+  } catch (error) {
+    return { held: true, reason: (error as Error).message };
+  }
+}
+
+const confPath = () => join(authDir(root), "server.conf");
+const confStamp = () => (existsSync(confPath()) ? `${statSync(confPath()).mtimeMs}:${readFileSync(confPath(), "utf8").length}` : "absent");
+const journalState = (): string => {
+  try {
+    return (readMaintenanceJournal(root) as { state?: string } | undefined)?.state ?? "none";
+  } catch (error) {
+    return `unreadable:${(error as Error).message}`;
+  }
+};
+
+try {
+  mkdirSync(join(root, ".cotal"), { recursive: true });
+  assertScratchHeld(root, "up resume render lock fixture");
+
+  console.log("1) CONTROL: an ORDINARY `cotal up` holds the root lock across its render");
+  const port = await freePort();
+  const server = `nats://127.0.0.1:${port}`;
+  const space = "alpha";
+  const first = run(["up", "--detach", "--space", space, "--server", server]);
+  let refusedDuringOrdinary: string | undefined;
+  const firstExit = once(first, "exit");
+  for (let i = 0; i < 3000 && refusedDuringOrdinary === undefined; i++) {
+    if (first.exitCode !== null) break;
+    const r = tryLock();
+    if (r.held) refusedDuringOrdinary = r.reason;
+    else await sleep(20);
+  }
+  ok("the probe sees the ordinary up's lock (an independent acquire is refused)",
+    refusedDuringOrdinary !== undefined, logOf(first).slice(-800));
+  ok("…and the refusal is the live-owner refusal, not a corruption",
+    /held by a live owner|recovery is already in progress/.test(refusedDuringOrdinary ?? ""), refusedDuringOrdinary);
+
+  await Promise.race([firstExit, sleep(300_000)]);
+  ok("the ordinary boot exited 0", first.exitCode === 0, logOf(first).slice(-1500));
+  ok("…and rendered server.conf", existsSync(confPath()));
+
+  console.log("\n2) `cotal down --preserve-state` leaves a resumable maintenance journal");
+  // The cut describes the manager over the ep rails, so it must not be taken until the manager has
+  // finished registering there. A registry write is the cheapest question that only answers once it
+  // has. A rail that never answers is a broken fixture, not the residual, so this waits rather than
+  // reporting the cut's refusal as the finding.
+  let railsUp = false;
+  for (let i = 0; i < 30 && !railsUp; i++) {
+    const probe = run(["channels", "set", "railprobe", "--desc", "rails", "--space", space]);
+    await Promise.race([once(probe, "exit"), sleep(30_000)]);
+    if (probe.exitCode === 0) railsUp = true;
+    else await sleep(5_000);
+  }
+  ok("the manager answers on the ep rails before the cut", railsUp);
+  const cut = run(["down", "--preserve-state"]);
+  await Promise.race([once(cut, "exit"), sleep(240_000)]);
+  ok("the cut exited 0", cut.exitCode === 0, logOf(cut).slice(-1500));
+  ok("the journal is `ready` (the state a bare `cotal up` recovers)", journalState() === "ready", journalState());
+
+  console.log("\n3) SUBJECT: the RESUMED `cotal up` renders with the root lock free");
+  const before = confStamp();
+  const resumed = run(["up", "--detach", "--space", space, "--server", server]);
+  // Only judge the lock once the OUTER recovery block has finished and the re-entry is underway -
+  // otherwise a lucky early acquire would just be racing the outer block, not observing the gap.
+  let acquiredDuringResume = false;
+  let seenState = "none";
+  for (let i = 0; i < 1500; i++) {
+    if (resumed.exitCode !== null) break;
+    const state = journalState();
+    if (state.startsWith("resume-")) {
+      seenState = state;
+      const r = tryLock();
+      if (!r.held) { acquiredDuringResume = true; break; }
+    }
+    await sleep(20);
+  }
+  ok("the re-entry was reached (journal moved to a resume state)",
+    seenState.startsWith("resume-"), { seenState, log: logOf(resumed).slice(-1200) });
+  ok("the root maintenance lock is HELD across the resumed render",
+    !acquiredDuringResume, { seenState, note: "an independent acquire succeeded mid-resume" });
+
+  // Hold the lock for real and watch whether the resumed boot renders anyway. A resumed `up` that
+  // took the lock could not reach its render while this is held.
+  const held = acquireMaintenanceLock(root);
+  try {
+    let rendered = false;
+    for (let i = 0; i < 600 && !rendered; i++) {
+      if (resumed.exitCode !== null) break;
+      if (confStamp() !== before) rendered = true;
+      else await sleep(50);
+    }
+    ok("…and no render happens while an independent holder owns the root lock",
+      !rendered, { before, after: confStamp() });
+  } finally {
+    releaseMaintenanceLock(held);
+  }
+
+  console.log(`\nUP RESUME RENDER LOCK SMOKE OK ✅  (${pass} passed)`);
+} catch (e) {
+  console.error("  ✗ FAIL:", (e as Error).message);
+  process.exitCode = 1;
+} finally {
+  for (const cp of kids) if (cp.exitCode === null) cp.kill("SIGKILL");
+  await sleep(500);
+  for (const name of ["nats.pid", "manager.pid", "delivery.pid"]) {
+    const p = join(root, ".cotal", name);
+    if (!existsSync(p)) continue;
+    const pid = Number.parseInt(readFileSync(p, "utf8").trim(), 10);
+    if (Number.isInteger(pid) && pid > 0) try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+  }
+  try { rmSync(maintenancePaths(root).lock, { force: true }); } catch { /* nothing held */ }
+  rmSync(scratch, { recursive: true, force: true });
+}

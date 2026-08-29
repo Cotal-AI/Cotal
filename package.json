@@ -403,6 +403,7 @@
     "smoke:clean": "tsx implementations/cli/smoke/clean.smoke.ts",
     "smoke:multi-space": "tsx implementations/cli/smoke/multi-space.smoke.ts",
     "smoke:up-multi-space-render:live": "tsx implementations/cli/smoke/up-multi-space-render-live.smoke.ts",
+    "smoke:up-resume-render-lock:live": "tsx implementations/cli/smoke/up-resume-render-lock-live.smoke.ts",
     "smoke:meshes-registry": "tsx implementations/cli/smoke/meshes-registry.smoke.ts",
     "smoke:mesh-root-identity": "tsx implementations/cli/smoke/mesh-root-identity.smoke.ts",
     "smoke:canonical-root-missing": "tsx implementations/cli/smoke/canonical-root-missing.smoke.ts",
