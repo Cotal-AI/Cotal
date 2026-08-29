@@ -1,19 +1,21 @@
-/** Every persona this repo SHIPS declares the channels it reads.
+/** Every persona this repo SHIPS declares the channels it reads and posts to.
  *
  *  The writer refuses a definition with no read set, which binds every caller that builds an
  *  AgentDef and saves it. Setup does not: it writes its persona files as literal template strings,
  *  so the writer's guard cannot see them and a template that omits the field would ship a persona
- *  whose read set is a guess. This suite is the other half of that coverage.
+ *  whose read or post set is a guess. This suite is the other half of that coverage.
  *
  *  It also enumerates the writers by OUTPUT PATH rather than by function name. Name-based searches
  *  missed setup twice, because a writer can call any helper it likes but must eventually name the
  *  directory it writes into. A new writer that appears here is not assumed wrong; it has to be
  *  listed deliberately, which is the point.
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
+import { DEFAULT_AGENT, LEGACY_DEFAULT_AGENT, reconcileDefaultAgent } from "../src/commands/setup.js";
 
 let pass = 0;
 let fail = 0;
@@ -28,7 +30,7 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 };
 
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
-const setupSrc = readFileSync(join(repoRoot, "implementations/cli/src/commands/setup.ts"), "utf8");
+const setupSrc = readFileSync(fileURLToPath(new URL("../src/commands/setup.ts", import.meta.url)), "utf8");
 
 // Every frontmatter block in setup's template literals. Anchored on the fences and on a `name:`
 // line ANYWHERE inside, not on the block starting with one: the managed-marker comment precedes
@@ -39,6 +41,7 @@ const blocks = [...setupSrc.matchAll(/---\n([\s\S]*?)\n---/g)]
   .filter((b) => /^name: /m.test(b));
 ok("setup ships at least the default persona plus the guided team", blocks.length >= 4, blocks.length);
 
+const frontmatter = new Map<string, Record<string, unknown>>();
 for (const raw of blocks) {
   // Drop the `${MANAGED_MARKER}` interpolation line: it is a source-level expression, not YAML, and
   // becomes a `#` comment only once the template is rendered. Reading the source means reading it
@@ -55,9 +58,58 @@ for (const raw of blocks) {
     continue;
   }
   const name = String(fm.name ?? "(unnamed)");
+  frontmatter.set(name, fm);
   ok(`${name} declares the channels it reads`, Array.isArray(fm.subscribe), fm.subscribe);
-  // allowSubscribe defaults to subscribe and allowPublish is default-deny, so neither is required;
-  // what must not happen is a shipped persona whose READ SET is left to a default.
+  ok(`${name} explicitly declares a non-empty post ACL`, Array.isArray(fm.allowPublish) && fm.allowPublish.length > 0, fm.allowPublish);
+}
+
+const defaultAgent = frontmatter.get("default_agent");
+ok(
+  "default-channel-creation: default stays unsubscribed with wildcard read and post ACLs",
+  Array.isArray(defaultAgent?.subscribe) &&
+    defaultAgent.subscribe.length === 0 &&
+    Array.isArray(defaultAgent.allowSubscribe) &&
+    defaultAgent.allowSubscribe.length === 1 &&
+    defaultAgent.allowSubscribe[0] === ">" &&
+    Array.isArray(defaultAgent.allowPublish) &&
+    defaultAgent.allowPublish.length === 1 &&
+    defaultAgent.allowPublish[0] === ">",
+  defaultAgent,
+);
+
+const legacyFrontmatter = parseYaml(LEGACY_DEFAULT_AGENT.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "") as Record<string, unknown>;
+ok(
+  "legacy-migration-fixture: the frozen legacy template carries the empty post ACL",
+  Array.isArray(legacyFrontmatter.allowPublish) && legacyFrontmatter.allowPublish.length === 0,
+  legacyFrontmatter.allowPublish,
+);
+
+const fixtureRoot = mkdtempSync(join(tmpdir(), "cotal-persona-templates-"));
+try {
+  const legacyPath = join(fixtureRoot, "legacy", "default.md");
+  mkdirSync(join(fixtureRoot, "legacy"));
+  writeFileSync(legacyPath, LEGACY_DEFAULT_AGENT, { flag: "wx" });
+  const legacyResult = reconcileDefaultAgent(legacyPath);
+  const upgradedLegacy = readFileSync(legacyPath, "utf8");
+  ok(
+    "legacy-default-upgrade: the byte-exact legacy template gains wildcard post permission",
+    legacyResult === "migrated" && upgradedLegacy === DEFAULT_AGENT && /allowPublish: \[\">\"\]/.test(upgradedLegacy),
+    legacyResult,
+  );
+
+  const editedPath = join(fixtureRoot, "edited", "default.md");
+  const editedLegacy = `${LEGACY_DEFAULT_AGENT}\n# user edit\n`;
+  mkdirSync(join(fixtureRoot, "edited"));
+  writeFileSync(editedPath, editedLegacy, { flag: "wx" });
+  const editedResult = reconcileDefaultAgent(editedPath);
+  const preservedEdited = readFileSync(editedPath, "utf8");
+  ok(
+    "edited-default-preservation: a user-edited legacy persona stays byte-identical",
+    editedResult === "unchanged" && preservedEdited === editedLegacy,
+    editedResult,
+  );
+} finally {
+  rmSync(fixtureRoot, { recursive: true, force: true });
 }
 
 // The writer enumeration, by output path. Each entry is a file that names an agents directory AND
@@ -94,12 +146,11 @@ const walk = (dir: string) => {
       const window = lines.slice(i, i + 3).join("\n");
       const isWrite = /\bwriteFileSync\(/.test(window);
       if (!isWrite) continue;
-      // `agent-file.ts` writes the path it was HANDED, so the call site names no directory. It is
-      // the shared writer every other caller routes through, so match it by what it is rather than
-      // failing to see the one file the whole guard rests on.
+      // Shared writers write the path they were HANDED, so the call site names no directory. Match
+      // them by what they are rather than failing to see the files the guard rests on.
       const target =
         /["'`]agents["'`]|\.cotal\/agents|agentFilePath\(|cotalPath\("agents"/.test(window) ||
-        /export function saveAgentFile/.test(src);
+        /export function (?:saveAgentFile|reconcileDefaultAgent)/.test(src);
       if (target) found.add(rel);
     }
   }

@@ -1,0 +1,42 @@
+{
+  "suite": "implementations/cli/smoke/up-multi-space-render-live.smoke.ts",
+  "grades": "suite",
+  "guard": "`cotal up` renders server.conf from the whole validated tenant inventory, and refuses to render while any account record is unreadable",
+  "command": "pnpm build >/dev/null && pnpm smoke:up-multi-space-render:live",
+  "progressPattern": "✓",
+  "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/up-multi-space-render.json",
+  "why": [
+    "The eviction this suite guards is silent by construction: with the sibling dropped from",
+    "`resolver_preload` the broker still starts, the booted space still works, and nothing prints.",
+    "So a suite that only booted a two-tenant root and looked healthy would stay green through the",
+    "whole defect, and the cells that must notice are the ones that read the OTHER tenant.",
+    "",
+    "Every command builds first and every restore rebuilds. `bin/cotal.ts` reaches the CLI through",
+    "`@cotal-ai/cli`, which resolves to `dist/`, so a mutation of `src` that skips the build is a",
+    "run of unmutated code wearing a mutant's verdict. Measured here: the render mutation graded",
+    "UNGRADABLE with no build in the command, and KILLED with one."
+  ],
+  "mutations": [
+    {
+      "name": "the render goes back to the one space being booted",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "serverConfig(auth, preloadSpaceAccounts(dir, auth)",
+      "replace": "serverConfig(auth, [auth]",
+      "expectRed": "server.conf preloads the SIBLING tenant's account",
+      "cell": "server.conf preloads the SIBLING tenant's account (not evicted by a boot that never named it)",
+      "command": "pnpm build >/dev/null && pnpm smoke:up-multi-space-render:live",
+      "afterRestore": "pnpm build"
+    },
+    {
+      "name": "an unreadable account record is skipped instead of refusing the render",
+      "file": "packages/workspace/src/auth-paths.ts",
+      "find": "  const { spaces, corrupt } = accountInventory(dir);\n  if (corrupt.length > 0)\n    throw new Error(\n      `${dir} holds ${corrupt.length} unreadable account record(s) (${corrupt.join(\", \")}) - refusing to render a broker config",
+      "replace": "  const { spaces, corrupt } = accountInventory(dir);\n  if (false)\n    throw new Error(\n      `${dir} holds ${corrupt.length} unreadable account record(s) (${corrupt.join(\", \")}) - refusing to render a broker config",
+      "expectRed": "and left the previous config untouched",
+      "cell": "…and left the previous config untouched (no partially-rendered tenant list)",
+      "note": "Aimed where the guard actually lives, after measuring. The non-zero exit and the message naming the record belong to an OLDER guard: `resolveMeshTarget` (mesh-target.ts:182) refuses an uncertain tenant list on the target-resolution path `up` runs before it ever renders, so both of those cells stay green with this refusal removed. What `preloadSpaceAccounts` owns is that the config is not rewritten on the way to that refusal, and that is the cell this reddens.",
+      "command": "pnpm build >/dev/null && pnpm smoke:up-multi-space-render:live",
+      "afterRestore": "pnpm build"
+    }
+  ]
+}

@@ -1,5 +1,12 @@
 # @cotal-ai/workspace
 
+## 0.35.0
+
+### Patch Changes
+
+- 4919a53: Render the broker config from the validated tenant inventory, so `cotal up` on a root that holds several spaces keeps every sibling account trusted instead of silently evicting it, and refuses to render while any account record is unreadable.
+  - @cotal-ai/core@0.35.0
+
 ## 0.34.0
 
 ### Patch Changes

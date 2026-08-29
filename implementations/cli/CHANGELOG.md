@@ -1,5 +1,28 @@
 # @cotal-ai/cli
 
+## 0.35.0
+
+### Minor Changes
+
+- c5948e6: Seed the default persona with wildcard channel read and post ACLs while keeping its active
+  subscription set empty. A fresh default agent can now join and create channels on demand without
+  receiving every channel at boot. Repeat setup also upgrades the byte-exact legacy default while
+  leaving every edited persona unchanged. The guided demo personas retain their existing `welcome`
+  scope.
+
+  This is a minor release because packages are pre-1.0 and the shipped security default broadens the
+  default persona's broker-enforced publish authority. The connector-core bump ships the updated
+  version-matched operator docs bundle.
+
+- d457d7f: Show each managed seat's model and requested variant in the default `cotal ps` view, and expose Jcode's declared local model catalog without presenting configured effort tiers as provider-verified capabilities.
+
+### Patch Changes
+
+- 4919a53: Render the broker config from the validated tenant inventory, so `cotal up` on a root that holds several spaces keeps every sibling account trusted instead of silently evicting it, and refuses to render while any account record is unreadable.
+- Updated dependencies [4919a53]
+  - @cotal-ai/workspace@0.35.0
+  - @cotal-ai/core@0.35.0
+
 ## 0.34.0
 
 ### Minor Changes

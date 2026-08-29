@@ -93,7 +93,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = `backup_live_${mode}`;
-  const { run } = sandboxRun(root, home);
+  const { run, env } = sandboxRun(root, home);
   const must = (label: string, result: ReturnType<typeof run>) => {
     assert.equal(result.status, 0, `${mode} ${label}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
   };
@@ -340,7 +340,7 @@ async function restoreReentryScenario(
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = `backup_reentry_${label}`;
-  const { run } = sandboxRun(root, home);
+  const { run, env } = sandboxRun(root, home);
   const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
   try {
     assert.equal(run("up", "--detach", ...(authenticated ? [] : ["--open"]), "--server", server, "--space", space).status, 0);
@@ -414,7 +414,7 @@ async function ordinaryResumeReentryScenario(injection: "resume-commit" | "resum
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = `backup_ordinary_${injection}`;
-  const { run } = sandboxRun(root, home);
+  const { run, env } = sandboxRun(root, home);
   const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
   try {
     assert.equal(run("up", "--detach", "--open", "--server", server, "--space", space).status, 0);
@@ -463,7 +463,7 @@ async function deadBoundListenerReplacementScenario(): Promise<void> {
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = "backup_dead_listener_replacement";
-  const { run } = sandboxRun(root, home);
+  const { run, env } = sandboxRun(root, home);
   const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
   try {
     assert.equal(run("up", "--detach", "--open", "--server", server, "--space", space).status, 0);
@@ -509,7 +509,7 @@ async function unboundRestoreReentryScenario(detached: boolean): Promise<void> {
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = `backup_unbound_${label}`;
-  const { run } = sandboxRun(root, home);
+  const { run, env } = sandboxRun(root, home);
   const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
   const pidPath = join(root, ".cotal", "nats.pid");
   let listenerPid: number | undefined;
@@ -551,7 +551,7 @@ async function boundForeignListenerScenario(): Promise<void> {
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = "backup_bound_foreign";
-  const { run } = sandboxRun(root, home);
+  const { run, env } = sandboxRun(root, home);
   const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
   let foreign: ChildProcess | undefined;
   try {
@@ -792,7 +792,7 @@ async function backupRestoreCycleScenario(): Promise<void> {
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = "backup_cycle";
-  const { run } = sandboxRun(root, home);
+  const { run, env } = sandboxRun(root, home);
   const must = (label: string, result: ReturnType<typeof run>) => {
     assert.equal(result.status, 0, `cycle ${label}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
   };
