@@ -197,8 +197,6 @@ export type AgentSkillsResult = { installed: string[]; backedUp: { name: string;
  *    only when empty. A user's or third party's other files in the directory are never removed.
  *  Idempotent; fails loud on a corrupt bundle or manifest. */
 export function installAgentSkills(): AgentSkillsResult {
-  const testCounter = process.env.COTAL_TEST_AGENT_SKILLS_COUNT_FILE;
-  if (testCounter) writeFileSync(testCounter, "reconcile\n", { flag: "a" });
   const src = canonicalSkillsDir();
   const names = canonicalSkillNames();
   const destinations = agentSkillDestinations();
