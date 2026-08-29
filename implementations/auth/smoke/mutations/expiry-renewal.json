@@ -1,0 +1,54 @@
+{
+  "suite": "implementations/auth/smoke/expiry-renewal.smoke.ts",
+  "guard": "an expired user bearer is never presented to the broker, and a reconnect that keeps failing is paced instead of repeated at a fixed rate",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:expiry-renewal:auth",
+  "completionMarker": "EXPIRY-RENEWAL SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/expiry-renewal.json",
+  "why": [
+    "#986 is two independent defects that only together produce the reported storm, so one mutation",
+    "cannot audit the fix. N1 restores the dial-with-dead-material half, N2 restores the flat-rate half.",
+    "Each names the one cell it must redden; if either survived, half the fix would be untested.",
+    "",
+    "N1 deletes the guard outright, which is the tree exactly as it stood when the issue was filed, so",
+    "this is a revert-check and not a contrived edit. Measured on this harness in that state: 11 denials",
+    "in 45s, all `\"exp\" claim timestamp check failed`, all from distinct connection nkeys, gaps",
+    "3068/3094/3074/3065/3099/3062/3055/3079/3063/3087 ms.",
+    "",
+    "The narrower mutation worth naming here was tried and could not be used: conditioning the guard on",
+    "`this.bearerSource` (refuse only where renewal existed and failed) does redden the same cell, but it",
+    "narrows the field inside the block and tsc then rejects the message ternary with TS2774. It fails",
+    "the BUILD, so the suite never runs and the tool grades it WRONG-RED rather than KILLED. Deleting the",
+    "guard covers the same behaviour and compiles.",
+    "",
+    "N2 leaves the guard in place, so no expired token reaches the broker and cell 1 stays green; what",
+    "comes back is the flat cadence, which is why its cell is the one that measures GROWTH between",
+    "attempts rather than their absence. An attempt-count assertion would have passed here.",
+    "",
+    "SPECIFIER BOUNDARY. This suite imports @cotal-ai/core by package specifier, which resolves to",
+    "dist/, so it audits the last BUILD and not src. Both mutations therefore carry a `command` that",
+    "builds core first and an `afterRestore` that rebuilds it — dist/ is gitignored, so restoring the",
+    "source alone would leave a tree whose compiled core is still the mutant."
+  ],
+  "mutations": [
+    {
+      "name": "N1 the pre-dial expiry guard is gone, so the endpoint dials with the dead bearer again",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (this.userMode && this.currentBearer && bearerExpiryMs(this.currentBearer) <= Date.now())\n      throw new Error(\n        this.bearerSource\n          ? \"this endpoint's user bearer has expired and renewal through the auth exchange is failing - not presenting the expired token to the broker; retrying with backoff\"\n          : \"this endpoint's user bearer has expired and it holds no bearer source to renew it - re-authenticate and rebuild the endpoint (construct it with a bearer FUNCTION for standing renewal)\",\n      );\n",
+      "replace": "",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "an endpoint that cannot renew presents its expired bearer to the broker ZERO times",
+      "cell": "an endpoint that cannot renew presents its expired bearer to the broker ZERO times",
+      "note": "The pre-fix tree. The renewing arm stays GREEN under this mutation, because a healthy source re-mints before the dial and never had the problem; only the cell watching the endpoint that cannot renew catches this, which is why that arm exists."
+    },
+    {
+      "name": "N2 the reconnect wait goes back to a fixed interval",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    const delay = Math.min(this.retryMs * 2 ** this.retryAttempt, CotalEndpoint.RETRY_BACKOFF_CAP_MS);",
+      "replace": "    const delay = this.retryMs;",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "the wait between reconnect attempts grows past the flat retry interval",
+      "cell": "the wait between reconnect attempts grows past the flat retry interval",
+      "note": "A credential that was expired three seconds ago is still expired now. Retrying it on a fixed interval for the life of the process is the load the issue reports; the guard alone moves that load off the broker but leaves the client spinning, so the cadence needs its own cell."
+    }
+  ]
+}
