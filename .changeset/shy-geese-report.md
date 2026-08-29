@@ -1,5 +1,6 @@
 ---
 "@cotal-ai/cli": minor
+"@cotal-ai/connector-core": minor
 "@cotal-ai/connector-jcode": minor
 ---
 
