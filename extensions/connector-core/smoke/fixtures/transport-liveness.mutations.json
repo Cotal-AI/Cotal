@@ -3,7 +3,7 @@
   "guard": "raw NATS transport liveness is epoch-safe and separate from full endpoint readiness",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:transport-liveness",
   "progressPattern": "  ✓ ",
-  "completionMarker": "SUITE COMPLETE: 11 cells",
+  "completionMarker": "SUITE COMPLETE: 12 cells",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/fixtures/transport-liveness.mutations.json",
   "why": [
     "The deterministic status queues grade the exact nats.js lifecycle contract without timing a broker outage. The companion broker smoke separately proves real public disconnect and reconnect events reach these paths.",
@@ -72,6 +72,24 @@
       "replace": "    this.lastConnectionError = error.message;",
       "expectRed": "a post-bind endpoint error is logged but is NOT presented as the pre-bind connection issue",
       "cell": "a post-bind endpoint error is logged but is NOT presented as the pre-bind connection issue",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "a late transport edge can resurrect a stopped MeshAgent",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      // An in-flight initial bind or rebuild can finish after stop() cleared local state. Shutdown is\n      // terminal for this MeshAgent, so a late endpoint edge cannot resurrect transport.\n      if (this.stopping) return;",
+      "replace": "      // Transport events are accepted even after stop.",
+      "expectRed": "late endpoint events after stop cannot resurrect readiness or transport",
+      "cell": "late endpoint events after stop cannot resurrect readiness or transport",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "a late readiness edge can resurrect a stopped MeshAgent",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      // Same stop race as transport above: a late connectAndBind completion is not a new session.\n      if (this.stopping) return;",
+      "replace": "      // Readiness events are accepted even after stop.",
+      "expectRed": "late endpoint events after stop cannot resurrect readiness or transport",
+      "cell": "late endpoint events after stop cannot resurrect readiness or transport",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]

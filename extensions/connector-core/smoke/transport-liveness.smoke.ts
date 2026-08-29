@@ -53,6 +53,10 @@
  *   IN  post-bind error is not presented as connectionIssue. OUT pre-bind retention (both versions
  *       retain it) and every transport/stop cell.
  *
+ * M8 removes the post-stop transport-event guard. M9 removes the post-stop readiness-event guard.
+ *   IN  late endpoint events after stop cannot resurrect either state, for each mutation.
+ *   OUT all earlier cells: stopping is false until that final race cell. OUT both issue cells.
+ *
  * Harness correction after the first graded run: M2 and M3 changed the discriminant guards to
  * `false &&`, so TypeScript correctly narrowed their bodies to an impossible status and the core
  * build stopped before any cell. The predictions did not change. The operators now keep each guard
@@ -230,6 +234,13 @@ check(
   stopping.connected === false && (stopping as unknown as AgentHarness).transportConnected === false,
   { ready: stopping.connected, transport: (stopping as unknown as AgentHarness).transportConnected },
 );
+stopping.ep.emit("transport", { connected: true, server: "nats://late" });
+stopping.ep.emit("connection", { connected: true });
+check(
+  "late endpoint events after stop cannot resurrect readiness or transport",
+  stopping.connected === false && (stopping as unknown as AgentHarness).transportConnected === false,
+  { ready: stopping.connected, transport: (stopping as unknown as AgentHarness).transportConnected },
+);
 
 const issue = new MeshAgent({ ...cfg, name: "issue-agent" });
 issue.ep.emit("error", new Error("pre-bind refused"));
@@ -243,7 +254,7 @@ check(
 );
 await issue.stop();
 
-const EXPECTED_CELLS = 11;
+const EXPECTED_CELLS = 12;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);

@@ -309,6 +309,9 @@ export class MeshAgent extends EventEmitter {
     this.ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => this.ingest(m, d, meta));
     this.ep.on("error", (e: Error) => this.handleEndpointError(e));
     this.ep.on("transport", (e: TransportState) => {
+      // An in-flight initial bind or rebuild can finish after stop() cleared local state. Shutdown is
+      // terminal for this MeshAgent, so a late endpoint edge cannot resurrect transport.
+      if (this.stopping) return;
       // nats.js and clean shutdown can both confirm the same edge. A duplicate carries no state
       // change and must not wake consumers or let an old confirmation look like a new outage.
       if (this._transportConnected === e.connected) return;
@@ -319,6 +322,8 @@ export class MeshAgent extends EventEmitter {
     // initial start, manual reconnect, AND the background self-heal — so a recovery the endpoint
     // did on its own can't leave us thinking we're offline (which would skip stop() → leak).
     this.ep.on("connection", (e: { connected: boolean }) => {
+      // Same stop race as transport above: a late connectAndBind completion is not a new session.
+      if (this.stopping) return;
       this._connected = e.connected;
       if (e.connected) {
         this.lastConnectionError = undefined;
