@@ -2,7 +2,6 @@
   "suite": "bin/smoke/spawn-default-agent-compat.smoke.ts",
   "guard": "detached spawn omits defaultAgent when an explicit agent wins or no caller default exists, while preserving a non-empty caller default as a distinct field",
   "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:spawn-default-agent-compat",
-  "completionMarker": "a non-empty caller default remains distinct from the explicit agent field",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/spawn-default-agent-compat.json",
   "why": [
     "The suite imports the exact request builder used by detached spawn and validates its in-memory output against the closed manager schema from immediately before defaultAgent was added.",
