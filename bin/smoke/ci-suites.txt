@@ -615,11 +615,11 @@ smoke:web-remote-bind
 # closure from built dist and require every external package in it to be installed by a production
 # dependency field. Appended so every existing shard assignment remains unchanged.
 smoke:manager-runtime-deps
+# Seat provenance rows must stay correct across the three ps presentations; appended so
+# every existing shard assignment remains unchanged.
+smoke:ps-provenance
 # Cotal's bundled Agent Skill is lazily reconciled through the real built CLI on the first normal
 # command after install/upgrade. The isolated-HOME suite also proves update/no-op/backup, corrupt and
 # symlink fail-loud behavior, all four verified harnesses, status skew, and a write-free --version.
 # Appended at the true tail so every existing shard membership remains unchanged.
 smoke:agent-skills-entry
-# Seat provenance rows must stay correct across the three ps presentations; appended so
-# every existing shard assignment remains unchanged.
-smoke:ps-provenance
