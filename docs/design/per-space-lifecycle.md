@@ -53,10 +53,10 @@ Steps 1 to 4 change nothing on disk, so a crash there leaves the root untouched.
 account exists and, after step 6, the broker trusts it, while its streams may not exist yet. That
 state is real and is made resumable rather than hidden: re-running `space add <name>` on an account
 record that already composes under this broker skips steps 4 and 5 and completes 6 and 7. Booting
-the space with `up` completes step 7 too, once `up` renders from the full inventory (prerequisite
-P0, §4). The verb is forward-idempotent and never destructive; it refuses only on a corrupt
-inventory, a missing broker record, a missing system seed, or an account record for that name signed
-by a different operator.
+the space with `up` completes step 7 too, now that `up` renders from the full inventory (§4). The
+verb is forward-idempotent and never destructive; it refuses only on a corrupt inventory, a missing
+broker record, a missing system seed, or an account record for that name signed by a different
+operator.
 
 `space add` does not start a manager or a delivery daemon for the new space (§6).
 
@@ -158,12 +158,18 @@ atomic promotion, above the renderer. That is this section.
 the lock and renders from that plus `broker.json`. No verb passes a remembered list, so a render can
 never drop a tenant that another verb added.
 
-`up` violates that rule today, and it is prerequisite P0. It calls
-`serverConfig(auth, [auth], …)` with the one space it resolved from the cwd, so on a root with
-several tenants the next `up` would render a config holding one account and orphan the rest, undoing
-any `space add` that came before it. Nothing guards this: `assertSingleSpaceBroker` covers
-`up --restore` and not a plain boot. `up` must render from the validated inventory like every other
-writer, and it must keep booting the one space it was asked for.
+`up` used to violate that rule, which was prerequisite P0. It called `serverConfig(auth, [auth], …)`
+with the one space it resolved from the cwd, so on a root with several tenants the next `up` would
+render a config holding one account and orphan the rest, undoing any `space add` that came before it
+— and nothing guarded it, because `assertSingleSpaceBroker` covers `up --restore` and not a plain
+boot. It now renders `serverConfig(auth, preloadSpaceAccounts(dir, auth), …)`: that reader re-reads
+the validated inventory and returns the booting space first with every sibling behind it, so `up`
+renders from disk like every other writer while still booting the one space it was asked for.
+
+It also refuses rather than narrowing the config, in both directions a tenant can go missing between
+the two reads: an unreadable account record fails the render naming the tenant list uncertain, and a
+record that disappears after the inventory validated it fails too. Both say the same thing — a tenant
+left out of the config is evicted from the broker, so an uncertain list is not a list to render from.
 
 **Serialization is the root maintenance lock.** `acquireMaintenanceLock` already gives an exclusive,
 owner-recorded, stale-reaping lock per root, and `backup` and `clean` take it. The lock is per root
@@ -270,9 +276,12 @@ P8. Until it lands, retaining the seed is a decision taken at broker creation wi
 ## 7. Prerequisites
 
 - **P0.** Make `up` render `server.conf` from the validated inventory instead of the single space it
-  booted (§4). Until this lands, every other piece of this design is undone by the next `up`.
+  booted (§4). Landed: `up` renders through `preloadSpaceAccounts`, which re-reads the inventory and
+  refuses the render whenever the tenant list is uncertain.
 - **P1.** Re-key `auth/creds` by `spaceSegment` so per-agent secrets name their tenant and
-  `space rm` can reap them (§2.2).
+  `space rm` can reap them (§2.2). Still open: the split auth records (callout, issuer, owner-secret,
+  service-keys) are keyed `auth/<spaceSegment>/…`, but `agentCredsDir(root)` still takes no space, so
+  §2.2's residue and the unreapable per-agent secrets stand.
 - **P2.** Make a resumed `up` take the root maintenance lock before it renders, which the ordinary
   and manifest paths already do, so the lock covers every writer of `server.conf` (§4). Landed: the
   re-entry inherits the recovery's lock rather than taking its own, and hands it to every helper that
