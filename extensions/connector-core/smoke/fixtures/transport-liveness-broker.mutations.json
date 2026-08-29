@@ -9,8 +9,10 @@
     "The unit transport-liveness suite proves the stop-versus-bind race by replacing connectAndBind",
     "wholesale, so nothing inside that method is under test there. This suite dials a real broker and",
     "gates armPlane3, the last await connectAndBind makes before it reports the endpoint live, which",
-    "holds a genuine bind open at its final step while stop() lands. That is the only place the",
-    "emitter's own stopped guard is reachable, so it is the only place it can be proven."
+    "holds a genuine bind open at its final step while stop() lands. Any gated await inside the method",
+    "would reach the guard; armPlane3 is the one chosen because it is the last, so the whole bind is",
+    "real up to the decision point, and because it returns immediately unless the endpoint hosts",
+    "Plane 3, which a MeshAgent endpoint never does."
   ],
   "mutations": [
     {
