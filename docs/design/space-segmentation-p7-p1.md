@@ -237,7 +237,15 @@ idiom in the P1 series.
    both write through the resolvers, and `REMINTABLE_DAEMON_CREDS` plus the `clean.ts:226` list take
    the `(space) => key` shape of §3.1.
 4. The `space rm` step 7 reap of the now-segmented `$SYS` creds, which §2.2 step 7 of the lifecycle
-   doc already promises "once those are keyed per space (P7)".
+   doc already promises "once those are keyed per space (P7)". `space rm` is not a command yet, so
+   this lands as a GUARANTEE PLUS DOOR like commit 1's `assertNoUnsegmentedLegacyMaterial`: the verb
+   cannot be written without it. It splits in TWO along §2.2's point of no return —
+   `assertSpaceMaterialReapable` at step 1, where refusing is still free, and `reapSpaceMaterial` at
+   step 7, which cannot refuse and cannot throw because a throw past step 5 strands the journal entry
+   and recurs identically on every re-run, so the removal a crash is supposed to be able to finish
+   could never finish. Seam failures are returned, per `remintDaemonCreds`'s posture. The reap is a
+   DELETER (§3.1) and so addresses `segmentedKey`, never a resolver, and it removes one segment
+   rather than `.cotal/space.*`, since unlike `clean` it runs on a root other tenants keep using.
 5. The lifecycle doc's §7 P7 entry gains `delivery.creds`, per §3.2.
 
 **Series P1**

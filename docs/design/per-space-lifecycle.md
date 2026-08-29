@@ -62,7 +62,12 @@ operator.
 
 ### 2.2 `cotal space rm <name>`
 
-1. Take the lock. Read the inventory. Refuse on any corrupt record.
+1. Take the lock. Read the inventory. Refuse on any corrupt record, and on a root still holding
+   root-scoped P7 material (`assertSpaceMaterialReapable`). That second refusal belongs HERE rather
+   than beside the reap it guards: root-scoped material on a multi-tenant root is unattributable, so
+   step 7 would have to choose between stranding what may be the departing tenant's live `$SYS` pair
+   and taking a survivor's — and asked at step 7 the question comes too late to answer either way,
+   because refusing there is no longer free.
 2. Refuse when `<name>` is the only tenant. That case is the broker-wide teardown that already
    exists (`cotal down` then `cotal clean all`), and `serverConfig` refuses to render zero spaces,
    so a "remove the last one" path would have no config to promote.
@@ -76,12 +81,19 @@ operator.
 6. Re-render and promote `server.conf` from the inventory minus this space, then reload (§4).
 7. Delete the local material keyed to this space: `account.<key>.json` through a new
    `deleteSpaceAccountAuth` (§7, rejected alternative 7), the `space.<hex>` user-auth state dir,
-   `manager-instance.<hex>.json`, and the space's `$SYS` creds once those are keyed per space (P7).
+   `manager-instance.<hex>.json`, and the space's P7 material — its `$SYS` pair, `membership-rw`,
+   `membership.json` and `delivery.creds` — through `reapSpaceMaterial`, which P7 landed ahead of
+   this verb. It sweeps every store-backed kind through the seam and then removes THIS space's
+   segment dir, never `.cotal/space.*`: unlike `clean`, this runs on a root the other tenants keep
+   using, and it has no raw `.cotal/` sweep behind it to catch a kind the seam loop forgot.
 8. Clear the journal entry.
 
 Steps 5 to 7 are individually idempotent, so a re-run after a crash finishes the removal instead of
 starting a second one. The commit point is step 5: before it the tenant is intact, after it the data
-is gone and only a backup can bring it back.
+is gone and only a backup can bring it back. That is why step 7 REPORTS its failures rather than
+throwing them (`reapSpaceMaterial` returns `{ removed, failed }`): a throw after step 5 leaves the
+journal entry standing, which refuses every other verb on the root, and since the same throw recurs
+on every re-run the removal could never be finished by the re-run this section promises.
 
 What step 6 does to that tenant's live connections is an eviction, not a revocation. Once the broker
 loads a config without the account, its users are refused. Creds minted under it stay

@@ -2,7 +2,7 @@
  * The space-segmentation foundation gate (P7/P1 shared design,
  * `docs/design/space-segmentation-p7-p1.md` §2 and §3). Hermetic — no broker, no network.
  *
- * Three guarantees, none of which the codebase asserted before:
+ * Four guarantees, none of which the codebase asserted before:
  *
  *  1. THE ENCODER'S COLLISION CLAIM NOW COVERS `.cotal/`. `spaceSegment` promised non-collision
  *     against the reserved siblings of the AUTH dir. P7 puts a `space.<hex>` directly under
@@ -19,24 +19,31 @@
  *  3. THE `space add` DOOR. Adding a tenant to a root holding unmigrated material is the only way to
  *     CREATE unattributable material, so the verb refuses and names a remedy that exists.
  *
+ *  4. `space rm`'s STEP 7 REAP, AND WHERE ITS QUESTION IS ASKED. The reap runs past §2.2's point of
+ *     no return, so it cannot refuse and cannot throw; the refusable precondition is asked at step 1
+ *     instead. It removes ONE tenant's material from a root the others keep using, which makes the
+ *     neighbour cell — not the removal cell — the one that catches a `.cotal/space.*` sweep.
+ *
  * The refusal WORDING is asserted, not just the throw. `up --rotate-sys` is broker-wide and refuses
  * on exactly the multi-tenant roots rule 4 fires on (probe-executed, §6), so a refusal that pointed
  * an operator there would be advice that cannot succeed — the same defect
- * `healMembershipDataCreds`'s own comment records.
+ * `healMembershipDataCreds`'s own comment records. That is why both doors now COMPOSE their remedy
+ * from rule 4's own answer: the sentence that is right for the single-tenant root a door usually
+ * sees is advice that cannot succeed on the roots §2.1 says bypass the doors entirely.
  *
  * Run: pnpm smoke:space-segmentation
  */
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createBrokerAuth, createSpaceAccountAuth } from "@cotal-ai/core";
+import { createBrokerAuth, createSpaceAccountAuth, type SecretStore } from "@cotal-ai/core";
 import { authDir, saveBrokerAuth, saveSpaceAccountAuth, spaceFromSegment, spaceSegment } from "../src/auth-paths.js";
 import {
-  assertNoUnsegmentedLegacyMaterial, CONNECTION_EVICTOR_CREDS_KIND, connectionEvictorCredsKey, cotalDir,
-  DELIVERY_CREDS_KIND, deliveryCredsKey, MEMBERSHIP_CONFIG_KIND, membershipConfigPath,
-  MEMBERSHIP_OBSERVER_CREDS_KIND, membershipObserverCredsKey, MEMBERSHIP_RW_CREDS_KIND, membershipRwCredsKey,
-  migrateLegacyCotalMaterial, P7_LEGACY_MATERIAL, RESERVED_COTAL_CHILDREN, segmentedKey,
-  spaceMaterialDir, spaceMaterialKey, type SpaceMaterialComposition,
+  assertNoUnsegmentedLegacyMaterial, assertSpaceMaterialReapable, CONNECTION_EVICTOR_CREDS_KIND,
+  connectionEvictorCredsKey, cotalDir, DELIVERY_CREDS_KIND, deliveryCredsKey, MEMBERSHIP_CONFIG_KIND,
+  membershipConfigPath, MEMBERSHIP_OBSERVER_CREDS_KIND, membershipObserverCredsKey, MEMBERSHIP_RW_CREDS_KIND,
+  membershipRwCredsKey, migrateLegacyCotalMaterial, P7_LEGACY_MATERIAL, reapSpaceMaterial,
+  RESERVED_COTAL_CHILDREN, segmentedKey, spaceMaterialDir, spaceMaterialKey, type SpaceMaterialComposition,
 } from "../src/space-segmentation.js";
 
 let pass = 0, fail = 0;
@@ -244,6 +251,148 @@ try {
   writeFileSync(join(cotalDir(wrapMulti), MEMBERSHIP_CONFIG_KIND), '{"accountId":"A"}');
   rejects("rule 4 refuses through the path wrapper too",
     () => membershipConfigPath(wrapMulti, "alpha"), ["this root holds 2 spaces (alpha, beta)", "an owner that may be wrong"]);
+
+  // --- 6) `space rm` STEP 7's REAP, and the step-1 precondition that guards it ------------------
+  //
+  // The reap is the second half of what §5 started: `clean` resets a whole root, this removes ONE
+  // tenant from a root the others keep using. Everything below turns on WHERE in §2.2 each half
+  // runs. Step 5 deletes the tenant's streams and buckets and cannot be undone; step 7 is the local
+  // cleanup after it. So the refusable question is asked at step 1, and the reap itself cannot
+  // refuse — a throw at step 7 strands the journal entry, and since the same throw recurs on every
+  // re-run, the removal a crash is supposed to be able to finish could never finish at all.
+  console.log("\n6) `space rm` step 7: the reap, and the step-1 precondition");
+
+  const reapKinds = [DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND,
+    MEMBERSHIP_OBSERVER_CREDS_KIND, CONNECTION_EVICTOR_CREDS_KIND];
+  /** A `SecretStore` in memory, so the SEAM's behaviour is asserted rather than the FS adapter's —
+   *  including the failure the reap must RETURN instead of throwing, which a real store will not
+   *  produce on demand. */
+  function memStore(seed: Record<string, string>, failOn?: string) {
+    const m = new Map(Object.entries(seed));
+    return {
+      store: {
+        get: async (k: string) => m.get(k),
+        put: async (k: string, v: string) => void m.set(k, v),
+        delete: async (k: string) => {
+          if (k === failOn) throw new Error("seam is down");
+          m.delete(k);
+        },
+      } satisfies SecretStore,
+      keys: () => [...m.keys()].sort(),
+    };
+  }
+  /** One tenant's segment, staged POST-P7 as this suite's staging rule requires. */
+  function stageSegment(root: string, space: string): void {
+    mkdirSync(spaceMaterialDir(root, space), { recursive: true });
+    for (const k of [...reapKinds, MEMBERSHIP_CONFIG_KIND])
+      writeFileSync(join(spaceMaterialDir(root, space), k), `${space}-${k}`);
+  }
+  const seeded = (space: string) => Object.fromEntries(reapKinds.map((k) => [segmentedKey(k, space), `${space}-${k}`]));
+  /**
+   * "Cannot throw" is the reap's headline contract, so the cells that assert it must survive a build
+   * that breaks it. An unguarded `await` on a throwing mutant aborts the run AFTER the cells that
+   * caught it went red but BEFORE the completion banner, which grades a real kill INCONCLUSIVE —
+   * the same trap the resolver loop's `existsSync` closes, reached from the other side. The sentinel
+   * deliberately carries neither the key nor the segment, so every cell downstream reads red.
+   */
+  const noThrow = async (fn: () => Promise<{ removed: string[]; failed: string[] }>) => {
+    try { return await fn(); } catch (e) { return { removed: [], failed: [`THREW: ${(e as Error).message}`] }; }
+  };
+
+  // THE PRECONDITION refuses on the root where the reap has no right answer: root-scoped material on
+  // a root with more than one tenant is unattributable, so reaping AROUND it strands what may be the
+  // departing tenant's live pair, and reaping IT may take a survivor's. There is no third answer,
+  // and this is asked while refusing is still free.
+  const reapBlocked = await makeRoot("reap-blocked", ["alpha", "beta"]);
+  roots.push(reapBlocked);
+  stageSegment(reapBlocked, "alpha");
+  writeFileSync(join(cotalDir(reapBlocked), DELIVERY_CREDS_KIND), "ROOT-SCOPED");
+  rejects("the precondition refuses to reap around root-scoped material",
+    () => assertSpaceMaterialReapable(reapBlocked, "alpha", "`cotal space rm`"),
+    ["still holds root-scoped", DELIVERY_CREDS_KIND, "strand", "nothing on disk records which"]);
+  // ...and its remedy is COMPOSED from rule 4's answer, not assumed. `cotal up` is the migration an
+  // operator would be told to run, and on THIS root it refuses — the population §2.1 says bypasses
+  // both doors. Advice that cannot succeed is the exact defect commit 2 removed from `repairAdvice`.
+  rejects("...naming a remedy that exists on THIS root, not the one that refuses here",
+    () => assertSpaceMaterialReapable(reapBlocked, "alpha", "`cotal space rm`"),
+    ["not available on this root either", "this root holds 2 spaces (alpha, beta)"],
+    ["Run `cotal up` for the sole tenant once"]);
+  // The `space add` door carried the SAME latent defect and is fixed by the same ask. Both doors
+  // weigh the same unmigrated set, so they must agree about it — and about what to do next.
+  rejects("the `space add` door's remedy is honest on that root too",
+    () => assertNoUnsegmentedLegacyMaterial(reapBlocked, "`cotal space add`"),
+    ["not available on this root either"], ["Run `cotal up` for the sole tenant once"]);
+  // POSITIVE CONTROL for that fix: on the single-tenant root the door usually sees, `cotal up` IS
+  // the remedy and must still be offered. A "fix" that dropped the sentence everywhere would pass
+  // every cell above while making the common refusal useless. (§4's door cell asserts it too.)
+  const reapSolo = await makeRoot("reap-solo", ["one"]);
+  roots.push(reapSolo);
+  writeFileSync(join(cotalDir(reapSolo), MEMBERSHIP_RW_CREDS_KIND), "ROOT-SCOPED");
+  rejects("CONTROL: ...and still says `cotal up` where `cotal up` actually works",
+    () => assertNoUnsegmentedLegacyMaterial(reapSolo, "`cotal space add`"),
+    ["Run `cotal up` for the sole tenant once"], ["not available on this root either"]);
+
+  // THE REAP itself, on the only root shape `space rm` ever runs on: multi-tenant (§2.2 step 2
+  // refuses the last tenant) and fully migrated (the precondition above).
+  const reaped = await makeRoot("reaped", ["alpha", "beta"]);
+  roots.push(reaped);
+  stageSegment(reaped, "alpha");
+  stageSegment(reaped, "beta");
+  check("CONTROL: the precondition passes once nothing is root-scoped",
+    ((): boolean => { try { assertSpaceMaterialReapable(reaped, "alpha", "op"); return true; } catch { return false; } })());
+  const reapStore = memStore({ ...seeded("alpha"), ...seeded("beta") });
+  const first = await noThrow(() => reapSpaceMaterial(reaped, "alpha", reapStore.store));
+  check("the reap removes this space's segment", !existsSync(spaceMaterialDir(reaped, "alpha")));
+  // A reap spelled `.cotal/space.*` is the shape a reader reaches for after seeing a directory
+  // removal, and on the multi-tenant root this verb runs on it takes every survivor's live material
+  // and reports success. The neighbour is the only cell that catches it — which is exactly why the
+  // read is guarded: a build that takes the neighbour's segment leaves nothing here to read, and an
+  // ENOENT would abort the run before the banner and grade its own catch INCONCLUSIVE. `noThrow`
+  // covers the calls; a cell that READS state a wrong build deletes needs the same care.
+  const neighbour = join(spaceMaterialDir(reaped, "beta"), DELIVERY_CREDS_KIND);
+  check("...and leaves the neighbour tenant's segment untouched",
+    existsSync(neighbour) && readFileSync(neighbour, "utf8") === `beta-${DELIVERY_CREDS_KIND}`, neighbour);
+  // It sweeps EVERY store-backed kind, not just the two `clean` names. `clean` has a raw sweep of
+  // `.cotal/` behind it; this does not, and for an INJECTED store the segment removal reaches
+  // nothing at all — so a kind missing from the seam loop outlives its tenant with no second net.
+  check("...deletes all four store-backed kinds at their SEGMENTED keys",
+    reapStore.keys().join(",") === Object.keys(seeded("beta")).sort().join(","), reapStore.keys().join(","));
+  check("...and reports each removal by the key it removed",
+    reapKinds.every((k) => first.removed.includes(`.cotal/${segmentedKey(k, "alpha")}`)) && first.failed.length === 0,
+    { removed: first.removed, failed: first.failed });
+  // §2.2 needs steps 5-7 individually idempotent so a re-run after a crash FINISHES the removal.
+  const second = await noThrow(() => reapSpaceMaterial(reaped, "alpha", reapStore.store));
+  check("the reap is idempotent: a re-run removes nothing and does not throw",
+    second.removed.length === 0 && second.failed.length === 0, second);
+
+  // A REAPER IS A DELETER, so it addresses `segmentedKey` and never a resolver. Staged here as a
+  // rule 3 tear — legacy and canonical both present — which is exactly what a resolver refuses. A
+  // reap built on one would throw past the point of no return over material it does not even want.
+  const reapTorn = await makeRoot("reap-torn", ["one"]);
+  roots.push(reapTorn);
+  stageSegment(reapTorn, "one");
+  writeFileSync(join(cotalDir(reapTorn), DELIVERY_CREDS_KIND), "LEGACY");
+  const tornStore = memStore(seeded("one"));
+  const torn2 = await noThrow(() => reapSpaceMaterial(reapTorn, "one", tornStore.store));
+  check("the reap does not migrate: a rule 3 tear neither throws nor moves",
+    torn2.failed.length === 0 && existsSync(join(cotalDir(reapTorn), DELIVERY_CREDS_KIND)) &&
+    readFileSync(join(cotalDir(reapTorn), DELIVERY_CREDS_KIND), "utf8") === "LEGACY", torn2);
+
+  // PAST THE POINT OF NO RETURN A FAILURE IS DATA. A throw here strands the journal entry that gates
+  // every other verb on the root; returning it lets step 7 finish what it can and lets the re-run
+  // finish the rest. Same posture, and the same reason, as `remintDaemonCreds`.
+  const reapFail = await makeRoot("reap-fail", ["alpha", "beta"]);
+  roots.push(reapFail);
+  stageSegment(reapFail, "alpha");
+  const failing = memStore(seeded("alpha"), segmentedKey(MEMBERSHIP_OBSERVER_CREDS_KIND, "alpha"));
+  const partial = await noThrow(() => reapSpaceMaterial(reapFail, "alpha", failing.store));
+  check("a seam failure is RETURNED, not thrown",
+    partial.failed.length === 1 && partial.failed[0]?.includes(MEMBERSHIP_OBSERVER_CREDS_KIND) === true, partial.failed);
+  check("...and the rest of the reap still runs — the other kinds AND the segment dir",
+    reapKinds.filter((k) => k !== MEMBERSHIP_OBSERVER_CREDS_KIND)
+      .every((k) => partial.removed.includes(`.cotal/${segmentedKey(k, "alpha")}`)) &&
+    partial.removed.some((r) => r.startsWith(`.cotal/${spaceSegment("alpha")} `)) &&
+    !existsSync(spaceMaterialDir(reapFail, "alpha")), partial.removed);
 
   // The banner is printed on BOTH outcomes and names the suite, which is what lets the mutation
   // config declare it as a completion marker: a mutant run that stops early is then INCONCLUSIVE

@@ -17,9 +17,9 @@
  * The choke point is {@link migrateLegacyCotalMaterial}; the per-kind resolvers built on it are at
  * the bottom of this file, and they are what every consumer of the five P7 kinds calls.
  */
-import { existsSync, readdirSync, renameSync } from "node:fs";
+import { existsSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { mkSecretDir } from "@cotal-ai/core";
+import { mkSecretDir, type SecretStore } from "@cotal-ai/core";
 import { accountInventory, authDir, spaceSegment } from "./auth-paths.js";
 
 /** `<root>/.cotal` — the dir whose children the segment must never collide with. */
@@ -94,6 +94,53 @@ export const P7_LEGACY_MATERIAL: readonly string[] = [
   MEMBERSHIP_CONFIG_KIND, DELIVERY_CREDS_KIND,
 ];
 
+/** Why the choke point would refuse to migrate on a root, in two parts a caller composes into its
+ *  own sentence: the {@link reason} it cannot be shown to hold one tenant, and the {@link remedy} an
+ *  operator actually has — which is sometimes NONE, and saying so is the point. */
+export interface SpaceMaterialMigrationRefusal {
+  /** The root's tenant state, phrased to be quoted after a caller's own "refusing to X:" prefix. */
+  reason: string;
+  /** What the operator can do. Where nothing works this says so and names no command. */
+  remedy: string;
+}
+
+/**
+ * §2 RULE 4'S PRECONDITION, ASKABLE: would {@link migrateLegacyCotalMaterial} refuse on this root,
+ * and why? `undefined` means the root can be shown to hold exactly one tenant.
+ *
+ * THE ONE IMPLEMENTATION of the rule, exported so a guard that needs to know whether `cotal up` can
+ * migrate this root ASKS instead of re-deriving a tenant count. That is commit 2's `repairAdvice`
+ * lesson (`sys-creds.ts`) applied where it was still owed: a count is a second implementation of the
+ * rule, and it reads "one" on the corrupt-inventory root where this fails CLOSED. A guard built on a
+ * count would print a remedy on exactly the root where the remedy refuses.
+ *
+ * The two callers need it for opposite reasons — the choke point to refuse, the doors below to say
+ * truthfully what an operator can do next — and a rule with two implementations drifts at whichever
+ * one is not the one someone edits.
+ */
+export function spaceMaterialMigrationRefusal(root: string): SpaceMaterialMigrationRefusal | undefined {
+  const { spaces, corrupt } = accountInventory(authDir(root));
+  if (corrupt.length > 0)
+    return {
+      reason: `this root's tenant list is not fully readable (${corrupt.join(", ")}), so it cannot be shown to hold one space`,
+      // Unlike the multi-tenant case this one HAS a remedy, which is why the two are not merged into
+      // one refusal: an unreadable record is repairable, an unrecorded owner is not.
+      remedy: "Repair or remove those account records first.",
+    };
+  if (spaces.length > 1)
+    return {
+      reason:
+        `this root holds ${spaces.length} spaces (${spaces.join(", ")}). ` +
+        "The root-scoped copy belongs to whichever tenant booted first and nothing on disk records which, " +
+        "so moving it into one tenant's segment would assert an owner that may be wrong",
+      remedy:
+        "There is no command to offer here - `cotal up` migrates only on a single-tenant root, and " +
+        "`cotal up --rotate-sys` is broker-wide and refuses on this root too. " +
+        "Per-space segmentation must land before this material can be reminted here.",
+    };
+  return undefined;
+}
+
 /**
  * THE CHOKE POINT (§2 rules 1-4): resolve one kind's per-space location, migrating a legacy
  * root-scoped copy into it on first touch, or REFUSING when the move cannot be made honestly.
@@ -149,17 +196,10 @@ export function migrateLegacyCotalMaterial(root: string, space: string, kind: st
   //
   // Fail-CLOSED on an unreadable record, like every other tenant-count read: an under-count here
   // would let the laundering proceed on a root that does hold several tenants.
-  const { spaces, corrupt } = accountInventory(authDir(root));
-  if (corrupt.length > 0)
+  const refusal = spaceMaterialMigrationRefusal(root);
+  if (refusal)
     throw new Error(
-      `refusing to migrate ${kind} into a per-space segment: this root's tenant list is not fully readable (${corrupt.join(", ")}), so it cannot be shown to hold one space; repair or remove those account records first`,
-    );
-  if (spaces.length > 1)
-    throw new Error(
-      `refusing to migrate ${kind} into a per-space segment: this root holds ${spaces.length} spaces (${spaces.join(", ")}). ` +
-      `The root-scoped copy belongs to whichever tenant booted first and nothing on disk records which, so moving it into "${space}" would assert an owner that may be wrong. ` +
-      "There is no command to offer here - `cotal up --rotate-sys` is broker-wide and refuses on this root too. " +
-      "Per-space segmentation must land before this material can be reminted here.",
+      `refusing to migrate ${kind} into "${space}"'s per-space segment: ${refusal.reason}. ${refusal.remedy}`,
     );
 
   // RULE 3 — ambiguity refuses, loudly. Canonical AND legacy both present is a partial migration
@@ -202,14 +242,39 @@ export function migrateLegacyCotalMaterial(root: string, space: string, kind: st
  * built, landed with the foundation so the verb cannot be written without it.
  */
 export function assertNoUnsegmentedLegacyMaterial(root: string, operation: string): void {
-  const dir = cotalDir(root);
-  const present = P7_LEGACY_MATERIAL.filter((kind) => existsSync(join(dir, kind)));
+  const present = unsegmentedLegacyMaterial(root);
   if (present.length === 0) return;
   throw new Error(
     `${operation} refuses: this root still holds root-scoped ${present.join(", ")}, which is not keyed to any space. ` +
     "Adding a second tenant now would make that material unattributable - it belongs to the space that booted first, and nothing on disk records which that was. " +
-    "Run `cotal up` for the sole tenant once to migrate it into its own segment, then add.",
+    migrationRemedy(root),
   );
+}
+
+/** The P7 kinds still sitting at their root-scoped location on this root — the unmigrated set both
+ *  doors weigh. Named rather than inlined twice because the two doors must agree on what counts. */
+export function unsegmentedLegacyMaterial(root: string): string[] {
+  const dir = cotalDir(root);
+  return P7_LEGACY_MATERIAL.filter((kind) => existsSync(join(dir, kind)));
+}
+
+/**
+ * The "what do I do about it" half of both doors' refusals — ASKED of {@link
+ * spaceMaterialMigrationRefusal}, never assumed.
+ *
+ * The obvious line here is "run `cotal up` for the sole tenant once, then retry", and it is right for
+ * the population a door usually sees: a root with one tenant, whose material migrates on that root's
+ * next first touch. It is WRONG for the population §2.1 says bypasses the doors entirely — roots
+ * already multi-tenant when this series landed, and backups of them restored later. There `cotal up`
+ * hits rule 4 and refuses, so the sentence hands the operator a command that cannot succeed. That is
+ * precisely the defect commit 2 removed from `repairAdvice`, and it was still latent here.
+ *
+ * So the remedy is composed from the answer rather than from an assumption about who is asking.
+ */
+function migrationRemedy(root: string): string {
+  const refusal = spaceMaterialMigrationRefusal(root);
+  if (!refusal) return "Run `cotal up` for the sole tenant once to migrate it into its own segment, then retry.";
+  return `Migrating it first is not available on this root either: ${refusal.reason}. ${refusal.remedy}`;
 }
 
 /**
@@ -304,4 +369,99 @@ export function membershipConfigPath(root: string, space: string): string {
  *  and migrates NOTHING: a sweeper must not move material it is about to delete. */
 export function spaceMaterialDir(root: string, space: string): string {
   return join(cotalDir(root), spaceSegment(space));
+}
+
+/** The P7 kinds a composition holds in its {@link SecretStore} — the ones written through `put` and
+ *  read back through `get`, so a reap must remove them through the seam and not by unlinking a file.
+ *  {@link MEMBERSHIP_CONFIG_KIND} is absent: it has no store reader at all (it is read raw by the
+ *  eviction path's workstation cross-check), so the segment removal is the whole of its reap. */
+const P7_STORE_KINDS: readonly string[] = [
+  DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, MEMBERSHIP_OBSERVER_CREDS_KIND, CONNECTION_EVICTOR_CREDS_KIND,
+];
+
+/**
+ * `cotal space rm` STEP 1'S PRECONDITION for the step 7 reap (`per-space-lifecycle.md` §2.2), which
+ * is deliberately not checked at step 7.
+ *
+ * THE ORDERING IS THE DESIGN. Step 5 is the point of no return: it deletes the tenant's streams and
+ * buckets. Step 7 is the local reap. A precondition discovered at step 7 would refuse AFTER the data
+ * is gone and the config re-rendered, leaving the journal entry standing — and since the check would
+ * fail identically on every re-run, the removal a crash is supposed to be able to finish could never
+ * finish at all. So the question is asked at step 1, beside the inventory read that is already
+ * happening, where a refusal costs the operator nothing.
+ *
+ * WHAT IT REFUSES: a root still holding root-scoped material for any P7 kind. `space rm` runs only on
+ * a multi-tenant root (§2.2 step 2 refuses the last tenant), and on such a root that material is
+ * unattributable in the §2.1 sense — it belongs to whichever tenant booted first, unrecorded. Reaping
+ * around it strands what may be the departing tenant's live `$SYS` pair for a survivor to inherit;
+ * reaping it may take a survivor's. There is no third answer, and the honest move is to refuse before
+ * anything is destroyed rather than to pick one silently.
+ *
+ * NOT YET CALLED: `cotal space rm` does not exist as a command today (§2.2 designs it; no `space`
+ * verb is implemented). This lands with the material it guards so the verb cannot be written without
+ * it, the same reason {@link assertNoUnsegmentedLegacyMaterial} landed with commit 1.
+ */
+export function assertSpaceMaterialReapable(root: string, space: string, operation: string): void {
+  const present = unsegmentedLegacyMaterial(root);
+  if (present.length === 0) return;
+  throw new Error(
+    `${operation} refuses: this root still holds root-scoped ${present.join(", ")}, which is not keyed to any space. ` +
+    `Removing "${space}" would either strand that material for a surviving tenant to inherit or delete a surviving tenant's, ` +
+    "and nothing on disk records which of them it belongs to. " +
+    migrationRemedy(root),
+  );
+}
+
+/**
+ * `cotal space rm` STEP 7 (`per-space-lifecycle.md` §2.2): reap ONE tenant's segmented material — the
+ * `$SYS` pair that step names, plus the rest of that tenant's segment, which P7 keyed alongside it.
+ *
+ * IT CANNOT REFUSE, and that is a contract, not an omission. It runs past step 5's point of no
+ * return, where a throw would strand the journal entry that gates every other verb on the root; §2.2
+ * relies on steps 5 to 7 being individually idempotent so a re-run after a crash FINISHES the
+ * removal. So seam failures are returned, not thrown — the same posture, for the same reason, as
+ * `remintDaemonCreds` (`renewal.ts`), and the caller must read `failed` or the material silently
+ * survives the tenant. Its precondition is {@link assertSpaceMaterialReapable}, asked at step 1.
+ *
+ * The seam deletes come FIRST and are addressed by {@link segmentedKey}, never by a resolver: a
+ * reaper is a DELETER, so it must not move material into the path it is about to remove, and a §2
+ * rule 3/4 refusal must not fail a reap over material the reap does not care about. It sweeps every
+ * store-backed kind rather than only the two `clean` does, because `clean` is a whole-root reset with
+ * a raw sweep of `.cotal/` to fall back on and this is not: for an INJECTED store the segment removal
+ * below reaches nothing, so a kind missing from the seam loop would outlive its tenant.
+ *
+ * It removes only THIS space's segment. A reap spelled `.cotal/space.*` is the shape a reader reaches
+ * for after seeing a directory removal, and on the multi-tenant root that is the only root this verb
+ * runs on it would take every surviving tenant's live material and report success.
+ */
+export async function reapSpaceMaterial(
+  root: string,
+  space: string,
+  secrets: SecretStore,
+): Promise<{ removed: string[]; failed: string[] }> {
+  const removed: string[] = [];
+  const failed: string[] = [];
+  for (const kind of P7_STORE_KINDS) {
+    const key = segmentedKey(kind, space);
+    try {
+      // Idempotent on an absent key by the seam's contract, and the `get` keeps the report honest
+      // rather than claiming a removal for material that was never there.
+      if ((await secrets.get(key)) !== undefined) {
+        await secrets.delete(key);
+        removed.push(`.cotal/${key}`);
+      }
+    } catch (e) {
+      failed.push(`${key}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  const dir = spaceMaterialDir(root, space);
+  try {
+    if (existsSync(dir)) {
+      rmSync(dir, { recursive: true, force: true });
+      removed.push(`.cotal/${spaceSegment(space)} (this space's material)`);
+    }
+  } catch (e) {
+    failed.push(`${spaceSegment(space)}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  return { removed, failed };
 }
