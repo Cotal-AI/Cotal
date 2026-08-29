@@ -673,11 +673,6 @@ smoke:space-segmentation
 # succeed, found by the P7 §6 probe and fixed alongside this suite. Hermetic and fast; the property
 # is a biconditional, so the single-tenant arm is graded too. Appended; shard assignments unchanged.
 smoke:sys-repair-honesty
-# Every workflow reachable by a push to main must QUEUE its runs rather than evict them. #976
-# measured the eviction; #980 fixed ci.yml and three siblings carried the same defect in two
-# spellings, one of them the release workflow. The property is only observable on main after a
-# merge, so it needs a static guard. Appended so every existing shard assignment remains unchanged.
-smoke:workflow-concurrency
 
 # The per-agent standing secrets' half of that design (series P1). Hermetic and fast, and separate
 # from the suite above because the kind set is OPEN - one file per agent per kind - so rule 2's "one
@@ -690,3 +685,8 @@ smoke:workflow-concurrency
 # success. Mutation-proofed - bin/smoke/mutations/agent-secret-segmentation.json. Appended; shard
 # assignments unchanged.
 smoke:agent-secret-segmentation
+# Every workflow reachable by a push to main must QUEUE its runs rather than evict them. #976
+# measured the eviction; #980 fixed ci.yml and three siblings carried the same defect in two
+# spellings, one of them the release workflow. The property is only observable on main after a
+# merge, so it needs a static guard. Appended so every existing shard assignment remains unchanged.
+smoke:workflow-concurrency
