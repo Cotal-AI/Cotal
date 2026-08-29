@@ -645,3 +645,9 @@ smoke:up-resume-render-lock:live
 # where an `up` recovers by adopting an already-live listener instead of spawning a competitor over
 # the same store. Appended so every existing shard assignment remains unchanged.
 smoke:up-adopt-resume-lock:live
+
+# `up --restore` under that same inherited lock, and the more severe half: the restore-side journal
+# writers self-acquired, so the FIRST of them - the listener bind - refused and the command did not
+# run at all. The adopt suite above enters through a resume with no artifact and stays green through
+# that break, so neither suite substitutes for the other. Appended; shard assignments unchanged.
+smoke:up-restore-reentry:live

@@ -609,12 +609,19 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // Inheriting makes handing this lock down MANDATORY, not tidy: the lock is not reentrant, and it
   // cannot stale-reap its way out either, because the recorded owner is alive — it is us. A helper
   // that self-acquired would take the "held by a live owner" refusal and fail the resume outright.
-  // So every site below that journals under it is handed `startupLock`: both ADOPT paths (the
-  // proven-restore and proven-ordinary listeners, which recover by adopting an already-live listener
-  // rather than spawning a competitor), both `bindSpawnedOrdinaryResumeListener` calls on the spawn
-  // path (detached and foreground), and the `completeResumeActivation` call that closes each of
-  // those two spawn paths. The one caller that does NOT pass it is the failure path below, where
-  // `startupLock` has genuinely been released already and the helper is meant to take its own.
+  // So EVERY helper below that journals under this lock takes it as a parameter, on both the restore
+  // and the ordinary side: the two ADOPT paths (proven-restore and proven-ordinary listeners, which
+  // recover by adopting an already-live listener rather than spawning a competitor), the spawn-path
+  // listener binds (detached and foreground, restore and ordinary), the dead-listener replacement,
+  // `completeResumeActivation` and the manager-commit / activation / degraded writers it calls.
+  //
+  // Read that list as a rule, not an inventory. The trap is that a call site with no lock ARGUMENT
+  // says nothing about whether the CALLEE acquires: the restore-side writers took no parameter and
+  // self-acquired, so handing the lock to the sites that visibly named it left `up --restore` dead
+  // on its first pass — it died in the listener bind, before any of the seams. If you add a helper
+  // that journals, give it `heldLock` and hand it down from here; do not audit by call-site shape.
+  // The one caller that does NOT pass it is the prepare-failure path above, where the lock has
+  // genuinely not been taken yet in this frame and the helper is meant to take its own.
   let startupLock: MaintenanceLock | undefined = inheritedLock ?? acquireMaintenanceLock(cotalRoot());
   onAdopt?.(); // from here the release below owns it, inherited or not
   const releaseStartupLock = () => {
@@ -651,7 +658,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         throw new Error(`restore attempt ${resumeAttempt} is manager-committed but its bound listener is dead; preserving the commit token and retained suppression`);
       if (await isReachable(restoredAttempt.server))
         throw new Error(`restore attempt ${resumeAttempt} refuses the occupied foreign listener at ${restoredAttempt.server}`);
-      replacePreparedDeadRestoreListener(restoredAttempt);
+      replacePreparedDeadRestoreListener(restoredAttempt, startupLock);
     }
     const ordinaryAttempt = resumeAttempt ? pendingOrdinaryResumes.get(resumeAttempt) : undefined;
     if (ordinaryAttempt?.adoptProof) {
@@ -899,7 +906,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         boundListener: {
           serverName: restored.serverName,
           serverNonce: restored.serverNonce,
-          onSpawn: (pid: number, startedAt: string) => bindSpawnedRestoreListener(restored, pid, startedAt),
+          onSpawn: (pid: number, startedAt: string) => bindSpawnedRestoreListener(restored, pid, startedAt, startupLock),
           verify: async () => { await provePreparedRestoreListener(restored); },
         },
       } : ordinaryAttempt ? {
@@ -979,7 +986,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   if (child.pid) writeFileSync(cotalPath("nats.pid"), String(child.pid));
   if (restored && process.env.COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_SPAWN === "1") process.exit(87);
   if (restored) try {
-    bindSpawnedRestoreListener(restored, child.pid ?? 0, listenerStartedAt);
+    bindSpawnedRestoreListener(restored, child.pid ?? 0, listenerStartedAt, startupLock);
   } catch (error) {
     await stopUnboundRestoreListener(child);
     removeMatchingNatsPid(child.pid ?? 0);
@@ -1155,7 +1162,7 @@ function markPendingResumeDegraded(attemptId: string, reason: string, heldLock?:
     return;
   }
   const restored = pendingRestores.get(attemptId);
-  if (restored) markPreparedRestoreDegraded(restored.root, restored.attemptId, reason);
+  if (restored) markPreparedRestoreDegraded(restored.root, restored.attemptId, reason, heldLock);
 }
 
 async function resumeControlAuth(root: string, mode: "open" | "auth" | "user"): Promise<ControlAuth> {
@@ -1212,12 +1219,12 @@ async function stopUnboundRestoreListener(child: ChildProcess): Promise<void> {
     throw new Error(`unbound restore listener process ${child.pid ?? "unknown"} did not exit`);
 }
 
-function bindSpawnedRestoreListener(prepared: PreparedRestore, pid: number, startedAt: string): void {
-  bindRestoreListenerOwner(prepared, restoreListenerOwner(pid, prepared.serverNonce, startedAt));
+function bindSpawnedRestoreListener(prepared: PreparedRestore, pid: number, startedAt: string, heldLock?: MaintenanceLock): void {
+  bindRestoreListenerOwner(prepared, restoreListenerOwner(pid, prepared.serverNonce, startedAt), heldLock);
 }
 
-function bindRestoreListenerOwner(prepared: PreparedRestore, processOwner: ProcessOwner): void {
-  bindPreparedRestoreListener(prepared, processOwner);
+function bindRestoreListenerOwner(prepared: PreparedRestore, processOwner: ProcessOwner, heldLock?: MaintenanceLock): void {
+  bindPreparedRestoreListener(prepared, processOwner, heldLock);
   if (process.env.COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_BIND === "1") process.exit(86);
 }
 
@@ -1635,7 +1642,7 @@ async function completeResumeActivation(
         if (!heldLock) releaseMaintenanceLock(lock);
       }
     } else {
-      recordPreparedRestoreManagerCommit(restored!, managerCommit);
+      recordPreparedRestoreManagerCommit(restored!, managerCommit, heldLock);
     }
     if (process.env.COTAL_SMOKE_EXIT_AFTER_RESUME_COMMIT === "1") process.exit(89);
   } else {
@@ -1691,7 +1698,7 @@ async function completeResumeActivation(
     pendingOrdinaryResumes.delete(attemptId);
   } else {
     restored!.managerCommit = managerCommit;
-    markPreparedRestoreActive(restored!, finalizeEvidence);
+    markPreparedRestoreActive(restored!, finalizeEvidence, heldLock);
     restored!.cleanupStage();
     pendingRestores.delete(attemptId);
   }
