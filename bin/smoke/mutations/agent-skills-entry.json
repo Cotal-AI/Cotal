@@ -1,7 +1,7 @@
 {
   "suite": "implementations/cli/smoke/agent-skills-entry.smoke.ts",
   "guard": "the real published CLI reconciles bundled Agent Skills on normal startup and through cotal update",
-  "command": "pnpm smoke:agent-skills-entry",
+  "command": "pnpm --filter @cotal-ai/cli build && pnpm --filter cotal-ai build && pnpm exec tsx implementations/cli/smoke/agent-skills-entry.smoke.ts",
   "completionMarker": "agent-skills-entry.smoke: completed",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/agent-skills-entry.json",
   "mutations": [
@@ -10,6 +10,7 @@
       "file": "implementations/cli/src/command.ts",
       "find": "  if (argv[0] !== \"setup\") installAgentSkills(); // setup reconciles inside its own flow so provenance sees the actual install/refresh\n",
       "replace": "  if (false && argv[0] !== \"setup\") installAgentSkills(); // setup reconciles inside its own flow so provenance sees the actual install/refresh\n",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build && pnpm --filter cotal-ai build",
       "expectRed": "FIRST NORMAL COMMAND: fresh install generation appears",
       "cell": "FIRST NORMAL COMMAND: fresh install generation appears",
       "note": "Restores the explicit-setup-only defect: connector seeding still runs, but no cross-harness skill appears on first normal use."
@@ -19,6 +20,7 @@
       "file": "implementations/cli/src/commands/update.ts",
       "find": "    rt.reconcileSkills();",
       "replace": "    if (false) rt.reconcileSkills();",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build && pnpm --filter cotal-ai build",
       "expectRed": "UPDATE COMMAND: explicit update reconciles bundled Agent Skills",
       "cell": "UPDATE COMMAND: explicit update reconciles bundled Agent Skills",
       "note": "The update entry must own an explicit skill reconciliation because boot deliberately skips update to avoid duplicate passes."
@@ -28,6 +30,7 @@
       "file": "implementations/cli/src/command.ts",
       "find": "  if (argv[0] !== \"setup\") installAgentSkills(); // setup reconciles inside its own flow so provenance sees the actual install/refresh\n",
       "replace": "  installAgentSkills();\n",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build && pnpm --filter cotal-ai build",
       "expectRed": "SETUP COMMAND: setup owns one skill reconcile and preserves install provenance",
       "cell": "SETUP COMMAND: setup owns one skill reconcile and preserves install provenance",
       "note": "Without the setup guard, boot installs the skill first and setup sees a no-op, reporting zero installed skills and losing the write provenance."
