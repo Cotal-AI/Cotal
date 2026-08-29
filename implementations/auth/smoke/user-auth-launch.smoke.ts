@@ -44,7 +44,12 @@ process.env.COTAL_HOME = home;
 process.env.XDG_CONFIG_HOME = configDir;
 const root = mkdtempSync(join(tmpdir(), "cotal-ua-root-"));
 const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
-const childEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
+// Ambient COTAL_* vars are a seat's environment, not this sandbox's: an inherited
+// COTAL_LIFECYCLE_UID silently satisfies `join --creds`'s lifecycle pairing and flips which
+// refusal fires, so a cell can pass on an operator's machine and fail in CI's clean env
+// (measured, PR #962 shard 3). The child sees only the sandbox's own pins.
+const inheritedEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_")));
+const childEnv = { ...inheritedEnv, COTAL_HOME: home, XDG_CONFIG_HOME: configDir };
 
 const { connect, credsAuthenticator, tokenAuthenticator } = await import("@nats-io/transport-node");
 const { chatSubject, isReachable, mintCreds, mintLifecycleUid, newIdentity } = await import("@cotal-ai/core");
@@ -396,9 +401,10 @@ try {
   const oldStaticCreds = join(oldCredsDir, "old-static.creds");
   let oldStaticMaterial = "";
   let oldStaticError = "";
+  const oldStaticUid = mintLifecycleUid();
   try {
     oldStaticMaterial = await mintCreds(auth, newIdentity(), "agent", {
-      lifecycleUid: mintLifecycleUid(),
+      lifecycleUid: oldStaticUid,
       allowSubscribe: ["general"],
       allowPublish: ["general"],
     });
@@ -408,7 +414,12 @@ try {
   check("the legacy static-agent control is a lifecycle-bound credential, not a pre-cut stub",
     oldStaticMaterial.includes("BEGIN NATS USER JWT"), oldStaticError);
   writeFileSync(oldStaticCreds, oldStaticMaterial, { mode: 0o600 });
-  const joinOldStatic = await cotal(["join", "--creds", oldStaticCreds, "--server", SERVER, "--space", SPACE], { timeoutMs: 15_000 });
+  // Without its provision-time uid, --creds is refused at the lifecycle-pairing guard BEFORE the
+  // user-mesh flip is even consulted — that ordering is what the ambient-env leak masked.
+  const joinUnpaired = await cotal(["join", "--creds", oldStaticCreds, "--server", SERVER, "--space", SPACE], { timeoutMs: 15_000 });
+  check("`join --creds` without its lifecycle uid is refused as lifecycle-paired (SPEC 13.1)",
+    joinUnpaired.status !== 0 && joinUnpaired.out.includes("lifecycle-paired"), joinUnpaired.out);
+  const joinOldStatic = await cotal(["join", "--creds", oldStaticCreds, "--lifecycle-uid", oldStaticUid, "--server", SERVER, "--space", SPACE], { timeoutMs: 15_000 });
   check("the flip: `join --creds` with an old static cred is refused on a known user mesh", joinOldStatic.status !== 0 && joinOldStatic.out.includes("per-user-auth") && joinOldStatic.out.includes("cotal spawn"), joinOldStatic.out);
   const sendOldStatic = await cotal(["send", "msg", "general", "old static", "--creds", oldStaticCreds, "--server", SERVER, "--space", SPACE], { timeoutMs: 15_000 });
   check("the flip: raw `--creds` send is refused on a known user mesh", sendOldStatic.status !== 0 && sendOldStatic.out.includes("per-user-auth"), sendOldStatic.out);

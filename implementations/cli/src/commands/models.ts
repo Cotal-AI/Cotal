@@ -46,8 +46,24 @@ function renderCatalog(row: ConnectorModelCatalog): void {
   for (const model of row.models) renderModel(model, pad);
 }
 
+const JCODE_DECLARED_WARNING = "declared by Jcode config; provider acceptance is validated only at launch";
+
+/** Render the variants exactly where an operator reads their names. Core keeps `options` opaque;
+ *  the CLI consumes Jcode's three markers together so a partial or third-party lookalike cannot
+ *  earn the non-authoritative label accidentally. */
+export function modelVariantsLine(model: ModelInfo, pad: number): string | undefined {
+  if (!model.variants?.length) return undefined;
+  const declared = model.variants.every((variant) =>
+    variant.options?.provenance === "declared-config" &&
+    variant.options.authoritative === false &&
+    variant.options.warning === JCODE_DECLARED_WARNING);
+  const label = declared ? "variants (declared, not provider-verified)" : "variants";
+  return `  ${"".padEnd(pad)}  ${label}: ${model.variants.map((variant) => variant.name).join(", ")}`;
+}
+
 function renderModel(model: ModelInfo, pad: number): void {
   const name = model.name && model.name !== model.id ? c.dim(`  ${model.name}`) : "";
   console.log(`  ${model.id.padEnd(pad)}${name}`);
-  if (model.variants?.length) console.log(c.dim(`  ${"".padEnd(pad)}  variants: ${model.variants.map((v) => v.name).join(", ")}`));
+  const variants = modelVariantsLine(model, pad);
+  if (variants) console.log(c.dim(variants));
 }

@@ -1,22 +1,42 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LAUNCH_MATERIAL_ENV, readLaunchMaterial, registry } from "@cotal-ai/core";
 import { configFromEnv, controlFromEnv, cotalToolSpecs } from "@cotal-ai/connector-core";
 import { z } from "zod";
-import { jcodeConnector } from "../src/index.js";
+import { jcodeConnector, listJcodeModels } from "../src/index.js";
 
 let pass = 0;
+let fail = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
-  assert.ok(condition, `${name}${actual === undefined ? "" : ` — ${JSON.stringify(actual)}`}`);
-  pass++;
-  console.log(`  ✓ ${name}`);
+  try {
+    assert.ok(condition, `${name}${actual === undefined ? "" : ` — ${JSON.stringify(actual)}`}`);
+    pass++;
+    console.log(`  ✓ ${name}`);
+  } catch (error) {
+    fail++;
+    console.error(`  ✗ ${name}: ${(error as Error).message}`);
+  }
 };
 const throws = (name: string, fn: () => unknown, match: RegExp): void => {
-  assert.throws(fn, match, name);
-  pass++;
-  console.log(`  ✓ ${name}`);
+  try {
+    assert.throws(fn, match, name);
+    pass++;
+    console.log(`  ✓ ${name}`);
+  } catch (error) {
+    fail++;
+    console.error(`  ✗ ${name}: ${(error as Error).message}`);
+  }
+};
+const catalogRefusesWithoutHome = (name: string, home: string, fn: () => unknown, match: RegExp): void => {
+  let message = "";
+  try {
+    fn();
+  } catch (error) {
+    message = (error as Error).message;
+  }
+  check(name, match.test(message) && !message.includes(home), message);
 };
 
 const dir = mkdtempSync(join(tmpdir(), "cotal-jcodeargs-"));
@@ -41,6 +61,44 @@ try {
   check("starts the host entry", base.args.length === 1 && /host/.test(base.args[0]), base.args);
   check("requires the jcode binary", jcodeConnector.requires?.join(",") === "jcode");
   check("declares a bounded three-minute bootstrap window", jcodeConnector.readinessTimeoutMs === 180_000, jcodeConnector.readinessTimeoutMs);
+  check("feeds the declared catalog into the connector hook", jcodeConnector.listModels === listJcodeModels);
+  const realJcodeHome = process.env.JCODE_HOME;
+  const catalogHome = join(dir, "catalog-home");
+  mkdirSync(catalogHome);
+  writeFileSync(
+    join(catalogHome, "config.toml"),
+    `[providers.cliproxy]\nmodel_catalog = true\n\n[[providers.cliproxy.models]]\nid = "opus-5"\nreasoning_efforts = ["low", "max"]\n\n[[providers.cliproxy.models]]\nid = "plain"\n`,
+  );
+  process.env.JCODE_HOME = catalogHome;
+  try {
+    rmSync(join(catalogHome, "config.toml"));
+    catalogRefusesWithoutHome("unreadable catalog failure hides the Jcode home", catalogHome, () => listJcodeModels(), /could not read Jcode config: unreadable \(ENOENT\)/);
+    writeFileSync(join(catalogHome, "config.toml"), `this = [is not valid TOML`);
+    catalogRefusesWithoutHome("malformed TOML failure hides the Jcode home", catalogHome, () => listJcodeModels(), /could not parse Jcode config: malformed TOML/);
+    writeFileSync(join(catalogHome, "config.toml"), `unrelated = true\n`);
+    catalogRefusesWithoutHome("missing providers failure hides the Jcode home", catalogHome, () => listJcodeModels(), /has no \[providers\] table/);
+    writeFileSync(
+      join(catalogHome, "config.toml"),
+      `[providers.cliproxy]\nmodel_catalog = true\n\n[[providers.cliproxy.models]]\nid = "opus-5"\nreasoning_efforts = ["low", "max"]\n\n[[providers.cliproxy.models]]\nid = "plain"\n`,
+    );
+    const catalog = listJcodeModels();
+    check("exposes Jcode's declared config catalog", catalog.models.map((m) => m.id).join(",") === "opus-5,plain", catalog);
+    check("attributes every model to its declared provider", catalog.models.every((m) => m.provider === "cliproxy"), catalog);
+    check("labels declared reasoning efforts as non-authoritative", catalog.models[0]?.variants?.map((v) => `${v.name}:${v.options?.authoritative}`).join(",") === "low:false,max:false", catalog.models[0]);
+    check("names the declared config source without duplicating the per-tier caveat", catalog.source === "declared Jcode config", catalog.source);
+
+    writeFileSync(join(catalogHome, "config.toml"), `[providers.cliproxy]\nmodel_catalog = false\n`);
+    catalogRefusesWithoutHome("no enabled provider failure hides the Jcode home", catalogHome, () => listJcodeModels(), /no provider with model_catalog = true/);
+    writeFileSync(join(catalogHome, "config.toml"), `[providers.cliproxy]\nmodel_catalog = true\n`);
+    throws("fails loud when an enabled provider declares no model entries", () => listJcodeModels(), /has no \[\[providers\.cliproxy\.models\]\] entries/);
+    writeFileSync(join(catalogHome, "config.toml"), `[providers.cliproxy]\nmodel_catalog = true\nmodels = []\n`);
+    catalogRefusesWithoutHome("empty enabled catalog failure hides the Jcode home", catalogHome, () => listJcodeModels(), /enabled 1 provider\(s\).*declared no models/);
+    writeFileSync(join(catalogHome, "config.toml"), `[providers.cliproxy]\nmodel_catalog = true\n[[providers.cliproxy.models]]\nid = "broken"\nreasoning_efforts = "high"\n`);
+    throws("fails loud on malformed declared effort metadata", () => listJcodeModels(), /reasoning_efforts must be an array/);
+  } finally {
+    if (realJcodeHome === undefined) delete process.env.JCODE_HOME;
+    else process.env.JCODE_HOME = realJcodeHome;
+  }
   check("forwards mesh identity", base.env?.COTAL_SPACE === "space" && base.env?.COTAL_NAME === "seat");
   check("pins private state to the launch directory", base.env?.COTAL_JCODE_HOME === process.cwd());
   check("drops ordinary operator env unless explicitly allowed", base.env?.UNRELATED_JCODE_ENV_CANARY === undefined);
@@ -118,7 +176,8 @@ try {
   throws("refuses unsupported launch options", () => jcodeConnector.buildLaunch({ space: "s", name: "n", launchOptions: { profile: "full" } }), /launch options are not supported/);
   throws("still validates malformed launch option keys", () => jcodeConnector.buildLaunch({ space: "s", name: "n", launchOptions: { "a=b": "x" } }), /not a valid flag name/);
 
-  console.log(`\nJCODE ARGS SMOKE PASSED (${pass} checks)`);
+  console.log(`\nJCODE ARGS SMOKE PASSED: ${pass} passed, ${fail} failed`);
+  if (fail) process.exitCode = 1;
 } finally {
   delete process.env.UNRELATED_JCODE_ENV_CANARY;
   rmSync(dir, { recursive: true, force: true });

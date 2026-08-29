@@ -620,3 +620,15 @@ smoke:manager-runtime-deps
 # disconnect/reconnect delivery. Appended so every existing shard assignment remains unchanged.
 smoke:transport-liveness
 smoke:transport-liveness:broker
+# Seat provenance rows must stay correct across the three ps presentations; appended so
+# every existing shard assignment remains unchanged.
+smoke:ps-provenance
+# The real user-auth composition root owns a broker, Better Auth IdP, auth daemon, manager, and
+# CLI subprocesses through grant, exchange, connect, revoke, crash-heal, and teardown. Appended so
+# every existing shard assignment remains unchanged.
+smoke:user-auth-launch:live
+# `cotal up` on a root holding several tenants renders server.conf from the validated inventory: the
+# MEMORY resolver is a whole-broker map, so a config rendered from the one booted space evicts every
+# sibling silently. Drives the real CLI against a real broker. Appended so every existing shard
+# assignment remains unchanged.
+smoke:up-multi-space-render:live

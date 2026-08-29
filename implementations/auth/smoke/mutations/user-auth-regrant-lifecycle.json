@@ -24,7 +24,7 @@
     {
       "name": "R2 the legacy static control mints a pre-lifecycle agent credential",
       "file": "implementations/auth/smoke/user-auth-launch.smoke.ts",
-      "find": "      lifecycleUid: mintLifecycleUid(),\n      allowSubscribe: [\"general\"],",
+      "find": "      lifecycleUid: oldStaticUid,\n      allowSubscribe: [\"general\"],",
       "replace": "      allowSubscribe: [\"general\"],",
       "expectRed": "the legacy static-agent control is a lifecycle-bound credential, not a pre-cut stub"
     },

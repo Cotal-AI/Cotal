@@ -82,7 +82,6 @@ const UNGATED: Record<string, string> = {
   // `smoke:user-spawn:live` left this list when it was gated: it had thrown at section B1e on a
   // missing explicit `tls` and stopped after 14 of its 66 cells, and being ungated is why nobody
   // heard about it. "Too slow for the gate" was 105 seconds.
-  "smoke:user-auth-launch:live": "full live stack",
   // Untriaged debt. These are the ones that should shrink.
   "smoke:attention": "UNTRIAGED",
   "smoke:attention:auth": "UNTRIAGED",
@@ -111,7 +110,7 @@ const CITED_IN_PLAN = new Set([
   "smoke:auth", "smoke:channel-attention", "smoke:channel-attention:auth", "smoke:channels",
   "smoke:doctor-auth", "smoke:install", "smoke:ledger",
   "smoke:manifest-launch", "smoke:members", "smoke:membership-feed:auth", "smoke:presence-scrub",
-  "smoke:start-model", "smoke:static-lifecycle", "smoke:user-auth-launch:live",
+  "smoke:start-model", "smoke:static-lifecycle",
   "smoke:user-spawn:live",
 ]);
 

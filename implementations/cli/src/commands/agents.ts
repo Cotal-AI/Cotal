@@ -24,7 +24,7 @@ const onFlag = { name: "on", type: "string", value: "<instance>", description: "
 // #651: the same rows, two richer presentations. `--wide` stays human (one dim facts line per
 // seat); `--json` is the machine form (one JSON object per line, exactly the row the manager
 // sent). Mutually exclusive because they are two answers to "how should I read this".
-const wideFlag = { name: "wide", type: "boolean", description: "also print the per-seat facts the manager already records: model pin, cwd, pid, spawner, lifecycle uid, host/instance" } as const;
+const wideFlag = { name: "wide", type: "boolean", description: "also print the per-seat facts the manager already records: cwd, pid, spawner, lifecycle uid, host/instance" } as const;
 const jsonFlag = { name: "json", type: "boolean", description: "machine-readable: one JSON object per seat per line (instance headers go to stderr)" } as const;
 export const stopFlags = [...targetFlags, nameFlag("managed agent to stop (required)"), onFlag] as const satisfies readonly FlagSpec[];
 export const psFlags = [...targetFlags, onFlag, wideFlag, jsonFlag] as const satisfies readonly FlagSpec[];
@@ -105,6 +105,18 @@ type AgentRow = {
   lifecycleUid: string;
   id: string;
 };
+
+/** A seat's compact runtime identity. Model is provenance, not a debugging detail, so it belongs
+ *  beside the connector in the default row. `variant` is the requested override the manager
+ *  recorded: when no override was requested it stays absent rather than inventing an effective
+ *  provider default Cotal cannot observe. */
+export function agentIdentity(r: Pick<AgentRow, "agent" | "model" | "variant" | "mode">): string {
+  const parts = [r.agent];
+  if (r.model) parts.push(`${r.model}${r.variant ? ` (${r.variant})` : ""}`);
+  else if (r.variant) parts.push(`variant ${r.variant}`);
+  parts.push(r.mode);
+  return parts.join(" · ");
+}
 
 /** Compact process age for a row: `12s`, `47m`, `3.5h`, `2d 7h`. */
 function fmtUptime(ms: number): string {
@@ -242,7 +254,7 @@ function printAgentRow(r: AgentRow, indent = ""): void {
   const authColor = r.authHealth === "auth-renewal-failed" ? c.red : c.yellow;
   console.log(
     `${indent}${c.bold(r.name)}${r.role ? c.dim("/" + r.role) : ""}  ${c.dim(
-      r.agent + " · " + r.mode,
+      agentIdentity(r),
     )}  ${proc}  ${mesh}${r.authHealth ? "  " + authColor(r.authHealth) : ""}`,
   );
   // The detached agent's ONLY operator window into a failing bearer refresh: the provider command's
@@ -250,29 +262,26 @@ function printAgentRow(r: AgentRow, indent = ""): void {
   if (r.authHealth && r.authReason) console.log(authColor(`${indent}    ${r.authReason}`));
 }
 
-/** The #651 wide facts for one seat, as one dim continuation line. Only fields the row actually
- *  carries print: an absent fact (no model pin, a runtime with no owned pid) is real state and
- *  prints nothing, never a fabricated placeholder. The lifecycle uid always prints (it is
- *  required on the row); host/instance attribute the seat in a multi-manager scatter view. */
-function printWideFacts(r: AgentRow, indent = ""): void {
+/** Extra operational facts for `--wide`. Model and requested variant are already in the compact
+ *  identity row, so repeating them here would make wide output noisier without adding provenance.
+ *  Only fields the manager actually recorded print; lifecycle uid is required on every row. */
+export function agentWideFacts(r: Pick<AgentRow, "cwd" | "pid" | "spawner" | "lifecycleUid" | "instanceId" | "host">): string[] {
   const facts: string[] = [];
-  // #651: render variant INDEPENDENTLY of model. Nesting it inside `if (r.model)` dropped a
-  // recorded variant-without-model from --wide while --json still carried it - a fact silently
-  // lost. Show it under the model when both are present, standalone when only the variant is.
-  if (r.model) facts.push(`model ${r.model}${r.variant ? ` (${r.variant})` : ""}`);
-  else if (r.variant) facts.push(`variant ${r.variant}`);
   if (r.cwd) facts.push(`cwd ${r.cwd}`);
   if (r.pid !== undefined) facts.push(`pid ${r.pid}`);
   if (r.spawner) facts.push(`spawner ${r.spawner}`);
   facts.push(`uid ${r.lifecycleUid}`);
   if (r.instanceId) facts.push(`instance ${r.instanceId}`);
   if (r.host) facts.push(`host ${r.host}`);
-  console.log(c.dim(`${indent}    ${facts.join("  ·  ")}`));
+  return facts;
+}
+
+function printWideFacts(r: AgentRow, indent = ""): void {
+  console.log(c.dim(`${indent}    ${agentWideFacts(r).join("  ·  ")}`));
 }
 
 /** How one seat renders in the chosen presentation. `--json` prints the manager's row EXACTLY as
- *  received (one JSON object per line); `--wide` adds the facts line under the unchanged compact
- *  row; bare stays exactly today's output. */
+ *  received; `--wide` adds the facts line under the compact row. */
 function printSeat(r: AgentRow, opts: { wide: boolean; json: boolean }, indent = ""): void {
   if (opts.json) {
     console.log(JSON.stringify(r));
@@ -284,8 +293,8 @@ function printSeat(r: AgentRow, opts: { wide: boolean; json: boolean }, indent =
 
 export async function ps(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof psFlags>;
-  // #651 presentations: bare output is UNCHANGED by this change - only the flags enrich. The two
-  // forms are mutually exclusive because they answer "how do I read this" two different ways;
+  // #651 presentations: the two forms are mutually exclusive because they answer "how do I read
+  // this" two different ways;
   // inventing a precedence would be a silent fallback, so refuse instead.
   const opts = { wide: v.wide === true, json: v.json === true };
   if (opts.wide && opts.json) {
