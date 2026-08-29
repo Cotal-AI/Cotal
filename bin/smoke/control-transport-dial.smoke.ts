@@ -8,6 +8,7 @@
  * cells are negative controls proving transport selection did not regress ordinary NATS dials.
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -53,6 +54,10 @@ for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_")) delete cl
 const home = mkdtempSync(join(tmpdir(), "cotal-control-dial-home-"));
 process.env.COTAL_HOME = home;
 const root = mkdtempSync(join(tmpdir(), "cotal-control-dial-root-"));
+// The JetStream store gets its own tokened dir rather than living under `root`, because the reaper
+// claims a lost broker by that prefix: a store buried in an untokened tree is not merely unreaped,
+// it is unreachable to the reaper.
+const brokerStore = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}control-dial-js-`));
 const tcpPort = await freePort();
 const wsPort = await freePort();
 const tcpServer = `nats://127.0.0.1:${tcpPort}`;
@@ -82,7 +87,7 @@ writeFileSync(
     host: "127.0.0.1",
     wsPort,
     wsHost: "127.0.0.1",
-    storeDir: join(root, "js"),
+    storeDir: brokerStore,
   }),
 );
 
@@ -102,8 +107,12 @@ const reachedRails = (result: { status: number | null; out: string }): boolean =
   result.status !== 0 && /no manager reachable on the ep rails|no manager service is registered|service "manager" has no live registered instances/.test(result.out) &&
   !/wsconnect|websocket connections must use/i.test(result.out);
 
+let releaseBroker: (() => void) | undefined;
 try {
   const broker = spawnProc("nats-server", ["-c", conf], { stdio: "ignore" });
+  // Covers what the finally cannot: a run killed by a signal, and a `process.exit` that skips
+  // pending finally blocks. smoke-kit reaps from a process `exit` hook as well as the signals.
+  releaseBroker = teardownOnSignal(broker, brokerStore);
   kids.push(broker);
   let serving = false;
   for (let i = 0; i < 80; i++) {
@@ -140,6 +149,11 @@ try {
   if (fail) process.exitCode = 1;
 } finally {
   await Promise.all(kids.map(async (child) => { if (child.exitCode === null) child.kill("SIGKILL"); await awaitExit(child); }));
+  // Removed here, not left to the reaper: release() below drops ownership, so once the finally
+  // runs the exit hook no longer holds this store. The kids above are awaited, so the walk
+  // cannot race a nats-server still writing.
+  rmSync(brokerStore, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });
+  releaseBroker?.(); // last: ownership is held until this teardown has actually finished
 }
