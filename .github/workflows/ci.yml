@@ -208,7 +208,10 @@ jobs:
       # The integration the unit suite cannot reach: real broker + real Manager + a real agent in
       # presence, then SIGKILL the manager to prove the agent outlives it.
       - name: herdr e2e (real broker + manager + agent, manager-kill survival)
-        run: pnpm smoke:herdr-e2e:live
+        # A hang here reads as `cancelled` on the job, which looks like a supersession rather
+        # than a failure — that is how a PASSING suite held this gate red for twelve runs. Bound
+        # the step so the next one fails red and names itself.
+        run: timeout 600 pnpm smoke:herdr-e2e:live
       - name: cmux launcher secret-hygiene smoke
         run: pnpm smoke:cmux
       - name: OpenCode cooperative-stop smoke test

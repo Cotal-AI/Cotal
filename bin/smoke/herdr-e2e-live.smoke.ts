@@ -24,6 +24,7 @@ import { randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
+import type { Readable } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, isReachable } from "@cotal-ai/core";
@@ -63,12 +64,20 @@ catch {
 // ── recorded identities, for teardown by exact name ────────────────────────────
 let srvPid: number | undefined;
 let mgrPid: number | undefined;
+/** The manager's stdio pipes, recorded so teardown can release them by that exact identity. */
+let mgrPipes: { stdout: Readable; stderr: Readable } | undefined;
 let scratch: string | undefined;
 let cleaned = false;
 function cleanup() {
   if (cleaned) return;
   cleaned = true;
   if (mgrPid !== undefined) { try { process.kill(mgrPid, "SIGKILL"); } catch { /* gone */ } }
+  // herdr's server is spawned DETACHED by the manager, which is the entire claim this suite exists
+  // to prove: it outlives the manager. It also inherits the manager's stdout/stderr, so killing the
+  // manager does NOT close the write ends and these read ends keep the event loop alive long after
+  // the last assertion. Every failure path here calls process.exit, so only a PASSING run hung —
+  // for 18 minutes, until the job limit killed it, with "25 passed, 0 failed" already printed.
+  if (mgrPipes) { mgrPipes.stdout.destroy(); mgrPipes.stderr.destroy(); }
   try { herdr.stopSession(HERDR_SESSION); } catch { /* not running */ }
   try { execFileSync("herdr", ["session", "delete", HERDR_SESSION], { stdio: "ignore" }); } catch { /* gone */ }
   if (srvPid !== undefined) { try { process.kill(srvPid); } catch { /* gone */ } }
@@ -124,6 +133,7 @@ const child = spawn(process.execPath, [
   stdio: ["ignore", "pipe", "pipe"],
 });
 mgrPid = child.pid;
+mgrPipes = { stdout: child.stdout, stderr: child.stderr };
 let ready: Record<string, unknown> | undefined;
 let childErr = "";
 child.stdout.on("data", (b: Buffer) => {
