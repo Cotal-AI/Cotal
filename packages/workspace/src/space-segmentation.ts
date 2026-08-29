@@ -14,8 +14,10 @@
  * canonical read on an unmigrated root reads absent and mints a SECOND live cred beside the one the
  * daemons are using.
  *
- * The choke point is {@link migrateLegacyCotalMaterial}; the per-kind resolvers built on it are at
- * the bottom of this file, and they are what every consumer of the five P7 kinds calls.
+ * The choke point is {@link migrateLegacyMaterialIn}; the per-kind resolvers built on it are at
+ * the bottom of this file, and they are what every consumer of the five P7 kinds calls. Series P1
+ * consumes the same choke point from `agent-secrets.ts` — the rules are identical, only the parent
+ * directory differs, because §3 places P7's segment under `.cotal/` and P1's under `.cotal/auth/creds/`.
  */
 import { existsSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -157,9 +159,17 @@ export function spaceMaterialMigrationRefusal(root: string): SpaceMaterialMigrat
  * externally and re-keys by the coordinated change of §3.1, never by migrating in place. Taking no
  * store makes the unsound call impossible to express, the same reason `rotateSystemCreds` takes none
  * (`system-rotation.ts:88-95`).
+ *
+ * `parent` is the directory the legacy copy sits DIRECTLY in and under which the segment is created.
+ * It is a parameter rather than `cotalDir(root)` because §3 settled two different placements for the
+ * two series — P7's segment is a child of `.cotal/`, P1's a child of `.cotal/auth/creds/` — and that
+ * was decided in the plan, not discovered by P1. Everything the rules turn on is the same at both
+ * placements, so parameterizing the parent is what keeps them ONE implementation; a P1-local copy of
+ * rules 2-4 is the second idiom §4 forbids. `root` stays alongside it because rule 4's tenant count
+ * is a property of the ROOT's account records, not of whichever directory the material sits in.
  */
-export function migrateLegacyCotalMaterial(root: string, space: string, kind: string): string {
-  const dir = cotalDir(root);
+export function migrateLegacyMaterialIn(parent: string, root: string, space: string, kind: string): string {
+  const dir = parent;
   const canonical = join(dir, spaceSegment(space), kind);
   const legacyPath = join(dir, kind);
 
@@ -220,6 +230,12 @@ export function migrateLegacyCotalMaterial(root: string, space: string, kind: st
   mkSecretDir(join(dir, spaceSegment(space)));
   renameSync(legacyPath, canonical);
   return canonical;
+}
+
+/** {@link migrateLegacyMaterialIn} at P7's placement — a legacy copy sitting directly under
+ *  `<root>/.cotal/`. The five P7 resolvers' one entry point. */
+export function migrateLegacyCotalMaterial(root: string, space: string, kind: string): string {
+  return migrateLegacyMaterialIn(cotalDir(root), root, space, kind);
 }
 
 /**

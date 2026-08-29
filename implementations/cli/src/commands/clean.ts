@@ -248,9 +248,18 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
       }
     }
     // Per-agent standing secrets (static creds / actor tokens / sentinel creds) are migrated
-    // kinds too. Despawn owns the primary delete; this is the crash-residue backstop, enumerated
-    // from the LOCAL creds dir (this surface IS the FS composition, per the doc above). Health
-    // files and unrecognizable strays are runtime state and fall to the raw removal below.
+    // kinds too, per-agent-FILE as of P1. Despawn owns the primary delete; this is the
+    // crash-residue backstop, enumerated from the LOCAL creds dir (this surface IS the FS
+    // composition, per the doc above). Health files and unrecognizable strays are runtime state
+    // and fall to the raw removal below.
+    //
+    // The enumeration is ROOT-WIDE and deliberately not narrowed to `space`, the one sweep here
+    // that is not: `clean all` resets THE ROOT, and P1 made a co-resident tenant's secrets a
+    // sibling segment rather than a separate root — narrowing would silently start stranding
+    // material this command has always removed. It is migration-free for the same reason the P7
+    // sweep above is (never move material into the path you are about to delete), which is why it
+    // reports both the segmented keys and the flat pre-P1 level rather than resolving through
+    // `agentCredsDir`.
     for (const key of agentSecretKeysUnder(root)) {
       try {
         await secrets.delete(key);

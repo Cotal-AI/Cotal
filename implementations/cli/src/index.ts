@@ -214,7 +214,7 @@ const baseCommands: Command[] = [
     positionals: "<name>",
     flags: [
       { name: "profile", type: "string", value: "<agent|observer|admin>", description: "cred profile (default agent)" },
-      { name: "out", type: "string", value: "<path>", description: "output path (default .cotal/auth/creds/<name>.creds)" },
+      { name: "out", type: "string", value: "<path>", description: "output path (default .cotal/auth/creds/space.<key>/<name>.creds)" },
       { name: "signer", type: "boolean", description: "emit a stripped account-signing file instead" },
       { name: "force", type: "boolean", description: "with --signer: overwrite an existing file" },
       { name: "allow-subscribe", type: "string", value: "<a,b>", description: "agent profile: read ACL override (comma-separated); refused off it" },

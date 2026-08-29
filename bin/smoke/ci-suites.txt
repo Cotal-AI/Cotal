@@ -673,3 +673,15 @@ smoke:space-segmentation
 # succeed, found by the P7 §6 probe and fixed alongside this suite. Hermetic and fast; the property
 # is a biconditional, so the single-tenant arm is graded too. Appended; shard assignments unchanged.
 smoke:sys-repair-honesty
+
+# The per-agent standing secrets' half of that design (series P1). Hermetic and fast, and separate
+# from the suite above because the kind set is OPEN - one file per agent per kind - so rule 2's "one
+# rename" is per FILE here and the family (three secrets plus the non-secret health file the manager
+# weighs with them) must move together. It also grades the one signature change in the series that is
+# not bookkeeping: `agentSecretKeyForFile` takes the space from the CALLER's authority and CHECKS the
+# path against it, so a recorded path cannot hand back a key into a co-resident tenant's material.
+# And it holds the sweep to BOTH levels - every tenant's segment plus any file still flat - because a
+# deleter that reported only the new level would strand an unmigrated root's creds and report
+# success. Mutation-proofed - bin/smoke/mutations/agent-secret-segmentation.json. Appended; shard
+# assignments unchanged.
+smoke:agent-secret-segmentation
