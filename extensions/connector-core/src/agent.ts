@@ -401,6 +401,10 @@ export class MeshAgent extends EventEmitter {
         );
       } catch (e) {
         const error = e instanceof Error ? e : new Error(String(e));
+        // stop() can win while the initial endpoint start is still pending. A rejection arriving
+        // after that terminal decision is teardown noise, not a new connectionIssue for the stopped
+        // session, and there is no next retry to explain or sleep toward.
+        if (this.stopping) return;
         this.lastConnectionError = error.message;
         this.log(`mesh unreachable (${error.message}); retrying in ${retryMs}ms`);
         await sleep(retryMs);
@@ -1508,7 +1512,7 @@ export class MeshAgent extends EventEmitter {
     // connectionIssue is the bounded readiness diagnostic documented above: retain failures only
     // while the endpoint has not bound. Post-bind consumer/permission faults are still logged, but
     // presenting one as the current connection failure after readiness succeeded is stale and false.
-    if (!this._connected) this.lastConnectionError = error.message;
+    if (!this._connected && !this.stopping) this.lastConnectionError = error.message;
     const fingerprint = error.message.replace(/oc_[A-Za-z0-9]+_\d+/g, "oc_*");
     const prior = this.endpointErrorLog.get(fingerprint);
     if (prior && now - prior.lastLoggedAt < ENDPOINT_ERROR_LOG_WINDOW_MS) {

@@ -648,6 +648,10 @@ export class CotalEndpoint extends EventEmitter {
 
   async start(): Promise<void> {
     await this.connectAndBind();
+    // stop() can finish while the INITIAL connectAndBind is still awaiting its broker work. The
+    // rebuild path already closes that race; initial start needs the same fence or the late bind
+    // leaves a fresh nc, heartbeat, consumers, and presence live on an endpoint already stopped.
+    if (await this.tearDownIfStopped()) return;
     // nats.js auto-reconnects transient drops; when it exhausts its attempts and the
     // connection closes for good, rebuild from scratch so an in-process agent (e.g. the
     // OpenCode plugin) recovers without a host respawn. Armed only after a successful first

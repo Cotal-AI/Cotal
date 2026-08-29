@@ -3,7 +3,7 @@
   "guard": "raw NATS transport liveness is epoch-safe and separate from full endpoint readiness",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:transport-liveness",
   "progressPattern": "  ✓ ",
-  "completionMarker": "SUITE COMPLETE: 14 cells",
+  "completionMarker": "SUITE COMPLETE: 17 cells",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/fixtures/transport-liveness.mutations.json",
   "why": [
     "The deterministic status queues grade the exact nats.js lifecycle contract without timing a broker outage. The companion broker smoke separately proves real public disconnect and reconnect events reach these paths.",
@@ -108,6 +108,33 @@
       "replace": "    this.lastConnectionError = undefined;\n    // Unconditional: a background self-heal can flip _connected without us, so a `_connected`",
       "expectRed": "stop preserves the last connection issue for post-mortem diagnosis",
       "cell": "stop preserves the last connection issue for post-mortem diagnosis",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "initial start leaves resources bound when stop wins the race",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (await this.tearDownIfStopped()) return;\n    // nats.js auto-reconnects transient drops; when it exhausts its attempts and the",
+      "replace": "    // nats.js auto-reconnects transient drops; when it exhausts its attempts and the",
+      "expectRed": "stop racing the INITIAL bind tears down resources created after stop began",
+      "cell": "stop racing the INITIAL bind tears down resources created after stop began",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "post-stop endpoint errors overwrite the retained diagnostic",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (!this._connected && !this.stopping) this.lastConnectionError = error.message;",
+      "replace": "    if (!this._connected) this.lastConnectionError = error.message;",
+      "expectRed": "post-stop endpoint errors cannot overwrite the preserved connection issue",
+      "cell": "post-stop endpoint errors cannot overwrite the preserved connection issue",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "a rejected initial start writes a new issue after stop",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        if (this.stopping) return;\n        this.lastConnectionError = error.message;",
+      "replace": "        this.lastConnectionError = error.message;",
+      "expectRed": "a start rejection arriving after stop cannot replace the post-mortem diagnostic",
+      "cell": "a start rejection arriving after stop cannot replace the post-mortem diagnostic",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]

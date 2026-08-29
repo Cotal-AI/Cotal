@@ -67,6 +67,18 @@
  *   OUT the terminal ordering cell (it checks before stop), every transport/readiness cell, and the
  *       constructed pre/post-bind issue cells (their own stop occurs after their assertions).
  *
+ * M12 removes the initial-start post-bind stop fence.
+ *   IN  stop racing the INITIAL bind tears down resources created after stop began.
+ *   OUT every other cell: only the controlled initial-start race creates resources after stop.
+ *
+ * M13 allows post-stop endpoint errors to overwrite connectionIssue.
+ *   IN  post-stop endpoint errors cannot overwrite the preserved issue.
+ *   OUT the earlier issue cells and all transport/start cells: their errors occur before stop.
+ *
+ * M14 allows a rejected initial start to write after stop.
+ *   IN  start rejection after stop cannot replace the post-mortem diagnostic.
+ *   OUT every earlier cell: their connectLoop catch is not reached after stop.
+ *
  * Harness correction after the first graded run: M2 and M3 changed the discriminant guards to
  * `false &&`, so TypeScript correctly narrowed their bodies to an impossible status and the core
  * build stopped before any cell. The predictions did not change. The operators now keep each guard
@@ -134,6 +146,11 @@ class ClosingNc extends FakeNc {
   finish(error?: Error): void { this.closedFlag = true; this.resolveClose(error); }
 }
 
+class DrainWitnessNc extends FakeNc {
+  drains = 0;
+  override async drain(): Promise<void> { this.drains++; await super.drain(); }
+}
+
 const cfg: AgentConfig = {
   space: "transport-liveness",
   name: "transport-agent",
@@ -150,6 +167,7 @@ type EndpointHarness = {
   watchStatus(): void;
   superviseConnection(): void;
   reestablishLoop(): Promise<void>;
+  connectAndBind(): Promise<void>;
 };
 type AgentHarness = {
   readonly transportConnected: boolean;
@@ -293,8 +311,49 @@ check(
   terminal.connectionIssue?.includes("terminal socket loss") === true,
   terminal.connectionIssue,
 );
+terminal.ep.emit("error", new Error("late teardown noise"));
+check(
+  "post-stop endpoint errors cannot overwrite the preserved connection issue",
+  terminal.connectionIssue?.includes("terminal socket loss") === true,
+  terminal.connectionIssue,
+);
 
-const EXPECTED_CELLS = 14;
+const starting = new MeshAgent({ ...cfg, name: "starting-agent" });
+const startingEp = starting.ep as unknown as EndpointHarness;
+let releaseBind!: () => void;
+const bindGate = new Promise<void>((resolve) => { releaseBind = resolve; });
+const freshNc = new DrainWitnessNc("nats://fresh-after-stop");
+startingEp.connectAndBind = async () => {
+  await bindGate;
+  startingEp.nc = freshNc;
+};
+const startingPromise = starting.start(1);
+await tick();
+await starting.stop(); // stop fully completes while the initial bind is still parked
+releaseBind();
+await startingPromise;
+check(
+  "stop racing the INITIAL bind tears down resources created after stop began",
+  freshNc.drains === 1 && freshNc.closedFlag === true,
+  { drains: freshNc.drains, closed: freshNc.closedFlag },
+);
+
+const failing = new MeshAgent({ ...cfg, name: "failing-start-agent" });
+let rejectStart!: (error: Error) => void;
+const startGate = new Promise<void>((_resolve, reject) => { rejectStart = reject; });
+(failing.ep as unknown as EndpointHarness).connectAndBind = () => startGate;
+const failedStart = failing.start(1);
+await tick();
+await failing.stop();
+rejectStart(new Error("late start rejection"));
+await failedStart;
+check(
+  "a start rejection arriving after stop cannot replace the post-mortem diagnostic",
+  failing.connectionIssue === undefined,
+  failing.connectionIssue,
+);
+
+const EXPECTED_CELLS = 17;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);
