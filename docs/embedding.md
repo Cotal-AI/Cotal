@@ -93,6 +93,21 @@ The runners take a CLI-shaped `ParsedArgs`, not a typed options object, so a hos
 const args: ParsedArgs = { values: { space, server, port: "0" }, positionals: [], raw: [] };
 ```
 
+### Long-lived endpoints take a bearer function
+
+`EndpointOptions.bearer` accepts either a string or a function, and the difference is not stylistic.
+A string is minted once, so when it expires (which it will: callout bearers live minutes) the
+endpoint has nothing to renew with. It will not present the dead token to the broker, since that is
+a guaranteed denial that still costs a full auth-callout round trip. It refuses to reconnect, emits
+`error` saying which case it is in, and retries on a widening backoff until the process
+re-authenticates and rebuilds it.
+
+Pass a **function** for anything that outlives one bearer. That is a renewal source: it is called
+ahead of each expiry and again whenever a reconnect finds the cached bearer dead, and it requires
+explicit `card.owner` and `card.actor`. The first-party surfaces already do this
+(`UserViewAuth.source`, the connector's `agentBearerCommand`). A string bearer is for a short
+one-shot connection.
+
 ## Booting the daemons
 
 ### auth-service
