@@ -657,12 +657,6 @@ smoke:up-adopt-resume-lock:live
 # run at all. The adopt suite above enters through a resume with no artifact and stays green through
 # that break, so neither suite substitutes for the other. Appended; shard assignments unchanged.
 smoke:up-restore-reentry:live
-# Raw NATS transport state is separate from full endpoint readiness. The deterministic suite grades
-# epoch staleness and state contracts; its companion owns a throwaway broker and proves real
-# disconnect/reconnect delivery. Appended so every existing shard assignment remains unchanged.
-smoke:transport-liveness
-smoke:transport-liveness:broker
-
 # The space-segmentation foundation (P7/P1 shared design). Hermetic and fast. It asserts the
 # `spaceSegment` collision guarantee over the children of `.cotal/` — a WIDER namespace than the
 # auth-dir siblings the encoder's comment originally claimed — plus the migration choke point's
@@ -690,3 +684,8 @@ smoke:sys-repair-honesty
 # success. Mutation-proofed - bin/smoke/mutations/agent-secret-segmentation.json. Appended; shard
 # assignments unchanged.
 smoke:agent-secret-segmentation
+# Raw NATS transport state is separate from full endpoint readiness. The deterministic suite grades
+# epoch staleness and state contracts; its companion owns a throwaway broker and proves real
+# disconnect/reconnect delivery. Appended so every existing shard assignment remains unchanged.
+smoke:transport-liveness
+smoke:transport-liveness:broker
