@@ -68,6 +68,7 @@ import {
   type JsonValue,
   type ManagerCommitEvidence,
   type ManagerFinalizeEvidence,
+  type MaintenanceLock,
   type MaintenanceReadyRecord,
   type ProcessOwner,
   type RestoreActiveRecord,
@@ -178,8 +179,17 @@ export function rehydratePreparedRestore(root: string, journal: RecoverableResto
   };
 }
 
-export function bindPreparedRestoreListener(prepared: PreparedRestore, processOwner: ProcessOwner): RestoreListenerProof {
-  const lock = acquireMaintenanceLock(prepared.root);
+// The `heldLock` on this and the four writers below is not symmetry: an `up` resume re-entry holds
+// the root maintenance lock for its whole run, the lock is not reentrant, and it cannot stale-reap
+// its way out because the recorded owner is alive — it is the caller. Self-acquiring here takes the
+// "held by a live owner" refusal and fails the restore outright, so a caller that already holds the
+// lock MUST hand it down. Callers outside a resume pass nothing and this takes its own, as before.
+export function bindPreparedRestoreListener(
+  prepared: PreparedRestore,
+  processOwner: ProcessOwner,
+  heldLock?: MaintenanceLock,
+): RestoreListenerProof {
+  const lock = heldLock ?? acquireMaintenanceLock(prepared.root);
   try {
     const journal = readMaintenanceJournal(prepared.root);
     if (!journal || journal.state !== "commit-intent" || journal.restore.attemptId !== prepared.attemptId)
@@ -196,14 +206,14 @@ export function bindPreparedRestoreListener(prepared: PreparedRestore, processOw
     prepared.listenerProof = proof;
     return proof;
   } finally {
-    releaseMaintenanceLock(lock);
+    if (!heldLock) releaseMaintenanceLock(lock);
   }
 }
 
-export function replacePreparedDeadRestoreListener(prepared: PreparedRestore): void {
+export function replacePreparedDeadRestoreListener(prepared: PreparedRestore, heldLock?: MaintenanceLock): void {
   if (!prepared.listenerProof)
     throw new Error(`restore attempt ${prepared.attemptId} has no bound listener proof to replace`);
-  const lock = acquireMaintenanceLock(prepared.root);
+  const lock = heldLock ?? acquireMaintenanceLock(prepared.root);
   try {
     replaceDeadRestoreListener(lock, prepared.listenerProof);
     prepared.serverNonce = randomUUID().replaceAll("-", "");
@@ -212,7 +222,7 @@ export function replacePreparedDeadRestoreListener(prepared: PreparedRestore): v
     prepared.journalState = "commit-intent";
     prepared.reentry = false;
   } finally {
-    releaseMaintenanceLock(lock);
+    if (!heldLock) releaseMaintenanceLock(lock);
   }
 }
 
@@ -886,10 +896,11 @@ export async function prepareRestore(root: string, flags: RestoreFlags): Promise
 export function markPreparedRestoreActive(
   prepared: PreparedRestore,
   managerResult: ManagerFinalizeEvidence,
+  heldLock?: MaintenanceLock,
 ): void {
   if (!isManagerFinalizeEvidence(managerResult, prepared.attemptId, prepared.managerCommit?.durableCommitToken ?? ""))
     throw new Error(`restore attempt ${prepared.attemptId} has invalid manager finalize evidence`);
-  const lock = acquireMaintenanceLock(prepared.root);
+  const lock = heldLock ?? acquireMaintenanceLock(prepared.root);
   try {
     const journal = readMaintenanceJournal(prepared.root);
     if (!journal || !["manager-committed", "active", "degraded"].includes(journal.state))
@@ -914,30 +925,36 @@ export function markPreparedRestoreActive(
       throw new Error(`restore activation journal does not contain durable manager commit evidence for ${prepared.attemptId}`);
     prepared.journalState = "active";
   } finally {
-    releaseMaintenanceLock(lock);
+    if (!heldLock) releaseMaintenanceLock(lock);
   }
 }
 
 export function recordPreparedRestoreManagerCommit(
   prepared: PreparedRestore,
   evidence: ManagerCommitEvidence,
+  heldLock?: MaintenanceLock,
 ): void {
   if (!isManagerCommitResult(evidence, prepared.attemptId))
     throw new Error(`restore attempt ${prepared.attemptId} has invalid manager commit evidence`);
   if (!prepared.listenerProof)
     throw new Error(`restore attempt ${prepared.attemptId} has no bound listener proof at manager commit`);
-  const lock = acquireMaintenanceLock(prepared.root);
+  const lock = heldLock ?? acquireMaintenanceLock(prepared.root);
   try {
     recordRestoreManagerCommit(lock, prepared.listenerProof, evidence);
     prepared.managerCommit = evidence;
     prepared.journalState = "manager-committed";
   } finally {
-    releaseMaintenanceLock(lock);
+    if (!heldLock) releaseMaintenanceLock(lock);
   }
 }
 
-export function markPreparedRestoreDegraded(root: string, attemptId: string, reason: string): void {
-  const lock = acquireMaintenanceLock(root);
+export function markPreparedRestoreDegraded(
+  root: string,
+  attemptId: string,
+  reason: string,
+  heldLock?: MaintenanceLock,
+): void {
+  const lock = heldLock ?? acquireMaintenanceLock(root);
   try {
     const journal = readMaintenanceJournal(root);
     if (!journal || (journal.state !== "commit-intent" && journal.state !== "active") || journal.restore.attemptId !== attemptId) return;
@@ -947,6 +964,6 @@ export function markPreparedRestoreDegraded(root: string, attemptId: string, rea
       paths: [journal.restore.target.path, journal.restore.previousSource?.identity.path].filter((path): path is string => Boolean(path)),
     }]);
   } finally {
-    releaseMaintenanceLock(lock);
+    if (!heldLock) releaseMaintenanceLock(lock);
   }
 }
