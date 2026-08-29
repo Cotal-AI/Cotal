@@ -632,13 +632,13 @@ smoke:up-multi-space-render:live
 # pair. Drives the real daemon against a real broker. Appended so every existing shard
 # assignment remains unchanged.
 smoke:sys-injection-evict
-# Issue #977: a focus-mode session must not ack-drop a body that recall cannot return. Drives the
-# real MeshAgent ingest, recallAmbient and the cotal_inbox tool spec against an isolated broker,
-# covering the replay-off concrete channel and the wildcard subscription. Appended so every existing
-# shard assignment remains unchanged.
-smoke:focus-recall-loss
 # A user-mode endpoint whose bearer expires must stop presenting the dead token: pre-fix it re-dialled
 # it on a flat 3s interval forever, one client costing a permanent auth-callout round trip every 3s.
 # Drives a real broker plus a real auth callout across three arms (no renewal source, healthy source,
 # loud refusal). Appended so every existing shard assignment remains unchanged.
 smoke:expiry-renewal:auth
+# Issue #977: a focus-mode session must not ack-drop a body that recall cannot return. Drives the
+# real MeshAgent ingest, recallAmbient and the cotal_inbox tool spec against an isolated broker,
+# covering the replay-off concrete channel and the wildcard subscription. Appended so every existing
+# shard assignment remains unchanged.
+smoke:focus-recall-loss
