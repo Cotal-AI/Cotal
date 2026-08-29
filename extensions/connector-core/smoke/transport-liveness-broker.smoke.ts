@@ -151,7 +151,10 @@ try {
   const bindGate = new Promise<void>((resolve) => { releaseBind = resolve; });
   raceEp.armPlane3 = async () => { bindAtFinalStep = true; await bindGate; };
   const raceStart = raceAgent.start(100).catch(() => {});
-  const reachedFinalStep = await until(() => bindAtFinalStep);
+  // A real dial and bind on a loaded runner, not a local poll, so this gets the same budget as
+  // the terminal-close cell. It returns the moment the bind arrives, so the cost is only paid
+  // when the bind never gets there, and then the cell fails loudly rather than passing empty.
+  const reachedFinalStep = await until(() => bindAtFinalStep, 30_000);
   await raceAgent.stop();
   releaseBind();
   await raceStart;
