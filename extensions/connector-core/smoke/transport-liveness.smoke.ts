@@ -53,6 +53,13 @@
  *   IN  post-bind error is not presented as connectionIssue. OUT pre-bind retention (both versions
  *       retain it) and every transport/stop cell.
  *
+ * Harness correction after the first graded run: M2 and M3 changed the discriminant guards to
+ * `false &&`, so TypeScript correctly narrowed their bodies to an impossible status and the core
+ * build stopped before any cell. The predictions did not change. The operators now keep each guard
+ * and replace only its emit with a no-op read of the narrowed payload, so the mutant stays compilable
+ * and reaches the behavior it is meant to break. The other five mutations killed their predicted
+ * named cells on that first run.
+ *
  * Run: pnpm smoke:transport-liveness
  */
 import type { Status } from "@nats-io/nats-core";

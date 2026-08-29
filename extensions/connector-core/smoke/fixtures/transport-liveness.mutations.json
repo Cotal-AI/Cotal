@@ -23,8 +23,8 @@
     {
       "name": "disconnect status no longer produces a transport edge",
       "file": "packages/core/src/endpoint.ts",
-      "find": "        if (s.type === \"disconnect\") {",
-      "replace": "        if (false && s.type === \"disconnect\") {",
+      "find": "          this.emit(\"transport\", { connected: false, server: s.server } satisfies TransportState);",
+      "replace": "          void s.server;",
       "expectRed": "a NATS disconnect makes transport false WITHOUT flapping full-bind readiness",
       "cell": "a NATS disconnect makes transport false WITHOUT flapping full-bind readiness",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
@@ -32,8 +32,8 @@
     {
       "name": "reconnect status no longer restores transport",
       "file": "packages/core/src/endpoint.ts",
-      "find": "        if (s.type === \"reconnect\") {",
-      "replace": "        if (false && s.type === \"reconnect\") {",
+      "find": "          this.emit(\"transport\", { connected: true, server: s.server } satisfies TransportState);",
+      "replace": "          void s.server;",
       "expectRed": "the distinguishable NATS reconnect edge restores transport without another readiness event",
       "cell": "the distinguishable NATS reconnect edge restores transport without another readiness event",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
