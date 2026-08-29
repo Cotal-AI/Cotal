@@ -408,11 +408,17 @@ refuses rather than silently proving the property on whatever binary is first on
   worsens nor repairs it.
 
   The torn-rotation check in §4.3 remains the same *class* of problem as U2's inventory CAS (a
-  two-write commit observed half-applied) and should reuse U2's vocabulary rather than invent a
-  second one. **Named forward reference:** U2's vocabulary section, path and section number to be
-  filled in from U2's post-verdict commit (U2 is folding two blockers; `default_agent` supplies the
-  citation). This stays an explicit unresolved reference rather than a guessed one — a wrong section
-  number here would be copied forward by exactly the lanes it is meant to align.
+  two-write commit observed half-applied) and reuses U2's vocabulary rather than inventing a second
+  one: `docs/design/u2-resolver-cas.md` §8, *"Exported vocabulary — the torn-write failure modes"*,
+  which names itself the stable citation target for other lanes. The term §4.3's torn rotation
+  instantiates is **TORN WRITE / LOST UPDATE**.
+
+  **Same class, not the same instance.** The citation borrows a name for the failure mode; it does
+  not claim U2's mechanism closes U3's window, and nothing in §4.3 waits on U2. U2's instance is an
+  inventory CAS; U3's is a `$SYS` two-cred write straddling a trust-record commit, and the two are
+  fenced by different things — U2 by its CAS, U3 by the intrinsic `iss` comparison that proves
+  staleness with no signer read. Reading the citation as coverage would be the one way this reference
+  does harm, so it is ruled out here rather than left to the reader.
 
 - **P2 (space-provisioner).** P2's gate already names "per-space membership/`$SYS` semantics on a
   shared broker" as an F4 residual (`CLOUD-PLAN.md:155-156`). U3 is the upstream half that makes

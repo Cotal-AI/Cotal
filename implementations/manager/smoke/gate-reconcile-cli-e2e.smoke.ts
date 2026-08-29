@@ -26,7 +26,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
@@ -86,8 +86,14 @@ const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 // THE SEEDED WORKSPACE ROOT the command will resolve from: its own scratch dir, never the
 // operator's. `findCotalRoot()` walks up for a `.cotal/`, so an unanchored cwd would reach the real
 // mesh root — the command runs with cwd set HERE, and this directory is what it must find.
-const ROOT = join(dir, "mesh-root");
-mkdirSync(join(ROOT, ".cotal"), { recursive: true });
+// REALPATH'D, and only after the directory exists (`realpathSync` needs a real target). The daemon
+// pins its scan root from `findCotalRoot()`, which returns a RESOLVED path; where TMPDIR is itself a
+// symlink the literal `join(...)` and the resolved path differ by the link alone, and the root-pin
+// guard below would then refuse a drift that is not one — a false red that says "root drift" while
+// the roots are the same directory.
+const rootPath = join(dir, "mesh-root");
+mkdirSync(join(rootPath, ".cotal"), { recursive: true });
+const ROOT = realpathSync(rootPath);
 
 writeFileSync(
   join(dir, "server.conf"),
