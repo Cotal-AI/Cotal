@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, chownSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { shortSocketHome } from "../src/private-state.js";
+import { mirrorJcodeSkills, shortSocketHome } from "../src/private-state.js";
 import { jcodeConnector } from "../src/extension.js";
 
 let pass = 0;
@@ -67,6 +67,17 @@ try {
     );
   } else {
     check("root connector refuses a foreign-owned deterministic socket directory", false, "run this suite from a non-root parent so it can create the foreign UID directory");
+  }
+
+  if (process.platform !== "win32" && process.getuid?.() === 0) {
+    const foreignHome = join(root, "foreign-managed-home");
+    const source = join(root, "foreign-skill-source", "team-topology");
+    mkdirSync(foreignHome, { mode: 0o700 });
+    chownSync(foreignHome, 1001, 1001);
+    mkdirSync(source, { recursive: true });
+    writeFileSync(join(source, "SKILL.md"), "managed skill\n");
+    assert.throws(() => mirrorJcodeSkills(foreignHome, join(root, "foreign-skill-source")), /owned by uid 1001/);
+    check("root connector refuses a foreign-owned managed Jcode home before mirroring skills", true);
   }
 
   // The connector's buildLaunch refuses Windows before host startup because the Harness API bridge

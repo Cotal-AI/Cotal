@@ -47,7 +47,14 @@ function privateAgentHome(space: string, name: string): string {
   if (!resolve(home).startsWith(resolve(managedRoot) + sep)) throw new Error(`jcode home ${home} escapes ${managedRoot} — refusing`);
   for (const path of [join(root, ".cotal"), managedRoot, home]) {
     try {
-      if (lstatSync(path).isSymbolicLink()) throw new Error(`refusing symlinked managed path: ${path}`);
+      const stats = lstatSync(path);
+      if (stats.isSymbolicLink()) throw new Error(`refusing symlinked managed path: ${path}`);
+      if (!stats.isDirectory()) throw new Error(`refusing non-directory managed path: ${path}`);
+      if (process.platform !== "win32") {
+        const uid = process.getuid?.();
+        if (uid === undefined || stats.uid !== uid)
+          throw new Error(`refusing managed path owned by uid ${stats.uid}, not effective uid ${String(uid)}: ${path}`);
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }

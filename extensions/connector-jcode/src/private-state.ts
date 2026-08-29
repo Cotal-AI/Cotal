@@ -133,9 +133,9 @@ function assertCurrentUserOwns(path: string, uid: number): void {
   if (process.platform === "win32") return;
   const currentUid = process.getuid?.();
   if (currentUid === undefined)
-    throw new Error(`cannot determine effective UID for Jcode short API socket directory: ${path}`);
+    throw new Error(`cannot determine effective UID for Jcode private directory: ${path}`);
   if (uid !== currentUid)
-    throw new Error(`refusing Jcode short API socket directory owned by uid ${uid}, not effective uid ${currentUid}: ${path}`);
+    throw new Error(`refusing Jcode private directory owned by uid ${uid}, not effective uid ${currentUid}: ${path}`);
 }
 
 function mirrorParent(home: string, destination: string): void {
@@ -147,7 +147,7 @@ function mirrorParent(home: string, destination: string): void {
     // A pre-0.78 SDK could have linked a whole external credential directory. Replace exactly
     // that link before writing: every launch re-copies this private mirror, so no stale link or
     // copied OAuth material survives to the next seat startup.
-    privateDirectory(current, { replaceSymlink: true });
+    privateDirectory(current, { replaceSymlink: true, requireOwner: true });
   }
 }
 
@@ -203,7 +203,7 @@ function credentialSources(): CredentialSources {
  * rotating auth files; current jcode rejects those links in its external mirror, so the connector
  * owns a fresh, owner-only copy instead. */
 export function mirrorJcodeCredentials(home: string, sources = credentialSources()): void {
-  privateDirectory(home);
+  privateDirectory(home, { requireOwner: true });
   for (const name of JCODE_CREDENTIAL_FILES) copyCredentialFile(home, join(sources.jcodeHome, name), name);
 
   for (const entry of optionalEntries(sources.appConfigDir)) {
@@ -230,7 +230,7 @@ export function mirrorJcodeCredentials(home: string, sources = credentialSources
  * the same CLI-owned bytes before every private launch, replacing only Cotal's named `SKILL.md`
  * entries. No operator or third-party private-home files are removed. */
 export function mirrorJcodeSkills(home: string, sourceDir: string): string[] {
-  privateDirectory(home);
+  privateDirectory(home, { requireOwner: true });
   const sourceRoot = resolve(sourceDir);
   const sourceRootStats = lstatSync(sourceRoot);
   if (!sourceRootStats.isDirectory() || sourceRootStats.isSymbolicLink())
@@ -254,17 +254,21 @@ export function mirrorJcodeSkills(home: string, sourceDir: string): string[] {
     try {
       const stats = lstatSync(destination);
       if (stats.isDirectory()) throw new Error(`Jcode managed skill destination is a directory: ${destination}`);
-      if (stats.isFile() && !stats.isSymbolicLink() && readFileSync(destination).equals(bytes)) {
-        if (manifest.skills[entry.name] !== digest) {
-          manifest.skills[entry.name] = digest;
-          manifestChanged = true;
+      if (!stats.isFile() || stats.isSymbolicLink()) {
+        rmSync(destination, { force: true });
+      } else {
+        const current = readFileSync(destination);
+        if (current.equals(bytes)) {
+          if (manifest.skills[entry.name] !== digest) {
+            manifest.skills[entry.name] = digest;
+            manifestChanged = true;
+          }
+          names.push(entry.name);
+          continue;
         }
-        names.push(entry.name);
-        continue;
+        if (manifest.skills[entry.name] !== skillDigest(current)) backupManagedSkill(destination, current);
+        rmSync(destination, { force: true });
       }
-      const current = readFileSync(destination);
-      if (manifest.skills[entry.name] !== skillDigest(current)) backupManagedSkill(destination, current);
-      rmSync(destination, { force: true });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
@@ -294,6 +298,7 @@ export function mirrorJcodeSkills(home: string, sourceDir: string): string[] {
     try {
       const stats = lstatSync(destination);
       if (stats.isDirectory()) throw new Error(`Jcode managed skill destination is a directory: ${destination}`);
+      if (!stats.isFile() || stats.isSymbolicLink()) throw new Error(`Jcode managed skill destination is not a real file: ${destination}`);
       const current = readFileSync(destination);
       if (manifest.skills[name] !== skillDigest(current)) backupManagedSkill(destination, current);
       rmSync(destination);

@@ -46,6 +46,7 @@ path rather than a global `cotal`.
 The package also ships Cotal's coordination skill. Codex, OpenCode, pi, and Jcode load it from
 `~/.agents/skills/`. The first normal `cotal` command after an install or upgrade reconciles that
 managed copy to the running CLI generation. `cotal update` and `cotal setup` do the same explicitly;
+concurrent Cotal commands serialize that update, and an older CLI cannot downgrade a newer copy.
 `cotal --version`, help, completion, and status probes remain write-free.
 
 Requirements:

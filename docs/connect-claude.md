@@ -40,7 +40,8 @@ coordinating agent teams (today `team-topology`), from one canonical source, on 
   `~/.agents/skills/`. Cotal reconciles its bundled skill there on the first normal CLI command after
   install or upgrade, and on `cotal update` and `cotal setup`. It backs up an edited managed copy to a
   fresh `SKILL.md.bak` slot before replacement or retirement and removes retired Cotal files without
-  touching user or third-party files. A current generation performs no writes. `cotal status` reports
+  touching user or third-party files. Reconciliation is cross-process serialized, and an older CLI
+  refuses to replace a newer managed generation. A current generation performs no writes. `cotal status` reports
   missing, stale, or retired files with `cotal update` as the repair.
 
 Cotal also generates an [Agent Skills discovery index](https://cotal.ai/.well-known/agent-skills/index.json)

@@ -2,7 +2,8 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { homeCotalDir } from "@cotal-ai/workspace";
+import { acquireLock, homeCotalDir } from "@cotal-ai/workspace";
+import { cliVersion } from "../seed/paths.js";
 
 /**
  * Cross-vendor Agent Skills distribution.
@@ -67,6 +68,34 @@ function digest(buf: Buffer): string {
   return `sha256:${createHash("sha256").update(buf).digest("hex")}`;
 }
 
+function compareGeneration(a: string, b: string): number {
+  const parse = (value: string) => {
+    const [core, pre = ""] = value.split("-", 2);
+    const release = core.split(".").map(Number);
+    if (release.length !== 3 || release.some((part) => !Number.isInteger(part) || part < 0))
+      throw new Error(`invalid Agent Skills generation ${JSON.stringify(value)}`);
+    return { release, pre: pre ? pre.split(".") : [] };
+  };
+  const left = parse(a);
+  const right = parse(b);
+  for (let i = 0; i < 3; i++) if (left.release[i] !== right.release[i]) return left.release[i] > right.release[i] ? 1 : -1;
+  if (!left.pre.length && right.pre.length) return 1;
+  if (left.pre.length && !right.pre.length) return -1;
+  const count = Math.max(left.pre.length, right.pre.length);
+  for (let i = 0; i < count; i++) {
+    const x = left.pre[i];
+    const y = right.pre[i];
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    const xn = /^\d+$/.test(x);
+    const yn = /^\d+$/.test(y);
+    if (xn && yn && Number(x) !== Number(y)) return Number(x) > Number(y) ? 1 : -1;
+    if (xn !== yn) return xn ? -1 : 1;
+    if (x !== y) return x > y ? 1 : -1;
+  }
+  return 0;
+}
+
 /** Write bytes to a file Cotal owns by staging a fresh file in the SAME directory and renaming it over
  *  the destination. rename() replaces the directory entry, so it never writes THROUGH an existing inode:
  *  a hard-linked `SKILL.md` (a regular file, so it passes the symlink guard) is superseded rather than
@@ -104,16 +133,30 @@ function manifestPath(): string {
   return join(homeCotalDir(), "agent-skills.json");
 }
 
+function reconcileLockPath(): string {
+  return join(homeCotalDir(), "agent-skills.lock");
+}
+
+function assertReconcileLockPathSafe(): void {
+  const path = reconcileLockPath();
+  if (!existsSync(path)) return;
+  const stats = lstatSync(path);
+  if (!stats.isFile() || stats.isSymbolicLink())
+    throw new Error(`Refusing to manage skills: reconcile lock ${path} is not a real file. Remove it, then retry.`);
+}
+
 function assertManifestPathSafe(): void {
   const root = homeCotalDir();
   for (const p of [root, manifestPath()]) {
     if (!existsSync(p)) continue;
-    if (lstatSync(p).isSymbolicLink())
-      throw new Error(`Refusing to manage skills: ownership path ${p} is a symlink. Replace it with a real path, then retry.`);
+    const stats = lstatSync(p);
+    if (stats.isSymbolicLink()) throw new Error(`Refusing to manage skills: ownership path ${p} is a symlink. Replace it with a real path, then retry.`);
+    if (p === manifestPath() && !stats.isFile())
+      throw new Error(`Refusing to manage skills: ownership path ${p} is not a regular file. Replace it with a real file, then retry.`);
   }
 }
 
-type Manifest = { skills: Record<string, string> }; // skill name -> digest Cotal last wrote
+type Manifest = { generation?: string; skills: Record<string, string> }; // skill name -> digest Cotal last wrote
 
 /** Read the ownership manifest. Absent bootstraps to empty; a present-but-malformed manifest (bad JSON,
  *  wrong shape, an illegal skill name, or a non-digest value) FAILS LOUD rather than silently resetting.
@@ -132,6 +175,9 @@ function readManifest(): Manifest {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
     throw new Error(`Corrupt Cotal skills manifest at ${path} (unexpected shape). Fix or delete it, then re-run cotal setup.`);
   const skills = (parsed as { skills?: unknown }).skills;
+  const generation = (parsed as { generation?: unknown }).generation;
+  if (generation !== undefined && (typeof generation !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(generation)))
+    throw new Error(`Corrupt Cotal skills manifest at ${path}: bad generation.`);
   // Must be a plain object, never an array: array indices ("0", "1") pass a slug check, so an array
   // would let a numeric "name" be treated as owned (and deleted), and a string property assigned to an
   // array is dropped by JSON.stringify, so ownership would silently fail to persist. Reject it outright.
@@ -141,7 +187,7 @@ function readManifest(): Manifest {
     if (!validSkillName(name)) throw new Error(`Corrupt Cotal skills manifest at ${path}: illegal skill name ${JSON.stringify(name)}.`);
     if (typeof dig !== "string" || !DIGEST.test(dig)) throw new Error(`Corrupt Cotal skills manifest at ${path}: bad digest for ${JSON.stringify(name)}.`);
   }
-  return { skills: skills as Record<string, string> };
+  return { ...(generation ? { generation } : {}), skills: skills as Record<string, string> };
 }
 
 /** Write the manifest atomically (temp + rename) so a crash can't leave a half-written ledger. */
@@ -163,7 +209,10 @@ export function canonicalSkillNames(): string[] {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     if (!e.isDirectory()) continue;
     if (!validSkillName(e.name)) throw new Error(`Cotal skill dir "${e.name}" has an illegal name. Corrupt skills bundle.`);
-    if (!existsSync(join(dir, e.name, "SKILL.md"))) throw new Error(`Cotal skill "${e.name}" is missing SKILL.md at ${join(dir, e.name)}. Corrupt skills bundle.`);
+    const skill = join(dir, e.name, "SKILL.md");
+    if (!existsSync(skill)) throw new Error(`Cotal skill "${e.name}" is missing SKILL.md at ${join(dir, e.name)}. Corrupt skills bundle.`);
+    const stats = lstatSync(skill);
+    if (!stats.isFile() || stats.isSymbolicLink()) throw new Error(`Cotal skill "${e.name}" has no real SKILL.md at ${skill}. Corrupt skills bundle.`);
     names.push(e.name);
   }
   if (!names.length) throw new Error(`No Cotal skills found in ${dir}. Corrupt skills bundle.`);
@@ -182,6 +231,8 @@ function assertNoSymlink(destination: AgentSkillDestination, name: string): void
       continue; // does not exist yet: nothing to follow
     }
     if (st.isSymbolicLink()) throw new Error(`Refusing to manage skills: ${p} is a symlink. Cotal only writes real files under ${destination.root}.`);
+    if (p.endsWith("SKILL.md") && !st.isFile())
+      throw new Error(`Refusing to manage skills: ${p} is not a regular file. Replace it with a real file, then retry.`);
   }
 }
 
@@ -197,69 +248,86 @@ export type AgentSkillsResult = { installed: string[]; backedUp: { name: string;
  *    only when empty. A user's or third party's other files in the directory are never removed.
  *  Idempotent; fails loud on a corrupt bundle or manifest. */
 export function installAgentSkills(): AgentSkillsResult {
-  const src = canonicalSkillsDir();
-  const names = canonicalSkillNames();
-  const destinations = agentSkillDestinations();
-  if (destinations.length !== 1) throw new Error("internal error: the legacy Agent Skills manifest supports exactly one destination");
-  const destination = destinations[0];
-  const home = destination.root;
-  const manifest = readManifest();
-  const installed: string[] = [];
-  const backedUp: { name: string; path: string }[] = [];
-  const removed: string[] = [];
-  let manifestChanged = false;
+  assertReconcileLockPathSafe();
+  const lock = acquireLock(reconcileLockPath(), {
+    label: "Agent Skills reconcile",
+    waitMs: 300_000,
+    onTimeout: (owner) => new Error(`Agent Skills reconcile is held by pid ${owner.pid}; retry once it finishes`),
+  });
+  try {
+    const src = canonicalSkillsDir();
+    const names = canonicalSkillNames();
+    const destinations = agentSkillDestinations();
+    if (destinations.length !== 1) throw new Error("internal error: the legacy Agent Skills manifest supports exactly one destination");
+    const destination = destinations[0];
+    const home = destination.root;
+    const manifest = readManifest();
+    const generation = cliVersion();
+    if (manifest.generation && compareGeneration(generation, manifest.generation) < 0)
+      throw new Error(`this cotal ${generation} is older than the installed Agent Skills generation ${manifest.generation}; run the newer cotal`);
+    const installed: string[] = [];
+    const backedUp: { name: string; path: string }[] = [];
+    const removed: string[] = [];
+    let manifestChanged = false;
 
-  for (const name of names) {
-    assertNoSymlink(destination, name);
-    const dir = join(home, name);
-    const destFile = join(dir, "SKILL.md");
-    const canonical = readFileSync(join(src, name, "SKILL.md"));
-    const canonicalDigest = digest(canonical);
-    if (existsSync(destFile)) {
-      const cur = readFileSync(destFile);
-      const currentDigest = digest(cur);
-      if (currentDigest === canonicalDigest && manifest.skills[name] === canonicalDigest) continue;
-      if (currentDigest === canonicalDigest && manifest.skills[name] === undefined) {
-        manifest.skills[name] = canonicalDigest;
-        manifestChanged = true;
-        continue;
+    for (const name of names) {
+      assertNoSymlink(destination, name);
+      const dir = join(home, name);
+      const destFile = join(dir, "SKILL.md");
+      const canonical = readFileSync(join(src, name, "SKILL.md"));
+      const canonicalDigest = digest(canonical);
+      if (existsSync(destFile)) {
+        const cur = readFileSync(destFile);
+        const currentDigest = digest(cur);
+        if (currentDigest === canonicalDigest && manifest.skills[name] === canonicalDigest) continue;
+        if (currentDigest === canonicalDigest && manifest.skills[name] === undefined) {
+          manifest.skills[name] = canonicalDigest;
+          manifestChanged = true;
+          continue;
+        }
+        const ours = manifest.skills[name] === currentDigest;
+        if (!ours && currentDigest !== canonicalDigest) {
+          const path = backupDivergent(destFile, cur);
+          backedUp.push({ name, path });
+        }
       }
-      const ours = manifest.skills[name] === currentDigest;
-      if (!ours && currentDigest !== canonicalDigest) {
-        const path = backupDivergent(destFile, cur); // create a FRESH backup slot (never overwrite a pre-existing/foreign .bak); every divergent edit stays recoverable
-        backedUp.push({ name, path });
-      }
+      mkdirSync(dir, { recursive: true });
+      writeOwnedFile(destFile, canonical);
+      installed.push(name);
+      if (manifest.skills[name] !== canonicalDigest) manifestChanged = true;
+      manifest.skills[name] = canonicalDigest;
     }
-    mkdirSync(dir, { recursive: true });
-    writeOwnedFile(destFile, canonical); // write ONLY our file, via rename (never truncates a hard-linked inode); never delete or replace anything else in the dir
-    installed.push(name);
-    if (manifest.skills[name] !== canonicalDigest) manifestChanged = true;
-    manifest.skills[name] = canonicalDigest;
-  }
 
-  for (const name of Object.keys(manifest.skills)) {
-    if (names.includes(name)) continue; // still shipped
-    assertNoSymlink(destination, name);
-    const dir = join(home, name);
-    const destFile = join(dir, "SKILL.md");
-    if (existsSync(destFile)) {
-      const current = readFileSync(destFile);
-      if (digest(current) !== manifest.skills[name]) backedUp.push({ name, path: backupDivergent(destFile, current) });
-      rmSync(destFile); // remove ONLY our file (not the dir, not a user's files)
-      try {
-        if (existsSync(dir) && readdirSync(dir).length === 0) rmdirSync(dir); // drop the dir only if now empty (rmdir refuses a non-empty dir)
-      } catch {
-        /* not empty or already gone: leave it */
+    for (const name of Object.keys(manifest.skills)) {
+      if (names.includes(name)) continue;
+      assertNoSymlink(destination, name);
+      const dir = join(home, name);
+      const destFile = join(dir, "SKILL.md");
+      if (existsSync(destFile)) {
+        const current = readFileSync(destFile);
+        if (digest(current) !== manifest.skills[name]) backedUp.push({ name, path: backupDivergent(destFile, current) });
+        rmSync(destFile);
+        try {
+          if (existsSync(dir) && readdirSync(dir).length === 0) rmdirSync(dir);
+        } catch {
+          /* not empty or already gone */
+        }
+        removed.push(name);
       }
-      removed.push(name);
+      delete manifest.skills[name];
+      manifestChanged = true;
     }
-    delete manifest.skills[name];
-    manifestChanged = true;
-  }
 
-  const changed = installed.length > 0 || backedUp.length > 0 || removed.length > 0 || manifestChanged;
-  if (changed) writeManifest(manifest);
-  return { installed, backedUp, removed, changed };
+    if (manifest.generation !== generation) {
+      manifest.generation = generation;
+      manifestChanged = true;
+    }
+    const changed = installed.length > 0 || backedUp.length > 0 || removed.length > 0 || manifestChanged;
+    if (changed) writeManifest(manifest);
+    return { installed, backedUp, removed, changed };
+  } finally {
+    lock.release();
+  }
 }
 
 export type SkillSkewState = "current" | "stale" | "missing" | "retired";
@@ -279,13 +347,17 @@ export function agentSkillsSkew(): SkillSkew[] {
   const out: SkillSkew[] = names.map((name) => {
     const installed = join(home, name, "SKILL.md");
     if (!existsSync(installed)) return { destination, name, state: "missing" };
+    assertNoSymlink(destination, name);
     const canonical = readFileSync(join(src, name, "SKILL.md"));
     return { destination, name, state: readFileSync(installed).equals(canonical) ? "current" : "stale" };
   });
   const manifest = readManifest();
   for (const name of Object.keys(manifest.skills)) {
     if (names.includes(name)) continue;
-    if (existsSync(join(home, name, "SKILL.md"))) out.push({ destination, name, state: "retired" });
+    if (existsSync(join(home, name, "SKILL.md"))) {
+      assertNoSymlink(destination, name);
+      out.push({ destination, name, state: "retired" });
+    }
   }
   return out;
 }

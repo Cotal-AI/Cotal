@@ -148,6 +148,19 @@ try {
     assert.notEqual(statSync(join(skillsHome, name, "SKILL.md")).ino, before, "our SKILL.md is a fresh inode, not the shared one");
   }
 
+  // --- Block 3b: non-regular managed paths are refused before read -------------------------------
+  {
+    const { manifest } = freshEnv();
+    const skillDir = join(agentSkillsHome(), name);
+    mkdirSync(join(skillDir, "SKILL.md"), { recursive: true });
+    assert.throws(() => installAgentSkills(), /not a regular file/, "installer refuses a directory where SKILL.md belongs");
+    assert.throws(() => agentSkillsSkew(), /not a regular file/, "status skew refuses a directory where SKILL.md belongs");
+    rmSync(join(skillDir, "SKILL.md"), { recursive: true });
+    mkdirSync(manifest, { recursive: true });
+    assert.throws(() => installAgentSkills(), /not a regular file/, "installer refuses a directory where the ownership manifest belongs");
+    assert.throws(() => agentSkillsSkew(), /not a regular file/, "status skew refuses a directory where the ownership manifest belongs");
+  }
+
   // --- Block 4: manifest traversal key is rejected, nothing deleted (round-2 HIGH) ----------------
   {
     const { home, manifest } = freshEnv();
@@ -208,6 +221,16 @@ try {
     assert.equal(readFileSync(victim, "utf8"), "OUTSIDE DATA", "manifest temp symlink must not clobber the outside file");
     assert.ok(existsSync(manifest), "manifest is written to its real path");
     rmSync(outside, { recursive: true, force: true });
+  }
+
+  // --- Block 9: an older generation cannot overwrite newer managed bytes -------------------------
+  {
+    const { manifest } = freshEnv();
+    mkdirSync(join(agentSkillsHome(), name), { recursive: true });
+    writeFileSync(join(agentSkillsHome(), name, "SKILL.md"), canonicalBytes);
+    writeFileSync(manifest, JSON.stringify({ generation: "999.0.0", skills: { [name]: sha(canonicalBytes) } }));
+    assert.throws(() => installAgentSkills(), /older than the installed Agent Skills generation/, "older CLI generation fails before overwrite");
+    assert.ok(readFileSync(join(agentSkillsHome(), name, "SKILL.md")).equals(canonicalBytes));
   }
 
   console.log("agent-skills.smoke: all assertions passed");

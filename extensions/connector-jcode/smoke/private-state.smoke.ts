@@ -90,6 +90,10 @@ try {
   symlinkSync(skillSource, sourceLink, "dir");
   assert.throws(() => mirrorJcodeSkills(home, sourceLink), /not a real directory/);
   check("managed Jcode skills refuse a symlinked canonical source root", true);
+  rmSync(managedSkill);
+  mkdirSync(managedSkill);
+  assert.throws(() => mirrorJcodeSkills(home, skillSource), /destination is a directory/);
+  check("managed Jcode skills refuse a directory where SKILL.md belongs", true);
 
   console.log(`\nJCODE PRIVATE STATE SMOKE PASSED (${pass} checks)`);
 } finally {
