@@ -6,27 +6,57 @@
  * client, not by calling the tool helper directly, so it grades the registered route as an agent
  * invokes it. The broker address is inert: MeshAgent is constructed but never started.
  *
- * MUTATION LEDGER, predicted before the run. M1 changes MeshAgent's `connected` getter from its live
- * field to the constant `false`.
+ * MUTATION LEDGER, predicted before the run. Six mutations, because the state a caller acts on is
+ * derived from three facts and one mutation on the derivation would be killed by whichever cell ran
+ * first, leaving every other state ungraded.
  *
+ * M1 replaces MeshAgent's `connected` getter with the constant false.
  *   IN  "the real MCP route reports the MeshAgent's live connected=true state"
- *       The staged source is true, so the constant changes this cell's observed result to false.
- *   OUT "the status tool is published with a CLOSED empty input schema"
- *       Schema publication does not read the connected getter.
- *   OUT "unknown input is refused before the status route executes"
- *       Input validation runs before the handler and never reads MeshAgent state.
- *   OUT "the first status has no synthesized lastDrainedAt"
- *       Drain state is independent of connectedness and has not been measured yet.
- *   OUT "the status route reports the live buffered count before the drain"
- *       The count comes from inboxCount(), whose source is unchanged by M1.
- *   OUT "a real inbox call clears the two buffered deliveries"
- *       The inbox route drains the staged buffer without consulting connectedness.
- *   OUT "lastDrainedAt is measured by that successful non-empty inbox drain"
- *       The timestamp source is the successful drain, not the connected getter.
- *   OUT "the status route reports the live buffered count after the drain"
- *       The count comes from inboxCount(), whose source is unchanged by M1.
- *   OUT "the status route reports a live connection issue as degraded"
- *       This cell stages connected=false, matching M1, and grades connectionIssue instead.
+ *   ALSO "bound with the transport down reports degraded, not connected and not disconnected",
+ *       which asserts the REPORTED `connected` is true. Predicted, not a surprise.
+ *   OUT every cell that asserts only on `state`: `connectionState` reads the private field rather
+ *       than this getter, so the derived state is unmoved by M1. Ready, connecting, disconnected and
+ *       both stopped cells stay green.
+ *
+ * M2 deletes the `_stopping` branch from `connectionState`.
+ *   IN  "a deliberately stopped session reports stopped rather than disconnected"
+ *   ALSO "a stopped session reports its retained failure as a post-mortem, not as a current issue",
+ *       because the issue key is chosen from the state. Predicted, not a surprise.
+ *   OUT ready, degraded, connecting and disconnected: none of them stages `_stopping`.
+ *
+ * M3 collapses `degraded` into `ready`.
+ *   IN  "bound with the transport down reports degraded, not connected and not disconnected"
+ *   OUT ready is already ready; connecting and disconnected stage `_connected` false and never
+ *       reach the mutated branch; stopped returns before it.
+ *
+ * M4 collapses `connecting` into `disconnected`.
+ *   IN  "a live transport whose bind has not finished reports connecting"
+ *   OUT disconnected expects that value anyway; ready and degraded return before this line;
+ *       stopped returns first.
+ *
+ * M5 drops the stopped scoping on the reported issue in tool-specs.
+ *   IN  "a stopped session reports its retained failure as a post-mortem, not as a current issue"
+ *   OUT the disconnected cell, which expects `connectionIssue` and gets it under the mutant too;
+ *       every cell that stages no issue at all.
+ *
+ * M6 replaces the `transportConnected` getter with the constant true.
+ *   IN  "bound with the transport down reports degraded, not connected and not disconnected"
+ *   OUT the derived state is computed from the private field, so `state` is unaffected everywhere.
+ *       Only cells asserting the REPORTED fact move. This is deliberate: it proves the raw facts
+ *       come from live getters rather than being back-derived from the state, which would make them
+ *       useless to a caller wanting to check our reading.
+ *
+ * M7 replaces the reported `stopping` fact with the constant false.
+ *   IN  "the reported facts distinguish stopped from disconnected, which agree on both other facts"
+ *   OUT every cell asserting only on `state`: the derivation reads the private field, so the state
+ *       itself is unmoved. Only the reported fact breaks, which is the point.
+ *
+ * WHAT THIS SUITE DOES NOT CLAIM. Every state is staged by writing MeshAgent's private fields, so
+ * these cells prove the tool REPORTS each state distinctly. They do not prove the endpoint reaches
+ * each combination. That is proved separately: the transport-liveness broker companion drives real
+ * disconnect and reconnect edges against a real broker, and the `connecting` window exists by
+ * construction, since the endpoint emits transport=true when connect() returns while the Cotal bind
+ * below is still in progress. Reachability is argued there and deliberately not claimed here.
  *
  * Named gap: no broker connection is opened, so this suite does not prove CotalEndpoint emits the
  * connection event. Existing endpoint suites own that source. It proves this tool reports the state
@@ -64,7 +94,13 @@ const config: AgentConfig = {
   allowPublish: [],
 };
 const agent = new MeshAgent(config);
-(agent as unknown as { _connected: boolean })._connected = true;
+// Both liveness facts, deliberately. Staging only `_connected` leaves `_transportConnected` false,
+// which is the DEGRADED state, so a setup that sets one and calls the session healthy is staging the
+// very combination this tool exists to tell apart.
+type Stage = { _connected: boolean; _transportConnected: boolean; _stopping: boolean; lastConnectionError?: string };
+const stage = agent as unknown as Stage;
+stage._connected = true;
+stage._transportConnected = true;
 
 const acked: string[] = [];
 const item = (id: string): InboxItem => ({
@@ -142,18 +178,73 @@ check(
 );
 check("the status route reports the live buffered count after the drain", drained.bufferedCount === 0, drained);
 
-(agent as unknown as { _connected: boolean; lastConnectionError?: string })._connected = false;
-(agent as unknown as { lastConnectionError?: string }).lastConnectionError = "socket closed";
+check("a bound session with a live transport reports ready", (await status()).state === "ready", await status());
+
+// DEGRADED: bound, transport down. The single boolean this tool used to report was FALSE here, on
+// the one row that actually needs attention, because it was derived from `connected` alone.
+stage._transportConnected = false;
 const degraded = await status();
 check(
-  "the status route reports a live connection issue as degraded",
-  degraded.connected === false && degraded.degraded === true && degraded.connectionIssue === "socket closed",
+  "bound with the transport down reports degraded, not connected and not disconnected",
+  degraded.state === "degraded" && degraded.connected === true && degraded.transportConnected === false,
   degraded,
+);
+
+// CONNECTING: the transport is live before the Cotal bind finishes. The endpoint creates this
+// window deliberately, emitting transport=true when connect() returns while the bind is still in
+// progress, so this is a real state rather than one invented to fill the table.
+stage._connected = false;
+stage._transportConnected = true;
+const connecting = await status();
+check(
+  "a live transport whose bind has not finished reports connecting",
+  connecting.state === "connecting" && connecting.connected === false && connecting.transportConnected === true,
+  connecting,
+);
+
+// DISCONNECTED, carrying the reason as a CURRENT problem.
+stage._transportConnected = false;
+stage.lastConnectionError = "socket closed";
+const down = await status();
+check(
+  "neither bound nor transported reports disconnected, with the reason as a current issue",
+  down.state === "disconnected" && down.connectionIssue === "socket closed" && !("lastConnectionIssue" in down),
+  down,
+);
+
+// STOPPED: terminal and NOT a fault. stop() clears both liveness flags, so without `stopping` this
+// is indistinguishable from the disconnected row above. The retained issue is a post-mortem here,
+// and reporting it under the same key would tell a reader a cleanly stopped session is broken.
+stage._stopping = true;
+const stopped = await status();
+check(
+  "a deliberately stopped session reports stopped rather than disconnected",
+  stopped.state === "stopped",
+  stopped,
+);
+check(
+  "a stopped session reports its retained failure as a post-mortem, not as a current issue",
+  stopped.lastConnectionIssue === "socket closed" && !("connectionIssue" in stopped),
+  stopped,
+);
+
+// The reported facts must be able to REPRODUCE the state, or they are decoration rather than a
+// check on our derivation. Stopped and disconnected both read connected=false and
+// transportConnected=false, so `stopping` is the only fact that separates them.
+check(
+  "the reported facts distinguish stopped from disconnected, which agree on both other facts",
+  down.connected === false &&
+    down.transportConnected === false &&
+    down.stopping === false &&
+    stopped.connected === false &&
+    stopped.transportConnected === false &&
+    stopped.stopping === true,
+  { down, stopped },
 );
 
 await Promise.all([client.close(), server.close()]);
 
-const EXPECTED_CELLS = 9;
+const EXPECTED_CELLS = 15;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);

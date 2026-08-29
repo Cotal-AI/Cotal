@@ -200,6 +200,16 @@ function ingestDedupKey(id: string): string | undefined {
  * layer to wake the session now (the Stop→idle flush of held messages); `"error"` (Error) for
  * endpoint faults.
  */
+/**
+ * The five states a caller has to tell apart, derived in one place so every consumer agrees.
+ *
+ * `degraded` is the one that matters and the one a single boolean gets wrong: the endpoint is bound
+ * but the socket underneath it is down, so sends queue or fail while the client reconnects. It is
+ * NOT the same as `disconnected`, and it is not a stopped session either. `stopped` is terminal and
+ * is not a fault at all.
+ */
+export type ConnectionState = "ready" | "degraded" | "connecting" | "disconnected" | "stopped";
+
 export class MeshAgent extends EventEmitter {
   readonly ep: CotalEndpoint;
   readonly config: AgentConfig;
@@ -269,7 +279,7 @@ export class MeshAgent extends EventEmitter {
   private recvKeySeq = 0;
   private focusExcludedIds = new Map<string, string>();
   private focusRecallUnsafeChannels = new Set<string>();
-  private stopping = false;
+  private _stopping = false;
 
   constructor(config: AgentConfig) {
     super();
@@ -315,7 +325,7 @@ export class MeshAgent extends EventEmitter {
     this.ep.on("transport", (e: TransportState) => {
       // An in-flight initial bind or rebuild can finish after stop() cleared local state. Shutdown is
       // terminal for this MeshAgent, so a late endpoint edge cannot resurrect transport.
-      if (this.stopping) return;
+      if (this._stopping) return;
       // nats.js and clean shutdown can both confirm the same edge. A duplicate carries no state
       // change and must not wake consumers or let an old confirmation look like a new outage.
       if (this._transportConnected === e.connected) return;
@@ -327,7 +337,7 @@ export class MeshAgent extends EventEmitter {
     // did on its own can't leave us thinking we're offline (which would skip stop() → leak).
     this.ep.on("connection", (e: { connected: boolean }) => {
       // Same stop race as transport above: a late connectAndBind completion is not a new session.
-      if (this.stopping) return;
+      if (this._stopping) return;
       this._connected = e.connected;
       if (e.connected) {
         this.lastConnectionError = undefined;
@@ -358,6 +368,22 @@ export class MeshAgent extends EventEmitter {
   /** The latest successful, non-empty inbox drain in this session. */
   get lastInboxDrainedAt(): number | undefined {
     return this._lastInboxDrainedAt;
+  }
+
+  /** Whether {@link stop} has been called. Terminal, and never cleared: a stopped session does not
+   *  serve again. This is the ONLY way to tell a deliberate shutdown from a lost connection, because
+   *  `stop()` clears readiness and transport together, so those two read identically in both cases. */
+  get stopping(): boolean {
+    return this._stopping;
+  }
+
+  /** The three liveness facts combined, in one place. Every combination maps, so a caller never has
+   *  to guess what an unlisted pair means, and a caller that disagrees with this reading can still
+   *  read {@link connected}, {@link transportConnected} and {@link stopping} directly. */
+  get connectionState(): ConnectionState {
+    if (this._stopping) return "stopped";
+    if (this._connected) return this._transportConnected ? "ready" : "degraded";
+    return this._transportConnected ? "connecting" : "disconnected";
   }
 
   /** Wait for the endpoint's real post-bind connection signal. `start()` deliberately stays
@@ -401,7 +427,7 @@ export class MeshAgent extends EventEmitter {
   }
 
   private async connectLoop(retryMs: number): Promise<void> {
-    while (!this.stopping && !this._connected) {
+    while (!this._stopping && !this._connected) {
       try {
         await this.ep.start();
         // _connected is set by the endpoint's "connection" event (fired inside start()), not here.
@@ -413,7 +439,7 @@ export class MeshAgent extends EventEmitter {
         // stop() can win while the initial endpoint start is still pending. A rejection arriving
         // after that terminal decision is teardown noise, not a new connectionIssue for the stopped
         // session, and there is no next retry to explain or sleep toward.
-        if (this.stopping) return;
+        if (this._stopping) return;
         this.lastConnectionError = error.message;
         this.log(`mesh unreachable (${error.message}); retrying in ${retryMs}ms`);
         await sleep(retryMs);
@@ -422,7 +448,7 @@ export class MeshAgent extends EventEmitter {
   }
 
   async stop(): Promise<void> {
-    this.stopping = true;
+    this._stopping = true;
     // stop() is a local terminal fact. Do not wait for an endpoint event that intentionally ignores
     // its own stopped close, or leave a cleanly stopped session reporting either state as live.
     this._connected = false;
@@ -442,7 +468,7 @@ export class MeshAgent extends EventEmitter {
    *  interruptible. Returns a one-line status for the caller to surface (e.g. the
    *  cotal_reconnect tool → TUI); on failure the endpoint keeps retrying in the background. */
   async reconnect(): Promise<{ ok: boolean; message: string }> {
-    if (this.stopping) {
+    if (this._stopping) {
       return {
         ok: false,
         message: "This session is shutting down, so its Cotal mesh connection cannot be reconnected. Start a new session instead.",
@@ -1524,7 +1550,7 @@ export class MeshAgent extends EventEmitter {
     // connectionIssue is the bounded readiness diagnostic documented above: retain failures only
     // while the endpoint has not bound. Post-bind consumer/permission faults are still logged, but
     // presenting one as the current connection failure after readiness succeeded is stale and false.
-    if (!this._connected && !this.stopping) this.lastConnectionError = error.message;
+    if (!this._connected && !this._stopping) this.lastConnectionError = error.message;
     const fingerprint = error.message.replace(/oc_[A-Za-z0-9]+_\d+/g, "oc_*");
     const prior = this.endpointErrorLog.get(fingerprint);
     if (prior && now - prior.lastLoggedAt < ENDPOINT_ERROR_LOG_WINDOW_MS) {

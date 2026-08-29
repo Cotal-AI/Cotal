@@ -69,7 +69,7 @@
     {
       "name": "post-bind endpoint errors become stale connection issues again",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    if (!this._connected && !this.stopping) this.lastConnectionError = error.message;",
+      "find": "    if (!this._connected && !this._stopping) this.lastConnectionError = error.message;",
       "replace": "    this.lastConnectionError = error.message;",
       "expectRed": "a post-bind endpoint error is logged but is NOT presented as the pre-bind connection issue",
       "cell": "a post-bind endpoint error is logged but is NOT presented as the pre-bind connection issue",
@@ -78,7 +78,7 @@
     {
       "name": "a late transport edge can resurrect a stopped MeshAgent",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "      // An in-flight initial bind or rebuild can finish after stop() cleared local state. Shutdown is\n      // terminal for this MeshAgent, so a late endpoint edge cannot resurrect transport.\n      if (this.stopping) return;",
+      "find": "      // An in-flight initial bind or rebuild can finish after stop() cleared local state. Shutdown is\n      // terminal for this MeshAgent, so a late endpoint edge cannot resurrect transport.\n      if (this._stopping) return;",
       "replace": "      // Transport events are accepted even after stop.",
       "expectRed": "late endpoint events after stop cannot resurrect readiness or transport",
       "cell": "late endpoint events after stop cannot resurrect readiness or transport",
@@ -87,7 +87,7 @@
     {
       "name": "a late readiness edge can resurrect a stopped MeshAgent",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "      // Same stop race as transport above: a late connectAndBind completion is not a new session.\n      if (this.stopping) return;",
+      "find": "      // Same stop race as transport above: a late connectAndBind completion is not a new session.\n      if (this._stopping) return;",
       "replace": "      // Readiness events are accepted even after stop.",
       "expectRed": "late endpoint events after stop cannot resurrect readiness or transport",
       "cell": "late endpoint events after stop cannot resurrect readiness or transport",
@@ -123,7 +123,7 @@
     {
       "name": "post-stop endpoint errors overwrite the retained diagnostic",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    if (!this._connected && !this.stopping) this.lastConnectionError = error.message;",
+      "find": "    if (!this._connected && !this._stopping) this.lastConnectionError = error.message;",
       "replace": "    if (!this._connected) this.lastConnectionError = error.message;",
       "expectRed": "post-stop endpoint errors cannot overwrite the preserved connection issue",
       "cell": "post-stop endpoint errors cannot overwrite the preserved connection issue",
@@ -132,7 +132,7 @@
     {
       "name": "a rejected initial start writes a new issue after stop",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "        if (this.stopping) return;\n        this.lastConnectionError = error.message;",
+      "find": "        if (this._stopping) return;\n        this.lastConnectionError = error.message;",
       "replace": "        this.lastConnectionError = error.message;",
       "expectRed": "a start rejection arriving after stop cannot replace the post-mortem diagnostic",
       "cell": "a start rejection arriving after stop cannot replace the post-mortem diagnostic",
