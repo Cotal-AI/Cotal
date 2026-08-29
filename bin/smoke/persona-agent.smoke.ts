@@ -28,6 +28,7 @@
  * Run: pnpm smoke:persona-agent
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -50,6 +51,7 @@ const { Manager } = await import("@cotal-ai/manager");
 let pass = 0;
 let fail = 0;
 const kids: ChildProcess[] = [];
+let releaseBroker: (() => void) | undefined;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); return; }
   fail++;
@@ -151,8 +153,10 @@ async function captureProcess(command: string, args: string[], env: NodeJS.Proce
 
 let mgr: InstanceType<typeof Manager> | undefined;
 try {
-  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), "cotal-869-js-"))], { stdio: "ignore" });
+  const brokerStore = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}869-js-`));
+  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", brokerStore], { stdio: "ignore" });
   kids.push(broker);
+  releaseBroker = teardownOnSignal(broker, brokerStore);
   for (let i = 0; i < 50; i++) {
     if ((await probeConnect(SERVER, { timeoutMs: 400 })).ok) break;
     await sleep(100);
@@ -330,4 +334,5 @@ try {
 } finally {
   try { await mgr?.stop(); } catch { /* teardown best-effort */ }
   for (const k of kids) k.kill("SIGKILL");
+  releaseBroker?.();
 }

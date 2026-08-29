@@ -40,6 +40,7 @@
  * COTAL_HOME and XDG_CONFIG_HOME are sandboxed; kills ONLY the PIDs it spawns. Needs nats-server on PATH.
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -75,6 +76,7 @@ import type { Command, Connector, LaunchOpts } from "@cotal-ai/core";
 let pass = 0;
 let fail = 0;
 const kids: ChildProcess[] = [];
+let releaseBroker: (() => void) | undefined;
 /** A graded cell. It RECORDS rather than throws, so every cell runs and the banner below always
  *  prints. That is not a style preference: `mutation-proof` treats a run that never reached its
  *  completion marker as INCONCLUSIVE rather than as a kill, so a fail-fast suite reports every
@@ -249,11 +251,12 @@ try {
   writeFileSync(join(authDir(rootCorrupt), "broker.json"), "{not json");
 
   // ---- 3. a REAL authed broker that trusts ONLY the live chain -----------------------------------
-  const storeDir = mkdtempSync(join(tmpdir(), "cotal-authroot-js-"));
+  const storeDir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}authroot-js-`));
   const conf = join(base, "server.conf");
   writeFileSync(conf, serverConfig(live, [live], { transport: { kind: "plaintext" }, port: PORT, storeDir, host: "127.0.0.1" }));
   const broker = spawnProc("nats-server", ["-c", conf], { stdio: "ignore" });
   kids.push(broker);
+  releaseBroker = teardownOnSignal(broker, storeDir);
   // An AUTHED broker answers a CREDLESS probe `auth-required`, and that answer is itself proof it
   // is up. A readiness loop waiting for `ok` here would never see one, and the suite would time out
   // rather than fail - a stall reads as infrastructure, and this cell would stop being a cell.
@@ -431,4 +434,5 @@ try {
   // like that to whichever suite was running.
   await Promise.race([mgr?.stop().catch(() => {}) ?? Promise.resolve(), sleep(10_000)]);
   await Promise.all(kids.map((k) => { k.kill("SIGKILL"); return awaitExit(k); }));
+  releaseBroker?.();
 }
