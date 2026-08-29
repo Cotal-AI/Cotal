@@ -1100,7 +1100,7 @@ cotal mint <name> --provision [--role <role>] [--space <s>] [--server <url>]
 | Flag | Default | Meaning |
 |---|---|---|
 | `--profile <agent\|observer\|admin>` | `agent` | Credential profile |
-| `--out <path>` | `.cotal/auth/creds/<name>.creds` | Output path |
+| `--out <path>` | `.cotal/auth/creds/space.<key>/<name>.creds` | Output path — the default sits under the resolved space's segment (`<key>` is that space's hex encoding, as in [Project files](config.md#project-files)) |
 | `--signer` | off | Emit a stripped account-signing file instead |
 | `--force` | off | With `--signer`: overwrite an existing file |
 | `--allow-subscribe <a,b>` | the agent file's, else subscribe | Read-ACL override, **agent profile only**: `observer` and `admin` carry a fixed read set, and `mint` refuses this flag there rather than narrowing nothing |
