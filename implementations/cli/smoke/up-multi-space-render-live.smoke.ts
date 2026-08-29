@@ -44,6 +44,11 @@ const freePort = (): Promise<number> =>
 const scratch = makeScratch("cotal-up-multispace-");
 const home = mkdtempSync(join(scratch, "home-"));
 const root = mkdtempSync(join(scratch, "root-"));
+// A run started from a session that is itself joined to a mesh inherits COTAL_* — a live
+// credential path and broker URL — and the spawns below spread this process env into their
+// children. Strip the inherited keys first; the one variable the children need (COTAL_HOME)
+// is set explicitly right after, pointing at this smoke's own sandbox.
+for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
 process.env.COTAL_HOME = home;
 
 const { composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, mintCreds, newIdentity } = await import("@cotal-ai/core");
