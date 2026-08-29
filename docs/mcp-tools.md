@@ -11,6 +11,7 @@ The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` an
 | Tool | Does | Side-effect |
 |---|---|---|
 | [`cotal_orientation`](#cotalorientation) | orient (who you are & what you can do) | read-only |
+| [`cotal_connection_status`](#cotalconnectionstatus) | connection status | read-only |
 | [`cotal_docs`](#cotaldocs) | read the docs (version-exact) | read-only |
 | [`cotal_roster`](#cotalroster) | who's present | read-only |
 | [`cotal_inbox`](#cotalinbox) | read incoming messages | clears only the messages it returns (nothing at all when peek is true) |
@@ -38,6 +39,18 @@ Your orientation card: who you are (name/role/space), the channels you can read 
 - **Side-effect:** read-only.
 - **Available:** always.
 - Call it first; safe to re-check anytime.
+
+No arguments.
+
+## `cotal_connection_status`
+
+*connection status*
+
+Report this session's live mesh connection state, latest connection issue, buffered inbox count, and the time of its latest successful non-empty inbox drain when one has occurred. Read-only and local: it reads this session's MeshAgent directly and does not call the manager or the broker.
+
+- **Side-effect:** read-only.
+- **Available:** always.
+- Reads this session's MeshAgent directly. `lastDrainedAt` is omitted until a non-empty inbox drain has successfully committed.
 
 No arguments.
 
