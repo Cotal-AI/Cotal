@@ -78,8 +78,8 @@
     {
       "name": "a late transport edge can resurrect a stopped MeshAgent",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "      // An in-flight initial bind or rebuild can finish after stop() cleared local state. Shutdown is\n      // terminal for this MeshAgent, so a late endpoint edge cannot resurrect transport.\n      if (this._stopping) return;",
-      "replace": "      // Transport events are accepted even after stop.",
+      "find": "      if (this._stopping) return;\n      if (this._transportConnected === e.connected) return;",
+      "replace": "      if (this._transportConnected === e.connected) return;",
       "expectRed": "late endpoint events after stop cannot resurrect readiness or transport",
       "cell": "late endpoint events after stop cannot resurrect readiness or transport",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
@@ -87,8 +87,8 @@
     {
       "name": "a late readiness edge can resurrect a stopped MeshAgent",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "      // Same stop race as transport above: a late connectAndBind completion is not a new session.\n      if (this._stopping) return;",
-      "replace": "      // Readiness events are accepted even after stop.",
+      "find": "      if (this._stopping) return;\n      this._connected = e.connected;",
+      "replace": "      this._connected = e.connected;",
       "expectRed": "late endpoint events after stop cannot resurrect readiness or transport",
       "cell": "late endpoint events after stop cannot resurrect readiness or transport",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
@@ -96,8 +96,8 @@
     {
       "name": "terminal close reports its error before readiness becomes false",
       "file": "packages/core/src/endpoint.ts",
-      "find": "      this.emit(\"connection\", { connected: false }); // dropped — report it before the rebuild kicks in\n      this.emit(\n        \"error\",\n        new Error(`mesh connection closed${err ? `: ${(err as Error).message}` : \"\"} - re-establishing`),\n      );",
-      "replace": "      this.emit(\n        \"error\",\n        new Error(`mesh connection closed${err ? `: ${(err as Error).message}` : \"\"} - re-establishing`),\n      );\n      this.emit(\"connection\", { connected: false }); // wrong order: diagnostic sees the old bound state",
+      "find": "      this.emit(\"connection\", { connected: false });\n      this.emit(\n        \"error\",",
+      "replace": "      this.emit(\n        \"error\",",
       "expectRed": "terminal close marks readiness false BEFORE retaining its matching diagnostic",
       "cell": "terminal close marks readiness false BEFORE retaining its matching diagnostic",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
@@ -105,8 +105,8 @@
     {
       "name": "clean stop destroys the last connection issue",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    // Unconditional: a background self-heal can flip _connected without us, so a `_connected`",
-      "replace": "    this.lastConnectionError = undefined;\n    // Unconditional: a background self-heal can flip _connected without us, so a `_connected`",
+      "find": "    await this.ep.stop();\n  }",
+      "replace": "    this.lastConnectionError = undefined;\n    await this.ep.stop();\n  }",
       "expectRed": "stop preserves the last connection issue for post-mortem diagnosis",
       "cell": "stop preserves the last connection issue for post-mortem diagnosis",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
@@ -114,8 +114,8 @@
     {
       "name": "initial start leaves resources bound when stop wins the race",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    if (await this.tearDownIfStopped()) return;\n    // nats.js auto-reconnects transient drops; when it exhausts its attempts and the",
-      "replace": "    // nats.js auto-reconnects transient drops; when it exhausts its attempts and the",
+      "find": "    if (await this.tearDownIfStopped()) return;\n    this.superviseConnection();",
+      "replace": "    this.superviseConnection();",
       "expectRed": "#975: stop racing the INITIAL bind leaves no nc, heartbeat, or armed supervisor",
       "cell": "#975: stop racing the INITIAL bind leaves no nc, heartbeat, or armed supervisor",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
@@ -141,8 +141,8 @@
     {
       "name": "manual rebuild keeps transport true through its no-connection window",
       "file": "packages/core/src/endpoint.ts",
-      "find": "      this.emit(\"transport\", { connected: false } satisfies TransportState);\n      this.emit(\"connection\", { connected: false }); // null window opened — not live until the rebind below",
-      "replace": "      this.emit(\"connection\", { connected: false }); // transport incorrectly stays true through the null window",
+      "find": "      this.emit(\"transport\", { connected: false } satisfies TransportState);\n      this.emit(\"connection\", { connected: false });",
+      "replace": "      this.emit(\"connection\", { connected: false });",
       "expectRed": "cotal_reconnect lowers transport during the rebuild null window",
       "cell": "cotal_reconnect lowers transport during the rebuild null window",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
