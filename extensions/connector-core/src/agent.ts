@@ -308,12 +308,13 @@ export class MeshAgent extends EventEmitter {
     });
     this.ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => this.ingest(m, d, meta));
     this.ep.on("error", (e: Error) => this.handleEndpointError(e));
+    // Two guards, and the comments sit out here so neither anchors a mutation on prose. An
+    // in-flight initial bind or rebuild can finish after stop() cleared local state, and shutdown is
+    // terminal for this MeshAgent, so a late endpoint edge must not resurrect transport. Separately,
+    // nats.js and clean shutdown can both confirm the same edge; a duplicate carries no state change
+    // and must not wake consumers or let an old confirmation look like a new outage.
     this.ep.on("transport", (e: TransportState) => {
-      // An in-flight initial bind or rebuild can finish after stop() cleared local state. Shutdown is
-      // terminal for this MeshAgent, so a late endpoint edge cannot resurrect transport.
       if (this.stopping) return;
-      // nats.js and clean shutdown can both confirm the same edge. A duplicate carries no state
-      // change and must not wake consumers or let an old confirmation look like a new outage.
       if (this._transportConnected === e.connected) return;
       this._transportConnected = e.connected;
       this.emit("transport", e);
@@ -321,8 +322,9 @@ export class MeshAgent extends EventEmitter {
     // The endpoint's (re)binds are the single source of truth for connectedness: this fires on
     // initial start, manual reconnect, AND the background self-heal — so a recovery the endpoint
     // did on its own can't leave us thinking we're offline (which would skip stop() → leak).
+    // Same stop race as the transport handler above: a late connectAndBind completion is not a new
+    // session. Kept out of the block so the guard can be anchored on code alone.
     this.ep.on("connection", (e: { connected: boolean }) => {
-      // Same stop race as transport above: a late connectAndBind completion is not a new session.
       if (this.stopping) return;
       this._connected = e.connected;
       if (e.connected) {

@@ -651,11 +651,11 @@ export class CotalEndpoint extends EventEmitter {
     // stop() can finish while the INITIAL connectAndBind is still awaiting its broker work. The
     // rebuild path already closes that race; initial start needs the same fence or the late bind
     // leaves a fresh nc, heartbeat, consumers, and presence live on an endpoint already stopped.
+    // superviseConnection below: nats.js auto-reconnects transient drops, and when it exhausts its
+    // attempts and the connection closes for good we rebuild from scratch, so an in-process agent
+    // (e.g. the OpenCode plugin) recovers without a host respawn. Armed only after a successful
+    // first connect; a first-connect failure throws to the caller's connect-retry loop instead.
     if (await this.tearDownIfStopped()) return;
-    // nats.js auto-reconnects transient drops; when it exhausts its attempts and the
-    // connection closes for good, rebuild from scratch so an in-process agent (e.g. the
-    // OpenCode plugin) recovers without a host respawn. Armed only after a successful first
-    // connect — a first-connect failure throws to the caller's connect-retry loop instead.
     this.superviseConnection();
   }
 
@@ -1088,7 +1088,7 @@ export class CotalEndpoint extends EventEmitter {
       // ORDER IS PART OF THE DIAGNOSTIC CONTRACT. MeshAgent retains endpoint errors only while it is
       // not bound, so readiness must turn false before the matching terminal-close error is emitted.
       // Reversing these two lines silently loses the only post-drop reason an agent can report.
-      this.emit("connection", { connected: false }); // dropped — report it before the rebuild kicks in
+      this.emit("connection", { connected: false });
       this.emit(
         "error",
         new Error(`mesh connection closed${err ? `: ${(err as Error).message}` : ""} - re-establishing`),
@@ -1142,7 +1142,7 @@ export class CotalEndpoint extends EventEmitter {
       // status iterator is now stale by construction and its close is epoch-dropped, so this line is
       // the authoritative raw-liveness edge for the no-nc window until the new watcher seeds true.
       this.emit("transport", { connected: false } satisfies TransportState);
-      this.emit("connection", { connected: false }); // null window opened — not live until the rebind below
+      this.emit("connection", { connected: false });
       try {
         await oldNc?.drain();
       } catch {
