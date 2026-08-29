@@ -161,10 +161,13 @@ version, no seeded marker) is left untouched on upgrade; a deliberately-removed 
 of removed-vs-never-seeded and is unioned with its backup on read, so a truncated authority never
 resurrects a removal. Before writing the generation stamp, setup verifies that every
 (re)installed extension is recorded in the manifest, present on disk with a resolvable entry file,
-and at the generation version. A version-skewed payload fails loud (`ext seed --repair`) rather than being stamped as current. A cotal
-**older** than the store's stamped generation refuses before writing anything, rather than stamping the
-store back down to its own version while refreshing nothing: run the newer cotal, or `ext seed --reset`
-to rebuild the store for the version you are running.
+and at the generation version. A version-skewed payload fails loud (`ext seed --repair`) rather than
+being stamped as current. A `cotal` **older** than the store's stamped generation refuses before
+writing anything, rather than stamping the store back down to its own version while refreshing
+nothing. The refusal names a concrete `cotal` executable only after its bounded `--version` probe
+proves that executable is at least the store generation; otherwise it retains the generic instruction
+to run the newer `cotal`. `ext seed --reset` remains the explicit way to rebuild the store for the
+version you are running.
 
 **Crash safety.** One shared advisory lock ([`packages/workspace/src/advisory-lock.ts`](../packages/workspace/src/advisory-lock.ts):
 atomic hard-link publish, PID + process-start liveness, bounded wait, dead-owner reclaim) guards the
