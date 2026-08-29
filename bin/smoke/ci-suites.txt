@@ -632,13 +632,13 @@ smoke:up-multi-space-render:live
 # pair. Drives the real daemon against a real broker. Appended so every existing shard
 # assignment remains unchanged.
 smoke:sys-injection-evict
-# Raw NATS transport state is separate from full endpoint readiness. The deterministic suite grades
-# epoch staleness and state contracts; its companion owns a throwaway broker and proves real
-# disconnect/reconnect delivery. Appended so every existing shard assignment remains unchanged.
-smoke:transport-liveness
-smoke:transport-liveness:broker
 # A user-mode endpoint whose bearer expires must stop presenting the dead token: pre-fix it re-dialled
 # it on a flat 3s interval forever, one client costing a permanent auth-callout round trip every 3s.
 # Drives a real broker plus a real auth callout across three arms (no renewal source, healthy source,
 # loud refusal). Appended so every existing shard assignment remains unchanged.
 smoke:expiry-renewal:auth
+# Raw NATS transport state is separate from full endpoint readiness. The deterministic suite grades
+# epoch staleness and state contracts; its companion owns a throwaway broker and proves real
+# disconnect/reconnect delivery. Appended so every existing shard assignment remains unchanged.
+smoke:transport-liveness
+smoke:transport-liveness:broker
