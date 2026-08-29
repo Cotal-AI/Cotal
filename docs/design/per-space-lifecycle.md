@@ -310,8 +310,19 @@ P8. Until it lands, retaining the seed is a decision taken at broker creation wi
 - **P5.** Retained broker system signing seed behind the multi-space opt-in (§5).
 - **P6.** Port the §4 reload spike into this tree as a smoke. No longer gating, since the behavior
   is already proven live.
-- **P7.** Key the `$SYS` cred pair, `membership.json` and `membership-rw.creds` per space, so a
-  tenant stops silently running on whichever sibling booted first and `space rm` can reap them (§5).
+- **P7.** Key the `$SYS` cred pair, `membership.json`, `membership-rw.creds` and `delivery.creds` per
+  space, so a tenant stops silently running on whichever sibling booted first and `space rm` can reap
+  them (§5). `delivery.creds` is not `$SYS` material and was not in this entry's original scope. It
+  belongs here because it sits in the same `REMINTABLE_DAEMON_CREDS` list at the same root scope and
+  carries the same inheritance exposure: `remintDaemonCreds` validates the store's signer against the
+  expected space precisely because a wrong-space signer re-signs a cred that space's broker rejects.
+  Segmenting the list except for one entry would have made the per-space key a per-entry special case
+  instead of a property of the list. Landed: all five kinds move into `.cotal/space.<hex>/` at one
+  migrating choke point, which refuses rather than migrate on a root whose tenant count it cannot
+  establish, and `space add` refuses to create a second tenant beside material that predates the
+  move. The reap of §2.2 step 7 and its step-1 precondition are landed as `reapSpaceMaterial` and
+  `assertSpaceMaterialReapable`; they have no caller yet, because `space rm` is still this section's
+  design rather than a command.
 - **P8.** A broker-wide system-account rotation that re-mints every tenant's `$SYS` pair, so §5's
   named recovery works on the multi-tenant root it is prescribed for (§5).
 
