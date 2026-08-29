@@ -263,10 +263,15 @@ try {
     const cwdBefore = process.cwd();
     try {
       process.chdir(ROOT); // so the root-drift guard is satisfied and the TENANCY guard is what speaks
+      // The WORKSTATION composition (`injected: false`), which is what this smoke exercises: the
+      // $SYS pair resolves through the FS store under `.cotal/`, and `membership.json` is still
+      // cross-checked as the second source. A hosted composition injects its own store instead and
+      // has no such file — that path is covered by the delivery $SYS-injection smoke.
+      const source = { secrets: workspaceSecretStore(ROOT), injected: false };
       const foreignAccount = `A${"B".repeat(55)}`;
       let tenancyErr = "";
       try {
-        await executePrincipalLiveness(SERVERS, { root: ROOT, expectedAccount: foreignAccount }, principalKey(DEV_OWNER, "whoever").key);
+        await executePrincipalLiveness(SERVERS, { root: ROOT, expectedAccount: foreignAccount, source }, principalKey(DEV_OWNER, "whoever").key);
       } catch (e) { tenancyErr = (e as Error).message; }
       check("TENANCY: disk material naming a different account than the daemon authenticates as REFUSES (never a confident sweep of a foreign tenant)",
         /names account/.test(tenancyErr) && tenancyErr.includes(foreignAccount), tenancyErr);
@@ -275,7 +280,7 @@ try {
       // tenant, not every tenant.
       let okErr = "";
       try {
-        await executePrincipalLiveness(SERVERS, { root: ROOT, expectedAccount: auth.account.pub }, principalKey(DEV_OWNER, "whoever").key);
+        await executePrincipalLiveness(SERVERS, { root: ROOT, expectedAccount: auth.account.pub, source }, principalKey(DEV_OWNER, "whoever").key);
       } catch (e) { okErr = (e as Error).message; }
       check("TENANCY control: the correctly-seeded root is accepted and answers (the guard rejects the wrong tenant, not all of them)", okErr === "", okErr);
 
@@ -284,7 +289,7 @@ try {
       process.chdir(cwdBefore);
       let driftErr = "";
       try {
-        await executePrincipalLiveness(SERVERS, { root: ROOT, expectedAccount: auth.account.pub }, principalKey(DEV_OWNER, "whoever").key);
+        await executePrincipalLiveness(SERVERS, { root: ROOT, expectedAccount: auth.account.pub, source }, principalKey(DEV_OWNER, "whoever").key);
       } catch (e) { driftErr = (e as Error).message; }
       check("ROOT DRIFT: a request-time root different from the daemon's start root REFUSES (the scan account cannot follow process.cwd())",
         /is not the one this daemon started in/.test(driftErr), driftErr);

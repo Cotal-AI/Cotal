@@ -115,15 +115,35 @@ export function credsFingerprint(creds: string): string {
   return createHash("sha256").update(jwt).digest("hex");
 }
 
+/** The `nats` claim block of a NATS user JWT — the permission set the broker enforces. Declared
+ *  because a local reader sometimes needs to know what a cred is SCOPED TO, not just when it
+ *  expires: an account-scoped cred names its own account inside `pub.allow`, which lets a holder
+ *  check a credential against the tenant it believes it serves BEFORE connecting, and report a
+ *  mismatch as a named refusal instead of a bare broker "Authorization Violation".
+ *
+ *  Read-only diagnosis, never enforcement: these claims are UNVERIFIED here (see
+ *  {@link credsClaims}), and the broker enforces the same permissions independently. A local check
+ *  over this block buys the DIAGNOSIS; it does not buy the guarantee. */
+export interface NatsUserClaims {
+  pub?: { allow?: string[]; deny?: string[] };
+  sub?: { allow?: string[]; deny?: string[] };
+  /** The account that ISSUED this user (for a data-account cred, the data account). */
+  issuer_account?: string;
+}
+
 /** The decoded (UNVERIFIED) claims of a creds file's user JWT — shared parse for every local
  *  inspector (credential health, renewal scheduling, identity checks). Unverified is correct here:
  *  the broker is the enforcement boundary; local readers only need the claims to schedule and
- *  diagnose. Throws on a structurally-unusable file (no JWT block / undecodable payload). */
-export function credsClaims(creds: string): { sub?: string; iat?: number; exp?: number; name?: string; iss?: string } {
+ *  diagnose. Throws on a structurally-unusable file (no JWT block / undecodable payload).
+ *
+ *  `nats` was always PRESENT in the returned object (this is a whole-payload parse) but was not
+ *  DECLARED, so a caller needing the permission block had to cast past this signature. Declaring it
+ *  is a typing fix, not a behaviour change: no parse, no field and no error path moves. */
+export function credsClaims(creds: string): { sub?: string; iat?: number; exp?: number; name?: string; iss?: string; nats?: NatsUserClaims } {
   const payload = jwtFromCreds(creds)?.split(".")[1];
   if (!payload) throw new Error("creds: no NATS user JWT block found");
   try {
-    return JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { sub?: string; iat?: number; exp?: number; name?: string; iss?: string };
+    return JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { sub?: string; iat?: number; exp?: number; name?: string; iss?: string; nats?: NatsUserClaims };
   } catch {
     throw new Error("creds: undecodable user JWT payload");
   }
