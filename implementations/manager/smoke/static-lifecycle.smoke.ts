@@ -164,10 +164,8 @@ const M = mgr as unknown as {
   lifecycleMembershipRefusal: (caller: string) => string | undefined;
   renewManagedStaticCred: (a: unknown) => Promise<void>;
   reconcileStaticLifecycles: () => Promise<void>;
-  writeRuntimeRecord: (lifecycleUid: string, handle: AgentHandle) => void;
 };
 M.managerInstanceId = "smoke-manager-instance";
-const writeRuntimeRecord = (uid: string, name: string): void => M.writeRuntimeRecord(uid, fakeHandle(name));
 
 // The real delivery-admin executor is covered by the restart/eviction suites. This lifecycle suite
 // grades the terminal's use of the seam and its ordering. Default verified-gone keeps existing cells
@@ -341,7 +339,6 @@ try {
       await nc.drain().catch(() => nc.close());
     }
   }
-  writeRuntimeRecord(orphanUid, "orphan");
   evictionVerified = false;
   evictionCalls = [];
   await M.reconcileStaticLifecycles();
@@ -376,7 +373,6 @@ try {
       await nc.drain().catch(() => nc.close());
     }
   }
-  writeRuntimeRecord(resOrphanUid, "resorphan");
   (mgr as unknown as { resumeRequired: boolean }).resumeRequired = true;
   await M.reconcileStaticLifecycles(); // BOOT sweep (resume pending): must DEFER the active orphan
   check("BOOT sweep DEFERS a resume-pending active orphan (does not terminalize it)", (await readSlotOnly("resorphan"))?.phase === "active");
