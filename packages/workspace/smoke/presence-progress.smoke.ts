@@ -82,6 +82,7 @@ const cliJoin = readFileSync(join(root, "implementations/cli/src/commands/join.t
 const cliStatus = readFileSync(join(root, "implementations/cli/src/commands/status.ts"), "utf8");
 const cliPlain = readFileSync(join(root, "implementations/cli/src/render.ts"), "utf8");
 const cliEndpoints = readFileSync(join(root, "implementations/cli/src/commands/endpoints.ts"), "utf8");
+const cliAgents = readFileSync(join(root, "implementations/cli/src/commands/agents.ts"), "utf8");
 const cliRoster = readFileSync(join(root, "implementations/cli/src/console/ui/Roster.tsx"), "utf8");
 const cliDetail = readFileSync(join(root, "implementations/cli/src/console/ui/Detail.tsx"), "utf8");
 const webMonitor = readFileSync(join(root, "implementations/web/src/web/app.js"), "utf8");
@@ -103,6 +104,10 @@ check(
   [cliStatus, cliJoin, cliEndpoints, cliPlain].every((source) => /statusBadge\(/.test(source)),
 );
 check(
+  "cotal ps names unknown progress for a textual working manager row",
+  /working · progress unknown/.test(cliAgents),
+);
+check(
   "Ink roster and agent detail name unknown progress, with heartbeat labelled separately",
   /progress unknown/.test(cliRoster) && /progress unknown/.test(cliDetail) && /heartbeat/.test(cliDetail),
 );
@@ -115,7 +120,7 @@ check(
   /progress unknown/.test(webGraph),
 );
 
-const EXPECTED = 22;
+const EXPECTED = 23;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
 console.log(`PRESENCE-PROGRESS SMOKE: ${pass} passed, ${fail} failed`);

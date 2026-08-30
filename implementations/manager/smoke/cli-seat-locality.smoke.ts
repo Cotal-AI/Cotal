@@ -77,6 +77,7 @@ const auth = await createSpaceAuth(space);
 const envFor = (o: LaunchOpts): Record<string, string> => ({
   COTAL_SPACE: o.space, COTAL_SERVERS: String(o.servers ?? SERVERS), COTAL_CREDS: String(o.creds),
   COTAL_ID: String(o.id), COTAL_NAME: o.name, PATH: process.env.PATH ?? "",
+  COTAL_E2E_STATUS: "working",
   ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
 });
 registry.register({ kind: "connector", name: "e2e-stub", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: "node", args: [STUB], env: envFor(o) }) } as Connector);
@@ -151,6 +152,7 @@ try {
   const ps = await cotal(["ps", "--space", space, "--server", SERVERS], root1);
   check("ps exits 0", ps.status === 0, { status: ps.status, out: ps.out.slice(-300) });
   check("ps reports the seat", ps.out.includes("seatA"), ps.out.slice(-300));
+  check("ps textual working mesh row names unknown progress", /working · progress unknown/.test(ps.out), ps.out.slice(-1200));
 
   console.log("\n2. `cotal ps --on <instance>` is answered by THAT instance (the flag reaches the mint)");
   const psA = await cotal(["ps", "--on", IID1, "--space", space, "--server", SERVERS], root1);
