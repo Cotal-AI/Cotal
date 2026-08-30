@@ -9,9 +9,8 @@ import {
   type Connector,
   type LaunchOpts,
   type LaunchSpec,
-  type MeshAgent,
 } from "@cotal-ai/core";
-import { controlEndpoint, startControlServer } from "@cotal-ai/connector-core";
+import { controlEndpoint, startControlServer, type MeshAgent } from "@cotal-ai/connector-core";
 import { Manager } from "../src/manager.js";
 
 let checks = 0;
