@@ -28,9 +28,10 @@
       "cell": "✗ FAIL: PUBLIC REPRO: abort settles channelHistory as AbortError instead of leaving it pending"
     },
     {
-      "name": "an aborted history window buffers its whole requested page instead of a bounded rolling batch",
+      "name": "an aborted history window asks the broker for its entire pending backlog in one pull",
       "file": "packages/core/src/endpoint.ts",
-      "command": "pnpm smoke:web-bounded-aggregation",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:web-bounded-aggregation",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
       "completionMarker": "web bounded-aggregation smoke:",
       "find": "      const iter = await consumer.consume({ max_messages: Math.min(target, 32) });",
       "replace": "      const iter = await consumer.fetch({ max_messages: pending });",
