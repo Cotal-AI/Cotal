@@ -2,7 +2,7 @@
  * MANAGER SERVICE OPS smoke (control-surface P2 item 1, slice 1b) — the FULL typed-command
  * fan-out over a REAL Manager + JWT broker + REAL agent processes (e2e-stub.mjs), proving:
  *
- *  1. The cluster document serves ALL 18 commands (describe lists them; targeted commands
+ *  1. The cluster document serves ALL 20 commands (describe lists them; targeted commands
  *     declare their modes).
  *  2. SPAWN FIDELITY (the 1b oracle): the ep `spawn` door coerces the full 15-field request into
  *     StartAgentOpts (field-for-field, captured at the single `startAgent` chokepoint), with the
