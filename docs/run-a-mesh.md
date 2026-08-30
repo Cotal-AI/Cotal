@@ -306,8 +306,8 @@ disaster-consent, and degraded-recovery details.
 
 `cotal personas` manages the local catalog offline: `list` (`--running` overlays live
 markers), `show <name>`, `edit <name>` (re-validates on save), `new <name>`, `rm <name>
---force`. The runtime counterpart is the `cotal_persona` tool, which goes over the wire
-with the manager's ownership checks. Fields: [agent files](agent-files.md).
+--force`. The runtime write is `cotal_persona`; the runtime read is `cotal_personas`
+(list / show), both over the wire with the manager's ownership checks. Fields: [agent files](agent-files.md).
 
 ## Gate recovery
 

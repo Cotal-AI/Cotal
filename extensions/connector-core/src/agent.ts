@@ -1262,6 +1262,19 @@ export class MeshAgent extends EventEmitter {
     return reply;
   }
 
+  /** Mesh-side persona catalog list: name, role, model, description, scoped by the same
+   *  ownership rule as `definePersona`. */
+  async listPersonas(): Promise<ControlReply> {
+    await this.requireConnected();
+    return this.managerInvoke("list-personas", undefined);
+  }
+
+  /** Mesh-side persona catalog show of one card. Unauthorized / missing names are not-found. */
+  async showPersona(name: string): Promise<ControlReply> {
+    await this.requireConnected();
+    return this.managerInvoke("show-persona", { name });
+  }
+
   // ---- presence ------------------------------------------------------------
 
   /** The full roster, including ourselves. */

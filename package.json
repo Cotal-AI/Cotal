@@ -476,6 +476,7 @@
     "smoke:ps-operator-path": "tsx implementations/auth/smoke/ps-operator-path.smoke.ts",
     "smoke:ps-user-mode": "tsx implementations/auth/smoke/ps-user-mode.smoke.ts",
     "smoke:persona-input-closed": "tsx implementations/manager/smoke/persona-input-closed.smoke.ts",
+    "smoke:persona-catalog-read": "tsx packages/core/smoke/persona-catalog-read.smoke.ts",
     "smoke:herdr:soak": "tsx extensions/herdr/soak.ts",
     "smoke:herdr:probe": "tsx extensions/herdr/probe.smoke.ts",
     "smoke:herdr-e2e:live": "tsx bin/smoke/herdr-e2e-live.smoke.ts",

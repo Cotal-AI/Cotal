@@ -20,6 +20,9 @@ import {
   idFromCreds,
   inspectCredHealth,
   loadAgentFile,
+  listPersonaCatalog,
+  personaCatalogDescription,
+  personaCatalogReadable,
   loadCotalConfig,
   mintCreds,
   mintLifecycleUid,
@@ -2173,6 +2176,16 @@ export class Manager {
       }),
       stopSelf: (ctx) => this.serveGated(ctx, () => unwrap(this.opStopSelf(callerOf(ctx), args(ctx)))),
       definePersona: (ctx) => this.serveGated(ctx, () => unwrap(this.opDefinePersona(args(ctx), callerOf(ctx), false))),
+      listPersonas: (ctx) => this.serveGated(ctx, () => unwrap(this.opListPersonas(callerOf(ctx), false))),
+      showPersona: (ctx) => this.serveGated(ctx, () => {
+        const r = this.opShowPersona(args(ctx), callerOf(ctx), false);
+        if (!r.ok) {
+          const msg = r.error ?? "not found";
+          if (msg.startsWith("no persona")) throw new EpEnvelopeError("not-found", msg);
+          throw new EpEnvelopeError("failed-precondition", msg);
+        }
+        return r.data;
+      }),
       purge: (ctx) => this.serveGated(ctx, () => adminGated(ctx, async () => unwrap(await this.opPurge(args(ctx), callerOf(ctx))))),
       // launch is OWNER-EQUALITY on the ep door for every caller (freelance HIGH #2): the deploy
       // path is the only launch consumer and its spec stamps the CALLER's own owner, so
@@ -5984,6 +5997,75 @@ export class Manager {
       return { ok: false, error: (e as Error).message };
     }
     return { ok: true, data: { name, path } };
+  }
+
+  /** Whether this caller may READ a catalog card's details (role/model/description/body). Same
+   *  ownership rule as redefine: owner == caller, or admin. Ownerless / operator-written files are
+   *  admin-only. Names of parseable files still appear on the list so a definer can see a taken
+   *  spawn name; details stay off the wire unless this is true. */
+  private canReadPersona(owner: string | undefined, caller: string, admin: boolean): boolean {
+    return personaCatalogReadable(owner, caller, admin);
+  }
+
+  /** Mesh-side catalog list (#402). Every parseable name is returned so a definer can see a taken
+   *  spawn name. Role / model / description / owner ride only when the caller could redefine the
+   *  file (same ownership as `definePersona`); other cards are name-only, so a peer cannot read a
+   *  prompt it does not own. Unparseable files are omitted for non-admin (no existence leak of a
+   *  broken card). */
+  private opListPersonas(caller: string, admin: boolean): ControlReply {
+    const personas = [];
+    for (const e of listPersonaCatalog(this.workspaceRoot)) {
+      if (e.error) {
+        if (!admin) continue;
+        personas.push({ name: e.name, error: "unparseable" });
+        continue;
+      }
+      const def = e.def!;
+      if (!this.canReadPersona(def.owner, caller, admin)) {
+        personas.push({ name: e.name });
+        continue;
+      }
+      const description = personaCatalogDescription(def);
+      personas.push({
+        name: e.name,
+        ...(def.role ? { role: def.role } : {}),
+        ...(def.model ? { model: def.model } : {}),
+        ...(description ? { description } : {}),
+        ...(def.owner ? { owner: def.owner } : {}),
+      });
+    }
+    return { ok: true, data: { personas } };
+  }
+
+  /** Mesh-side catalog show (#402). Same ownership as list. Unknown or unauthorized names are
+   *  not-found (no existence leak). The body is included so a peer can inspect a prompt it owns
+   *  before spawn; policy fields stay off the wire. */
+  private opShowPersona(args: Record<string, unknown>, caller: string, admin: boolean): ControlReply {
+    const name = String(args.name ?? "").trim();
+    if (!name) return { ok: false, error: "name required" };
+    const nameErr = this.nameError(name);
+    if (nameErr) return { ok: false, error: nameErr };
+    const path = agentFilePath(this.workspaceRoot, name);
+    if (!existsSync(path)) return { ok: false, error: `no persona "${name}"` };
+    let def;
+    try {
+      def = loadAgentFile(path);
+    } catch (e) {
+      return { ok: true, data: { name, error: (e as Error).message } };
+    }
+    if (!this.canReadPersona(def.owner, caller, admin)) return { ok: false, error: `no persona "${name}"` };
+    const description = personaCatalogDescription(def);
+    return {
+      ok: true,
+      data: {
+        name,
+        ...(def.role ? { role: def.role } : {}),
+        ...(def.model ? { model: def.model } : {}),
+        ...(description ? { description } : {}),
+        ...(def.owner ? { owner: def.owner } : {}),
+        ...(def.persona ? { persona: def.persona } : {}),
+      },
+    };
   }
 
   /** The post-authorization `input` effect (C3): type `text` into the seat's terminal as if a human

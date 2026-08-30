@@ -153,7 +153,7 @@ try {
   const A = await instrument([
     { command: "status" }, { command: "ps" }, { command: "inspect" }, { command: "models" },
     { command: "spawn" }, { command: "despawn", owner: true }, { command: "attach", owner: true },
-    { command: "define-persona" }, { command: "purge" }, { command: "launch" },
+    { command: "define-persona" }, { command: "list-personas" }, { command: "show-persona" }, { command: "purge" }, { command: "launch" },
     { command: "resume-preserved" }, { command: "commit-resume" }, { command: "finalize-resume" },
     { command: "prepare-preservation" }, { command: "commit-preservation" }, { command: "abort-preservation" },
   ]);
@@ -172,7 +172,7 @@ try {
     for (let i = 0; i < 60 && replies.length === 0; i++) await wait(100);
     const d = replies[0] as { ok?: boolean; data?: { descriptor?: { clusters?: Array<{ commands?: string[]; document?: { revision?: number; commands?: Array<{ name: string; targeted: boolean; modes?: string[] }> } }> } } } | undefined;
     const cmds = d?.data?.descriptor?.clusters?.[0]?.commands ?? [];
-    check("describe lists all 18 commands", cmds.length === 18 && ["status", "ps", "inspect", "models", "spawn", "despawn", "attach", "input", "stop", "define-persona", "purge", "launch", "resume-preserved", "commit-resume", "finalize-resume", "prepare-preservation", "commit-preservation", "abort-preservation"].every((c) => cmds.includes(c)), cmds);
+    check("describe lists all 20 commands", cmds.length === 20 && ["status", "ps", "inspect", "models", "spawn", "despawn", "attach", "input", "stop", "define-persona", "list-personas", "show-persona", "purge", "launch", "resume-preserved", "commit-resume", "finalize-resume", "prepare-preservation", "commit-preservation", "abort-preservation"].every((c) => cmds.includes(c)), cmds);
     clusterDigest = (d?.data?.descriptor?.clusters?.[0] as { digest?: string } | undefined)?.digest;
     const doc = d?.data?.descriptor?.clusters?.[0]?.document;
     spawnInputDigest = (doc?.commands?.find((c) => c.name === "spawn") as { inputDigest?: string } | undefined)?.inputDigest;
@@ -180,8 +180,8 @@ try {
     const despawnDecl = doc?.commands?.find((c) => c.name === "despawn");
     const stopDecl = doc?.commands?.find((c) => c.name === "stop");
     const inputDecl = doc?.commands?.find((c) => c.name === "input");
-    check("the document is revision 7 (the C3 `input` command); despawn AND input declare owner+any modes (the 1c operator reach), stop declares self mode (child/ledger ABSENT everywhere)",
-      doc?.revision === 7 && despawnDecl?.targeted === true && JSON.stringify(despawnDecl?.modes) === '["owner","any"]'
+    check("the document is revision 8 (persona catalog list/show); despawn AND input declare owner+any modes (the 1c operator reach), stop declares self mode (child/ledger ABSENT everywhere)",
+      doc?.revision === 8 && despawnDecl?.targeted === true && JSON.stringify(despawnDecl?.modes) === '["owner","any"]'
       && inputDecl?.targeted === true && JSON.stringify(inputDecl?.modes) === '["owner","any"]'
       && stopDecl?.targeted === true && JSON.stringify(stopDecl?.modes) === '["self"]'
       && doc?.commands?.every((c) => !(c.modes ?? []).includes("child") && !(c.modes ?? []).includes("ledger")) === true, doc?.commands);
@@ -327,6 +327,26 @@ try {
     const widened = loadAgentFile(eppPath);
     check("a redefine drops the marker once the persona has a real read set",
       rDefC.reply.ok === true && widened.meta?.scope_source === undefined, { meta: widened.meta, reply: rDefC.reply });
+
+    const rList = await A.call("list-personas");
+    const listed = ((rList.reply.data as { personas?: Array<{ name: string; model?: string; description?: string; owner?: string }> })?.personas) ?? [];
+    const eppRow = listed.find((p) => p.name === "eppersona");
+    check("list-personas includes the just-defined name with model and description for its owner",
+      rList.reply.ok === true && eppRow?.model === "m9" && typeof eppRow?.description === "string" && (eppRow.description?.length ?? 0) > 0, { listed: listed.map((p) => p.name), eppRow, reply: rList.reply });
+    const rShow = await A.call("show-persona", { name: "eppersona" });
+    check("show-persona returns the owned card body",
+      rShow.reply.ok === true && (rShow.reply.data as { persona?: string }).persona?.includes("widened by the operator") === true, rShow.reply);
+    const rShowMiss = await A.call("show-persona", { name: "ghost-persona" });
+    check("show-persona of an unknown name is not-found",
+      rShowMiss.reply.ok === false && rShowMiss.reply.error?.code === "not-found", rShowMiss.reply);
+    const rListB = await B.call("list-personas");
+    const listedB = ((rListB.reply.data as { personas?: Array<{ name: string; description?: string; model?: string }> })?.personas) ?? [];
+    const eppFromB = listedB.find((p) => p.name === "eppersona");
+    check("a foreign list sees the taken name without description or model",
+      rListB.reply.ok === true && eppFromB !== undefined && !("description" in (eppFromB ?? {})) && !("model" in (eppFromB ?? {})), { eppFromB, reply: rListB.reply });
+    const rShowB = await B.call("show-persona", { name: "eppersona" });
+    check("a foreign show-persona is not-found (no existence leak of the body)",
+      rShowB.reply.ok === false && rShowB.reply.error?.code === "not-found", rShowB.reply);
     check("and leaves the operator's read set alone", JSON.stringify(widened.subscribe) === '["general"]', widened.subscribe);
 
     const rModels = await A.call("models", {});
