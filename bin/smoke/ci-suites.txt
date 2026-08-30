@@ -469,7 +469,6 @@ smoke:jcode-route-identity
 # must preserve the mesh seat and unacknowledged batch, make exactly one private replacement, attach
 # the same session, and accept subsequent mesh work; a failed recovery exits rather than looping.
 smoke:jcode-provider-disconnect
-smoke:jcode-mid-turn-delivery
 
 smoke:orientation
 
@@ -710,3 +709,8 @@ smoke:endpoint-permission-results:auth
 # remains unchanged.
 smoke:presence-watch-stall
 smoke:web-presence-view
+
+# A directed DM arriving during a live Jcode turn must reach the recipient session through Jcode's
+# soft-interrupt queue and commit only at the clean containing-turn boundary. Real loopback broker
+# plus shipped host; mutation-proofed. Appended so every existing shard assignment remains unchanged.
+smoke:jcode-mid-turn-delivery
