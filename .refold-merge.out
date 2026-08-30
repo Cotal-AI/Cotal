@@ -1,0 +1,4 @@
+Auto-merging docs/connect-jcode.md
+Auto-merging extensions/connector-core/src/docs-bundle.generated.ts
+CONFLICT (content): Merge conflict in extensions/connector-core/src/docs-bundle.generated.ts
+Automatic merge failed; fix conflicts and then commit the result.
