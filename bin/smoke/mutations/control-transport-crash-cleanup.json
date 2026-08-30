@@ -1,0 +1,31 @@
+{
+  "suite": "bin/smoke/fixtures/control-transport-crash-cleanup.mts",
+  "guard": "credential-bearing temporary paths are owned before auth persistence and broker spawn",
+  "command": "pnpm smoke:control-transport-crash-cleanup",
+  "completionMarker": "CONTROL PRE-BROKER CRASH PROBE",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/control-transport-crash-cleanup.json",
+  "why": [
+    "The fault is injected immediately after saveSpaceAuth and before config/broker creation. The",
+    "positive controls prove one project root, one home, one tokened store and two seed-field auth",
+    "files exist. Removing the pre-write path registrations restores the exact reviewed HIGH window",
+    "and must redden the named total cleanup cell."
+  ],
+  "mutations": [
+    {
+      "name": "credential paths are created without pre-write exit ownership",
+      "file": "bin/smoke/control-transport-dial.smoke.ts",
+      "find": "const releaseHome = teardownPathOnSignal(home);\nprocess.env.COTAL_HOME = home;",
+      "replace": "const releaseHome = () => {};\nprocess.env.COTAL_HOME = home;",
+      "expectRed": "COTAL_HOME roots remaining after pre-broker crash = 0",
+      "cell": "COTAL_HOME roots remaining after pre-broker crash = 0"
+    },
+    {
+      "name": "project credential root is unowned before saveSpaceAuth",
+      "file": "bin/smoke/control-transport-dial.smoke.ts",
+      "find": "const releaseRoot = teardownPathOnSignal(root);",
+      "replace": "const releaseRoot = () => {};",
+      "expectRed": "project roots remaining after pre-broker crash = 0",
+      "cell": "project roots remaining after pre-broker crash = 0"
+    }
+  ]
+}
