@@ -102,8 +102,9 @@ to judge whether spawning it is wanted, and a broadcast soliciting spawns from a
 unfamiliar principal is a thing a peer should be suspicious of, so announcing belongs on
 the channel your team is working on rather than `general`. The old announcement carried limited discovery. Peers already listening saw the bare name, but
 no prompt, model, or role. Peers joining later saw nothing. No path a peer can
-deliberately consult is affected: `cotal personas list` reads the catalog within a
-workspace, and `cotal_spawn` on a name that does not exist fails loud.
+deliberately consult is affected: `cotal_personas` lists and shows the catalog over the
+wire (spawn-capability, same ownership as the write), `cotal personas list` reads the
+catalog within a workspace, and `cotal_spawn` on a name that does not exist fails loud.
 
 The operator-side counterpart is `cotal personas` (list / show / edit / new / rm); it
 reads and writes the same files directly, offline, no mesh ([CLI](cli.md)).

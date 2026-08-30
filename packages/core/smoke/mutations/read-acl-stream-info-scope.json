@@ -1,0 +1,69 @@
+{
+  "suite": "packages/core/smoke/read-acl-auth.smoke.ts",
+  "guard": "A role-less agent credential carries no `$JS.API.STREAM.INFO` grant on DM, TASK, DLV or EPC, so it cannot read stream state or enumerate retained subjects on any per-peer stream.",
+  "command": "pnpm smoke:read-acl:auth",
+  "completionMarker": "READ-ACL SMOKE",
+  "progressPattern": "^  [✓✗] ",
+  "minTicks": 12,
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/read-acl-stream-info-scope.json   # --config resolves against the repo root, never the cwd",
+  "why": [
+    "The agent profile emits a JetStream consumer-create DENY triple on DM, TASK and DLV, and for a",
+    "while it emitted no matching `$JS.API.STREAM.INFO` row for any of them. The first repair granted",
+    "STREAM.INFO on all four of DM, TASK, DLV and EPC, unconditionally, to every agent. That is wider",
+    "than the deny triple's shape suggests, because `subjects_filter` is a REQUEST-BODY field: no ACL",
+    "can split `STREAM.INFO` into 'message counts' and 'enumerate every retained subject'. A role-less",
+    "agent holding it on DM reads the whole DM social graph (who DMed whom, per-pair volume) and the",
+    "task-routing graph, on streams it has no other grant on at all.",
+    "",
+    "The narrowed grammar: `STREAM.INFO.TASK` moved inside the existing `if (svcD)` role gate, next to",
+    "the `svc_<role>` bind rows it belongs with, and the DM/DLV/EPC rows removed outright (an agent",
+    "reaches DM and DLV through a pre-created durable by name and EPC through a subject-scoped",
+    "DIRECT.GET, so no agent-side caller reads any of them at stream level).",
+    "",
+    "These mutations re-broaden the grant one stream at a time, so each deny cell is shown to measure",
+    "its OWN row rather than riding on a neighbour's. Re-broadening is the honest mutation here: it is",
+    "the exact code state the cells were reconciled against, so a cell that stays green under it is a",
+    "cell that would have blessed the wider grant.",
+    "",
+    "This config grades the role-less side, which is the default agent shape and the one this suite",
+    "mints. The role-carrying side is graded from provision-stream-info-role-gate.json."
+  ],
+  "mutations": [
+    {
+      "name": "STREAM.INFO on the DM stream is granted to every agent again",
+      "file": "packages/core/src/provision.ts",
+      "find": "    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,\n",
+      "replace": "    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,\n    `$JS.API.STREAM.INFO.${DM}`,\n",
+      "expectRed": "G1: STREAM.INFO on DM is blocked (no DM metadata leak)",
+      "cell": "G1: STREAM.INFO on DM is blocked (no DM metadata leak)",
+      "note": "The widest of the four. A `subjects_filter` query on DM_<space> enumerates `inst.<owner>.<actor>.<owner>.<actor>` with per-subject counts, which is the DM social graph; G1 is the cell that has to notice."
+    },
+    {
+      "name": "STREAM.INFO on the TASK stream escapes the role gate",
+      "file": "packages/core/src/provision.ts",
+      "find": "    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,\n",
+      "replace": "    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,\n    `$JS.API.STREAM.INFO.${TASK}`,\n",
+      "expectRed": "G2: STREAM.INFO on TASK is blocked",
+      "cell": "G2: STREAM.INFO on TASK is blocked",
+      "note": "Leaves the row inside `if (svcD)` alone and adds a second, ungated one, so what is mutated is the GATE rather than the grant. The agent this suite mints has no role and must still be refused."
+    },
+    {
+      "name": "STREAM.INFO on the delivery stream is granted to every agent again",
+      "file": "packages/core/src/provision.ts",
+      "find": "    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,\n",
+      "replace": "    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,\n    `$JS.API.STREAM.INFO.${DLV}`,\n",
+      "expectRed": "G3: STREAM.INFO on DLV is blocked (no delivery metadata leak)",
+      "cell": "G3: STREAM.INFO on DLV is blocked (no delivery metadata leak)",
+      "note": "DLV carries the re-authorized per-member handoff; enumerating its subjects names who has durable-backstop traffic pending."
+    },
+    {
+      "name": "STREAM.INFO on the EPC contract store is granted to every agent again",
+      "file": "packages/core/src/provision.ts",
+      "find": "    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,\n",
+      "replace": "    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,\n    `$JS.API.STREAM.INFO.${epcStreamName(space)}`,\n",
+      "expectRed": "G4: STREAM.INFO on EPC is blocked",
+      "cell": "G4: STREAM.INFO on EPC is blocked",
+      "note": "EPC is read by subject-scoped DIRECT.GET, so stream-level reach adds only the ability to list every contract subject in the space."
+    }
+  ]
+}

@@ -12,6 +12,7 @@
     }
   },
   "scripts": {
+    "test": "tsx smoke/package.smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   }
 }

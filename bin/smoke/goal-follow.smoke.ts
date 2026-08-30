@@ -75,6 +75,12 @@ const acceptance = () => Promise.resolve({
   epoch: 0,
 });
 
+const boundedAcceptance = () => Promise.resolve({
+  reply: { ok: true as const, data: { goalId: GOAL, readinessDeadlineMs: 400 } },
+  instanceId: "i1",
+  epoch: 0,
+});
+
 console.log("A. a REFUSED progress subscription is reported as a refusal, not as a timeout");
 {
   const t0 = Date.now();
@@ -123,6 +129,20 @@ console.log("D. a subscription denial NEVER manufactures an acceptance (the pre-
   const r = await submitAndFollowGoal(deniedConn as never, "s", "manager", CALLER, 20_000, refuseAtAccept as never);
   ok("a refusal at accept survives the pending subscription denial unchanged", r.reply.error?.code === "failed-precondition", r.reply.error);
   ok("...and no acceptance is claimed for a goal that was never accepted", !(r.reply.error?.message ?? "").includes("was accepted"), r.reply.error?.message);
+}
+
+console.log("E. the accepted readiness budget, not a shorter generic caller wait, bounds the follow");
+{
+  const delayedTerminalConn = {
+    subscribe: (_subject: string, opts: { callback: (err: Error | null, m: { data: Uint8Array }) => void }) => {
+      const timer = setTimeout(() => opts.callback(null, {
+        data: new TextEncoder().encode(JSON.stringify({ goalId: GOAL, phase: "terminal", state: "succeeded", data: { name: "slow" } })),
+      }), 250);
+      return { unsubscribe: () => clearTimeout(timer) };
+    },
+  };
+  const r = await submitAndFollowGoal(delayedTerminalConn as never, "s", "manager", CALLER, 100, boundedAcceptance as never);
+  ok("a terminal inside the accepted readiness budget outlives the shorter generic caller wait", r.reply.ok === true, r.reply);
 }
 
 console.log(`\ngoal-follow smoke passed (${pass} checks)`);

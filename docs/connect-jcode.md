@@ -75,11 +75,23 @@ space/name and is owner-only. Jcode's own credential inheritance is used for the
 so provider logins work without copying its transcript/config tree into the seat. The spawned
 Jcode process does not inherit `COTAL_*` values or the Cotal launch-material pointer.
 
+Connector diagnostics are written both to the spawning terminal and to an owner-only
+`<private-home>/logs/connector-<timestamp>-<pid>.log`, so a failed launch remains inspectable after
+the manager's launch error scrolls away. Public startup failures stay scrubbed to allow-listed
+codes rather than arbitrary Harness API messages.
+
 If a provider failure closes the private Harness API connection during a mesh-driven turn, the
-connector leaves that turn's inbox batch unacknowledged and makes one private replacement
-connection to the same session. The seat reports `waiting` while it reconnects, then redrives that
-unacknowledged batch only after the session attaches. A failed replacement, or a second disconnect,
-ends the seat rather than silently retrying bridges without bound.
+connector leaves that turn's inbox batch unacknowledged and opens one bounded recovery window for a
+private replacement connection to the same session. A transient launch or attach failure retries
+inside that window, so a loaded host gets the same result as a fast one without creating an
+unbounded connector relaunch loop. The seat reports `waiting` while it reconnects, then redrives
+that unacknowledged batch only after the session attaches. Each failed replacement must be proven
+stopped before another launch. A permanent Harness refusal, including an invalid request, missing
+session, protocol mismatch, missing binary, or socket permission denial, ends the seat immediately;
+another launch cannot change it. An unprovable teardown, the recovery window expiring, or a second
+disconnect after a successful replacement also ends the seat. An unrecognized Harness SDK error
+code remains transient by default and retries inside the same bounded window; new permanent codes
+must be added to the explicit classifier and its exact-count regression.
 
 Jcode currently supports **stdio** MCP servers. The connector writes only its own `cotal` entry to
 the private `JCODE_HOME/mcp.json`; it starts a stdio MCP bridge for that entry and relays its calls
@@ -106,11 +118,13 @@ connected notice.
 For a foreground launch, the TUI opens as soon as the session is ready, before the readiness turn,
 so it streams boot activity instead of leaving the terminal blank. Presence still begins only after
 the readiness proof passes. An inbound peer message then wakes a Harness API turn. A directed message
-that arrives while this Cotal-owned turn is active enters Jcode's session-owned soft-interrupt queue,
-which incorporates it at a safe provider or tool boundary. Ambient channel traffic stays buffered for
-the next turn. The host marks presence working while the turn runs and acknowledges every initial or
-soft-interrupted inbox id only after that containing turn succeeds. A failed turn or private Harness
-replacement leaves the ids unacknowledged for mesh redelivery. `cotal_inbox` pulls only buffered quiet
+that arrives while the Harness session is busy (a Cotal-owned `run()`, a TUI-owned turn, or an
+advisory idle pulse between tool rounds of a still-open Cotal-owned run) enters Jcode's session-owned
+soft-interrupt queue. Ambient channel traffic stays buffered for the next turn. The host marks
+presence working while the session is busy, publishes `activity` naming automatic queue depth and age
+while anything remains uncommitted, and acknowledges every initial or soft-interrupted inbox id only
+after that containing turn succeeds. A failed Cotal-owned turn or private Harness replacement leaves
+those ids unacknowledged for mesh redelivery. `cotal_inbox` pulls only buffered quiet
 ambient from that host-owned queue; its shared optional `peek` argument is supported, so `peek: true`
 shows those messages without clearing them.
 
@@ -120,6 +134,11 @@ shows those messages without clearing them.
 against the active provider, then the connector reads runtime identity back and refuses startup if
 it is not the requested model; a seat is never allowed to join under a model label it did not
 receive.
+
+Model startup refusals are named without exposing provider output: `model_prefix_rejected` means a
+`provider/model` value was supplied where the Harness API requires a bare id, `model_refused` means
+Jcode rejected that bare id, and `model_mismatch` means Jcode accepted the request but reported a
+different effective model.
 
 `cotal models --agent jcode` reads the declared catalog from the operator Jcode home's
 `config.toml`: each provider with `model_catalog = true`, its `[[providers.<name>.models]]` ids,

@@ -99,7 +99,7 @@ the mesh: the mesh handler binding the effect interface onto the real planes, th
 journal, and the `RunDriver` the manager daemon hosts. Depends on core and lang.
 - `**@cotal-ai/connector-core**` (`extensions/connector-core`): the shared MCP-bridge runtime:
 the mesh agent, the `cotal_*` tool specs (incl. `cotal_spawn` / `cotal_persona` /
-`cotal_despawn`), and the hook relay. The adapters below are thin clients over it.
+`cotal_personas` / `cotal_despawn`), and the hook relay. The adapters below are thin clients over it.
 - `**@cotal-ai/connector-claude-code**` (`extensions/connector-claude-code`): the Claude Code
 adapter (installed plugin + `claude/channel` push).
 - `**@cotal-ai/connector-opencode**` (`extensions/connector-opencode`): the OpenCode adapter

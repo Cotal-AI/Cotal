@@ -1,0 +1,130 @@
+{
+  "suite": "packages/workspace/smoke/segmented-runtime-namespace.smoke.ts",
+  "guard": "the runtime pid/log records are per-space, a pre-segmentation root-scoped record is still found and stopped across the upgrade, both spellings present fails loud, one space's stop leaves the other space's daemon running, and a folder whose space no account record names still finds and stops its own daemon",
+  "command": "pnpm smoke:segmented-runtime-namespace",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/segmented-runtime-namespace.json",
+  "mutations": [
+    {
+      "name": "S1 the manager record goes back to a root-scoped name",
+      "file": "packages/workspace/src/local-process.ts",
+      "find": "export const MANAGER_PIDFILE = \"manager.{space}.pid\";",
+      "replace": "export const MANAGER_PIDFILE = \"manager.pid\";",
+      "expectRed": "manager.pid resolves to a DIFFERENT record for a second space on the same root",
+      "cell": "manager.pid resolves to a DIFFERENT record for a second space on the same root"
+    },
+    {
+      "name": "S2 the delivery-aware marker goes back to a root-scoped name",
+      "file": "packages/workspace/src/local-process.ts",
+      "find": "export const MANAGER_DELIVERY_AWARE_MARKER = \"manager.{space}.delivery-aware\";",
+      "replace": "export const MANAGER_DELIVERY_AWARE_MARKER = \"manager.delivery-aware\";",
+      "expectRed": "the delivery-aware marker is per-space too",
+      "cell": "the delivery-aware marker is per-space too"
+    },
+    {
+      "name": "S3 the compat READ stops admitting the pre-segmentation name",
+      "file": "packages/workspace/src/local-process.ts",
+      "find": "  const preSegmentation = PRE_SEGMENTATION_RUNTIME_RECORDS.get(template);\n  if (preSegmentation !== undefined) add(preSegmentation);",
+      "replace": "  void PRE_SEGMENTATION_RUNTIME_RECORDS;",
+      "expectRed": "with ONLY the pre-segmentation record present, the seam resolves to it",
+      "cell": "with ONLY the pre-segmentation record present, the seam resolves to it"
+    },
+    {
+      "name": "S4 the ambiguity refusal silently prefers the canonical record",
+      "file": "packages/workspace/src/local-process.ts",
+      "find": "  if (existsByteExact(canonical))\n    throw new Error(\n      `both ${canonical} and the pre-upgrade ${present.join(\" and \")} exist for space \"${context.space}\" - ambiguous process record; remove the stale one`,\n    );",
+      "replace": "  if (existsByteExact(canonical)) return canonical;",
+      "expectRed": "both records present is ambiguous and throws rather than picking one",
+      "cell": "both records present is ambiguous and throws rather than picking one"
+    },
+    {
+      "name": "S5 RESERVED_COTAL_CHILDREN keeps the root-scoped manager record",
+      "file": "packages/workspace/src/space-segmentation.ts",
+      "find": "\"membership-observer.creds\", \"membership-rw.creds\", \"meshes\", \"nats\", \"nats.log\", \"nats.pid\",",
+      "replace": "\"membership-observer.creds\", \"membership-rw.creds\", \"meshes\", \"nats\", \"nats.log\", \"nats.pid\", \"manager.pid\",",
+      "expectRed": "\"manager.pid\" is no longer a literal child of .cotal/",
+      "cell": "\"manager.pid\" is no longer a literal child of .cotal/"
+    },
+    {
+      "name": "S6 one root, one manager record: the CLI stop path hits the wrong space's daemon",
+      "file": "packages/workspace/src/local-process.ts",
+      "find": "export const MANAGER_PIDFILE = \"manager.{space}.pid\";",
+      "replace": "export const MANAGER_PIDFILE = \"manager.pid\";",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:segmented-runtime-records",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build",
+      "expectRed": "...and beta's manager is UNTOUCHED — the defect this change fixes",
+      "cell": "...and beta's manager is UNTOUCHED — the defect this change fixes"
+    },
+    {
+      "name": "S7 one root, one delivery record: stopping alpha's daemon stops beta's",
+      "file": "packages/workspace/src/local-process.ts",
+      "find": "export const DELIVERY_PIDFILE = \"delivery.{space}.pid\";",
+      "replace": "export const DELIVERY_PIDFILE = \"delivery.pid\";",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:segmented-runtime-records",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build",
+      "expectRed": "...and beta's daemon survives with its record intact",
+      "cell": "...and beta's daemon survives with its record intact"
+    },
+    {
+      "name": "S8 the supervise-side writer ignores the space it is recording for",
+      "file": "implementations/manager/src/commands.ts",
+      "find": "  const pidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, ctx);",
+      "replace": "  const pidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, { ...ctx, space: \"shared\" });",
+      "command": "pnpm smoke:record-manager-pid-per-space",
+      "expectRed": "both records exist after both managers recorded themselves",
+      "cell": "both records exist after both managers recorded themselves"
+    },
+    {
+      "name": "S9 the writer stops reclaiming a dead pre-upgrade record",
+      "file": "implementations/manager/src/commands.ts",
+      "find": "  reclaimDeadPreUpgradeRecord(MANAGER_PIDFILE, ctx);\n  reclaimDeadPreUpgradeRecord(MANAGER_DELIVERY_AWARE_MARKER, ctx);",
+      "replace": "  void reclaimDeadPreUpgradeRecord;",
+      "command": "pnpm smoke:record-manager-pid-per-space",
+      "expectRed": "the dead pre-upgrade records are reclaimed",
+      "cell": "the dead pre-upgrade records are reclaimed"
+    },
+    {
+      "name": "S10 the folder's space stops being read off its own records",
+      "file": "packages/workspace/src/space.ts",
+      "find": "  const recorded = recordedRuntimeSpaces(root);",
+      "replace": "  const recorded = recordedRuntimeSpaces(root).slice(0, 0);",
+      "expectRed": "a live manager record NAMES its space, where the account-derived read cannot",
+      "cell": "a live manager record NAMES its space, where the account-derived read cannot"
+    },
+    {
+      "name": "S11 the same, against the CLI: a space-less read answers about a space nothing recorded",
+      "file": "packages/workspace/src/space.ts",
+      "find": "  const recorded = recordedRuntimeSpaces(root);",
+      "replace": "  const recorded = recordedRuntimeSpaces(root).slice(0, 0);",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:segmented-runtime-records",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build",
+      "expectRed": "the folder-default read FINDS it, with no auth material to name the space",
+      "cell": "the folder-default read FINDS it, with no auth material to name the space"
+    },
+    {
+      "name": "S12 two spaces running under one root is arbitrated instead of refused",
+      "file": "packages/workspace/src/space.ts",
+      "find": "  if (running.length > 1)\n    throw new Error(\n      `${root}/.cotal records running daemons for ${running.length} spaces (${running.map((r) => r.space).join(\", \")}) - this folder's stack is not one mesh and a folder-wide command cannot scope to one; stop them by name (\\`cotal down\\` in each mesh's own root) or remove the record of the one that is gone`,\n    );",
+      "replace": "  if (running.length > 1) return running[0].space;",
+      "expectRed": "two spaces RUNNING under one root is refused, naming both",
+      "cell": "two spaces RUNNING under one root is refused, naming both"
+    },
+    {
+      "name": "S13 a record name that does not round-trip is read as a tenant",
+      "file": "packages/workspace/src/local-process.ts",
+      "find": "  return space.length > 0 && spaceKey(space) === key ? space : undefined;",
+      "replace": "  return space.length > 0 ? space : undefined;",
+      "expectRed": "strays and pre-upgrade names are not read as spaces",
+      "cell": "strays and pre-upgrade names are not read as spaces"
+    },
+    {
+      "name": "S14 down's folder sweep goes back to the account-derived space (live)",
+      "file": "implementations/cli/src/commands/down.ts",
+      "find": "  const folderCtx = (): LocalProcessContext => (folderContext ??= { root: cotalRoot(), space: resolveRuntimeSpace(process.cwd()) });",
+      "replace": "  const folderCtx = (): LocalProcessContext => (folderContext ??= { root: cotalRoot(), space: \"main\" });",
+      "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:up-manifest:live",
+      "expectRed": "broker + manager are gone after down (no orphaned supervise)",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "cell": "broker + manager are gone after down (no orphaned supervise)"
+    }
+  ]
+}

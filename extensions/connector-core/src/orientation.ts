@@ -77,6 +77,9 @@ const CORE_TOOLS = new Set([
   "cotal_status",
 ]);
 
+const honestStatus = (status: PresenceStatus): string =>
+  status === "working" ? "working · progress unknown" : status;
+
 /** Assemble the card. `visibleTools` is the already-gated tool list the connector exposes (pass the
  *  result of `cotalToolSpecs(config)` mapped to name/title) — the orientation tool itself is dropped.
  *  Pure: `generatedAt` is supplied by the caller so it's testable and deterministic. */
@@ -96,7 +99,7 @@ export function buildOrientation(
   const peers = agent.roster().filter((p) => p.card.id !== agent.id);
   const shown = peers
     .slice(0, 8)
-    .map((p) => `${p.card.role ? `${p.card.name}/${p.card.role}` : p.card.name} (${p.status})`);
+    .map((p) => `${p.card.role ? `${p.card.name}/${p.card.role}` : p.card.name} (${honestStatus(p.status)})`);
   const summary = peers.length
     ? shown.join(", ") + (peers.length > shown.length ? `, +${peers.length - shown.length} more` : "")
     : "no other peers present";
@@ -154,7 +157,7 @@ export function renderOrientation(o: Orientation): string {
     `Tools — more: ${o.tools.more.map((t) => t.name).join(", ") || "—"}`,
     "",
     `Right now (snapshot @ ${new Date(o.generatedAt).toISOString()}):`,
-    `  • status: ${o.status} · attention: ${o.attention}`,
+    `  • status: ${honestStatus(o.status)} · attention: ${o.attention}`,
     `  • peers present: ${o.peers.present} — ${o.peers.summary}`,
     `  • unread: ${o.unread.total}`,
     "",

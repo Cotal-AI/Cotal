@@ -13,6 +13,7 @@ import {
   completeMaintenanceCut,
   loadMeshes,
   localProcessPath,
+  localProcessPathCandidates,
   readMaintenanceJournal,
   readMaintenanceResumeDocument,
   readPreservationCommitIntent,
@@ -25,7 +26,9 @@ import {
   sameStoreIdentity,
   writePreservationCommitIntent,
   writePreservationPrepareIntent,
-  spaceKey,
+  DELIVERY_PIDFILE,
+  MANAGER_DELIVERY_AWARE_MARKER,
+  MANAGER_PIDFILE,
   type LocalProcess,
   type LocalProcessContext,
   MAINTENANCE_RESUME_DOCUMENT_VERSION,
@@ -53,7 +56,7 @@ import { extensionNames, localProcessSurface } from "../ext-loader.js";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { parsePid, probeLiveness } from "@cotal-ai/workspace";
-import { resolveSpace } from "../lib/status.js";
+import { resolveRuntimeSpace } from "../lib/status.js";
 import { downManifest } from "./down-manifest.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
@@ -119,7 +122,7 @@ export async function down(args: ParsedArgs): Promise<void> {
   // Both contexts resolve lazily: a purely target-addressed stop must not require a mesh root at
   // the cwd, and a folder sweep must not require a resolvable mesh target.
   let folderContext: LocalProcessContext | undefined;
-  const folderCtx = (): LocalProcessContext => (folderContext ??= { root: cotalRoot(), space: resolveSpace(process.cwd()) });
+  const folderCtx = (): LocalProcessContext => (folderContext ??= { root: cotalRoot(), space: resolveRuntimeSpace(process.cwd()) });
   let targetContext: LocalProcessContext | undefined;
   const contextFor = (component: LocalProcess): LocalProcessContext => {
     if (!targetAddressed(component)) return folderCtx();
@@ -737,14 +740,26 @@ export async function readPresenceWithoutConsumer(space: string, server: string)
   }
 }
 
-/** Compatibility inventory for `clean`; lifecycle commands use the registered descriptors above. */
-export function pidfileTargets(space: string): Array<[file: string, label: string]> {
+/**
+ * Compatibility inventory for `clean`; lifecycle commands use the registered descriptors above.
+ *
+ * ABSOLUTE paths, and EVERY name each record has been written under. The runtime records are
+ * `{space}` templates now, so only the local-process seam may expand one, and a sweeper that named
+ * just the canonical spelling would leave a pre-upgrade `manager.pid` behind on exactly the root a
+ * full reset is for. Built from the CANDIDATE list rather than {@link localProcessPath}: a deleter
+ * must name what it removes, and the resolver refuses on a root holding both spellings.
+ */
+export function pidfileTargets(space: string, root: string): Array<[file: string, label: string]> {
+  const context: LocalProcessContext = { root, space };
+  const every = (template: string, label: string): Array<[string, string]> =>
+    localProcessPathCandidates(template, context).map((p) => [p, label]);
   return [
-    ["manager.pid", "manager"],
-    ["delivery.pid", "delivery daemon"],
-    [`auth-service.${spaceKey(space)}.pid`, "user-auth service"],
-    ["web.pid", "web dashboard"],
-    ["nats.pid", "nats-server"],
+    ...every(MANAGER_PIDFILE, "manager"),
+    ...every(MANAGER_DELIVERY_AWARE_MARKER, "manager delivery-aware marker"),
+    ...every(DELIVERY_PIDFILE, "delivery daemon"),
+    ...every("auth-service.{space}.pid", "user-auth service"),
+    ...every("web.pid", "web dashboard"),
+    ...every("nats.pid", "nats-server"),
   ];
 }
 

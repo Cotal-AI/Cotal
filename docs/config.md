@@ -236,11 +236,17 @@ A project's state lives in `.cotal/` at the mesh root (found by walking up from 
 | `manifests/<hash>.json` | Manifest-deploy ledger (records of `up -f` / `spawn -f` runs) |
 | `config.json` | Space-local connector config (the override layer above) |
 | `nats.pid` · `nats.log` | Background nats-server pid + log |
-| `manager.pid` · `manager.log` | Manager (supervisor) pid + log; `manager.delivery-aware` marks a delivery-aware build. The manager writes the pid itself, whatever started it, and removes it on a clean stop only while it still names that process. A reader treats the record as a running manager only if the pid is alive **and** the process is a supervisor: a recycled pid belonging to something else is reported as a stale record, never signalled |
-| `delivery.pid` · `delivery.log` · `delivery.creds` | Delivery daemon pid, log, and scoped cred (auth mode) |
+| `manager.<key>.pid` · `manager.<key>.log` | Manager (supervisor) pid + log for one space; `manager.<key>.delivery-aware` marks a delivery-aware build. `<key>` is the same case-safe hex space key as the rows above, so one root can run a manager per space. A pre-segmentation root-scoped `manager.pid` is still read while it is the only spelling present, and is removed as the new record is written; both spellings present is reported as ambiguous rather than guessed. The manager writes the pid itself, whatever started it, and removes it on a clean stop only while it still names that process. A reader treats the record as a running manager only if the pid is alive **and** the process is a supervisor: a recycled pid belonging to something else is reported as a stale record, never signalled |
+| `delivery.<key>.pid` · `delivery.<key>.log` · `delivery.creds` | Delivery daemon pid and log for one space, and its scoped cred (auth mode). Per-space and compatible with a pre-segmentation `delivery.pid` on the same terms as the manager row |
 | `web.pid` · `web.log` | Web dashboard pid + log |
 | `membership.json` · `membership-*.creds` | Membership feed state + its scoped creds |
 | `setup.log` | Last `cotal setup` run |
+
+A command that acts on the whole folder without being told a space reads one off these runtime
+records: `<key>` decodes back to the space name, and a space whose record is running wins over
+residue from a stopped one. Two spaces running under one root is reported rather than arbitrated.
+This is what lets `cotal status` and `cotal down` work in a folder whose mesh runs with
+`broker: { auth: false }`, where there is no `auth/account.<key>.json` to name the space.
 
 ### Machine files
 

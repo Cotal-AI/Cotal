@@ -5,6 +5,7 @@
  * Run: pnpm smoke:pr-head-gate
  * Prove: pnpm mutation-proof --config bin/smoke/mutations/pr-head-gate.json
  */
+import { spawnSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,6 +21,7 @@ const workflows = Object.fromEntries(
     .filter((name) => /\.ya?ml$/.test(name))
     .map((name) => [name, readFileSync(join(ROOT, ".github/workflows", name), "utf8")]),
 );
+const fixtureFetch = join(ROOT, "bin/smoke/fixtures/pr-head-gate-fetch.mjs");
 
 let passed = 0, failed = 0;
 function check(name: string, condition: unknown, detail?: unknown): void {
@@ -33,15 +35,71 @@ check(
   JSON.stringify(expectedPullRequestWorkflows(workflows, ["package.json"])) === JSON.stringify(["CI", "Windows"]) &&
     JSON.stringify(expectedPullRequestWorkflows(workflows, ["install.sh"])) === JSON.stringify(["CI", "Installer", "Windows"]),
 );
+let repositoryWorkflowsParsed = false;
+try {
+  expectedPullRequestWorkflows(workflows, ["package.json"]);
+  repositoryWorkflowsParsed = true;
+} catch {}
+check("every repository workflow declaration parses without throwing", repositoryWorkflowsParsed);
+check(
+  "paths-ignore skips a workflow only when every changed path is ignored",
+  JSON.stringify(expectedPullRequestWorkflows({
+    "ignore.yml": "name: Ignore\non:\n  pull_request:\n    paths-ignore: ['docs/**']\n",
+  }, ["docs/cli.md"])) === "[]" &&
+    JSON.stringify(expectedPullRequestWorkflows({
+      "ignore.yml": "name: Ignore\non:\n  pull_request:\n    paths-ignore: ['docs/**']\n",
+    }, ["docs/cli.md", "package.json"])) === '["Ignore"]',
+);
+check(
+  "ordinary YAML comments after a flow event list preserve pull_request",
+  JSON.stringify(expectedPullRequestWorkflows({
+    "hidden.yml": "name: Hidden\non: [push, pull_request] # ordinary YAML comment\n",
+  }, ["package.json"])) === '["Hidden"]',
+);
+let invalidYamlRefused = false;
+try {
+  expectedPullRequestWorkflows({
+    "invalid.yml": "name: Invalid\non: [pull_request\n",
+  }, ["package.json"]);
+} catch (error) {
+  invalidYamlRefused = /invalid YAML/.test(String(error));
+}
+check("invalid workflow YAML fails closed instead of shrinking the expected set", invalidYamlRefused);
+for (const [label, source, pattern] of [
+  ["an empty on sequence fails closed", "name: Empty\non: []\n", /top-level on sequence must not be empty/],
+  ["an empty on mapping fails closed", "name: Empty\non: {}\n", /top-level on mapping must not be empty/],
+] as const) {
+  let refused = false;
+  try { expectedPullRequestWorkflows({ "unknown.yml": source }, ["package.json"]); }
+  catch (error) { refused = pattern.test(String(error)); }
+  check(label, refused);
+}
+check(
+  "a scalar event without pull_request is explicitly omitted",
+  JSON.stringify(expectedPullRequestWorkflows({ "future.yml": "name: Future\non: future_event\n" }, ["package.json"])) === "[]",
+);
+check(
+  "an event mapping without pull_request is explicitly omitted",
+  JSON.stringify(expectedPullRequestWorkflows({ "future.yml": "name: Future\non:\n  future_event:\n" }, ["package.json"])) === "[]",
+);
 let unsupportedRefused = false;
 try {
   expectedPullRequestWorkflows({
     "unknown.yml": "name: Unknown\non:\n  pull_request:\n    paths: ${{ future.paths }}\n",
   }, ["package.json"]);
 } catch (error) {
-  unsupportedRefused = /unsupported inline paths declaration/.test(String(error));
+  unsupportedRefused = /pull_request paths must be a non-empty string array/.test(String(error));
 }
 check("an unrecognised workflow declaration fails closed instead of shrinking the expected set", unsupportedRefused);
+let unsupportedFilterRefused = false;
+try {
+  expectedPullRequestWorkflows({
+    "unknown.yml": "name: Unknown\non:\n  pull_request:\n    branches: [main]\n",
+  }, ["package.json"]);
+} catch (error) {
+  unsupportedFilterRefused = /unsupported pull_request filter: branches/.test(String(error));
+}
+check("a pull_request filter the guard cannot evaluate fails closed", unsupportedFilterRefused);
 let unsupportedPatternRefused = false;
 try {
   expectedPullRequestWorkflows({
@@ -86,6 +144,34 @@ const green = classifyPullRequestHead({
 });
 check("the exact head is green only after every expected workflow succeeds", green.green, green);
 
+const missingOne = classifyPullRequestHead({
+  pr: positive.pr,
+  headSha: positive.headSha,
+  expected: expectedNames,
+  runs: succeeded.filter((run: Record<string, unknown>) => run.name !== "Docs"),
+});
+check("a missing expected workflow keeps the exact head red", JSON.stringify(missingOne.missing) === '["Docs"]' && !missingOne.green, missingOne);
+
+const wrongPullRequest = classifyPullRequestHead({
+  pr: positive.pr,
+  headSha: positive.headSha,
+  expected: ["CI"],
+  runs: succeeded.map((run: Record<string, unknown>) =>
+    run.name === "CI" ? { ...run, pull_requests: [{ number: positive.pr + 1 }] } : run,
+  ),
+});
+check("a successful run attached to another pull request does not satisfy this pull request", JSON.stringify(wrongPullRequest.missing) === '["CI"]' && !wrongPullRequest.green, wrongPullRequest);
+
+const wrongHead = classifyPullRequestHead({
+  pr: positive.pr,
+  headSha: positive.headSha,
+  expected: ["Windows"],
+  runs: succeeded.map((run: Record<string, unknown>) =>
+    run.name === "Windows" ? { ...run, head_sha: "0".repeat(40) } : run,
+  ),
+});
+check("a successful run for another commit does not satisfy the exact head", JSON.stringify(wrongHead.missing) === '["Windows"]' && !wrongHead.green, wrongHead);
+
 const failedRuns = succeeded.map((run: Record<string, unknown>) =>
   run.name === "CI" ? { ...run, conclusion: "failure" } : run,
 );
@@ -110,7 +196,38 @@ for (const conclusion of ["neutral", "skipped"]) {
   check(`a ${conclusion} expected workflow is failing, never green`, JSON.stringify(verdict.failing) === '["CI"]' && !verdict.green, verdict);
 }
 
-const EXPECTED = 20;
+function shippedCommand(mode: "success" | "missing") {
+  // The shipped gate reads GitHub credentials (GH_TOKEN/GITHUB_TOKEN/GITHUB_REPOSITORY) and no
+  // COTAL_ name at all, so an ambient copy would hand a live credential and broker URL to a child
+  // that has no use for either. Strip the prefix.
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
+  return spawnSync("pnpm", ["--silent", "pr-head-gate", "1098"], {
+    cwd: ROOT,
+    encoding: "utf8",
+    env: {
+      ...env,
+      GITHUB_REPOSITORY: "Cotal-AI/Cotal",
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${fixtureFetch}`.trim(),
+      PR_HEAD_GATE_FIXTURE: mode,
+    },
+  });
+}
+
+const shippedGreen = shippedCommand("success");
+check(
+  "the shipped pr-head-gate command reports the YAML-derived Hidden workflow green",
+  shippedGreen.status === 0 && shippedGreen.stdout.includes("expected: Hidden") && shippedGreen.stdout.includes("verdict: GREEN"),
+  `${shippedGreen.stdout}${shippedGreen.stderr}`,
+);
+const shippedMissing = shippedCommand("missing");
+check(
+  "the shipped pr-head-gate command reports a missing YAML-derived workflow as not green",
+  shippedMissing.status === 1 && shippedMissing.stdout.includes("missing: Hidden") && shippedMissing.stdout.includes("verdict: NOT GREEN"),
+  `${shippedMissing.stdout}${shippedMissing.stderr}`,
+);
+
+const EXPECTED = 34;
 check(`every cell ran (${EXPECTED} before sentinel)`, passed + failed === EXPECTED);
 console.log(`PR HEAD GATE SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 console.log("SUITE COMPLETE");
