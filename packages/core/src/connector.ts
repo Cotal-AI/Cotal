@@ -210,6 +210,19 @@ export interface Connector extends Extension {
   /** Whether this connector can reopen the exact host session named by
    *  {@link LaunchOpts.continueSession} after a supervised process crash. Default-deny. */
   readonly supportsSessionContinuation?: boolean;
+  /**
+   * Whether this connector can tell its host that the advertised `cotal_*` list changed.
+   *
+   * Default-deny. The advertised `cotal_*` list is a function of the session's mesh
+   * config (spawn tools appear or vanish with the connection). A session that changes
+   * connection therefore changes the advertised surface. MCP hosts can fire
+   * `tools/list_changed`; native hosts that take a tool map once cannot. Consumers
+   * above this boundary branch on THIS FLAG, never on the connector's name. A
+   * connection-changing op against a connector that does not declare this MUST fail
+   * loud ({@link refuseUnannouncedToolListChange}) rather than leave a stale list that
+   * still accepts the call and is denied at the wire.
+   */
+  readonly supportsToolListAnnounce?: boolean;
   /** Whether this connector can honor {@link LaunchOpts.variant}. Default-deny so a variant request
    *  fails before provisioning side effects in the manager. */
   readonly supportsModelVariant?: boolean;
@@ -228,4 +241,17 @@ export interface Connector extends Extension {
    *  one is worse than none: someone waits for a prompt that will never appear and reads the
    *  startup as hung. Omit when there is nothing specific to say. */
   readonly launchHint?: string;
+}
+
+/**
+ * Refuse a connection-changing op when the connector cannot announce the resulting
+ * tool-list change. Name-blind: callers pass the connector they resolved, never a
+ * string of known harnesses. Default-deny: absent/false throws. Returns void when
+ * the connector declared {@link Connector.supportsToolListAnnounce}.
+ */
+export function refuseUnannouncedToolListChange(connector: Pick<Connector, "name" | "supportsToolListAnnounce">): void {
+  if (connector.supportsToolListAnnounce === true) return;
+  throw new Error(
+    `${connector.name} connector cannot announce a tool-list change, so a connection change is refused rather than leaving a stale advertised surface`,
+  );
 }

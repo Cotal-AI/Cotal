@@ -117,6 +117,7 @@ export const codexConnector: Connector = {
   name: "codex",
   requires: ["codex"],
   supportsModelVariant: true, // variant = Codex reasoning effort (minimal|low|medium|high|xhigh)
+  supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
   // There is no first-run gate to press through here: the host joins the mesh FIRST (app-server,
   // credentials, tools) and only then hands the terminal to Codex, so the honest thing to tell
   // someone staring at a blank terminal is that the pause is the mesh, and the UI is coming.

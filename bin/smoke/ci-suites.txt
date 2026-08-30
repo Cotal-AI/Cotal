@@ -696,3 +696,9 @@ smoke:workflow-concurrency
 # the suite. This compiler-API intersection checks every named workspace import against the package's
 # public exports. Appended so every existing shard assignment remains unchanged.
 smoke:workspace-import-exports
+
+# Connection-changing ops branch on Connector.supportsToolListAnnounce, never on a
+# harness name. Default-deny: undeclared is refuse, not a no-op. Discriminating
+# fixtures are connectors the CLI has never heard of. Issue #1004. Appended so
+# every existing shard assignment remains unchanged.
+smoke:tool-list-announce
