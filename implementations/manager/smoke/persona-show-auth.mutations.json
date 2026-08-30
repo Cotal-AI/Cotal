@@ -2,7 +2,6 @@
   "suite": "implementations/manager/smoke/persona-show-auth.smoke.ts",
   "guard": "show-persona fails closed on an unparseable file before parser diagnostics can cross the manager entry",
   "command": "pnpm smoke:manager-persona-show-auth",
-  "completionMarker": "MANAGER PERSONA SHOW AUTH OK",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/persona-show-auth.mutations.json",
   "why": [
     "The regression drives the real managerServiceDefs show-persona handler without starting a broker.",
