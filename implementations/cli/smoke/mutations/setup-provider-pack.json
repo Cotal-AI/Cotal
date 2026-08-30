@@ -1,0 +1,16 @@
+{
+  "suite": "implementations/cli/smoke/setup-provider-pack.smoke.ts",
+  "guard": "generic CLI tarballs contain no harness-native setup assets or invocations and the Claude connector declares and ships its provider",
+  "command": "pnpm --filter @cotal-ai/workspace... build && pnpm --filter @cotal-ai/connector-core build && pnpm --filter @cotal-ai/connector-claude-code build && pnpm --filter @cotal-ai/cli build && pnpm exec tsx implementations/cli/smoke/setup-provider-pack.smoke.ts",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/setup-provider-pack.json",
+  "mutations": [
+    {
+      "name": "generic CLI regains a harness asset path",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "async function runSkillsOnly(): Promise<void> {\n  await reconcileConnectorSkills();",
+      "replace": "async function runSkillsOnly(): Promise<void> {\n  void \".claude-plugin\";\n  await reconcileConnectorSkills();",
+      "expectRed": "generic CLI compiled setup ships no harness-native invocation or asset path",
+      "cell": "generic CLI compiled setup ships no harness-native invocation or asset path"
+    }
+  ]
+}
