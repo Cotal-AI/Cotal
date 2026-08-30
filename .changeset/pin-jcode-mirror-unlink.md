@@ -3,4 +3,4 @@
 "@cotal-ai/connector-core": patch
 ---
 
-Unpinning a Jcode credential-mirror parent no longer lets removal follow a swapped directory symlink.
+Jcode credential mirroring pins copy and unlink through a Linux `/dev/fd` parent, and names a refusal when that traversal is missing.

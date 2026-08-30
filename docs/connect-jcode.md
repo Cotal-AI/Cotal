@@ -14,9 +14,11 @@ supported.
 
 ## Install
 
-The connector is seeded with the Cotal CLI. It currently supports **macOS and Linux only**:
-Jcode's released Harness API bridge is a Unix-socket surface. Install Jcode 0.78.1 or later from
-its GitHub release and make the binary available as `jcode` on `PATH`:
+The connector is seeded with the Cotal CLI. Jcode's released Harness API bridge is a Unix-socket
+surface, so Windows is not supported. Credential mirroring pins each parent through
+`/dev/fd/<fd>/<name>`, which needs Linux procfs traversal. macOS mounts `/dev/fd` but has no
+subpath namespace under a descriptor, so a managed Jcode seat currently launches on Linux only.
+Install Jcode 0.78.1 or later from its GitHub release and make the binary available as `jcode` on `PATH`:
 
 ```bash
 jcode version --json
@@ -83,9 +85,13 @@ codes rather than arbitrary Harness API messages.
 Credential mirroring is mandatory for managed Jcode seats: each launch atomically refreshes the
 allowlisted Jcode, provider-config, and external-login destinations, and removes a destination when
 its source login was removed. Cleanup addresses only that explicit inventory; transcripts, MCP
-configuration, logs, and other private-home state are untouched. Removal opens each parent with
-`O_NOFOLLOW` through the previous directory fd and unlinks the leaf through that pinned parent, so
-replacing a walked directory with a symlink cannot delete a namesake file outside the private home.
+configuration, logs, and other private-home state are untouched. Copy and removal both open each
+parent with `O_NOFOLLOW` through the previous directory fd after proving `/dev/fd/<fd>/.` traverses,
+then publish or unlink the leaf through that pinned parent. Replacing a walked directory with a
+symlink cannot write or delete a namesake file outside the private home. If `/dev/fd` cannot
+traverse, the connector throws a named error. After that probe succeeds, `ENOENT` on a child means
+the mirror path is absent.
+
 There is no credential-free opt-out today because the private instance must reproduce the operator's
 current provider-login state rather than silently start with stale or partial authorization.
 

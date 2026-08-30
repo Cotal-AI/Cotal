@@ -3,7 +3,7 @@
   "guard": "Jcode credential mirrors exactly reconcile all four source families, remove absent credentials, preserve unrelated state, and keep path safety intact",
   "command": "pnpm smoke:jcode-private-state",
   "progressPattern": "✓",
-  "minTicks": 12,
+  "minTicks": 16,
   "mutations": [
     {
       "name": "Jcode short socket alias targets managed home",
@@ -36,6 +36,14 @@
       "replace": "      rmSync(destination, { force: true });",
       "expectRed": "parent-swap after the parent is pinned does not delete outside",
       "cell": "parent-swap after the parent is pinned does not delete outside"
+    },
+    {
+      "name": "Jcode credential mirror copy follows the destination path",
+      "file": "extensions/connector-jcode/src/private-state.ts",
+      "find": "    const temp = containedPath(dirFd, tempName);",
+      "replace": "    const temp = join(dirname(destination), tempName);",
+      "expectRed": "parent-swap after the write parent is pinned does not copy outside",
+      "cell": "parent-swap after the write parent is pinned does not copy outside"
     }
   ]
 }
