@@ -33,8 +33,6 @@ export interface AgentHandle {
   /** OS pid of the spawned child, when the backend owns a real process (pty/host); absent for
    *  backends that don't (tmux/cmux attach to an externally-owned process). */
   readonly pid?: number;
-  /** Durable identity for successor supervision. Optional during the preservation rollout. */
-  readonly locator?: string;
   status(): "running" | "exited";
   /** Tear the agent down. `graceful` (default) signals a clean exit (so the session
    *  leaves the mesh on its own) before ensuring the process/tab is gone; otherwise
@@ -75,8 +73,6 @@ export interface AgentHandle {
 export interface Runtime {
   readonly kind: RuntimeKind;
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle;
-  /** Hard-stop the opaque durable locator, then resolve only after proving it no longer exists. */
-  reap?(locator: string): Promise<void>;
 }
 
 /**
