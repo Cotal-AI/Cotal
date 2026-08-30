@@ -26,7 +26,8 @@
       "find": "      chatSubject(this.space, \"*\", \"*\", channel),\n      opts?.limit ?? 100,\n      undefined,\n      opts?.signal,\n    );",
       "replace": "      chatSubject(this.space, \"*\", \"*\", channel),\n      opts?.limit ?? 100,\n    );",
       "expectRed": "✗ FAIL: PUBLIC REPRO: abort settles channelHistory as AbortError instead of leaving it pending",
-      "cell": "✗ FAIL: PUBLIC REPRO: abort settles channelHistory as AbortError instead of leaving it pending"
+      "cell": "✗ FAIL: PUBLIC REPRO: abort settles channelHistory as AbortError instead of leaving it pending",
+      "completionMarker": "HISTORY CANCELLATION:"
     },
     {
       "name": "an aborted history window asks the broker for its entire pending backlog in one pull",
