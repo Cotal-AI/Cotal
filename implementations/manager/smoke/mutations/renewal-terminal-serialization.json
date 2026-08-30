@@ -13,8 +13,8 @@
     {
       "name": "retirement no longer drains the renewal accepted before its latch",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    const acceptedRenewal = a.staticCredentialRenewal;\n    if (acceptedRenewal) await acceptedRenewal.catch(() => {});",
-      "replace": "    void a.staticCredentialRenewal;",
+      "find": "    if (acceptedRenewal) await acceptedRenewal.catch(() => {});",
+      "replace": "    void acceptedRenewal;",
       "expectRed": "the durable terminal does not pass an accepted renewal still in flight",
       "cell": "the durable terminal does not pass an accepted renewal still in flight"
     },
