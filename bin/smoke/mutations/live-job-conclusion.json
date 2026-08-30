@@ -1,0 +1,31 @@
+{
+  "suite": "bin/smoke/live-job-conclusion.smoke.ts",
+  "guard": "a live job that reaches its own deadline becomes a named red check, while a newer run for the same PR remains an intentional supersession",
+  "command": "pnpm smoke:live-job-conclusion",
+  "completionMarker": "SUITE COMPLETE",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/live-job-conclusion.json",
+  "why": [
+    "Sixteen consecutive main runs measured 1514-1517 seconds on live against a 1500-second job limit. The job was badged cancelled, exactly like a superseded PR revision, and ci-ok flattened both into the same failure.",
+    "The passing herdr hang was fixed separately. Eighteen subsequent successful live jobs measure 430-587 seconds, so this change does not raise the budget; it makes the next self-timeout legible.",
+    "The pure classifier is constructed because this pull request cannot force its own GitHub job to time out and still receive the result. The second mutation grades the production workflow binding separately.",
+    "A first workflow cut added a separate dependent diagnosis job. Hosted PR evidence showed a superseded run then queued that job and ci-ok sequentially, holding the replacement run behind two extra runner allocations. The classifier now lives inside the already-existing ci-ok aggregate."
+  ],
+  "mutations": [
+    {
+      "name": "a deadline cancellation is treated as an ordinary supersession again",
+      "file": "scripts/live-job-conclusion.mjs",
+      "find": "  if (durationSeconds >= timeoutSeconds)\n    return { kind: \"self-timeout\", durationSeconds, timeoutSeconds };",
+      "replace": "  if (durationSeconds >= timeoutSeconds)\n    return { kind: \"superseded\", supersedingRunId: 0 };",
+      "expectRed": "a job at the deadline is an explicit self-timeout",
+      "cell": "a job at the deadline is an explicit self-timeout"
+    },
+    {
+      "name": "ci-ok stops invoking the live cancellation classifier",
+      "file": ".github/workflows/ci.yml",
+      "find": "          node scripts/live-job-conclusion.mjs\n",
+      "replace": "          node --version\n",
+      "expectRed": "the workflow calls the committed classifier with the measured 25-minute budget",
+      "cell": "the workflow calls the committed classifier with the measured 25-minute budget"
+    }
+  ]
+}

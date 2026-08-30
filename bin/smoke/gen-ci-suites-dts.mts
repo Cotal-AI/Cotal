@@ -12,6 +12,10 @@ export const DECLARATIONS = [
     module: fileURLToPath(new URL("./shard-stability.mjs", import.meta.url)),
     declaration: fileURLToPath(new URL("./shard-stability.d.mts", import.meta.url)),
   },
+  {
+    module: fileURLToPath(new URL("../../scripts/live-job-conclusion.mjs", import.meta.url)),
+    declaration: fileURLToPath(new URL("../../scripts/live-job-conclusion.d.mts", import.meta.url)),
+  },
 ] as const;
 
 function options(): ts.CompilerOptions {
@@ -32,6 +36,7 @@ export function renderDeclaration(modulePath: string): string {
   if (errors.length) throw new Error(`${modulePath} does not typecheck: ${errors.slice(0, 5).map((d) => ts.flattenDiagnosticMessageText(d.messageText, " ")).join("; ")}`);
   program.emit(undefined, (_fileName, text) => { emitted = text; });
   if (emitted === undefined) throw new Error(`no declaration emitted for ${modulePath}`);
+  emitted = emitted.replace(/^#![^\n]*\n/, "");
   return banner(modulePath) + emitted;
 }
 
