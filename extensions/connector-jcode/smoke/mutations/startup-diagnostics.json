@@ -10,7 +10,8 @@
       "file": "extensions/connector-jcode/src/startup-diagnostics.ts",
       "find": "    if (stats.isSymbolicLink()) throw new Error(`refusing symlinked Jcode connector log directory: ${logs}`);",
       "replace": "    if (false) throw new Error(\"mutant\");",
-      "expectRed": "connector diagnostic log refuses a pre-planted logs symlink"
+      "expectRed": "connector diagnostic log refuses a pre-planted logs symlink",
+      "cell": "connector diagnostic log refuses a pre-planted logs symlink"
     }
   ]
 }

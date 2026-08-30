@@ -37,7 +37,7 @@ try {
     check("connector diagnostic log refuses a pre-planted logs symlink", refused && readdirSync(outside).length === 0, readdirSync(outside));
   }
 
-  console.log(`\nJCODE STARTUP DIAGNOSTICS SMOKE PASSED (${pass} checks)`);
+  console.log(`\n${pass} checks passed`);
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
