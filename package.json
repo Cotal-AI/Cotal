@@ -483,6 +483,7 @@
     "smoke:workspace-import-exports": "tsx bin/smoke/workspace-import-exports.smoke.ts",
     "smoke:required-arg-seam": "tsx bin/smoke/required-arg-seam.smoke.ts",
     "smoke:ci-suites": "tsx bin/smoke/ci-suites.smoke.ts",
+    "smoke:package-test-contract": "tsx bin/smoke/package-test-contract.smoke.ts",
     "smoke:ci-fragments": "tsx bin/smoke/ci-fragments.smoke.ts",
     "smoke:ci-declarations": "tsx bin/smoke/ci-declarations.smoke.ts",
     "smoke:shard-stability": "tsx bin/smoke/shard-stability.smoke.ts",
