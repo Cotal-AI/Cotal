@@ -432,6 +432,33 @@ if (process.platform !== "win32") {
   check("symlinked bin: payloads copied into that generation's durable store", existsSync(join(seedDir(cfg), "store", version)));
 }
 
+// ── a NEWER binary names a shared-store migration and records who wrote it + when ─────────────────
+{
+  const cfg = track(freshCfg());
+  cotal(cfg, ["ext", "list"]); // establish a healthy current store first
+  const stampPath = join(seedDir(cfg), "stamp.json");
+  const currentGeneration = readJson(join(REPO, "bin", "package.json")).version;
+  const priorGeneration = "0.35.0";
+  writeJson(stampPath, { generation: priorGeneration }); // legacy stamp shape, before provenance existed
+
+  const migrated = cotal(cfg, ["ext", "list"]);
+  const stamp = readJson(stampPath) as { generation?: string; writtenBy?: string; writtenAt?: string };
+  check("migration provenance: a newer binary announces the shared seed-store generation migration",
+    migrated.status === 0 && migrated.stderr.includes(`migrated operator-global seed store generation ${priorGeneration} -> ${currentGeneration}`),
+    migrated.stderr);
+  check("migration provenance: stamp records the exact CLI entry that wrote the generation",
+    stamp.writtenBy === BIN, stamp);
+  check("migration provenance: stamp records a valid ISO timestamp",
+    typeof stamp.writtenAt === "string" && Number.isFinite(Date.parse(stamp.writtenAt)) && new Date(stamp.writtenAt).toISOString() === stamp.writtenAt,
+    stamp);
+  check("migration provenance: the notice names the durable writer and timestamp recorded in the stamp",
+    migrated.stderr.includes(`written by ${stamp.writtenBy} at ${stamp.writtenAt}`) && migrated.stderr.includes(stampPath),
+    migrated.stderr);
+  const steady = cotal(cfg, ["ext", "list"]);
+  check("migration provenance: a current no-op boot does not claim another migration",
+    !steady.stderr.includes("migrated operator-global seed store generation"), steady.stderr);
+}
+
 // ── an OLDER binary must refuse a store stamped NEWER, and write nothing ─────────────────────────
 // Without the refusal an older cotal misses the stamp fast path, refreshes nothing (the refresh
 // fires only when the running binary is strictly newer), and then writes its own older generation
@@ -447,7 +474,9 @@ if (process.platform !== "win32") {
   const cfg = track(freshCfg());
   cotal(cfg, ["ext", "list"]); // seed it normally first
   const stamp = join(seedDir(cfg), "stamp.json");
-  writeJson(stamp, { generation: "99.0.0" });
+  const newerWriter = "/opt/cotal-99/bin/cotal";
+  const newerWrittenAt = "2026-08-29T14:01:40.000Z";
+  writeJson(stamp, { generation: "99.0.0", writtenBy: newerWriter, writtenAt: newerWrittenAt });
   const before = readFileSync(stamp);
   const storeBefore = readdirSync(join(seedDir(cfg), "store")).sort().join(",");
 
@@ -455,6 +484,8 @@ if (process.platform !== "win32") {
   const said = `${r.stdout}${r.stderr}`;
   check("downgrade: an older binary REFUSES a store stamped newer", r.status !== 0, r.status);
   check("downgrade: the refusal names both generations", /is older than the seed store's generation 99\.0\.0/.test(said), said.slice(0, 300));
+  check("downgrade: the refusal names who wrote the newer generation and when",
+    said.includes(`written by ${newerWriter} at ${newerWrittenAt}`), said.slice(0, 500));
   check("downgrade: the refusal names the way out", /ext seed --reset/.test(said), said.slice(0, 300));
   // The point of the guard is that it writes NOTHING, so assert the bytes, not just the exit code.
   check("downgrade: stamp.json is byte-identical after the refusal", readFileSync(stamp).equals(before));

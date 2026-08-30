@@ -13,7 +13,7 @@ import {
 import { c } from "../ui.js";
 import { selfArgv } from "../lib/self-exec.js";
 import { claimExtensionMutation } from "../lib/ext-mutation.js";
-import { SEED_BUILTINS, seedGeneration, stampPath } from "./paths.js";
+import { entryScript, SEED_BUILTINS, seedGeneration, stampPath } from "./paths.js";
 import {
   acquireReconcileLock,
   clearChildMarker,
@@ -39,6 +39,7 @@ import {
   recoverAuthorityFromBackup,
   writeAuthority,
   writeStamp,
+  type Stamp,
 } from "./authority.js";
 import { gcSeedStore, stageSeedPayload } from "./store.js";
 
@@ -208,8 +209,9 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
     isValidSemver(storeGeneration) &&
     isStrictlyNewer(storeGeneration, generation)
   ) {
+    const stampProvenance = describeStampProvenance(readStamp());
     throw new Error(
-      `this cotal ${generation} is older than the seed store's generation ${storeGeneration} - ` +
+      `this cotal ${generation} is older than the seed store's generation ${storeGeneration}${stampProvenance} - ` +
         "run the newer cotal, or `cotal ext seed --reset` to rebuild the store for this version",
     );
   }
@@ -256,6 +258,13 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
     return NOOP;
 
   const stampGen = readStamp()?.generation;
+  const migrationFrom =
+    mode !== "reset" &&
+    stampGen !== undefined &&
+    isValidSemver(stampGen) &&
+    isStrictlyNewer(generation, stampGen)
+      ? stampGen
+      : undefined;
   const repairTarget = mode === "repair" ? cursor?.package : undefined;
   const seeded: string[] = [];
   const refreshed: string[] = [];
@@ -309,7 +318,8 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
   // recoverable partial run on the next boot.
   writeAuthority(everSeeded);
   ensureWitness(generation);
-  writeStamp(generation);
+  const committedStamp = writeStamp(generation, entryScript());
+  if (migrationFrom) announceSeedMigration(migrationFrom, committedStamp);
   clearCursor();
   clearRecovery();
   gcSeedStore(
@@ -317,6 +327,17 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
     loadExtensionsManifest().extensions.map((e) => e.spec),
   );
   return { noop: false, seeded, refreshed, removedKept };
+}
+
+function describeStampProvenance(stamp: Stamp | undefined): string {
+  if (!stamp?.writtenBy || !stamp.writtenAt) return "";
+  return `, written by ${stamp.writtenBy} at ${stamp.writtenAt}`;
+}
+
+function announceSeedMigration(from: string, stamp: Stamp): void {
+  process.stderr.write(
+    `→ migrated operator-global seed store generation ${from} -> ${stamp.generation}, written by ${stamp.writtenBy} at ${stamp.writtenAt}: ${stampPath()}\n`,
+  );
 }
 
 /** Quarantine any corrupt manifest / seed-state so a maintenance run rebuilds clean instead of wedging
