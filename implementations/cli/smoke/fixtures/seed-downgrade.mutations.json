@@ -17,6 +17,9 @@
     "",
     "Every anchor is code-only and unique. The refusal mutation keeps both semver predicates intact,",
     "so it remains compile-clean and changes only whether the guarded refusal is reachable.",
+    "The three seed-source mutations rebuild @cotal-ai/cli after source restoration because smoke:seed",
+    "compiles the mutant before running the public CLI. Restoring source without rebuilding leaves dist",
+    "compiled from the mutant even though git reports a clean tree.",
     "",
     "WHAT THIS DOES NOT PROVE, stated because the fix has a real limit. The guard ships in this",
     "version and later. A binary RELEASED BEFORE it does not carry it and never will, so an old",
@@ -32,6 +35,7 @@
       "file": "implementations/cli/src/seed/reconcile.ts",
       "find": "    isValidSemver(storeGeneration) &&\n    isStrictlyNewer(storeGeneration, generation)",
       "replace": "    isValidSemver(storeGeneration) &&\n    isStrictlyNewer(storeGeneration, generation) &&\n    process.pid < 0",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
       "expectRed": "✗ FAIL: downgrade: an older binary REFUSES a store stamped newer",
       "cell": "✗ FAIL: downgrade: an older binary REFUSES a store stamped newer"
     },
@@ -40,6 +44,7 @@
       "file": "implementations/cli/src/seed/reconcile.ts",
       "find": "    const newerExecutable = verifiedCotalExecutables().find(\n      (candidate) => compareSemver(candidate.version, storeGeneration) >= 0,\n    );\n    const recovery = newerExecutable\n      ? `run the cotal-ai ${newerExecutable.version} executable at ${JSON.stringify(newerExecutable.path)}`\n      : \"run the newer cotal\";",
       "replace": "    const recovery = \"run the newer cotal\";",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
       "expectRed": "✗ FAIL: downgrade hint: finds the installer cotal even when reduced PATH omits ~/.local/bin",
       "cell": "✗ FAIL: downgrade hint: finds the installer cotal even when reduced PATH omits ~/.local/bin"
     },
@@ -48,6 +53,7 @@
       "file": "implementations/cli/src/seed/reconcile.ts",
       "find": "      (candidate) => compareSemver(candidate.version, storeGeneration) >= 0,",
       "replace": "      (candidate) => compareSemver(candidate.version, storeGeneration) >= 0 || compareSemver(candidate.version, storeGeneration) < 0,",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
       "expectRed": "✗ FAIL: downgrade hint: never names a candidate below the store generation",
       "cell": "✗ FAIL: downgrade hint: never names a candidate below the store generation"
     },
