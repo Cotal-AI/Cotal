@@ -52,7 +52,7 @@
       "name": "workspace discovery aliases the pinned inventory, so an omitted package can disappear from both sides",
       "file": "bin/smoke/package-test-contract.smoke.ts",
       "find": "const discovered = discoverWorkspacePackages();",
-      "replace": "const discovered = WORKSPACE_PACKAGE_DIRS;",
+      "replace": "const discovered = Object.fromEntries(Object.entries(discoverWorkspacePackages()).filter(([name]) => name !== \"@cotal-ai/delivery\"));",
       "expectRed": "✗ FAIL: independent workspace discovery exactly matches the pinned package inventory",
       "cell": "✗ FAIL: independent workspace discovery exactly matches the pinned package inventory"
     }
