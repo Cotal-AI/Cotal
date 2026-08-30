@@ -47,7 +47,8 @@
       "file": "extensions/connector-jcode/src/host.ts",
       "find": "      await shutdown(1);\n    } finally {\n      reconnecting = false;",
       "replace": "      /* mutant: terminal recovery failure is swallowed */\n    } finally {\n      reconnecting = false;",
-      "expectRed": "terminal ownership refusal or unsafe third launch"
+      "command": "pnpm smoke:jcode-provider-permanent-refusal",
+      "expectRed": "persistent invalid_request replacement refusal is terminal before another launch"
     }
   ]
 }
