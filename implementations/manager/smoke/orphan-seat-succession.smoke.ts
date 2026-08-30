@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -32,6 +32,17 @@ const alive = (pid: number): boolean => {
 };
 const stopGroup = (pid?: number) => { if (!pid) return; try { process.kill(-pid, "SIGKILL"); } catch { try { process.kill(pid, "SIGKILL"); } catch {} } };
 const here = dirname(fileURLToPath(import.meta.url)); const repo = resolve(here, "../../.."); const host = join(here, "_orphan-seat-host.ts"); const tsx = join(repo, "node_modules", ".bin", "tsx");
+if (process.env.COTAL_ORPHAN_SEAT_THROW_CONTROL === "1") throw new Error("CONTROL_THROW_MUST_FAIL");
+const throwControl = spawnSync(tsx, [fileURLToPath(import.meta.url)], {
+  cwd: repo,
+  env: { ...process.env, COTAL_ORPHAN_SEAT_THROW_CONTROL: "1" },
+  encoding: "utf8",
+});
+check(
+  "instrument: an unconditional thrown error makes the public suite fail closed",
+  throwControl.status !== 0 && throwControl.stderr.includes("CONTROL_THROW_MUST_FAIL"),
+  { status: throwControl.status, stderr: throwControl.stderr },
+);
 const port = await freePort(); const servers = `nats://127.0.0.1:${port}`; const space = `orphan817-${randomUUID().slice(0, 8)}`; const auth = await createSpaceAuth(space); const observerCreds = await mintMembershipObserverCreds(auth, newIdentity()); const evictorCreds = await mintConnectionEvictorCreds(auth, newIdentity());
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN)); const root = join(dir, "ws"); mkdirSync(join(root, ".cotal", "agents"), { recursive: true }); saveSpaceAuth(authDir(root), auth); writeFileSync(join(root, ".cotal", "agents", "worker.md"), "---\nname: worker\nrole: worker\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\n"); writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
 const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" }); const releaseBroker = teardownOnSignal(broker, dir); let daemon: CotalEndpoint | undefined; const managers: ChildProcess[] = []; const seats: number[] = [];
@@ -57,6 +68,9 @@ try {
   // Deliberate scope boundary: delivery-admin evicts NATS connections; it does not own OS process
   // lifecycle. Safe successor process reaping depends on durable PID start-identity pinning (#1069).
   check("broker succession leaves the orphan OS process alive (OS reap is out of scope)", alive(first.ready.seatPid), first.ready);
+  const EXPECTED = 5;
+  if (pass + fail !== EXPECTED)
+    throw new Error(`expected ${EXPECTED} cells, ran ${pass + fail}; a cell was added or silently skipped`);
   console.log(`\nORPHAN-SEAT SUCCESSION SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"} (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
-} finally { for (const child of managers) if (child.exitCode === null) child.kill("SIGKILL"); for (const pid of seats) stopGroup(pid); await daemon?.stop().catch(() => {}); broker.kill("SIGKILL"); await wait(300); rmSync(dir, { recursive: true, force: true }); releaseBroker(); process.exit(process.exitCode ?? 0); }
+} finally { for (const child of managers) if (child.exitCode === null) child.kill("SIGKILL"); for (const pid of seats) stopGroup(pid); await daemon?.stop().catch(() => {}); broker.kill("SIGKILL"); await wait(300); rmSync(dir, { recursive: true, force: true }); releaseBroker(); }
