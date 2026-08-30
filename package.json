@@ -66,6 +66,7 @@
     "smoke:lang-differential": "tsx packages/lang/smoke/differential.smoke.ts",
     "smoke:orientation": "tsx extensions/connector-core/smoke/orientation.smoke.ts",
     "smoke:docs": "tsx extensions/connector-core/smoke/docs.smoke.ts",
+    "smoke:disarm-delete-timeout": "tsx packages/core/smoke/disarm-delete-timeout.smoke.ts",
     "smoke:pi": "tsx extensions/pi/pi.smoke.ts && tsx extensions/pi/pi-sdk.smoke.ts",
     "smoke:codex-args": "tsx extensions/connector-codex/smoke/codex-args.smoke.ts",
     "smoke:codex-host": "tsx extensions/connector-codex/smoke/codex-host.smoke.ts",
