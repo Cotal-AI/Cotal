@@ -713,6 +713,15 @@ smoke:web-presence-view
 # sequence 1. Discriminator is drainWindow minStart, not the returned page. Appended so
 # every existing shard assignment remains unchanged.
 smoke:sparse-history-walk
+# Raw NATS transport state is separate from full endpoint readiness. The deterministic suite grades
+# epoch staleness and state contracts; its companion owns a throwaway broker and proves real
+# disconnect/reconnect delivery. Appended so every existing shard assignment remains unchanged.
+smoke:transport-liveness
+smoke:transport-liveness:broker
+# The connection status tool reaches MeshAgent state through a real in-memory MCP server and client,
+# including a measured successful inbox drain. Appended so every existing shard assignment remains
+# unchanged.
+smoke:connection-status
 
 # A directed DM arriving during a live Jcode turn must reach the recipient session through Jcode's
 # soft-interrupt queue and commit only at the clean containing-turn boundary. Real loopback broker

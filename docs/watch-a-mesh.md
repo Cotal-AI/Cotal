@@ -145,7 +145,7 @@ replaces the data and clears the mark.
 **When the observer itself goes deaf.** Presence liveness is derived from heartbeat timestamps, so
 a watch that hears nothing for longer than the TTL used to flip every peer `offline` at once. The
 sidebar is an online-only list, so the page emptied while the browser's connection pill stayed
-live — that pill is the local SSE link, not the observer's upstream. Whole-bucket silence past
+live. That pill is the local SSE link, not the observer's upstream. Whole-bucket silence past
 TTL is now a fact about the *view*: the header says `stale: roster` (`observer presence watch
 silent since T`) and the last-known online list stays on screen until the watch delivers again.
 A single peer whose own heartbeat lapses while the watch is live still drops out. A stall
