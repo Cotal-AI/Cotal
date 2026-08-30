@@ -460,6 +460,8 @@
     "smoke:space-auth-store": "tsx packages/workspace/smoke/space-auth-store.smoke.ts",
     "smoke:space-segmentation": "tsx packages/workspace/smoke/space-segmentation.smoke.ts",
     "smoke:segmented-runtime-namespace": "tsx packages/workspace/smoke/segmented-runtime-namespace.smoke.ts",
+    "smoke:segmented-runtime-records": "tsx implementations/cli/smoke/segmented-runtime-records.smoke.ts",
+    "smoke:record-manager-pid-per-space": "tsx implementations/manager/smoke/record-manager-pid-per-space.smoke.ts",
     "smoke:agent-secret-segmentation": "tsx packages/workspace/smoke/agent-secret-segmentation.smoke.ts",
     "smoke:delivery-store-boundary": "tsx implementations/delivery/smoke/delivery-store-boundary.smoke.ts",
     "smoke:sys-injection-evict": "tsx implementations/delivery/smoke/sys-injection-evict.smoke.ts",

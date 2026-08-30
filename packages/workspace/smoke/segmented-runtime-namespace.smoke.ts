@@ -33,8 +33,9 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spaceKey } from "../src/auth-paths.js";
-import { localProcessPath, type LocalProcessContext } from "../src/local-process.js";
-import { MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE } from "../src/pid.js";
+import {
+  localProcessPath, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, type LocalProcessContext,
+} from "../src/local-process.js";
 import { RESERVED_COTAL_CHILDREN } from "../src/space-segmentation.js";
 
 let pass = 0, fail = 0;

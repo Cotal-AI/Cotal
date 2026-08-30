@@ -727,3 +727,11 @@ smoke:connection-status
 # soft-interrupt queue and commit only at the clean containing-turn boundary. Real loopback broker
 # plus shipped host; mutation-proofed. Appended so every existing shard assignment remains unchanged.
 smoke:jcode-mid-turn-delivery
+
+# The runtime pid/log namespace is per-space: two spaces on one workspace root each keep their own
+# manager/delivery records, a pre-segmentation root-scoped record is still found and stopped across
+# the upgrade, and both spellings present fails loud. Naming seam, the CLI's read/stop paths, and the
+# supervise-side writer. Appended so every existing shard assignment remains unchanged.
+smoke:segmented-runtime-namespace
+smoke:segmented-runtime-records
+smoke:record-manager-pid-per-space

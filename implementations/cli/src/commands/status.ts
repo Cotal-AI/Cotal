@@ -16,7 +16,7 @@ import {
   type ParsedArgs,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, accountInventory, authDir, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, localProcessVisible, parsePid, preflightTarget, probeLiveness, readProcessCommand, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, type LocalProcess, type LocalProcessContext, type MeshTarget, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, accountInventory, authDir, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, localProcessVisible, parsePid, DELIVERY_PIDFILE, MANAGER_PIDFILE, preflightTarget, probeLiveness, readProcessCommand, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, type LocalProcess, type LocalProcessContext, type MeshTarget, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { connect } from "@nats-io/transport-node";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, extensionVersions } from "../lib/version.js";
@@ -181,7 +181,7 @@ function printProject(root: string, cmd: string): void {
     const state = proc(localProcessPath(component.pidFile, context));
     if (component.name === "nats") nats = state;
     const detail = component.name === "manager" && state.live
-      ? c.dim(managerHasDeliveryMarker() ? " · delivery-aware" : " · old/unknown build")
+      ? c.dim(managerHasDeliveryMarker(context.space) ? " · delivery-aware" : " · old/unknown build")
       : "";
     row(component.name, `${formatProc(state)}${detail}`);
   }
@@ -511,7 +511,7 @@ async function managerServiceHealth(
 }
 
 async function managerHealth(target: MeshTarget, context: LocalProcessContext): Promise<ComponentHealth> {
-  const record = processRecord(localProcessPath("manager.pid", context));
+  const record = processRecord(localProcessPath(MANAGER_PIDFILE, context));
   const facts = pidFacts(record);
   // A corrupt or kernel-unreadable LOCAL record is neither evidence that the manager is absent nor
   // permission to replace it with a network answer.  Name that failed local control surface first.
@@ -568,7 +568,7 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext): 
  * adoption report is the renewal record it writes through the manager-owned renewal pass.  The
  * latter is intentionally not inferred from credential mtime or process output. */
 async function deliveryHealth(target: MeshTarget, context: LocalProcessContext): Promise<ComponentHealth> {
-  const record = processRecord(localProcessPath("delivery.pid", context));
+  const record = processRecord(localProcessPath(DELIVERY_PIDFILE, context));
   const facts = pidFacts(record);
   const stopped = processVerdict(record);
   const renewalPath = join(context.root, ".cotal", "renewal.json");

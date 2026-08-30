@@ -299,7 +299,6 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     // ONLY this space's segment — the other tenants' material is not this reset's to touch.
     rm(spaceMaterialDir(root, space), `.cotal/${spaceSegment(space)} (this space's material)`);
     for (const f of [
-      "manager.delivery-aware",
       // The LEGACY FLAT copies of the raw P7 kinds: still present on a root no post-P7 `up` has
       // touched, and this surface must not leave old-operator $SYS material behind because the
       // migration had not run yet. The $SYS pair comes from its ONE named source, shared with the
@@ -310,7 +309,9 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     ]) rm(join(root, ".cotal", f), `.cotal/${f}`);
     // Crash residue: after a clean `down` none of this exists; after a crash the dead pidfiles and
     // transient launch artifacts are exactly the leftovers a "full local reset" must not keep.
-    for (const [file] of pidfileTargets(space)) rm(join(root, ".cotal", file), `.cotal/${file} (stale pidfile)`);
+    // Absolute paths, every spelling: the runtime records are `{space}` templates now, and the
+    // delivery-aware marker rides along with them (it was a literal in the list above).
+    for (const [path] of pidfileTargets(space, root)) rm(path, `${relative(root, path)} (stale runtime record)`);
     rm(join(root, ".cotal", "run"), ".cotal/run (launch artifacts)");
     // The auth dir's NON-namer contents (callout, creds, server.conf, the user-auth state dir, any
     // stray) are removed BEFORE the trust records — a locked/immutable stray UNDER `.cotal/auth`

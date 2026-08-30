@@ -28,6 +28,7 @@ import type { AddressInfo } from "node:net";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { canonicalLocalProcessPath, MANAGER_PIDFILE } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
@@ -161,7 +162,7 @@ agents:
   check("ledger id is the user-mode principal (u_….worker)", /^u_[a-z2-7]{26}\.worker$/.test(entry?.id ?? ""), entry);
 
   console.log("4) crash: SIGKILL the manager and its child (deprovision never runs)");
-  const mgrPid = Number(readFileSync(join(root, ".cotal", "manager.pid"), "utf8").trim());
+  const mgrPid = Number(readFileSync(canonicalLocalProcessPath(MANAGER_PIDFILE, { root, space: SPACE }), "utf8").trim());
   // Children first (the launched worker's process tree), then the manager itself.
   const kids = (() => { try { return execSync(`pgrep -P ${mgrPid}`, { encoding: "utf8" }).trim().split("\n").filter(Boolean); } catch { return []; } })();
   for (const k of kids) { try { execSync(`pkill -9 -P ${k}`); } catch { /* leaf */ } try { process.kill(Number(k), "SIGKILL"); } catch { /* gone */ } }

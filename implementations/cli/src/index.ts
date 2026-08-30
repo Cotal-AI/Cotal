@@ -1,5 +1,9 @@
 import { registry, type Command } from "@cotal-ai/core";
-import { serverFlag, spaceFlag, targetFlags, type LocalProcess } from "@cotal-ai/workspace";
+import {
+  serverFlag, spaceFlag, targetFlags,
+  DELIVERY_PIDFILE, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE,
+  type LocalProcess,
+} from "@cotal-ai/workspace";
 import { up, upComplete, upFlags } from "./commands/up.js";
 import { runtimes } from "./commands/runtimes.js";
 import { down, downComplete } from "./commands/down.js";
@@ -438,21 +442,24 @@ const baseCommands: Command[] = [
   // `cotal ext add`, it self-registers here and appears in this same surface.
 ];
 
+// The runtime rows name their pidfile through the workspace constants, which are `{space}`
+// TEMPLATES like `auth-service.{space}.pid` already was. A copied literal here is the defect this
+// closes: the manager and the daemon write one name and status/down looked up another.
 const baseProcesses: LocalProcess[] = [
   {
     kind: "local-process",
     name: "manager",
     label: "manager",
     order: 10,
-    pidFile: "manager.pid",
-    artifacts: ["manager.delivery-aware"],
+    pidFile: MANAGER_PIDFILE,
+    artifacts: [MANAGER_DELIVERY_AWARE_MARKER],
   },
   {
     kind: "local-process",
     name: "delivery",
     label: "delivery daemon",
     order: 20,
-    pidFile: "delivery.pid",
+    pidFile: DELIVERY_PIDFILE,
     artifacts: ["delivery.creds"],
   },
   {

@@ -34,9 +34,17 @@ export function cotalDir(root: string): string {
  *
  * {@link spaceSegment}'s collision guarantee was written against the reserved siblings of the AUTH
  * dir. P7 puts a segment directly under `.cotal/`, which is a WIDER namespace, so the guarantee has
- * to hold there too. It does today — no `.cotal` child begins with `space.`, the nearest being
- * `auth-service.<spaceKey>.pid` — but it held by ACCIDENT until something asserted it, which is what
- * `smoke:space-segmentation` now does.
+ * to hold there too. It does today — no `.cotal` child begins with `space.` — but it held by
+ * ACCIDENT until something asserted it, which is what `smoke:space-segmentation` now does.
+ *
+ * LITERAL children only. The space-KEYED children (`manager.<spaceKey>.pid`, its log and
+ * delivery-aware marker, `delivery.<spaceKey>.pid`, its log, `auth-service.<spaceKey>.pid`) are not
+ * listed because they are not fixed names; they are the nearest miss to a canonical segment, sharing
+ * the `<prefix>.<spaceKey>` shape, and the guard suite checks their real expansions directly. Their
+ * root-scoped spellings USED to be listed here — the runtime pid/log namespace was root-scoped, so
+ * one root hosted one manager and one delivery daemon by filename — and the records among them are
+ * now `PRE_SEGMENTATION_RUNTIME_RECORDS` in `local-process.ts`, which is where the readers and
+ * sweepers take them from.
  *
  * Keep in sync with the writers of `.cotal/` children (`cotalPath(...)` in `up.ts`, the raw removal
  * list at `clean.ts:272-279`). A name added here that starts with `space.` is a real collision and
@@ -44,8 +52,7 @@ export function cotalDir(root: string): string {
  */
 export const RESERVED_COTAL_CHILDREN: readonly string[] = [
   "agents", "auth", "auth-service.json", "broker-policy.json", "channels.json", "config.json",
-  "connection-evictor.creds", "delivery.creds", "delivery.log", "delivery.pid", "maintenance",
-  "manager.delivery-aware", "manager.log", "manager.pid", "manifests", "membership.json",
+  "connection-evictor.creds", "delivery.creds", "maintenance", "manifests", "membership.json",
   "membership-observer.creds", "membership-rw.creds", "meshes", "nats", "nats.log", "nats.pid",
   "setup.log",
 ];
