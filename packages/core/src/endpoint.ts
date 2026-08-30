@@ -350,6 +350,12 @@ export class CotalEndpoint extends EventEmitter {
   private jsm?: JetStreamManager;
   private kv?: KV;
   private channelKv?: KV;
+  /** The presence/channel-registry watches' own handles. Each is an ORDERED push consumer: its idle
+   *  heartbeat monitor lives on a JS timer independent of the connection, so a drain that doesn't
+   *  `.stop()` it first leaves the monitor to fire into a closing connection every 30s, throwing
+   *  `DrainingConnectionError` out of `reset()` on a timer nothing awaits. */
+  private presenceWatchIter?: Awaited<ReturnType<KV["watch"]>>;
+  private channelWatchIter?: Awaited<ReturnType<KV["watch"]>>;
   /** Plane-3 durable-membership registry KV — lazily opened by the privileged delivery daemon (or a
    *  short-lived provisioner). */
   private membersKv?: KV;
@@ -1047,6 +1053,18 @@ export class CotalEndpoint extends EventEmitter {
       }
     }
     this.streamMsgs.length = 0;
+    try {
+      this.presenceWatchIter?.stop();
+    } catch {
+      /* already closed with the connection */
+    }
+    this.presenceWatchIter = undefined;
+    try {
+      this.channelWatchIter?.stop();
+    } catch {
+      /* already closed with the connection */
+    }
+    this.channelWatchIter = undefined;
     for (const sub of this.chatSubs.values()) {
       try {
         sub.unsubscribe();
@@ -1266,6 +1284,18 @@ export class CotalEndpoint extends EventEmitter {
         /* already closed */
       }
     }
+    try {
+      this.presenceWatchIter?.stop();
+    } catch {
+      /* already closed */
+    }
+    this.presenceWatchIter = undefined;
+    try {
+      this.channelWatchIter?.stop();
+    } catch {
+      /* already closed */
+    }
+    this.channelWatchIter = undefined;
     try {
       if (this.doRegister) {
         this.status = "offline";
@@ -4297,6 +4327,7 @@ export class CotalEndpoint extends EventEmitter {
     let hydrated!: () => void;
     this.presenceSnapshot = new Promise<void>((resolve) => { hydrated = resolve; });
     const iter = await this.kv.watch();
+    this.presenceWatchIter = iter;
     void (async () => {
       let ready = false;
       for await (const e of iter) {
@@ -4317,6 +4348,7 @@ export class CotalEndpoint extends EventEmitter {
   private async startChannelWatch(): Promise<void> {
     if (!this.channelKv) return;
     const iter = await this.channelKv.watch();
+    this.channelWatchIter = iter;
     void (async () => {
       for await (const e of iter) this.handleChannelEntry(e);
     })().catch((e) => this.emit("error", e as Error));
