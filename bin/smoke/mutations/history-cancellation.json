@@ -41,13 +41,13 @@
       "cell": "6.9 the request following a cancelled read answers instead of being starved by abandoned work"
     },
     {
-      "name": "the rolling window returns its oldest limit messages instead of retaining the newest tail",
+      "name": "the rolling window stops after the first limit messages instead of reaching the window ceiling",
       "file": "packages/core/src/endpoint.ts",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:history-recent",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "completionMarker": "history-recent smoke:",
-      "find": "            if (out.length > limit) out.shift();",
-      "replace": "            if (false) out.shift();",
+      "find": "          if (delivered >= pending) { complete = true; break; }",
+      "replace": "          if (delivered >= Math.min(pending, limit)) { complete = true; break; }",
       "expectRed": "limit=10 returns the NEWEST ten",
       "cell": "limit=10 returns the NEWEST ten"
     },
