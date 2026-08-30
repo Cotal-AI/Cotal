@@ -160,7 +160,9 @@ zero sources answered, and you keep looking at the last good data with the marke
 
 The open channel's own history read is bounded by the same deadline. It is a single read, so there
 is no short page to serve: it either produced the messages or it refuses, naming the channel and the
-bound it exceeded, and the view keeps the messages it already had rather than emptying. Every one of
+bound it exceeded, and the view keeps the messages it already had rather than emptying. A sparse
+channel (fewer messages than the page) is bounded by that channel's own first and last matching
+sequences, not by walking the stream back to sequence 1. Every one of
 these routes takes an optional `limit`, and a value that is not a whole number is refused outright
 rather than guessed at. The same holds for the channel name in the URL: an escape the decoder cannot
 read is the caller's typo, not a broken server. Either way a malformed request is answered as a bad
