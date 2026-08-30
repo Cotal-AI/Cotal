@@ -3,6 +3,7 @@
   "guard": "generated declarations remain byte-exact with both CI registry helper modules",
   "command": "pnpm smoke:ci-declarations",
   "completionMarker": "CI DECLARATIONS SMOKE",
+  "grades": "tool",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/ci-declarations.json",
   "why": [
     "The declarations are compiler output, not hand-written types. Each mutation changes one module's",

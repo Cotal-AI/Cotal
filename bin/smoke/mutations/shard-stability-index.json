@@ -3,6 +3,7 @@
   "guard": "frozen legacy suites retain exact parsed indices, including moves by a complete shard cycle and removals",
   "command": "pnpm smoke:shard-stability",
   "completionMarker": "SHARD INDEX SMOKE",
+  "grades": "tool",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/shard-stability-index.json",
   "why": [
     "Derived shard equality is weaker than the frozen legacy invariant. Moving a suite by four",

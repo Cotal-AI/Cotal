@@ -3,6 +3,7 @@
   "guard": "independent suite fragments merge without conflict and an existing fragment keeps its shard when another is added",
   "command": "pnpm smoke:ci-fragments",
   "completionMarker": "CI FRAGMENTS SMOKE",
+  "grades": "tool",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/ci-fragments.json",
   "why": [
     "Issue #998 has two separable costs. Distinct paths must remove the shared-tail merge conflict,",
