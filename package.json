@@ -9,7 +9,8 @@
     "node": ">=22"
   },
   "scripts": {
-    "prepare": "node scripts/install-git-merge-drivers.mjs",
+    "prepare": "pnpm git:setup",
+    "git:setup": "node scripts/install-git-merge-drivers.mjs",
     "typecheck": "pnpm build && pnpm -r typecheck",
     "build": "pnpm -r build",
     "gen:schema": "node scripts/generate-cotal-schema.mjs",

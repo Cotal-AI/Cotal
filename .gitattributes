@@ -1,5 +1,6 @@
 # The CI gate registry is positional: shard assignment is `index % count`. The custom driver keeps
 # the base byte-order wholesale and moves only each side's additions to the tail, with each suite's
 # preceding comment block attached. This preserves the safety property `!merge` protected without
-# making every concurrent append a manual conflict. `pnpm install` registers the local driver.
+# making every concurrent append a manual conflict. A clone's first `pnpm install` registers the
+# local driver; `pnpm git:setup` is the explicit idempotent repair for an existing checkout.
 bin/smoke/ci-suites.txt merge=cotal-ci-suites

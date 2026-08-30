@@ -48,6 +48,8 @@ function fixture(): string {
   git(repo, "commit", "-qm", "base");
   const installed = spawnSync(process.execPath, [join(repo, "scripts", "install-git-merge-drivers.mjs")], { cwd: repo, encoding: "utf8" });
   check("installer registers the path-bound merge driver in local Git config", installed.status === 0 && git(repo, "config", "--local", "merge.cotal-ci-suites.driver").includes("merge-ci-suites.mjs"), installed.stderr);
+  const repaired = spawnSync(process.execPath, [join(repo, "scripts", "install-git-merge-drivers.mjs")], { cwd: repo, encoding: "utf8" });
+  check("explicit merge-driver setup is idempotent", repaired.status === 0 && git(repo, "config", "--local", "merge.cotal-ci-suites.driver").includes("merge-ci-suites.mjs"), repaired.stderr);
   return repo;
 }
 
