@@ -175,6 +175,9 @@ const server = createServer((socket) => {
             reply({ ev: "ok" });
           }
           break;
+        case "soft_interrupt":
+          reply({ ev: "ok" });
+          break;
         case "get_runtime_info":
           reply({ ev: "runtime_info", session_id: frame.session_id, model: "fake-model", routes: [] });
           break;
