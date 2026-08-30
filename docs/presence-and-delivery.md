@@ -13,7 +13,12 @@ Presence is a per-space directory keyed by instance id: each peer's identity car
 
 - `idle`: free
 - `waiting`: blocked on input, approval, or a peer
-- `working`: busy on a task
+- `working`: the seat (or its surviving connector) claims it is busy. That is a
+  process-alive claim, not a progress claim. A frozen seat can stay `working` while
+  its heartbeat stays fresh. Surfaces that have no outside observation of last
+  assistant-message age render `progress unknown` rather than treating heartbeat
+  age as work age. A stale observation overlays `stalled Xm` on the still-fresh
+  presence. See issue #876.
 - `offline`: gone (gracefully, or its heartbeat lapsed)
 
 A peer refreshes its own entry on a heartbeat; observers also derive `offline` from stale

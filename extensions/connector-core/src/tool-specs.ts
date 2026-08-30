@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, channelInAllow, AmbiguousPeerError, isPermissionDenied, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, channelInAllow, AmbiguousPeerError, isPermissionDenied, presenceProgressLabel, progressOverlay, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 import { FEEDBACK_URL, PUBLIC_FEEDBACK_URL, isAuthed, type AgentConfig } from "./config.js";
 import { buildOrientation, renderOrientation, type OrientationTool } from "./orientation.js";
@@ -613,7 +613,8 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
                 .map(([c]) => `#${c}`)
             : [];
           const mutedHint = muted.length ? ` (locally muted ${muted.join(", ")}; DM to reach)` : "";
-          return `${statusGlyph(p.status)} ${who} — ${p.status}${p.activity ? `: ${p.activity}` : ""}${attn}${me}${mutedHint}${id}`;
+          const progress = p.status === "working" ? presenceProgressLabel(p.status, progressOverlay(undefined, Date.now())) : p.status;
+          return `${statusGlyph(p.status)} ${who} — ${progress}${p.activity ? `: ${p.activity}` : ""}${attn}${me}${mutedHint}${id}`;
         });
         return ok(`Present in "${config.space}" (${roster.length}):\n${lines.join("\n")}`);
       },

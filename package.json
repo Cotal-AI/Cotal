@@ -65,6 +65,7 @@
     "smoke:lang-engine": "pnpm --filter @cotal-ai/lang build:emit && tsx packages/lang/smoke/engine.smoke.ts",
     "smoke:lang-differential": "tsx packages/lang/smoke/differential.smoke.ts",
     "smoke:orientation": "tsx extensions/connector-core/smoke/orientation.smoke.ts",
+    "smoke:presence-progress": "tsx extensions/connector-core/smoke/presence-progress.smoke.ts",
     "smoke:docs": "tsx extensions/connector-core/smoke/docs.smoke.ts",
     "smoke:pi": "tsx extensions/pi/pi.smoke.ts && tsx extensions/pi/pi-sdk.smoke.ts",
     "smoke:codex-args": "tsx extensions/connector-codex/smoke/codex-args.smoke.ts",

@@ -1,4 +1,4 @@
-import type { ParsedArgs, Presence } from "@cotal-ai/core";
+import { presenceProgressLabel, progressOverlay, type ParsedArgs, type Presence } from "@cotal-ai/core";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
 import { c, statusBadge } from "../ui.js";
 
@@ -39,6 +39,10 @@ export function printEndpoints(roster: Presence[], space: string): void {
   const kindWidth = Math.max(...rows.map((row) => row.kind.length));
   for (const row of rows) {
     const activity = row.presence.activity ? `  ${c.dim(row.presence.activity)}` : "";
-    console.log(`${c.bold(row.label.padEnd(labelWidth))}  ${c.dim(row.kind.padEnd(kindWidth))}  ${statusBadge(row.presence.status)}${activity}`);
+    const progress =
+      row.presence.status === "working"
+        ? `  ${c.dim(presenceProgressLabel(row.presence.status, progressOverlay(undefined, Date.now())))}`
+        : "";
+    console.log(`${c.bold(row.label.padEnd(labelWidth))}  ${c.dim(row.kind.padEnd(kindWidth))}  ${statusBadge(row.presence.status)}${progress}${activity}`);
   }
 }
