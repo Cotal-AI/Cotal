@@ -80,10 +80,11 @@
     },
     {
       "name": "B12 the FIFO scheduler arms a second callback while the first chunk is still waiting, restoring reorderable same-deadline writes",
-      "file": "implementations/web/smoke/bounded-aggregation.smoke.ts",
-      "find": "      if (writing || timer !== undefined || queued.length === 0 || to.destroyed) return;",
-      "replace": "      if (writing || queued.length === 0 || to.destroyed) return;",
-      "expectRed": "0.1 slow-link serialization arms only one chunk callback at a time"
+      "file": "implementations/web/smoke/slow-link-throttle.ts",
+      "find": "    if (writing || timer !== undefined || queued.length === 0 || to.destroyed) return;",
+      "replace": "    if (writing || queued.length === 0 || to.destroyed) return;",
+      "expectRed": "slow-link serialization arms only one chunk callback at a time",
+      "command": "pnpm smoke:web-proxy-order"
     }
   ]
 }

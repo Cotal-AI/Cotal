@@ -38,6 +38,7 @@ import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import {
   activityBackfill, AGGREGATION_CONCURRENCY, AGGREGATION_DEADLINE_MS, type ActivitySource,
 } from "../src/web.js";
+import { throttledWriter } from "./slow-link-throttle.js";
 
 let cells = 0;
 let failed = 0;
@@ -56,68 +57,6 @@ const freePort = async (): Promise<number> =>
     const s = net.createServer();
     s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
   });
-
-type ThrottleWriter = { readonly destroyed: boolean; write(chunk: Buffer, callback: () => void): unknown };
-type ThrottleDeps = {
-  now(): number;
-  schedule(callback: () => void, delay: number): unknown;
-  cancel(handle: unknown): void;
-};
-
-/** One TCP direction's FIFO scheduler, separated so the ordering contract is directly testable. */
-function throttledWriter(
-  to: ThrottleWriter,
-  opts: { oneWayMs: number; bytesPerSec: number },
-  deps: ThrottleDeps = {
-    now: Date.now,
-    schedule: (callback, delay) => { const timer = setTimeout(callback, delay); timer.unref(); return timer; },
-    cancel: (handle) => clearTimeout(handle as NodeJS.Timeout),
-  },
-): { push(chunk: Buffer): void; close(): void } {
-    let clear = 0;
-    let timer: unknown;
-    let writing = false;
-    const queued: Array<{ at: number; chunk: Buffer }> = [];
-    const pump = () => {
-      if (writing || timer !== undefined || queued.length === 0 || to.destroyed) return;
-      const next = queued[0];
-      const delay = Math.max(0, next.at - deps.now());
-      timer = deps.schedule(() => {
-        timer = undefined;
-        if (to.destroyed) return;
-        queued.shift();
-        writing = true;
-        to.write(next.chunk, () => { writing = false; pump(); });
-      }, delay);
-    };
-    return {
-      push: (chunk: Buffer) => {
-      const now = deps.now();
-      const at = Math.max(now + opts.oneWayMs, clear) + (chunk.length / opts.bytesPerSec) * 1000;
-      clear = at;
-      queued.push({ at, chunk: Buffer.from(chunk) });
-      pump();
-      },
-      close: () => { if (timer !== undefined) deps.cancel(timer); },
-    };
-}
-
-// A deterministic scheduling control: two chunks may share a timer deadline, but only one callback
-// may be armed at a time and their writes must stay FIFO. The old independent-timer proxy fails both.
-{
-  const callbacks: (() => void)[] = [];
-  const writes: string[] = [];
-  const writer = throttledWriter(
-    { destroyed: false, write: (chunk, done) => { writes.push(chunk.toString()); done(); return true; } },
-    { oneWayMs: 0, bytesPerSec: 1 },
-    { now: () => 0, schedule: (callback) => { callbacks.push(callback); return callback; }, cancel: () => {} },
-  );
-  writer.push(Buffer.from("a"));
-  writer.push(Buffer.from("b"));
-  ok("0.1 slow-link serialization arms only one chunk callback at a time", callbacks.length === 1, callbacks.length);
-  while (callbacks.length) callbacks.shift()!();
-  ok("0.2 slow-link serialization writes same-deadline chunks in FIFO order", writes.join("") === "ab", writes);
-}
 
 /** The link between the dashboard process and the broker: `oneWayMs` of delay each way plus a
  *  throughput cap each way. A single TCP flow at a high RTT is bandwidth-delay-product limited and
