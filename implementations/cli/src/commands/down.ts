@@ -52,7 +52,7 @@ import {
 import { extensionNames, localProcessSurface } from "../ext-loader.js";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
-import { parsePid, probeLiveness } from "@cotal-ai/workspace";
+import { parsePid, parseProcessIdentity, probeLiveness, signalRecordedProcess } from "@cotal-ai/workspace";
 import { resolveSpace } from "../lib/status.js";
 import { downManifest } from "./down-manifest.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
@@ -248,7 +248,8 @@ export async function stopLocalProcess(component: LocalProcess, context: LocalPr
         : `${component.name} has a stale extension-removal reservation at ${pidPath} - remove that file and retry`,
     );
   }
-  const pid = parsePid(rawPid);
+  const identity = parseProcessIdentity(rawPid);
+  const pid = identity?.pid;
   const marker = `${pidPath}.stopping`;
   let markerFd: number | undefined;
   for (;;) {
@@ -310,9 +311,12 @@ export async function stopLocalProcess(component: LocalProcess, context: LocalPr
         `${component.label} has an unattributable pidfile at ${pidPath} (${JSON.stringify(rawPid)}) - it may still front a running process; refusing to remove it or report a clean stop. Stop that process and remove the file manually.`,
       );
     }
+    const recorded = { pid, ...(identity.start !== undefined ? { start: identity.start } : {}) };
     try {
-      process.kill(pid, "SIGTERM");
+      signalRecordedProcess(recorded, "SIGTERM");
     } catch (e) {
+      const msg = (e as Error).message ?? "";
+      if (/no longer matches|cannot be compared/.test(msg)) throw e;
       // ONLY an ESRCH proves the process is already gone (safe to clear). EPERM (exists, another
       // user's) or any other errno (EIO, argument errors, unknown) means we could NOT confirm death
       // - reporting it stopped and removing its record would orphan a live process. Fail loud, keep
@@ -329,7 +333,7 @@ export async function stopLocalProcess(component: LocalProcess, context: LocalPr
     const graceDeadline = Date.now() + 15_000;
     while (probeLiveness(pid) !== "dead" && Date.now() < graceDeadline) await sleep(100);
     if (probeLiveness(pid) !== "dead") {
-      try { process.kill(pid, "SIGKILL"); } catch { /* raced to exit */ }
+      try { signalRecordedProcess(recorded, "SIGKILL"); } catch { /* raced to exit, or identity no longer matches */ }
       const hardDeadline = Date.now() + 3_000;
       while (probeLiveness(pid) !== "dead" && Date.now() < hardDeadline) await sleep(100);
     }

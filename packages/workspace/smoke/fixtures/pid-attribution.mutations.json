@@ -28,7 +28,23 @@
       "find": "  if (r.status === 0 && out !== \"\") return { kind: \"command\", command: out };",
       "replace": "  if (r.status === 0 && out !== \"\") return { kind: \"unreadable\", why: \"mutant\" };",
       "expectRed": "this very process is readable and is NOT a manager"
+    },
+    {
+      "name": "PREDICTED KILLED (>=1 red) - a recycled pid (alive, different start token) is treated as the same process and signalled",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "  const token = arguments.length >= 2 ? liveToken : processStartToken(recorded.pid);\n  if (recorded.start === undefined || token === undefined) return \"unknown\";\n  return token === recorded.start ? \"same\" : \"recycled\";",
+      "replace": "  const token = arguments.length >= 2 ? liveToken : processStartToken(recorded.pid);\n  if (recorded.start === undefined || token === undefined) return \"unknown\";\n  return \"same\";",
+      "expectRed": "THE DISCRIMINATING CASE: a live pid with a DIFFERENT start token is recycled, not merely dead",
+      "cell": "THE DISCRIMINATING CASE: a live pid with a DIFFERENT start token is recycled, not merely dead"
+    },
+    {
+      "name": "PREDICTED KILLED (>=1 red) - signalRecordedProcess skips the identity match and always sends",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "  const match = matchProcessIdentity(recorded, tokenOf(recorded.pid));\n  if (match === \"recycled\")\n    throw new Error(`recorded pid ${recorded.pid} is alive but its start token no longer matches; the original process is gone and the number was reused - refusing to signal a stranger`);\n  if (match === \"unknown\" && recorded.start !== undefined)\n    throw new Error(`recorded pid ${recorded.pid} carries a start token that cannot be compared against the live process; refusing to signal an unproven identity`);\n  send(recorded.pid, signal);",
+      "replace": "  send(recorded.pid, signal);",
+      "expectRed": "a recycled pid is REFUSED and NEVER signalled (would kill a stranger)",
+      "cell": "a recycled pid is REFUSED and NEVER signalled (would kill a stranger)"
     }
   ],
-  "_note": "The suite imports `../src/pid.js` and `../../../implementations/cli/src/lib/manager-proc.js` RELATIVELY, so both mutated files are the modules under test and no build step belongs here. Mutation 4 targets the POSIX `ps` branch, which is the one this machine executes; the linux `/proc` branch and the win32 branch are not covered by these four and neither is claimed to be."
+  "_note": "The suite imports `../src/pid.js` and `../../../implementations/cli/src/lib/manager-proc.js` RELATIVELY, so both mutated files are the modules under test and no build step belongs here. Recycled-pid cells inject tokens rather than waiting for OS pid wraparound, which is impractical. win32 has no stable start token; the Windows detached handle is not on this main (#880)."
 }

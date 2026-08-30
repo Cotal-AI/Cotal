@@ -12,7 +12,7 @@ import { closeSync, existsSync, ftruncateSync, linkSync, openSync, readdirSync, 
 import { basename, dirname } from "node:path";
 import { type AuthPrepared } from "@cotal-ai/core";
 import { spaceKey } from "@cotal-ai/workspace";
-import { parsePid, probeLiveness, type LivenessProbe } from "@cotal-ai/workspace";
+import { parsePid, parseProcessIdentity, probeLiveness, signalRecordedProcess, type LivenessProbe } from "@cotal-ai/workspace";
 import type { SignalFn } from "./manager-proc.js";
 
 import { selfArgv } from "./self-exec.js";
@@ -216,14 +216,17 @@ export async function stopAuthService(space: string, probe: LivenessProbe = prob
     rmSync(p, { force: true }); // empty husk: no process to signal
     return;
   }
-  const pid = parsePid(trimmed);
+  const identity = parseProcessIdentity(trimmed);
+  const pid = identity?.pid;
   if (pid === undefined)
     throw new Error(
       `auth-service pidfile ${p} holds unattributable content ${JSON.stringify(trimmed)} - refusing to remove a record for a process it cannot identify or signal; inspect or remove it manually`,
     );
   try {
-    send(pid, "SIGTERM");
+    signalRecordedProcess({ pid, ...(identity.start !== undefined ? { start: identity.start } : {}) }, "SIGTERM", { send });
   } catch (e) {
+    const msg = (e as Error).message ?? "";
+    if (/no longer matches|cannot be compared/.test(msg)) throw e;
     // ESRCH = already gone, so removing its record is safe. EPERM (exists, another user's) or any
     // other errno means we could NOT stop it - removing the record would orphan a live signer while
     // reporting a clean stop, so preserve it and fail loud.

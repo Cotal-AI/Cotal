@@ -5,8 +5,8 @@ import { selfArgv } from "./self-exec.js";
 import { resolveSpace } from "./status.js";
 import { cotalPath } from "./paths.js";
 import {
-  commandIsCotalSupervisor, parsePid, probeLiveness, readProcessCommand,
-  MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, type CommandReader, type LivenessProbe,
+  commandIsCotalSupervisor, parsePid, parseProcessIdentity, probeLiveness, readProcessCommand,
+  signalRecordedProcess, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, type CommandReader, type LivenessProbe,
 } from "@cotal-ai/workspace";
 
 /** Exported so the delivery cutover preflight can NAME the pid it refused on: an error that says
@@ -250,7 +250,8 @@ export async function stopManager(
     return "already-gone";
   }
   const raw = readFileSync(p, "utf8").trim();
-  const pid = parsePid(raw);
+  const identity = parseProcessIdentity(raw);
+  const pid = identity?.pid;
   if (pid === undefined) {
     // An EMPTY pidfile is a pre-protocol husk with nothing behind it, and clearing it is safe. ANY
     // OTHER unattributable content (garbled, fractional, out of range) may still front a LIVE
@@ -293,8 +294,10 @@ export async function stopManager(
         `NEXT: verify with \`ps -p ${pid}\`, then stop it yourself or remove \`.cotal/manager.pid\` if it is gone.`,
     );
   try {
-    send(pid, "SIGTERM");
+    signalRecordedProcess({ pid, ...(identity.start !== undefined ? { start: identity.start } : {}) }, "SIGTERM", { send });
   } catch (e) {
+    const msg = (e as Error).message ?? "";
+    if (/no longer matches|cannot be compared/.test(msg)) throw e;
     const code = (e as NodeJS.ErrnoException).code;
     if (code === "ESRCH") {
       clear(); // died between the probe and the signal, which is an ordinary race and genuinely gone

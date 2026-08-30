@@ -18,7 +18,7 @@
  * module they may depend on, never a core export.
  */
 
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 /** A Node/POSIX-signalable pid: a positive INTEGER within the signed 32-bit range `process.kill`
@@ -143,4 +143,99 @@ export function readProcessCommand(pid: number): ProcessCommand {
  */
 export function commandIsCotalSupervisor(command: string): boolean {
   return /(^|\s)supervise(\s|$)/.test(command);
+}
+
+/**
+ * An OS-stable process-start token used ONLY to detect PID reuse. Linux: `/proc/<pid>/stat`
+ * field 22 (starttime, ticks since boot). macOS/BSD: `ps -o lstart=`. Windows: undefined —
+ * `/proc` is absent and MSYS `ps` is not stable across calls, so a lock/stop that treated a
+ * missing token as mismatch would reclaim or refuse a still-live owner. The token is the
+ * kernel's own start clock for that pid, not our `Date.now()` stamp, so it cannot drift from
+ * the process it names.
+ */
+export function processStartToken(pid: number): string | undefined {
+  if (process.platform === "win32") return undefined;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const after = stat.lastIndexOf(") ");
+    if (after >= 0) {
+      const token = stat.slice(after + 2).split(" ")[19];
+      if (token) return token;
+    }
+  } catch {
+    /* not Linux, or the process is gone */
+  }
+  try {
+    const out = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return out || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** One recorded process identity: pid plus the start token taken at write time. */
+export interface ProcessIdentity {
+  pid: number;
+  /** Absent on a legacy pid-only record, or on win32 where no stable token is available yet. */
+  start?: string;
+}
+
+/** Encode a pidfile body. A token, when present, is `pid start=<token>` on one line. */
+export function formatProcessIdentity(id: ProcessIdentity): string {
+  return id.start !== undefined ? `${id.pid} start=${id.start}\n` : `${id.pid}\n`;
+}
+
+/** Parse a pidfile body. Bare integer is a legacy record (pid only). `pid start=<token>` is
+ *  the load-bearing form. Anything else is unattributable. */
+export function parseProcessIdentity(raw: string): ProcessIdentity | undefined {
+  const trimmed = raw.trim();
+  const m = /^(\d+)(?:\s+start=(.+))?$/.exec(trimmed);
+  if (!m) return undefined;
+  const pid = parsePid(m[1]!);
+  if (pid === undefined) return undefined;
+  const start = m[2];
+  if (start !== undefined && start.length === 0) return undefined;
+  return start !== undefined ? { pid, start } : { pid };
+}
+
+export type IdentityMatch = "same" | "recycled" | "unknown";
+
+/**
+ * Compare a recorded identity against the live process at that pid.
+ *   same     — live start token matches the record (or there is no token to compare).
+ *   recycled — the pid is alive AND the live token differs from the recorded one.
+ *   unknown  — cannot obtain a live token (win32, vanished between probe and read).
+ * A missing recorded token is never `recycled`: that would treat every legacy pidfile as a
+ * stranger. The destructive caller refuses `unknown` rather than signalling on it.
+ */
+export function matchProcessIdentity(recorded: ProcessIdentity, liveToken?: string): IdentityMatch {
+  const token = arguments.length >= 2 ? liveToken : processStartToken(recorded.pid);
+  if (recorded.start === undefined || token === undefined) return "unknown";
+  return token === recorded.start ? "same" : "recycled";
+}
+
+export type SignalFn = (pid: number, signal: NodeJS.Signals) => void;
+
+/**
+ * Signal a process ONLY after the recorded identity still names it. Recycled → refuse (would
+ * kill a stranger). Unknown with a recorded token → refuse (cannot prove). Legacy pid-only
+ * records (`start` absent) stay signalable so a pidfile written before this contract is not
+ * wedged; the recycled case is what this exists to catch, and it requires a token.
+ *
+ * There is no tokenless overload. Callers that only have a number must construct
+ * `{ pid }` explicitly, which is the legacy case, not a hidden bare kill.
+ */
+export function signalRecordedProcess(
+  recorded: ProcessIdentity,
+  signal: NodeJS.Signals,
+  opts: { token?: (pid: number) => string | undefined; send?: SignalFn } = {},
+): void {
+  const tokenOf = opts.token ?? processStartToken;
+  const send = opts.send ?? ((pid, sig) => process.kill(pid, sig));
+  const match = matchProcessIdentity(recorded, tokenOf(recorded.pid));
+  if (match === "recycled")
+    throw new Error(`recorded pid ${recorded.pid} is alive but its start token no longer matches; the original process is gone and the number was reused - refusing to signal a stranger`);
+  if (match === "unknown" && recorded.start !== undefined)
+    throw new Error(`recorded pid ${recorded.pid} carries a start token that cannot be compared against the live process; refusing to signal an unproven identity`);
+  send(recorded.pid, signal);
 }

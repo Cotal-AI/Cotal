@@ -1,7 +1,8 @@
-import { execFileSync } from "node:child_process";
 import { linkSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname } from "node:path";
+import { processStartToken } from "./pid.js";
+export { processStartToken };
 
 /**
  * A machine-local, crash-safe advisory file lock, shared by every serialized workstation mutation
@@ -61,35 +62,6 @@ export interface AcquireOptions {
   readonly pollMs?: number;
   /** The loud error thrown when the wait bound elapses with the lock still live-held. */
   readonly onTimeout?: (owner: LockOwner) => Error;
-}
-
-/** A best-effort, OS-cheap process-start token used ONLY to detect PID reuse. Undefined ⇒ the check
- *  is skipped for that platform and the bounded wait is the sole backstop (never a hard dependency). */
-export function processStartToken(pid: number): string | undefined {
-  // Windows has no cheap, STABLE start token here: `/proc` is absent and a `ps` on PATH (MSYS/Git)
-  // returns inconsistent output between calls, which would make the SAME live lock read differently
-  // from the acquirer vs a reader and be misjudged stale. Per the no-token rule, return undefined so a
-  // live PID keeps the lock active/unknown (bounded-wait is the backstop) rather than a false reclaim.
-  if (process.platform === "win32") return undefined;
-  try {
-    // Linux: /proc/<pid>/stat field 22 (starttime). comm (field 2) may hold spaces/parens, so parse
-    // after the final ')': the remainder begins at field 3 (state), so starttime is index 19.
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const after = stat.lastIndexOf(") ");
-    if (after >= 0) {
-      const token = stat.slice(after + 2).split(" ")[19];
-      if (token) return token;
-    }
-  } catch {
-    /* not Linux, or the process is gone — fall through */
-  }
-  try {
-    // macOS/BSD: the process start date is stable for the life of the PID.
-    const out = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-    return out || undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /** Sleep synchronously without spawning a process (safe inside a sync acquire loop). */

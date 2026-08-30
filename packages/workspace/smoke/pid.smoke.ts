@@ -25,7 +25,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  commandIsCotalSupervisor, livenessFromErrno, parsePid, probeLiveness, readProcessCommand,
+  commandIsCotalSupervisor, formatProcessIdentity, livenessFromErrno, matchProcessIdentity, parsePid, parseProcessIdentity, probeLiveness, processStartToken, readProcessCommand, signalRecordedProcess,
   type CommandReader,
 } from "../src/pid.js";
 
@@ -372,6 +372,106 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
+// ── IDENTITY BEFORE SIGNAL (#909): a recorded pid is not proof it still names that process ──
+check("a bare pidfile body parses as pid-only (legacy)", parseProcessIdentity("4321\n")?.pid === 4321 && parseProcessIdentity("4321\n")?.start === undefined);
+check("a token-bearing body round-trips", (() => {
+  const raw = formatProcessIdentity({ pid: 4321, start: "ticks-99" });
+  const parsed = parseProcessIdentity(raw);
+  return parsed?.pid === 4321 && parsed.start === "ticks-99";
+})());
+check("empty start= is unattributable", parseProcessIdentity("4321 start=") === undefined);
+check("garbled body is unattributable", parseProcessIdentity("not-a-pid") === undefined);
+
+check("legacy pid-only identity is unknown, never recycled (would wedge every pre-token pidfile)",
+  matchProcessIdentity({ pid: 1 }, "anything") === "unknown");
+check("matching tokens are same", matchProcessIdentity({ pid: 1, start: "a" }, "a") === "same");
+check("THE DISCRIMINATING CASE: a live pid with a DIFFERENT start token is recycled, not merely dead",
+  matchProcessIdentity({ pid: 1, start: "born-as-A" }, "born-as-B") === "recycled");
+check("a recorded token that cannot be compared is unknown",
+  matchProcessIdentity({ pid: 1, start: "a" }, undefined) === "unknown");
+
+{
+  const sent: Array<{ pid: number; sig: string }> = [];
+  const send = (pid: number, sig: NodeJS.Signals) => { sent.push({ pid, sig }); };
+  signalRecordedProcess({ pid: 7, start: "same" }, "SIGTERM", { token: () => "same", send });
+  check("a matching identity is signalled", sent.length === 1 && sent[0]?.pid === 7 && sent[0]?.sig === "SIGTERM");
+}
+{
+  const sent: Array<{ pid: number; sig: string }> = [];
+  const send = (pid: number, sig: NodeJS.Signals) => { sent.push({ pid, sig }); };
+  let threw = false;
+  try {
+    signalRecordedProcess({ pid: 7, start: "born-as-A" }, "SIGTERM", { token: () => "born-as-B", send });
+  } catch (e) {
+    threw = /no longer matches/.test((e as Error).message);
+  }
+  check("a recycled pid is REFUSED and NEVER signalled (would kill a stranger)", threw && sent.length === 0);
+}
+{
+  const sent: Array<{ pid: number; sig: string }> = [];
+  const send = (pid: number, sig: NodeJS.Signals) => { sent.push({ pid, sig }); };
+  let threw = false;
+  try {
+    signalRecordedProcess({ pid: 7, start: "token" }, "SIGTERM", { token: () => undefined, send });
+  } catch (e) {
+    threw = /cannot be compared/.test((e as Error).message);
+  }
+  check("an unproven token-bearing identity is REFUSED rather than signalled", threw && sent.length === 0);
+}
+{
+  const sent: Array<{ pid: number; sig: string }> = [];
+  const send = (pid: number, sig: NodeJS.Signals) => { sent.push({ pid, sig }); };
+  signalRecordedProcess({ pid: 7 }, "SIGTERM", { token: () => "whatever", send });
+  check("a legacy pid-only record remains signalable (migration: no token was ever written)", sent.length === 1);
+}
+
+if (process.platform !== "win32") {
+  const live = processStartToken(process.pid);
+  check("this process has an OS start token", typeof live === "string" && live.length > 0, live);
+  check("the live token matches itself", matchProcessIdentity({ pid: process.pid, start: live }, live) === "same");
+} else {
+  check("win32 has no stable start token yet, so processStartToken is undefined (named, not skipped)",
+    processStartToken(process.pid) === undefined);
+}
+
+{
+  const { stopLocalProcess } = await import("../../../implementations/cli/src/commands/down.js");
+  const { stopManager } = await import("../../../implementations/cli/src/lib/manager-proc.js");
+  const idRoot = mkdtempSync(join(tmpdir(), "cotal-pid-identity-"));
+  mkdirSync(join(idRoot, ".cotal"), { recursive: true });
+  const prev = process.cwd();
+  try {
+    process.chdir(idRoot);
+    writeFileSync(join(idRoot, ".cotal", "manager.pid"), formatProcessIdentity({ pid: process.pid, start: "born-as-A" }));
+    let managerSent: number | undefined;
+    let managerThrew = false;
+    let managerErr = "";
+    try {
+      await stopManager(() => "alive", (pid) => { managerSent = pid; }, () => ({ kind: "unreadable", why: "injected" }));
+    } catch (e) {
+      managerErr = (e as Error).message;
+      managerThrew = /no longer matches|cannot be compared/.test(managerErr);
+    }
+    check("stopManager refuses a recycled recorded identity and does not signal", managerThrew && managerSent === undefined, { managerSent, managerThrew, managerErr });
+    check("...and preserves the pidfile", existsSync(join(idRoot, ".cotal", "manager.pid")));
+
+    writeFileSync(join(idRoot, ".cotal", "nats.pid"), formatProcessIdentity({ pid: process.pid, start: "born-as-A" }));
+    const nats = { kind: "local-process" as const, name: "nats", label: "nats-server", pidFile: "nats.pid" };
+    let natsThrew = false;
+    try {
+      await stopLocalProcess(nats, { root: idRoot, space: "s" });
+    } catch (e) {
+      natsThrew = /no longer matches|cannot be compared/.test((e as Error).message);
+    }
+    check("stopLocalProcess refuses a recycled nats pidfile and does not SIGTERM this process",
+      natsThrew && probeLiveness(process.pid) === "alive", { natsThrew });
+    check("...and preserves the nats pidfile", existsSync(join(idRoot, ".cotal", "nats.pid")));
+  } finally {
+    process.chdir(prev);
+    rmSync(idRoot, { recursive: true, force: true });
+  }
+}
+
 console.log(`\nPID CONTRACT TESTS PASSED ✅  (${pass} checks)`);
 console.log(
   "  COVERAGE, precisely: the `unknown` branch IS exercised, via the injected probe seam, including\n" +
@@ -379,6 +479,12 @@ console.log(
   "  the real kernel ever produces `unknown` -- that is established outside this suite, by a seccomp\n" +
   "  BPF filter answering kill(pid,0) with an arbitrary errno without executing it (SECCOMP_RET_ERRNO,\n" +
   "  or an LSM through security_task_kill). Both halves are needed and neither substitutes for the\n" +
-  "  other: the seam proves the code handles the state, the seccomp harness proves the state happens.",
+  "  other: the seam proves the code handles the state, the seccomp harness proves the state happens.\n" +
+  "  WINDOWS: processStartToken is undefined on win32 by design (no stable /proc starttime; MSYS ps is\n" +
+  "  not stable). The Windows detached handle in detached-spawn.ts is NOT on this main; it arrives with\n" +
+  "  #880. This suite names that gap rather than skipping it: a pid-only ChildProcess.kill remains a\n" +
+  "  bare process.kill(pid) until that file exists and consumes signalRecordedProcess. Recycled-pid\n" +
+  "  discrimination is constructed (injected tokens), not a live OS pid-wraparound, which is impractical\n" +
+  "  to wait for.",
 );
 process.exit(0);

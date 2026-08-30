@@ -7,7 +7,7 @@ import {
   newIdentity,
   waitForDeliveryLease,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KIND, authDir, deliveryCredsKey, findCotalRoot, getSoleSpaceAuth, listSpaceAccounts, parsePid, probeLiveness, segmentedKey, type LivenessProbe, workspaceSecretStore } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, authDir, deliveryCredsKey, findCotalRoot, getSoleSpaceAuth, listSpaceAccounts, parsePid, parseProcessIdentity, probeLiveness, segmentedKey, signalRecordedProcess, type LivenessProbe, workspaceSecretStore } from "@cotal-ai/workspace";
 import { selfArgv } from "./self-exec.js";
 import { resolveSpace } from "./status.js";
 import { cotalPath } from "./paths.js";
@@ -228,7 +228,8 @@ export async function stopDelivery(probe: LivenessProbe = probeLiveness, signal?
     return;
   }
   const raw = readFileSync(p, "utf8").trim();
-  const pid = parsePid(raw);
+  const identity = parseProcessIdentity(raw);
+  const pid = identity?.pid;
   if (pid === undefined) {
     if (raw === "") {
       await removeRecords(); // pre-protocol husk, nothing behind it
@@ -254,8 +255,10 @@ export async function stopDelivery(probe: LivenessProbe = probeLiveness, signal?
         `NEXT: verify with \`ps -p ${pid}\`, then stop it yourself or remove \`.cotal/delivery.pid\` if it is gone.`,
     );
   try {
-    send(pid, "SIGTERM");
+    signalRecordedProcess({ pid, ...(identity.start !== undefined ? { start: identity.start } : {}) }, "SIGTERM", { send });
   } catch (e) {
+    const msg = (e as Error).message ?? "";
+    if (/no longer matches|cannot be compared/.test(msg)) throw e;
     const code = (e as NodeJS.ErrnoException).code;
     if (code === "ESRCH") {
       await removeRecords(); // raced to exit between probe and signal
