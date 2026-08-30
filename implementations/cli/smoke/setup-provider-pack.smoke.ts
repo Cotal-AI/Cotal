@@ -46,7 +46,7 @@ try {
     join(extensionsDir, "extensions.json"),
     JSON.stringify({ extensions: [{
       pkg: "@cotal-ai/connector-claude-code",
-      version: "0.36.0",
+      version: JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8")).version as string,
       spec: "packed-fixture",
       provides: [{ kind: "connector", name: "claude" }, { kind: "connector-setup", name: "claude" }],
       commands: [],
