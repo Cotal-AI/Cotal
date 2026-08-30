@@ -5,6 +5,13 @@ name: Installer
 # configurations (no Node, old Node, musl, wget-only, each shell); macOS gets a real run on
 # the only honest macOS oracle there is.
 on:
+  # The matrix installs PUBLISHED artifacts, which rot while the tree holds still: the
+  # pinned-version case sat broken for 28 dormant days because nothing touched these paths
+  # (#994). The schedule exists so the gate can notice its subject changing underneath it;
+  # workflow_dispatch is the manual oracle for a re-check without a path-touching commit.
+  schedule:
+    - cron: '23 6 * * 1'
+  workflow_dispatch:
   pull_request:
     paths:
       - 'install.sh'
@@ -18,7 +25,15 @@ on:
       - 'install/**'
       - '.github/workflows/installer.yml'
 
-concurrency: ${{ github.workflow }}-${{ github.ref }}
+# Same rule as ci.yml. The short form used here before selected `cancel-in-progress: false` for
+# BOTH events, so a PR revision did not supersede its predecessor and the container matrix ran
+# twice, and it selected `queue: single`, which evicted queued main runs. Both halves are now
+# event-specific, which is a deliberate behaviour change on the PR side and not only a queue fix.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Tracks the line above: `queue: max` with `cancel-in-progress: true` is a validation error.
+  queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}
 
 jobs:
   lint:

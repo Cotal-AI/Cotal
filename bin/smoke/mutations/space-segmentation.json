@@ -1,0 +1,104 @@
+{
+  "suite": "packages/workspace/smoke/space-segmentation.smoke.ts",
+  "guard": "every P7 kind reaches its per-space location through ONE migrating choke point; the owners that must not migrate address the same layout it does; and `space rm`'s reap takes exactly one tenant's material, past the point of no return, without ever refusing",
+  "command": "pnpm smoke:space-segmentation",
+  "completionMarker": "SPACE-SEGMENTATION GATE",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/space-segmentation.json",
+  "why": [
+    "All five segmented kinds have an absent-means-MINT writer. That makes the read-fallback the",
+    "obvious-looking implementation - resolve the canonical location, fall back to the flat one -",
+    "into the worst one available: on a root whose material has not moved yet, the canonical read",
+    "answers ABSENT and the writer mints a SECOND live credential beside the one the running daemons",
+    "hold. Nothing errors. The split shows up later as a daemon the broker refuses, on a root where",
+    "both files look valid. So the property is not `the key is right`; it is `the move happened",
+    "before anyone could read absence`, which is why the migration lives inside the resolver rather",
+    "than beside it, and why the refusals must travel OUT through the resolver instead of being",
+    "caught there. The fourth mutation guards the other end: the hosted arm must not answer with the",
+    "pre-P7 flat kind, because a host provisions from the key this returns.",
+    "",
+    "The reap mutations (5-9) all turn on WHERE in the `space rm` sequence a step runs. Step 7 is",
+    "past step 5's point of no return, so the reap's contract is the inverse of the resolver's: it",
+    "must not migrate, must not refuse, and must not throw - a throw there strands the journal entry",
+    "and recurs identically on every re-run, so the removal a crash is supposed to be able to finish",
+    "could never finish at all. It is also the only sweep in the codebase that runs on a root OTHER",
+    "TENANTS ARE STILL USING, which is why the `.cotal/space.*` spelling - the one a reader reaches",
+    "for after seeing a directory removal - is graded here: it passes every removal cell while taking",
+    "every survivor's live material and reporting success. Mutation 9 is the door defect this commit",
+    "found and fixed, restored as it stood: a remedy asserted rather than asked, which prints a",
+    "command that refuses on exactly the roots the door was written for."
+  ],
+  "mutations": [
+    {
+      "name": "the resolver stops moving material and becomes a pure key builder (the read-fallback, shipped)",
+      "file": "packages/workspace/src/space-segmentation.ts",
+      "find": "  if (!composition.injected) migrateLegacyCotalMaterial(composition.root, space, kind);\n  return segmentedKey(kind, space);",
+      "replace": "  if (!composition.injected && composition.root === \"\") migrateLegacyCotalMaterial(composition.root, space, kind);\n  return segmentedKey(kind, space);",
+      "expectRed": "delivery.creds: the FS arm MOVED the legacy copy on first touch",
+      "cell": "the FS arm migrates on first touch, so no absent-means-mint writer ever reads absence past a flat copy"
+    },
+    {
+      "name": "the fifth kind's wrapper composes the path itself instead of going through the choke point",
+      "file": "packages/workspace/src/space-segmentation.ts",
+      "find": "  return migrateLegacyCotalMaterial(root, space, MEMBERSHIP_CONFIG_KIND);",
+      "replace": "  return join(spaceMaterialDir(root, space), MEMBERSHIP_CONFIG_KIND);",
+      "expectRed": "membership.json: the path wrapper migrates on first touch too",
+      "cell": "the kind whose wrapper returns a PATH rather than a key is held to the same first-touch move"
+    },
+    {
+      "name": "the wrapper catches the choke point's refusal, laundering an ambiguous root into a confident key",
+      "file": "packages/workspace/src/space-segmentation.ts",
+      "find": "  if (!composition.injected) migrateLegacyCotalMaterial(composition.root, space, kind);\n  return segmentedKey(kind, space);\n}",
+      "replace": "  if (!composition.injected) { try { migrateLegacyCotalMaterial(composition.root, space, kind); } catch { /* mutation */ } }\n  return segmentedKey(kind, space);\n}",
+      "expectRed": "rule 3 refuses through the named wrapper, not only through the choke point",
+      "cell": "rules 3 and 4 reach the caller through the wrapper - a swallowed refusal is a silent second mint"
+    },
+    {
+      "name": "the hosted arm answers with the bare kind, as a composition with no root to segment by would",
+      "file": "packages/workspace/src/space-segmentation.ts",
+      "find": "  if (!composition.injected) migrateLegacyCotalMaterial(composition.root, space, kind);\n  return segmentedKey(kind, space);\n}",
+      "replace": "  if (!composition.injected) migrateLegacyCotalMaterial(composition.root, space, kind);\n  return composition.injected ? kind : segmentedKey(kind, space);\n}",
+      "expectRed": "delivery.creds: the hosted arm resolves the SAME key and migrates NOTHING",
+      "cell": "both compositions resolve ONE key - a host provisions from this string, so the flat kind writes where no daemon reads"
+    },
+    {
+      "name": "the reap sweeps `.cotal/space.*`, the spelling a reader reaches for after seeing a directory removal",
+      "file": "packages/workspace/src/space-segmentation.ts",
+      "find": "      rmSync(dir, { recursive: true, force: true });",
+      "replace": "      for (const c of readdirSync(cotalDir(root))) if (c.startsWith(\"space.\")) rmSync(join(cotalDir(root), c), { recursive: true, force: true });",
+      "expectRed": "...and leaves the neighbour tenant's segment untouched",
+      "cell": "the reap takes ONE tenant's segment on a root the others keep using - the removal cells cannot tell the difference"
+    },
+    {
+      "name": "the reap throws the seam failure instead of returning it, past the point of no return",
+      "file": "packages/workspace/src/space-segmentation.ts",
+      "find": "    } catch (e) {\n      failed.push(`${key}: ${e instanceof Error ? e.message : String(e)}`);",
+      "replace": "    } catch (e) {\n      throw e;",
+      "expectRed": "a seam failure is RETURNED, not thrown",
+      "cell": "step 7 cannot throw: a throw strands the journal entry and recurs on every re-run, so the removal can never finish"
+    },
+    {
+      "name": "the reap addresses the store through the migrating resolver rather than segmentedKey",
+      "file": "packages/workspace/src/space-segmentation.ts",
+      "find": "    const key = segmentedKey(kind, space);\n    try {",
+      "replace": "    const key = spaceMaterialKey(kind, space, { injected: false, root });\n    try {",
+      "expectRed": "the reap does not migrate: a rule 3 tear neither throws nor moves",
+      "cell": "a reaper is a DELETER - it must not move material into the path it is about to remove, nor fail a reap over a refusal it does not care about"
+    },
+    {
+      "name": "the reap sweeps only the two kinds `clean` names, as a list copied from the reset would",
+      "file": "packages/workspace/src/space-segmentation.ts",
+      "find": "  DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, MEMBERSHIP_OBSERVER_CREDS_KIND, CONNECTION_EVICTOR_CREDS_KIND,\n];",
+      "replace": "  DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND,\n];",
+      "expectRed": "...deletes all four store-backed kinds at their SEGMENTED keys",
+      "cell": "`clean` has a raw `.cotal/` sweep behind its seam loop and this has none - for an injected store a missing kind outlives its tenant"
+    },
+    {
+      "name": "the door asserts its remedy instead of asking rule 4 for it (the defect this commit removed)",
+      "file": "packages/workspace/src/space-segmentation.ts",
+      "find": "  if (!refusal) return \"Run `cotal up` for the sole tenant once to migrate it into its own segment, then retry.\";\n  return `Migrating it first is not available on this root either: ${refusal.reason}. ${refusal.remedy}`;",
+      "replace": "  void refusal;\n  return \"Run `cotal up` for the sole tenant once to migrate it into its own segment, then retry.\";",
+      "expectRed": "the `space add` door's remedy is honest on that root too",
+      "cell": "a remedy composed from rule 4's own answer - the roots that bypass the doors entirely are exactly the roots `cotal up` refuses"
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 export * from "./advisory-lock.js";
 export * from "./extension-mutation.js";
 export * from "./auth-paths.js";
+export * from "./agent-secrets.js";
 export * from "./agent-health.js";
 export * from "./bin-path.js";
 export * from "./colors.js";
@@ -21,6 +22,7 @@ export * from "./render.js";
 export * from "./renewal.js";
 export * from "./secret-store-fs.js";
 export * from "./space.js";
+export * from "./space-segmentation.js";
 export * from "./system-rotation.js";
 export * from "./win-cmd.js";
 export * from "./pid.js";

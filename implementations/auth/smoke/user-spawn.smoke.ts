@@ -112,7 +112,7 @@ const { connect: rawConnect } = await import("@nats-io/transport-node");
 const { Kvm } = await import("@nats-io/kv");
 const { createHash } = await import("node:crypto");
 const { decodeJwt } = await import("jose");
-const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, workspaceSecretStore, agentLifecycleSecretFilePaths } = await import("@cotal-ai/workspace");
+const { agentCredsDir, authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, workspaceSecretStore, agentLifecycleSecretFilePaths } = await import("@cotal-ai/workspace");
 const {
   cotalAuthProvider, establishIdpSession, fetchIdpJwt, grantActor, loadCalloutAuth, loadAuthServiceInfo,
   actorLedgerDir, managedActorLedgerDir, ledgerRowFilename, deriveOwnerForIdpSubject, loadOwnerSecret, loadPinnedIdp,
@@ -165,7 +165,9 @@ const SPACE = `uspawn-${Math.floor(Math.random() * 1e6)}`;
 const CLIENT_ID = "cotal-cli";
 const dir = userAuthStateDir(root, SPACE); // the provider's space-scoped state dir (ledger, pin, discovery)
 const store = workspaceSecretStore(root); // the secret kinds ride the seam, keyed auth/<space>/…
-const credsDir = join(authDir(root), "creds");
+// This space's agent-secret segment (P1) — where the CLI and manager actually file an
+// incarnation's family, so a scan for one reads the layout under test.
+const credsDir = agentCredsDir(root, SPACE);
 // The manager files each incarnation's user secrets lifecycle-keyed (`<name>.<uid>.<kind>`).
 // Recover the uid from the token/sentinel already on disk, then derive the whole family (so a
 // not-yet-written health file still resolves to the right path); `noIncFiles` asserts a name has NO
@@ -175,7 +177,7 @@ const incUid = (name: string): string => {
   for (const f of readdirSync(credsDir)) { const m = re.exec(f); if (m) return m[1]; }
   throw new Error(`no incarnation secret on disk for ${name} in ${credsDir}`);
 };
-const incFiles = (name: string) => agentLifecycleSecretFilePaths(root, name, incUid(name));
+const incFiles = (name: string) => agentLifecycleSecretFilePaths(root, SPACE, name, incUid(name));
 const noIncFiles = (name: string): boolean => {
   const re = new RegExp(`^${name}\\.[a-z0-9]{26,32}\\.`);
   return !readdirSync(credsDir).some((f) => re.test(f));

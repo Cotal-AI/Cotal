@@ -53,16 +53,21 @@ Steps 1 to 4 change nothing on disk, so a crash there leaves the root untouched.
 account exists and, after step 6, the broker trusts it, while its streams may not exist yet. That
 state is real and is made resumable rather than hidden: re-running `space add <name>` on an account
 record that already composes under this broker skips steps 4 and 5 and completes 6 and 7. Booting
-the space with `up` completes step 7 too, once `up` renders from the full inventory (prerequisite
-P0, §4). The verb is forward-idempotent and never destructive; it refuses only on a corrupt
-inventory, a missing broker record, a missing system seed, or an account record for that name signed
-by a different operator.
+the space with `up` completes step 7 too, now that `up` renders from the full inventory (§4). The
+verb is forward-idempotent and never destructive; it refuses only on a corrupt inventory, a missing
+broker record, a missing system seed, or an account record for that name signed by a different
+operator.
 
 `space add` does not start a manager or a delivery daemon for the new space (§6).
 
 ### 2.2 `cotal space rm <name>`
 
-1. Take the lock. Read the inventory. Refuse on any corrupt record.
+1. Take the lock. Read the inventory. Refuse on any corrupt record, and on a root still holding
+   root-scoped P7 material (`assertSpaceMaterialReapable`). That second refusal belongs HERE rather
+   than beside the reap it guards: root-scoped material on a multi-tenant root is unattributable, so
+   step 7 would have to choose between stranding what may be the departing tenant's live `$SYS` pair
+   and taking a survivor's — and asked at step 7 the question comes too late to answer either way,
+   because refusing there is no longer free.
 2. Refuse when `<name>` is the only tenant. That case is the broker-wide teardown that already
    exists (`cotal down` then `cotal clean all`), and `serverConfig` refuses to render zero spaces,
    so a "remove the last one" path would have no config to promote.
@@ -76,23 +81,44 @@ by a different operator.
 6. Re-render and promote `server.conf` from the inventory minus this space, then reload (§4).
 7. Delete the local material keyed to this space: `account.<key>.json` through a new
    `deleteSpaceAccountAuth` (§7, rejected alternative 7), the `space.<hex>` user-auth state dir,
-   `manager-instance.<hex>.json`, and the space's `$SYS` creds once those are keyed per space (P7).
+   `manager-instance.<hex>.json`, and the space's P7 material — its `$SYS` pair, `membership-rw`,
+   `membership.json` and `delivery.creds` — through `reapSpaceMaterial`, which P7 landed ahead of
+   this verb. It sweeps every store-backed kind through the seam and then removes THIS space's
+   segment dir, never `.cotal/space.*`: unlike `clean`, this runs on a root the other tenants keep
+   using, and it has no raw `.cotal/` sweep behind it to catch a kind the seam loop forgot. The
+   space's per-agent standing secrets go the same way through `reapAgentSecrets`, which P1 landed
+   ahead of this verb for the same reason. That one ENUMERATES rather than sweeping a fixed list of
+   kinds, because P1's set is one file per agent per kind and only the segment records which exist —
+   so it carries an I/O step before its first seam call, and an unreadable segment there is reported
+   like any other failure rather than thrown past step 5.
 8. Clear the journal entry.
 
 Steps 5 to 7 are individually idempotent, so a re-run after a crash finishes the removal instead of
 starting a second one. The commit point is step 5: before it the tenant is intact, after it the data
-is gone and only a backup can bring it back.
+is gone and only a backup can bring it back. That is why step 7 REPORTS its failures rather than
+throwing them (`reapSpaceMaterial` returns `{ removed, failed }`): a throw after step 5 leaves the
+journal entry standing, which refuses every other verb on the root, and since the same throw recurs
+on every re-run the removal could never be finished by the re-run this section promises.
 
 What step 6 does to that tenant's live connections is an eviction, not a revocation. Once the broker
 loads a config without the account, its users are refused. Creds minted under it stay
 cryptographically valid and would still be honored by a stale broker that never loaded the new
 config, the same qualifier `up --rotate-sys` already prints for retired `$SYS` creds.
 
-The per-agent secret files under `auth/creds` are not deleted, because that directory is
-space-independent today (`agentCredsDir(root)` takes no space) and no file in it names its tenant, so
-reaping one space's would risk a sibling's. They are broker-dead the moment the account leaves the
-resolver, so what remains is disk residue. `space rm` lists the files it is leaving behind, and
-re-keying that directory by `spaceSegment` is prerequisite P1 (§7).
+The per-agent secret files under `auth/creds` are reaped with the rest, now that P1 keys them by
+`spaceSegment` — `auth/creds/space.<hex>/<name>.<kind>`, so every one of them names its tenant and
+one space's can be removed without risking a sibling's. That is also why step 7's precondition
+belongs at step 1. A root still holding pre-P1 files FLAT in `auth/creds` holds material that names
+no tenant, and removing a space is precisely what would make it look owned: on a two-tenant root the
+removal leaves one space in the inventory, which is the condition under which the migration rules
+stop refusing, so the survivor's next `spawn`, `mint` or `doctor auth` moves those files into the
+survivor's segment and the layout then asserts an owner nobody chose. `assertAgentSecretsReapable`
+refuses at step 1 because that is the last moment the evidence that it was a guess still exists.
+
+What the reap does not reach is a hosted composition. It enumerates the segment on disk, because
+`SecretStore` has no list operation and P1's key set is open rather than a fixed list of kinds, so a
+deployment whose agent secrets live only in an injected store reaps them through that store's own
+tenant teardown — the same boundary `clean all`'s agent sweep already draws.
 
 ### 2.3 Per-space artifacts
 
@@ -158,20 +184,40 @@ atomic promotion, above the renderer. That is this section.
 the lock and renders from that plus `broker.json`. No verb passes a remembered list, so a render can
 never drop a tenant that another verb added.
 
-`up` violates that rule today, and it is prerequisite P0. It calls
-`serverConfig(auth, [auth], …)` with the one space it resolved from the cwd, so on a root with
-several tenants the next `up` would render a config holding one account and orphan the rest, undoing
-any `space add` that came before it. Nothing guards this: `assertSingleSpaceBroker` covers
-`up --restore` and not a plain boot. `up` must render from the validated inventory like every other
-writer, and it must keep booting the one space it was asked for.
+`up` used to violate that rule, which was prerequisite P0. It called `serverConfig(auth, [auth], …)`
+with the one space it resolved from the cwd, so on a root with several tenants the next `up` would
+render a config holding one account and orphan the rest, undoing any `space add` that came before it
+— and nothing guarded it, because `assertSingleSpaceBroker` covers `up --restore` and not a plain
+boot. It now renders `serverConfig(auth, preloadSpaceAccounts(dir, auth), …)`: that reader re-reads
+the validated inventory and returns the booting space first with every sibling behind it, so `up`
+renders from disk like every other writer while still booting the one space it was asked for.
+
+It also refuses rather than narrowing the config, in both directions a tenant can go missing between
+the two reads: an unreadable account record fails the render naming the tenant list uncertain, and a
+record that disappears after the inventory validated it fails too. Both say the same thing — a tenant
+left out of the config is evicted from the broker, so an uncertain list is not a list to render from.
 
 **Serialization is the root maintenance lock.** `acquireMaintenanceLock` already gives an exclusive,
 owner-recorded, stale-reaping lock per root, and `backup` and `clean` take it. The lock is per root
 rather than per space on purpose: the config, the store and the broker process are shared, so two
-tenants' lifecycle verbs are not independent. `up` already holds it across its own render, and so
-does `up -f`. What escapes it is narrow: a resume re-entry skips acquiring the lock and still reaches
-the render. Closing that is prerequisite P2 (§7); until it lands, the lock is mutual exclusion over
-every writer of `server.conf` except a resumed `up`.
+tenants' lifecycle verbs are not independent. Every `up` now holds it across its render — the
+ordinary path, `up -f`, and a resume re-entry alike, which is prerequisite P2 (§7). A re-entry used
+to hold no lock at all and still reach the renderer, so a concurrent `up` could rewrite the
+whole-broker config — every tenant's trust, unserialized — while a resume was mid-flight. The lock is
+now mutual exclusion over every writer of `server.conf`, with no exception.
+
+**A resumed `up` inherits that lock, and must hand it down.** The recovery journals `resume-intent`
+under the lock it already holds, so releasing it for the re-entry to re-acquire would leave exactly
+the window the lock is there to close: the journal in a resume state with the lock free. Inheriting
+in turn makes handing the lock down mandatory rather than tidy. The lock is not reentrant, and it
+cannot stale-reap its way out either, because the recorded owner is alive — it is the caller. A
+helper that self-acquired would take the "held by a live owner" refusal and fail the resume outright.
+So every helper that journals under it takes the lock as a `heldLock` parameter and the re-entry
+passes it, on the restore and the ordinary side alike; the one caller that does not is the
+prepare-failure path, where the lock has genuinely not been taken in that frame and the helper is
+meant to take its own. Audit that by the callee, not by the call site: a site that passes no lock
+says nothing about whether the callee acquires one, and threading only the sites that visibly named
+a lock left `up --restore` dead in its listener bind, on the self-acquiring restore-side writers.
 
 **Promotion is compare-and-set, because the lock is advisory.** A small non-secret
 `broker-config.json` beside `server.conf` records `{ gen, inventoryDigest }`. A verb reads
@@ -213,9 +259,16 @@ The two creds are not equivalent. The membership observer pins the data account 
 connect and disconnect subjects, so it is genuinely per-space and a new space needs its own. The
 connection evictor is `$SYS.REQ.SERVER.*.KICK` with no account scoping, so it is broker-wide and one
 per broker would do, though today one is minted per space at `up`. Both land on root-scoped paths,
-alongside a root-scoped `membership.json` naming one account, so a second space's `up` overwrites the
-first space's observer with one pinned to the wrong data account. Keying those three paths per space
-is prerequisite P7, and `space rm` step 7 can only reap them once it lands.
+alongside a root-scoped `membership.json` naming one account and a root-scoped `membership-rw.creds`
+store key. One tenant's set is all a root can hold, and the way that bites is INHERITANCE, not an
+overwrite. A second space's `up` cannot overwrite the first space's, because `up` refuses a `--space`
+the root does not already hold — at the workspace-root identity check, before any trust write — so on
+an established root the fresh-space branch that mints the bundle never runs at all. On a root that
+already holds two tenants neither space is fresh either, so the only writer that runs is the
+absent-only heal path, which writes what is missing and nothing else. The first tenant to boot
+therefore wins the root-scoped bundle and the second silently runs on it: after the second tenant
+boots, `membership.json` still names the FIRST tenant's data account. Keying those paths per space is
+prerequisite P7, and `space rm` step 7 can only reap them once it lands.
 
 Without the seed a later-added space has no observer, which degrades membership to traffic-only and
 makes live eviction refuse. `space add` refuses rather than provisioning a second-class tenant.
@@ -256,18 +309,36 @@ P8. Until it lands, retaining the seed is a decision taken at broker creation wi
 ## 7. Prerequisites
 
 - **P0.** Make `up` render `server.conf` from the validated inventory instead of the single space it
-  booted (§4). Until this lands, every other piece of this design is undone by the next `up`.
+  booted (§4). Landed: `up` renders through `preloadSpaceAccounts`, which re-reads the inventory and
+  refuses the render whenever the tenant list is uncertain.
 - **P1.** Re-key `auth/creds` by `spaceSegment` so per-agent secrets name their tenant and
-  `space rm` can reap them (§2.2).
+  `space rm` can reap them (§2.2). Landed: `agentCredsDir(root, space)` resolves through the shared
+  choke point and moves a pre-P1 flat file into the space's segment on first touch; every key, path
+  and `agentSecretKeyForFile` takes the space from the CALLER's authority rather than from a recorded
+  path; and step 7 reaps one tenant's segment through `reapAgentSecrets` behind the step-1
+  `assertAgentSecretsReapable`.
 - **P2.** Make a resumed `up` take the root maintenance lock before it renders, which the ordinary
-  and manifest paths already do, so the lock covers every writer of `server.conf` (§4).
+  and manifest paths already do, so the lock covers every writer of `server.conf` (§4). Landed: the
+  re-entry inherits the recovery's lock rather than taking its own, and hands it to every helper that
+  journals under it.
 - **P3.** A multi-tenant backup inventory validator (§2.3).
 - **P4.** `deleteSpaceAccountAuth(store, space)`, deleting one tenant's account key and nothing else.
 - **P5.** Retained broker system signing seed behind the multi-space opt-in (§5).
 - **P6.** Port the §4 reload spike into this tree as a smoke. No longer gating, since the behavior
   is already proven live.
-- **P7.** Key the `$SYS` cred pair and `membership.json` per space, so two tenants' `up` runs stop
-  overwriting each other and `space rm` can reap them (§5).
+- **P7.** Key the `$SYS` cred pair, `membership.json`, `membership-rw.creds` and `delivery.creds` per
+  space, so a tenant stops silently running on whichever sibling booted first and `space rm` can reap
+  them (§5). `delivery.creds` is not `$SYS` material and was not in this entry's original scope. It
+  belongs here because it sits in the same `REMINTABLE_DAEMON_CREDS` list at the same root scope and
+  carries the same inheritance exposure: `remintDaemonCreds` validates the store's signer against the
+  expected space precisely because a wrong-space signer re-signs a cred that space's broker rejects.
+  Segmenting the list except for one entry would have made the per-space key a per-entry special case
+  instead of a property of the list. Landed: all five kinds move into `.cotal/space.<hex>/` at one
+  migrating choke point, which refuses rather than migrate on a root whose tenant count it cannot
+  establish, and `space add` refuses to create a second tenant beside material that predates the
+  move. The reap of §2.2 step 7 and its step-1 precondition are landed as `reapSpaceMaterial` and
+  `assertSpaceMaterialReapable`; they have no caller yet, because `space rm` is still this section's
+  design rather than a command.
 - **P8.** A broker-wide system-account rotation that re-mints every tenant's `$SYS` pair, so §5's
   named recovery works on the multi-tenant root it is prescribed for (§5).
 

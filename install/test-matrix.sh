@@ -40,6 +40,11 @@ fi
 # `arg` is one of: empty, AS_ROOT, TWICE, an installer flag (--dry-run), or an env
 # assignment (CI=1). `expectation` is a shell snippet run after the installer with $out
 # (combined output) and $rc (exit code) in scope; it must return 0 to pass.
+#
+# `pinned-version` pins 0.19.0, and the number is load-bearing: it is the oldest release that
+# still installs from a blank machine. Every earlier core floats json-canonicalize ^2.0.0, and
+# json-canonicalize 2.0.1 (published 2026-08-14) stopped shipping the bundle its `main` points
+# at, so every earlier cotal-ai now crashes on launch when installed fresh (#994).
 scenarios() {
   cat <<'MATRIX'
 bare~ubuntu:24.04~apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null && useradd -m -s /bin/bash tester~~installs_ok && vendored && contained
@@ -58,7 +63,7 @@ ascii-locale~node:22-bookworm-slim~useradd -m -s /bin/bash tester~LC_ALL=C~insta
 no-color~node:22-bookworm-slim~useradd -m -s /bin/bash tester~NO_COLOR=1~installs_ok && no_ansi
 ci-mode~node:22-bookworm-slim~useradd -m -s /bin/bash tester~CI=1~installs_ok && no_setup_handoff
 upgrade~node:22-bookworm-slim~useradd -m -s /bin/bash tester~TWICE~installs_ok && single_path_block && contained
-pinned-version~node:22-bookworm-slim~useradd -m -s /bin/bash tester~--version 0.14.1~installs_ok && version_is 0.14.1
+pinned-version~node:22-bookworm-slim~useradd -m -s /bin/bash tester~--version 0.19.0~installs_ok && version_is 0.19.0
 dry-run~node:22-bookworm-slim~useradd -m -s /bin/bash tester~--dry-run~changed_nothing
 MATRIX
 }
@@ -415,7 +420,9 @@ export ${env_pairs:-IGNORE=1}
 mkdir -p /marker && touch /marker/start
 ${user_prefix} 'cd \$HOME && ${install_cmd}'
 echo "___RC=\$?"
-echo "___VERSION=\$(${user_prefix} '\$HOME/.local/bin/cotal --version 2>/dev/null | head -1' || echo none)"
+# stderr is deliberately kept: a binary that installs but crashes on launch must name its
+# crash in the failure report, not read as "did not report a version:" with nothing after it.
+echo "___VERSION=\$(${user_prefix} '\$HOME/.local/bin/cotal --version 2>&1 | head -5' | tr '\n' ' ' || echo none)"
 echo "___NODE=\$(${user_prefix} '\$HOME/.local/share/cotal/nodebin/node -v 2>/dev/null' || echo none)"
 echo "___PATHBLOCKS=\$(cat /home/tester/.zshrc /home/tester/.bashrc /home/tester/.bash_profile /home/tester/.config/fish/config.fish 2>/dev/null | grep -c '^# cotal\$' || echo 0)"
 echo "___RCTOUCHED=\$(cd /home/tester 2>/dev/null && grep -rl '# cotal' .zshrc .bashrc .bash_profile .config/fish/config.fish 2>/dev/null | tr '\n' ' ')"

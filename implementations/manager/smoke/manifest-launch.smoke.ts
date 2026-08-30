@@ -39,6 +39,7 @@ import { join } from "node:path";
 import { Manager } from "../src/manager.js";
 import { loadLaunchSpec, materializePersona, launchAgentToStartOpts, launchSpecForRun } from "../src/launch.js";
 import { createSpaceAuth, mintCreds, newIdentity, principalKey, setupSpaceStreams, registry, DEV_OWNER, type Connector, type LaunchSpec, type AgentHandle, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
+import { agentLifecycleSecretFilePaths } from "@cotal-ai/workspace";
 import { bootBroker } from "./_boot-broker.js";
 
 let failures = 0;
@@ -159,7 +160,7 @@ registry.register(recCon);
 
   // Lifecycle-keyed cred file (`<name>.<uid>.creds`) — the reply's uid names this incarnation's file.
   const scoutUid = reply.ok ? String((reply.data as { lifecycleUid?: string }).lifecycleUid ?? "") : "";
-  const acl = credAcl(join(root, ".cotal", "auth", "creds", `scout.${scoutUid}.creds`));
+  const acl = credAcl(agentLifecycleSecretFilePaths(root, "demo", "scout", scoutUid).creds);
   check("read ACL = resolved allowSubscribe (general+ops+review)", ["general", "ops", "review"].every((ch) => acl.sub.some((s) => s.endsWith("." + ch))), acl.sub);
   check("post ACL = resolved allowPublish (general only)", acl.pub.some((s) => s.endsWith(".general")) && !acl.pub.some((s) => s.endsWith(".ops")), acl.pub);
 }
@@ -276,7 +277,7 @@ function writeSpec(name: string, body: unknown): string {
   check("reply carries the spawned nkey id", reply.ok && typeof reply.data?.id === "string" && (reply.data.id as string).length > 0);
   // Lifecycle-keyed under the SPAWNED name: `ranger.<uid>.creds`.
   const scout2Uid = reply.ok ? String((reply.data as { lifecycleUid?: string }).lifecycleUid ?? "") : "";
-  const scout2Creds = join(root, ".cotal", "auth", "creds", `ranger.${scout2Uid}.creds`);
+  const scout2Creds = agentLifecycleSecretFilePaths(root, "demo", "ranger", scout2Uid).creds;
   check("creds are filed under the SPAWNED name (ledger-keying invariant)", existsSync(scout2Creds));
   // The cred file's OWN nkey subject equals the reply id — the invariant `down -f` relies on to
   // verify a cred belongs to the recorded agent before deleting it (name+id ownership).

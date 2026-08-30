@@ -11,6 +11,13 @@ import {
 } from "@cotal-ai/core";
 import { assertSingleSpaceBroker, authDir, getSpaceAuth, putSpaceAuth } from "./auth-paths.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
+import {
+  connectionEvictorCredsKey,
+  CONNECTION_EVICTOR_CREDS_KIND,
+  membershipObserverCredsKey,
+  MEMBERSHIP_OBSERVER_CREDS_KIND,
+  migrateLegacyCotalMaterial,
+} from "./space-segmentation.js";
 
 /**
  * The class-3 ($SYS) renewal owner's half, the counterpart to `renewal.ts`, which owns the class-2
@@ -39,12 +46,13 @@ import { workspaceSecretStore } from "./secret-store-fs.js";
  * {@link rotateSystemCreds}.
  */
 
-/** The two $SYS credential files, by the same key↔filename convention `renewal.ts` uses. They stay on
- *  the raw FS, with no secret-store seam: renewing them means rewriting the broker config too, so the
- *  pair and the trust record move together or not at all, which is not something a store can hold half
- *  of. Named here so the rotation writer, the staleness check and `cotal clean`'s removal list cannot
- *  drift apart. */
-export const SYSTEM_CREDS_FILES = ["membership-observer.creds", "connection-evictor.creds"] as const;
+/** The two $SYS credential KINDS, in rotation-write order. They stay on the raw FS, with no injected
+ *  secret-store seam: renewing them means rewriting the broker config too, so the pair and the trust
+ *  record move together or not at all, which is not something a store can hold half of. Named here so
+ *  the rotation writer, the staleness check and `cotal clean`'s removal list cannot drift apart —
+ *  which is also why they are the KIND constants and not a second pair of literals (P7 made the
+ *  kind and the location two different strings; a literal here would silently stay the old one). */
+export const SYSTEM_CREDS_FILES = [MEMBERSHIP_OBSERVER_CREDS_KIND, CONNECTION_EVICTOR_CREDS_KIND] as const;
 
 export interface SystemRotationResult {
   /** The broker record's new system-account generation (the successor discriminator `putSpaceAuth` guards). */
@@ -122,9 +130,16 @@ export async function rotateSystemCreds(root: string, expectedSpace: string): Pr
   // plus an eviction rail whose recovery is one re-run.
   //
   // Each file is still written atomically, so no reader can ever see a half-written credential.
+  //
+  // Written through the per-kind resolvers (P7 §2 rule 1) rather than a hand-composed
+  // `join(root, ".cotal", …)`: the pair is per-SPACE now, and this is a workstation-only operation,
+  // so the composition is the FS one by construction. The store's `put` is the same
+  // `mkSecretDir` + `writeSecretFileAtomic` the raw write used, and it is what creates the
+  // `space.<hex>/` dir on a root whose pair has never been segmented.
+  const composition = { injected: false as const, root };
   await putSpaceAuth(s, rotated);
-  writeSecretFileAtomic(join(root, ".cotal", SYSTEM_CREDS_FILES[0]), observer);
-  writeSecretFileAtomic(join(root, ".cotal", SYSTEM_CREDS_FILES[1]), evictor);
+  await s.put(membershipObserverCredsKey(expectedSpace, composition), observer);
+  await s.put(connectionEvictorCredsKey(expectedSpace, composition), evictor);
 
   return { gen: rotated.gen ?? 0, auth: rotated, expiresAt: credsClaims(observer).exp };
 }
@@ -153,10 +168,16 @@ export interface StaleSystemCred {
  * an unreadable file is reported with no `iss` rather than throwing, because a diagnosis surface must not
  * crash on the corruption it exists to describe.
  */
-export function staleSystemCreds(root: string, sysPub: string): StaleSystemCred[] {
+export function staleSystemCreds(root: string, sysPub: string, space: string): StaleSystemCred[] {
   const stale: StaleSystemCred[] = [];
   for (const file of SYSTEM_CREDS_FILES) {
-    const path = join(root, ".cotal", file);
+    // The CHOKE POINT, called for its path (P7 §2 rule 1). A reader, not a writer — but it must not
+    // read the canonical location without moving a legacy pair into it first: reading past an
+    // unmigrated pair would answer "absent, therefore not stale" for the exact half-rotated state
+    // this function exists to catch, and both surfaces that call it (the boot path, `doctor auth`)
+    // are the first thing to touch these creds on a root `up` has not re-provisioned. A §2 rule 3/4
+    // refusal propagates, loudly, rather than being swallowed into a healthy-looking answer.
+    const path = migrateLegacyCotalMaterial(root, space, file);
     if (!existsSync(path)) continue;
     let iss: string | undefined;
     try {

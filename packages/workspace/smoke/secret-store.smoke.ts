@@ -4,8 +4,10 @@
  * get/put/delete roundtrip (absent → undefined, whole-value replace, idempotent delete), and the
  * byte-for-byte layout invariant (key == relative path, 0600 file under a 0700 parent). Plus the
  * per-agent standing-secret surface: key/path builders off ONE guarded name segment (hostile
- * names refused before any key or path exists), the `clean all` sweep enumeration, and the
- * materialize-to-file projection subprocesses read. Pure filesystem, no broker.
+ * names refused before any key or path exists) inside ONE per-space segment (P1), the `clean all`
+ * sweep enumeration, and the materialize-to-file projection subprocesses read. The segmentation
+ * RULES themselves (first-touch move, the refusals, cross-tenant addressing) are proved next door
+ * in agent-secret-segmentation.smoke.ts. Pure filesystem, no broker.
  *
  * Run: pnpm smoke:secret-store
  */
@@ -13,6 +15,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FsSecretStore, workspaceSecretStore } from "../src/secret-store-fs.js";
+import { materializeSecretToFile, spaceSegment } from "../src/auth-paths.js";
 import {
   agentActorTokenKey,
   agentCredsDir,
@@ -20,8 +23,7 @@ import {
   agentSecretFilePaths,
   agentSecretKeysUnder,
   agentSentinelCredsKey,
-  materializeSecretToFile,
-} from "../src/auth-paths.js";
+} from "../src/agent-secrets.js";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`); } };
@@ -84,44 +86,50 @@ try {
   const root = mkdtempSync(join(tmpdir(), "cotal-agent-secrets-"));
   try {
     const ws = workspaceSecretStore(root);
-    const files = agentSecretFilePaths(root, "smoke-agent");
-    await ws.put(agentCredsKey("smoke-agent"), "CREDS");
-    await ws.put(agentActorTokenKey("smoke-agent"), "TOKEN");
-    await ws.put(agentSentinelCredsKey("smoke-agent"), "SENTINEL");
+    // Every builder is per-space as of P1; the key composition is the local FS one, the same shape
+    // the CLI and manager pass (`{ injected: false, root }`).
+    const SPACE = "smoke-space";
+    const SEG = spaceSegment(SPACE);
+    const comp = { injected: false as const, root };
+    const files = agentSecretFilePaths(root, SPACE, "smoke-agent");
+    await ws.put(agentCredsKey(SPACE, "smoke-agent", comp), "CREDS");
+    await ws.put(agentActorTokenKey(SPACE, "smoke-agent", comp), "TOKEN");
+    await ws.put(agentSentinelCredsKey(SPACE, "smoke-agent", comp), "SENTINEL");
     check("agent creds key lands byte-for-byte at the canonical path", readFileSync(files.creds, "utf8") === "CREDS");
     check("actor-token key ↔ path", readFileSync(files.actorToken, "utf8") === "TOKEN");
     check("sentinel key ↔ path", readFileSync(files.sentinelCreds, "utf8") === "SENTINEL");
-    check("valid name with _ and - builds the expected key", agentCredsKey("a_B-2") === "auth/creds/a_B-2.creds");
+    check("valid name with _ and - builds the expected key", agentCredsKey(SPACE, "a_B-2", comp) === `auth/creds/${SEG}/a_B-2.creds`);
+    check("the key's segment is the space's, and the path agrees with it", files.creds === join(agentCredsDir(root, SPACE), "smoke-agent.creds"));
 
     // The guarded segment — executed boundary probes on both surfaces (key AND path builders).
     for (const bad of ["", ".", "..", "a/b", "a\\b", "a b", "../x", "a\0b", "a.b"])
-      await rejects(`hostile agent name ${JSON.stringify(bad)} refused by the key builder`, () => agentCredsKey(bad), "unsafe agent name");
-    await rejects("hostile agent name refused by the path builder too", () => agentSecretFilePaths(root, "../x"), "unsafe agent name");
+      await rejects(`hostile agent name ${JSON.stringify(bad)} refused by the key builder`, () => agentCredsKey(SPACE, bad, comp), "unsafe agent name");
+    await rejects("hostile agent name refused by the path builder too", () => agentSecretFilePaths(root, SPACE, "../x"), "unsafe agent name");
 
     // Sweep enumeration: exactly the three secret kinds; health + strays are NOT keys; the
     // sentinel filename parses under its LONGEST suffix, never as `<x>.sentinel` + `.creds`.
-    writeFileSync(join(agentCredsDir(root), "smoke-agent.auth-health.json"), "{}");
-    writeFileSync(join(agentCredsDir(root), "weird name.creds"), "stray");
+    writeFileSync(join(agentCredsDir(root, SPACE), "smoke-agent.auth-health.json"), "{}");
+    writeFileSync(join(agentCredsDir(root, SPACE), "weird name.creds"), "stray");
     const keys = agentSecretKeysUnder(root).sort();
     check("sweep finds exactly the three secret kinds",
       keys.length === 3 &&
-      keys.includes("auth/creds/smoke-agent.creds") &&
-      keys.includes("auth/creds/smoke-agent.actor-token") &&
-      keys.includes("auth/creds/smoke-agent.sentinel.creds"));
+      keys.includes(`auth/creds/${SEG}/smoke-agent.creds`) &&
+      keys.includes(`auth/creds/${SEG}/smoke-agent.actor-token`) &&
+      keys.includes(`auth/creds/${SEG}/smoke-agent.sentinel.creds`));
     check("sweep on a root with no creds dir is empty", agentSecretKeysUnder(mkdtempSync(join(tmpdir(), "cotal-empty-root-"))).length === 0);
 
     // Materialize: the projection a subprocess reads — store value, 0600, absent key fails loud.
     const target = join(root, "elsewhere", "token-file");
-    await materializeSecretToFile(ws, agentActorTokenKey("smoke-agent"), target);
+    await materializeSecretToFile(ws, agentActorTokenKey(SPACE, "smoke-agent", comp), target);
     check("materialize writes the store value at the explicit path", readFileSync(target, "utf8") === "TOKEN");
     if (process.platform !== "win32") {
       check("materialized file lands 0600", (statSync(target).mode & 0o777) === 0o600);
       check("materialize hardens the parent to 0700", (statSync(join(root, "elsewhere")).mode & 0o777) === 0o700);
     }
-    await rejects("materialize of an absent key fails loud", () => materializeSecretToFile(ws, agentCredsKey("ghost"), join(root, "x")), "not in the store");
+    await rejects("materialize of an absent key fails loud", () => materializeSecretToFile(ws, agentCredsKey(SPACE, "ghost", comp), join(root, "x")), "not in the store");
 
     // The delete half of the pair removes the canonical file (byte-identity).
-    await ws.delete(agentActorTokenKey("smoke-agent"));
+    await ws.delete(agentActorTokenKey(SPACE, "smoke-agent", comp));
     check("deleted actor token is gone from disk", !existsSync(files.actorToken));
   } finally {
     rmSync(root, { recursive: true, force: true });

@@ -24,6 +24,7 @@ import {
   readRenewalRecord,
   renewalRecordPath,
   saveSpaceAuth,
+  spaceMaterialDir,
   writeRenewalRecord,
 } from "@cotal-ai/workspace";
 import { doctor } from "../src/commands/doctor.js";
@@ -44,6 +45,13 @@ const root = mkdtempSync(join(tmpdir(), "cotal-renewal-honesty-"));
 mkdirSync(join(root, ".cotal", "auth"), { recursive: true });
 const auth = await createSpaceAuth("renewal-honesty-smoke");
 saveSpaceAuth(authDir(root), auth);
+// A POST-P7 root: the managed kinds are staged in this space's segment, where `up` leaves them.
+// Staging flat would work once and then break, because the first `doctor auth` MIGRATES — the
+// second staging below would land a flat copy beside the canonical one, which is the §2 rule 3
+// ambiguity and refuses loudly. Migration itself is covered in `doctor-auth.smoke.ts`.
+const spaceDir = spaceMaterialDir(root, auth.space);
+mkdirSync(spaceDir, { recursive: true, mode: 0o700 });
+const staged = (kind: string) => join(spaceDir, kind);
 
 const origCwd = process.cwd();
 const origLog = console.log;
@@ -109,8 +117,8 @@ try {
   const dlvId = newIdentity();
   const rwId = newIdentity();
   // an EXPIRED delivery cred = a remintable PROBLEM, so the `--fix` branch actually runs.
-  writeFileSync(join(root, ".cotal", "delivery.creds"), await mintCreds(auth, dlvId, "delivery", { expiresAt: now - 10 }), { mode: 0o600 });
-  writeFileSync(join(root, ".cotal", "membership-rw.creds"), await mintCreds(auth, rwId, "membership-rw", { expiresInSeconds: 600 }), { mode: 0o600 });
+  writeFileSync(staged("delivery.creds"), await mintCreds(auth, dlvId, "delivery", { expiresAt: now - 10 }), { mode: 0o600 });
+  writeFileSync(staged("membership-rw.creds"), await mintCreds(auth, rwId, "membership-rw", { expiresInSeconds: 600 }), { mode: 0o600 });
   // the last renewal was refused by the broker.
   writeRenewalRecord(root, {
     ts: "2026-01-01T00:00:00.000Z",
@@ -119,7 +127,7 @@ try {
     adoption: { ok: false, error: "the broker did not accept the re-signed credential (Authorization Violation); nothing adopted" },
   });
   const afterFix = await runDoctor({ fix: true });
-  check("`--fix` re-signed the expired delivery cred (the fix branch ran)", inspectCredHealth(readFileSync(join(root, ".cotal", "delivery.creds"), "utf8")).state === "healthy");
+  check("`--fix` re-signed the expired delivery cred (the fix branch ran)", inspectCredHealth(readFileSync(staged("delivery.creds"), "utf8")).state === "healthy");
   check("`--fix` did NOT erase the broker refusal to green (exit 1)", afterFix.code === 1, `${afterFix.code} ${afterFix.out.slice(-300)}`);
   check("`--fix` verdict still names the unproven/refused state, not `auth: healthy`", !afterFix.out.includes("auth: healthy") && /not broker-accepted|refused by the broker/i.test(afterFix.out), afterFix.out);
   const afterRec = readRenewalRecord(root);
@@ -127,7 +135,7 @@ try {
 
   // negative control: with NO prior refusal, `--fix` on a fresh expired cred still reaches healthy/0
   // (it only preserves REFUSALS, it does not block every fix).
-  writeFileSync(join(root, ".cotal", "delivery.creds"), await mintCreds(auth, dlvId, "delivery", { expiresAt: now - 10 }), { mode: 0o600 });
+  writeFileSync(staged("delivery.creds"), await mintCreds(auth, dlvId, "delivery", { expiresAt: now - 10 }), { mode: 0o600 });
   writeRenewalRecord(root, { ts: "2026-01-01T00:00:00.000Z", owner: "manager", results: [{ file: "delivery.creds", ok: true }], adoption: { ok: true, detail: { delivery: { ok: true, brokerAccepted: { identity: "x" } } } } });
   const cleanFix = await runDoctor({ fix: true });
   check("`--fix` with no prior refusal still reaches healthy (exit 0)", cleanFix.code === undefined && cleanFix.out.includes("auth: healthy"), `${cleanFix.code} ${cleanFix.out.slice(-300)}`);

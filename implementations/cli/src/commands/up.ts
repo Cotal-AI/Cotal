@@ -15,7 +15,7 @@ import {
   rmSync,
   realpathSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
   isReachable,
   DEFAULT_SERVER,
@@ -59,7 +59,12 @@ import {
   findMesh,
   getCurrent,
   loadMeshes,
-  MEMBERSHIP_RW_CREDS_KEY,
+  connectionEvictorCredsKey,
+  membershipConfigPath,
+  membershipObserverCredsKey,
+  membershipRwCredsKey,
+  MEMBERSHIP_CONFIG_KIND,
+  MEMBERSHIP_RW_CREDS_KIND,
   recordMesh,
   meshesForRoot,
   removeMesh,
@@ -2689,7 +2694,7 @@ async function authSetup(
   if (!auth) {
     auth = await createSpaceAuth(space);
     await putSpaceAuth(store, auth); // strips the $SYS seed at rest, but leaves the in-memory `auth` intact …
-    await provisionMembershipCreds(auth, cotalRoot()); // … so the observer can still be minted here (fresh-space only)
+    await provisionMembershipCreds(auth, cotalRoot(), space); // … so the observer can still be minted here (fresh-space only)
     // A fresh space's $SYS material was just minted from the seed that only exists in this branch, so
     // the ASK is already satisfied, so say so rather than rotating a one-second-old account, and never
     // report a rotation that did not happen.
@@ -2725,7 +2730,7 @@ async function authSetup(
     console.log(c.dim("  NOTE: full backups taken before this rotation can no longer be restored (they are bound to the retired trust chain) - take a fresh `cotal backup` once the mesh is up."));
   }
   // The DATA half of the membership bundle, on EVERY path — see healMembershipDataCreds.
-  await healMembershipDataCreds(auth, cotalRoot());
+  await healMembershipDataCreds(auth, cotalRoot(), space);
   // The $SYS creds must be signed by the system account THIS boot is about to put in `server.conf`.
   // A rotation that committed the trust record and then died leaves them stale, unexpired, and
   // broker-dead and, crash-before-either-write, stale in a way that no comparison between the two
@@ -2738,7 +2743,7 @@ async function authSetup(
   // same pair, so booting here would silently downgrade revocation to deny-new for the life of the
   // mesh. The repo's posture is to throw rather than degrade, and the recovery is one command that
   // this message names.
-  const stale = staleSystemCreds(cotalRoot(), auth.sys.pub);
+  const stale = staleSystemCreds(cotalRoot(), auth.sys.pub, space);
   if (stale.length)
     throw new Error(
       `${stale.map((x) => `${x.file} (signed by ${x.iss ? `${x.iss.slice(0, 12)}…` : "an unreadable issuer"})`).join(", ")} ` +
@@ -2878,18 +2883,26 @@ async function assertRootBrokerStopped(root: string): Promise<void> {
  *  its own error text — advice that could not succeed. Healing here fixes both spellings at once:
  *  the ordinary `up` repairs the data half with no rotation at all, and a rotation now repairs it
  *  too, because this runs after both branches converge. */
-async function healMembershipDataCreds(auth: SpaceAuth, root: string): Promise<void> {
+async function healMembershipDataCreds(auth: SpaceAuth, root: string, space: string): Promise<void> {
   try {
     const store = workspaceSecretStore(root);
+    // THE RESOLVERS, not the bare kinds (P7 §2 rule 1). Both reads below are absent-means-MINT, which
+    // is precisely why the location must be resolved through the choke point: a canonical read on a
+    // root whose material is still flat answers "absent" and mints a SECOND live cred beside the one
+    // the running daemons hold. `up` is a workstation composition by construction, so the resolver
+    // gets the FS arm and moves the material on this first touch.
+    const composition = { injected: false as const, root };
+    const rwKey = membershipRwCredsKey(space, composition);
     const wrote: string[] = [];
-    if ((await store.get(MEMBERSHIP_RW_CREDS_KEY)) === undefined) {
-      await store.put(MEMBERSHIP_RW_CREDS_KEY, await mintCreds(auth, newIdentity(), "membership-rw"));
-      wrote.push(MEMBERSHIP_RW_CREDS_KEY);
+    if ((await store.get(rwKey)) === undefined) {
+      await store.put(rwKey, await mintCreds(auth, newIdentity(), "membership-rw"));
+      wrote.push(MEMBERSHIP_RW_CREDS_KIND); // the KIND is what an operator reads, never the segmented key
     }
-    if (!existsSync(cotalPath("membership.json"))) {
-      mkSecretDir(cotalPath()); // harden .cotal/ before the file lands, as the fresh path does
-      writeSecretFile(cotalPath("membership.json"), JSON.stringify({ accountId: auth.account.pub }));
-      wrote.push("membership.json");
+    const configPath = membershipConfigPath(root, space);
+    if (!existsSync(configPath)) {
+      mkSecretDir(dirname(configPath)); // harden the per-space dir before the file lands, as the fresh path does
+      writeSecretFile(configPath, JSON.stringify({ accountId: auth.account.pub }));
+      wrote.push(MEMBERSHIP_CONFIG_KIND);
     }
     if (wrote.length)
       console.log(c.dim(`• membership: provisioned ${wrote.join(" + ")} - the data-account half needs no system-account rotation`));
@@ -2900,7 +2913,7 @@ async function healMembershipDataCreds(auth: SpaceAuth, root: string): Promise<v
   }
 }
 
-async function provisionMembershipCreds(auth: SpaceAuth, root: string): Promise<void> {
+async function provisionMembershipCreds(auth: SpaceAuth, root: string, space: string): Promise<void> {
   try {
     const observer = await mintMembershipObserverCreds(auth, newIdentity());
     const rw = await mintCreds(auth, newIdentity(), "membership-rw");
@@ -2909,11 +2922,19 @@ async function provisionMembershipCreds(auth: SpaceAuth, root: string): Promise<
     // close a revoked/removed principal's live connections. A space without it degrades to
     // deny-new-only (durable reauth) — surfaced loudly by the removal path, never silent.
     const evictor = await mintConnectionEvictorCreds(auth, newIdentity());
-    mkSecretDir(cotalPath()); // harden .cotal/ before the creds land (born under a private ACL, no race)
-    writeSecretFile(cotalPath(SYSTEM_CREDS_FILES[0]), observer);
-    await workspaceSecretStore(root).put(MEMBERSHIP_RW_CREDS_KEY, rw); // migrated kind: through the seam (0600 FS put)
-    writeSecretFile(cotalPath(SYSTEM_CREDS_FILES[1]), evictor);
-    writeSecretFile(cotalPath("membership.json"), JSON.stringify({ accountId: auth.account.pub }));
+    // All four land through the per-kind resolvers (P7 §2 rule 1), and all four through the store's
+    // `put`, which is the same `mkSecretDir` + atomic write the raw `writeSecretFile` did — the
+    // difference being that it hardens the PER-SPACE dir the material now lives in rather than
+    // `.cotal/` itself. This is the fresh-space branch, so nothing is there to migrate; it calls the
+    // resolvers anyway because a kind with two write paths is a kind that grows two layouts.
+    const composition = { injected: false as const, root };
+    const store = workspaceSecretStore(root);
+    await store.put(membershipObserverCredsKey(space, composition), observer);
+    await store.put(membershipRwCredsKey(space, composition), rw);
+    await store.put(connectionEvictorCredsKey(space, composition), evictor);
+    const configPath = membershipConfigPath(root, space);
+    mkSecretDir(dirname(configPath));
+    writeSecretFile(configPath, JSON.stringify({ accountId: auth.account.pub }));
   } catch (e) {
     console.error(c.dim(`• broker-sourced membership not provisioned: ${(e as Error).message}`));
   }

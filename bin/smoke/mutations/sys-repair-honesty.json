@@ -1,0 +1,51 @@
+{
+  "suite": "implementations/delivery/smoke/sys-repair-honesty.smoke.ts",
+  "guard": "the $SYS repair advice instructs exactly when the guard would permit the command it names",
+  "command": "pnpm smoke:sys-repair-honesty",
+  "completionMarker": "SYS-REPAIR-HONESTY SMOKE",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/sys-repair-honesty.json",
+  "why": [
+    "The delivery daemon told an operator whose observer cred was missing to run `cotal down` then",
+    "`cotal up --rotate-sys`. On a root hosting several spaces both verbs are broker-wide and",
+    "assertSingleSpaceBroker turns them away - advice that cannot succeed, reached on a real root.",
+    "The fix ASKS THE GUARD rather than counting tenants, so the two can never disagree; the corrupt",
+    "inventory root is what separates the two, because its readable tenant count is one and only the",
+    "guard (which fails closed on unreadable records) refuses. The property is a biconditional, so",
+    "the single-tenant arm has to stay instructive: a fix that simply stops naming commands is also",
+    "wrong, and mutation 4 is the arm that says so."
+  ],
+  "mutations": [
+    {
+      "name": "the guard's refusal is swallowed, restoring the advice that cannot succeed",
+      "file": "implementations/delivery/src/sys-creds.ts",
+      "find": "  } catch (e) {\n    return (e as Error).message;\n  }\n}",
+      "replace": "  } catch {\n    return undefined;\n  }\n}",
+      "expectRed": "the two root: the guard REFUSES and the advice does not instruct",
+      "cell": "a multi-tenant root is not handed a command that its own guard refuses"
+    },
+    {
+      "name": "the fail-closed corrupt-inventory refusal is read as permission, as a tenant COUNT would",
+      "file": "implementations/delivery/src/sys-creds.ts",
+      "find": "    return (e as Error).message;",
+      "replace": "    const why = (e as Error).message;\n    return why.includes(\"not fully readable\") ? undefined : why;",
+      "expectRed": "the corrupt root: the guard REFUSES and the advice does not instruct",
+      "cell": "the advice consults the guard itself, not a re-derived tenant count that reads \"one\" here"
+    },
+    {
+      "name": "the advice paraphrases the refusal instead of quoting it",
+      "file": "implementations/delivery/src/sys-creds.ts",
+      "find": "    `${refusal}. There is no other command that mints ${named}: the $SYS signing seed is discarded at provisioning, ` +",
+      "replace": "    `this root hosts more than one space, so the rotation would refuse. There is no other command that mints ${named}: the $SYS signing seed is discarded at provisioning, ` +",
+      "expectRed": "the advice quotes the guard's reasoning verbatim, so the two can never disagree",
+      "cell": "the operator reads the guard's own words, so a future refusal reason cannot go unreported"
+    },
+    {
+      "name": "the healthy root stops naming its command too, making the property one-sided",
+      "file": "implementations/delivery/src/sys-creds.ts",
+      "find": "  if (refusal === undefined) return \"re-mint it with `cotal down` then `cotal up --rotate-sys`\";",
+      "replace": "  if (refusal === undefined) return \"re-mint the $SYS pair at the next system-account rotation\";",
+      "expectRed": "the solo root: the guard PERMITS and the advice instructs",
+      "cell": "the single-tenant root keeps its real command - silence everywhere is not the fix"
+    }
+  ]
+}

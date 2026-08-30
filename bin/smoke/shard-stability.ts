@@ -28,9 +28,11 @@
  *   disagreement with the head topology can be caught and refused; DO NOT PASS IT from a
  *   gate. Hardcoding it at the call site restores the coincidence-coupling this tool exists
  *   to remove and permanently silences the mismatch abort below.
- * Run from inside a worktree of the repo. Exits 1 if any pre-existing suite changes shard.
+ * Run from inside a worktree of the repo. Exits 1 if any pre-existing suite changes shard,
+ * and likewise when a NEW entry's comment claims "Appended" while the entry sits before a
+ * pre-existing suite: the claim sentence is validated against position instead of trusted (#1011).
  *
- * CONTROLS BUILT IN, because a bare zero is not evidence. All sixteen run on every invocation:
+ * CONTROLS BUILT IN, because a bare zero is not evidence. All nineteen run on every invocation:
  *   - a forced mid-file insert must report non-zero (the instrument responds at all)
  *   - identity (base vs base) must report 0
  *   - an unchanged 20-item registry under 4 -> 5 shards must move 16 items
@@ -47,6 +49,9 @@
  *   - duplicate step IDs declared after another step key must be refused
  *   - duplicate step IDs declared as the first step key must also be refused
  *   - the complete head workflow must parse under the next shard count and still refuse both duplicates
+ *   - a NEW entry claiming "Appended" while inserted mid-file must be named as a violation
+ *   - the same claim on a true tail append must report nothing
+ *   - "Appended" claims on PRE-EXISTING entries must be ignored (history is not re-graded)
  * Any failed control ABORTS with exit 2 rather than emitting a verdict.
  *
  * A third line once sat here claiming "the known production re-shard 7837b64c->d1aeafc3
@@ -311,20 +316,23 @@ if (headCount !== declaredHeadCount) {
 }
 console.log(`shard counts ${baseCount} -> ${headCount}, read from ci.yml at ${base.slice(0, 8)} and ${head.slice(0, 8)}`);
 
-const read = (sha: string): string[] => {
+const readRaw = (sha: string): string => {
   // EXIT 2, NOT 1, when the input cannot be read. Exit 1 means "re-shard detected";
   // a bad sha must not be indistinguishable from a real defect, or a CI job wiring
   // this in reports a typo as a production finding. The bogus-sha control once returned
   // exit 1 where the README promised 2.
-  let raw: string;
   try {
-    raw = execFileSync("git", ["--no-replace-objects", "show", `${sha}:bin/smoke/ci-suites.txt`], {
+    return execFileSync("git", ["--no-replace-objects", "show", `${sha}:bin/smoke/ci-suites.txt`], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch {
     verdict("ABORT", `cannot read bin/smoke/ci-suites.txt at '${sha}' (bad sha, or not a worktree of this repo)`, 2);
   }
+};
+
+const read = (sha: string): string[] => {
+  const raw = readRaw(sha);
   const list = raw
     .split("\n")
     .map((l) => l.trim())
@@ -344,6 +352,31 @@ const shardOf = (list: string[], count: number) => {
 const moved = (a: string[], b: string[], aCount: number, bCount: number): string[] => {
   const sa = shardOf(a, aCount), sb = shardOf(b, bCount);
   return [...sa.keys()].filter((suite) => sb.has(suite) && sa.get(suite) !== sb.get(suite));
+};
+
+// #1011: every ci-suites.txt entry ends its comment with the same sentence, "Appended;
+// shard assignments unchanged." That sentence is both the rule and the claim, and nothing
+// checked the claim against the entry's POSITION: a new entry inserted mid-file carried it
+// verbatim while re-sharding a third of the file. Validate the sentence instead of trusting
+// it. A NEW entry (absent at base) whose comment block claims "Appended" must sit after
+// every pre-existing suite. Claims on pre-existing entries are history and are not re-graded.
+const appendedClaimViolations = (baseList: string[], headRaw: string): string[] => {
+  const baseSet = new Set(baseList);
+  const entries: Array<{ name: string; line: number; comment: string }> = [];
+  let pending: string[] = [];
+  headRaw.split("\n").forEach((line, index) => {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("#")) { pending.push(trimmed); return; }
+    if (trimmed.length === 0) { pending = []; return; }
+    entries.push({ name: trimmed, line: index + 1, comment: pending.join("\n") });
+    pending = [];
+  });
+  let lastPre = -1;
+  entries.forEach((entry, position) => { if (baseSet.has(entry.name)) lastPre = position; });
+  return entries
+    .filter((entry, position) =>
+      !baseSet.has(entry.name) && position < lastPre && /\bAppended\b/i.test(entry.comment))
+    .map((entry) => `${entry.name} (line ${entry.line})`);
 };
 
 const replaceRefRuntimeControl = (): boolean => {
@@ -613,6 +646,14 @@ const completeTopologyDuplicatesRefused =
   completeTopologyMappedId.injected && completeTopologyMappedId.count === null &&
   completeTopologyLeadingId.injected && completeTopologyLeadingId.count === null;
 const replaceRefRefused = replaceRefRuntimeControl();
+const claimControlBase = ["smoke:a", "smoke:b", "smoke:c"];
+const claimSentence = "# Appended; shard assignments unchanged.";
+const claimMidFile = appendedClaimViolations(claimControlBase,
+  `smoke:a\n\n${claimSentence}\nsmoke:NEW-CONTROL\n\nsmoke:b\nsmoke:c\n`);
+const claimTail = appendedClaimViolations(claimControlBase,
+  `smoke:a\nsmoke:b\nsmoke:c\n\n${claimSentence}\nsmoke:NEW-CONTROL\n`);
+const claimHistorical = appendedClaimViolations(claimControlBase,
+  `${claimSentence}\nsmoke:a\n${claimSentence}\nsmoke:b\n${claimSentence}\nsmoke:c\n`);
 console.log(`CONTROL forced mid-file insert -> ${forced.length} moved  (must be > 0)`);
 console.log(`CONTROL identity               -> ${identity.length} moved  (must be 0)`);
 console.log(`CONTROL shard count 4 -> 5     -> ${countIncrease.length} moved  (must be 16)`);
@@ -629,6 +670,9 @@ console.log(`CONTROL Git replacement ref     -> ${replaceRefRefused ? "refused" 
 console.log(`CONTROL duplicate mapped step id -> ${duplicateMappedIdControl.injected ? duplicateMappedIdControl.count ?? "refused" : "unreadable"}       (must be refused)`);
 console.log(`CONTROL duplicate leading step id -> ${duplicateLeadingIdControl.injected ? duplicateLeadingIdControl.count ?? "refused" : "unreadable"}       (must be refused)`);
 console.log(`CONTROL complete workflow ${headCount} -> ${headCount + 1} -> ${completeTopologyCount ?? "unreadable"} shards, duplicate ids ${completeTopologyDuplicatesRefused ? "refused" : "accepted"}       (must be ${headCount + 1}, refused)`);
+console.log(`CONTROL mid-file "Appended" claim -> ${claimMidFile.length} named  (must be 1)`);
+console.log(`CONTROL tail "Appended" claim     -> ${claimTail.length} named  (must be 0)`);
+console.log(`CONTROL historical claims         -> ${claimHistorical.length} named  (must be 0)`);
 if (
   forced.length === 0 || identity.length !== 0 || countIncrease.length !== 16 ||
   countDecrease.length !== 16 || commentShadowCount !== 4 ||
@@ -636,21 +680,32 @@ if (
   conditionalJobCount !== null || conditionalStepCount !== null || unguardedRunnerCount !== null || !replaceRefRefused ||
   !duplicateMappedIdControl.injected || duplicateMappedIdControl.count !== null ||
   !duplicateLeadingIdControl.injected || duplicateLeadingIdControl.count !== null ||
-  completeTopologyCount !== headCount + 1 || !completeTopologyDuplicatesRefused
+  completeTopologyCount !== headCount + 1 || !completeTopologyDuplicatesRefused ||
+  claimMidFile.length !== 1 || claimTail.length !== 0 || claimHistorical.length !== 0
 ) {
   verdict("ABORT", "controls failed, this run cannot be trusted", 2);
 }
 
 const added = B.filter((suite) => !A.includes(suite));
 const removed = A.filter((suite) => !B.includes(suite));
+const claimViolations = appendedClaimViolations(A, readRaw(head));
 console.log(`\n${base.slice(0, 8)} -> ${head.slice(0, 8)}  @${baseCount}->${headCount} shards`);
 console.log(`  suites: ${A.length} -> ${B.length} · added ${added.length} · removed ${removed.length}`);
 console.log(`  pre-existing suites CHANGING SHARD: ${changed.length} of ${A.length}`);
 if (changed.length > 0) {
   console.log(`  first few: ${changed.slice(0, 5).join(", ")}`);
+}
+if (claimViolations.length > 0) {
+  console.log(`  NEW entries claiming "Appended" while mid-file: ${claimViolations.join(", ")}`);
+}
+if (changed.length > 0 || claimViolations.length > 0) {
   const remedy = baseCount === headCount
     ? "Append new suites at the END of ci-suites.txt."
     : `The shard matrix changed ${baseCount} -> ${headCount}; review every reassignment as deliberate.`;
-  verdict("RESHARD", `RE-SHARD DETECTED. ${remedy}`, 1);
+  const claimNote = claimViolations.length > 0
+    ? ` FALSE "Appended" CLAIM on ${claimViolations.join(", ")}: the sentence is validated against position (#1011); a new entry carrying it must sit after every pre-existing suite.`
+    : "";
+  const headline = changed.length > 0 ? `RE-SHARD DETECTED. ${remedy}` : "NO pre-existing suite moved, but the registry lies about how it grew.";
+  verdict("RESHARD", `${headline}${claimNote}`, 1);
 }
-verdict("STABLE", "STABLE - no pre-existing suite changes runner.", 0);
+verdict("STABLE", "STABLE - no pre-existing suite changes runner, no false append claims.", 0);

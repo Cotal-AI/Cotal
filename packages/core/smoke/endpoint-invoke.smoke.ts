@@ -146,5 +146,19 @@ console.log("describe REQUEST-BINDING (freelance HIGH #1):");
   c("the honest reply alone resolves with its attributed responder + answer", responder.epoch === HONEST.epoch && a.descriptor.endpoint === ENDPOINT, { responder, a });
 }
 
+// 6) Core NATS drops a request published before a responder subscribes. The describe bootstrap is
+//    read-only, so it re-publishes the SAME bound request inside the ORIGINAL deadline. Model that
+//    registration gap exactly: the first publish has nobody behind it; the second reaches the newly
+//    available responder. A one-shot describe waits out the deadline and fails this cell.
+{
+  let publishes = 0;
+  const nc = fakeNc((req) => ++publishes === 1 ? [] : [reply(HONEST, req.nonce, req.id)]);
+  let responder: { instanceId: string; epoch: number } | undefined;
+  let error: unknown;
+  try { ({ responder } = await describeEndpoint(nc, SPACE, ENDPOINT, CALLER, { deadlineMs: 800 })); }
+  catch (e) { error = e; }
+  c("an unanswered describe is re-published within its original deadline when the responder registers after the first request", publishes === 2 && responder?.instanceId === HONEST.instanceId, { publishes, responder, error });
+}
+
 console.log(`\n${fail === 0 ? "ENDPOINT-INVOKE BINDING SMOKE OK ✅" : "ENDPOINT-INVOKE BINDING SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);

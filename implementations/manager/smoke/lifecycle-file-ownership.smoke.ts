@@ -43,7 +43,7 @@ import {
   type AgentHandle,
   type Presence,
 } from "@cotal-ai/core";
-import { agentCredsKey, agentSecretFilePaths, workspaceSecretStore } from "@cotal-ai/workspace";
+import { agentCredsDir, agentCredsKey, agentSecretFilePaths, spaceSegment, workspaceSecretStore } from "@cotal-ai/workspace";
 import { bootBroker } from "./_boot-broker.js";
 
 let failures = 0;
@@ -93,7 +93,12 @@ const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status:
 const con: Connector = { kind: "connector", name: "smoke-lf", requires: ["node"], buildLaunch: () => ({ command: "true", args: [], env: {} }) };
 registry.register(con);
 
-const credsDir = join(workspaceRoot, ".cotal", "auth", "creds");
+// This space's agent-secret segment (P1) and the store-key prefix that addresses it — the manager
+// under test writes both through the same pair, so a name-disjointness claim proved here is a claim
+// about the layout the manager actually uses.
+const credsDir = agentCredsDir(workspaceRoot, space);
+const credsKeyPrefix = `auth/creds/${spaceSegment(space)}`;
+const composition = { injected: false as const, root: workspaceRoot };
 const store = workspaceSecretStore(workspaceRoot);
 
 try {
@@ -116,11 +121,11 @@ try {
   const legacyOperatorCred = join(credsDir, "worker.creds");
   const collidingAlias = `worker-${uidA}`; // a standing NAME that spells A's old flattened base
   const collidingAliasCred = join(credsDir, `${collidingAlias}.creds`);
-  await store.put(`auth/creds/worker.${uidB}.creds`, "SUCCESSOR-B-CREDENTIAL");
+  await store.put(`${credsKeyPrefix}/worker.${uidB}.creds`, "SUCCESSOR-B-CREDENTIAL");
   writeFileSync(credsB, "SUCCESSOR-B-CREDENTIAL");
-  await store.put(agentCredsKey("worker"), "OPERATOR-STANDING-CREDENTIAL");
+  await store.put(agentCredsKey(space, "worker", composition), "OPERATOR-STANDING-CREDENTIAL");
   writeFileSync(legacyOperatorCred, "OPERATOR-STANDING-CREDENTIAL");
-  await store.put(agentCredsKey(collidingAlias), "COLLIDING-ALIAS-STANDING-CREDENTIAL");
+  await store.put(agentCredsKey(space, collidingAlias, composition), "COLLIDING-ALIAS-STANDING-CREDENTIAL");
   writeFileSync(collidingAliasCred, "COLLIDING-ALIAS-STANDING-CREDENTIAL");
   check("lifecycle path is DISJOINT from the colliding standing alias's path (grammar, not entropy)", credsA !== collidingAliasCred, { credsA, collidingAliasCred });
 
@@ -134,9 +139,9 @@ try {
 
   check("A's own creds file was torn down", !existsSync(credsA));
   check("SUCCESSOR B's creds file SURVIVED the replayed A teardown", existsSync(credsB) === true);
-  check("SUCCESSOR B's store row SURVIVED", (await store.get(`auth/creds/worker.${uidB}.creds`)) === "SUCCESSOR-B-CREDENTIAL");
-  check("seeded name-keyed OPERATOR cred SURVIVED (uid teardown holds no record of it)", existsSync(legacyOperatorCred) && (await store.get(agentCredsKey("worker"))) === "OPERATOR-STANDING-CREDENTIAL", { file: existsSync(legacyOperatorCred) });
-  check("STANDING alias `worker-<uidA>` SURVIVED A's teardown (file + store row)", existsSync(collidingAliasCred) && (await store.get(agentCredsKey(collidingAlias))) === "COLLIDING-ALIAS-STANDING-CREDENTIAL", { file: existsSync(collidingAliasCred) });
+  check("SUCCESSOR B's store row SURVIVED", (await store.get(`${credsKeyPrefix}/worker.${uidB}.creds`)) === "SUCCESSOR-B-CREDENTIAL");
+  check("seeded name-keyed OPERATOR cred SURVIVED (uid teardown holds no record of it)", existsSync(legacyOperatorCred) && (await store.get(agentCredsKey(space, "worker", composition))) === "OPERATOR-STANDING-CREDENTIAL", { file: existsSync(legacyOperatorCred) });
+  check("STANDING alias `worker-<uidA>` SURVIVED A's teardown (file + store row)", existsSync(collidingAliasCred) && (await store.get(agentCredsKey(space, collidingAlias, composition))) === "COLLIDING-ALIAS-STANDING-CREDENTIAL", { file: existsSync(collidingAliasCred) });
 
   // Replay a THIRD time with NO recorded paths — the uid-DERIVE fallback (a crash lost the record)
   // must address only `worker.<uidA>.*`, never the standing `worker-<uidA>` family: the reverse
@@ -147,7 +152,7 @@ try {
     name: "worker",
     lifecycleUid: uidA!,
   });
-  check("uid-DERIVE fallback replay ALSO leaves the colliding standing alias intact", existsSync(collidingAliasCred) && (await store.get(agentCredsKey(collidingAlias))) === "COLLIDING-ALIAS-STANDING-CREDENTIAL");
+  check("uid-DERIVE fallback replay ALSO leaves the colliding standing alias intact", existsSync(collidingAliasCred) && (await store.get(agentCredsKey(space, collidingAlias, composition))) === "COLLIDING-ALIAS-STANDING-CREDENTIAL");
 
   // ── #4: roster-consulting allocation, ORDERED (A4) ─────────────────────────
   // A LIVE unmanaged peer already holds "solo" → the next spawn of that persona must auto-number.
@@ -179,7 +184,7 @@ try {
   check("an OFFLINE same-name row does NOT block reuse (reuse stays reuse)", spawnReuse.ok && (spawnReuse.data as { name: string }).name === "reuse", spawnReuse.ok && (spawnReuse.data as { name: string }).name);
 
   // Sanity: the legacy name-keyed builders still resolve for standing operator secrets.
-  check("legacy name-keyed path builder is intact for operator secrets", basename(agentSecretFilePaths(workspaceRoot, "worker").creds) === "worker.creds");
+  check("legacy name-keyed path builder is intact for operator secrets", basename(agentSecretFilePaths(workspaceRoot, space, "worker").creds) === "worker.creds");
 } finally {
   await stopBroker();
   rmSync(workspaceRoot, { recursive: true, force: true });
