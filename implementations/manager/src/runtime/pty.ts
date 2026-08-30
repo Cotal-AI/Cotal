@@ -2,6 +2,7 @@ import * as pty from "@lydell/node-pty";
 import Headless from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import type { AgentHandle, AttachSession, LaunchSpec, Runtime } from "@cotal-ai/core";
+import { processStartToken, reapProcess } from "@cotal-ai/workspace";
 import { preparePtyLaunch } from "./windows-launch.js";
 
 const DEFAULT_COLS = 120;
@@ -30,6 +31,21 @@ const GRACE_MS = 3_000;
 export class PtyRuntime implements Runtime {
   readonly kind = "pty" as const;
 
+  async reap(raw: string): Promise<void> {
+    let locator: { v: 1; kind: "pty"; pid: number; startToken: string; killScope: "process-group" };
+    try {
+      locator = JSON.parse(raw) as typeof locator;
+    } catch {
+      throw new Error("pty runtime: invalid durable locator JSON");
+    }
+    if (
+      locator?.v !== 1 || locator.kind !== "pty" || !Number.isInteger(locator.pid) || locator.pid <= 0 ||
+      typeof locator.startToken !== "string" || locator.startToken.length === 0 ||
+      locator.killScope !== "process-group" || Object.keys(locator).length !== 5
+    ) throw new Error("pty runtime: invalid durable locator");
+    await reapProcess(locator);
+  }
+
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     // POSIX: passthrough (node-pty's exec resolves the bare name). win32: resolve the EXACT file and
     // adapt — a `.cmd`/`.bat` shim runs through cmd.exe with a pre-escaped command line. Resolve
@@ -47,6 +63,16 @@ export class PtyRuntime implements Runtime {
       // PATH) instead of silently inheriting the manager's env.
       env: spec.env ?? {},
     });
+
+    let locator: string | undefined;
+    if (process.platform !== "win32") {
+      const startToken = processStartToken(proc.pid);
+      if (!startToken) {
+        try { proc.kill("SIGKILL"); } catch { /* fail closed after best-effort rollback */ }
+        throw new Error(`pty runtime: cannot capture a stable start token for child pid ${proc.pid}`);
+      }
+      locator = JSON.stringify({ v: 1, kind: "pty", pid: proc.pid, startToken, killScope: "process-group" });
+    }
 
     const dataSubs = new Set<(c: Buffer) => void>();
     const exitSubs = new Set<() => void>();
@@ -105,6 +131,7 @@ export class PtyRuntime implements Runtime {
       name,
       kind: "pty",
       pid: proc.pid,
+      locator,
       status: () => (alive ? "running" : "exited"),
       exitInfo: () => exit,
       stop: (opts) => {

@@ -84,6 +84,13 @@ export class OrcaRuntime implements Runtime {
   readonly kind = "orca" as const;
   readonly #worktrees = new Map<string, orca.OrcaWorktree>();
 
+  async reap(raw: string): Promise<void> {
+    const ref = parseLocator(raw);
+    const terminal = { handle: ref.terminalId, ptyId: ref.terminalId };
+    orca.closeManagedTerminal(terminal);
+    await orca.waitManagedTerminalExit(terminal);
+  }
+
   #cacheWorktree(cwd: string, worktree: orca.OrcaWorktree): void {
     this.#worktrees.delete(cwd);
     this.#worktrees.set(cwd, worktree);
@@ -127,11 +134,17 @@ export class OrcaRuntime implements Runtime {
       terminal = orca.currentTerminal(terminal) ?? terminal;
       return terminal;
     };
+    terminal = current();
+    if (!terminal.ptyId) {
+      try { orca.closeManagedTerminal(terminal); } finally { cleanupLauncher(launcher); }
+      throw new Error("orca runtime: terminal has no stable pty id for durable supervision");
+    }
     if (spec.confirm) scheduleConfirm(() => current().handle);
 
     return {
       name,
       kind: "orca",
+      locator: JSON.stringify({ v: 1, kind: "orca", worktreeId: worktree.id, terminalId: terminal.ptyId }),
       status: () => (orca.terminalAlive(terminal) ? "running" : "exited"),
       stop: (opts) => {
         if (opts?.graceful === false) {
@@ -175,6 +188,16 @@ export class OrcaRuntime implements Runtime {
       },
     };
   }
+}
+
+function parseLocator(raw: string): { v: 1; kind: "orca"; worktreeId: string; terminalId: string } {
+  let ref: unknown;
+  try { ref = JSON.parse(raw); } catch { throw new Error("orca runtime: invalid durable locator JSON"); }
+  if (!ref || typeof ref !== "object") throw new Error("orca runtime: invalid durable locator");
+  const r = ref as Record<string, unknown>;
+  if (r.v !== 1 || r.kind !== "orca" || typeof r.worktreeId !== "string" || !r.worktreeId || typeof r.terminalId !== "string" || !r.terminalId || Object.keys(r).length !== 4)
+    throw new Error("orca runtime: invalid durable locator");
+  return r as { v: 1; kind: "orca"; worktreeId: string; terminalId: string };
 }
 
 /** Self-registering runtime provider — `import "@cotal-ai/orca"` makes the manager's `orca`

@@ -38,6 +38,12 @@ export class TmuxRuntime implements Runtime {
 
   constructor(private readonly session: string) {}
 
+  async reap(raw: string): Promise<void> {
+    const ref = parseLocator(raw);
+    tmux.closeWindow(ref.windowId);
+    await tmux.waitForPaneExit(ref.paneId);
+  }
+
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     if (!/^[A-Za-z0-9_.-]+$/.test(name))
       throw new Error(
@@ -60,6 +66,7 @@ export class TmuxRuntime implements Runtime {
     return {
       name,
       kind: "tmux",
+      locator: JSON.stringify({ v: 1, kind: "tmux", session: this.session, windowId, paneId }),
       status: () => {
         try {
           return tmux.paneState(paneId);
@@ -100,6 +107,16 @@ export class TmuxRuntime implements Runtime {
       },
     };
   }
+}
+
+function parseLocator(raw: string): { v: 1; kind: "tmux"; session: string; windowId: string; paneId: string } {
+  let ref: unknown;
+  try { ref = JSON.parse(raw); } catch { throw new Error("tmux runtime: invalid durable locator JSON"); }
+  if (!ref || typeof ref !== "object") throw new Error("tmux runtime: invalid durable locator");
+  const r = ref as Record<string, unknown>;
+  if (r.v !== 1 || r.kind !== "tmux" || typeof r.session !== "string" || !r.session || typeof r.windowId !== "string" || !/^@[0-9]+$/.test(r.windowId) || typeof r.paneId !== "string" || !/^%[0-9]+$/.test(r.paneId) || Object.keys(r).length !== 5)
+    throw new Error("tmux runtime: invalid durable locator");
+  return r as { v: 1; kind: "tmux"; session: string; windowId: string; paneId: string };
 }
 
 /** Self-registering runtime provider — `import "@cotal-ai/tmux"` makes the manager's
