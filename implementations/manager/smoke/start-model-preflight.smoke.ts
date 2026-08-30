@@ -50,7 +50,9 @@ import { opencodeConnector } from "@cotal-ai/connector-opencode";
 import { hermesConnector } from "@cotal-ai/connector-hermes";
 
 let failures = 0;
+let checks = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
+  checks++;
   console.log(`${cond ? "✓" : "✗"} ${label}${cond ? "" : ` — ${extra ?? ""}`}`);
   if (!cond) failures++;
 }
@@ -494,4 +496,5 @@ registry.register(recNoResumeCon);
 }
 
 console.log(`\nSTART-MODEL/PREFLIGHT SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);
+if (failures === 0) console.log(`${checks} checks passed`);
 process.exit(failures === 0 ? 0 : 1);
