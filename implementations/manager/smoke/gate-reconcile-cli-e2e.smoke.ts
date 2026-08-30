@@ -244,7 +244,18 @@ try {
     let ready = false;
     for (let i = 0; i < 120; i++) { if (/delivery daemon up/.test(daemonLog)) { ready = true; break; } await wait(250); }
     check("POISONED LEASE: correctly-rooted daemon acquires immediately", ready, daemonLog.slice(-1200));
-    if (!ready) throw new Error("the healthy delivery daemon did not acquire after the wrong-root refusal");
+    if (!ready) {
+      if (poisonDaemon.exitCode === null && poisonDaemon.signalCode === null) { poisonDaemon.kill("SIGKILL"); await awaitExit(poisonDaemon); }
+      await wait(35_000);
+      daemon = spawn("npx", ["tsx", join(REPO, "bin", "cotal.ts"), "deliver", "--space", space, "--server", SERVERS, "--dev-mint"], {
+        cwd: ROOT, stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, COTAL_SERVER: "", COTAL_SERVERS: "", COTAL_CREDS: "", NATS_URL: "" },
+      });
+      daemonLog = "";
+      daemon.stdout?.on("data", (b) => { daemonLog += String(b); });
+      daemon.stderr?.on("data", (b) => { daemonLog += String(b); });
+      for (let i = 0; i < 120; i++) { if (/delivery daemon up/.test(daemonLog)) { ready = true; break; } await wait(250); }
+    }
 
     const { conn } = await buildResidue({ holderLive: true });
     await conn!.close();
