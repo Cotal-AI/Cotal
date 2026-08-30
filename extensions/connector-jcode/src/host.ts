@@ -40,13 +40,14 @@ export const PERMANENT_BRIDGE_RECOVERY_CODES = new Set([
   "unknown_session",
   "unsupported_version",
 ]);
+export const PERMANENT_BRIDGE_CONNECT_CAUSE_CODES = new Set(["EACCES"]);
 
 /** Recovery retries availability races, not a refusal that another attempt cannot change. */
 export function permanentBridgeRecoveryFailure(error: unknown): error is HarnessError {
   if (!(error instanceof HarnessError)) return false;
   if (PERMANENT_BRIDGE_RECOVERY_CODES.has(error.code)) return true;
   if (error.code === "connect_failed")
-    return (error.cause as NodeJS.ErrnoException | undefined)?.code === "EACCES";
+    return PERMANENT_BRIDGE_CONNECT_CAUSE_CODES.has((error.cause as NodeJS.ErrnoException | undefined)?.code ?? "");
   return false;
 }
 

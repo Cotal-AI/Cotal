@@ -25,8 +25,8 @@
     {
       "name": "M3 stop classifying connect_failed EACCES as permanent",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "    return (error.cause as NodeJS.ErrnoException | undefined)?.code === \"EACCES\";",
-      "replace": "    return false;",
+      "find": "export const PERMANENT_BRIDGE_CONNECT_CAUSE_CODES = new Set([\"EACCES\"]);",
+      "replace": "export const PERMANENT_BRIDGE_CONNECT_CAUSE_CODES = new Set([]);",
       "expectRed": "connect_failed with EACCES classifies as permanent",
       "cell": "connect_failed with EACCES classifies as permanent"
     },
