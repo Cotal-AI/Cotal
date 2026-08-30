@@ -697,3 +697,16 @@ smoke:workflow-concurrency
 # the suite. This compiler-API intersection checks every named workspace import against the package's
 # public exports. Appended so every existing shard assignment remains unchanged.
 smoke:workspace-import-exports
+
+# A denied JetStream metadata read must reject the endpoint call, never return a well-formed partial
+# result that callers mistake for genuine emptiness. A real narrowed JWT cred drives listChannels
+# through a denied CHAT STREAM.INFO, paired with an actually absent CHAT-stream control.
+# Mutation-proofed - bin/smoke/mutations/endpoint-permission-results.json. Appended so every existing
+# shard assignment remains unchanged.
+smoke:endpoint-permission-results:auth
+# A stalled presence KV-watch must mark the observer view stale rather than sweep every
+# peer offline. The endpoint cell holds the watch through a TCP proxy; the web cell drives
+# the shipped presence-view → stale-pill path. Appended so every existing shard assignment
+# remains unchanged.
+smoke:presence-watch-stall
+smoke:web-presence-view

@@ -19,7 +19,7 @@ import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import {
   EpEnvelopeError, EP_UNANSWERED, EP_UNBOUND_RESPONDER, EP_REGISTRY_READ_FAILED,
-  isReachable, parseEpSubject, epReplySubject, spacePrefix,
+  describeEndpoint, isReachable, parseEpSubject, epReplySubject, spacePrefix,
 } from "@cotal-ai/core";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { askManager, epRailFailure } from "../src/lib/control.js";
@@ -116,6 +116,19 @@ try {
   for (let i = 0; i < 50 && !up; i++) { up = await isReachable(SERVER); if (!up) await wait(100); }
   if (!up) throw new Error("broker did not come up");
   const nc = await connect({ servers: SERVER });
+  {
+    // The retry runs from a timer after the initial publish. Closing the real connection before that
+    // tick must reject the describe as a normal caller-visible failure, not escape as an uncaught
+    // ClosedConnectionError and terminate this process.
+    const closingNc = await connect({ servers: SERVER });
+    const started = Date.now();
+    const pending = describeEndpoint(closingNc, SPACE, "manager", { owner: "local", actor: "cliabc", uid: "u".repeat(26) }, { deadlineMs: 1000 });
+    setTimeout(() => { void closingNc.drain(); }, 100);
+    let e: unknown;
+    try { await pending; } catch (err) { e = err; }
+    c("live: a connection closing before the describe retry rejects cleanly instead of throwing from the timer",
+      (e as { code?: string })?.code === "unavailable" && (e as Error)?.message.includes("closed connection") && Date.now() - started < 1000, e);
+  }
   /** A describe responder for `manager` on the class rail that answers every request with `body`. */
   const serveDescribe = (body: (id: string) => Record<string, unknown>) => nc.subscribe(`${spacePrefix(SPACE)}.ep.one.manager.describe.>`, {
     callback: (err, msg) => {
