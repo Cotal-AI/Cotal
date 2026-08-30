@@ -1,0 +1,51 @@
+{
+  "suite": "packages/workspace/smoke/presence-progress.smoke.ts",
+  "guard": "a frozen working seat is distinguishable from a progressing one; heartbeat freshness is not progress",
+  "command": "pnpm smoke:presence-progress",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/workspace/smoke/mutations/presence-progress.json",
+  "completionMarker": "PRESENCE-PROGRESS SMOKE",
+  "why": [
+    "A cell that only asserts working for a working seat PASSES AGAINST THE BUG: a frozen seat",
+    "also self-reports working. The discriminating cells are frozen-vs-progressing labels and",
+    "the control that a heartbeat can be fresh while last-assistant age is stale.",
+    "",
+    "A1 treats missing observation as fresh progress, restoring the guess.",
+    "A2 prevents the stall branch from firing.",
+    "A3 changes the chosen five-minute policy to twenty minutes.",
+    "A4 flips the strict boundary so the exact five-minute point stalls."
+  ],
+  "mutations": [
+    {
+      "name": "A1 missing observation is treated as fresh progress",
+      "file": "packages/workspace/src/progress.ts",
+      "find": "  if (observation === undefined) return { kind: \"unknown\" };",
+      "replace": "  if (observation === undefined) return { kind: \"fresh\", ageMs: 0 };",
+      "expectRed": "no observation is progress unknown, not a guessed stall",
+      "cell": "no observation is progress unknown, not a guessed stall"
+    },
+    {
+      "name": "A2 stall threshold never fires, so a 25m freeze looks fresh",
+      "file": "packages/workspace/src/progress.ts",
+      "find": "  return ageMs > stallMs ? { kind: \"stalled\", ageMs } : { kind: \"fresh\", ageMs };",
+      "replace": "  return false && ageMs > stallMs ? { kind: \"stalled\", ageMs } : { kind: \"fresh\", ageMs };",
+      "expectRed": "a frozen working seat is stalled, not attested working",
+      "cell": "a frozen working seat is stalled, not attested working"
+    },
+    {
+      "name": "A3 five-minute policy drifts to twenty minutes",
+      "file": "packages/workspace/src/progress.ts",
+      "find": "export const PROGRESS_STALL_MS = 5 * 60_000;",
+      "replace": "export const PROGRESS_STALL_MS = 20 * 60_000;",
+      "expectRed": "the exported stall policy is exactly five minutes",
+      "cell": "the exported stall policy is exactly five minutes"
+    },
+    {
+      "name": "A4 exact five-minute boundary stalls instead of remaining fresh",
+      "file": "packages/workspace/src/progress.ts",
+      "find": "  return ageMs > stallMs ? { kind: \"stalled\", ageMs } : { kind: \"fresh\", ageMs };",
+      "replace": "  return ageMs >= stallMs ? { kind: \"stalled\", ageMs } : { kind: \"fresh\", ageMs };",
+      "expectRed": "the 5m policy is fresh at the exact boundary",
+      "cell": "the 5m policy is fresh at the exact boundary"
+    }
+  ]
+}

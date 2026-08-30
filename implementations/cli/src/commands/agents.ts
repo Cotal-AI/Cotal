@@ -245,7 +245,7 @@ function printAgentRow(r: AgentRow, indent = ""): void {
       : r.mesh === "offline"
         ? c.dim("mesh offline")
         : r.mesh === "working"
-          ? c.green("working")
+          ? c.green("working · progress unknown")
           : r.mesh === "waiting"
             ? c.yellow("waiting")
             : c.cyan(r.mesh);

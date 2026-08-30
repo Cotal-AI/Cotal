@@ -1,4 +1,4 @@
-import type { ParsedArgs, Presence } from "@cotal-ai/core";
+import { type ParsedArgs, type Presence } from "@cotal-ai/core";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
 import { c, statusBadge } from "../ui.js";
 

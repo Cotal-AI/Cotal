@@ -67,6 +67,8 @@
     "smoke:lang-engine": "pnpm --filter @cotal-ai/lang build:emit && tsx packages/lang/smoke/engine.smoke.ts",
     "smoke:lang-differential": "tsx packages/lang/smoke/differential.smoke.ts",
     "smoke:orientation": "tsx extensions/connector-core/smoke/orientation.smoke.ts",
+    "smoke:presence-progress": "tsx packages/workspace/smoke/presence-progress.smoke.ts",
+    "smoke:presence-render-census": "tsx packages/workspace/smoke/presence-render-census.smoke.ts",
     "smoke:docs": "tsx extensions/connector-core/smoke/docs.smoke.ts",
     "smoke:disarm-delete-timeout": "tsx packages/core/smoke/disarm-delete-timeout.smoke.ts",
     "smoke:pi": "tsx extensions/pi/pi.smoke.ts && tsx extensions/pi/pi-sdk.smoke.ts",

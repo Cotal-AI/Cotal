@@ -22,6 +22,7 @@ import {
   c,
   connectOrExit,
   localProcessPath,
+  progressSignal,
   userViewAuth,
   userViewAuthOrExit,
   type LocalProcess,
@@ -809,6 +810,13 @@ export async function web(args: ParsedArgs): Promise<void> {
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
   await ep.start();
 
+  // The dashboard does not yet have a manager/session-store observer. Carry the absence as data so
+  // both browser renderers can say so honestly without deriving progress from the heartbeat.
+  const rosterSnapshot = () => ep.getRoster().map((presence) => ({
+    ...presence,
+    progress: presence.status === "working" ? progressSignal(undefined, Date.now()) : undefined,
+  }));
+
   const clients = new Set<ServerResponse>();
   const send = (res: ServerResponse, event: string, data: unknown) =>
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -819,7 +827,7 @@ export async function web(args: ParsedArgs): Promise<void> {
   // Presence changes → push the whole roster; the client just re-renders it.
   // Trailing-edge debounce: a stall-recovery replay is one burst of N keys, and pushing
   // per key would empty-to-fill the online-only sidebar once per key. Settle first.
-  const pushRoster = debounce(() => broadcast("roster", ep.getRoster()), 150);
+  const pushRoster = debounce(() => broadcast("roster", rosterSnapshot()), 150);
   ep.on("presence", () => pushRoster());
   ep.on("presence-view", (view: { fresh: boolean; staleSince?: number }) =>
     broadcast("presence-view", view),
@@ -900,7 +908,7 @@ export async function web(args: ParsedArgs): Promise<void> {
         connection: "keep-alive",
       });
       clients.add(res);
-      send(res, "roster", ep.getRoster());
+      send(res, "roster", rosterSnapshot());
       send(res, "presence-view", ep.presenceView());
       // Seed this client's graph with the current membership snapshot (the live tap only carries
       // post-connect traffic; membership is state, so a fresh client needs it explicitly).
@@ -911,7 +919,7 @@ export async function web(args: ParsedArgs): Promise<void> {
       return;
     }
     if (path === READINESS_PATH) return json(res, { space, pid: process.pid });
-    if (path === "/api/roster") return json(res, ep.getRoster());
+    if (path === "/api/roster") return json(res, rosterSnapshot());
     if (path === "/api/membership") {
       // Authoritative who-is-subscribed (broker-sourced); {asOf, members:[{id,live,durable,observedAt}]}.
       //

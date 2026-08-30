@@ -113,7 +113,8 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   ];
   const o = buildOrientation(agentStub({ roster, unread: 3 }), cfg({ creds: "CREDS" }), [], 1);
   assert.equal(o.peers.present, 2, "self excluded from peer count");
-  assert.match(o.peers.summary, /bob\/worker \(working\)/);
+  assert.match(o.peers.summary, /bob\/worker \(working · progress unknown\)/,
+    "a textual working peer must expose that no outside progress observation exists");
   assert.ok(!o.peers.summary.includes("alice"), "self not in the peer summary");
   assert.equal(o.unread.total, 3);
 }

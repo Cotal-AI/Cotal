@@ -86,8 +86,8 @@ function AgentDetail({ agent, feed, width }: { agent: Presence; feed: FeedEntry[
         <Text>{card.kind}</Text>
       </Field>
       <Field label="status">
-        <Text color={s.color}>{s.dot + " " + s.word}</Text>
-        <Text dimColor>{"  (" + ago(ts) + " ago)"}</Text>
+        <Text color={s.color}>{s.dot + " " + s.word + (status === "working" ? " · progress unknown" : "")}</Text>
+        <Text dimColor>{"  (heartbeat " + ago(ts) + " ago)"}</Text>
       </Field>
       {activity ? (
         <Field label="activity">
