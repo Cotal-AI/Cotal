@@ -1,0 +1,28 @@
+{
+  "suite": "implementations/manager/smoke/persona-show-auth.smoke.ts",
+  "guard": "show-persona fails closed on an unparseable file before parser diagnostics can cross the manager entry",
+  "command": "pnpm smoke:manager-persona-show-auth",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/persona-show-auth.mutations.json",
+  "why": [
+    "The regression drives the real managerServiceDefs show-persona handler without starting a broker.",
+    "Its EpServeContext is constructed, while admission, path resolution, parsing, failure mapping,",
+    "and the not-found envelope all execute from implementations/manager/src/manager.ts.",
+    "",
+    "The unique code-only anchor is the parse-failure return beside loadAgentFile. Mutating it back",
+    "to a successful raw diagnostic reproduces the blocked head: the named cell sees no EpEnvelopeError",
+    "and fails. This proves the suite depends on authorization-before-diagnostic at the shipped handler.",
+    "",
+    "Not graded here: broker ACL reach and a live spawn-capable MCP call. This host forbids the lifecycle",
+    "commands needed for that path. The existing manager-service-ops suite remains the broker-backed door."
+  ],
+  "mutations": [
+    {
+      "name": "an unparseable show returns its raw parser diagnostic before authorization",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    } catch {\n      return { ok: false, error: `no persona \"${name}\"` };\n    }\n    if (!this.canReadPersona(def.owner, caller, admin)) return { ok: false, error: `no persona \"${name}\"` };",
+      "replace": "    } catch (error) {\n      return { ok: true, data: { name, error: (error as Error).message } };\n    }\n    if (!this.canReadPersona(def.owner, caller, admin)) return { ok: false, error: `no persona \"${name}\"` };",
+      "expectRed": "a foreign caller showing an ownerless broken persona gets not-found, never parser diagnostics",
+      "cell": "a foreign caller showing an ownerless broken persona gets not-found, never parser diagnostics"
+    }
+  ]
+}

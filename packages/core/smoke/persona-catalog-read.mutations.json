@@ -1,0 +1,35 @@
+{
+  "suite": "packages/core/smoke/persona-catalog-read.smoke.ts",
+  "guard": "mesh-side persona catalog details ride owner-or-admin; a foreign card is name-only",
+  "command": "./node_modules/.bin/tsx packages/core/smoke/persona-catalog-read.smoke.ts",
+  "completionMarker": "ok    alice sees",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/persona-catalog-read.mutations.json",
+  "why": [
+    "THE DEFECT IS A MISSING READ, AND THE DANGEROUS HALF OF THE READ IS OWNERSHIP.",
+    "A catalog that always attaches role/model/description would let any spawn-capable peer",
+    "read a prompt it cannot redefine. The unique code-only cell is personaCatalogReadable's",
+    "owner-or-admin predicate in packages/core/src/agent-file.ts; the manager handler calls",
+    "that function, and this suite inlines the same projection so a always-true mutation",
+    "leaks aliceTheirs.description and a never-non-admin mutation hides aliceMine.role.",
+    "No broker: the suite writes a throwaway .cotal/agents tree and grades the helpers",
+    "the manager consults. ci-suites.txt is frozen; this fixture is the proof path."
+  ],
+  "mutations": [
+    {
+      "cell": "alice sees a foreign name only — no role, model, or description leak",
+      "name": "catalog details become readable to every caller (always-true)",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "export function personaCatalogReadable(owner: string | undefined, caller: string, admin: boolean): boolean {\n  return admin || owner === caller;\n}",
+      "replace": "export function personaCatalogReadable(owner: string | undefined, caller: string, admin: boolean): boolean {\n  return true;\n}",
+      "expectRed": "alice sees a foreign name only"
+    },
+    {
+      "cell": "alice sees her own role/model/description",
+      "name": "catalog details become admin-only (owner cannot read own card)",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "export function personaCatalogReadable(owner: string | undefined, caller: string, admin: boolean): boolean {\n  return admin || owner === caller;\n}",
+      "replace": "export function personaCatalogReadable(owner: string | undefined, caller: string, admin: boolean): boolean {\n  return admin;\n}",
+      "expectRed": "alice sees her own role/model/description"
+    }
+  ]
+}
