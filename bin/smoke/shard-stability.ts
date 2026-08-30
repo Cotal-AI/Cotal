@@ -68,7 +68,6 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-// @ts-expect-error plain .mjs helper shared with the property smoke.
 import { changedSuiteIndices } from "./shard-stability.mjs";
 
 // FIRST LINE OF OUTPUT, BEFORE ANY WORK: a gate can grep for this to prove the detector

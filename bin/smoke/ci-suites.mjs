@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * The one reader of the CI suite registry: the frozen positional list in `ci-suites.txt` plus one
  * file per future suite in `ci-suites.d/`. Three things read the registry - the serial/sharded
@@ -26,7 +27,9 @@ export const CI_SUITES_DIR = fileURLToPath(new URL("./ci-suites.d", import.meta.
  * names the mistake at the point it is made; the alternative is a line that reads correct and runs
  * nothing.
  */
+/** @param {string} raw @param {string} [label] @returns {string[]} */
 export function parseCiSuites(raw, label = CI_SUITES_PATH) {
+  /** @type {string[]} */
   const out = [];
   raw.split("\n").forEach((line, i) => {
     const s = line.trim();
@@ -54,6 +57,7 @@ export function readCiSuites(path = CI_SUITES_PATH) {
 /** One suite per fragment file, sorted by filename for deterministic serial execution. The file
  * name is deliberately NOT the execution/shard identity; simultaneous PRs add different paths, so
  * GitHub can merge them independently, and the suite name inside remains the audited public script. */
+/** @param {string} [dir] @returns {string[]} */
 export function readCiSuiteFragments(dir = CI_SUITES_DIR) {
   return readdirSync(dir, { withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.endsWith(".txt"))
@@ -74,6 +78,7 @@ export function readCiSuiteFragments(dir = CI_SUITES_DIR) {
  * cannot use a concatenated index because another independently-merged filename before them would
  * move their runner. SHA-256 over the public suite name makes assignment independent of filenames,
  * directory order and merge order. */
+/** @param {string} suite @param {number} count @returns {number} */
 export function fragmentShard(suite, count) {
   if (!Number.isInteger(count) || count < 1) throw new Error(`shard count must be positive, got ${count}`);
   return createHash("sha256").update(suite).digest().readUInt32BE(0) % count;
@@ -81,6 +86,7 @@ export function fragmentShard(suite, count) {
 
 /** The exact assignment the runner executes: frozen positional legacy entries plus independently
  * hashed fragment entries. Shared so the regression tests the production selector, not a copy. */
+/** @param {string[]} legacy @param {string[]} fragments @param {number} shard @param {number} count @returns {string[]} */
 export function suitesForShard(legacy, fragments, shard, count) {
   if (!Number.isInteger(shard) || !Number.isInteger(count) || count < 1 || shard < 0 || shard >= count)
     throw new Error(`invalid shard ${shard}/${count}`);
