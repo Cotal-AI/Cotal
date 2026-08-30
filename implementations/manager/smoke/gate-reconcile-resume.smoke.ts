@@ -28,7 +28,7 @@ import {
   repairCursorMatches,
   serveIssuanceGateKv,
 } from "@cotal-ai/core";
-import { GateReconcileRefused, reconcileEndpointGate } from "../src/reconcile-gate.ts";
+import { GateReconcileRefused, reconcileEndpointGate } from "../src/reconcile-gate.js";
 
 const casLoss = (message = "wrong last sequence") => Object.assign(new Error(message), { code: 10071 });
 const enc = new TextEncoder();
@@ -251,11 +251,11 @@ console.log("C. cursor binding and executor authority are exact");
     { owner: DEV_OWNER, actor: "repair_exec", connId: "repairconn0123456789", lifecycleUid: mintLifecycleUid() },
     { endpointServeExecutor: { endpoint: ENDPOINT, instanceId } },
   );
-  const publish = permissions.pub?.allow ?? [];
+  const publish = ((permissions.pub as { allow?: string[] } | undefined)?.allow ?? []);
   const exact = `$KV.${epAuthBucket(SPACE)}.${eprepairKey(ENDPOINT, instanceId)}`;
   const foreign = `$KV.${epAuthBucket(SPACE)}.${eprepairKey(ENDPOINT, sibling)}`;
   check("the executor can write exactly its one repair cursor key", publish.includes(exact), publish);
-  check("the executor has no wildcard or sibling repair-key grant", !publish.includes(foreign) && !publish.some((row) => row.includes("eprepair") && row.includes(">")), publish);
+  check("the executor has no wildcard or sibling repair-key grant", !publish.includes(foreign) && !publish.some((row: string) => row.includes("eprepair") && row.includes(">")), publish);
 }
 
 const EXPECTED = 21;

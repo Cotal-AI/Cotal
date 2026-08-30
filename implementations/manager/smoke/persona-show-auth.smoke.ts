@@ -64,7 +64,7 @@ const context = (name: string): EpServeContext => ({
     v: 1,
     id: "ffeeddccbbaa99887766554433221100",
     args: { name },
-  },
+  } as unknown as EpServeContext["request"],
 });
 
 const owned = await show.handler(context("mine")) as { name?: string; persona?: string };
