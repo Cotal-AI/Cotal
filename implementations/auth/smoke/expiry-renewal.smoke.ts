@@ -124,7 +124,11 @@ try {
     registerPresence: false, watchPresence: false, watchChannels: false, consume: false,
   });
   epA.on("error", (e: Error) => errorsA.push({ ms: Date.now() - t0, msg: e.message }));
-  epA.on("warning", (e: Error) => errorsA.push({ ms: Date.now() - t0, msg: e.message }));
+  // The refusal below is a RECOVERABLE condition: the reestablish loop owns the retry, so #1119
+  // reclassified it from `error` to `warning` (an unhandled `error` kills a listenerless host).
+  // Watch the channel it is actually emitted on, and assert the classification separately.
+  const warningsA: Array<{ ms: number; msg: string }> = [];
+  epA.on("warning", (e: Error) => warningsA.push({ ms: Date.now() - t0, msg: e.message }));
   await epA.start();
   const denialsBeforeA = denials.length;
 
@@ -139,10 +143,19 @@ try {
   );
 
   // The refusal must be loud, and must say WHICH situation it is: no renewal path at all.
-  const refusals = errorsA.filter((e) => /no bearer source to renew it/.test(e.msg));
+  const refusals = warningsA.filter((e) => /no bearer source to renew it/.test(e.msg));
   check(
     "the refusal to dial is loud and names the missing renewal path",
     refusals.length > 0,
+    { warnings: warningsA.map((e) => e.msg), errors: errorsA.map((e) => e.msg) },
+  );
+
+  // Keep #1119's classification true: this path retries on its own, so surfacing it as `error`
+  // would kill a host that never registered a listener. That regression is invisible to the cell
+  // above, which passes on either channel once it is looking at the right one.
+  check(
+    "the recoverable refusal stays off the error channel",
+    errorsA.every((e) => !/no bearer source to renew it/.test(e.msg)),
     errorsA.map((e) => e.msg),
   );
 
