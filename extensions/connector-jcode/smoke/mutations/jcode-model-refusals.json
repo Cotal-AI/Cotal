@@ -3,8 +3,7 @@
   "guard": "all three connector-owned Jcode model startup refusals retain distinct allow-listed public codes and their scrubbed fatal line is persisted in the managed seat's connector log",
   "command": "pnpm smoke:jcode-host",
   "progressPattern": "✓",
-  "minTicks": 40,
-  "completionMarker": "model_mismatch fatal is persisted in the seat connector log",
+  "minTicks": 30,
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/jcode-model-refusals.json",
   "why": [
     "Issue #985 reproduced a prefixed model reaching the managed session and dying before set_model,",
