@@ -723,6 +723,11 @@ smoke:transport-liveness:broker
 # unchanged.
 smoke:connection-status
 
+# A directed DM arriving during a live Jcode turn must reach the recipient session through Jcode's
+# soft-interrupt queue and commit only at the clean containing-turn boundary. Real loopback broker
+# plus shipped host; mutation-proofed. Appended so every existing shard assignment remains unchanged.
+smoke:jcode-mid-turn-delivery
+
 # A membership-watch CONSUMER.DELETE timeout is best-effort cleanup, never a process kill.
 # Mutation-proofed - packages/core/smoke/mutations/disarm-delete-timeout.json. Appended so every
 # existing shard assignment remains unchanged.
