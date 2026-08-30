@@ -13,6 +13,16 @@
       "completionMarker": "ok a fresh driver resumes it from there and finishes it",
       "cell": "and the parallel scope entry stays PENDING rather than recording the release as its outcome",
       "note": "Measured before the guard: a host stop inside `parallel` or `fanOut` settled the scope entry with `status: \"failed\"` and `error.code: \"L4000\"` carrying the release's own text, and a resume with a healthy host and no `shouldStop` replayed that entry and threw. The identical stop one statement earlier, at a sequential seam, resumed cleanly. The cell reads the entry's shape rather than its message, so rewording the release text cannot green it."
+    },
+    {
+      "name": "the scope settles a FABRICATED ok value and then releases, so the resume finishes while skipping the arm that never ran",
+      "file": "packages/lang/src/perform.ts",
+      "find": "    if (reason instanceof RunReleased) throw reason;",
+      "replace": "    if (reason instanceof RunReleased) {\n      await host.journal.settle(scopeKey, { status: \"ok\", result: { value: { a: 1, b: 2 } } } as never, endedAt, facts);\n      throw reason;\n    }",
+      "expectRed": "and the parallel scope entry stays PENDING rather than recording the release as its outcome",
+      "completionMarker": "ok a fresh driver resumes it from there and finishes it",
+      "cell": "and the parallel scope entry stays PENDING rather than recording the release as its outcome",
+      "note": "A reviewer built this one and it survived the first version of these cells: settling `ok` with an invented value releases correctly AND resumes without throwing, so cells that only checked for the L4000 message and for the absence of a resume error all passed while the arm that had not run was silently skipped. Deleting the guard is not the only wrong implementation, and `resume did not throw` is not the claim; `the scope settled nothing and the resume performed the missing arm` is."
     }
   ]
 }

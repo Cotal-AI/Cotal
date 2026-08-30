@@ -1147,13 +1147,25 @@ await fanOut([1, 2], async (n) => { await sleep("1m"); return n; }, { name: "eac
           error: (scope as { error?: { code?: string } }).error?.code,
         });
 
-  // And the consequence that made it critical rather than cosmetic.
+  // And the consequence that made it critical rather than cosmetic. NOT resuming without throwing:
+  // that alone passes for an implementation that settles the scope `ok` with an invented value and
+  // then releases, which finishes the resume while silently skipping the arm that never ran. So the
+  // claim is what the journal HOLDS afterwards: the scope settled, and BOTH arms performed, one of
+  // which had not run when the host stopped. Measured on the correct implementation: three entries,
+  // all settled, two of them the branch effects.
   let resumeErr: unknown;
+  let after: readonly JournalEntry[] = [];
   try {
-    await resume(P, new Journal({ run: runId, entries }), { runId, pins, handler: new SimHandler({}) });
+    const r = await resume(P, new Journal({ run: runId, entries }), { runId, pins, handler: new SimHandler({}) });
+    after = r.journal.entries();
   } catch (e) { resumeErr = e; }
   ok(`so a healthy driver resumes past a ${label} it was stopped inside`,
     resumeErr === undefined, `${(resumeErr as Error)?.name}: ${(resumeErr as Error)?.message}`);
+  ok(`and the ${label} arm that had not run when the host stopped is performed on that resume`,
+    after.length === 3
+      && after.every((e) => e.state === "settled")
+      && after.filter((e) => e.kind === "sleep").length === 2,
+    after.map((e) => `${e.kind}:${e.name}/${e.state}`));
 }
 
 // ── a program cannot catch its host leaving ──────────────────────────────────────────────────
