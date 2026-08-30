@@ -72,6 +72,11 @@ The guarantees, at a glance, each enforced by the broker per
     never message content, and channel *names* are already public via the registry. Hiding
     even the existence/volume of other channels requires the per-channel-stream model and is
     deferred strict-containment work ([roadmap](roadmap.md)).
+  - **Same leak, DM/TASK/DLV stream state:** agents also hold `STREAM.INFO` on the DM, TASK, and
+    delivery streams (message counts, first/last seq, needed for a role like `board` to render),
+    so the same `subjects_filter` query enumerates DM subjects (`inst.<owner>.<actor>.<owner>.<actor>`)
+    and task subjects (`svc.<role>.<owner>.<actor>`): who DMed whom and who anycast which role.
+    Never message content, and bounded by the same deferred per-stream-per-peer containment work.
 - **DM / task peer confidentiality**: per-identity inbox prefixes plus
   provisioner-created bind-only consumers, so an agent cannot read someone else's inbox or
   steal another role's work; durable-channel backstop reads are re-authorized by a trusted
