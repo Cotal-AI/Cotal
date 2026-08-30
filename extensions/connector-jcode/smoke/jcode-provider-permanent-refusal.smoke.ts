@@ -111,9 +111,12 @@ try {
   await waitFor("persistent permanent replacement refusal", () =>
     entries().find((entry) => entry.ev === "attach_refused" && entry.code === "invalid_request"),
   );
-  await waitFor("terminal host exit or unsafe retry", () =>
-    child!.exitCode !== null || entries().filter((entry) => entry.ev === "listening").length >= 3 ? true : undefined,
-  );
+  const terminalDeadline = Date.now() + 10_000;
+  while (
+    child.exitCode === null &&
+    entries().filter((entry) => entry.ev === "listening").length < 3 &&
+    Date.now() < terminalDeadline
+  ) await sleep(100);
   const launches = entries().filter((entry) => entry.ev === "listening");
   const refusals = entries().filter((entry) => entry.ev === "attach_refused");
   check(
