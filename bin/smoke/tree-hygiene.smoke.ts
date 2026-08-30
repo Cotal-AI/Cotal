@@ -28,6 +28,11 @@ const git = (args: string[]) => execFileSync("git", args, { cwd: root, encoding:
  * and is what `.gitignore` matches, so it is what this gate matches too. */
 const SCRATCH = /\.out$/;
 
+/** The single application of the rule. The control below and the real scan both run through this,
+ * so a mutation that blinds the scan cannot leave the control green: testing the pattern directly
+ * would grade the regex rather than the gate that uses it. */
+const scratchPaths = (paths: string[]) => paths.filter((p) => SCRATCH.test(p));
+
 const tracked = git(["ls-files"]).split("\n").filter(Boolean);
 
 // Positive control on the instrument before believing its zero: a search of the wrong universe
@@ -38,15 +43,18 @@ check(
   { trackedFiles: tracked.length },
 );
 
-// Positive control on the PATTERN, against literals rather than the tree, so this cell keeps
-// discriminating after the tree is clean.
+// Positive control on the RULE, driven through the same function the real scan uses, so this cell
+// keeps discriminating after the tree is clean and reddens if the scan is blinded.
+const CONTROL_OFFENDERS = [".refold2-build.out", ".refold-tc.out", ".lane/guard-baseline.out"];
+const CONTROL_CLEAN = [".gitignore", "package.json", "bin/smoke/tree-hygiene.smoke.ts", "docs/README.md"];
+const controlHits = scratchPaths([...CONTROL_OFFENDERS, ...CONTROL_CLEAN]);
 check(
-  "the pattern matches the shapes both producer families write, and spares ordinary sources",
-  [".refold2-build.out", ".refold-tc.out", ".lane/guard-baseline.out"].every((p) => SCRATCH.test(p)) &&
-    ![".gitignore", "package.json", "bin/smoke/tree-hygiene.smoke.ts", "docs/README.md"].some((p) => SCRATCH.test(p)),
+  "the rule the real scan applies matches the shapes both producer families write, and spares ordinary sources",
+  controlHits.length === CONTROL_OFFENDERS.length && CONTROL_OFFENDERS.every((p, i) => controlHits[i] === p),
+  { controlHits },
 );
 
-const offenders = tracked.filter((p) => SCRATCH.test(p));
+const offenders = scratchPaths(tracked);
 check(
   `no scratch command output is tracked (scanned ${tracked.length} tracked files)`,
   offenders.length === 0,
