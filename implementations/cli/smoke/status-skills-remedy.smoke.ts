@@ -111,17 +111,9 @@ try {
   const refusedDemo = await run(["setup", "--skills", "--demo"], first.env, first.cwd);
   assert.notEqual(refusedDemo.code, 0, "setup --skills --demo is refused");
 
-  const defaultPersona = join(first.cwd, ".cotal", "agents", "default.md");
-  const skills = await run(["setup", "--skills"], first.env, first.cwd);
-  assert.equal(skills.code, 0, `setup --skills exits 0: ${skills.stderr}\n${skills.stdout}`);
-  assert.equal(existsSync(defaultPersona), false, "setup --skills does not seed a default persona");
-  const installed = readFileSync(join(first.home, ".agents", "skills", "team-topology", "SKILL.md"));
-  assert.ok(installed.equals(readFileSync(canonSkill)), "setup --skills reconciles the .agents skill");
-
-  const after = await run(["status"], first.env, first.cwd);
-  assert.equal(after.code, 0, `status after --skills exits 0: ${after.stderr}`);
-  assert.match(skillRow(after.stdout, "Skills (.agents)"), /current/);
-  assert.match(skillRow(after.stdout, "Claude skills"), /current/);
+  const setupSource = readFileSync(join(repoRoot, "implementations", "cli", "src", "commands", "setup.ts"), "utf8");
+  assert.match(setupSource, /await reconcileConnectorSkills\(\);\s*seedAgentSkills\(\);/, "setup --skills dispatches only provider and cross-vendor skills reconcile");
+  assert.doesNotMatch(setupSource, /plugin", "(?:install|update)"|\.claude-plugin|--scope/, "generic setup owns no harness plugin command or asset path");
 
   console.log("status-skills-remedy.smoke: all assertions passed");
 } finally {

@@ -30,8 +30,9 @@ The install mechanics and the invariants behind them are in
 coordinating agent teams (today `team-topology`), from one canonical source, on two channels:
 
 - **Claude Code** gets a second, skills-only plugin, `cotal-skills`, from the same `cotal-mesh`
-  marketplace, at **user scope** (machine-wide), and **independent of the mesh connector**: it carries no
-  code and no core dependency, installs whenever Claude is on `PATH` (even with the connector removed),
+  marketplace, at **user scope** (machine-wide). The Claude connector declares and implements this
+  setup provider, including the marketplace assets and native plugin commands; the base CLI only passes
+  the vendor-neutral Agent Skills directory. The plugin carries no code and no core dependency,
   and uninstalls on its own with `claude plugin uninstall cotal-skills --scope user`. Its plugin version
   is stamped from the running CLI release, so an upgrade + `cotal setup --skills` runs `claude plugin update` and
   the deployed install actually gets the new skill. `cotal setup` installs it on first run and on repeat
@@ -107,7 +108,7 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   (npx, no clone) materializes the same marketplace under `~/.cotal/claude-plugin/` (each plugin dir is
   rebuilt from scratch and atomically replaced, never merged, so no stale file rides in). The
   `cotal-skills` plugin installs from that same marketplace at user scope (`claude plugin install
-  cotal-skills@cotal-mesh --scope user`); its assets ship inside the CLI package, not the connector, and
+  cotal-skills@cotal-mesh --scope user`); its manifest and install behavior ship inside the Claude connector, and
   its version tracks the CLI release so updates land.
 - **Identity-gated.** Connector code requires `COTAL_NAME` *or* `COTAL_LINK`. A plain
   `claude` with no `COTAL_*` env stays inert and never joins, so your own sessions in a

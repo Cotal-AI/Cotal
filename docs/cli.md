@@ -84,9 +84,9 @@ cotal setup [--full] [--demo] [--yes] [--skills]
 | `--full` | off | Redo the full guided flow (implies `--demo`) |
 | `--demo` | off | Also seed the guided expert team (`david`, `sven`, `me`) |
 | `--yes`, `-y` | off | Non-interactive accept-all (for agents / CI) |
-| `--skills` | off | Reconcile Cotal skills only (Claude `cotal-skills` plugin + `~/.agents/skills`). Refused with `--full` or `--demo`. |
+| `--skills` | off | Reconcile Cotal skills only through installed connector providers, plus `~/.agents/skills`. Refused with `--full` or `--demo`. |
 
-Guided setup is **configure-only**: it checks prerequisites, installs the Claude Code plugin, and
+Guided setup is **configure-only**: it checks prerequisites, invokes installed connectors' declared setup providers, and
 seeds persona files, and it launches nothing (no mesh, no web, no manager). First run gets the
 narrated flow; later runs print a status card. By default it seeds one `default` persona; the
 `david`/`sven`/`me` team is opt-in via `--demo`. `cotal status` points stale Claude skills and
