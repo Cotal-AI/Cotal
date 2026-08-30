@@ -709,3 +709,9 @@ smoke:endpoint-permission-results:auth
 # remains unchanged.
 smoke:presence-watch-stall
 smoke:web-presence-view
+
+# Mixed source, installed, and plugin generations must be self-identifying in the status Machine
+# block. The installed cell enters through a package-manager-style symlink and the skills cell uses
+# the real Claude plugin-list JSON seam. Mutation-proofed - bin/smoke/mutations/status-provenance.json.
+# Appended so every existing shard assignment remains unchanged.
+smoke:status-provenance
