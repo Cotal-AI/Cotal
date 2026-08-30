@@ -99,6 +99,13 @@ foreground spawn has no manager to pin and refuses the flag). There are no ordin
 aliases and no short forms: wherever a display names an instance you can address, it prints
 the whole id, because `--on` takes nothing else.
 
+The reserved `describe` bootstrap is the one request the resolver may repeat while waiting: it is
+read-only, it is re-published under the same request binding, and every attempt stays inside the
+original deadline. This covers the startup window where Core NATS discards the first request before
+the manager has subscribed. If the connection closes while the resolver waits, the describe fails
+cleanly instead of throwing from the retry timer. The resolved command is never repeated by this
+readiness behavior.
+
 The resolve and the invoke are separate trips through the same anycast queue, so in a
 multi-manager space an unpinned call can land on an instance the caller did not resolve. Every
 call carries the incarnation it resolved against, and a manager that is not that incarnation

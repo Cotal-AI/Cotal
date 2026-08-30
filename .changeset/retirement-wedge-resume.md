@@ -1,0 +1,5 @@
+---
+"@cotal-ai/auth": patch
+---
+
+Fix the boot crash-resume so a retirement whose head terminal never landed is resumed at the next auth-service boot. A crash between the barrier's last two durable writes (the gate terminal, then the head terminal) left the gate retired by the operation while the alias head stayed `retiring` — non-current and not replaceable per SPEC 13.1 — and the boot's owed-ness check, which read the gate alone, skipped that intent on every boot. The alias could never mint and could never be replaced. Owed-ness now reads the gate AND the alias head: a retirement whose gate terminal landed by its own operation resumes exactly while that operation's uid still owns a non-terminal head, re-entering the same barrier so only the head tail is finished (nothing past the gate terminal is re-revoked or re-drained); a retired head at the uid and a successor's head are the completed cells and stay skipped. A same-op despawn retry already repaired this state through the retire-lifecycle rail; the boot path was the dead letter. Adds a mutation-proofed smoke that stages the crash window deterministically and proves both repair triggers.

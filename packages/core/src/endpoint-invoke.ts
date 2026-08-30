@@ -34,6 +34,23 @@ import type { EpVerbTarget, EpAttributedReply, EpScatterResult, EpInstanceLivene
 
 const dec = new TextDecoder(), enc = new TextEncoder();
 const nonce = (): string => randomBytes(24).toString("base64url");
+/** A describe is the reserved read-only discovery bootstrap, so an unanswered request may be
+ *  re-published within its ORIGINAL deadline. Core NATS does not retain a request sent before a
+ *  responder subscribes; without this bounded retry, a responder that registers one moment later
+ *  is invisible until the caller pays the whole deadline. Commands are never retried here. */
+const DESCRIBE_RETRY_MS = 250;
+
+/** Format a caught value on a path that cannot afford to throw (timer/callback). A
+ *  poisoned `Error.message` getter or `toString` must not escape the catch; the
+ *  fallback is the detail, never a reason to skip the rejection. */
+function caughtText(e: unknown, fallback: string): string {
+  try {
+    return e instanceof Error ? e.message : String(e);
+  } catch {
+    return fallback;
+  }
+}
+
 /** Delivery margin above an action owner's accepted readiness budget. Spawn's established generic
  *  invariant was 40s client > 30s manager; preserve that measured 10s separation when a connector
  *  declares a different budget instead of inventing a second timeout policy. */
@@ -100,6 +117,7 @@ export async function describeEndpoint(
   };
   let sub: Subscription | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let retryTimer: ReturnType<typeof setInterval> | undefined;
   /** The status stream itself, kept because `stop()`, not `return()`, is what releases it. */
   let statusStream: { [Symbol.asyncIterator](): AsyncIterator<{ type: string; error?: unknown }>; stop(err?: Error): void } | undefined;
   let statusIter: AsyncIterator<{ type: string; error?: unknown }> | undefined;
@@ -138,7 +156,19 @@ export async function describeEndpoint(
           resolve({ body: reply as unknown as Record<string, unknown>, responder: { instanceId: parsed.instanceId, epoch: parsed.epoch } });
         },
       });
-      nc.publish(subject, enc.encode(JSON.stringify(env)));
+      const request = enc.encode(JSON.stringify(env));
+      nc.publish(subject, request);
+      // The first publish may precede the responder's subscription during startup. Re-publish the
+      // SAME read-only describe under the SAME request binding until one answer wins or the original
+      // deadline expires; this neither extends the budget nor retries the command being resolved.
+      // `publish` throws synchronously after close/drain. A timer throw escapes the caller's promise
+      // and crashes the process, so make transport loss settle this describe instead.
+      retryTimer = setInterval(() => {
+        try { nc.publish(subject, request); }
+        catch (e) {
+          reject(new EpEnvelopeError("unavailable", `the describe retry for ${endpoint} could not publish: ${caughtText(e, "unknown publish failure")}`));
+        }
+      }, DESCRIBE_RETRY_MS);
     });
     const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no describe reply from ${endpoint} within ${deadlineMs}ms`, [{ kind: EP_UNANSWERED, endpoint, command: "describe" }])), deadlineMs); });
     // A REFUSED PUBLISH MUST NOT MASQUERADE AS AN ABSENT RESPONDER. `nc.publish` is fire-and-forget:
@@ -178,6 +208,7 @@ export async function describeEndpoint(
   } finally {
     sub?.unsubscribe();
     if (timer !== undefined) clearTimeout(timer);
+    if (retryTimer !== undefined) clearInterval(retryTimer);
     // Release on EVERY exit, success included. `stop()` resolves the generator's signal and its
     // `iterClosed`, which is what the transport splices the listener on; `return()` is kept only to
     // settle the parked `next()` it wakes.

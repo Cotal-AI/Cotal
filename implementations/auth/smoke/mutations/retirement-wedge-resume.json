@@ -1,0 +1,51 @@
+{
+  "suite": "implementations/auth/smoke/retirement-wedge.smoke.ts",
+  "guard": "the boot crash-resume derives a retirement's owed-ness from the gate AND the alias head: a crash between the barrier's gate terminal and its head terminal leaves the gate retired by the op and the head retiring, and the next auth boot must resume that intent (finishing only the head tail) instead of skipping it forever, while a completed cell (head retired at this uid, or a successor's head) stays skipped",
+  "command": "pnpm smoke:retirement-wedge:auth",
+  "completionMarker": "RETIREMENT-WEDGE SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/retirement-wedge-resume.json",
+  "why": [
+    "#878's defect is a silent skip, and a silent skip's signature is that nothing fails: the boot",
+    "comes up clean next to an alias that can never mint and can never be replaced. The suite's",
+    "trigger-A section is therefore the load-bearing cell: it stages the exact crash window (the",
+    "barrier runs for real and aborts at verified eviction; the frontier record and gate terminal",
+    "are replayed with the barrier's own primitives; the head terminal never runs), then boots the",
+    "REAL plane and demands the head land retired with the resume logged and the tail-only counts.",
+    "",
+    "THE PROPERTY under guard is the cross-object owed-ness predicate in resumeOpenOperations: an",
+    "intent whose gate is retired by its own op is owed exactly while this op's uid still owns a",
+    "non-terminal head. Reverting the predicate to the gate-only form (M1) must redden trigger A's",
+    "head-terminal cell — that is the reverted-fix proof. But a predicate alone is not the whole",
+    "fix: the resume READS the head under the intent's own alias coordinates, which the boot",
+    "enumeration only carries because enumerateOperationIntents now parses and returns owner/actor",
+    "(M2 kills on that too, by making the widened predicate read a foreign head and skip again).",
+    "",
+    "The completed-cell direction (never resume a finished op) is guarded in the suite by the",
+    "successor-head boot cell, but a mutation that REMOVES owed-ness cannot exist without also",
+    "removing the wedge repair, so the dangerous direction here is the skip; the completed-cell",
+    "cells exist to keep a future widening honest.",
+    "",
+    "SPECIFIER BOUNDARY. The suite imports the auth package by relative source path (../src/index.js),",
+    "so both mutated files are the files that run and no build step is needed in the command."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the gate-only predicate: the widened branch's gate-state test never matches (the shipped #878 defect, behaviorally)",
+      "file": "implementations/auth/src/service.ts",
+      "find": "    if (!owed && it.kind === \"retirement\" && gate !== undefined && gate.row.state === \"retired\" && gate.row.op?.opId === it.opId) {",
+      "replace": "    if (!owed && it.kind === \"retirement\" && gate !== undefined && gate.row.state === \"frozen-by-a-foreign-op\" && gate.row.op?.opId === it.opId) {",
+      "expectRed": "TRIGGER A REPAIRS: the boot resumed the intent and completed the head terminal (`retired`)",
+      "cell": "TRIGGER A REPAIRS: the boot resumed the intent and completed the head terminal (`retired`)",
+      "note": "The widened owed-ness branch can never fire (no gate row is ever in the mutant's state), so retirement owed-ness past the freeze bar is exactly the shipped gate-only predicate: the staged crash window (gate retired, head retiring) is skipped, the boot resumes nothing, and the trigger-A head cell reddens with the head still retiring. The mutation is the reverted fix in behavior, one literal different from the shipped code."
+    },
+    {
+      "name": "M2 the enumeration stops carrying owner/actor: the completed-cell skip guard loses its coordinates and re-resumes a finished op",
+      "file": "implementations/auth/src/credential-ledger.ts",
+      "find": "    out.push({ opId, kind: o.kind, lifecycleUid: uid, owner: o.owner, actor: o.actor });",
+      "replace": "    out.push({ opId, kind: o.kind, lifecycleUid: uid, owner: \"zzz\", actor: \"zzz\" });",
+      "expectRed": "the COMPLETED cell stays skipped: a boot over gate retired + a successor's active head resumes nothing",
+      "cell": "the COMPLETED cell stays skipped: a boot over gate retired + a successor's active head resumes nothing",
+      "note": "The predicate's head read is only as good as the coordinates the enumeration carries. Under a lying alias the WEDGED cell still repairs (the absent-head branch marks it owed and the durable intent's own coordinates - not the enumeration's - drive the resume, so the head lands retired anyway; that cell stays green by design), but the completed-cell SKIP guard loses its ground truth: the real alias's head is now invisible to the predicate, the foreign alias reads absent, owed flips true, and the boot re-resumes a FINISHED op - exactly the whole-barrier-rerun hazard the standing fix constraint forbids. The completed-cell cell reddens on it. It guards the owner/actor parse addition end-to-end: delete that change and the file no longer typechecks, so the nearest executable degradation is a lying coordinate."
+    }
+  ]
+}
