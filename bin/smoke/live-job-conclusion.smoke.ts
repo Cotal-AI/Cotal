@@ -44,7 +44,9 @@ check("the API path classifies the measured 1516-second shape as self-timeout", 
 
 const supersededVerdict = await inspectLiveConclusion({ ...base, event: "pull_request", prNumber: 967, headRef: "fix/test" }, "token", async (url) => {
   const path = String(url);
-  if (path.includes("/attempts/1/jobs")) return json({ jobs: [{ name: "live", started_at: "2026-08-29T00:00:00Z", completed_at: "2026-08-29T00:06:20Z" }] });
+  // A whole-run supersession can land before live starts. No timestamps is lawful in that case and
+  // must not obscure the positive newer-run proof.
+  if (path.includes("/attempts/1/jobs")) return json({ jobs: [{ name: "live", started_at: null, completed_at: null }] });
   if (path.endsWith("/actions/runs/10")) return json({ created_at: "2026-08-29T00:00:00Z" });
   if (path.includes("/actions/workflows/ci.yml/runs")) return json({ workflow_runs: [
     { id: 10, created_at: "2026-08-29T00:00:00Z", pull_requests: [{ number: 967 }] },

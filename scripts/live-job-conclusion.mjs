@@ -77,13 +77,17 @@ export async function inspectLiveConclusion(opts, token, fetchImpl = fetch) {
   );
   const matches = jobs.jobs.filter((job) => job.name === opts.job);
   if (matches.length !== 1) throw new Error(`expected exactly one ${JSON.stringify(opts.job)} job in this run attempt, found ${matches.length}`);
-  const durationSeconds = elapsedSeconds(matches[0]);
   const supersedingRunId = await supersedingPullRequestRun(opts, token, fetchImpl);
+  // A PR revision may be superseded while live is still queued, in which case GitHub records no
+  // started/completed timestamps. The newer same-PR run is already sufficient evidence; never make
+  // an intentionally cancelled revision look broken merely because work had not started yet.
+  if (supersedingRunId !== undefined) return { kind: "superseded", supersedingRunId };
+  const durationSeconds = elapsedSeconds(matches[0]);
   return classifyLiveConclusion({
     result: opts.result,
     durationSeconds,
     timeoutSeconds: opts.timeoutSeconds,
-    supersedingRunId,
+    supersedingRunId: undefined,
   });
 }
 
