@@ -1,0 +1,5 @@
+Auto-merging docs/setup-internals.md
+Auto-merging extensions/connector-core/src/docs-bundle.generated.ts
+CONFLICT (content): Merge conflict in extensions/connector-core/src/docs-bundle.generated.ts
+Auto-merging package.json
+Automatic merge failed; fix conflicts and then commit the result.

@@ -1,0 +1,18 @@
+{
+  "suite": "implementations/delivery/smoke/injected-tenancy-admission.smoke.ts",
+  "guard": "an injected two-account delivery composition validates its observer tenancy before endpoint construction and lease.0 acquisition",
+  "command": "pnpm --filter @cotal-ai/delivery... build && pnpm smoke:delivery-injected-tenancy-admission",
+  "progressPattern": "✓",
+  "minTicks": 8,
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/delivery/smoke/mutations/injected-tenancy-admission.json",
+  "mutations": [
+    {
+      "name": "injected startup skips scan-credential admission",
+      "file": "implementations/delivery/src/delivery.ts",
+      "find": "  await validateScanTargetAdmission(scanTarget);",
+      "replace": "  void scanTarget;",
+      "expectRed": "INJECTED ADMISSION: foreign observer refuses before endpoint construction and lease.0 acquisition",
+      "cell": "INJECTED ADMISSION: foreign observer refuses before endpoint construction and lease.0 acquisition"
+    }
+  ]
+}
