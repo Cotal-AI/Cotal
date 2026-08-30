@@ -454,6 +454,7 @@
     "smoke:launch-parity": "tsx bin/smoke/launch-parity.smoke.ts",
     "smoke:seat-env-scope": "tsx bin/smoke/seat-env-scope.smoke.ts",
     "smoke:suite-ambient-env": "tsx bin/smoke/suite-ambient-env.smoke.ts",
+    "smoke:suite-own-process-material": "tsx bin/smoke/suite-own-process-material.smoke.ts",
     "smoke:broker-disclosure": "tsx bin/smoke/broker-disclosure.smoke.ts",
     "smoke:spawn-detach:live": "tsx bin/smoke/spawn-detach-live.smoke.ts",
     "smoke:goal-follow": "tsx bin/smoke/goal-follow.smoke.ts",

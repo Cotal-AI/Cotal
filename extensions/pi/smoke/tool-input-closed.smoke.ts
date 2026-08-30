@@ -55,6 +55,11 @@ const agent = new Proxy({} as MeshAgent, {
   get(_t, prop) { throw new Error(`registration touched the mesh agent (${String(prop)})`); },
 });
 
+// A launcher-spawned seat exports COTAL_LAUNCH_MATERIAL. This suite then defaults
+// COTAL_SERVERS, a direct material var, and configFromEnv refuses the pair. Drop the
+// POINTER only. Unlinking the file is wrong: the session that launched this process
+// may still need it.
+delete process.env.COTAL_LAUNCH_MATERIAL;
 registerCotalTools(pi, agent, configFromEnv());
 
 const withArgs = registered.filter((d) => Object.keys(d.parameters?.properties ?? {}).length > 0);
