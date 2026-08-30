@@ -9,7 +9,7 @@
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -53,6 +53,8 @@ for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_")) delete cl
 
 const home = mkdtempSync(join(tmpdir(), "cotal-control-dial-home-"));
 process.env.COTAL_HOME = home;
+const xdg = join(home, "xdg");
+mkdirSync(xdg);
 const root = mkdtempSync(join(tmpdir(), "cotal-control-dial-root-"));
 // The JetStream store gets its own tokened dir rather than living under `root`, because the reaper
 // claims a lost broker by that prefix: a store buried in an untokened tree is not merely unreaped,
@@ -94,7 +96,7 @@ writeFileSync(
 const runCli = (args: string[], timeout = 60_000) => {
   const result = spawnSync("npx", ["tsx", cli, ...args], {
     cwd: root,
-    env: { ...cleanEnv, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" },
+    env: { ...cleanEnv, COTAL_HOME: home, XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" },
     encoding: "utf8",
     timeout,
   });
@@ -164,8 +166,8 @@ try {
   rmSync(brokerStore, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });
-  const remainingArtifacts = [brokerStore, root, home].filter((path) => existsSync(path)).length;
-  ok("E: broker store, project root, and COTAL_HOME artifacts remaining after teardown = 0", remainingArtifacts === 0, remainingArtifacts);
+  const remainingArtifacts = [brokerStore, root, home, xdg].filter((path) => existsSync(path)).length;
+  ok("E: broker store, project root, COTAL_HOME, and XDG artifacts remaining after teardown = 0", remainingArtifacts === 0, remainingArtifacts);
   releaseHome?.();
   releaseRoot?.();
   releaseBroker?.(); // last: ownership is held until this teardown has actually finished
