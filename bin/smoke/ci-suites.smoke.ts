@@ -23,7 +23,6 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-// @ts-expect-error - plain .mjs helper, the one parser shared by shard.mjs and gate-inventory.
 import { parseCiSuites, readCiSuites, CI_SUITES_PATH } from "./ci-suites.mjs";
 
 let pass = 0;
@@ -47,6 +46,18 @@ const parse = (raw: string): string[] | string => {
 const same = (a: unknown, b: string[]) => JSON.stringify(a) === JSON.stringify(b);
 
 console.log("ci-suites: the chain file's parser");
+
+// The root entrypoint must produce the dist/ that package-importing suites grade. The hosted CI
+// workflow also builds before invoking shard.mjs directly, but `pnpm smoke:ci` is the documented
+// local gate and must not depend on ambient artifacts from an earlier checkout or edit.
+const packageScripts = (JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as {
+  scripts?: Record<string, string>;
+}).scripts ?? {};
+check(
+  "smoke:ci builds before starting its shard",
+  packageScripts["smoke:ci"] === "pnpm build && node bin/smoke/shard.mjs 0 1",
+  packageScripts["smoke:ci"],
+);
 
 // ---- Comments and blanks are removed, and are NOT entries --------------------------------------
 const withNoise = ["# a heading", "", "smoke:alpha", "   ", "# trailing note", "smoke:beta", ""].join("\n");
@@ -163,7 +174,7 @@ check(
   simultaneousAppendsConflict,
 );
 
-const EXPECTED = 23;
+const EXPECTED = 24;
 check(
   `every cell ran - ${EXPECTED} expected, so a cell that stops existing is not mistaken for one that passed`,
   pass + fail === EXPECTED,
