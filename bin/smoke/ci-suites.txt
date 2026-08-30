@@ -691,14 +691,15 @@ smoke:agent-secret-segmentation
 # merge, so it needs a static guard. Appended so every existing shard assignment remains unchanged.
 smoke:workflow-concurrency
 
+# Most smoke trees are still outside their package TypeScript projects. A type-only import from a
+# workspace package can therefore name something the package never exported and vanish when tsx runs
+# the suite. This compiler-API intersection checks every named workspace import against the package's
+# public exports. Appended so every existing shard assignment remains unchanged.
+smoke:workspace-import-exports
+
 # A denied JetStream metadata read must reject the endpoint call, never return a well-formed partial
 # result that callers mistake for genuine emptiness. A real narrowed JWT cred drives listChannels
 # through a denied CHAT STREAM.INFO, paired with an actually absent CHAT-stream control.
 # Mutation-proofed - bin/smoke/mutations/endpoint-permission-results.json. Appended so every existing
 # shard assignment remains unchanged.
 smoke:endpoint-permission-results:auth
-# Most smoke trees are still outside their package TypeScript projects. A type-only import from a
-# workspace package can therefore name something the package never exported and vanish when tsx runs
-# the suite. This compiler-API intersection checks every named workspace import against the package's
-# public exports. Appended so every existing shard assignment remains unchanged.
-smoke:workspace-import-exports
