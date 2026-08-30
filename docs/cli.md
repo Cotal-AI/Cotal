@@ -1287,6 +1287,12 @@ command of each boot, so you rarely call it):
 | `--reset` | Discard the record and re-seed all seven built-ins (the six connectors plus the web dashboard). **Resurrects any you removed.** Rebuilds cleanly over corrupt seed state. |
 | `--force` | Re-seed the built-ins even when the version stamp is current or a downgrade. |
 
+When a newer `cotal` advances the operator-global seed store to its generation, it prints one
+migration line naming the old and new generations, the exact CLI entry that wrote the store, the
+commit timestamp, and `seed/stamp.json`. That writer and timestamp are kept in the stamp, so a later
+older CLI refusal can say which executable wrote the generation it will not overwrite and when.
+Legacy generation-only stamps remain readable; their refusal simply has no writer provenance to add.
+
 The default connector for a bare `cotal spawn` (no `--agent`) is the persona's `agent:` pin if it
 has one, else `claude`; set `COTAL_DEFAULT_AGENT` (e.g. `opencode`) to change the fallback. It is
 a default, so a persona that pins its harness still wins over it. An `--agent` naming a removed

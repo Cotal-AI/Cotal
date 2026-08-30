@@ -84,8 +84,8 @@ export function seedStorePath(generation: string, name: string): string {
   return join(seedStoreDir(), generation, name);
 }
 
-/** Resolve package-manager bin symlinks before looking for package-owned files. */
-function entryScript(): string {
+/** Resolve package-manager bin symlinks to the exact CLI entry this process is running. */
+export function entryScript(): string {
   const entry = process.argv[1];
   if (!entry) throw new Error("cannot resolve the cotal entry script: no entry script (process.argv[1])");
   try {
