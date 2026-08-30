@@ -14,8 +14,8 @@
     {
       "name": "flow event list comments hide pull_request again",
       "file": "scripts/pr-head-gate.mjs",
-      "find": "  if (Array.isArray(on)) {",
-      "replace": "  if (Array.isArray(on) && !on.includes(\"pull_request\")) {",
+      "find": "    return on.includes(\"pull_request\") ? null : undefined;",
+      "replace": "    return undefined;",
       "expectRed": "ordinary YAML comments after a flow event list preserve pull_request",
       "cell": "ordinary YAML comments after a flow event list preserve pull_request"
     },
