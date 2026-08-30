@@ -100,13 +100,6 @@ export class HerdrRuntime implements Runtime {
 
   constructor(private readonly session: string) {}
 
-  async reap(raw: string): Promise<void> {
-    const ref = parseLocator(raw);
-    const info = herdr.agentInfo(ref.session, ref.terminalId);
-    if (info) herdr.closePane(ref.session, info.paneId);
-    await herdr.waitForTerminalExit(ref.session, ref.terminalId);
-  }
-
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     if (!/^[A-Za-z0-9_.-]+$/.test(name))
       throw new Error(`herdr runtime: unsafe agent name ${JSON.stringify(name)} (allowed: letters, digits, _ . -)`);
@@ -182,7 +175,6 @@ export class HerdrRuntime implements Runtime {
     return {
       name,
       kind: "herdr",
-      locator: JSON.stringify({ v: 1, kind: "herdr", session, terminalId }),
       // terminalState throws on any failed inventory (fail closed); for the status probe that
       // uncertainty must read as "running" — preserving, like tmux — never as a false exit.
       status: () => {
@@ -244,16 +236,6 @@ export class HerdrRuntime implements Runtime {
       },
     };
   }
-}
-
-function parseLocator(raw: string): { v: 1; kind: "herdr"; session: string; terminalId: string } {
-  let ref: unknown;
-  try { ref = JSON.parse(raw); } catch { throw new Error("herdr runtime: invalid durable locator JSON"); }
-  if (!ref || typeof ref !== "object") throw new Error("herdr runtime: invalid durable locator");
-  const r = ref as Record<string, unknown>;
-  if (r.v !== 1 || r.kind !== "herdr" || typeof r.session !== "string" || !r.session || typeof r.terminalId !== "string" || !r.terminalId || Object.keys(r).length !== 4)
-    throw new Error("herdr runtime: invalid durable locator");
-  return r as { v: 1; kind: "herdr"; session: string; terminalId: string };
 }
 
 /** Self-registering runtime provider — `import "@cotal-ai/herdr"` makes the manager's `herdr`

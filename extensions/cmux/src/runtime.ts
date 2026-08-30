@@ -76,12 +76,6 @@ function cmuxLayout(label: string, tab: Tab): string {
 export class CmuxRuntime implements Runtime {
   readonly kind = "cmux";
 
-  async reap(raw: string): Promise<void> {
-    const workspace = parseLocator(raw);
-    cmux.closeWorkspace(workspace);
-    await cmux.waitForWorkspaceExit(workspace);
-  }
-
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     // `name` becomes a temp-script key and a `cotal-<name>` tab id — keep it a bare token
     // so it can't traverse paths or break the workspace label.
@@ -106,7 +100,6 @@ export class CmuxRuntime implements Runtime {
     return {
       name,
       kind: "cmux",
-      locator: JSON.stringify({ v: 1, kind: "cmux", workspace }),
       status: () => {
         try {
           return cmux.workspaceState(workspace);
@@ -147,16 +140,6 @@ export class CmuxRuntime implements Runtime {
       },
     };
   }
-}
-
-function parseLocator(raw: string): string {
-  let ref: unknown;
-  try { ref = JSON.parse(raw); } catch { throw new Error("cmux runtime: invalid durable locator JSON"); }
-  if (!ref || typeof ref !== "object") throw new Error("cmux runtime: invalid durable locator");
-  const r = ref as Record<string, unknown>;
-  if (r.v !== 1 || r.kind !== "cmux" || typeof r.workspace !== "string" || !r.workspace || Object.keys(r).length !== 3)
-    throw new Error("cmux runtime: invalid durable locator");
-  return r.workspace;
 }
 
 /** Self-registering runtime provider — `import "@cotal-ai/cmux"` makes the manager's
