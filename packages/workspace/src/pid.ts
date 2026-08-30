@@ -318,11 +318,19 @@ export function verifyIdentityPin(pidfilePath: string, tokenAt: ProcessStartToke
   try {
     rawPin = readFileSync(identityPinPath(pidfilePath), "utf8");
   } catch {
-    return { kind: "legacy" };
+    // No pin: a LEGACY record. But legacy is only a refusal question for a pid that is LIVE or of
+    // unknown liveness - a pid that is ESRCH-dead needs no identity proof (nothing can be
+    // signalled), so it reports `gone` and the caller clears the stale record exactly as before
+    // #969. kill(pid, 0) only: this probe signals nothing.
+    return probeLiveness(pidRead) === "dead" ? { kind: "gone" } : { kind: "legacy" };
   }
+  // The TORN shapes below refuse when the pid is live or unknown - identity cannot be proven.
+  // When the pid is ESRCH-dead there is nothing to signal, so the record is clearable whatever
+  // state the pin is in: a torn pin must not wedge the cleanup of a process that no longer exists.
+  const dead = probeLiveness(pidRead) === "dead";
   const parsed = parseRecord(rawPin);
-  if (parsed.kind !== "record") return { kind: "torn-pin", raw: parsed.kind === "unattributable" ? parsed.raw : "" };
-  if (parsed.record.pid !== pidRead) return { kind: "torn-pairing", pinPid: parsed.record.pid };
+  if (parsed.kind !== "record") return dead ? { kind: "gone" } : { kind: "torn-pin", raw: parsed.kind === "unattributable" ? parsed.raw : "" };
+  if (parsed.record.pid !== pidRead) return dead ? { kind: "gone" } : { kind: "torn-pairing", pinPid: parsed.record.pid };
   const verdict = assertRecordIdentity(parsed.record, tokenAt);
   if (verdict.kind === "match") return { kind: "match" };
   if (verdict.kind === "gone") return { kind: "gone" };
