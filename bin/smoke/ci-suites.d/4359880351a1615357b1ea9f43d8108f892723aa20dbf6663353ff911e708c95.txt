@@ -1,0 +1,2 @@
+# Exact permanent recovery classifier contract and unknown-code retry policy.
+smoke:jcode-recovery-classifier

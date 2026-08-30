@@ -37,7 +37,7 @@ function runShippedShard(scripts: Record<string, string>) {
     const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
     return {
       status: r.status,
-      timedOut: r.error?.code === "ETIMEDOUT" || r.signal === "SIGTERM",
+      timedOut: (r.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT" || r.signal === "SIGTERM",
       out,
     };
   } finally {
