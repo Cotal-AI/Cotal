@@ -148,6 +148,12 @@ const server = createServer((socket) => {
           break;
         }
         case "attach_session":
+          if (process.env.FAKE_JCODE_FAIL_ATTACH_ONCE_FILE && !existsSync(process.env.FAKE_JCODE_FAIL_ATTACH_ONCE_FILE)) {
+            writeFileSync(process.env.FAKE_JCODE_FAIL_ATTACH_ONCE_FILE, "failed");
+            log({ ev: "attach_failed_once", session_id: frame.session_id });
+            reply({ ev: "error", code: "unavailable", message: "synthetic transient attach failure" });
+            break;
+          }
           attachedExisting = frame.session_id;
           sessionWorkingDir = frame.working_dir ?? storedSession()?.working_dir;
           saveSession({ session_id: frame.session_id, working_dir: sessionWorkingDir, transcript_bytes: 1 });
@@ -192,11 +198,13 @@ const server = createServer((socket) => {
           } else {
             event({ ev: "message_accepted", session_id: frame.session_id });
             const closeOnContent = process.env.FAKE_JCODE_CLOSE_ON_CONTENT;
+            const closeAlwaysOnContent = process.env.FAKE_JCODE_CLOSE_ALWAYS_ON_CONTENT;
             const closeOnceFile = process.env.FAKE_JCODE_CLOSE_ONCE_FILE;
             const shouldClose =
-              closeOnContent &&
-              String(frame.content).includes(closeOnContent) &&
-              (!closeOnceFile || !existsSync(closeOnceFile));
+              (closeOnContent &&
+                String(frame.content).includes(closeOnContent) &&
+                (!closeOnceFile || !existsSync(closeOnceFile))) ||
+              (closeAlwaysOnContent && String(frame.content).includes(closeAlwaysOnContent));
             if (shouldClose) {
               if (closeOnceFile) writeFileSync(closeOnceFile, "closed");
               socket.destroy();

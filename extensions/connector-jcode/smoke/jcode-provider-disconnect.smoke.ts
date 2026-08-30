@@ -46,6 +46,7 @@ const shimDir = join(root, "bin");
 const shim = join(shimDir, "jcode");
 const log = join(root, "fake.jsonl");
 const closeOnce = join(root, "first-bridge-closed");
+const failAttachOnce = join(root, "recovery-attach-failed");
 const sessionState = join(root, "fake-session.json");
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
 let child: ChildProcess | undefined;
@@ -90,7 +91,9 @@ try {
       PATH: `${shimDir}:${env.PATH ?? ""}`,
       FAKE_JCODE_LOG: log,
       FAKE_JCODE_CLOSE_ON_CONTENT: "SIMULATE_PROVIDER_STALL",
+      FAKE_JCODE_CLOSE_ALWAYS_ON_CONTENT: "SIMULATE_SECOND_PROVIDER_STALL",
       FAKE_JCODE_CLOSE_ONCE_FILE: closeOnce,
+      FAKE_JCODE_FAIL_ATTACH_ONCE_FILE: failAttachOnce,
       FAKE_JCODE_SESSION_STATE: sessionState,
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodeclose",
@@ -116,21 +119,24 @@ try {
 
   await operator.unicast(peerId!, "SIMULATE_PROVIDER_STALL");
   await waitFor("simulated provider disconnect", () => existsSync(closeOnce) ? closeOnce : undefined);
-  // The unfixed host reacts immediately through `client.on("close") → shutdown(1)`. Let that
-  // path settle before the assertion; a reconnecting host remains live and proceeds to its one
-  // reattach attempt below.
-  await sleep(500);
-  check("provider disconnect does not exit the mesh seat (#781)", child.exitCode === null, { code: child.exitCode, stderr });
+  await waitFor("synthetic transient recovery attach failure", () => existsSync(failAttachOnce) ? failAttachOnce : undefined);
+  check("the recovery attempt deterministically loses its first attach race (#971)", entries().some((entry) => entry.ev === "attach_failed_once"), entries());
+  await waitFor("recovery retry or seat exit after the transient attach loss", () =>
+    stderr.includes("private Harness replacement not ready yet; retrying inside its one recovery window") || child.exitCode !== null
+      ? true
+      : undefined,
+  );
+  check("provider disconnect survives a transient replacement loss inside the bounded recovery window (#971)", child.exitCode === null && stderr.includes("private Harness replacement not ready yet; retrying inside its one recovery window"), { code: child.exitCode, stderr });
   await waitFor("recovery Harness connection", () => {
     const hellos = entries().filter(
       (entry) => entry.ev === "request" && (entry.frame as { req?: string }).req === "hello",
     );
-    return hellos.length >= 2 ? hellos : undefined;
+    return hellos.length >= 3 ? hellos : undefined;
   });
   const reattachments = entries().filter(
     (entry) => entry.ev === "session_path" && entry.req === "attach_session" && entry.session_id === "fake-session",
   );
-  check("recovered Harness client reattaches the existing private session (#781)", reattachments.length >= 1, reattachments);
+  check("recovered Harness client reattaches the existing private session after the transient loss (#971)", reattachments.length >= 2, reattachments);
 
   await operator.unicast(peerId!, "RECOVERED_MESH_WORK");
   const retriedTurn = await waitFor("unacknowledged stalled turn redelivery", () => {
@@ -157,9 +163,13 @@ try {
   );
   check("recovered seat accepts a later mesh turn (#781)", JSON.stringify(recoveredTurn).includes("RECOVERED_MESH_WORK"), recoveredTurn);
 
-  child.kill("SIGTERM");
+  const secondCloseStarted = Date.now();
+  await operator.unicast(peerId!, "SIMULATE_SECOND_PROVIDER_STALL");
+  await waitFor("second provider disconnect remains terminal", () =>
+    stderr.includes("private Harness connection closed after its one recovery attempt") ? stderr : undefined,
+  );
   await Promise.race([once(child, "exit"), sleep(10_000)]);
-  check("recovered host still exits cleanly on operator stop", child.exitCode === 0, { code: child.exitCode, stderr });
+  check("a second provider disconnect stays terminal without opening an unbounded recovery loop", child.exitCode === 1 && Date.now() - secondCloseStarted < 10_000, { code: child.exitCode, elapsedMs: Date.now() - secondCloseStarted, stderr });
   console.log(`\nJCODE PROVIDER-DISCONNECT SMOKE PASSED (${pass} checks)`);
 } finally {
   if (child && child.exitCode === null) child.kill("SIGKILL");
