@@ -63,6 +63,9 @@ export function readCiSuiteFragments(dir = CI_SUITES_DIR) {
       const suites = parseCiSuites(readFileSync(path, "utf8"), path);
       if (suites.length !== 1)
         throw new Error(`${path}: a suite fragment must contain exactly one smoke script, got ${suites.length}`);
+      const expected = `${createHash("sha256").update(suites[0]).digest("hex")}.txt`;
+      if (entry.name !== expected)
+        throw new Error(`${path}: fragment filename must be sha256(${suites[0]}) = ${expected}`);
       return suites;
     });
 }

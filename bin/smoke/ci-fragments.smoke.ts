@@ -5,6 +5,7 @@
  * Run: pnpm smoke:ci-fragments
  */
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,11 +19,14 @@ const check = (name: string, condition: unknown) => {
 
 const fixture = mkdtempSync(join(tmpdir(), "cotal-ci-fragments-"));
 try {
-  writeFileSync(join(fixture, "z-last.txt"), "# z\nsmoke:z-last\n");
-  writeFileSync(join(fixture, "a-first.txt"), "smoke:a-first\n");
+  const fileFor = (suite: string) => `${createHash("sha256").update(suite).digest("hex")}.txt`;
+  writeFileSync(join(fixture, fileFor("smoke:z-last")), "# z\nsmoke:z-last\n");
+  writeFileSync(join(fixture, fileFor("smoke:a-first")), "smoke:a-first\n");
+  const firstRead = readCiSuiteFragments(fixture);
   check(
     "fragment files are read deterministically by filename",
-    JSON.stringify(readCiSuiteFragments(fixture)) === JSON.stringify(["smoke:a-first", "smoke:z-last"]),
+    JSON.stringify(firstRead) === JSON.stringify(readCiSuiteFragments(fixture)) &&
+      [...firstRead].sort().join(",") === "smoke:a-first,smoke:z-last",
   );
   writeFileSync(join(fixture, "empty.txt"), "# no suite\n");
   let emptyRefused = false;
@@ -34,6 +38,11 @@ try {
   try { readCiSuiteFragments(fixture); } catch (error) { multiRefused = /exactly one smoke script, got 2/.test(String(error)); }
   check("a multi-suite fragment is refused", multiRefused);
   rmSync(join(fixture, "two.txt"));
+  writeFileSync(join(fixture, "human-topic.txt"), "smoke:human-topic\n");
+  let filenameRefused = false;
+  try { readCiSuiteFragments(fixture); } catch (error) { filenameRefused = /fragment filename must be sha256/.test(String(error)); }
+  check("a hand-chosen shared fragment filename is refused", filenameRefused);
+  rmSync(join(fixture, "human-topic.txt"));
 
   const suite = "smoke:stable-fragment";
   const shard = fragmentShard(suite, 4);
@@ -50,7 +59,8 @@ try {
 const mergeRoot = mkdtempSync(join(tmpdir(), "cotal-ci-fragment-merge-"));
 try {
   mkdirSync(join(mergeRoot, "bin/smoke/ci-suites.d"), { recursive: true });
-  writeFileSync(join(mergeRoot, "bin/smoke/ci-suites.d/base.txt"), "smoke:base\n");
+  const fileFor = (suite: string) => `${createHash("sha256").update(suite).digest("hex")}.txt`;
+  writeFileSync(join(mergeRoot, "bin/smoke/ci-suites.d", fileFor("smoke:base")), "smoke:base\n");
   const git = (args: string[]) => execFileSync("git", args, {
     cwd: mergeRoot,
     encoding: "utf8",
@@ -60,10 +70,10 @@ try {
   git(["config", "user.name", "CI fragments smoke"]);
   git(["config", "user.email", "ci-fragments@example.invalid"]);
   git(["add", "."]); git(["commit", "-qm", "base"]); git(["branch", "incoming"]);
-  writeFileSync(join(mergeRoot, "bin/smoke/ci-suites.d/main.txt"), "smoke:main\n");
+  writeFileSync(join(mergeRoot, "bin/smoke/ci-suites.d", fileFor("smoke:main")), "smoke:main\n");
   git(["add", "."]); git(["commit", "-qm", "main addition"]); git(["branch", "main-side"]);
   git(["checkout", "-q", "incoming"]);
-  writeFileSync(join(mergeRoot, "bin/smoke/ci-suites.d/branch.txt"), "smoke:branch\n");
+  writeFileSync(join(mergeRoot, "bin/smoke/ci-suites.d", fileFor("smoke:branch")), "smoke:branch\n");
   git(["add", "."]); git(["commit", "-qm", "branch addition"]);
   const merged = spawnSync("git", ["merge", "main-side", "--no-edit"], { cwd: mergeRoot, encoding: "utf8" });
   check(
@@ -75,7 +85,7 @@ try {
   rmSync(mergeRoot, { recursive: true, force: true });
 }
 
-const EXPECTED = 6;
+const EXPECTED = 7;
 check(`every cell ran (${EXPECTED} before the sentinel)`, passed + failed === EXPECTED);
 console.log(`CI FRAGMENTS SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 if (failed) process.exitCode = 1;

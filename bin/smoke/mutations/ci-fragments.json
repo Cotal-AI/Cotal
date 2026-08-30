@@ -14,8 +14,8 @@
     {
       "name": "simultaneous suite additions share one fragment path again",
       "file": "bin/smoke/ci-fragments.smoke.ts",
-      "find": "  writeFileSync(join(mergeRoot, \"bin/smoke/ci-suites.d/branch.txt\"), \"smoke:branch\\n\");",
-      "replace": "  writeFileSync(join(mergeRoot, \"bin/smoke/ci-suites.d/main.txt\"), \"smoke:branch\\n\");",
+      "find": "  writeFileSync(join(mergeRoot, \"bin/smoke/ci-suites.d\", fileFor(\"smoke:branch\")), \"smoke:branch\\n\");",
+      "replace": "  writeFileSync(join(mergeRoot, \"bin/smoke/ci-suites.d\", fileFor(\"smoke:main\")), \"smoke:branch\\n\");",
       "expectRed": "simultaneous additions on distinct fragment paths merge cleanly with the standard driver",
       "cell": "simultaneous additions on distinct fragment paths merge cleanly with the standard driver"
     },
