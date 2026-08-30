@@ -63,8 +63,15 @@ const check = (name: string, condition: boolean, actual?: unknown): void => {
   pass++;
   console.log(`  ✓ ${name}`);
 };
+function readJsonLines<T>(path: string): T[] {
+  if (!existsSync(path)) return [];
+  const raw = readFileSync(path, "utf8");
+  const lines = raw.split("\n");
+  if (!raw.endsWith("\n")) lines.pop();
+  return lines.filter(Boolean).map((line) => JSON.parse(line) as T);
+}
 const entriesOf = (path: string): Array<{ ev: string; [key: string]: unknown }> =>
-  existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
+  readJsonLines(path);
 const entries = (): Array<{ ev: string; [key: string]: unknown }> => entriesOf(log);
 const alive = (pid: number): boolean => {
   try {

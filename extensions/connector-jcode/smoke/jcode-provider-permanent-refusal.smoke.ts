@@ -49,8 +49,15 @@ const check = (name: string, condition: boolean, actual?: unknown): void => {
   passed++;
   console.log(`  ✓ ${name}`);
 };
+function readJsonLines<T>(path: string): T[] {
+  if (!existsSync(path)) return [];
+  const raw = readFileSync(path, "utf8");
+  const lines = raw.split("\n");
+  if (!raw.endsWith("\n")) lines.pop();
+  return lines.filter(Boolean).map((line) => JSON.parse(line) as T);
+}
 const entries = (): Array<{ ev: string; [key: string]: unknown }> =>
-  existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
+  readJsonLines(log);
 
 try {
   const directCodes = [
