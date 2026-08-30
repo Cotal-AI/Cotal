@@ -65,7 +65,7 @@ const BROKEN = "BROKEN:";
 type UngatedExemption = { reason: string; recheckBy: string };
 const EXPECTED_EXEMPTIONS = 20;
 const standing = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-11-30" });
-const untriaged = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-09-30" });
+const untriagedExemption = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-09-30" });
 
 const UNGATED: Record<string, UngatedExemption> = {
   // Need external tooling no CI runner has.
@@ -88,15 +88,15 @@ const UNGATED: Record<string, UngatedExemption> = {
   // missing explicit `tls` and stopped after 14 of its 66 cells, and being ungated is why nobody
   // heard about it. "Too slow for the gate" was 105 seconds.
   // Untriaged debt. These are the ones that should shrink.
-  "smoke:attention": untriaged("UNTRIAGED"),
-  "smoke:attention:auth": untriaged("UNTRIAGED"),
- "smoke:delivery-boot-retry:auth": untriaged("UNTRIAGED"),
-  "smoke:delivery-broker-coupling": untriaged("UNTRIAGED"), "smoke:delivery-old-manager": untriaged("UNTRIAGED"),
-  "smoke:feedback": untriaged("UNTRIAGED"),
-  "smoke:lifecycle-files": untriaged("UNTRIAGED"), "smoke:manager-console": untriaged("UNTRIAGED"),
-  "smoke:plane3-activation:auth": untriaged("UNTRIAGED"),
-  "smoke:plane3-gate:auth": untriaged("UNTRIAGED"),
-  "smoke:self-serve-join-coverage:auth": untriaged("UNTRIAGED"),
+  "smoke:attention": untriagedExemption("UNTRIAGED"),
+  "smoke:attention:auth": untriagedExemption("UNTRIAGED"),
+ "smoke:delivery-boot-retry:auth": untriagedExemption("UNTRIAGED"),
+  "smoke:delivery-broker-coupling": untriagedExemption("UNTRIAGED"), "smoke:delivery-old-manager": untriagedExemption("UNTRIAGED"),
+  "smoke:feedback": untriagedExemption("UNTRIAGED"),
+  "smoke:lifecycle-files": untriagedExemption("UNTRIAGED"), "smoke:manager-console": untriagedExemption("UNTRIAGED"),
+  "smoke:plane3-activation:auth": untriagedExemption("UNTRIAGED"),
+  "smoke:plane3-gate:auth": untriagedExemption("UNTRIAGED"),
+  "smoke:self-serve-join-coverage:auth": untriagedExemption("UNTRIAGED"),
 };
 
 /**
