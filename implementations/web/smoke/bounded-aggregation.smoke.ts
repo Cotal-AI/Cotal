@@ -151,7 +151,7 @@ async function floodArm(ep: CotalEndpoint): Promise<number> {
 
 const CHANNELS = 40;
 const PER_CHANNEL = 120;
-const DMS = 1200;
+const DMS = 2000;
 const ONE_WAY_MS = 80;
 // CALIBRATED, and the calibration is part of the experiment. Too slow and NOTHING completes inside
 // the deadline, which makes the pooled and flood arms both zero and §3 unable to distinguish them;
