@@ -696,3 +696,8 @@ smoke:workflow-concurrency
 # the suite. This compiler-API intersection checks every named workspace import against the package's
 # public exports. Appended so every existing shard assignment remains unchanged.
 smoke:workspace-import-exports
+
+# cotal_send still creates ad hoc channels, but the success receipt must let a
+# caller TELL a new name from a known one. Issue #989. Appended so every
+# existing shard assignment remains unchanged.
+smoke:send-channel-receipt
