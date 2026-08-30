@@ -243,8 +243,8 @@ export async function activateStaticLifecycle(
 }
 
 /** The static TERMINAL (F1, the (b2) order): freeze-under-the-retirement-op -> head
- *  `active -> retiring` -> B1 ledger revoke -> cleanup (the injected footprint teardown; the
- *  process kill — static "eviction" — already happened on the manager's stop path) -> gate
+ *  `active -> retiring` -> B1 ledger revoke -> broker connection eviction -> cleanup (the injected
+ *  footprint teardown; on a normal stop the manager separately proves runtime exit) -> gate
  *  `frozen -> retired` -> head `retiring -> retired` LAST -> slot `retired` (the alias frees).
  *  Every gate/head step DELEGATES to the shared core saga; recovery recognizes a SAME-OP
  *  terminal gate and finishes the head (the lost-ack alias wedge the panel closed).
@@ -326,9 +326,9 @@ export async function runStaticTerminal(
     await headBeginRetirement(t, { owner: args.owner, actor: args.actor, lifecycleUid: args.lifecycleUid, opId: args.opId });
   await revokeStaticCredentialRows(t, args.lifecycleUid, slot.row.credentialIds, hooks.log);
   // A crash may leave the prior seat process alive after its manager disappeared. Deny-new is
-  // durable above; prove kill-live before cleanup touches its live broker bindings, then before
-  // retiring the gate/head and freeing the alias. Failure leaves the lifecycle terminalizing, so
-  // the successor can never coexist with the orphan.
+  // durable above; verify the predecessor principal has no live broker connections before cleanup,
+  // then before retiring the gate/head and freeing the alias. This does not reap the OS process.
+  // Failure leaves the lifecycle terminalizing, so a successor never gains simultaneous broker rails.
   const principal = principalKey(args.owner, args.actor).key;
   hooks.log(`verify-evicting orphan seat principal ${principal} before lifecycle cleanup`);
   await evictAndAudit(t, args, hooks.evict);
@@ -361,14 +361,14 @@ export function planStaticSlotResume(row: StaticManagedSlotRow, adopted: boolean
       return "none";
     case "provisioning":
     case "terminalizing":
-      // A crashed spawn (its process never joined) or a crashed terminal: both re-drive the
+      // A crashed spawn (it never reached managed ownership) or a crashed terminal: both re-drive the
       // exact-op terminal (runStaticTerminal is total over the partial durable states).
       return "drive-terminal";
     case "active":
       // `adopted` is genuine live membership (the manager holds this incarnation as a managed
-      // agent). Adopted -> the live process owns it, leave it. NOT adopted -> the process is gone
-      // (a non-preserving restart, or an orphan the resume did not claim): the incarnation is
-      // dead, terminalize. The CALLER supplies `adopted` correctly per sweep: a boot sweep with a
+      // agent). Adopted -> this manager owns the live incarnation, leave it. NOT adopted -> no live
+      // managed owner claimed the incarnation (a non-preserving restart, or an orphan the resume did
+      // not claim): contain its broker authority and terminalize. The CALLER supplies `adopted` correctly per sweep: a boot sweep with a
       // resume pending DEFERS active slots (adoption has not run yet) rather than passing a false
       // adopted; the post-adoption sweep passes true membership.
       return adopted ? "none" : "drive-terminal";
