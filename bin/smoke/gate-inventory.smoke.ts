@@ -63,15 +63,16 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const BROKEN = "BROKEN:";
 
 type UngatedExemption = { reason: string; recheckBy: string };
-const RECHECK = "2026-11-30";
-const exemption = (reason: string): UngatedExemption => ({ reason, recheckBy: RECHECK });
+const EXPECTED_EXEMPTIONS = 20;
+const standing = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-11-30" });
+const untriaged = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-09-30" });
 
 const UNGATED: Record<string, UngatedExemption> = {
   // Need external tooling no CI runner has.
-  "smoke:orca:live": exemption("drives the public orca CLI"),
-  "smoke:orca-e2e:live": exemption("drives the public orca CLI"), "smoke:pi": exemption("needs a pi install"), "smoke:codex-live": exemption("needs a logged-in codex CLI"),
-  "smoke:codex-tui-live": exemption("needs a codex TUI session"),
-  "smoke:jcode-live": exemption("needs an installed, authenticated jcode CLI (COTAL_E2E_JCODE=1)"),
+  "smoke:orca:live": standing("drives the public orca CLI"),
+  "smoke:orca-e2e:live": standing("drives the public orca CLI"), "smoke:pi": standing("needs a pi install"), "smoke:codex-live": standing("needs a logged-in codex CLI"),
+  "smoke:codex-tui-live": standing("needs a codex TUI session"),
+  "smoke:jcode-live": standing("needs an installed, authenticated jcode CLI (COTAL_E2E_JCODE=1)"),
   // A STANDING DECISION, and only for the REAL-SESSION arm. The same suite is GATED as
   // `smoke:agui-map`, pointed at a fixture DERIVED from a real session by
   // `scripts/redact-claude-session.mjs` (whitelist by construction, identifiers pseudonymised
@@ -80,22 +81,22 @@ const UNGATED: Record<string, UngatedExemption> = {
   // TODAY's harness rather than a snapshot, so a new `origin.kind` shows up here as a throw before
   // it shows up in production; and it shares no assumption with the redactor, which itself encodes
   // a belief about which fields matter and could be wrong in the same direction as the mapper.
-  "smoke:agui-map:real": exemption("names an operator's own uncommittable session JSONL (COTAL_AGUI_SESSION); the fixture arm is gated as smoke:agui-map"),
+  "smoke:agui-map:real": standing("names an operator's own uncommittable session JSONL (COTAL_AGUI_SESSION); the fixture arm is gated as smoke:agui-map"),
   // Full-stack live suites: boot a real broker + install tree, too slow/stateful for the PR gate.
-  "smoke:manager-singleton:live": exemption("full live stack"), "smoke:seed-tarball:live": exemption("packs a tarball"),
+  "smoke:manager-singleton:live": standing("full live stack"), "smoke:seed-tarball:live": standing("packs a tarball"),
   // `smoke:user-spawn:live` left this list when it was gated: it had thrown at section B1e on a
   // missing explicit `tls` and stopped after 14 of its 66 cells, and being ungated is why nobody
   // heard about it. "Too slow for the gate" was 105 seconds.
   // Untriaged debt. These are the ones that should shrink.
-  "smoke:attention": exemption("UNTRIAGED"),
-  "smoke:attention:auth": exemption("UNTRIAGED"),
- "smoke:delivery-boot-retry:auth": exemption("UNTRIAGED"),
-  "smoke:delivery-broker-coupling": exemption("UNTRIAGED"), "smoke:delivery-old-manager": exemption("UNTRIAGED"),
-  "smoke:feedback": exemption("UNTRIAGED"),
-  "smoke:lifecycle-files": exemption("UNTRIAGED"), "smoke:manager-console": exemption("UNTRIAGED"),
-  "smoke:plane3-activation:auth": exemption("UNTRIAGED"),
-  "smoke:plane3-gate:auth": exemption("UNTRIAGED"),
-  "smoke:self-serve-join-coverage:auth": exemption("UNTRIAGED"),
+  "smoke:attention": untriaged("UNTRIAGED"),
+  "smoke:attention:auth": untriaged("UNTRIAGED"),
+ "smoke:delivery-boot-retry:auth": untriaged("UNTRIAGED"),
+  "smoke:delivery-broker-coupling": untriaged("UNTRIAGED"), "smoke:delivery-old-manager": untriaged("UNTRIAGED"),
+  "smoke:feedback": untriaged("UNTRIAGED"),
+  "smoke:lifecycle-files": untriaged("UNTRIAGED"), "smoke:manager-console": untriaged("UNTRIAGED"),
+  "smoke:plane3-activation:auth": untriaged("UNTRIAGED"),
+  "smoke:plane3-gate:auth": untriaged("UNTRIAGED"),
+  "smoke:self-serve-join-coverage:auth": untriaged("UNTRIAGED"),
 };
 
 /**
@@ -246,8 +247,8 @@ if (unexplained.length) {
   console.log(`  ✓ every ungated suite is listed with a reason`);
 }
 
-console.log(`  exemption freshness examined: ${exemptionReviews.examined} of ${Object.keys(UNGATED).length}`);
-if (exemptionReviews.examined !== Object.keys(UNGATED).length) {
+console.log(`  exemption freshness examined: ${exemptionReviews.examined} of ${EXPECTED_EXEMPTIONS}`);
+if (exemptionReviews.examined !== EXPECTED_EXEMPTIONS) {
   fail++;
   console.log(`  ✗ FAIL: exemption freshness did not examine every UNGATED entry`);
 } else if (expiryControl.examined !== 1 || expiryControl.expired.length !== 1) {
