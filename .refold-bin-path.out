@@ -1,4 +1,0 @@
-$ tsx packages/workspace/smoke/bin-path.smoke.ts
-  ✓ relative PATH entries resolve to the exact absolute executable
-
-1 checks passed
