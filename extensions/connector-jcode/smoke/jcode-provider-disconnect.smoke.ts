@@ -265,7 +265,7 @@ try {
     safetyBridges.length === 2 && alive(safetyBridges[1]!.pid),
     safetyBridges,
   );
-  console.log(`\nJCODE PROVIDER-DISCONNECT SMOKE PASSED (${pass} checks)`);
+  console.log(`\nJCODE PROVIDER-DISCONNECT SMOKE: ${pass} checks passed`);
 } finally {
   if (child && child.exitCode === null) child.kill("SIGKILL");
   if (safetyChild && safetyChild.exitCode === null) safetyChild.kill("SIGKILL");

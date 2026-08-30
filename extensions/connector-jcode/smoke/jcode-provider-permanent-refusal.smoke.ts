@@ -6,7 +6,9 @@ import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { HarnessError } from "@1jehuang/jcode-sdk";
 import { CotalEndpoint, isReachable, seedChannelRegistry } from "@cotal-ai/core";
+import { PERMANENT_BRIDGE_RECOVERY_CODES, permanentBridgeRecoveryFailure } from "../src/host.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function freePort(): Promise<number> {
@@ -51,6 +53,31 @@ const entries = (): Array<{ ev: string; [key: string]: unknown }> =>
   existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
 
 try {
+  const directCodes = [
+    "handshake_failed",
+    "invalid_instance_home",
+    "invalid_request",
+    "jcode_not_found",
+    "unknown_request",
+    "unknown_session",
+    "unsupported_version",
+  ];
+  check(
+    "the direct permanent classifier has exactly seven named SDK codes",
+    PERMANENT_BRIDGE_RECOVERY_CODES.size === 7 &&
+      directCodes.every((code) => PERMANENT_BRIDGE_RECOVERY_CODES.has(code)),
+    [...PERMANENT_BRIDGE_RECOVERY_CODES],
+  );
+  check(
+    "all seven direct SDK refusal categories classify as permanent",
+    directCodes.filter((code) => permanentBridgeRecoveryFailure(new HarnessError(code, "synthetic refusal"))).length === 7,
+  );
+  const denied = new HarnessError("connect_failed", "permission denied");
+  denied.cause = Object.assign(new Error("permission denied"), { code: "EACCES" });
+  check("connect_failed with EACCES classifies as permanent", permanentBridgeRecoveryFailure(denied));
+  const unknown = new HarnessError("future_sdk_code", "future refusal");
+  check("an unknown HarnessError code remains transient by default", !permanentBridgeRecoveryFailure(unknown));
+
   mkdirSync(shimDir, { recursive: true });
   writeFileSync(shim, `#!/bin/sh\nexec "${process.execPath}" "${fake}" "$@"\n`);
   chmodSync(shim, 0o755);
@@ -128,7 +155,7 @@ try {
       !stderr.includes("replacement not ready yet; retrying"),
     { code: child.exitCode, launches: launches.length, refusals: refusals.length, stderr },
   );
-  console.log(`\nJCODE PROVIDER PERMANENT-REFUSAL SMOKE PASSED (${passed} checks)`);
+  console.log(`\nJCODE PROVIDER PERMANENT-REFUSAL SMOKE: ${passed} checks passed`);
 } finally {
   if (child && child.exitCode === null) child.kill("SIGKILL");
   for (const entry of entries()) {

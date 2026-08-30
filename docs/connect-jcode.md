@@ -84,7 +84,9 @@ that unacknowledged batch only after the session attaches. Each failed replaceme
 stopped before another launch. A permanent Harness refusal, including an invalid request, missing
 session, protocol mismatch, missing binary, or socket permission denial, ends the seat immediately;
 another launch cannot change it. An unprovable teardown, the recovery window expiring, or a second
-disconnect after a successful replacement also ends the seat.
+disconnect after a successful replacement also ends the seat. An unrecognized Harness SDK error
+code remains transient by default and retries inside the same bounded window; new permanent codes
+must be added to the explicit classifier and its exact-count regression.
 
 Jcode currently supports **stdio** MCP servers. The connector writes only its own `cotal` entry to
 the private `JCODE_HOME/mcp.json`; it starts a stdio MCP bridge for that entry and relays its calls
