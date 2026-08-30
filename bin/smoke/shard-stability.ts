@@ -316,20 +316,22 @@ if (headCount !== declaredHeadCount) {
 }
 console.log(`shard counts ${baseCount} -> ${headCount}, read from ci.yml at ${base.slice(0, 8)} and ${head.slice(0, 8)}`);
 
-const readRaw = (sha: string): string => {
+const readBlob = (sha: string, path: string): string => {
   // EXIT 2, NOT 1, when the input cannot be read. Exit 1 means "re-shard detected";
   // a bad sha must not be indistinguishable from a real defect, or a CI job wiring
   // this in reports a typo as a production finding. The bogus-sha control once returned
   // exit 1 where the README promised 2.
   try {
-    return execFileSync("git", ["--no-replace-objects", "show", `${sha}:bin/smoke/ci-suites.txt`], {
+    return execFileSync("git", ["--no-replace-objects", "show", `${sha}:${path}`], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch {
-    verdict("ABORT", `cannot read bin/smoke/ci-suites.txt at '${sha}' (bad sha, or not a worktree of this repo)`, 2);
+    verdict("ABORT", `cannot read ${path} at '${sha}' (bad sha, or not a worktree of this repo)`, 2);
   }
 };
+
+const readRaw = (sha: string): string => readBlob(sha, "bin/smoke/ci-suites.txt");
 
 const read = (sha: string): string[] => {
   const raw = readRaw(sha);
@@ -343,6 +345,27 @@ const read = (sha: string): string[] => {
   return list;
 };
 
+const fragmentPaths = (sha: string): string[] => {
+  try {
+    return execFileSync(
+      "git",
+      ["--no-replace-objects", "ls-tree", "-r", "--name-only", sha, "--", "bin/smoke/ci-suites.d"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    ).split("\n").map((line) => line.trim()).filter((line) => line.endsWith(".txt")).sort();
+  } catch {
+    verdict("ABORT", `cannot enumerate bin/smoke/ci-suites.d at '${sha}'`, 2);
+  }
+};
+
+const fragments = (sha: string): string[] => fragmentPaths(sha).map((path) => {
+  const list = readBlob(sha, path).split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("#"));
+  if (list.length !== 1)
+    verdict("ABORT", `${path} at '${sha}' must contain exactly one suite, got ${list.length}`, 2);
+  return list[0];
+});
+
 const shardOf = (list: string[], count: number) => {
   const m = new Map<string, number>();
   list.forEach((suite, index) => { if (!m.has(suite)) m.set(suite, index % count); });
@@ -352,6 +375,22 @@ const shardOf = (list: string[], count: number) => {
 const moved = (a: string[], b: string[], aCount: number, bCount: number): string[] => {
   const sa = shardOf(a, aCount), sb = shardOf(b, bCount);
   return [...sa.keys()].filter((suite) => sb.has(suite) && sa.get(suite) !== sb.get(suite));
+};
+
+const fragmentShard = (suite: string, count: number): number =>
+  createHash("sha256").update(suite).digest().readUInt32BE(0) % count;
+
+const assignment = (legacy: string[], fragmentSuites: string[], count: number): Map<string, number> => {
+  const out = shardOf(legacy, count);
+  for (const suite of fragmentSuites) if (!out.has(suite)) out.set(suite, fragmentShard(suite, count));
+  return out;
+};
+
+const movedRegistry = (
+  aLegacy: string[], aFragments: string[], bLegacy: string[], bFragments: string[], aCount: number, bCount: number,
+): string[] => {
+  const a = assignment(aLegacy, aFragments, aCount), b = assignment(bLegacy, bFragments, bCount);
+  return [...a.keys()].filter((suite) => b.has(suite) && a.get(suite) !== b.get(suite));
 };
 
 // #1011: every ci-suites.txt entry ends its comment with the same sentence, "Appended;
@@ -389,7 +428,7 @@ const replaceRefRuntimeControl = (): boolean => {
     delete env[name];
   }
   try {
-    mkdirSync(join(root, "bin/smoke"), { recursive: true });
+    mkdirSync(join(root, "bin/smoke/ci-suites.d"), { recursive: true });
     const verifier = execFileSync(
       "git",
       ["--no-replace-objects", "show", `${head}:bin/smoke/verify-shard-inputs.sh`],
@@ -397,6 +436,7 @@ const replaceRefRuntimeControl = (): boolean => {
     );
     const inputs = new Map([
       ["bin/smoke/ci-suites.txt", "smoke:first\nsmoke:second\n"],
+      ["bin/smoke/ci-suites.d/control.txt", "smoke:fragment\n"],
       ["bin/smoke/ci-suites.mjs", "export {};\n"],
       ["bin/smoke/shard.mjs", "export {};\n"],
       ["bin/smoke/reap-smoke-brokers.mjs", "export {};\n"],
@@ -421,11 +461,12 @@ const replaceRefRuntimeControl = (): boolean => {
     const original = git(["rev-parse", "HEAD"]);
 
     writeFileSync(join(root, "bin/smoke/ci-suites.txt"), "smoke:first\n");
+    writeFileSync(join(root, "bin/smoke/ci-suites.d/control.txt"), "smoke:changed-fragment\n");
     writeFileSync(
       join(root, "bin/smoke/verify-shard-inputs.sh"),
       "#!/usr/bin/env bash\nexit 0\n",
     );
-    git(["add", "bin/smoke/ci-suites.txt", "bin/smoke/verify-shard-inputs.sh"]);
+    git(["add", "bin/smoke/ci-suites.txt", "bin/smoke/ci-suites.d/control.txt", "bin/smoke/verify-shard-inputs.sh"]);
     const tree = git(["write-tree"]);
     const replacement = git(["commit-tree", tree, "-p", original, "-m", "control: replacement tree"]);
     git(["replace", original, replacement]);
@@ -445,9 +486,7 @@ const replaceRefRuntimeControl = (): boolean => {
       ],
       { cwd: root, env, encoding: "utf8" },
     );
-    return result.status === 2 && result.stderr.includes(
-      "tracked shard input changed after checkout: bin/smoke/ci-suites.txt",
-    );
+    return result.status === 2 && /tracked shard (?:input|fragment inventory) changed after checkout/.test(result.stderr);
   } catch {
     return false;
   } finally {
@@ -456,7 +495,8 @@ const replaceRefRuntimeControl = (): boolean => {
 };
 
 const A = read(base), B = read(head);
-const changed = moved(A, B, baseCount, headCount);
+const AF = fragments(base), BF = fragments(head);
+const changed = movedRegistry(A, AF, B, BF, baseCount, headCount);
 
 // --- controls, printed before the verdict ---
 const forced = moved(A, [...A.slice(0, 10), "smoke:FORCED-CONTROL", ...A.slice(10)], baseCount, baseCount);
@@ -686,12 +726,13 @@ if (
   verdict("ABORT", "controls failed, this run cannot be trusted", 2);
 }
 
-const added = B.filter((suite) => !A.includes(suite));
-const removed = A.filter((suite) => !B.includes(suite));
+const allA = [...A, ...AF], allB = [...B, ...BF];
+const added = allB.filter((suite) => !allA.includes(suite));
+const removed = allA.filter((suite) => !allB.includes(suite));
 const claimViolations = appendedClaimViolations(A, readRaw(head));
 console.log(`\n${base.slice(0, 8)} -> ${head.slice(0, 8)}  @${baseCount}->${headCount} shards`);
-console.log(`  suites: ${A.length} -> ${B.length} · added ${added.length} · removed ${removed.length}`);
-console.log(`  pre-existing suites CHANGING SHARD: ${changed.length} of ${A.length}`);
+console.log(`  suites: ${allA.length} -> ${allB.length} · added ${added.length} · removed ${removed.length}`);
+console.log(`  pre-existing suites CHANGING SHARD: ${changed.length} of ${allA.length}`);
 if (changed.length > 0) {
   console.log(`  first few: ${changed.slice(0, 5).join(", ")}`);
 }
@@ -700,7 +741,7 @@ if (claimViolations.length > 0) {
 }
 if (changed.length > 0 || claimViolations.length > 0) {
   const remedy = baseCount === headCount
-    ? "Append new suites at the END of ci-suites.txt."
+    ? "Keep ci-suites.txt frozen; add new suites as one-file fragments under ci-suites.d."
     : `The shard matrix changed ${baseCount} -> ${headCount}; review every reassignment as deliberate.`;
   const claimNote = claimViolations.length > 0
     ? ` FALSE "Appended" CLAIM on ${claimViolations.join(", ")}: the sentence is validated against position (#1011); a new entry carrying it must sit after every pre-existing suite.`
