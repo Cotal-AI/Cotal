@@ -134,7 +134,7 @@ try {
   const epNc = (ep as unknown as { nc: import("@nats-io/transport-node").NatsConnection }).nc;
   const priv = ep as unknown as {
     lastMatchingSeq(js: unknown, stream: string, subject: string): Promise<number>;
-    drainWindow(js: unknown, stream: string, subject: string, start: number, ceiling: number): Promise<unknown[]>;
+    drainWindow(js: unknown, stream: string, subject: string, start: number, ceiling: number, limit: number): Promise<unknown[]>;
   };
   const CHAT = `CHAT_${SPACE}`;
   const TALK = `cotal.${SPACE}.chat.*.*.talk`;
@@ -149,16 +149,18 @@ try {
         ...real.consumers,
         get: async (...args: unknown[]) => {
           const c = await (real.consumers.get as (...a: unknown[]) => Promise<Record<string, unknown>>).apply(real.consumers, args);
-          const realFetch = (c.fetch as (o?: unknown) => Promise<AsyncIterable<unknown>>).bind(c);
+          const truncate = (inner: AsyncIterable<unknown> & { stop?: () => void }) => {
+            const gen = (async function* () {
+              let n = 0;
+              for await (const m of inner) { if (n++ >= cut) return; yield m; }
+            })();
+            return Object.assign(gen, { stop: () => inner.stop?.() });
+          };
+          const realFetch = (c.fetch as (o?: unknown) => Promise<AsyncIterable<unknown> & { stop?: () => void }>).bind(c);
+          const realConsume = (c.consume as (o?: unknown) => Promise<AsyncIterable<unknown> & { stop?: () => void }>).bind(c);
           return Object.assign(Object.create(c as object), {
-            fetch: async (o?: unknown) => {
-              const inner = await realFetch(o);
-              const gen = (async function* () {
-                let n = 0;
-                for await (const m of inner) { if (n++ >= cut) return; yield m; }
-              })();
-              return Object.assign(gen, { stop: () => (inner as { stop?: () => void }).stop?.() });
-            },
+            fetch: async (o?: unknown) => truncate(await realFetch(o)),
+            consume: async (o?: unknown) => truncate(await realConsume(o)),
           });
         },
       },
@@ -178,7 +180,7 @@ try {
   // 2. Window drain: cut after 3 of the pending batch, ending cleanly. Returning those 3 is what
   //    made a cut-short read look like a convincing short page.
   let drainThrew: unknown;
-  await priv.drainWindow(truncatingJs(3), CHAT, TALK, 1, 10_000).then(
+  await priv.drainWindow(truncatingJs(3), CHAT, TALK, 1, 10_000, 100).then(
     (r) => { drainThrew = `RETURNED ${(r as unknown[]).length} messages`; },
     (e) => { drainThrew = e; },
   );
