@@ -18,7 +18,7 @@
  * Run: pnpm smoke:segmented-runtime-records
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -27,7 +27,7 @@ import {
 import { deliveryLiveness, deliveryUp, stopDelivery } from "../src/lib/delivery-proc.js";
 import { managerHasDeliveryMarker, managerLiveness, managerUp, stopManager } from "../src/lib/manager-proc.js";
 
-const ALPHA = "segrec-alpha", BETA = "segrec-beta";
+const ALPHA = "segrec-alpha", BETA = "segrec-beta", GAMMA = "segrec-gamma";
 const root = mkdtempSync(join(tmpdir(), "cotal-segrec-"));
 mkdirSync(join(root, ".cotal"), { recursive: true });
 const cwd = process.cwd();
@@ -129,6 +129,26 @@ try {
   } catch (e) {
     check("both records present throws rather than picking one", /ambiguous/.test((e as Error).message), (e as Error).message);
   }
+
+  console.log("\n7) an OPEN-MODE root: the folder's own daemon is found without naming its space");
+  // The space a folder operates on is read from its `.cotal/auth` account records. An open mesh
+  // (`broker: { auth: false }`) has none, so that read answers with the DEFAULT space while the
+  // manager here runs under the mesh's own. A root-scoped `manager.pid` was space-blind and hid
+  // this; a per-space record does not, and a bare `cotal down` that cannot name the space walks
+  // past a live manager, reports the broker stopped and exits 0. Every helper below is called with
+  // NO space, which is what `down`, `status` and the delivery preflight do.
+  rmSync(join(root, ".cotal", "manager.pid"), { force: true });
+  rmSync(record(MANAGER_PIDFILE, ALPHA), { force: true });
+  const solo = daemon();
+  const soloPid = solo.pid!;
+  place(MANAGER_PIDFILE, GAMMA, soloPid);
+  check("the folder-default read FINDS it, with no auth material to name the space", managerUp(),
+    { liveness: managerLiveness(), children: readdirSync(join(root, ".cotal")) });
+  check("...and it is the recorded process, not a coincidence", managerLiveness() === "alive");
+  const soloStop = await stopManager();
+  await waitDead(soloPid);
+  check("...and a bare stop REAPS it rather than orphaning it", soloStop === "stopped" && !alive(soloPid), soloStop);
+  check("...and the record it acted on is gone", !existsSync(record(MANAGER_PIDFILE, GAMMA)));
 } finally {
   process.chdir(cwd);
   for (const child of children) if (child.pid && alive(child.pid)) { try { process.kill(child.pid, "SIGKILL"); } catch { /* gone */ } }
