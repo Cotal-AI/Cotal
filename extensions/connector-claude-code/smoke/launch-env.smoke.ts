@@ -39,6 +39,13 @@ for (const k of CLAUDE_PROVIDER_KEYS) process.env[k] = `smoke-${k}`;
 for (const k of HOST_MARKERS) process.env[k] = `parent-${k}`;
 for (const k of UNRELATED) process.env[k] = `parent-${k}`;
 
+// Windows environment names are case-insensitive but preserve their source casing. Model the
+// common `Path` spelling so this suite exercises the same scrub path on every platform.
+const path = process.env.PATH ?? process.env.Path;
+delete process.env.PATH;
+delete process.env.Path;
+if (path !== undefined) process.env.Path = path;
+
 const env = claudeConnector.buildLaunch({ space: "smoke", name: "claude-1" } as never).env ?? {};
 
 check(
@@ -73,7 +80,12 @@ for (const k of UNRELATED) {
   check(`${k} was withheld (not a declared auth var)`, !(k in env));
 }
 
-check("PATH present so the seat still launches", typeof env.PATH === "string" && env.PATH.length > 0);
+const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path");
+check(
+  "PATH present so the seat still launches",
+  pathKey !== undefined && typeof env[pathKey] === "string" && env[pathKey].length > 0,
+  pathKey,
+);
 
 const opted = claudeConnector.buildLaunch({
   space: "smoke",
