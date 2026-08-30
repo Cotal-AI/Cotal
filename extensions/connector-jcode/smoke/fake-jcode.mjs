@@ -212,6 +212,13 @@ const server = createServer((socket) => {
             reply({ ev: "ok" });
           } else {
             event({ ev: "message_accepted", session_id: frame.session_id });
+            // A real Harness reports idle between tool rounds while the host's run() is still
+            // awaiting turn_done. That is the #1075 idle-during-drive wedge: the connector used
+            // that advisory status to refuse soft_interrupt even though the Cotal-owned turn was live.
+            if (process.env.FAKE_JCODE_IDLE_DURING_TURN === "1") {
+              log({ ev: "idle_during_turn", session_id: frame.session_id });
+              event({ ev: "session_status", session_id: frame.session_id, status: "idle" });
+            }
             const closeOnContent = process.env.FAKE_JCODE_CLOSE_ON_CONTENT;
             const closeAlwaysOnContent = process.env.FAKE_JCODE_CLOSE_ALWAYS_ON_CONTENT;
             const closeOnceFile = process.env.FAKE_JCODE_CLOSE_ONCE_FILE;
@@ -237,6 +244,21 @@ const server = createServer((socket) => {
                 if (process.env.FAKE_JCODE_NEVER_ORIENTATION !== "1" && orientationTurns > readyAfter) {
                   log({ ev: "orientation_done", turn: orientationTurns });
                   event({ ev: "tool_done", session_id: frame.session_id, call_id: "orientation", name: "mcp__cotal__cotal_orientation", output: "ok" });
+                  const externalMs = Number(process.env.FAKE_JCODE_EXTERNAL_TURN_MS ?? "0");
+                  if (externalMs > 0) {
+                    // A TUI-owned turn: the session is busy without a host send_message. The host
+                    // only learns this from session_status. Delay past mesh join so the incoming
+                    // handler is armed before the seat looks busy.
+                    setTimeout(() => {
+                      log({ ev: "external_turn", status: "working", session_id: frame.session_id });
+                      event({ ev: "session_status", session_id: frame.session_id, status: "working" });
+                      setTimeout(() => {
+                        log({ ev: "external_turn", status: "idle", session_id: frame.session_id });
+                        event({ ev: "session_status", session_id: frame.session_id, status: "idle" });
+                        event({ ev: "turn_done", session_id: frame.session_id });
+                      }, externalMs);
+                    }, 400);
+                  }
                 }
               }
               event({ ev: "text_delta", session_id: frame.session_id, text: "fake reply" });
