@@ -199,6 +199,79 @@ export function reclaimDeadPreUpgradeRecord(template: string, context: LocalProc
   }
 }
 
+/** A space this root holds a runtime record for, with the one fact a caller has to act on. */
+export interface RecordedRuntimeSpace {
+  readonly space: string;
+  /** False only when EVERY record for this space is provably not a process (empty husk, or a pid
+   *  ESRCH-proven dead). An unparsable record or a pid the kernel will not answer for counts as
+   *  possibly running: the same fail-closed direction `down`'s dependant guard takes, because the
+   *  cost of the other reading is walking past a live daemon. */
+  readonly mayBeRunning: boolean;
+}
+
+/**
+ * The spaces whose runtime daemons THIS ROOT has recorded, read off the record filenames.
+ *
+ * A root's space is otherwise derived from its `.cotal/auth` account records, and an OPEN mesh
+ * (`broker: { auth: false }`) has none — so that derivation answers with the default space while the
+ * mesh runs under its own name. A root-scoped `manager.pid` was space-blind and hid that; a
+ * per-space record does not, and a `cotal down` that cannot name the space walks past a live manager
+ * and exits 0. The records themselves are the one source that always knows: `spaceKey` is injective
+ * UTF-8 hex, so the name a start wrote decodes back to the space it wrote it for.
+ *
+ * THE PID RECORDS ONLY. They are what "a daemon is running here" means; the log and the
+ * delivery-aware marker are siblings of a record rather than evidence of their own. A
+ * PRE-SEGMENTATION root-scoped record names no space and contributes none — the folder's own space
+ * still resolves it, through the candidate list in {@link localProcessPath}.
+ */
+export function recordedRuntimeSpaces(root: string): RecordedRuntimeSpace[] {
+  const dir = join(root, ".cotal");
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return []; // no `.cotal` → nothing is recorded here
+  }
+  const found = new Map<string, boolean>();
+  for (const name of names)
+    for (const template of [MANAGER_PIDFILE, DELIVERY_PIDFILE]) {
+      const space = spaceFromRecordName(template, name);
+      if (space === undefined) continue;
+      found.set(space, (found.get(space) ?? false) || recordMayBeRunning(join(dir, name)));
+    }
+  return [...found].map(([space, mayBeRunning]) => ({ space, mayBeRunning })).sort((a, b) => a.space.localeCompare(b.space));
+}
+
+/** The space a canonical record filename encodes, or undefined when the name is not one
+ *  {@link canonicalLocalProcessPath} wrote for this template (wrong fixed parts, non-hex body, or a
+ *  body that does not round-trip back to the same name). Same predicate as the account-file and
+ *  path-segment decoders: enumeration must never read a stray as a tenant. */
+function spaceFromRecordName(template: string, name: string): string | undefined {
+  const at = template.indexOf("{space}");
+  if (at < 0) return undefined;
+  const prefix = template.slice(0, at), suffix = template.slice(at + "{space}".length);
+  if (!name.startsWith(prefix) || !name.endsWith(suffix) || name.length <= prefix.length + suffix.length) return undefined;
+  const key = name.slice(prefix.length, name.length - suffix.length);
+  if (key.length % 2 !== 0 || !/^[0-9a-f]+$/.test(key)) return undefined;
+  const space = Buffer.from(key, "hex").toString("utf8");
+  return space.length > 0 && spaceKey(space) === key ? space : undefined;
+}
+
+/** Whether a record file might still front a process. See {@link RecordedRuntimeSpace.mayBeRunning}
+ *  for the direction and why it is that one. */
+function recordMayBeRunning(path: string): boolean {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8").trim();
+  } catch {
+    return false; // removed under us → nothing to address
+  }
+  if (raw === "") return false; // pre-protocol husk: no process behind it
+  const pid = parsePid(raw);
+  if (pid === undefined) return true; // unattributable: cannot prove it gone
+  return probeLiveness(pid) !== "dead"; // alive OR unknown; only ESRCH clears it
+}
+
 /** Byte-exact existence: an entry named exactly `basename(p)` in its parent dir. `existsSync` on a
  *  case-insensitive filesystem reports a case-folded sibling as present, which for a legacy pidfile
  *  lookup would match a DIFFERENT space's file; this matches only the exact name. */

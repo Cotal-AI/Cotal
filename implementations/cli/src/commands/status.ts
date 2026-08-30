@@ -22,7 +22,7 @@ import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, extensionVersions } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
-import { machineStatus, resolveSpace, webUp, WEB_URL, type MachineStatus } from "../lib/status.js";
+import { machineStatus, resolveRuntimeSpace, webUp, WEB_URL, type MachineStatus } from "../lib/status.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { c, statusBadge } from "../ui.js";
@@ -173,7 +173,20 @@ function printProject(root: string, cmd: string): void {
     return;
   }
   const userDisk = auth && hasUserAuthState(root, auth.space);
-  const context: LocalProcessContext = { root, space: auth?.space ?? resolveSpace(root), userAuth: Boolean(userDisk) };
+  // An open mesh has no account record to name its space, so the folder's space is read off its
+  // runtime records - and a root whose records show two spaces RUNNING has no single answer, the
+  // same shape as the multi-account case above. The process rows below are keyed by one space, so
+  // report that state and stop rather than crashing in the recovery command that names it.
+  let space: string;
+  try {
+    space = auth?.space ?? resolveRuntimeSpace(root);
+  } catch (e) {
+    row("auth", c.dim("none (open/local only)"));
+    row("hint", (e as Error).message);
+    row("personas", personaSummary(root));
+    return;
+  }
+  const context: LocalProcessContext = { root, space, userAuth: Boolean(userDisk) };
   row("auth", auth ? c.green(`space ${auth.space}${userDisk ? " · user-auth" : ""}`) : c.dim("none (open/local only)"));
   row("personas", personaSummary(root));
   let nats: Proc | undefined;

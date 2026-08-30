@@ -9,14 +9,14 @@ import {
 } from "@cotal-ai/core";
 import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, deliveryCredsKey, findCotalRoot, getSoleSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, reclaimDeadPreUpgradeRecord, segmentedKey, type LivenessProbe, type LocalProcessContext, workspaceSecretStore } from "@cotal-ai/workspace";
 import { selfArgv } from "./self-exec.js";
-import { resolveSpace } from "./status.js";
+import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
 import { MANAGER_PID_PATH, ensureManager, managerHasDeliveryMarker, managerLiveness, stopManager, type SignalFn } from "./manager-proc.js";
 
 /** The space this folder's commands mean, and the per-space record paths over it. The daemon is
  *  minted a space-scoped cred and binds that space's durables, so a root-scoped record gave one root
  *  one daemon by filename; every helper below therefore takes the space it is answering about. */
-const folderSpace = (): string => resolveSpace(process.cwd());
+const folderSpace = (): string => resolveRuntimeSpace(process.cwd());
 const ctx = (space: string): LocalProcessContext => ({ root: cotalRoot(), space });
 /** READ-resolving: also names a pre-segmentation `delivery.pid` when that is what is on disk. */
 const PID_PATH = (space: string = folderSpace()): string => localProcessPath(DELIVERY_PIDFILE, ctx(space));

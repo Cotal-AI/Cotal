@@ -137,8 +137,15 @@ try {
   // this; a per-space record does not, and a bare `cotal down` that cannot name the space walks
   // past a live manager, reports the broker stopped and exits 0. Every helper below is called with
   // NO space, which is what `down`, `status` and the delivery preflight do.
+  // Down to ONE space here: the cells above deliberately left a second tenant and the ambiguous pair
+  // in place. A folder that really does host two live spaces is refused rather than guessed at (8).
   rmSync(join(root, ".cotal", "manager.pid"), { force: true });
   rmSync(record(MANAGER_PIDFILE, ALPHA), { force: true });
+  process.kill(twin.pid!, "SIGKILL");
+  await stopManager(undefined, undefined, undefined, BETA);
+  await stopDelivery(undefined, undefined, BETA);
+  await waitDead(bPid);
+  await waitDead(d2Pid);
   const solo = daemon();
   const soloPid = solo.pid!;
   place(MANAGER_PIDFILE, GAMMA, soloPid);
@@ -149,6 +156,28 @@ try {
   await waitDead(soloPid);
   check("...and a bare stop REAPS it rather than orphaning it", soloStop === "stopped" && !alive(soloPid), soloStop);
   check("...and the record it acted on is gone", !existsSync(record(MANAGER_PIDFILE, GAMMA)));
+
+  console.log("\n8) two spaces RUNNING under one root is refused, not arbitrated");
+  // The folder-wide commands (`down`, `status`, `clean`) stop and report ONE stack, and the broker,
+  // its store and this root are shared by every space on it - so there is no single right answer
+  // here and picking one silently would stop or report the wrong tenant's daemon.
+  const twoA = daemon(), twoB = daemon();
+  place(MANAGER_PIDFILE, ALPHA, twoA.pid!);
+  place(MANAGER_PIDFILE, BETA, twoB.pid!);
+  try {
+    managerUp();
+    check("a space-less read refuses while two spaces are live (did not throw)", false);
+  } catch (e) {
+    const msg = (e as Error).message;
+    check("a space-less read refuses while two spaces are live, naming both",
+      /records running daemons for 2 spaces/.test(msg) && msg.includes(ALPHA) && msg.includes(BETA), msg);
+  }
+  // Residue must NOT wedge the folder: one space's record outliving its process is a crash, not a
+  // second mesh, and the live one is still the folder's stack.
+  process.kill(twoB.pid!, "SIGKILL");
+  await waitDead(twoB.pid!);
+  check("...but a DEAD record beside a live one names the live space, so a stop still works",
+    managerUp() && managerLiveness() === "alive", { records: readdirSync(join(root, ".cotal")) });
 } finally {
   process.chdir(cwd);
   for (const child of children) if (child.pid && alive(child.pid)) { try { process.kill(child.pid, "SIGKILL"); } catch { /* gone */ } }

@@ -20,6 +20,7 @@ import {
   readMaintenanceJournal,
   releaseMaintenanceLock,
   removeMeshesByRoot,
+  resolveRuntimeSpace,
   resolveSpace,
   rollbackRestore,
   SYSTEM_CREDS_FILES,
@@ -171,7 +172,7 @@ export function liveMeshProcess(root: string, space?: string): string | undefine
  * at a `cotal down` that would not have stopped that mesh at all.
  */
 export function liveMeshOwner(root: string, space?: string): string | undefined {
-  const context: LocalProcessContext = { root, space: space ?? resolveSpace(root) };
+  const context: LocalProcessContext = { root, space: space ?? resolveRuntimeSpace(root) };
   for (const component of localProcessSurface()) {
     if (!component.clearsMesh) continue;
     const state = pidfileState(localProcessPath(component.pidFile, context));
@@ -182,10 +183,10 @@ export function liveMeshOwner(root: string, space?: string): string | undefined 
 
 /** `space` names the tenant whose pidfiles to look at. Pass it whenever the caller already knows
  *  which mesh it means (a registry entry does): re-deriving it from the root can resolve a
- *  DIFFERENT tenant on a multi-space root, and `resolveSpace` throws outright on an unreadable or
+ *  DIFFERENT tenant on a multi-space root, and the derivation throws outright on an unreadable or
  *  ambiguous one — a caller asking a yes/no liveness question should not inherit that failure. */
 export function liveMeshProcesses(root: string, space?: string): string[] {
-  const context: LocalProcessContext = { root, space: space ?? resolveSpace(root) };
+  const context: LocalProcessContext = { root, space: space ?? resolveRuntimeSpace(root) };
   const running: string[] = [];
   for (const component of localProcessSurface()) {
     const state = pidfileState(localProcessPath(component.pidFile, context));

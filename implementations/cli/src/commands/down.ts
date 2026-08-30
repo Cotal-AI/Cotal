@@ -56,7 +56,7 @@ import { extensionNames, localProcessSurface } from "../ext-loader.js";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { parsePid, probeLiveness } from "@cotal-ai/workspace";
-import { resolveSpace } from "../lib/status.js";
+import { resolveRuntimeSpace } from "../lib/status.js";
 import { downManifest } from "./down-manifest.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
@@ -122,7 +122,7 @@ export async function down(args: ParsedArgs): Promise<void> {
   // Both contexts resolve lazily: a purely target-addressed stop must not require a mesh root at
   // the cwd, and a folder sweep must not require a resolvable mesh target.
   let folderContext: LocalProcessContext | undefined;
-  const folderCtx = (): LocalProcessContext => (folderContext ??= { root: cotalRoot(), space: resolveSpace(process.cwd()) });
+  const folderCtx = (): LocalProcessContext => (folderContext ??= { root: cotalRoot(), space: resolveRuntimeSpace(process.cwd()) });
   let targetContext: LocalProcessContext | undefined;
   const contextFor = (component: LocalProcess): LocalProcessContext => {
     if (!targetAddressed(component)) return folderCtx();

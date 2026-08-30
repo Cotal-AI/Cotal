@@ -8,7 +8,7 @@ import { resolveNatsServer } from "./nats-bin.js";
 import { cliVersion } from "./version.js";
 
 // Moved into `@cotal-ai/workspace` (stage 4); re-exported for the CLI's many importers.
-export { resolveSpace } from "@cotal-ai/workspace";
+export { resolveRuntimeSpace, resolveSpace } from "@cotal-ai/workspace";
 
 export interface MeshStatus {
   reachable: boolean;

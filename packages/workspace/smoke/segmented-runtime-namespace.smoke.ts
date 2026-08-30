@@ -27,6 +27,13 @@
  *  4. `RESERVED_COTAL_CHILDREN` REFLECTS THE NEW REALITY. It lists the LITERAL children of
  *     `.cotal/`, and the five runtime records are no longer among them.
  *
+ *  5. THE FOLDER'S SPACE COMES FROM THE RECORDS IT HOLDS. A root's space is otherwise read from its
+ *     `.cotal/auth` account records, and an OPEN mesh has none - so that read answers with the
+ *     default while the daemons here run under the mesh's own space. Space-blind names hid it; a
+ *     per-space name does not, and a folder-wide `down` that cannot name the space walks past a live
+ *     manager. The record filenames decode back to their space, residue never wedges the folder, and
+ *     two spaces genuinely running under one root is refused rather than arbitrated.
+ *
  * Run: pnpm smoke:segmented-runtime-namespace
  */
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -34,8 +41,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spaceKey } from "../src/auth-paths.js";
 import {
-  localProcessPath, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, type LocalProcessContext,
+  canonicalLocalProcessPath, DELIVERY_PIDFILE, localProcessPath, MANAGER_DELIVERY_AWARE_MARKER,
+  MANAGER_PIDFILE, type LocalProcessContext,
 } from "../src/local-process.js";
+import { resolveRuntimeSpace, resolveSpace } from "../src/space.js";
 import { RESERVED_COTAL_CHILDREN } from "../src/space-segmentation.js";
 
 let pass = 0, fail = 0;
@@ -129,6 +138,82 @@ try {
         !RESERVED_COTAL_CHILDREN.includes(name),
         RESERVED_COTAL_CHILDREN,
       );
+  }
+
+  console.log("\n6) the folder's runtime space is read off the records it holds");
+  {
+    // A LIVE record: this process, which is beyond doubt running. A DEAD one: a pid far above any
+    // platform's pid_max, so the kernel answers ESRCH rather than "maybe".
+    const LIVE = String(process.pid), DEAD = "999999999";
+    const place = (root: string, template: string, space: string, pid: string) =>
+      writeFileSync(canonicalLocalProcessPath(template, ctx(root, space)), pid);
+    {
+      const root = makeRoot("openmode");
+      check(
+        "with no records and no account material, it is the folder's own space",
+        resolveRuntimeSpace(root) === resolveSpace(root),
+        { runtime: resolveRuntimeSpace(root), folder: resolveSpace(root) },
+      );
+      place(root, MANAGER_PIDFILE, "beta", LIVE);
+      check(
+        "a live manager record NAMES its space, where the account-derived read cannot",
+        resolveRuntimeSpace(root) === "beta" && resolveSpace(root) !== "beta",
+        { runtime: resolveRuntimeSpace(root), folder: resolveSpace(root) },
+      );
+    }
+    {
+      const root = makeRoot("deliveryonly");
+      place(root, DELIVERY_PIDFILE, "gamma", LIVE);
+      check("a delivery record names its space too", resolveRuntimeSpace(root) === "gamma", resolveRuntimeSpace(root));
+    }
+    {
+      const root = makeRoot("deadonly");
+      place(root, MANAGER_PIDFILE, "delta", DEAD);
+      check(
+        "a DEAD record still names its space, so a stop can clear it",
+        resolveRuntimeSpace(root) === "delta",
+        resolveRuntimeSpace(root),
+      );
+    }
+    {
+      const root = makeRoot("residue");
+      place(root, MANAGER_PIDFILE, "dead-one", DEAD);
+      place(root, MANAGER_PIDFILE, "live-one", LIVE);
+      check(
+        "crash residue beside a running space does not wedge the folder - the live one answers",
+        resolveRuntimeSpace(root) === "live-one",
+        resolveRuntimeSpace(root),
+      );
+    }
+    {
+      const root = makeRoot("twolive");
+      place(root, MANAGER_PIDFILE, "one", LIVE);
+      place(root, DELIVERY_PIDFILE, "two", LIVE);
+      rejects(
+        "two spaces RUNNING under one root is refused, naming both",
+        () => resolveRuntimeSpace(root),
+        ["running daemons for 2 spaces", "one", "two"],
+      );
+    }
+    {
+      const root = makeRoot("strays");
+      // Nothing that is not a name a canonical write produced may be read as a tenant: a
+      // pre-segmentation root-scoped record (which names NO space and is found through the candidate
+      // list instead), a non-hex body, an odd-length body, and a LOG, which holds text and not a pid.
+      writeFileSync(join(root, ".cotal", "manager.pid"), LIVE);
+      writeFileSync(join(root, ".cotal", "manager.notahexkey.pid"), LIVE);
+      writeFileSync(join(root, ".cotal", "manager.abc.pid"), LIVE);
+      writeFileSync(join(root, ".cotal", `manager.${spaceKey("logspace")}.log`), LIVE);
+      check(
+        "strays and pre-upgrade names are not read as spaces",
+        resolveRuntimeSpace(root) === resolveSpace(root),
+        resolveRuntimeSpace(root),
+      );
+      check(
+        "...and the pre-upgrade record is still what the folder's space resolves to",
+        localProcessPath(MANAGER_PIDFILE, ctx(root, resolveRuntimeSpace(root))) === join(root, ".cotal", "manager.pid"),
+      );
+    }
   }
 } finally {
   for (const root of roots) rmSync(root, { recursive: true, force: true });

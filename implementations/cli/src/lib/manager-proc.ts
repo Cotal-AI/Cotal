@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, openSync, closeSync, chmodSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { DEFAULT_SERVER } from "@cotal-ai/core";
 import { selfArgv } from "./self-exec.js";
-import { resolveSpace } from "./status.js";
+import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
 import {
   canonicalLocalProcessPath, commandIsCotalSupervisor, localProcessPath, parsePid, probeLiveness,
@@ -14,8 +14,10 @@ import {
 /** The space whose manager this folder's commands mean. Every helper below defaults to it, and the
  *  ones a caller reaches with an explicit `--space` take it as their last argument: the records are
  *  per-space now, so a helper that assumed the folder's space would answer about a sibling tenant's
- *  manager on a root that hosts more than one. */
-const folderSpace = (): string => resolveSpace(process.cwd());
+ *  manager on a root that hosts more than one. Resolved from the folder's own RECORDS first: an open
+ *  mesh has no account record to name its space, and answering with the default there is how a
+ *  space-less read reports "absent" over a live manager. */
+const folderSpace = (): string => resolveRuntimeSpace(process.cwd());
 const ctx = (space: string): LocalProcessContext => ({ root: cotalRoot(), space });
 
 /** Exported so the delivery cutover preflight can NAME the pid it refused on: an error that says
