@@ -56,12 +56,20 @@ Y/n), carry a `confirm` consent prompt, or be `live` (it draws its own pane via
 interactive run offers a Claude handoff
 ([`lib/assist.ts`](../implementations/cli/src/lib/assist.ts)).
 
-The **connector picker** (`pickConnectors`) multiselects Claude / OpenCode (detected
-pre-checked). Only **Claude** runs an install (its wake channel binds to an *installed* plugin);
-**OpenCode auto-wires at spawn** (it injects its plugin via `buildLaunch`, never writing the
-user's config), so the picker just marks it ready. Two experts (david, the engineer; sven, the
-guide) plus the operator's own driving session (`me`) are written by default, and `me` is the
-persona `cotal spawn me` drives.
+The **connector picker** (`pickConnectors`) multiselects the **setup connector surface**
+(`setupConnectorSurface`): every connector name the live registry or the installed extension
+manifest advertises, materialized through the same loader the rest of the CLI uses. No connector
+name is written into `setup.ts`. `setupConnectorCandidates` turns that surface into choices and
+reads each hint off the connector's own declarations: `requires` names the executables a candidate
+still needs on PATH, `setup` says whether it owns setup actions at all, and `pluginRoot` says
+whether those actions install plugin assets. A selected candidate runs its connector-owned
+`connector` action through `connectorSetupStep`, which receives the `Connector` itself; a candidate
+that declares no provider is simply marked ready (OpenCode auto-wires at spawn, injecting its
+plugin via `buildLaunch` and never writing the user's config). The `skills` action runs for every
+present connector that declares one, selected or not, because Cotal's authored skills are
+independent of mesh membership. Two experts (david, the engineer; sven, the guide) plus the
+operator's own driving session (`me`) are written by default, and `me` is the persona
+`cotal spawn me` drives.
 
 **`--yes`** forces non-interactive accept-all even on a TTY: optional plus `confirm` steps run
 (so the demo personas are written), the global install takes its default, and a failure aborts
@@ -73,8 +81,8 @@ with the log path and a non-zero exit. It still launches nothing. The control pl
 | Thing | Must stay in sync across | Why |
 |---|---|---|
 | Marketplace name **`cotal-mesh`** | `setup.ts` (materialized `marketplace.json`), `CHANNEL_REF` in [`extensions/connector-claude-code/src/extension.ts`](../extensions/connector-claude-code/src/extension.ts), repo [`.claude-plugin/marketplace.json`](../.claude-plugin/marketplace.json) | The wake channel ref `plugin:cotal@cotal-mesh` binds by this name |
-| Plugin assets | `setup.ts` copy list (`dist/mcp.cjs`, `dist/hook.cjs`, `.claude-plugin/plugin.json`, `.mcp.json`, `hooks/hooks.json`) and the connector `package.json` `files` field | Setup materializes the plugin from `Connector.pluginRoot`; missing or renamed assets break the install |
-| `Connector.pluginRoot` | [`packages/core/src/connector.ts`](../packages/core/src/connector.ts) (contract) plus set in the claude connector's `extension.ts` | How setup finds the plugin dir without importing the extension |
+| Plugin assets | the claude connector's own [`src/setup.ts`](../extensions/connector-claude-code/src/setup.ts) copy list (`dist/mcp.cjs`, `dist/hook.cjs`, `.claude-plugin/plugin.json`, `.mcp.json`, `hooks/hooks.json`) and its `package.json` `files` field | The connector materializes its own plugin; missing or renamed assets break the install, and the base CLI has no copy of the list |
+| `Connector.pluginRoot` | [`packages/core/src/connector.ts`](../packages/core/src/connector.ts) (contract) plus set in the claude connector's `extension.ts` | A connector's declaration that it ships installable plugin assets; the picker phrases its hint from it |
 | `BUNDLED_PKG_PREFIX` | [`lib/nats-bin.ts`](../implementations/cli/src/lib/nats-bin.ts) ↔ the `@eplightning/nats-server-*` `optionalDependencies` in [`implementations/cli/package.json`](../implementations/cli/package.json) | The bundled NATS binary is resolved by `${prefix}-${platform}-${arch}`. (Future: swap the prefix to our own `@cotal-ai/nats-server-*`.) |
 | Onboard marker plus `ONBOARD_VERSION` | `~/.cotal/onboarded.json` in [`lib/onboard.ts`](../implementations/cli/src/lib/onboard.ts); version const in `setup.ts` | Flips first-run vs ensure |
 | Demo-agent format | `DEMO_AGENTS` in `setup.ts` matches the frontmatter shape read by [`packages/core/src/agent-file.ts`](../packages/core/src/agent-file.ts) (same as `examples/01-lateral-coordination/agents/`) | `cotal spawn <name>` loads these |

@@ -1,0 +1,45 @@
+{
+  "suite": "extensions/connector-jcode/smoke/jcode-host.smoke.ts",
+  "guard": "all three connector-owned Jcode model startup refusals retain distinct allow-listed public codes and their scrubbed fatal line is persisted in the managed seat's connector log",
+  "command": "pnpm smoke:jcode-host",
+  "progressPattern": "✓",
+  "minTicks": 30,
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/jcode-model-refusals.json",
+  "why": [
+    "Issue #985 reproduced a prefixed model reaching the managed session and dying before set_model,",
+    "while the host rendered only `startup failed (unknown)` and left no connector log.",
+    "The host smoke drives that boundary plus the SDK set_model rejection and the post-readiness",
+    "runtime mismatch through real child processes. Each mutation removes one distinct refusal code",
+    "or the persistence write and names the assertion that must go red."
+  ],
+  "mutations": [
+    {
+      "name": "prefixed models collapse back to the unknown startup code",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "          \"model_prefix_rejected\",\n          `jcode connector: model ${JSON.stringify(config.model)} carries a provider prefix, but the Harness API expects a bare model id — pass ${JSON.stringify(spec.bare)} (the ${JSON.stringify(spec.prefix)} provider is selected by configuration, not by the model id)`,",
+      "replace": "          \"unknown\",\n          `jcode connector: model ${JSON.stringify(config.model)} carries a provider prefix, but the Harness API expects a bare model id — pass ${JSON.stringify(spec.bare)} (the ${JSON.stringify(spec.prefix)} provider is selected by configuration, not by the model id)`,",
+      "expectRed": "model_prefix_rejected names the connector-owned refusal"
+    },
+    {
+      "name": "Harness model rejections collapse back to the unknown startup code",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "throw new JcodeConnectorError(\"model_refused\", \"Jcode refused the requested model\", { cause: error });",
+      "replace": "throw new JcodeConnectorError(\"unknown\" as never, \"Jcode refused the requested model\", { cause: error });",
+      "expectRed": "model_refused names the connector-owned refusal"
+    },
+    {
+      "name": "runtime model mismatches collapse back to the unknown startup code",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "          \"model_mismatch\",\n          `jcode connector: requested model ${JSON.stringify(config.model)} but the Harness API reports ${JSON.stringify(runtime.model)} — refusing a mislabelled mesh seat`,",
+      "replace": "          \"unknown\" as never,\n          `jcode connector: requested model ${JSON.stringify(config.model)} but the Harness API reports ${JSON.stringify(runtime.model)} — refusing a mislabelled mesh seat`,",
+      "expectRed": "model_mismatch names the connector-owned refusal"
+    },
+    {
+      "name": "connector diagnostics stop being persisted per seat",
+      "file": "extensions/connector-jcode/src/startup-diagnostics.ts",
+      "find": "  if (diagnosticLogFd !== undefined) writeSync(diagnosticLogFd, message);",
+      "replace": "  void diagnosticLogFd;",
+      "expectRed": "model_prefix_rejected fatal is persisted in the seat connector log"
+    }
+  ]
+}

@@ -120,8 +120,8 @@ try {
 
   console.log("2. invoke status (generic, by name)");
   const rStatus = await invokeCommand(nc, space, service, "status", undefined, { currentEpoch });
-  const status = rStatus.reply.data as { instanceId: string; runtime: string; agentCount: number };
-  check("invoke status returns the typed ManagerStatus", rStatus.reply.ok === true && status.runtime === "pty" && typeof status.agentCount === "number", rStatus.reply);
+  const status = rStatus.reply.data as { instanceId: string; runtime: string; agentCount: number; connectors: unknown[] };
+  check("invoke status returns the typed ManagerStatus", rStatus.reply.ok === true && status.runtime === "pty" && typeof status.agentCount === "number" && Array.isArray(status.connectors), rStatus.reply);
 
   console.log("3. invoke spawn (the recompiled input contract gates args)");
   let badCode: string | undefined;

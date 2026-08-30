@@ -1167,9 +1167,12 @@ export function permissionsFor(
     // JetStream control plane — scoped to this agent's own streams/durables.
     "$JS.API.INFO",
     // STREAM.INFO: CHAT (join watermark, recall drop-marker, channel-list counts — a documented
-    // metadata surface, see SPEC §9) + the world-readable presence/registry KVs. NOT DM/TASK: agents
-    // bind their dm_<id>/svc_<role> by name and never inspect those streams, so granting INFO there
-    // would only leak DM-inbox / task subject metadata across peers for no functional gain.
+    // metadata surface, see SPEC §9) + the world-readable presence/registry KVs. NOT DM/DLV/EPC:
+    // an agent reaches each of those by name — its own pre-created dm_<id>/dlv_<id> durable, or a
+    // subject-scoped DIRECT.GET on EPC — so it never needs a stream-level read, and `subjects_filter`
+    // is a REQUEST-BODY field no ACL can narrow, so INFO there would enumerate DM and delivery
+    // subject metadata across peers (who DMed whom) for no functional gain. TASK's INFO row is
+    // role-gated with the rest of its TASK grants, below.
     `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,
     // Live channel delivery is the agent's own native core subscription (sub.allow over chat.*.<ch>,
     // below) — there is NO per-instance chat live-tail durable to bind. The durable backstop is
@@ -1232,7 +1235,10 @@ export function permissionsFor(
     // TASK consumer: BIND ONLY its own role's pre-created durable (svc_<role>). Like DM, the
     // create-time filter_subject isn't reliably ACL-constrainable, so no create path is
     // allowed — the privileged provisioner pre-creates svc_<role> filtered to svc.<role>.*.
+    // STREAM.INFO rides the SAME role gate as the bind rows: a role-less agent holds no TASK grant
+    // at all, so it can neither read the task stream's state nor enumerate its subjects.
     pubAllow.push(
+      `$JS.API.STREAM.INFO.${TASK}`,
       `$JS.API.CONSUMER.INFO.${TASK}.${svcD}`,
       `$JS.API.CONSUMER.MSG.NEXT.${TASK}.${svcD}`,
       `$JS.ACK.${TASK}.${svcD}.>`,

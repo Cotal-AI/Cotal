@@ -1,0 +1,46 @@
+{
+  "suite": "implementations/cli/smoke/setup-connectors.smoke.ts",
+  "guard": "guided setup derives its connector membership from the live registry and installed manifest, and derives readiness and setup hints from connector declarations rather than connector names",
+  "command": "rm -rf implementations/cli/dist && pnpm --filter @cotal-ai/cli... build && pnpm exec tsx implementations/cli/smoke/setup-connectors.smoke.ts",
+  "completionMarker": "SUITE COMPLETE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/setup-connectors.json",
+  "why": [
+    "The old picker admitted only the literal names claude and opencode. A test covering only those names would certify the bug, so the fixtures register connector names the CLI has never heard of and pin the candidate count to a literal four.",
+    "",
+    "The mutations independently restore name-based membership at the surface, name-based membership at the candidate list, and name-based setup hints. Each must redden its own genericity assertion."
+  ],
+  "mutations": [
+    {
+      "name": "restore the literal claude and opencode membership list",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "  const names = new Set(registry.all<Connector>(\"connector\").map((connector) => connector.name));\n  for (const name of manifestExtensionNames(\"connector\")) names.add(name);",
+      "replace": "  const declared = new Set([...registry.all<Connector>(\"connector\").map((connector) => connector.name), ...manifestExtensionNames(\"connector\")]);\n  const names = new Set([\"claude\", \"opencode\"].filter((name) => declared.has(name)));",
+      "expectRed": "registry-registered connectors join the derived setup membership",
+      "cell": "registry-registered connectors join the derived setup membership",
+      "command": "rm -rf implementations/cli/dist && pnpm --filter @cotal-ai/cli... build && pnpm exec tsx implementations/cli/smoke/setup-connectors.smoke.ts",
+      "afterRestore": "rm -rf implementations/cli/dist && pnpm --filter @cotal-ai/cli... build",
+      "note": "The load-bearing revert for #1036: membership goes back to the hardcoded pair while every other seam stays generic. Compile-clean; both derivation reads stay live."
+    },
+    {
+      "name": "restore the claude and opencode membership gate",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "  return [...connectors]\n    .sort((a, b) => a.name.localeCompare(b.name))\n    .map((connector) => {",
+      "replace": "  return [...connectors]\n    .filter((connector) => connector.name === \"claude\" || connector.name === \"opencode\")\n    .sort((a, b) => a.name.localeCompare(b.name))\n    .map((connector) => {",
+      "expectRed": "every registered connector appears in setup candidates",
+      "cell": "every registered connector appears in setup candidates",
+      "command": "rm -rf implementations/cli/dist && pnpm --filter @cotal-ai/cli... build && pnpm exec tsx implementations/cli/smoke/setup-connectors.smoke.ts",
+      "afterRestore": "rm -rf implementations/cli/dist && pnpm --filter @cotal-ai/cli... build"
+    },
+    {
+      "name": "restore the claude name check for setup hints",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "          : connector.setup\n            ? connector.pluginRoot\n              ? \"installs a plugin\"\n              : \"runs its own setup\"\n            : \"ready at spawn\",",
+      "replace": "          : connector.setup\n            ? connector.name === \"claude\"\n              ? \"installs a plugin\"\n              : \"runs its own setup\"\n            : \"ready at spawn\",",
+      "expectRed": "a non-claude connector with pluginRoot gets the plugin hint",
+      "cell": "a non-claude connector with pluginRoot gets the plugin hint",
+      "command": "rm -rf implementations/cli/dist && pnpm --filter @cotal-ai/cli... build && pnpm exec tsx implementations/cli/smoke/setup-connectors.smoke.ts",
+      "afterRestore": "rm -rf implementations/cli/dist && pnpm --filter @cotal-ai/cli... build"
+    }
+  ],
+  "grades": "tool"
+}
