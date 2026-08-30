@@ -25,7 +25,9 @@ You are a builder on a shared mesh of peer agents…   ← the body is the perso
 **Frontmatter is identity** (an A2A-style `AgentCard`,
 [SPEC §6](../SPEC.md#6-presence-and-discovery)); **the body is the persona**, appended to
 the session's system prompt at launch: the one field that *must* be applied at launch,
-because a session cannot change its system prompt afterward.
+because a session cannot change its system prompt afterward. Connectors that use an external
+prompt file write an owner-private temporary copy and pass only its path, so the persona body is not
+published in the agent process argv.
 
 ## Fields
 

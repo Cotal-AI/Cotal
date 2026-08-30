@@ -270,7 +270,8 @@ registry.register(recNoResumeCon);
     const af = join(dir, "p.md");
     writeFileSync(af, "---\nname: p\n---\nMESH PERSONA BODY\n");
     const a = cArgs({ ...base, configPath: af, resume: "sess-9" });
-    check("claude: resume + persona → --append-system-prompt kept", a.includes("--append-system-prompt"), a);
+    check("claude: resume + persona → --append-system-prompt-file kept", a.includes("--append-system-prompt-file"), a);
+    check("claude: resume + persona → persona body stays off argv", !a.includes("MESH PERSONA BODY"), a);
     check("claude: resume + persona → --resume kept", a.includes("--resume"), a);
     check("claude: resume + persona → --fork-session kept", a.includes("--fork-session"), a);
   }
