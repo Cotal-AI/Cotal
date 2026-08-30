@@ -13,6 +13,7 @@
 import { spawnSync } from "node:child_process";
 import { readCiSuites } from "./ci-suites.mjs";
 import { reapSmokeBrokers, reportReaped } from "./reap-smoke-brokers.mjs";
+import { neverRanBlock } from "./shard-never-ran.mjs";
 
 const shard = Number(process.argv[2]);
 const count = Number(process.argv[3]);
@@ -41,7 +42,8 @@ if (pre.supported && pre.reaped.length > 0) {
 const isWin = process.platform === "win32";
 const leaked = [];
 let failure;
-for (const cmd of mine) {
+for (let i = 0; i < mine.length; i++) {
+  const cmd = mine[i];
   const [bin, ...args] = cmd.split(/\s+/);
   console.log(`\n===== ${cmd} =====`);
   // shell:true on Windows so `pnpm` resolves to pnpm.cmd; the tokens are our own fixed script names.
@@ -54,6 +56,8 @@ for (const cmd of mine) {
   if (after.reaped.length > 0) leaked.push({ cmd, count: after.reaped.length });
   if (r.status !== 0) {
     console.error(`\n✗ shard ${shard}/${count} FAILED at: ${cmd} (exit ${r.status})`);
+    const never = neverRanBlock(mine, i);
+    if (never) console.error(never);
     failure = r.status || 1;
     break;
   }
