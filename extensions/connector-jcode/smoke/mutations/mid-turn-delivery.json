@@ -1,0 +1,36 @@
+{
+  "suite": "extensions/connector-jcode/smoke/jcode-mid-turn-delivery.smoke.ts",
+  "guard": "a directed DM arriving during a live Jcode turn is accepted by the recipient session through its soft-interrupt queue, and the exact Cotal delivery is committed only at the clean containing-turn boundary",
+  "command": "pnpm smoke:jcode-mid-turn-delivery",
+  "progressPattern": "✓",
+  "minTicks": 4,
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/mid-turn-delivery.json",
+  "why": [
+    "The failure presents as success everywhere upstream: JetStream accepts the DM, presence says the",
+    "recipient is working, and the connector reports an automatic message queued. The fixture therefore",
+    "grades only recipient observation: the shipped host must submit soft_interrupt to the recipient's",
+    "Harness session before the already-open turn ends. Its size matrix rules out the live 4 KiB specimen",
+    "as a payload ceiling by requiring the same recipient observation at short, 4 KiB, and 64 KiB.",
+    "",
+    "M1 removes only the shipped handoff call. It is attributable to the production host because the",
+    "fixture's red assertion searches the fake Harness request log, not connector memory or sender ack.",
+    "M2 keeps the handoff but drops the accepted ids from the containing-turn ledger; the post-boundary",
+    "recipient turn then carries the same DM again, proving that queue acceptance alone is not the commit."
+  ],
+  "mutations": [
+    {
+      "name": "M1 leave directed mid-turn DMs parked in the connector inbox",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "        const current: JcodeClient = client;\n        const request = current.softInterrupt(sessionId, injection, false);",
+      "replace": "        const current: JcodeClient = client;\n        return;",
+      "expectRed": "short, 4 KiB, and 64 KiB DMs reach the recipient session before the active turn ends (#910)"
+    },
+    {
+      "name": "M2 accept the soft interrupt but commit only the turn's initial ids",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "      await steerSettled;\n      const committed = surfacedIds;",
+      "replace": "      await steerSettled;\n      const committed = ids;",
+      "expectRed": "the clean containing turn commits the steered DMs exactly once"
+    }
+  ]
+}
