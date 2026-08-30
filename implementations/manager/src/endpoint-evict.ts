@@ -21,7 +21,7 @@ import { CotalEndpoint, mintCreds, newIdentity, type EvictionResult, type SpaceA
 /** Build the registration barrier's `evict(holderPrincipal) → verifiedGone` over the delivery
  *  daemon's `ctl.delivery-admin` rail. Per-call connection (eviction is a rare, heavyweight barrier
  *  step; a standing privileged connection would be a wider surface holding nothing). */
-export function makeManagerEndpointEvictor(opts: {
+export function makeManagerEndpointEvictionEvidence(opts: {
   space: string;
   servers: string;
   auth: SpaceAuth;
@@ -84,4 +84,10 @@ export function makeManagerEndpointEvictor(opts: {
       await ep?.stop().catch(() => {});
     }
   };
+}
+
+/** Boolean adapter for barriers that only consume the verified-gone decision. */
+export function makeManagerEndpointEvictor(opts: Parameters<typeof makeManagerEndpointEvictionEvidence>[0]): (holderPrincipal: string) => Promise<boolean> {
+  const evidence = makeManagerEndpointEvictionEvidence(opts);
+  return async (principal) => (await evidence(principal)).verifiedGone;
 }
