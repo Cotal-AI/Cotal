@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setInstalledExtensionsEnabled } from "../src/ext-loader.js";
-import { connectorPluginStep } from "../src/commands/setup.js";
+import { setupConnectorSurface } from "../src/commands/setup.js";
 
 const tmp = mkdtempSync(join(import.meta.dirname, ".setup-failloud-"));
 process.env.XDG_CONFIG_HOME = tmp;
@@ -19,17 +19,16 @@ mkdirSync(join(tmp, "cotal", "extensions"), { recursive: true });
 const writeManifest = (extensions: unknown[]) => writeFileSync(manifestPath, JSON.stringify({ extensions }));
 
 try {
-  // Removed: claude absent from the manifest -> skip the plugin, never crash the guided flow.
+  // Removed: absent from the manifest means absent from setup's connector surface.
   writeManifest([]);
-  const skipped = await connectorPluginStep("claude").run();
-  assert.match(String(skipped), /not installed - skipping/, "a removed connector must skip");
+  assert.deepEqual(await setupConnectorSurface(), [], "a removed connector must leave the setup surface");
 
-  // Broken-present: claude IS in the manifest but has no package on disk -> materialize throws, and the
-  // step must PROPAGATE that (fail loud) instead of swallowing it into the benign skip message.
+  // Broken-present: an unfamiliar connector IS in the manifest but has no package on disk -> the same
+  // discovery boundary guided setup uses must fail loud rather than silently dropping it.
   writeManifest([
-    { pkg: "@cotal-ai/connector-claude-code", version: "9.9.9", spec: ".", provides: [{ kind: "connector", name: "claude" }], commands: [] },
+    { pkg: "@example/connector-unfamiliar", version: "9.9.9", spec: ".", provides: [{ kind: "connector", name: "unfamiliar" }], commands: [] },
   ]);
-  await assert.rejects(connectorPluginStep("claude").run(), /is in the manifest but not installed/, "a broken-present connector must fail loud");
+  await assert.rejects(setupConnectorSurface(), /is in the manifest but not installed/, "a broken-present unfamiliar connector must fail loud");
 
   console.log("setup-failloud.smoke: all assertions passed");
 } finally {

@@ -1,4 +1,4 @@
-import { type Connector } from "@cotal-ai/core";
+import { Registry, type Connector } from "@cotal-ai/core";
 import { setupConnectorCandidates } from "../src/commands/setup.js";
 
 let pass = 0;
@@ -21,8 +21,15 @@ const connectors: Connector[] = [
   { kind: "connector", name: "not-claude-plugin", pluginRoot: "/other-plugin", buildLaunch: launch },
 ];
 const EXPECTED_CONNECTORS = 4;
+const testRegistry = new Registry();
+testRegistry.register(...connectors);
+check(
+  "the fixture registered the pinned connector count",
+  testRegistry.all<Connector>("connector").length === EXPECTED_CONNECTORS,
+  `${testRegistry.all<Connector>("connector").length} of ${EXPECTED_CONNECTORS}`,
+);
 
-const candidates = setupConnectorCandidates(connectors, (bin) => bin !== "opencode");
+const candidates = setupConnectorCandidates(testRegistry.all<Connector>("connector"), (bin) => bin !== "opencode");
 check("every registered connector appears in setup candidates", candidates.length === EXPECTED_CONNECTORS, `${candidates.length} of ${EXPECTED_CONNECTORS}`);
 check("an unknown capability-empty connector appears and is selectable", candidates.find((candidate) => candidate.value === "never-heard-of")?.hint === "ready at spawn");
 check("a non-claude connector with pluginRoot gets the plugin hint", candidates.find((candidate) => candidate.value === "not-claude-plugin")?.hint === "installs a plugin");
@@ -34,7 +41,7 @@ const claudeWithoutPlugin = setupConnectorCandidates(
 );
 check("claude without pluginRoot does not get the plugin hint", claudeWithoutPlugin[0]?.hint === "ready at spawn");
 
-const EXPECTED_CELLS = 5;
+const EXPECTED_CELLS = 6;
 check("every generic connector cell ran", pass + fail === EXPECTED_CELLS, `${pass + fail} of ${EXPECTED_CELLS}`);
 console.log(`SETUP CONNECTOR GENERICITY: ${candidates.length} of ${EXPECTED_CONNECTORS} registered connectors examined`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);

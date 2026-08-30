@@ -100,7 +100,7 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
     if (candidate.missing.length) {
       p.log.warn(`${candidate.value} needs ${candidate.missing.join(", ")} on PATH; install it, then re-run ${displayCmd()} setup.`);
     } else if (candidate.connector.pluginRoot) {
-      if (!(await runSteps([connectorPluginStep(candidate.value)], log, { yes }))) return abort();
+      if (!(await runSteps([connectorPluginStep(candidate.connector)], log, { yes }))) return abort();
     } else {
       p.log.success(`${candidate.value} ready (auto-wired when you spawn it)`);
       log.line(`connector ${candidate.value}: ready (no install)`);
@@ -250,7 +250,9 @@ export function setupConnectorCandidates(
     });
 }
 
-async function setupConnectorSurface(): Promise<Connector[]> {
+/** Materialize every connector advertised by the registry or installed manifest. Exported so the
+ *  fail-loud smoke reaches the same discovery boundary as guided setup. */
+export async function setupConnectorSurface(): Promise<Connector[]> {
   const names = new Set(registry.all<Connector>("connector").map((connector) => connector.name));
   for (const name of manifestExtensionNames("connector")) names.add(name);
   return Promise.all([...names].sort().map((name) =>
@@ -283,21 +285,17 @@ async function pickConnectors(candidates: readonly SetupConnectorCandidate[], ye
   return new Set(picked as string[]);
 }
 
-/** An installed connector's plugin assets, as a setup step. Exported for the fail-loud smoke. */
-export function connectorPluginStep(name: string): Step {
+/** A connector's declared plugin assets, as a setup step. Shared setup code receives the connector
+ *  declaration and never resolves a privileged connector name. */
+export function connectorPluginStep(connector: Connector): Step {
+  const { name, pluginRoot } = connector;
+  if (!pluginRoot) throw new Error(`the ${JSON.stringify(name)} connector declares no plugin assets`);
   return {
     name: `${name}-plugin`,
     title: `Install the ${name} connector plugin`,
     explain: `Installs the plugin assets declared by the ${name} connector.`,
-    context: [join(homeCotalDir(), "claude-plugin"), CC_DOCS_URL],
+    context: [pluginRoot],
     async run() {
-      // The connector is a seeded/`ext add`ed plugin now, not a static import. Only a GENUINE
-      // removal (absent from the manifest) skips the plugin; a present-but-broken connector (version
-      // skew, incompatible core, missing entry, import throw) must fail loud through runSteps with the
-      // real repair diagnostic, never be misreported as a deliberate removal.
-      if (!manifestExtensionNames("connector").includes(name))
-        return `${name} connector not installed - skipping the plugin (re-add its connector package with: cotal ext add <package>)`;
-      const connector = await materializeExtension<Connector>({ kind: "connector", name });
       installConnectorPlugin(connector);
       return "cotal@cotal-mesh (local scope)";
     },
@@ -548,10 +546,10 @@ function verifyPluginLoaded(name: string, scope: string, expectedVersion?: strin
  *  plugin). Called from connectorPluginStep when a selected connector declares plugin assets. */
 function installConnectorPlugin(connector: Connector): void {
   const { pluginRoot } = connector;
-  if (!pluginRoot) throw new Error(`the ${JSON.stringify(connector.name)} connector ships no plugin assets`);
+  if (!pluginRoot) throw new Error(`the ${JSON.stringify(connector.name)} connector declares no plugin assets`);
   for (const f of ["dist/mcp.cjs", "dist/hook.cjs", ".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json"]) {
     if (!existsSync(join(pluginRoot, f)))
-      throw new Error(`plugin asset missing: ${join(pluginRoot, f)} (in a dev clone, build it with: pnpm --filter @cotal-ai/connector-claude-code bundle)`);
+      throw new Error(`plugin asset missing for connector ${JSON.stringify(connector.name)}: ${join(pluginRoot, f)}`);
   }
   materializePluginDir("cotal", pluginRoot, [".claude-plugin", ".mcp.json", "hooks", "dist/mcp.cjs", "dist/hook.cjs"]);
   writeMarketplaceManifest();
