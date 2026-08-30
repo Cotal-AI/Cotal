@@ -1,6 +1,17 @@
-import assert from "node:assert/strict";
 import { type Connector } from "@cotal-ai/core";
 import { setupConnectorCandidates } from "../src/commands/setup.js";
+
+let pass = 0;
+let fail = 0;
+const check = (name: string, condition: boolean, detail = "") => {
+  if (condition) {
+    pass += 1;
+    console.log(`  ok ${name}`);
+  } else {
+    fail += 1;
+    console.log(`  FAIL: ${name}${detail ? ` - ${detail}` : ""}`);
+  }
+};
 
 const launch = () => ({ command: "true", args: [] });
 const connectors: Connector[] = [
@@ -12,16 +23,19 @@ const connectors: Connector[] = [
 const EXPECTED_CONNECTORS = 4;
 
 const candidates = setupConnectorCandidates(connectors, (bin) => bin !== "opencode");
-assert.equal(candidates.length, EXPECTED_CONNECTORS, "every registered connector appears in setup candidates");
-assert.equal(candidates.find((candidate) => candidate.value === "never-heard-of")?.hint, "ready at spawn", "an unknown capability-empty connector appears and is selectable");
-assert.equal(candidates.find((candidate) => candidate.value === "not-claude-plugin")?.hint, "installs a plugin", "a non-claude connector with pluginRoot gets the plugin hint");
-assert.equal(candidates.find((candidate) => candidate.value === "opencode")?.hint, "opencode not on PATH", "missing requirements derive the PATH hint");
+check("every registered connector appears in setup candidates", candidates.length === EXPECTED_CONNECTORS, `${candidates.length} of ${EXPECTED_CONNECTORS}`);
+check("an unknown capability-empty connector appears and is selectable", candidates.find((candidate) => candidate.value === "never-heard-of")?.hint === "ready at spawn");
+check("a non-claude connector with pluginRoot gets the plugin hint", candidates.find((candidate) => candidate.value === "not-claude-plugin")?.hint === "installs a plugin");
+check("missing requirements derive the PATH hint", candidates.find((candidate) => candidate.value === "opencode")?.hint === "opencode not on PATH");
 
 const claudeWithoutPlugin = setupConnectorCandidates(
   [{ kind: "connector", name: "claude", requires: ["claude"], buildLaunch: launch }],
   () => true,
 );
-assert.equal(claudeWithoutPlugin[0]?.hint, "ready at spawn", "claude without pluginRoot does not get the plugin hint");
+check("claude without pluginRoot does not get the plugin hint", claudeWithoutPlugin[0]?.hint === "ready at spawn");
 
+const EXPECTED_CELLS = 5;
+check("every generic connector cell ran", pass + fail === EXPECTED_CELLS, `${pass + fail} of ${EXPECTED_CELLS}`);
 console.log(`SETUP CONNECTOR GENERICITY: ${candidates.length} of ${EXPECTED_CONNECTORS} registered connectors examined`);
-console.log("setup-connectors.smoke: all assertions passed");
+console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
+process.exit(fail === 0 ? 0 : 1);
