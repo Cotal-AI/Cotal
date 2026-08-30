@@ -33,7 +33,7 @@ The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` an
 
 *orient (who you are & what you can do)*
 
-Your orientation card: who you are (name/role/space), the channels you can read and post to, your capabilities, the tools available to you (grouped into a core loop plus the rest), who's present, your status/attention, and how many messages are unread. Call this first to get your bearings; it's read-only and safe to re-check anytime.
+Your orientation card: who you are (name/role/space), the recorded model pin if one was set, the channels you can read and post to, your capabilities, the tools available to you (grouped into a core loop plus the rest), who's present, your status/attention, and how many messages are unread. Call this first to get your bearings; it's read-only and safe to re-check anytime.
 
 - **Side-effect:** read-only.
 - **Available:** always.
@@ -226,7 +226,7 @@ Ask the manager to start a new peer endpoint in your space. It joins the mesh as
 | `name` | string | yes | Which persona to spawn: the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md. The new peer joins under the persona's own `name:` (auto-numbered with an underscore, e.g. socrates_2, if that's taken). Fails if no such persona file exists; spawn an existing persona, don't invent a name. |
 | `role` | string | no | Optional role for the new peer (e.g. worker, reviewer); overrides the persona file's role. |
 | `agent` | string | no | Optional harness the new peer runs on: the agent/connector type (claude, jcode, opencode, hermes), NOT the persona to spawn (that's `name`). Resolution order: this explicit agent > the persona's agent: pin > the caller's COTAL_DEFAULT_AGENT > the manager's COTAL_DEFAULT_AGENT > the product default (Claude). |
-| `model` | string | no | Optional model override (e.g. opus, sonnet); it wins over the persona file's model:. |
+| `model` | string | no | Optional model override (e.g. opus, sonnet); it wins over the persona file's model:. The spawn fails if the manager does not record this pin. The result names the recorded model; do not treat a spawn as cross-vendor unless that name matches what you requested. |
 | `variant` | string | no | Optional model variant override (connector-defined; for OpenCode, a model variant such as high/max/low). |
 | `launchOptions` | record | no | Optional connector-specific launch options: an opaque key→value map the chosen connector forwards raw to its own host form (claude CLI flags, OpenCode agent config); a connector with no option surface (Hermes) rejects any, and malformed keys are refused. |
 | `cwd` | string | no | Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace. |

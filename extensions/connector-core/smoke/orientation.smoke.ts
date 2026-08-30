@@ -87,6 +87,12 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   const text = renderOrientation(o);
   assert.match(text, /read-only/);
   assert.match(text, /may join \(read ACL\)/);
+  assert.match(text, /Model pin: none recorded/);
+  assert.equal(o.identity.model, undefined);
+
+  const pinned = buildOrientation(agentStub(), cfg({ model: "grok-4.6" }), [], 1);
+  assert.equal(pinned.identity.model, "grok-4.6");
+  assert.match(renderOrientation(pinned), /Model pin: grok-4\.6/);
 }
 
 // 3 — core/more grouping covers exactly the gated set (minus orientation itself), no dupes.
