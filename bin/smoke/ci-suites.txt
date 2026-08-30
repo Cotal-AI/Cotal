@@ -699,3 +699,7 @@ smoke:workspace-import-exports
 # disconnect/reconnect delivery. Appended so every existing shard assignment remains unchanged.
 smoke:transport-liveness
 smoke:transport-liveness:broker
+# The connection status tool reaches MeshAgent state through a real in-memory MCP server and client,
+# including a measured successful inbox drain. Appended so every existing shard assignment remains
+# unchanged.
+smoke:connection-status

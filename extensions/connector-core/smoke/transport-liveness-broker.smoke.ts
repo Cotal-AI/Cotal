@@ -125,7 +125,12 @@ try {
   await ep.nc!.reconnect();
   check(
     "a REAL terminal close marks readiness false before exposing its user-visible reason",
-    await until(() => !agent.connected && /mesh connection closed/.test(terminalIssueAtError ?? ""), 30_000),
+    // The transport clause is not decoration. cotal_connection_status renders
+    // `connected:false, transportConnected:true` as "connecting", so a terminal close that left
+    // transport true would report a permanently dead session as one that is coming up. The cell
+    // below proves stop() clears the flag; only this proves a terminal close does.
+    await until(() => !agent.connected && /mesh connection closed/.test(terminalIssueAtError ?? ""), 30_000) &&
+      agent.transportConnected === false,
     { ready: agent.connected, terminalIssueAtError, latestIssue: agent.connectionIssue, transport },
   );
 
