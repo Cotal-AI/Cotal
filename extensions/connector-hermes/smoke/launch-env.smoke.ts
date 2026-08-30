@@ -43,7 +43,7 @@ const PER_SESSION = [
   "COTAL_LIFECYCLE_UID", "COTAL_ID", "COTAL_ROLE", "COTAL_MODEL", "COTAL_VARIANT",
   "COTAL_AGENT_FILE", "COTAL_LINK", "COTAL_SUBSCRIBE", "COTAL_ALLOW_SUBSCRIBE",
   "COTAL_ALLOW_PUBLISH", "COTAL_CAPABILITIES", "COTAL_EVENTS", "COTAL_WORKSPACE_ROOT",
-  "COTAL_CHANNEL", "COTAL_CODEX_HOME", "COTAL_OPENCODE_PROMPT", "COTAL_TOKEN",
+  "COTAL_CHANNEL", "COTAL_CODEX_HOME", "COTAL_OPENCODE_PROMPT", "COTAL_TOKEN", "COTAL_UV_BIN",
 ] as const;
 
 /** Machine-wide operator knobs that DO cross: no connector assigns them per spawn. */
@@ -70,6 +70,12 @@ for (const k of PER_SESSION)
 assert.equal(env.COTAL_SPACE, "smoke", "the connector supplies this child's space");
 assert.equal(env.COTAL_NAME, "hermes-1", "the connector supplies this child's name");
 assert.ok(env.PATH !== undefined, "PATH is forwarded so the seat can still launch");
+assert.ok(!("COTAL_UV_BIN" in env), "an ambient uv override is reset unless manager boot resolved it");
+
+const resolvedUv = hermesConnector.buildLaunch({
+  space: "smoke", name: "hermes-uv", resolvedBinaries: { uv: "/verified/bin/uv" },
+}).env ?? {};
+assert.equal(resolvedUv.COTAL_UV_BIN, "/verified/bin/uv", "the exact uv path resolved at manager boot reaches the launcher");
 
 for (const k of OPERATOR_KNOBS)
   assert.equal(env[k], `parent-${k}`, `${k} is a machine-wide operator knob and must cross`);
