@@ -60,12 +60,13 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✗ ${name}`);
 };
 
-/** A project root with a `.cotal/agents` catalog holding the named personas. */
+/** A project root with a `.cotal/agents` catalog holding shipped-loader-valid personas. */
 function project(label: string, personas: string[]): string {
   const root = mkdtempSync(join(tmpdir(), `cotal-${label}-`));
   const dir = join(root, ".cotal", "agents");
   mkdirSync(dir, { recursive: true });
-  for (const p of personas) writeFileSync(join(dir, `${p}.md`), `# ${p}\n`);
+  for (const p of personas)
+    writeFileSync(join(dir, `${p}.md`), `---\nname: ${p}\nsubscribe: []\n---\n\n# ${p}\n`);
   return root;
 }
 
@@ -99,7 +100,7 @@ function thisFolder(out: string): string {
 const strip = (s: string) => s.replace(/\u001b\[[0-9;]*m/g, "");
 const GREEN_DEFAULT = /\u001b\[32m[^\u001b]*default/;
 
-let folderRoot!: string, meshRoot!: string;
+let folderRoot!: string, meshRoot!: string, invalidRoot!: string;
 try {
   // THE DIVERGENCE, exactly as measured: the folder we stand in HAS a default persona; the mesh
   // that a bare `cotal spawn` resolves to does NOT.
@@ -139,20 +140,31 @@ try {
   check("agreeing: no launches row", !/→ launches/.test(agreePlain), agreePlain);
   check("agreeing: the persona row still names its root", agreePlain.includes(join(meshRoot, ".cotal", "agents")), agreePlain);
 
-  // A root that DOES hold default.md, agreeing with spawn, keeps its green — the simple case must
-  // stay simple, and this is the positive control for the GREEN assertion above: the same
-  // instrument, same run, CAN see a green default. Without it, "no green default" would also pass
-  // if the detector were broken or the section empty.
+  // A root that holds a VALID default.md, agreeing with spawn, keeps its green. Before this fix the
+  // positive control wrote only `# default`, a file the shipped loader rejects, and asserted that
+  // status painted it green. Now the control proves green means the same file spawn can load.
   clearCurrent();
   recordMesh({ space: "here", server: "nats://127.0.0.1:4223", root: folderRoot, mode: "open", ts: "2026-06-22T00:00:00.000Z" });
   setCurrent("here");
   const simple = thisFolder(await runStatus(folderRoot));
   check(
-    "positive control: an agreeing root WITH default.md still prints a GREEN default",
+    "positive control: an agreeing root with a loader-valid default prints a GREEN default",
     GREEN_DEFAULT.test(simple),
     simple,
   );
   check("positive control: and no divergence row", !/spawn root/.test(strip(simple)), strip(simple));
+
+  // Same root, existence-only default: the old status reader greened this while spawn rejected it.
+  // Keep the invalid file present so an existence check survives, then require the shipped loader's
+  // verdict to reach the output.
+  invalidRoot = project("invalid", []);
+  writeFileSync(join(invalidRoot, ".cotal", "agents", "default.md"), "# default\n");
+  clearCurrent();
+  recordMesh({ space: "invalid", server: "nats://127.0.0.1:4225", root: invalidRoot, mode: "open", ts: "2026-06-22T00:00:00.000Z" });
+  setCurrent("invalid");
+  const invalid = thisFolder(await runStatus(invalidRoot));
+  check("invalid default: present file is NOT green when the shipped loader rejects it", !GREEN_DEFAULT.test(invalid), invalid);
+  check("invalid default: status names the loader failure state", /invalid default/.test(strip(invalid)), strip(invalid));
 
   // Resolver failure must be DESCRIBED, not thrown: status is the recovery command. Two meshes and
   // no `current` is `ambiguous-target`, one of the ordinary states the resolver refuses on.
@@ -204,4 +216,5 @@ try {
   rmSync(scratch, { recursive: true, force: true });
   rmSync(folderRoot, { recursive: true, force: true });
   rmSync(meshRoot, { recursive: true, force: true });
+  if (invalidRoot) rmSync(invalidRoot, { recursive: true, force: true });
 }

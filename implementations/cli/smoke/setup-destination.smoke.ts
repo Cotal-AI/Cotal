@@ -62,10 +62,11 @@ let resolveMeshTarget!: typeof import("@cotal-ai/workspace").resolveMeshTarget;
 let agentFilePath!: typeof import("@cotal-ai/core").agentFilePath;
 let loadAgentFile!: typeof import("@cotal-ai/core").loadAgentFile;
 let seedDestinationFor!: typeof import("../src/commands/setup.js").seedDestinationFor;
+let seedDefaultForSetup!: typeof import("../src/commands/setup.js").seedDefaultForSetup;
 try {
   ({ recordMesh, setCurrent, resolveMeshTarget } = await import("@cotal-ai/workspace"));
   ({ agentFilePath, loadAgentFile } = await import("@cotal-ai/core"));
-  ({ seedDestinationFor } = await import("../src/commands/setup.js"));
+  ({ seedDestinationFor, seedDefaultForSetup } = await import("../src/commands/setup.js"));
 } catch (e) {
   cleanScratch(e);
 }
@@ -137,9 +138,7 @@ try {
   // `existsSync` is not the question: `status` reports a green `default` for a file `loadAgentFile`
   // refuses, so an unparseable seed would originate that divergence right here.
   setCurrent("alpha");
-  const seeded = seedDestinationFor(here);
-  const { seedDefaultAgentInto } = await import("../src/commands/setup.js");
-  seedDefaultAgentInto(seeded.dir);
+  const seeded = seedDefaultForSetup(here, false);
   const file = join(seeded.dir, "default.md");
   check("the seed actually wrote the file", existsSync(file));
   const def = loadAgentFile(file); // throws on malformed frontmatter — that IS the assertion
@@ -162,8 +161,7 @@ try {
   const fresh = mesh("fresh", 4803, { seedCotal: false });
   check("the new root really is empty before seeding", listed(fresh).length === 0, listed(fresh));
   setCurrent("fresh");
-  const freshDest = seedDestinationFor(here);
-  seedDefaultAgentInto(freshDest.dir);
+  const freshDest = seedDefaultForSetup(here, false);
   check("seeding builds the whole .cotal/agents chain under an empty root", existsSync(join(catalogOf(fresh), "default.md")));
   check("and it parses too", loadAgentFile(join(catalogOf(fresh), "default.md")).name === "default_agent");
 

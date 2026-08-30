@@ -58,9 +58,11 @@ The three channel verbs on one card, with the common recipes:
 
 ## Persona lookup
 
-- **By name.** A launcher resolves a bare name to `.cotal/agents/<name>.md` (project
-  catalog). This is a directory convention, not an HTTP well-known; mesh discovery stays
-  NATS presence. The card built from the file is what gets broadcast.
+- **By name.** A launcher resolves a bare name to `<target-root>/.cotal/agents/<name>.md`. The
+  target root comes from the selected mesh, including `cotal use`, `--space`, and `--server`, so
+  launchers, `cotal personas`, setup, status, and agent-profile minting use one catalog. This is a
+  directory convention, not an HTTP well-known; mesh discovery stays NATS presence. The card built
+  from the file is what gets broadcast.
 - **One ref.** The launcher sets `COTAL_AGENT_FILE=<abs path>` (the *who*) the way
   `COTAL_LINK` carries the *where*; the joined session reads its card straight from the
   file. Individual `COTAL_*` vars still override it ([config](config.md)).
@@ -105,5 +107,5 @@ no prompt, model, or role. Peers joining later saw nothing. No path a peer can
 deliberately consult is affected: `cotal personas list` reads the catalog within a
 workspace, and `cotal_spawn` on a name that does not exist fails loud.
 
-The operator-side counterpart is `cotal personas` (list / show / edit / new / rm); it
-reads and writes the same files directly, offline, no mesh ([CLI](cli.md)).
+The operator-side counterpart is `cotal personas` (list / show / edit / new / rm); it reads and
+writes the selected mesh root's files directly, offline, with no broker connection ([CLI](cli.md)).

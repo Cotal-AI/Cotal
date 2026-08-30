@@ -5,13 +5,18 @@
   "progressPattern": "✓",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/fixtures/setup-destination.mutations.json",
   "why": [
-    "ONE MUTATION, AND IT RESTORES THE WRONG DESTINATION. The resolver still selects a mesh and the",
+    "TWO MUTATIONS cover the destination and the folded resolver-to-writer wiring. The first still",
+    "selects a mesh and the",
     "returned target still names it, but dir is silently replaced with the cwd-derived catalog. That",
     "is the precise state in which setup reports success while a following spawn cannot find the file.",
     "",
     "The substitution is compile-clean and occurs after resolveMeshTarget succeeds, so the mutation",
     "cannot be killed merely because target selection stopped working. The first alpha destination",
-    "cell must redden by name; an unrelated throw or later parse failure does not count."
+    "cell must redden by name; an unrelated throw or later parse failure does not count.",
+    "",
+    "The second mutation removes the write from seedDefaultForSetup, the helper production setup and",
+    "the smoke both call. This closes the prior seam-only gap: resolution can remain correct while the",
+    "shipped wiring never hands that destination to the persona writer. The named write cell kills it."
   ],
   "mutations": [
     {
@@ -22,6 +27,15 @@
       "expectRed": "alpha: the destination is the RESOLVED MESH's catalog, not the cwd's",
       "cell": "alpha: the destination is the RESOLVED MESH's catalog, not the cwd's",
       "note": "This changes only the chosen write directory, retains the resolved mesh metadata, and typechecks before the smoke runs."
+    },
+    {
+      "name": "setup resolves and announces a destination but never passes it to the shipped persona writer",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "  return seedDefaultAgent(dest);",
+      "replace": "  return dest;",
+      "expectRed": "the seed actually wrote the file",
+      "cell": "the seed actually wrote the file",
+      "note": "This compile-clean mutation breaks production's resolver-to-writer helper rather than the smoke's arithmetic or a restated rule."
     }
   ]
 }

@@ -58,11 +58,11 @@ let personas!: typeof import("../src/commands/personas.js").personas;
 let personasComplete!: typeof import("../src/commands/personas.js").personasComplete;
 let spawnComplete!: typeof import("../src/commands/spawn.js").spawnComplete;
 let sendComplete!: typeof import("../src/commands/send.js").sendComplete;
-let personaRootFor!: typeof import("../src/commands/mint.js").personaRootFor;
 let mint!: typeof import("../src/commands/mint.js").mint;
 let createSpaceAuth!: typeof import("@cotal-ai/core").createSpaceAuth;
 let saveSpaceAuth!: typeof import("@cotal-ai/workspace").saveSpaceAuth;
 let authDir!: typeof import("@cotal-ai/workspace").authDir;
+let agentSecretFilePaths!: typeof import("@cotal-ai/workspace").agentSecretFilePaths;
 try {
   ({ recordMesh, setCurrent, resolveMeshTarget } = await import("@cotal-ai/workspace"));
   ({ agentFilePath, loadAgentFile } = await import("@cotal-ai/core"));
@@ -70,9 +70,9 @@ try {
   ({ personas, personasComplete } = await import("../src/commands/personas.js"));
   ({ spawnComplete } = await import("../src/commands/spawn.js"));
   ({ sendComplete } = await import("../src/commands/send.js"));
-  ({ personaRootFor, mint } = await import("../src/commands/mint.js"));
+  ({ mint } = await import("../src/commands/mint.js"));
   ({ createSpaceAuth } = await import("@cotal-ai/core"));
-  ({ saveSpaceAuth, authDir } = await import("@cotal-ai/workspace"));
+  ({ saveSpaceAuth, authDir, agentSecretFilePaths } = await import("@cotal-ai/workspace"));
 } catch (e) { cleanScratch(e); }
 
 let pass = 0;
@@ -316,18 +316,24 @@ try {
   check("control: the two `minted` cards carry DIFFERENT ACLs (else the mint cell cannot discriminate)",
     (meshCard.subscribe ?? []).join(",") !== (cwdCard.subscribe ?? []).join(","),
     { mesh: meshCard.subscribe, cwd: cwdCard.subscribe });
-  // DRIVE THE REAL `mint()`, not its seam. An earlier version of this cell called `personaRootFor`
-  // directly and SURVIVED reverting mint.ts:152 to `cotalRoot()` — because that mutation removes
-  // the CALL to personaRootFor rather than changing the function, so a cell invoking the seam still
-  // got the right answer while the shipped path read the wrong card. That is pr-review's
-  // unwitnessed-wrapper finding reproduced inside the cell written to close it. Driving `mint()`
-  // is what makes the mutation observable.
-  //
-  // mint refuses before the card read without on-disk space auth, so the cwd root gets real trust
-  // material; everything stays offline (no --provision, so no broker is contacted).
-  saveSpaceAuth(authDir(CWD), await createSpaceAuth("meshspace"));
+  // DRIVE THE REAL `mint()`, not a resolver seam. Trust belongs under the selected mesh root. A cwd
+  // with different trust must be refused before any credential is written.
+  const meshAuth = await createSpaceAuth("meshspace");
+  const cwdAuth = await createSpaceAuth("meshspace");
+  saveSpaceAuth(authDir(MESH), meshAuth);
+  saveSpaceAuth(authDir(CWD), cwdAuth);
   const credsPath = join(scratch, "minted.creds");
-  await captureMint(["minted"], { profile: "agent", out: credsPath });
+  const mixed = await captureMint(["minted"], { profile: "agent", out: credsPath });
+  check("mint: a cwd trust root that differs from the selected mesh authority is REFUSED", /authorities disagree/.test(mixed), mixed);
+  check("mint: the refusal names BOTH roots", mixed.includes(MESH) && mixed.includes(CWD), mixed);
+  check("mint: the mixed-root refusal writes no credential", !existsSync(credsPath));
+
+  // Remove only the conflicting trust from the cwd. The cwd and selected mesh roots still differ,
+  // proving success now sources ACLs, signing and storage from the target root rather than requiring
+  // the operator to stand there.
+  rmSync(join(CWD, ".cotal", "auth"), { recursive: true, force: true });
+  const mintedOut = await captureMint(["minted"], { profile: "agent", out: credsPath });
+  check("mint: without conflicting cwd trust, the target root supplies the coherent authority", /minted agent creds/.test(mintedOut), mintedOut);
   // The ACLs are not echoed on stdout - they are baked into the minted credential, which is the
   // artifact that actually carries them to the broker. Read the file mint wrote.
   const credsText = existsSync(credsPath) ? readFileSync(credsPath, "utf8") : "";
@@ -339,6 +345,14 @@ try {
     credsText.length > 0 && /"sub"/.test(claims), claims.slice(0, 120));
   check("mint: the credential carries the MESH card's channel, not the cwd card's",
     claims.includes("mesh-alpha") && !claims.includes("cwd-one"), claims.slice(0, 400));
+
+  // Default storage is authority too. Run without --out from the divergent cwd and require the
+  // canonical target-root file, with no same-named credential materialized under cwd.
+  const stored = await captureMint(["minted-stored"], { profile: "agent", "allow-subscribe": "mesh-alpha" });
+  const meshStored = agentSecretFilePaths(MESH, meshAuth.space, "minted-stored").creds;
+  const cwdStored = agentSecretFilePaths(CWD, meshAuth.space, "minted-stored").creds;
+  check("mint: default credential storage uses the selected mesh root", existsSync(meshStored), { stored, meshStored });
+  check("mint: default credential storage does NOT use the cwd root", !existsSync(cwdStored), cwdStored);
 
 
 

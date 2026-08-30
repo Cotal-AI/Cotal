@@ -18,7 +18,7 @@ import {
   type Profile,
   type SpaceAuth,
 } from "@cotal-ai/core";
-import { agentCredsKey, agentSecretFilePaths, authDir, getSoleSpaceAuth, hasUserAuthState, isWorkspaceTargetError, materializeSecretToFile, preflightOrExit, renderWorkspaceError, resolveMeshTarget, resolveTargetOrExit, workspaceSecretStore, type MeshTarget } from "@cotal-ai/workspace";
+import { agentCredsKey, agentSecretFilePaths, authDir, canonicalRoot, getSpaceAuth, getSoleSpaceAuth, hasUserAuthState, isWorkspaceTargetError, materializeSecretToFile, preflightOrExit, renderWorkspaceError, resolveMeshTarget, resolveTargetOrExit, workspaceSecretStore, type MeshTarget } from "@cotal-ai/workspace";
 import { cotalRoot } from "../lib/paths.js";
 import { c } from "../ui.js";
 
@@ -41,8 +41,9 @@ export async function mint(args: ParsedArgs): Promise<void> {
     space?: string;
     server?: string;
   };
-  const store = workspaceSecretStore(cotalRoot());
-  const dir = authDir(cotalRoot());
+  const cwdRoot = cotalRoot();
+  const cwdStore = workspaceSecretStore(cwdRoot);
+  const cwdAuthDir = authDir(cwdRoot);
 
   // `--role` and `--provision` describe an AGENT identity's broker footprint. Nothing else this
   // command emits has one: a signer file is account material, an observer or admin binds no
@@ -77,7 +78,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
 
   // `--signer`: no identity, no name — strip this space's auth.json to its account signing material.
   if (values.signer) {
-    const auth = await getSoleSpaceAuth(store, dir);
+    const auth = await getSoleSpaceAuth(cwdStore, cwdAuthDir);
     if (!auth) {
       console.error(c.red("no space auth found here - run `cotal up` first"));
       process.exit(1);
@@ -105,11 +106,28 @@ export async function mint(args: ParsedArgs): Promise<void> {
     console.error(c.red(`unknown profile "${profile}" - expected agent, observer, or admin`));
     process.exit(1);
   }
-  const auth = await getSoleSpaceAuth(store, dir);
-  // `--provision` needs a mesh to connect to. Resolve it BEFORE insisting on local trust material:
-  // an open mesh keeps none on disk by design, and "run `cotal up` first" is the wrong sentence for
-  // a mesh that is up. The same step pins the trust root (see provisionTarget).
-  const target = values.provision ? await provisionTarget(auth, values) : undefined;
+  const resolvedTarget = resolveMintTarget(values);
+  const root = resolvedTarget.root;
+  const store = workspaceSecretStore(root);
+  const dir = authDir(root);
+  const auth = await getSpaceAuth(store, resolvedTarget.space);
+  const cwdAuth = canonicalRoot(root) === canonicalRoot(cwdRoot)
+    ? auth
+    : await getSoleSpaceAuth(cwdStore, cwdAuthDir);
+  if (cwdAuth && (!auth || cwdAuth.space !== resolvedTarget.space || cwdAuth.account.pub !== auth.account.pub)) {
+    const targetAuthority = auth ? `${resolvedTarget.space}/${auth.account.pub}` : `${resolvedTarget.space}/no-account`;
+    const cwdAuthority = `${cwdAuth.space}/${cwdAuth.account.pub}`;
+    console.error(
+      c.red(
+        `mint resolved mesh root ${resolvedTarget.root}, but this folder's trust root is ${cwdRoot}. ` +
+          `Their authorities disagree (${targetAuthority} vs ${cwdAuthority}), so mint refuses to choose one; run \`cotal mint\` from ${resolvedTarget.root}.`,
+      ),
+    );
+    process.exit(1);
+  }
+  // `--provision` additionally needs an authed target and a live broker. The target was already
+  // resolved and held to this root above, so ACLs, trust, storage and the broker all share one root.
+  const target = values.provision ? await provisionTarget(auth, values, resolvedTarget) : undefined;
   if (!auth) {
     console.error(c.red("no space auth found here - run `cotal up` first"));
     process.exit(1);
@@ -121,7 +139,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
   // alone (refusing is the safe direction; the manager's stricter marker×registry check guards the
   // PERMISSIVE branch, not this one). `--signer` stays available above: infrastructure creds
   // (supervisor/delivery/…) are pre-flip trust material, not agent identities.
-  if (hasUserAuthState(cotalRoot(), auth.space)) {
+  if (hasUserAuthState(root, auth.space)) {
     console.error(
       c.red(
         `✗ space "${auth.space}" is a per-user-auth mesh - static ${profile} creds are retired here. Use user-mode commands (\`cotal login\`; agents: \`cotal spawn\`); static dashboard/audit creds are not supported on user-auth meshes. Static minting remains available on static-auth meshes.`,
@@ -149,7 +167,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
   // flag) would let a caller collide with a live agent's broker footprint by passing its uid.
   let lifecycleUid: string | undefined;
   if (profile === "agent") {
-    const f = agentFilePath(personaRootFor(values), name);
+    const f = agentFilePath(root, name);
     const def = existsSync(f) ? loadAgentFile(f) : undefined;
     allowSubscribe = splitList(values["allow-subscribe"]) ?? def?.allowSubscribe ?? def?.subscribe;
     allowPublish = splitList(values["allow-publish"]) ?? def?.allowPublish;
@@ -170,7 +188,6 @@ export async function mint(args: ParsedArgs): Promise<void> {
   } else {
     // The default path IS the per-agent standing-cred kind's canonical location — a migrated
     // kind: store first (the source of truth), then materialize the file consumers read.
-    const root = cotalRoot();
     const secrets = workspaceSecretStore(root);
     const composition = { injected: false as const, root };
     out = agentSecretFilePaths(root, auth.space, name).creds;
@@ -229,9 +246,9 @@ export async function mint(args: ParsedArgs): Promise<void> {
  * no committed suite in the repo before that cell existed - mint appears in none of them - so a
  * regression on this credential surface would have shipped silently.
  */
-export function personaRootFor(values: { space?: string; server?: string }): string {
+export function resolveMintTarget(values: { space?: string; server?: string }): MeshTarget {
   try {
-    return resolveMeshTarget(process.cwd(), { space: values.space, server: values.server }).root;
+    return resolveMeshTarget(process.cwd(), { space: values.space, server: values.server });
   } catch (e) {
     if (isWorkspaceTargetError(e)) {
       console.error(c.red(renderWorkspaceError({ kind: "target", error: e })));
@@ -241,8 +258,8 @@ export function personaRootFor(values: { space?: string; server?: string }): str
   }
 }
 
-async function provisionTarget(auth: SpaceAuth | undefined, flags: { space?: string; server?: string }): Promise<MeshTarget> {
-  const target = await resolveTargetOrExit({ space: flags.space ?? auth?.space, server: flags.server });
+async function provisionTarget(auth: SpaceAuth | undefined, flags: { space?: string; server?: string }, resolved?: MeshTarget): Promise<MeshTarget> {
+  const target = resolved ?? await resolveTargetOrExit({ space: flags.space ?? auth?.space, server: flags.server });
   if (auth && target.space !== auth.space) {
     console.error(c.red(`--provision resolved mesh "${target.space}" but this root's auth is for space "${auth.space}"; name the space with --space`));
     process.exit(1);

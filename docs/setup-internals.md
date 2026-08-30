@@ -10,24 +10,28 @@
 
 `cotal setup`
 ([`implementations/cli/src/commands/setup.ts`](../implementations/cli/src/commands/setup.ts))
-is **configure-only and state-independent**: it checks prerequisites, installs the Claude Code
+is **configure-only**: it checks prerequisites, installs the Claude Code
 plugin, and seeds persona files, and it **launches nothing**: no mesh, no web dashboard, no
 manager, no delivery daemon, no cmux/tmux session, no demo. Starting the stack is `cotal up`; the
 dashboard is `cotal web`. Every file it writes is announced (`→ wrote …` via `provenance.wrote`).
-It is two-tier, gated on a machine marker.
+It is two-tier, gated on a machine marker. Persona seeding resolves the selected mesh root first,
+then uses the same `.cotal/agents` catalog as spawn. With no mesh it names a cwd fallback; an
+ambiguous or broken target refuses rather than choosing a root.
 
 **First run** (no `~/.cotal/onboarded.json`, or `--full`, or `--yes`) runs `runFirstRun(yes)`:
 
 - splash → intro → core **checks** (Node >= 22; **locate** `nats-server`: located, never
-  started) → **connector picker** → write the demo personas (david/sven/me) and seed the generic
-  `default` → **offer a global install** (`offerGlobalInstall`) → onboarded marker → a finale that
+  started) → **connector picker** → resolve and announce the persona destination → seed the generic
+  `default` and optional demo personas (david/sven/me) there → **offer a global install**
+  (`offerGlobalInstall`) → onboarded marker → a finale that
   lists the commands to start things (`cotal up --detach`, `cotal web`, `cotal spawn …`,
   `cotal console`, `cotal down`). Nothing is running when it returns.
 - The old `--auth` / `--open` flags are **gone**: they set the mesh MODE at launch time, and setup
   no longer launches; mode is now `cotal up [--open]`'s concern (an unknown-option error names
   them, no silent no-op).
 
-**Later runs** run `runEnsure`: re-seed the `default` persona if it's missing (announced),
+**Later runs** run `runEnsure`: resolve and announce the same destination, re-seed the `default`
+persona if it's missing,
 re-offer the **global install** (`offerGlobalInstall`, same `isNpx()` + PATH-scan gate as first
 run, so a repeat `npx cotal-ai setup` on a machine that still lacks a durable `cotal` finally
 installs it), then print the **status card** (`readyCard`). The card is **read-only probes** (`machineStatus`/`meshStatus`/`webUp`/`managerUp` for NATS, the plugin, the mesh, the web

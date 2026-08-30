@@ -124,9 +124,7 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
   // The destination is resolved ONCE, the way `spawn` resolves it, and announced BEFORE the write:
   // the persona has to land in the catalog spawn reads, and when that is not this folder the user
   // has to be told so by the output rather than discover it from a refusal an hour later.
-  const dest = seedDestination();
-  announceSeedDestination(dest);
-  seedDefaultAgent(dest);
+  const dest = seedDefaultForSetup(process.cwd());
   p.log.success(`Seeded your agent (${join(dest.dir, "default.md")}) - spawn it with \`${displayCmd()} spawn\` once your mesh is up`);
   log.line(`default-agent: wrote ${join(dest.dir, "default.md")} (${dest.source === "mesh" ? `mesh ${dest.target!.space}` : "cwd fallback"})`);
   // The guided expert team (david the engineer + sven the guide + me, your session) is opt-in:
@@ -309,9 +307,7 @@ export function skillsPluginStep(): Step {
 async function runEnsure(demo: boolean): Promise<void> {
   // Same destination question as the first run, same disclosure: a repeat `cotal setup` is exactly
   // what the old refusal told the user to run, so it above all must seed where `spawn` reads.
-  const dest = seedDestination();
-  announceSeedDestination(dest);
-  seedDefaultAgent(dest); // ensure `cotal spawn` (no name) always has a default to launch
+  const dest = seedDefaultForSetup(process.cwd()); // ensure `cotal spawn` (no name) always has a default to launch
   p.log.success(`Your agent: ${join(dest.dir, "default.md")}`);
   if (demo) seedDemoTeam(dest); // `cotal setup --demo` on a configured machine: add the team, then card
   ensureSkillsPlugin(); // fail-loud: close the upgrade gap so an onboarded machine re-running setup gets/refreshes (not silently stale) the Claude skills plugin
@@ -788,6 +784,14 @@ function announceSeedDestination(dest: SeedDestination): void {
 function seedDefaultAgent(dest: SeedDestination = seedDestination()): SeedDestination {
   seedDefaultAgentInto(dest.dir);
   return dest;
+}
+
+/** Resolve, disclose and write through setup's shipped destination wiring. The smoke disables only
+ *  the presentation step while keeping the production resolver-to-writer path intact. */
+export function seedDefaultForSetup(cwd: string, announce = true): SeedDestination {
+  const dest = seedDestinationFor(cwd);
+  if (announce) announceSeedDestination(dest);
+  return seedDefaultAgent(dest);
 }
 
 /** The write itself, seam-exported for the smoke: reconcile into an explicit catalog directory. */

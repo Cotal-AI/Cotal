@@ -25,6 +25,7 @@ import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
 import { machineStatus, resolveSpace, webUp, WEB_URL, type MachineStatus } from "../lib/status.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
+import { listPersonas } from "../lib/personas.js";
 import { c, statusBadge } from "../ui.js";
 
 /** `--components` is the fail-loud health pass. Bare `status` remains a broad, recovery-oriented
@@ -402,29 +403,14 @@ function webInstalled(): boolean {
   }
 }
 
-/** A SECOND, PRIVATE READER of the persona catalog — deliberately recorded as such.
- *
- *  `lib/personas.ts` already owns "what personas exist" (`listPersonas`/`personasDir`), and this
- *  function re-implements a slice of it: it stats `default.md` and the three demo files directly
- *  rather than going through that module. Two readers of one catalog is how `status` and `spawn`
- *  came to disagree in the first place, so this duplication is the SAME CLASS as the bug being
- *  fixed here, one level down: not a wrong root any more, but still a second answer to a question
- *  that should have one owner.
- *
- *  Left in place for this change because folding it into `lib/personas.ts` means editing a file
- *  another lane owns, and a cross-lane edit is not worth smuggling into a UX fix. It SHOULD be
- *  folded: `personaSummary` wants to be a renderer over `listPersonas(root)`, which would also make
- *  it report a malformed persona file (today it cannot — `existsSync` sees a broken file as
- *  present, so a corrupt `default.md` still reads as a green `default` here while `spawn` refuses
- *  to load it). That is a smaller instance of exactly the contradiction this commit removes.
- *
- *  Writing it down is the point: a divergence that survives because nobody recorded it is the next
- *  instance of this bug. */
+/** Summarize the catalog through the shipped loader. A file is launchable only when
+ *  {@link listPersonas} parsed it with the same {@code loadAgentFile} path spawn uses. */
 function personaSummary(root: string): string {
-  const dir = personasDirOf(root);
-  const def = existsSync(join(dir, "default.md"));
-  const demo = ["david.md", "sven.md", "me.md"].filter((f) => existsSync(join(dir, f))).length;
-  const parts = [def ? c.green("default") : c.dim("no default")];
+  const personas = listPersonas(root);
+  const byName = new Map(personas.map((persona) => [persona.name, persona]));
+  const def = byName.get("default");
+  const demo = ["david", "sven", "me"].filter((name) => byName.get(name)?.def !== undefined).length;
+  const parts = [def?.def ? c.green("default") : def?.error ? c.red("invalid default") : c.dim("no default")];
   if (demo) parts.push(c.dim(`demo team ${demo}/3`));
   return parts.join(" · ");
 }
