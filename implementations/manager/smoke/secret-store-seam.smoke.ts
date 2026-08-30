@@ -31,6 +31,7 @@ import {
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, workspaceSecretStore, agentSecretKeyForFile } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
+import { bootDeliveryDaemon, type DeliveryDaemon } from "./_boot-delivery.js";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const freePort = (): Promise<number> =>
@@ -76,6 +77,7 @@ const kids: ChildProcess[] = [];
 const srv = spawnProc("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 kids.push(srv);
 let mgr: InstanceType<typeof Manager> | undefined;
+let delivery: DeliveryDaemon | undefined;
 
 const store = recordingStore(workspaceSecretStore(workspaceRoot));
 
@@ -84,6 +86,12 @@ try {
   for (let i = 0; i < 60; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
   if (!up) throw new Error(`auth nats-server did not come up on ${PORT}`);
   await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
+  // Section D drives a REAL static retirement of an agent that really minted credentials, so SPEC
+  // 13.1's terminal barrier really requires "cluster-verified eviction of every revoked credential's
+  // live connections" here — the ledger names a holder. Without the daemon serving the
+  // `ctl.delivery-admin` rail the barrier fails closed (correctly) and the retirement never reaches
+  // the teardown this suite is about. Boot the shipped daemon rather than weaken the barrier.
+  delivery = await bootDeliveryDaemon({ space, servers: SERVERS, auth });
 
   mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot, secretStore: store });
   // A fake runtime + connector: nothing launches, the credential lifecycle is fully real.
@@ -181,6 +189,7 @@ try {
   console.log(`\nsecret-store-seam smoke: ${pass} passed, ${fail} failed`);
 } finally {
   await mgr?.stop().catch(() => {});
+  await delivery?.stop();
   for (const k of kids) { k.kill("SIGKILL"); }
   await wait(200);
 }
