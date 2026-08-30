@@ -696,10 +696,6 @@ smoke:workflow-concurrency
 # the suite. This compiler-API intersection checks every named workspace import against the package's
 # public exports. Appended so every existing shard assignment remains unchanged.
 smoke:workspace-import-exports
-# The path-bound merge driver is the enforcement behind concurrent tail appends: two real branch
-# merges in both orders keep every base suite on its original shard and keep comment blocks attached.
-# Appended so every existing shard assignment remains unchanged.
-smoke:ci-suites-merge-driver
 
 # A denied JetStream metadata read must reject the endpoint call, never return a well-formed partial
 # result that callers mistake for genuine emptiness. A real narrowed JWT cred drives listChannels
@@ -717,3 +713,16 @@ smoke:web-presence-view
 # sequence 1. Discriminator is drainWindow minStart, not the returned page. Appended so
 # every existing shard assignment remains unchanged.
 smoke:sparse-history-walk
+# The path-bound merge driver is the enforcement behind concurrent tail appends: two real branch
+# merges in both orders keep every base suite on its original shard and keep comment blocks attached.
+# Appended so every existing shard assignment remains unchanged.
+smoke:ci-suites-merge-driver
+# Raw NATS transport state is separate from full endpoint readiness. The deterministic suite grades
+# epoch staleness and state contracts; its companion owns a throwaway broker and proves real
+# disconnect/reconnect delivery. Appended so every existing shard assignment remains unchanged.
+smoke:transport-liveness
+smoke:transport-liveness:broker
+# The connection status tool reaches MeshAgent state through a real in-memory MCP server and client,
+# including a measured successful inbox drain. Appended so every existing shard assignment remains
+# unchanged.
+smoke:connection-status
