@@ -41,14 +41,14 @@
       "file": "implementations/web/src/web.ts",
       "find": "        const dms = await within(\n          ep.dmHistory({ limit, signal: clock.signal }).catch((e: unknown) => {\n            throw new Error(`direct messages: the read failed: ${e instanceof Error ? e.message : String(e)}`);\n          }),\n          clock.until,\n        );\n        if (dms === LATE)\n          return json(res, { error: `direct messages: the read did not finish within ${AGGREGATION_DEADLINE_MS}ms` }, 503);",
       "replace": "        const dms = await ep.dmHistory({ limit, signal: clock.signal }).catch((e: unknown) => {\n          throw new Error(`direct messages: the read failed: ${e instanceof Error ? e.message : String(e)}`);\n        });",
-      "expectRed": "5.4 `/api/dms` REFUSES at its own deadline when the inner read never ends"
+      "expectRed": "5.5 the never-ending refusal names the deadline it exceeded"
     },
     {
       "name": "B7 the refusal stops naming what it exceeded, so the page can say only that something returned a status - the same illegibility as the `{\"error\":\"timeout\"}` this change exists to replace",
       "file": "implementations/web/src/web.ts",
       "find": "`direct messages: the read did not finish within ${AGGREGATION_DEADLINE_MS}ms`",
       "replace": "\"direct messages unavailable\"",
-      "expectRed": "6.7 and the refusal names the deadline it exceeded"
+      "expectRed": "5.5 the never-ending refusal names the deadline it exceeded"
     },
     {
       "name": "B8 the server stops saying a page was short in its own log, so the operator who can tell a slow link from a broken channel is the one person never told",
