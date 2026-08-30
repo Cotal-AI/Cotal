@@ -153,6 +153,7 @@
     "smoke:attention:auth": "tsx extensions/connector-core/smoke/attention-auth.smoke.ts",
     "smoke:channel-attention": "tsx extensions/connector-core/smoke/per-channel-attention.smoke.ts",
     "smoke:channel-attention:auth": "tsx extensions/connector-core/smoke/per-channel-attention-auth.smoke.ts",
+    "smoke:focus-recall-wildcard": "tsx extensions/connector-core/smoke/focus-recall-wildcard.smoke.ts",
     "smoke:presence-scrub": "tsx packages/core/smoke/presence-offline-scrub.smoke.ts",
     "smoke:cross-path-dedup": "tsx extensions/connector-core/smoke/cross-path-dedup.smoke.ts",
     "smoke:overflow-churn-bound": "tsx extensions/connector-core/smoke/overflow-churn-bound.smoke.ts",
