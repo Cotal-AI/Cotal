@@ -1,0 +1,2 @@
+# Generic setup package boundary and connector-owned harness provider.
+smoke:setup-provider-pack

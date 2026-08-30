@@ -1,4 +1,4 @@
-import type { Extension } from "./registry.js";
+import type { Extension, ExtensionRef } from "./registry.js";
 import type { McpServerSpec } from "./connector-config.js";
 
 /** Identity + mesh coordinates the manager hands a connector to launch an agent. */
@@ -172,6 +172,9 @@ export interface ConnectorModelCatalog extends ModelCatalog {
 export interface Connector extends Extension {
   readonly kind: "connector";
   readonly name: string;
+  /** Connector-owned setup surface. The base CLI resolves this through the extension registry and
+   * never carries a harness's asset names or native install commands itself. */
+  readonly setup?: ExtensionRef;
   buildLaunch(opts: LaunchOpts): LaunchSpec;
   /** Optional model catalog hook. The manager calls this for selector UIs; launch remains authority-free
    *  and still accepts any string the operator supplies. */

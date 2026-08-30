@@ -101,6 +101,7 @@
     "smoke:jcode-provider-permanent-refusal": "tsx extensions/connector-jcode/smoke/jcode-provider-permanent-refusal.smoke.ts",
     "smoke:jcode-recovery-classifier": "tsx extensions/connector-jcode/smoke/jcode-recovery-classifier.smoke.ts",
     "smoke:jcode-mid-turn-delivery": "tsx extensions/connector-jcode/smoke/jcode-mid-turn-delivery.smoke.ts",
+    "smoke:jcode-inbound-wedge": "tsx extensions/connector-jcode/smoke/jcode-inbound-wedge.smoke.ts",
     "smoke:jcode-live": "tsx extensions/connector-jcode/smoke/jcode-live.smoke.ts",
     "smoke:view": "tsx implementations/cli/smoke/view.smoke.ts",
     "smoke:members": "tsx packages/core/smoke/members.smoke.ts",
@@ -460,8 +461,11 @@
     "smoke:materialize-concurrency": "pnpm --filter @cotal-ai/workspace... build && tsx packages/workspace/smoke/materialize-concurrency.smoke.ts",
     "smoke:setup-failloud": "pnpm --filter @cotal-ai/workspace... build && tsx implementations/cli/smoke/setup-failloud.smoke.ts",
     "smoke:agent-skills": "pnpm --filter @cotal-ai/workspace... build && tsx implementations/cli/smoke/agent-skills.smoke.ts",
+    "smoke:status-skills-remedy": "pnpm --filter @cotal-ai/workspace... build && pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/delivery --filter @cotal-ai/auth --filter @cotal-ai/connector-core build && tsx implementations/cli/smoke/status-skills-remedy.smoke.ts",
+    "smoke:setup-provider-pack": "pnpm --filter @cotal-ai/workspace... build && pnpm --filter @cotal-ai/connector-core build && pnpm --filter @cotal-ai/connector-claude-code build && pnpm --filter @cotal-ai/cli build && tsx implementations/cli/smoke/setup-provider-pack.smoke.ts && tsx implementations/cli/smoke/setup-provider-absent.smoke.ts",
     "smoke:ext-seed-help": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/ext-seed-help.smoke.ts",
     "smoke:seed": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/seed.smoke.ts",
+    "smoke:seed-migration-provenance": "pnpm --filter cotal-ai... build && pnpm --dir bin seeded-connectors && tsx implementations/cli/smoke/seed-migration-provenance.smoke.ts",
     "smoke:seed-tarball:live": "pnpm --filter cotal-ai... build && tsx bin/smoke/seed-tarball-live.smoke.ts",
     "smoke:down-manifest-usermode:live": "tsx implementations/auth/smoke/down-manifest-usermode.smoke.ts",
     "smoke:secret-store": "tsx packages/workspace/smoke/secret-store.smoke.ts",
@@ -470,6 +474,7 @@
     "smoke:agent-secret-segmentation": "tsx packages/workspace/smoke/agent-secret-segmentation.smoke.ts",
     "smoke:delivery-store-boundary": "tsx implementations/delivery/smoke/delivery-store-boundary.smoke.ts",
     "smoke:sys-injection-evict": "tsx implementations/delivery/smoke/sys-injection-evict.smoke.ts",
+    "smoke:delivery-injected-tenancy-admission": "tsx implementations/delivery/smoke/injected-tenancy-admission.smoke.ts",
     "smoke:sys-repair-honesty": "tsx implementations/delivery/smoke/sys-repair-honesty.smoke.ts",
     "smoke:delivery-teardown": "tsx implementations/cli/smoke/delivery-teardown.smoke.ts",
     "smoke:auth-store": "tsx implementations/auth/smoke/auth-store.smoke.ts",
@@ -511,6 +516,7 @@
     "smoke:retire-reply-bind": "tsx implementations/manager/smoke/retire-reply-bind.smoke.ts",
     "smoke:gate-reconcile:auth": "tsx implementations/manager/smoke/gate-reconcile-auth.smoke.ts",
     "smoke:gate-reconcile-cli:auth": "tsx implementations/manager/smoke/gate-reconcile-cli-e2e.smoke.ts",
+    "smoke:gate-reconcile-resume": "pnpm --filter @cotal-ai/core build && tsx implementations/manager/smoke/gate-reconcile-resume.smoke.ts",
     "smoke:boot-self-heal-gate": "tsx implementations/manager/smoke/boot-self-heal-gate.smoke.ts",
     "smoke:resolve-rtt": "tsx implementations/manager/smoke/resolve-rtt-probe.smoke.ts",
     "smoke:queue-win": "tsx implementations/manager/smoke/queue-win-distribution.smoke.ts",
@@ -563,6 +569,7 @@
     "@types/node": "^22.20.0",
     "ts-json-schema-generator": "^2.9.0",
     "tsx": "^4.23.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "yaml": "^2.9.0"
   }
 }

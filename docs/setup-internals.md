@@ -35,6 +35,13 @@ dashboard, and the manager) and for anything down it prints the exact command to
 (`cotal up --detach`, `cotal web`, `cotal supervise`). Displaying state never depends on it; setup
 still launches nothing.
 
+**`--skills`** is the status-card write: it asks installed connectors with a declared skills setup
+hook to reconcile their own harness, then reconciles `~/.agents/skills`. The base CLI passes only the
+vendor-neutral skills directory, version, and state directory; connector packages own native assets
+and commands. It does not seed personas, install the mesh
+connector, offer a global install, or write the onboarded stamp. Combined with `--full` or
+`--demo` it is refused.
+
 The seeded `default` persona has an empty active `subscribe` set and wildcard
 `allowSubscribe`/`allowPublish` ACLs. A fresh agent receives no channel traffic until it joins a
 channel, but can join, create, read, and post to channels on demand. The guided demo personas keep
@@ -171,7 +178,10 @@ resurrects a removal. Before writing the generation stamp, setup verifies that e
 and at the generation version. A version-skewed payload fails loud (`ext seed --repair`) rather than being stamped as current. A cotal
 **older** than the store's stamped generation refuses before writing anything, rather than stamping the
 store back down to its own version while refreshing nothing: run the newer cotal, or `ext seed --reset`
-to rebuild the store for the version you are running.
+to rebuild the store for the version you are running. A generation advance records the exact
+realpath-resolved CLI entry and an ISO timestamp in `seed/stamp.json`, then announces the migration
+after that stamp commits. An older CLI includes those fields in its refusal when present; legacy
+generation-only stamps stay valid and retain the shorter refusal.
 
 **Crash safety.** One shared advisory lock ([`packages/workspace/src/advisory-lock.ts`](../packages/workspace/src/advisory-lock.ts):
 atomic hard-link publish, PID + process-start liveness, bounded wait, dead-owner reclaim) guards the
