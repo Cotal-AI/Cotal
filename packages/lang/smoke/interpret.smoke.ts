@@ -1099,14 +1099,14 @@ let c = await sleep("1s")
 // Both scopes that launch thunks are covered, because they share the path. The resume is the point:
 // settling nothing leaves the scope pending, a pending scope re-enters, and settling is idempotent,
 // so the run finishes where it stopped rather than carrying a durable failure.
-for (const [label, P] of [
-  ["parallel", `
+for (const [label, scopeName, P] of [
+  ["parallel", "both", `
 await parallel({
   a: async () => { await sleep("1m"); return 1; },
   b: async () => { await sleep("2m"); return 2; },
 }, { name: "both" });
 `],
-  ["fanOut", `
+  ["fanOut", "each", `
 await fanOut([1, 2], async (n) => { await sleep("1m"); return n; }, { name: "each", key: (n) => "k" + n });
 `],
 ] as const) {
@@ -1127,15 +1127,25 @@ await fanOut([1, 2], async (n) => { await sleep("1m"); return n; }, { name: "eac
   ok(`a host stop inside ${label} releases the run rather than failing it`,
     released instanceof RunReleased, `${(released as Error)?.name}`);
 
-  // The defect was here: an entry settled `failed` with the release text as its error.
+  // The defect was here, and this reads the JOURNAL'S OWN SHAPE rather than an error message. A
+  // message match would go quietly green the day the release text is reworded, while the bug it
+  // guards returned; the durable claim is that this scope settles NOTHING. Under the reverted fix
+  // the same entry is `settled` with `status: "failed"` and `error.code: "L4000"`, so each of the
+  // three conditions below is one the defect actually breaks.
   const entries = journal.entries();
-  const recordedRelease = entries.filter((e) => {
-    const err = (e as { error?: { message?: string } }).error;
-    return err !== undefined && String(err.message).includes("released before its next effect");
-  });
-  ok(`and ${label} records the release as NO entry's outcome`,
-    recordedRelease.length === 0,
-    recordedRelease.map((e) => (e as { error?: { code?: string } }).error?.code));
+  const scope = entries.find((e) => e.kind === label && e.name === scopeName);
+  ok(`and the ${label} scope entry stays PENDING rather than recording the release as its outcome`,
+    scope !== undefined
+      && scope.state === "pending"
+      && (scope as { status?: string }).status === undefined
+      && (scope as { error?: unknown }).error === undefined,
+    scope === undefined
+      ? "no scope entry at all"
+      : {
+          state: scope.state,
+          status: (scope as { status?: string }).status,
+          error: (scope as { error?: { code?: string } }).error?.code,
+        });
 
   // And the consequence that made it critical rather than cosmetic.
   let resumeErr: unknown;

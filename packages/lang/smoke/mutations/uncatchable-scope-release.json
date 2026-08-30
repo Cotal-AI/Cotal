@@ -1,0 +1,18 @@
+{
+  "suite": "packages/lang/smoke/interpret.smoke.ts",
+  "guard": "A host stop is never recorded as a concurrency scope's outcome: the scope settles nothing, stays pending, and a healthy driver resumes past it. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-interpret",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/uncatchable-scope-release.json",
+  "mutations": [
+    {
+      "name": "the release class is dropped from the scope's do-not-record ladder, so a host stop settles the scope as an L4000 failure",
+      "file": "packages/lang/src/perform.ts",
+      "find": "    if (reason instanceof RunReleased) throw reason;",
+      "replace": "",
+      "expectRed": "and the parallel scope entry stays PENDING rather than recording the release as its outcome",
+      "completionMarker": "ok a fresh driver resumes it from there and finishes it",
+      "cell": "and the parallel scope entry stays PENDING rather than recording the release as its outcome",
+      "note": "Measured before the guard: a host stop inside `parallel` or `fanOut` settled the scope entry with `status: \"failed\"` and `error.code: \"L4000\"` carrying the release's own text, and a resume with a healthy host and no `shouldStop` replayed that entry and threw. The identical stop one statement earlier, at a sequential seam, resumed cleanly. The cell reads the entry's shape rather than its message, so rewording the release text cannot green it."
+    }
+  ]
+}
