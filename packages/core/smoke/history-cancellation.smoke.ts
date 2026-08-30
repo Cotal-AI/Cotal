@@ -14,7 +14,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
-import { jetstreamManager } from "@nats-io/jetstream";
+import { DeliverPolicy, jetstreamManager } from "@nats-io/jetstream";
 import { CotalEndpoint, chatStream, isReachable, setupSpaceStreams } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -101,6 +101,9 @@ try {
   control = await connect({ servers: brokerUrl });
   const jsm = await jetstreamManager(control);
   const consumers = async () => (await jsm.streams.info(chatStream(space))).state.consumer_count;
+  const drainActive = async () =>
+    (await jsm.consumers.list(chatStream(space)).next())
+      .some((info) => info.config.deliver_policy !== DeliverPolicy.Last);
   const consumerNames = async (): Promise<string[]> => {
     const names: string[] = [];
     for await (const info of jsm.consumers.list(chatStream(space))) names.push(info.name);
@@ -115,8 +118,8 @@ try {
   );
 
   const startedBy = Date.now() + 5000;
-  while (Date.now() < startedBy && (await consumers()) === 0) await wait(25);
-  check("positive control: the public read created a live JetStream consumer", (await consumers()) > 0, await consumers());
+  while (Date.now() < startedBy && !(await drainActive())) await wait(25);
+  check("positive control: the public read reached its live window-drain consumer", await drainActive(), await consumers());
   const activeNames = await consumerNames();
   check("positive control: the active read consumer identity is observable", activeNames.length === 1, activeNames);
 
