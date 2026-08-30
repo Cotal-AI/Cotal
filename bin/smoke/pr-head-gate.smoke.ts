@@ -197,11 +197,16 @@ for (const conclusion of ["neutral", "skipped"]) {
 }
 
 function shippedCommand(mode: "success" | "missing") {
+  // The shipped gate reads GitHub credentials (GH_TOKEN/GITHUB_TOKEN/GITHUB_REPOSITORY) and no
+  // COTAL_ name at all, so an ambient copy would hand a live credential and broker URL to a child
+  // that has no use for either. Strip the prefix.
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
   return spawnSync("pnpm", ["--silent", "pr-head-gate", "1098"], {
     cwd: ROOT,
     encoding: "utf8",
     env: {
-      ...process.env,
+      ...env,
       GITHUB_REPOSITORY: "Cotal-AI/Cotal",
       NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${fixtureFetch}`.trim(),
       PR_HEAD_GATE_FIXTURE: mode,

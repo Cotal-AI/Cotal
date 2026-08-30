@@ -32,10 +32,16 @@ const alive = (pid: number): boolean => {
 };
 const stopGroup = (pid?: number) => { if (!pid) return; try { process.kill(-pid, "SIGKILL"); } catch { try { process.kill(pid, "SIGKILL"); } catch {} } };
 const here = dirname(fileURLToPath(import.meta.url)); const repo = resolve(here, "../../.."); const host = join(here, "_orphan-seat-host.ts"); const tsx = join(repo, "node_modules", ".bin", "tsx");
+// One scrubbed copy for both children below: this suite re-entered, and the manager host. Both
+// reach real connection material, and a run started from a managed session would otherwise pass it
+// down whole. Copy-and-strip rather than scrubbing process.env in place - the re-entered child reads
+// COTAL_ORPHAN_SEAT_THROW_CONTROL, which is set on top of the copy at the spawn site.
+const ambientEnv: NodeJS.ProcessEnv = { ...process.env };
+for (const key of Object.keys(ambientEnv)) if (key.startsWith("COTAL_")) delete ambientEnv[key];
 if (process.env.COTAL_ORPHAN_SEAT_THROW_CONTROL !== "1") {
   const throwControl = spawnSync(tsx, [fileURLToPath(import.meta.url)], {
     cwd: repo,
-    env: { ...process.env, COTAL_ORPHAN_SEAT_THROW_CONTROL: "1" },
+    env: { ...ambientEnv, COTAL_ORPHAN_SEAT_THROW_CONTROL: "1" },
     encoding: "utf8",
   });
   check(
@@ -48,7 +54,7 @@ const port = await freePort(); const servers = `nats://127.0.0.1:${port}`; const
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN)); const root = join(dir, "ws"); mkdirSync(join(root, ".cotal", "agents"), { recursive: true }); saveSpaceAuth(authDir(root), auth); writeFileSync(join(root, ".cotal", "agents", "worker.md"), "---\nname: worker\nrole: worker\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\n"); writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
 const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" }); const releaseBroker = teardownOnSignal(broker, dir); let daemon: CotalEndpoint | undefined; const managers: ChildProcess[] = []; const seats: number[] = [];
 async function startManager(tag: string, returnAtManager = false): Promise<{ child: ChildProcess; manager?: { managerPid: number; managerInstanceId: string }; ready?: { managerPid: number; managerInstanceId: string; seatPid: number; actor: string; lifecycleUid: string }; spawn?: { managerPid: number; managerInstanceId: string; reply: { ok: boolean; error?: string; data?: unknown }; managedNames: string[] }; stdout: () => string; stderr: () => string }> {
-  const child = spawn(tsx, [host], { cwd: repo, env: { ...process.env, REPRO_ROOT: root, REPRO_SPACE: space, REPRO_SERVERS: servers, REPRO_OBSERVER_CREDS: observerCreds, REPRO_EVICTOR_CREDS: evictorCreds, REPRO_ACCOUNT_ID: auth.account.pub, COTAL_SERVER: "", COTAL_SERVERS: "", COTAL_CREDS: "", NATS_URL: "" }, detached: true, stdio: ["ignore", "pipe", "pipe"] }); managers.push(child); let out = "", err = ""; child.stdout?.on("data", (b) => out += String(b)); child.stderr?.on("data", (b) => err += String(b)); const deadline = Date.now() + 120_000;
+  const child = spawn(tsx, [host], { cwd: repo, env: { ...ambientEnv, REPRO_ROOT: root, REPRO_SPACE: space, REPRO_SERVERS: servers, REPRO_OBSERVER_CREDS: observerCreds, REPRO_EVICTOR_CREDS: evictorCreds, REPRO_ACCOUNT_ID: auth.account.pub, COTAL_SERVER: "", COTAL_SERVERS: "", COTAL_CREDS: "", NATS_URL: "" }, detached: true, stdio: ["ignore", "pipe", "pipe"] }); managers.push(child); let out = "", err = ""; child.stdout?.on("data", (b) => out += String(b)); child.stderr?.on("data", (b) => err += String(b)); const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) { const readyLine = out.split("\n").find((x) => x.startsWith("REPRO_READY ")); if (readyLine) { const ready = JSON.parse(readyLine.slice("REPRO_READY ".length)); seats.push(ready.seatPid); return { child, ready, stdout: () => out, stderr: () => err }; } const spawnLine = out.split("\n").find((x) => x.startsWith("REPRO_SPAWN ")); if (spawnLine) return { child, spawn: JSON.parse(spawnLine.slice("REPRO_SPAWN ".length)), stdout: () => out, stderr: () => err }; const managerLine = out.split("\n").find((x) => x.startsWith("REPRO_MANAGER ")); if (managerLine && returnAtManager) return { child, manager: JSON.parse(managerLine.slice("REPRO_MANAGER ".length)), stdout: () => out, stderr: () => err }; if (child.exitCode !== null) throw new Error(`${tag} manager exited ${child.exitCode}: ${err}`); await wait(100); }
   throw new Error(`${tag} manager readiness timeout: ${err}`);
 }
