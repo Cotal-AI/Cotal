@@ -448,6 +448,15 @@ export class CotalEndpoint extends EventEmitter {
   private readonly roster = new Map<string, Presence>();
   /** Resolves when the current presence watch has consumed its complete initial KV snapshot. */
   private presenceSnapshot = Promise.resolve();
+  /**
+   * Observer-local age of the last presence-KV delivery (any key, including DEL/PURGE). Distinct
+   * from each peer's `ts`: that is the publisher's heartbeat. Whole-bucket silence past TTL is
+   * the observer going deaf, not  N  simultaneous deaths, and sweep must not treat it as the
+   * latter (#1045).
+   */
+  private lastPresenceWatchAt = 0;
+  /** Last emitted presence-view freshness. Suppresses duplicate `presence-view` events. */
+  private presenceViewFresh = true;
   private status: PresenceStatus = "idle";
   private activity?: string;
   /** Mirror of the connector's authoritative attention state, published in presence (advisory). The
@@ -1078,6 +1087,8 @@ export class CotalEndpoint extends EventEmitter {
     this.chatSubDenied.clear();
     this.confirmingChatSubs.clear();
     this.roster.clear();
+    this.lastPresenceWatchAt = 0;
+    this.presenceViewFresh = true;
     this.joinSeq.clear();
     this.channelConfigs.clear();
     this.channelDefaults = {};
@@ -1911,6 +1922,20 @@ export class CotalEndpoint extends EventEmitter {
     return [...this.roster.values()].sort((a, b) =>
       a.card.name.localeCompare(b.card.name),
     );
+  }
+
+  /**
+   * Freshness of THIS observer's presence watch, not of any peer. `fresh: false` means the
+   * whole bucket has been silent past the liveness window — the view is stale as of
+   * `staleSince`, and {@link getRoster} is last-known rather than a current offline verdict.
+   * A watch that has not yet delivered anything is not stale (there is no T to name).
+   */
+  presenceView(): { fresh: boolean; staleSince?: number } {
+    if (!this.doWatch) return { fresh: true };
+    if (this.lastPresenceWatchAt === 0) return { fresh: true };
+    const staleSince = this.lastPresenceWatchAt + this.ttlMs;
+    if (Date.now() < staleSince) return { fresh: true };
+    return { fresh: false, staleSince };
   }
 
   /** Wait until the current presence watch has consumed its initial KV snapshot. An empty bucket
@@ -4438,6 +4463,7 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   private handleKvEntry(e: KvEntry): void {
+    this.lastPresenceWatchAt = Date.now();
     if (e.operation === "DEL" || e.operation === "PURGE") {
       this.markOffline(e.key);
       return;
@@ -4460,6 +4486,18 @@ export class CotalEndpoint extends EventEmitter {
     if (raw.card?.id !== id) return;
     const prev = this.roster.get(id);
     const stale = Date.now() - raw.ts > this.ttlMs;
+    // A watch recovering from a stall replays the bucket. Those PUTs still carry the publisher's
+    // pre-stall timestamps, so they look TTL-expired even though the peers kept heartbeating on
+    // the broker. Materializing them as offline is the empty-to-full flicker #1045 named: the
+    // observer's catch-up, not N deaths. Keep last-known rows, stay view-stale, and wait for a
+    // live timestamp (or an explicit offline/delete) before changing a known peer.
+    if (stale && raw.status !== "offline") {
+      if (prev) return;
+      this.roster.set(id, this.toOffline(raw));
+      this.emit("roster", this.getRoster());
+      return;
+    }
+    this.setPresenceViewFresh(true);
     // Any offline materialization (a stale snapshot OR a graceful-leave record) drops the advisory
     // attention fields — an offline peer must not carry a stale `[focus]`/`locally muted` hint.
     const p: Presence =
@@ -4522,8 +4560,22 @@ export class CotalEndpoint extends EventEmitter {
     this.emit("roster", this.getRoster());
   }
 
+  private setPresenceViewFresh(fresh: boolean): void {
+    if (fresh === this.presenceViewFresh) return;
+    this.presenceViewFresh = fresh;
+    this.emit("presence-view", this.presenceView());
+  }
+
   private sweep(): void {
     const now = Date.now();
+    // Whole-bucket silence past TTL is THIS observer going deaf. Real rosters do not lose every
+    // peer in one window, and treating that silence as N offline verdicts empties an online-only
+    // sidebar with nothing saying the window went blind (#1045). Gate the per-peer age-out on
+    // watch freshness; surface the view as stale instead.
+    if (this.lastPresenceWatchAt !== 0 && now - this.lastPresenceWatchAt > this.ttlMs) {
+      this.setPresenceViewFresh(false);
+      return;
+    }
     let changed = false;
     for (const [id, p] of this.roster) {
       if (p.status !== "offline" && now - p.ts > this.ttlMs) {
