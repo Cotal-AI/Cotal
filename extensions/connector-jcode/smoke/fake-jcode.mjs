@@ -148,6 +148,18 @@ const server = createServer((socket) => {
           break;
         }
         case "attach_session":
+          if (
+            process.env.FAKE_JCODE_REFUSE_ATTACH_CODE &&
+            (!process.env.FAKE_JCODE_REFUSE_ATTACH_AFTER_FILE || existsSync(process.env.FAKE_JCODE_REFUSE_ATTACH_AFTER_FILE))
+          ) {
+            log({ ev: "attach_refused", code: process.env.FAKE_JCODE_REFUSE_ATTACH_CODE, session_id: frame.session_id });
+            reply({
+              ev: "error",
+              code: process.env.FAKE_JCODE_REFUSE_ATTACH_CODE,
+              message: process.env.FAKE_JCODE_REFUSE_ATTACH_MESSAGE ?? "synthetic persistent attach refusal",
+            });
+            break;
+          }
           if (process.env.FAKE_JCODE_FAIL_ATTACH_ONCE_FILE && !existsSync(process.env.FAKE_JCODE_FAIL_ATTACH_ONCE_FILE)) {
             writeFileSync(process.env.FAKE_JCODE_FAIL_ATTACH_ONCE_FILE, "failed");
             log({ ev: "attach_failed_once", session_id: frame.session_id });

@@ -4,7 +4,7 @@ import { existsSync, lstatSync, mkdirSync, openSync, closeSync, rmSync, writeFil
 import { createServer, type Server } from "node:net";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { JcodeClient, launchInstance, type ApiEvent, type LaunchedInstance } from "@1jehuang/jcode-sdk";
+import { HarnessError, JcodeClient, launchInstance, type ApiEvent, type LaunchedInstance } from "@1jehuang/jcode-sdk";
 import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
 import { mirrorJcodeCredentials, shortSocketHome } from "./private-state.js";
 import { captureProcessIdentity, launchIdentityEnv, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
@@ -31,6 +31,23 @@ import {
 
 const MAX_RELAY_BYTES = 4 * 1024 * 1024;
 const RELAY_TIMEOUT_MS = 30_000;
+
+/** Recovery retries availability races, not a refusal that another attempt cannot change. */
+function permanentBridgeRecoveryFailure(error: unknown): error is HarnessError {
+  if (!(error instanceof HarnessError)) return false;
+  if (
+    new Set([
+      "handshake_failed",
+      "invalid_instance_home",
+      "invalid_request",
+      "jcode_not_found",
+      "unknown_request",
+      "unknown_session",
+      "unsupported_version",
+    ]).has(error.code)
+  ) return true;
+  return error.code === "connect_failed" && (error.cause as NodeJS.ErrnoException | undefined)?.code === "EACCES";
+}
 
 interface RelayEndpoint {
   path: string;
@@ -550,6 +567,7 @@ export async function runJcodeHost(): Promise<void> {
           await replacement?.close().catch(() => {});
           await stopPrivateJcode();
           if (stopping) return;
+          if (permanentBridgeRecoveryFailure(error)) throw error;
           const remaining = deadline - Date.now();
           if (remaining <= 0) throw error;
           process.stderr.write(
@@ -560,7 +578,7 @@ export async function runJcodeHost(): Promise<void> {
       }
     } catch (error) {
       process.stderr.write(
-        `[cotal-jcode] private Harness connection closed and its one recovery window expired: ${((lastError ?? error) as Error).message}\n`,
+        `[cotal-jcode] private Harness connection closed and recovery failed: ${((lastError ?? error) as Error).message}\n`,
       );
       await shutdown(1);
     } finally {

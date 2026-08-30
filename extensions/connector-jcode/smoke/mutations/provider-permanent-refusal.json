@@ -1,0 +1,17 @@
+{
+  "suite": "extensions/connector-jcode/smoke/jcode-provider-permanent-refusal.smoke.ts",
+  "guard": "a persistent permanent SDK replacement refusal terminates the shipped Jcode host before another bridge launch",
+  "command": "pnpm smoke:jcode-provider-permanent-refusal",
+  "progressPattern": "✓",
+  "minTicks": 2,
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/provider-permanent-refusal.json",
+  "mutations": [
+    {
+      "name": "M1 retry a permanent SDK replacement refusal",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "          if (permanentBridgeRecoveryFailure(error)) throw error;",
+      "replace": "          if (false) throw error;",
+      "expectRed": "persistent invalid_request replacement refusal is terminal before another launch"
+    }
+  ]
+}
