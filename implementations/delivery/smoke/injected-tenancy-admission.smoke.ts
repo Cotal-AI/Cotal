@@ -24,6 +24,7 @@ import {
   mintCreds,
   mintMembershipObserverCreds,
   newIdentity,
+  rotateSystemAccount,
   serverConfig,
   setupSpaceStreams,
   type ParsedArgs,
@@ -102,7 +103,7 @@ try {
   const observerA = await mintMembershipObserverCreds(authA, newIdentity());
   const observerB = await mintMembershipObserverCreds(authB, newIdentity());
   const evictor = await mintConnectionEvictorCreds(authA, newIdentity());
-  const foreignEvictor = await mintConnectionEvictorCreds(authB, newIdentity());
+  const foreignEvictor = await mintConnectionEvictorCreds(await rotateSystemAccount(authA), newIdentity());
 
   const inspectorId = newIdentity();
   inspector = new CotalEndpoint({
