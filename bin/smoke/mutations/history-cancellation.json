@@ -20,10 +20,11 @@
   ],
   "mutations": [
     {
-      "name": "drainWindow no longer stops its live pull when the public signal aborts",
+      "name": "neither history pull stage stops its live iterator when the public signal aborts",
       "file": "packages/core/src/endpoint.ts",
-      "find": "      const iter = await consumer.fetch({ max_messages: pending });\n      const stop = () => iter.stop(abortReason(signal));\n      signal?.addEventListener(\"abort\", stop, { once: true });",
-      "replace": "      const iter = await consumer.fetch({ max_messages: pending });\n      const stop = () => iter.stop(abortReason(signal));",
+      "find": "      signal?.addEventListener(\"abort\", stop, { once: true });",
+      "replace": "",
+      "allowMultiple": true,
       "expectRed": "✗ FAIL: PUBLIC REPRO: abort settles channelHistory as AbortError instead of leaving it pending",
       "cell": "✗ FAIL: PUBLIC REPRO: abort settles channelHistory as AbortError instead of leaving it pending"
     },
