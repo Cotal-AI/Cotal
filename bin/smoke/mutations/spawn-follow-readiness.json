@@ -13,7 +13,7 @@
     {
       "name": "the follower ignores the accepted readiness budget and uses only the shorter caller wait",
       "file": "packages/core/src/endpoint-invoke.ts",
-      "find": "      ? Math.max(deadlineMs, readinessDeadlineMs + 10_000)\n      : deadlineMs;",
+      "find": "      ? Math.max(deadlineMs, readinessDeadlineMs + GOAL_FOLLOW_MARGIN_MS)\n      : deadlineMs;",
       "replace": "      ? deadlineMs\n      : deadlineMs;",
       "expectRed": "a terminal inside the accepted readiness budget outlives the shorter generic caller wait",
       "cell": "a terminal inside the accepted readiness budget outlives the shorter generic caller wait",

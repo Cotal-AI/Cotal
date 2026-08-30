@@ -34,6 +34,10 @@ import type { EpVerbTarget, EpAttributedReply, EpScatterResult, EpInstanceLivene
 
 const dec = new TextDecoder(), enc = new TextEncoder();
 const nonce = (): string => randomBytes(24).toString("base64url");
+/** Delivery margin above an action owner's accepted readiness budget. Spawn's established generic
+ *  invariant was 40s client > 30s manager; preserve that measured 10s separation when a connector
+ *  declares a different budget instead of inventing a second timeout policy. */
+const GOAL_FOLLOW_MARGIN_MS = 10_000;
 
 /** A resolved command contract: the compiled input/output validators (recompiled from the store,
  *  digest-verified against the registered declaration) plus the command's §13.2 admission facts. */
@@ -477,7 +481,7 @@ export async function submitAndFollowGoal(
     const readinessDeadlineMs = acceptance?.readinessDeadlineMs;
     const followDeadlineMs = typeof readinessDeadlineMs === "number"
       && Number.isSafeInteger(readinessDeadlineMs) && readinessDeadlineMs >= 0
-      ? Math.max(deadlineMs, readinessDeadlineMs + 10_000)
+      ? Math.max(deadlineMs, readinessDeadlineMs + GOAL_FOLLOW_MARGIN_MS)
       : deadlineMs;
     // A denial that has ALREADY arrived must not be waited out: it is knowable now, and holding the
     // caller to its deadline is what turns a grant problem into a retry (the cell that caught this

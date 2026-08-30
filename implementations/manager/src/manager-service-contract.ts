@@ -158,7 +158,9 @@ const SPAWN_INPUT_SCHEMA = {
 const SPAWN_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["name", "owner", "actor", "uid", "goalId", "fingerprint", "readinessDeadlineMs", "executor"],
+  // Additive for mixed-version readers: current managers always emit readinessDeadlineMs, while a
+  // new follower accepts an older acceptance without it and falls back to its caller deadline.
+  required: ["name", "owner", "actor", "uid", "goalId", "fingerprint", "executor"],
   properties: {
     name: { type: "string" },
     owner: { type: "string" },
