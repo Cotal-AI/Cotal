@@ -74,13 +74,13 @@ const silentErr = (() => {
 })();
 check("undeclared is refused (default-deny, not a no-op)", silentErr.length > 0);
 check(
-  "undeclared refusal names the connector and the missing announce",
-  /smoke-silent-unknown/.test(silentErr) && /cannot announce a tool-list change/.test(silentErr),
+  "undeclared refusal names the missing announce",
+  /cannot announce a tool-list change/.test(silentErr),
   silentErr,
 );
 check(
-  "undeclared refusal does not special-case a shipped harness name",
-  !/\b(claude|opencode|hermes|codex|jcode|pi)\b/.test(silentErr),
+  "the refusal message contains no connector name at all",
+  !/\b(claude|opencode|hermes|codex|jcode|pi|smoke-silent-unknown|smoke-announce-unknown|smoke-denied-unknown)\b/.test(silentErr),
   silentErr,
 );
 
