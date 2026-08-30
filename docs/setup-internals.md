@@ -110,14 +110,16 @@ fail-loud on collision.
 - **Delivery daemon:** `startDeliveryDetached` / `ensureDelivery`
   ([`lib/delivery-proc.ts`](../implementations/cli/src/lib/delivery-proc.ts)) re-execs `cotal
   deliver` detached with a pre-minted scoped `delivery.creds` (auth mode only, the durable
-  backstop; open mode has none). Writes `.cotal/delivery.pid` and `.cotal/delivery.log`.
+  backstop; open mode has none). Writes `.cotal/delivery.<key>.pid` and `.cotal/delivery.<key>.log`,
+  where `<key>` is the space key ([Config](config.md#project-files)), so a root can serve a space per
+  daemon.
 - **Manager:** `startManagerDetached` / `ensureManager`
   ([`lib/manager-proc.ts`](../implementations/cli/src/lib/manager-proc.ts)) re-execs `cotal
   supervise` detached (pty runtime); it answers the control plane
-  (`cotal_spawn` / `cotal_despawn` / `cotal_persona`). Writes `.cotal/manager.log`;
-  `managerUp()` checks the pid record for setup's status card. The **manager itself** writes
-  `.cotal/manager.pid`, so a supervisor started by a container entrypoint, by cron, or by hand is
-  recorded the same way a detached `cotal up` is. Readers verify the recorded pid is alive and is a
+  (`cotal_spawn` / `cotal_despawn` / `cotal_persona`). Writes `.cotal/manager.<key>.log`;
+  `managerUp(space)` checks that space's pid record for setup's status card. The **manager itself**
+  writes `.cotal/manager.<key>.pid`, so a supervisor started by a container entrypoint, by cron, or
+  by hand is recorded the same way a detached `cotal up` is. Readers verify the recorded pid is alive and is a
   supervisor before trusting it ([Config](config.md#project-files)).
 
 The **web dashboard** is *not* part of `cotal up`. It ships inside `cotal-ai` as the `@cotal-ai/web`

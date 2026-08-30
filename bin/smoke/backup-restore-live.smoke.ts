@@ -11,6 +11,8 @@ import { createSpaceAuth, mintCreds, newIdentity, probeConnect, rotateSystemAcco
 import {
   acquireMaintenanceLock,
   authDir,
+  canonicalLocalProcessPath,
+  MANAGER_PIDFILE,
   brokerAuthPath,
   loadSoleSpaceAuth,
   prepareAlternateRestore,
@@ -680,7 +682,7 @@ async function preservationStopCrashRecoveryScenario(): Promise<void> {
     const { run, env, sandbox } = sandboxRun(root, home);
     const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
     assert.equal(run("up", "--detach", "--open", "--server", server, "--space", space).status, 0, `${suffix} up`);
-    const mgrPid = Number(readFileSync(join(root, ".cotal", "manager.pid"), "utf8").trim());
+    const mgrPid = Number(readFileSync(canonicalLocalProcessPath(MANAGER_PIDFILE, { root, space }), "utf8").trim());
     const crashOptions = { cwd: root, env: { ...env, [hook]: "1" }, encoding: "utf8" as const, timeout: 240_000 };
     assertSmokeSandboxDown(sandbox, ["down", "--preserve-state"], crashOptions);
     const crashed = spawnSync(tsx, [cliPath, "down", "--preserve-state"], crashOptions);
