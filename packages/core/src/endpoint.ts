@@ -33,6 +33,8 @@ import {
   jetstreamManager,
   AckPolicy,
   DeliverPolicy,
+  JetStreamApiCodes,
+  JetStreamApiError,
   type JetStreamClient,
   type JetStreamManager,
   type ConsumerMessages,
@@ -2150,8 +2152,11 @@ export class CotalEndpoint extends EventEmitter {
           if (p?.kind === "chat" && isPrincipalOwnerToken(p.owner)) counts.set(p.rest, (counts.get(p.rest) ?? 0) + count);
         }
       }
-    } catch {
-      /* stream missing — fall through to registry-only channels */
+    } catch (e) {
+      // A genuinely absent CHAT stream means there are no retained message counts yet. Every other
+      // failure, especially a STREAM.INFO permission denial, means the count view could not be read
+      // and must stay loud rather than returning a valid-looking registry-only subset.
+      if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;
     }
     const channels = new Set<string>([...counts.keys(), ...this.channelConfigs.keys()]);
     return [...channels]
@@ -2596,7 +2601,10 @@ export class CotalEndpoint extends EventEmitter {
       // exists to stop.
       throw new Error(`history: the broker reported messages on ${subject} but delivered none - the read was cut short, not empty`);
     } finally {
-      await consumer.delete().catch(() => { /* already gone, or denied */ });
+      try { await consumer.delete(); }
+      catch (e) {
+        if (!isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound)) throw e;
+      }
     }
   }
 
@@ -2650,7 +2658,10 @@ export class CotalEndpoint extends EventEmitter {
       // up to eight per call, the dashboard makes one call per channel, and a reload repeats it.
       // Left alone that accumulates consumers on the broker until the thresholds expire, and the
       // resulting resource exhaustion would land in streamHistory's catch and read as empty history.
-      await consumer.delete().catch(() => { /* already gone, or denied: nothing to reclaim */ });
+      try { await consumer.delete(); }
+      catch (e) {
+        if (!isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound)) throw e;
+      }
     }
   }
 
@@ -2776,14 +2787,23 @@ export class CotalEndpoint extends EventEmitter {
     try {
       await jsm.consumers.info(stream, name);
       return; // this lifecycle's durable exists — keep its original frontier
-    } catch { /* absent; create below */ }
+    } catch (e) {
+      if (!isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound)) throw e;
+      // Genuinely absent consumer: create it below. A denial is not absence.
+    }
     const frontier = (await jsm.streams.info(stream)).state.last_seq;
     try {
       await jsm.consumers.add(stream, dmDurableConfig(this.space, owner, actor, lifecycleUid, { ...opts, activationFrontier: frontier }));
     } catch (e) {
       // A concurrent same-lifecycle provisioner may have won the create with an earlier frontier —
       // if the durable now exists it is authoritative; anything else stays a loud failure.
-      try { await jsm.consumers.info(stream, name); return; } catch { /* not a lost race */ }
+      try { await jsm.consumers.info(stream, name); return; }
+      catch (probeError) {
+        // The probe never creates a successful result: it either proves the concurrent winner above,
+        // or the original create failure stays authoritative. Preserve a denial from the probe because
+        // it names the missing capability more accurately than an unrelated create conflict.
+        if (isPermissionDenied(probeError)) throw probeError;
+      }
       throw e;
     }
   }
@@ -2917,7 +2937,11 @@ export class CotalEndpoint extends EventEmitter {
   /** Release the held lease on clean shutdown so a replacement daemon re-acquires immediately (best
    *  effort — a crash just lets the bucket TTL expire it). */
   async releaseDeliveryLease(shardIndex: number): Promise<void> {
-    try { await (await this.deliveryRegistry()).delete(leaseKey(shardIndex)); } catch { /* already gone */ }
+    try { await (await this.deliveryRegistry()).delete(leaseKey(shardIndex)); }
+    catch {
+      // Intentionally best-effort for EVERY failure: the lease TTL is the crash-safe release authority,
+      // and clean shutdown must continue even when the broker is already gone or draining.
+    }
   }
 
   /** Read a shard's delivery lease (the daemon-availability signal), or `undefined` if none is live.
@@ -2952,6 +2976,9 @@ export class CotalEndpoint extends EventEmitter {
       try {
         this.managerLeaseKv = await kvm.create(managerBucket(this.space), { ttl: MANAGER_LEASE_TTL_MS });
       } catch {
+        // OPEN mode has no broker ACLs, so a permission denial is impossible here. `create` is only
+        // the ensure-exists attempt; `open` below is the authority after either a pre-existing bucket
+        // or a create race, and it still throws if the bucket cannot actually be used.
         this.managerLeaseKv = await kvm.open(managerBucket(this.space));
       }
     }
@@ -2993,7 +3020,10 @@ export class CotalEndpoint extends EventEmitter {
       const kv = await this.managerLeaseRegistry();
       if (revision === undefined) await kv.delete(managerLeaseKey(instanceId));
       else await kv.delete(managerLeaseKey(instanceId), { previousSeq: revision });
-    } catch { /* not ours / already gone */ }
+    } catch {
+      // Intentionally best-effort for EVERY failure: a revision mismatch means the lease is no longer
+      // ours, while a broker failure is recovered by the bucket TTL. Shutdown must not claim deletion.
+    }
   }
   /** Read a live manager liveness lease, or undefined if NONE (no manager instance holds the space). A
    *  presence/existence check for the CLI's `spawn -f` reuse and `waitLeaseGone`, which only need "is any
@@ -3028,8 +3058,16 @@ export class CotalEndpoint extends EventEmitter {
         // it returns that instance's latest state, so a DEL here retires only its own key. The
         // defect was asking one wildcard for the newest message in the whole subtree, where a
         // stopping peer's tombstone outranks a live sibling's older PUT.
-        const m = await jsm.streams.getMessage(stream, { last_by_subj: subject }).catch(() => null);
+        let m;
+        try {
+          m = await jsm.streams.getMessage(stream, { last_by_subj: subject });
+        } catch (e) {
+          if ((e as { code?: unknown }).code === JetStreamApiCodes.NoMessageFound) continue;
+          throw e;
+        }
         if (m === null) continue; // key vanished between INFO and GET: it is not a live holder
+        // A 10037 above means the key vanished between INFO and GET: it is not a live holder. A
+        // denial or failed read is not absence and is rethrown.
         const op = m.header?.get("KV-Operation");
         if (op === "DEL" || op === "PURGE" || m.data.length === 0) continue;
         if (newest === undefined || m.seq > newest.seq) newest = { data: m.data, seq: m.seq };
@@ -3211,7 +3249,7 @@ export class CotalEndpoint extends EventEmitter {
     // delete/recreate a predecessor's in-flight catch-up consumer — the uid disambiguates.
     const cuP = parsePrincipalKey(owner);
     const name = `cu_${cuP ? lifecycleNameKey(cuP.owner, cuP.actor, lifecycleUid) : `${token(owner)}-${lifecycleUid}`}_${generation}`;
-    try { await this.jsm.consumers.delete(chatStream(this.space), name); } catch { /* none */ }
+    await this.deleteConsumerIfPresent(chatStream(this.space), name);
     await this.jsm.consumers.add(chatStream(this.space), {
       name, filter_subject: subject, ack_policy: AckPolicy.None, mem_storage: true,
       inactive_threshold: nanos(30_000), deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: fromSeqExcl + 1,
@@ -3238,7 +3276,7 @@ export class CotalEndpoint extends EventEmitter {
         pending -= got;
       }
     } finally {
-      try { await this.jsm.consumers.delete(chatStream(this.space), name); } catch { /* gone */ }
+      await this.deleteConsumerIfPresent(chatStream(this.space), name);
     }
     return { copied, evicted };
   }
@@ -3567,7 +3605,9 @@ export class CotalEndpoint extends EventEmitter {
    *  the trusted reader is the auth gate). */
   private async runFanout(): Promise<void> {
     if (!this.js || !this.jsm) return;
-    try { await this.jsm.consumers.add(chatStream(this.space), fanoutDurableConfig(this.space, { ackWaitMs: this.ackWaitMs })); } catch { /* exists */ }
+    // Named consumer creation is idempotent for the same config. A denial must not be mistaken for
+    // "already exists"; let the broker response decide and propagate every failure.
+    await this.jsm.consumers.add(chatStream(this.space), fanoutDurableConfig(this.space, { ackWaitMs: this.ackWaitMs }));
     const consumer = await this.js.consumers.get(chatStream(this.space), FANOUT_DURABLE);
     const msgs = await consumer.consume();
     this.streamMsgs.push(msgs);
@@ -3622,7 +3662,8 @@ export class CotalEndpoint extends EventEmitter {
    *  + transfer each entry. */
   private async runReader(): Promise<void> {
     if (!this.js || !this.jsm) return;
-    try { await this.jsm.consumers.add(inboxStream(this.space), inboxReaderConfig(this.space, { ackWaitMs: this.ackWaitMs })); } catch { /* exists */ }
+    // Same fail-loud rule as fan-out: idempotent success is success, denial is not existence.
+    await this.jsm.consumers.add(inboxStream(this.space), inboxReaderConfig(this.space, { ackWaitMs: this.ackWaitMs }));
     const consumer = await this.js.consumers.get(inboxStream(this.space), INBOX_READER_DURABLE);
     const msgs = await consumer.consume();
     this.streamMsgs.push(msgs);
@@ -3690,7 +3731,8 @@ export class CotalEndpoint extends EventEmitter {
         headers: frameHeaders,
       });
     } catch {
-      // Transfer failed — keep the entry pending (redeliver), bounded by the same ceiling so a poison
+      // EVERY transfer failure is deliberately a retry, never a successful result. Keep the entry
+      // pending (redeliver), bounded by the same ceiling so a poison
       // entry can't head-of-line the shared reader forever.
       if (redeliveries >= READER_MAX_REDELIVERIES) {
         m.term();
@@ -3713,7 +3755,10 @@ export class CotalEndpoint extends EventEmitter {
     if (!this.ownLifecycleUid) return; // no lifecycle uid — never provisioned for Plane-3 (its durable is lifecycle-keyed)
     let consumer;
     try { consumer = await this.js.consumers.get(dlvStream(this.space), dlvDurable(this.owner, this.actor, this.ownLifecycleUid)); }
-    catch { return; } // no DLV durable — Plane-3 not active for us
+    catch (e) {
+      if (isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound)) return;
+      throw e; // a denied bind is not proof Plane-3 is absent
+    }
     const msgs = await consumer.consume();
     this.streamMsgs.push(msgs);
     void (async () => {
@@ -3827,8 +3872,9 @@ export class CotalEndpoint extends EventEmitter {
   private async armBootDurableMemberships(): Promise<void> {
     for (const channel of this.channels) {
       if (!isConcreteChannel(channel) || this.plane3Channels.has(channel)) continue;
-      let cls: DeliveryClass;
-      try { cls = await this.deliveryClassFresh(channel); } catch { continue; }
+      // A missing channel row legitimately resolves through the defaults. A failed/denied registry
+      // read does not prove the channel is live-only, so let it fail startup loudly.
+      const cls = await this.deliveryClassFresh(channel);
       if (cls !== "durable") continue;
       try {
         const r = await this.durableJoinChannel(channel);
@@ -4126,8 +4172,20 @@ export class CotalEndpoint extends EventEmitter {
     if (!this.jsm) throw new Error("endpoint not started");
     try {
       return await this.jsm.consumers.info(stream, durable);
-    } catch {
-      return null; // 404 — fresh durable
+    } catch (e) {
+      if (isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound))
+        return null; // structured absence — fresh durable
+      throw e;
+    }
+  }
+
+  /** Delete one named consumer, swallowing ONLY structured consumer/stream absence. */
+  private async deleteConsumerIfPresent(stream: string, durable: string): Promise<void> {
+    if (!this.jsm) throw new Error("endpoint not started");
+    try {
+      await this.jsm.consumers.delete(stream, durable);
+    } catch (e) {
+      if (!isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound, JetStreamApiCodes.StreamNotFound)) throw e;
     }
   }
 
@@ -4213,7 +4271,7 @@ export class CotalEndpoint extends EventEmitter {
     const out: JsMsg[] = [];
     // Clear any consumer leaked by a crashed prior read before re-creating it with THIS read's
     // single filter (the read ACL is enforced at create — see the doc above).
-    try { await this.jsm.consumers.delete(stream, name); } catch { /* none; fine */ }
+    await this.deleteConsumerIfPresent(stream, name);
     await this.jsm.consumers.add(stream, {
       name,
       filter_subject: subject,
@@ -4244,7 +4302,7 @@ export class CotalEndpoint extends EventEmitter {
         pending -= got;
       }
     } finally {
-      try { await this.jsm.consumers.delete(stream, name); } catch { /* already gone */ }
+      await this.deleteConsumerIfPresent(stream, name);
     }
     return out;
   }
@@ -4261,6 +4319,7 @@ export class CotalEndpoint extends EventEmitter {
       msgs = await this.collectHistory(subject, start, { untilSeq: upToSeq });
     } catch (e) {
       this.emit("error", e as Error);
+      if (isPermissionDenied(e)) throw e;
       return 0;
     }
     const noop: Delivery = { ack: () => {}, nak: () => {}, durable: false };
@@ -4309,6 +4368,7 @@ export class CotalEndpoint extends EventEmitter {
       raw = await this.collectHistory(subject, { seq: sinceSeq + 1 });
     } catch (e) {
       this.emit("error", e as Error);
+      if (isPermissionDenied(e)) throw e;
       raw = [];
     }
     const collected: CotalMessage[] = [];
@@ -4739,6 +4799,13 @@ export function isPermissionDenied(e: unknown): boolean {
   if (e instanceof PermissionViolationError) return true;
   if ((e as { cause?: unknown } | null)?.cause instanceof PermissionViolationError) return true;
   return /permissions?\s+violation/i.test(String((e as { message?: unknown } | null)?.message ?? ""));
+}
+
+/** True only for the structured JetStream API absence codes named by the caller. A status 404 or
+ * message regex is too broad here: the catch sites use absence to produce a successful empty/fresh
+ * result, so a permission denial, timeout, or protocol failure must never pass as "not found". */
+function isJetStreamMissing(e: unknown, ...codes: number[]): boolean {
+  return e instanceof JetStreamApiError && codes.includes(e.code);
 }
 
 /** True ONLY for a denial on a **publish** — the single case that proves the message was never

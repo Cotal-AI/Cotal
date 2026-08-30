@@ -657,6 +657,7 @@ smoke:up-adopt-resume-lock:live
 # run at all. The adopt suite above enters through a resume with no artifact and stays green through
 # that break, so neither suite substitutes for the other. Appended; shard assignments unchanged.
 smoke:up-restore-reentry:live
+
 # The space-segmentation foundation (P7/P1 shared design). Hermetic and fast. It asserts the
 # `spaceSegment` collision guarantee over the children of `.cotal/` — a WIDER namespace than the
 # auth-dir siblings the encoder's comment originally claimed — plus the migration choke point's
@@ -689,11 +690,19 @@ smoke:agent-secret-segmentation
 # spellings, one of them the release workflow. The property is only observable on main after a
 # merge, so it needs a static guard. Appended so every existing shard assignment remains unchanged.
 smoke:workflow-concurrency
+
 # Most smoke trees are still outside their package TypeScript projects. A type-only import from a
 # workspace package can therefore name something the package never exported and vanish when tsx runs
 # the suite. This compiler-API intersection checks every named workspace import against the package's
 # public exports. Appended so every existing shard assignment remains unchanged.
 smoke:workspace-import-exports
+
+# A denied JetStream metadata read must reject the endpoint call, never return a well-formed partial
+# result that callers mistake for genuine emptiness. A real narrowed JWT cred drives listChannels
+# through a denied CHAT STREAM.INFO, paired with an actually absent CHAT-stream control.
+# Mutation-proofed - bin/smoke/mutations/endpoint-permission-results.json. Appended so every existing
+# shard assignment remains unchanged.
+smoke:endpoint-permission-results:auth
 # Raw NATS transport state is separate from full endpoint readiness. The deterministic suite grades
 # epoch staleness and state contracts; its companion owns a throwaway broker and proves real
 # disconnect/reconnect delivery. Appended so every existing shard assignment remains unchanged.
