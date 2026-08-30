@@ -30,22 +30,22 @@
   ],
   "mutations": [
     {
-      "name": "M1 the gate-only predicate: a retirement is owed only while its gate is frozen (the shipped #878 defect, verbatim)",
+      "name": "M1 the gate-only predicate: the widened branch's gate-state test never matches (the shipped #878 defect, behaviorally)",
       "file": "implementations/auth/src/service.ts",
-      "find": "    let owed = gate !== undefined && gate.row.state === \"frozen\" && gate.row.op?.opId === it.opId;",
-      "replace": "    let owed = gate !== undefined && gate.row.state === \"frozen\" && gate.row.op?.opId === it.opId; if (!owed && it.kind === \"retirement\") owed = false;",
+      "find": "    if (!owed && it.kind === \"retirement\" && gate !== undefined && gate.row.state === \"retired\" && gate.row.op?.opId === it.opId) {",
+      "replace": "    if (!owed && it.kind === \"retirement\" && gate !== undefined && gate.row.state === \"frozen-by-a-foreign-op\" && gate.row.op?.opId === it.opId) {",
       "expectRed": "TRIGGER A REPAIRS: the boot resumed the intent and completed the head terminal (`retired`)",
       "cell": "TRIGGER A REPAIRS: the boot resumed the intent and completed the head terminal (`retired`)",
-      "note": "Functionally identical to the pre-fix predicate for retirement owed-ness past the freeze bar: the widened cell is forced off, so the staged crash window (gate retired, head retiring) is skipped exactly as the defect skipped it. The trigger-A head cell reddens first; the resume-log and tail-only cells redden on the same cause."
+      "note": "The widened owed-ness branch can never fire (no gate row is ever in the mutant's state), so retirement owed-ness past the freeze bar is exactly the shipped gate-only predicate: the staged crash window (gate retired, head retiring) is skipped, the boot resumes nothing, and the trigger-A head cell reddens with the head still retiring. The mutation is the reverted fix in behavior, one literal different from the shipped code."
     },
     {
-      "name": "M2 the enumeration stops carrying owner/actor: the widened predicate reads the head under a foreign alias and skips again",
+      "name": "M2 the enumeration stops carrying owner/actor: the widened predicate reads the head under a foreign alias",
       "file": "implementations/auth/src/credential-ledger.ts",
       "find": "    out.push({ opId, kind: o.kind, lifecycleUid: uid, owner: o.owner, actor: o.actor });",
       "replace": "    out.push({ opId, kind: o.kind, lifecycleUid: uid, owner: \"nonexistent-owner\", actor: \"nonexistent-actor\" });",
       "expectRed": "TRIGGER A REPAIRS: the boot resumed the intent and completed the head terminal (`retired`)",
       "cell": "TRIGGER A REPAIRS: the boot resumed the intent and completed the head terminal (`retired`)",
-      "note": "The predicate's head read is only as good as the coordinates the enumeration carries: with a foreign alias the head read returns undefined and the absent-head branch would resume (owed=true), so this mutant instead proves the COORDINATE path end-to-end differently — it makes the enumeration lie about whose intent this is, and the resume that follows addresses the wrong alias, leaving the staged head retiring and the same cell red. It guards the owner/actor parse addition specifically: delete that change and the type no longer compiles, so the nearest executable degradation is a lying coordinate."
+      "note": "The predicate's head read is only as good as the coordinates the enumeration carries: with a foreign alias the head read returns undefined, the absent-head branch marks the intent owed, and the resume that follows addresses the wrong alias - the durable intent row still names the real one, so the barrier's own identity pin refuses it (permission-denied: the opId belongs to another lifecycle), the resume fails loud, the head stays retiring, and the same cell reddens. It guards the owner/actor parse addition end-to-end: delete that change and the file no longer typechecks, so the nearest executable degradation is a lying coordinate."
     }
   ]
 }
