@@ -28,6 +28,16 @@
       "cell": "✗ FAIL: PUBLIC REPRO: abort settles channelHistory as AbortError instead of leaving it pending"
     },
     {
+      "name": "an aborted history window asks the broker for its entire pending backlog in one pull",
+      "file": "packages/core/src/endpoint.ts",
+      "command": "pnpm smoke:web-bounded-aggregation",
+      "completionMarker": "web bounded-aggregation smoke:",
+      "find": "        const iter = await consumer.fetch({ max_messages: Math.min(target - delivered, 32) });",
+      "replace": "        const iter = await consumer.fetch({ max_messages: pending });",
+      "expectRed": "6.9 the request following a cancelled read answers instead of being starved by abandoned work",
+      "cell": "6.9 the request following a cancelled read answers instead of being starved by abandoned work"
+    },
+    {
       "name": "the dashboard starts channel reads without its response-deadline signal",
       "file": "implementations/web/src/web.ts",
       "command": "pnpm smoke:history-cancellation && pnpm smoke:web-history-cancellation",
