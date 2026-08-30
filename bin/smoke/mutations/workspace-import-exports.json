@@ -1,6 +1,6 @@
 {
   "suite": "bin/smoke/workspace-import-exports.smoke.ts",
-  "guard": "every named import from a workspace package resolves to a public export, including type-only imports in smoke trees outside package TypeScript projects",
+  "guard": "every named import or re-export from a workspace package resolves to a public export, including type-only declarations outside package TypeScript projects",
   "command": "pnpm smoke:workspace-import-exports",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/workspace-import-exports.json",
   "mutations": [
@@ -10,6 +10,13 @@
       "find": "import { controlEndpoint, startControlServer, type MeshAgent } from \"@cotal-ai/connector-core\";",
       "replace": "import { controlEndpoint, startControlServer } from \"@cotal-ai/connector-core\";\nimport type { MeshAgent } from \"@cotal-ai/core\";",
       "expectRed": "@cotal-ai/core does not export MeshAgent"
+    },
+    {
+      "name": "W2 bogus named re-export enters a real manager barrel",
+      "file": "implementations/manager/src/runtime/index.ts",
+      "find": "import { existsSync } from \"node:fs\";",
+      "replace": "export type { JcodeBogusReExport1024 } from \"@cotal-ai/core\";\nimport { existsSync } from \"node:fs\";",
+      "expectRed": "@cotal-ai/core does not export JcodeBogusReExport1024"
     }
   ]
 }

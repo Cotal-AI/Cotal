@@ -3,8 +3,9 @@
  *
  * Type-only imports disappear when a smoke runs under tsx, and most smoke trees are not included in
  * their package's TypeScript project. That allowed one manager smoke to import `MeshAgent` from core
- * even though connector-core defines and exports it. Scan every TypeScript tree with the compiler's
- * module resolver and require every named import from a workspace package to be publicly exported.
+ * even though connector-core defines and exports it. Named re-exports carry the same risk in public
+ * barrels. Scan every TypeScript tree with the compiler's module resolver and require every named
+ * import or re-export from a workspace package to be publicly exported.
  *
  * Run: pnpm smoke:workspace-import-exports
  */
@@ -43,6 +44,7 @@ const program = ts.createProgram(sourceFiles, parsedConfig.options);
 const checker = program.getTypeChecker();
 const failures: string[] = [];
 let importCount = 0;
+let reExportCount = 0;
 let nameCount = 0;
 
 for (const filePath of sourceFiles) {
@@ -50,12 +52,20 @@ for (const filePath of sourceFiles) {
   assert.ok(source, `compiler loaded ${relative(ROOT, filePath)}`);
 
   for (const statement of source.statements) {
-    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+    const isImport = ts.isImportDeclaration(statement);
+    const isNamedReExport =
+      ts.isExportDeclaration(statement) &&
+      statement.exportClause !== undefined &&
+      ts.isNamedExports(statement.exportClause);
+    if ((!isImport && !isNamedReExport) || statement.moduleSpecifier === undefined || !ts.isStringLiteral(statement.moduleSpecifier))
+      continue;
     const packageName = statement.moduleSpecifier.text;
-    const clause = statement.importClause;
-    if (!packageName.startsWith("@cotal-ai/") || clause === undefined) continue;
+    if (!packageName.startsWith("@cotal-ai/")) continue;
+    const clause = isImport ? statement.importClause : undefined;
+    if (isImport && clause === undefined) continue;
 
-    importCount++;
+    if (isImport) importCount++;
+    else reExportCount++;
     const moduleSymbol = checker.getSymbolAtLocation(statement.moduleSpecifier);
     const line = source.getLineAndCharacterOfPosition(statement.moduleSpecifier.getStart()).line + 1;
     if (moduleSymbol === undefined) {
@@ -73,9 +83,14 @@ for (const filePath of sourceFiles) {
       );
     };
 
-    if (clause.name !== undefined) checkName("default", clause.name.getStart());
-    if (clause.namedBindings !== undefined && ts.isNamedImports(clause.namedBindings)) {
+    if (clause?.name !== undefined) checkName("default", clause.name.getStart());
+    if (clause?.namedBindings !== undefined && ts.isNamedImports(clause.namedBindings)) {
       for (const element of clause.namedBindings.elements) {
+        checkName((element.propertyName ?? element.name).text, element.name.getStart());
+      }
+    }
+    if (isNamedReExport) {
+      for (const element of statement.exportClause.elements) {
         checkName((element.propertyName ?? element.name).text, element.name.getStart());
       }
     }
@@ -83,6 +98,9 @@ for (const filePath of sourceFiles) {
 }
 
 assert.ok(importCount > 0, "workspace imports were found");
+assert.ok(reExportCount > 0, "workspace named re-exports were found");
 assert.ok(nameCount > 0, "workspace import names were checked");
 assert.deepEqual(failures, [], failures.join("\n"));
-console.log(`WORKSPACE IMPORT EXPORTS: ${nameCount} names across ${importCount} imports`);
+console.log(
+  `WORKSPACE IMPORT EXPORTS: ${nameCount} names across ${importCount} imports and ${reExportCount} re-exports`,
+);
