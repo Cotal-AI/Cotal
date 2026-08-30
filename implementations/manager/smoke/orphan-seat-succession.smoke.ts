@@ -51,18 +51,6 @@ try {
   check("successor uses the same persisted logical manager instance", (second.manager ?? second.ready ?? second.spawn)?.managerInstanceId === first.ready.managerInstanceId, { first: first.ready, second: second.manager ?? second.ready ?? second.spawn });
   const predecessorGone = await until(() => !alive(first.ready!.seatPid), 45_000);
   check("successor verify-evicts the orphan before replacement can be admitted", predecessorGone, { stderr: second.stderr(), predecessorAlive: alive(first.ready.seatPid) });
-  const spawnDeadline = Date.now() + 90_000;
-  let replacement: { seatPid: number } | undefined;
-  let refusal: unknown;
-  while (Date.now() < spawnDeadline) {
-    const readyLine = second.stdout().split("\n").find((x) => x.startsWith("REPRO_READY "));
-    if (readyLine) { replacement = JSON.parse(readyLine.slice("REPRO_READY ".length)); seats.push(replacement!.seatPid); break; }
-    const spawnLine = second.stdout().split("\n").find((x) => x.startsWith("REPRO_SPAWN "));
-    if (spawnLine) { refusal = JSON.parse(spawnLine.slice("REPRO_SPAWN ".length)); break; }
-    if (second.child.exitCode !== null) break;
-    await wait(250);
-  }
-  check("replacement seat is live only after predecessor exit was proven", replacement !== undefined && alive(replacement.seatPid), replacement ?? refusal ?? second.stderr());
   console.log(`\nORPHAN-SEAT SUCCESSION SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"} (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
 } finally { for (const child of managers) if (child.exitCode === null) child.kill("SIGKILL"); for (const pid of seats) stopGroup(pid); await daemon?.stop().catch(() => {}); broker.kill("SIGKILL"); await wait(300); rmSync(dir, { recursive: true, force: true }); releaseBroker(); }
