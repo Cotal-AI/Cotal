@@ -506,7 +506,7 @@ export function channelMeta(i: InboxItem): Record<string, string> {
 /** The full Cotal tool set for a given config. Renderers iterate this; `source` names the
  *  hosting connector and is stamped onto outgoing feedback. */
 export function cotalToolSpecs(config: AgentConfig, source = "connector"): CotalToolSpec[] {
-  // Manager-op tools (cotal_spawn / cotal_persona) ride the `spawn` capability — publish to the
+  // Manager-op tools (cotal_spawn / cotal_persona / cotal_personas) ride the `spawn` capability — publish to the
   // privileged control subject. The AUTH layer is the real boundary: on an authed mesh an agent
   // without the capability is denied at the wire (nats-server); open mode mints no identity, so
   // anyone may spawn. Mirror that here so the advertised surface is truthful — an agent only sees
@@ -1253,6 +1253,68 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       },
     },
     {
+      name: "cotal_personas",
+      title: "Cotal: list or show personas",
+      description:
+        "Read the workspace persona catalog the manager owns (.cotal/agents). Omit `name` to list spawnable persona names (role, model, and a one-line description when you own the file). Pass `name` to show one card you own, including the persona body. Same ownership as cotal_persona: a file you do not own lists as a name only, while unauthorized, unknown, and unparseable shows are all not-found. Use this to see whether a name is taken before cotal_persona, or what a teammate's persona says, without shelling out.",
+      schema: {
+        name: z
+          .string()
+          .regex(/^[A-Za-z0-9_-]+$/, "letters, digits, _ or - only")
+          .optional()
+          .describe("Persona to show. Omit to list the catalog."),
+      },
+      async run(agent, _config, { name }: { name?: string }) {
+        try {
+          if (name) {
+            const reply = await agent.showPersona(name);
+            if (!reply.ok) return err(`Couldn't show ${name}: ${reply.error ?? "manager refused"}`);
+            const row = (reply.data ?? {}) as {
+              name?: string;
+              role?: string;
+              model?: string;
+              description?: string;
+              owner?: string;
+              persona?: string;
+              error?: string;
+            };
+            if (row.error) return err(`Persona \`${name}\` is unparseable: ${row.error}`);
+            const meta = [
+              row.role && `role=${row.role}`,
+              row.model && `model=${row.model}`,
+              row.owner && `owner=${row.owner}`,
+            ]
+              .filter(Boolean)
+              .join("  ");
+            const lines = [`Persona \`${row.name ?? name}\`${meta ? `  ${meta}` : ""}`];
+            if (row.description) lines.push(row.description);
+            if (row.persona) lines.push("", row.persona);
+            return ok(lines.join("\n"));
+          }
+          const reply = await agent.listPersonas();
+          if (!reply.ok) return err(`Couldn't list personas: ${reply.error ?? "manager refused"}`);
+          const personas = ((reply.data as { personas?: Array<{
+            name: string;
+            role?: string;
+            model?: string;
+            description?: string;
+            owner?: string;
+            error?: string;
+          }> })?.personas) ?? [];
+          if (!personas.length) return ok("No personas in the manager catalog.");
+          const lines = personas.map((p) => {
+            if (p.error) return `${p.name}  ⨯ unparseable`;
+            const meta = [p.role, p.model && `model=${p.model}`, p.owner && `owner=${p.owner}`].filter(Boolean).join("  ");
+            const head = meta ? `${p.name}  ${meta}` : p.name;
+            return p.description ? `${head}\n  ${p.description}` : head;
+          });
+          return ok(`Personas in the manager catalog (${personas.length}):\n${lines.join("\n")}`);
+        } catch (e) {
+          return controlFailure(name ? `Couldn't show ${name}` : "Couldn't list personas", e);
+        }
+      },
+    },
+    {
       name: "cotal_reconnect",
       title: "Cotal: reconnect to the mesh",
       description:
@@ -1273,6 +1335,6 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
   // it had closed the seam. A no-argument tool gets a closed EMPTY object, so the refusal is the
   // same refusal everywhere and "takes nothing" never degrades into "takes anything".
   return specs
-    .filter((spec) => canSpawn || (spec.name !== "cotal_spawn" && spec.name !== "cotal_persona"))
+    .filter((spec) => canSpawn || (spec.name !== "cotal_spawn" && spec.name !== "cotal_persona" && spec.name !== "cotal_personas"))
     .map((spec) => ({ ...spec, schema: z.strictObject(spec.schema ?? {}) }));
 }
