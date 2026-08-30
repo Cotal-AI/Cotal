@@ -696,6 +696,13 @@ smoke:workflow-concurrency
 # the suite. This compiler-API intersection checks every named workspace import against the package's
 # public exports. Appended so every existing shard assignment remains unchanged.
 smoke:workspace-import-exports
+
+# A denied JetStream metadata read must reject the endpoint call, never return a well-formed partial
+# result that callers mistake for genuine emptiness. A real narrowed JWT cred drives listChannels
+# through a denied CHAT STREAM.INFO, paired with an actually absent CHAT-stream control.
+# Mutation-proofed - bin/smoke/mutations/endpoint-permission-results.json. Appended so every existing
+# shard assignment remains unchanged.
+smoke:endpoint-permission-results:auth
 # A sparse channelHistory must stop at the subject's first matching sequence, not stream
 # sequence 1. Discriminator is drainWindow minStart, not the returned page. Appended so
 # every existing shard assignment remains unchanged.
