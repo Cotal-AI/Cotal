@@ -11,7 +11,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { classifyLiveConclusion } from "../../scripts/live-job-conclusion.mjs";
+import { classifyLiveConclusion, inspectLiveConclusion } from "../../scripts/live-job-conclusion.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const workflow = readFileSync(join(ROOT, ".github", "workflows", "ci.yml"), "utf8");
@@ -23,23 +23,46 @@ function check(name: string, condition: boolean, extra?: unknown): void {
 
 console.log("A. the conclusion classifier separates the three cancellation causes");
 check("a job at the deadline is an explicit self-timeout",
-  classifyLiveConclusion({ result: "cancelled", durationSeconds: 1516, timeoutSeconds: 1500, marginSeconds: 60, supersedingRunId: undefined }).kind === "self-timeout");
+  classifyLiveConclusion({ result: "cancelled", durationSeconds: 1516, timeoutSeconds: 1500, supersedingRunId: undefined }).kind === "self-timeout");
 check("a newer run for the same PR proves intentional supersession even near the deadline",
-  classifyLiveConclusion({ result: "cancelled", durationSeconds: 1490, timeoutSeconds: 1500, marginSeconds: 60, supersedingRunId: 42 }).kind === "superseded");
+  classifyLiveConclusion({ result: "cancelled", durationSeconds: 1516, timeoutSeconds: 1500, supersedingRunId: 42 }).kind === "superseded");
 check("a short cancellation with no superseder fails loud rather than inventing a cause",
-  classifyLiveConclusion({ result: "cancelled", durationSeconds: 400, timeoutSeconds: 1500, marginSeconds: 60, supersedingRunId: undefined }).kind === "unexplained-cancellation");
+  classifyLiveConclusion({ result: "cancelled", durationSeconds: 400, timeoutSeconds: 1500, supersedingRunId: undefined }).kind === "unexplained-cancellation");
 check("an ordinary success needs no cancellation diagnosis",
-  classifyLiveConclusion({ result: "success", durationSeconds: 550, timeoutSeconds: 1500, marginSeconds: 60, supersedingRunId: undefined }).kind === "not-cancelled");
+  classifyLiveConclusion({ result: "success", durationSeconds: 550, timeoutSeconds: 1500, supersedingRunId: undefined }).kind === "not-cancelled");
+
+const json = (value: unknown): Response => new Response(JSON.stringify(value), { status: 200 });
+const base = {
+  result: "cancelled", repo: "Cotal-AI/Cotal", runId: 10, attempt: 1, workflow: "ci.yml", job: "live",
+  timeoutSeconds: 1500, event: "push", prNumber: 0, headRef: "",
+};
+const timeoutVerdict = await inspectLiveConclusion(base, "token", async (url) => {
+  check("the real classifier reads the current run attempt's jobs", String(url).includes("/runs/10/attempts/1/jobs?per_page=100"), url);
+  return json({ jobs: [{ name: "live", started_at: "2026-08-29T00:00:00Z", completed_at: "2026-08-29T00:25:16Z" }] });
+});
+check("the API path classifies the measured 1516-second shape as self-timeout", timeoutVerdict.kind === "self-timeout", timeoutVerdict);
+
+const supersededVerdict = await inspectLiveConclusion({ ...base, event: "pull_request", prNumber: 967, headRef: "fix/test" }, "token", async (url) => {
+  const path = String(url);
+  if (path.includes("/attempts/1/jobs")) return json({ jobs: [{ name: "live", started_at: "2026-08-29T00:00:00Z", completed_at: "2026-08-29T00:06:20Z" }] });
+  if (path.endsWith("/actions/runs/10")) return json({ created_at: "2026-08-29T00:00:00Z" });
+  if (path.includes("/actions/workflows/ci.yml/runs")) return json({ workflow_runs: [
+    { id: 10, created_at: "2026-08-29T00:00:00Z", pull_requests: [{ number: 967 }] },
+    { id: 11, created_at: "2026-08-29T00:06:00Z", pull_requests: [{ number: 967 }] },
+  ] });
+  return new Response("unexpected URL", { status: 500 });
+});
+check("the API path identifies the newer run for the same PR as intentional supersession",
+  supersededVerdict.kind === "superseded" && supersededVerdict.supersedingRunId === 11, supersededVerdict);
 
 console.log("\nB. the real CI workflow reaches the classifier and gates on its result");
 check("the timeout-legibility job runs after live under always()",
   /  live-conclusion:\n(?:.|\n)*?    if: always\(\)\n    needs: \[live\]/.test(workflow));
 check("the job grants only read access needed for checkout and the Actions jobs API",
   /  live-conclusion:\n(?:.|\n)*?    permissions:\n      actions: read\n      contents: read/.test(workflow));
-check("the workflow calls the committed classifier with the 25-minute budget and 60-second evidence band",
+check("the workflow calls the committed classifier with the measured 25-minute budget",
   workflow.includes("node scripts/live-job-conclusion.mjs")
-  && workflow.includes("--timeout-seconds 1500")
-  && workflow.includes("--margin-seconds 60"));
+  && workflow.includes("--timeout-seconds 1500"));
 check("ci-ok requires the legibility result as well as the live result",
   workflow.includes("needs: [unit, smoke, live, live-conclusion]")
   && workflow.includes('[ "${{ needs[\'live-conclusion\'].result }}" = "success" ]'));

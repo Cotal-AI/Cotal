@@ -23,10 +23,10 @@ function argsOf(argv) {
   return out;
 }
 
-export function classifyLiveConclusion({ result, durationSeconds, timeoutSeconds, marginSeconds, supersedingRunId }) {
+export function classifyLiveConclusion({ result, durationSeconds, timeoutSeconds, supersedingRunId }) {
   if (result !== "cancelled") return { kind: "not-cancelled" };
   if (supersedingRunId !== undefined) return { kind: "superseded", supersedingRunId };
-  if (durationSeconds >= timeoutSeconds - marginSeconds)
+  if (durationSeconds >= timeoutSeconds)
     return { kind: "self-timeout", durationSeconds, timeoutSeconds };
   return { kind: "unexplained-cancellation", durationSeconds };
 }
@@ -83,7 +83,6 @@ export async function inspectLiveConclusion(opts, token, fetchImpl = fetch) {
     result: opts.result,
     durationSeconds,
     timeoutSeconds: opts.timeoutSeconds,
-    marginSeconds: opts.marginSeconds,
     supersedingRunId,
   });
 }
@@ -102,11 +101,11 @@ async function main() {
     workflow: required(raw.workflow, "--workflow"),
     job: required(raw.job, "--job"),
     timeoutSeconds: positiveInt(raw["timeout-seconds"], "--timeout-seconds"),
-    marginSeconds: positiveInt(raw["margin-seconds"], "--margin-seconds"),
     event: required(raw.event, "--event"),
     prNumber: Number(raw["pr-number"] ?? 0),
     headRef: raw["head-ref"] ?? "",
   };
+  if (!Number.isSafeInteger(opts.prNumber) || opts.prNumber < 0) throw new Error("--pr-number must be a non-negative integer");
   const token = required(process.env.GITHUB_TOKEN, "GITHUB_TOKEN");
   const verdict = await inspectLiveConclusion(opts, token);
   if (verdict.kind === "not-cancelled") {

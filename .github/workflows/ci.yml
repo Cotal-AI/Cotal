@@ -237,19 +237,21 @@ jobs:
       - name: Classify a cancelled live job
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LIVE_RESULT: ${{ needs.live.result }}
+          PR_NUMBER: ${{ github.event.pull_request.number || 0 }}
+          HEAD_REF: ${{ github.head_ref }}
         run: >-
           node scripts/live-job-conclusion.mjs
-          --result "${{ needs.live.result }}"
+          --result "$LIVE_RESULT"
           --repo "$GITHUB_REPOSITORY"
           --run-id "$GITHUB_RUN_ID"
           --attempt "$GITHUB_RUN_ATTEMPT"
           --workflow ci.yml
           --job live
           --timeout-seconds 1500
-          --margin-seconds 60
           --event "$GITHUB_EVENT_NAME"
-          --pr-number "${{ github.event.pull_request.number || 0 }}"
-          --head-ref "${{ github.head_ref }}"
+          --pr-number "$PR_NUMBER"
+          --head-ref "$HEAD_REF"
 
   ci-ok:
     # Single required status: green only if unit + every smoke shard + live and its explicit

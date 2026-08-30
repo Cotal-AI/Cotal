@@ -13,8 +13,8 @@
     {
       "name": "a deadline cancellation is treated as an ordinary supersession again",
       "file": "scripts/live-job-conclusion.mjs",
-      "find": "  if (durationSeconds >= timeoutSeconds - marginSeconds)\n    return { kind: \"self-timeout\", durationSeconds, timeoutSeconds };",
-      "replace": "  if (durationSeconds >= timeoutSeconds - marginSeconds)\n    return { kind: \"superseded\", supersedingRunId: 0 };",
+      "find": "  if (durationSeconds >= timeoutSeconds)\n    return { kind: \"self-timeout\", durationSeconds, timeoutSeconds };",
+      "replace": "  if (durationSeconds >= timeoutSeconds)\n    return { kind: \"superseded\", supersedingRunId: 0 };",
       "expectRed": "a job at the deadline is an explicit self-timeout",
       "cell": "a job at the deadline is an explicit self-timeout"
     },
