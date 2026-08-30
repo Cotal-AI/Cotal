@@ -27,7 +27,7 @@
     {
       "name": "the sibling and wildcard grant assertion disappears",
       "file": "implementations/manager/smoke/gate-reconcile-resume.smoke.ts",
-      "find": "  check(\"the executor has no wildcard or sibling repair-key grant\", !publish.includes(foreign) && !publish.some((row) => row.includes(\"eprepair\") && row.includes(\">\")), publish);\n",
+      "find": "  check(\"the executor has no wildcard or sibling repair-key grant\", !publish.includes(foreign) && !publish.some((row: string) => row.includes(\"eprepair\") && row.includes(\">\")), publish);\n",
       "replace": "",
       "expectRed": "every cell ran (21 before the sentinel)",
       "cell": "every cell ran (21 before the sentinel)",
