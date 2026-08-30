@@ -108,6 +108,7 @@
     "smoke:channels": "tsx packages/core/smoke/channels.smoke.ts",
     "smoke:wildcard-backfill": "tsx packages/core/smoke/wildcard-backfill.smoke.ts",
     "smoke:channels:auth": "tsx packages/core/smoke/channels-auth.smoke.ts",
+    "smoke:endpoint-permission-results:auth": "tsx packages/core/smoke/endpoint-permission-results.smoke.ts",
     "smoke:no-implicit-general": "tsx packages/core/smoke/no-implicit-general.smoke.ts",
     "smoke:session-channels": "tsx extensions/connector-core/smoke/session-channels.smoke.ts",
     "smoke:read-acl:auth": "tsx packages/core/smoke/read-acl-auth.smoke.ts",
