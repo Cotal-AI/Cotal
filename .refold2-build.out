@@ -1,0 +1,93 @@
+Scope: 26 of 27 workspace projects
+packages/lang build$ tsc -p tsconfig.json
+packages/lang build: Done
+packages/core build$ tsc -p tsconfig.json
+packages/core build: Done
+examples/05-scale-showcase build$ tsc -p tsconfig.json
+extensions/herdr build$ tsc -p tsconfig.json
+extensions/cmux build$ tsc -p tsconfig.json
+extensions/connector-core build$ tsc -p tsconfig.json
+extensions/cmux build: Done
+extensions/orca build$ tsc -p tsconfig.json
+extensions/herdr build: Done
+extensions/tmux build$ tsc -p tsconfig.json
+examples/05-scale-showcase build: Done
+implementations/runtime build$ tsc -p tsconfig.json
+extensions/tmux build: Done
+packages/workspace build$ tsc -p tsconfig.json
+extensions/orca build: Done
+extensions/connector-core build: Done
+implementations/runtime build: Done
+packages/workspace build: Done
+extensions/connector-claude-code build$ node -e "require('node:fs').rmSync('dist',{recursive:true,force:true})" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle
+extensions/connector-codex build$ node -e "require('node:fs').rmSync('dist',{recursive:true,force:true})" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle
+extensions/connector-hermes build$ node -e "require('node:fs').rmSync('dist',{recursive:true,force:true})" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle
+extensions/connector-jcode build$ node -e "require('node:fs').rmSync('dist',{recursive:true,force:true})" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle
+extensions/connector-hermes build: $ esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/launch.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/launch.js --banner:js="import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);" && esbuild src/standalone.ts --bundle --platform=node --format=cjs --target=node20 --outfile=plugin/cotal/_sidecar/standalone.cjs
+extensions/connector-jcode build: $ esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/host-main.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/host.js --banner:js="import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);" && esbuild src/mcp-main.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/mcp.js --banner:js="import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);"
+extensions/connector-claude-code build: $ esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/mcp.ts src/hook.ts --bundle --platform=node --format=cjs --target=node20 --outdir=dist --out-extension:.js=.cjs
+extensions/connector-codex build: $ esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/host-main.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/host.js --banner:js="import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);"
+extensions/connector-hermes build:   dist/index.js  1.5mb ⚠️
+extensions/connector-hermes build: ⚡ Done in 21ms
+extensions/connector-claude-code build:   dist/index.js  1.6mb ⚠️
+extensions/connector-claude-code build: ⚡ Done in 22ms
+extensions/connector-hermes build:   dist/launch.js  3.1mb ⚠️
+extensions/connector-hermes build: ⚡ Done in 41ms
+extensions/connector-claude-code build:   dist/mcp.cjs   3.5mb ⚠️
+extensions/connector-claude-code build:   dist/hook.cjs  2.4mb ⚠️
+extensions/connector-claude-code build: ⚡ Done in 63ms
+extensions/connector-claude-code build: Done
+extensions/connector-opencode build$ node -e "require('node:fs').rmSync('dist',{recursive:true,force:true})" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle
+extensions/connector-hermes build:   plugin/cotal/_sidecar/standalone.cjs  3.1mb ⚠️
+extensions/connector-hermes build: ⚡ Done in 34ms
+extensions/connector-hermes build: Done
+extensions/pi build$ node -e "require('node:fs').rmSync('dist',{recursive:true,force:true})" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle
+extensions/connector-codex build:   dist/index.js  1.5mb ⚠️
+extensions/connector-codex build: ⚡ Done in 22ms
+extensions/connector-jcode build:   dist/index.js  1.6mb ⚠️
+extensions/connector-jcode build: ⚡ Done in 26ms
+extensions/connector-jcode build:   dist/host.js  3.2mb ⚠️
+extensions/connector-jcode build: ⚡ Done in 51ms
+extensions/connector-codex build:   dist/host.js  3.7mb ⚠️
+extensions/connector-codex build: ⚡ Done in 60ms
+extensions/connector-codex build: Done
+implementations/auth build$ tsc -p tsconfig.json
+extensions/connector-jcode build:   dist/mcp.js  3.0mb ⚠️
+extensions/connector-jcode build: ⚡ Done in 45ms
+extensions/connector-jcode build: Done
+implementations/cli build$ tsc -p tsconfig.json
+extensions/connector-opencode build: $ esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/plugin.entry.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/plugin.bundle.js && esbuild src/serve.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/serve.js
+implementations/auth build: Done
+implementations/delivery build$ tsc -p tsconfig.json
+extensions/connector-opencode build:   dist/index.js  1.5mb ⚠️
+extensions/connector-opencode build: ⚡ Done in 19ms
+extensions/pi build: $ esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/standalone.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/standalone.js --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-tui --banner:js="import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);"
+extensions/connector-opencode build:   dist/plugin.bundle.js  3.2mb ⚠️
+extensions/connector-opencode build: ⚡ Done in 39ms
+extensions/connector-opencode build:   dist/serve.js  5.8kb
+extensions/connector-opencode build: ⚡ Done in 4ms
+extensions/connector-opencode build: Done
+implementations/manager build$ tsc -p tsconfig.json && node -e "const fs=require('node:fs'); fs.rmSync('dist/console', { recursive: true, force: true }); fs.cpSync('src/console', 'dist/console', { recursive: true })" && pnpm run build:console-bundle
+extensions/pi build:   dist/index.js  2.0mb ⚠️
+extensions/pi build: ⚡ Done in 43ms
+implementations/delivery build: Done
+implementations/web build$ tsc -p tsconfig.json && rm -rf dist/web && cp -R src/web dist/web && node scripts/copy-vendor.mjs
+extensions/pi build:   dist/standalone.js  3.3mb ⚠️
+extensions/pi build: ⚡ Done in 63ms
+extensions/pi build: Done
+implementations/cli build: Done
+implementations/web build: dist/web/vendor/marked.umd.js  <-  /private/tmp/fold-1058/node_modules/.pnpm/marked@18.0.6/node_modules/marked/lib/marked.umd.js
+implementations/web build: dist/web/vendor/purify.min.js  <-  /private/tmp/fold-1058/node_modules/.pnpm/dompurify@3.4.12/node_modules/dompurify/dist/purify.min.js
+implementations/web build: dist/web/vendor/vendor-manifest.json  (2 libs)
+implementations/web build: Done
+implementations/manager build: $ esbuild src/console-session-entry.ts --bundle --format=iife --platform=browser --target=es2020 --alias:node:crypto=./src/console-crypto-shim.ts --outfile=dist/console/session-bundle.js && node scripts/console-bundle-loadtest.mjs
+implementations/manager build:   dist/console/session-bundle.js  336.6kb
+implementations/manager build: ⚡ Done in 10ms
+implementations/manager build: console session-bundle.js load-test OK (browser-like context, no Buffer/process; CotalSession complete; codec byte-exact)
+implementations/manager build: Done
+bin build$ tsc -p tsconfig.json
+examples/01-lateral-coordination build$ tsc -p tsconfig.json
+examples/02-self-improving-console build$ tsc -p tsconfig.json
+examples/01-lateral-coordination build: Done
+examples/02-self-improving-console build: Done
+bin build: Done
