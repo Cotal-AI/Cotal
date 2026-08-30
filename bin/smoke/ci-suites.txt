@@ -256,6 +256,7 @@ smoke:artifact-store
 smoke:backup-inventory
 smoke:probe-teardown
 smoke:persona-announce
+smoke:persona-role-capability
 smoke:presence-ttl-migration:auth
 smoke:presence-ttl-refresh-cli
 smoke:presence-ttl-expiry-open
