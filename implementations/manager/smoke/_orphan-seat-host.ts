@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Manager } from "../src/manager.js";
-import { registry, type AgentHandle, type AttachSession, type Connector, type LaunchOpts, type LaunchSpec, type Runtime } from "@cotal-ai/core";
+import { evictDeniedPrincipalWithCreds, registry, type AgentHandle, type AttachSession, type Connector, type EvictionResult, type LaunchOpts, type LaunchSpec, type Runtime } from "@cotal-ai/core";
 
 const root = process.env.REPRO_ROOT!;
 const space = process.env.REPRO_SPACE!;
@@ -10,10 +10,11 @@ const servers = process.env.REPRO_SERVERS!;
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "../../..");
 const stub = join(here, "e2e-stub.mjs");
+const wrapper = join(here, "_orphan-seat-wrapper.mjs");
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
-const envFor = (o: LaunchOpts): Record<string, string> => ({ COTAL_SPACE: o.space, COTAL_SERVERS: String(o.servers ?? servers), COTAL_CREDS: String(o.creds), COTAL_ID: String(o.id), COTAL_NAME: o.name, COTAL_LIFECYCLE_UID: String(o.lifecycleUid), PATH: process.env.PATH ?? "" });
-registry.register({ kind: "connector", name: "orphan-repro", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: process.execPath, args: [stub], env: envFor(o) }) } as Connector);
+const envFor = (o: LaunchOpts): Record<string, string> => ({ COTAL_SPACE: o.space, COTAL_SERVERS: String(o.servers ?? servers), COTAL_CREDS: String(o.creds), COTAL_ID: String(o.id), COTAL_NAME: o.name, COTAL_LIFECYCLE_UID: String(o.lifecycleUid), COTAL_E2E_SURVIVE_DISCONNECT: "1", PATH: process.env.PATH ?? "" });
+registry.register({ kind: "connector", name: "orphan-repro", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: process.execPath, args: [wrapper, stub], env: envFor(o) }) } as Connector);
 const session: AttachSession = { cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} };
 class DetachedRuntime implements Runtime {
   readonly kind = "orphan-repro";
@@ -24,6 +25,15 @@ class DetachedRuntime implements Runtime {
   }
 }
 const manager = new Manager({ space, servers, runtime: "pty", workspaceRoot: root, consolePort: 0 });
+(manager as unknown as { staticLifecycleEvict?: (principal: string) => Promise<EvictionResult> }).staticLifecycleEvict =
+  (principal) => evictDeniedPrincipalWithCreds({
+    servers,
+    observerCreds: process.env.REPRO_OBSERVER_CREDS!,
+    evictorCreds: process.env.REPRO_EVICTOR_CREDS!,
+    accountId: process.env.REPRO_ACCOUNT_ID!,
+    principal,
+    options: { maxVerifyRounds: 12 },
+  });
 await manager.start();
 const managerInstanceId = (manager as unknown as { managerInstanceId: string }).managerInstanceId;
 process.stdout.write(`REPRO_MANAGER ${JSON.stringify({ managerPid: process.pid, managerInstanceId })}\n`);

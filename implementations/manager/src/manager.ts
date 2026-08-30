@@ -53,7 +53,7 @@ import {
   type RuntimeMode,
 } from "./runtime/index.js";
 import { AttachEndpoint, type SessionEstablishment } from "./attach-endpoint.js";
-import { makeManagerEndpointEvictor } from "./endpoint-evict.js";
+import { makeManagerEndpointEvictionEvidence, makeManagerEndpointEvictor } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec } from "./launch.js";
@@ -699,7 +699,7 @@ export class Manager {
   private readonly installedExtensions: boolean;
   private readonly runtime: Runtime;
   /** Internal test seam. Production leaves this undefined and uses the scoped delivery-admin evictor. */
-  private staticLifecycleEvict?: (principal: string) => Promise<boolean>;
+  private staticLifecycleEvict?: (principal: string) => Promise<import("@cotal-ai/core").EvictionResult>;
   private readonly preserveStopTimeoutMs: number;
   private readonly agents = new Map<string, ManagedAgent>();
   /** Names whose spawn is in flight (reserved synchronously before the provision await) — counted
@@ -5706,7 +5706,7 @@ export class Manager {
     const acceptedRenewal = a.staticCredentialRenewal;
     if (acceptedRenewal) await acceptedRenewal.catch(() => {});
     const opId = retireOpId(a.lifecycleUid);
-    const evict = this.staticLifecycleEvict ?? makeManagerEndpointEvictor({
+    const evict = this.staticLifecycleEvict ?? makeManagerEndpointEvictionEvidence({
       space: this.space,
       servers: this.servers ?? DEFAULT_SERVER,
       auth: this.auth!,
@@ -5732,7 +5732,10 @@ export class Manager {
         }
         await runStaticTerminal(
           t,
-          { owner: DEV_OWNER, alias: a.name, actor: a.id, lifecycleUid: a.lifecycleUid, opId },
+          {
+            owner: DEV_OWNER, alias: a.name, actor: a.id, lifecycleUid: a.lifecycleUid, opId,
+            managerInstance: this.managerInstanceId, managerProcessUid: this.managerLifecycleUid,
+          },
           { cleanup, evict, log: (line) => console.error(`static retirement ${a.name}: ${line}`) },
         );
       });
