@@ -385,18 +385,24 @@ export async function enumerateAgentFamily(reg: LifecycleRegistry, lifecycleUid:
 }
 
 /** A durable operation intent under `stage.<opId>` (SINGLE segment: the session release pins
- *  live at `stage.session.<sid>.<c|s>` and are not operations). */
+ *  live at `stage.session.<sid>.<c|s>` and are not operations). `owner`/`actor` name the alias
+ *  the op belongs to: the boot resume reads that alias's lifecycle head to decide owed-ness
+ *  across the cross-object invariant (gate AND head, SPEC 13.1). */
 export interface OperationIntentRef {
   opId: string;
   kind: "takeover" | "retirement";
   lifecycleUid: string;
+  owner: string;
+  actor: string;
 }
 
 /**
  * Enumerate every durable OPERATION intent `stage.<opId>` (SPEC 13.1) — the boot-resume
- * discovery: a barrier executor that crashed mid-operation finds what it may owe here (whether
- * an intent is actually OWED is the gate's call: only a gate still frozen by that opId is —
- * completed and lost operations leave their intent behind by design). Multi-segment `stage.`
+ * discovery: a barrier executor that crashed mid-operation finds what it may owe here. Whether
+ * an intent is actually OWED is the cross-object call the boot resume makes over the gate AND
+ * the alias head (see `resumeOpenOperations`): a retirement is owed while EITHER its gate is
+ * still frozen by that opId OR its head has not reached the terminal (completed and lost
+ * operations leave their intent behind by design and are skipped). Multi-segment `stage.`
  * keys (the session release pins) are not operations and are skipped; a single-segment intent
  * that carries a DEL/PURGE marker, fails to parse, or names an unknown kind THROWS — an intent
  * is never deleted while resumable, and garbled trusted-path state never drives a barrier.
@@ -419,13 +425,17 @@ export async function enumerateOperationIntents(reg: LifecycleRegistry): Promise
       throw new EpEnvelopeError("internal", `the operation intent ${e.key} carries an unknown kind ${isRec(o) ? JSON.stringify(o.kind ?? null) : "(not an object)"} (closed set, SPEC 13.1)`);
     if (typeof o.lifecycleUid !== "string")
       throw new EpEnvelopeError("internal", `the operation intent ${e.key} carries no lifecycleUid (SPEC 13.1)`);
+    // The alias the op belongs to (every intent kind carries it): the boot resume reads the
+    // lifecycle head under this alias to decide owed-ness (SPEC 13.1: the head is keyed by alias).
+    if (typeof o.owner !== "string" || o.owner.length === 0 || typeof o.actor !== "string" || o.actor.length === 0)
+      throw new EpEnvelopeError("internal", `the operation intent ${e.key} carries no owner/actor (SPEC 13.1)`);
     let uid: string;
     try {
       uid = assertLifecycleToken(o.lifecycleUid);
     } catch {
       throw new EpEnvelopeError("internal", `the operation intent ${e.key} carries a malformed lifecycleUid (SPEC 13.1)`);
     }
-    out.push({ opId, kind: o.kind, lifecycleUid: uid });
+    out.push({ opId, kind: o.kind, lifecycleUid: uid, owner: o.owner, actor: o.actor });
   }
   return out;
 }
