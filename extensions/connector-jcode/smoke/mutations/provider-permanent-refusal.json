@@ -1,0 +1,42 @@
+{
+  "suite": "extensions/connector-jcode/smoke/jcode-provider-permanent-refusal.smoke.ts",
+  "guard": "a persistent permanent SDK replacement refusal terminates the shipped Jcode host before another bridge launch",
+  "command": "pnpm smoke:jcode-provider-permanent-refusal",
+  "progressPattern": "✓",
+  "minTicks": 6,
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/provider-permanent-refusal.json",
+  "mutations": [
+    {
+      "name": "M1 retry a permanent SDK replacement refusal",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "          if (permanentBridgeRecoveryFailure(error)) throw error;",
+      "replace": "          if (false) throw error;",
+      "expectRed": "persistent invalid_request replacement refusal is terminal before another launch",
+      "cell": "a persistent invalid_request replacement refusal is terminal before another launch"
+    },
+    {
+      "name": "M2 drop three advertised direct permanent SDK codes",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "  \"handshake_failed\",\n  \"invalid_instance_home\",\n  \"invalid_request\",\n  \"jcode_not_found\",\n  \"unknown_request\",",
+      "replace": "  \"invalid_instance_home\",\n  \"invalid_request\",\n  \"unknown_request\",",
+      "expectRed": "the direct permanent classifier has exactly seven named SDK codes",
+      "cell": "the direct permanent classifier has exactly seven named SDK codes"
+    },
+    {
+      "name": "M3 stop classifying connect_failed EACCES as permanent",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "export const PERMANENT_BRIDGE_CONNECT_CAUSE_CODES = new Set([\"EACCES\"]);",
+      "replace": "export const PERMANENT_BRIDGE_CONNECT_CAUSE_CODES = new Set([]);",
+      "expectRed": "connect_failed with EACCES classifies as permanent",
+      "cell": "connect_failed with EACCES classifies as permanent"
+    },
+    {
+      "name": "M4 classify unknown HarnessError codes as permanent",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "  return false;\n}",
+      "replace": "  return true;\n}",
+      "expectRed": "an unknown HarnessError code remains transient by default",
+      "cell": "an unknown HarnessError code remains transient by default"
+    }
+  ]
+}
