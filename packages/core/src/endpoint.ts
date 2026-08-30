@@ -2475,8 +2475,10 @@ export class CotalEndpoint extends EventEmitter {
    * A filtered subject's sequences are non-contiguous (other channels interleave in the same
    * stream), so the window cannot be computed arithmetically. A FAILED attempt holds fewer than a
    * page by definition, so wasted transfer stays page-sized and geometric growth keeps the number of
-   * attempts logarithmic. The one unbounded case is named in the body: a channel whose matches are
-   * all old and sparse walks back to the start of the stream and reads its whole retained set.
+   * attempts logarithmic. A channel with fewer than `limit` matches used to keep widening until
+   * sequence 1 and drain the stream's whole retained set (#840). The walk now stops at the
+   * subject's FIRST matching sequence (the mirror of the last-matching ceiling), probed on the
+   * same CREATE surface, and only after a short drain so a dense page never pays for the floor.
    *
    * `before` pages toward the past: pass the `seq` of the oldest message you already have.
    */
@@ -2530,17 +2532,26 @@ export class CotalEndpoint extends EventEmitter {
       // Geometric growth keeps the number of attempts logarithmic, so total wasted transfer is a
       // small multiple of a page.
       //
-      // NAMED POLICY for the remaining case: when a channel's matches are all old and sparse, the
-      // search walks back to sequence 1 and the final drain transfers that subject's whole retained
-      // set. That is chosen deliberately — a FULL page of genuinely recent messages, at the cost of
-      // an unbounded read on a channel that has not been used in a long time — over returning a
-      // short page while older messages exist. The exact ceiling above means this is now reached
-      // only by real sparsity WITHIN a channel, never by the channel simply being quiet lately.
+      // A SHORT PAGE is either "the channel is exhausted" or "the window is still above the
+      // first match". Sequence 1 is the wrong floor for the first of those: three matches at
+      // the high end of a busy stream are exhausted as soon as the window's lower edge passes
+      // the subject's first matching sequence, and walking on to 1 re-reads everyone else's
+      // retained set (#840). Probe that floor only after a short drain so a dense page (one
+      // drain, full) never pays for it. The remaining unbounded-looking case is a subject
+      // whose FIRST match really is near sequence 1; that span is the channel's own, not the
+      // stream's.
       let span = Math.max(limit * 4, 64);
+      let floor = 1;
+      let floorKnown = false;
       for (;;) {
-        const start = Math.max(1, ceiling - span + 1);
+        const start = Math.max(floor, ceiling - span + 1);
         const page = await this.drainWindow(js, stream, subject, start, ceiling);
-        if (page.length >= limit || start === 1) return page.slice(-limit);
+        if (page.length >= limit) return page.slice(-limit);
+        if (!floorKnown) {
+          floor = Math.max(1, await this.firstMatchingSeq(js, stream, subject));
+          floorKnown = true;
+        }
+        if (start <= floor) return page.slice(-limit);
         span *= 4;
       }
     } catch (e) {
@@ -2562,6 +2573,34 @@ export class CotalEndpoint extends EventEmitter {
       if (/stream not found/i.test(msg) || (e as { code?: number } | null)?.code === 404) return [];
       if (isPermissionDenied(e) && stream === dmStream(this.space)) return [];
       throw e;
+    }
+  }
+
+  /** The newest stream sequence matching `subject`, or 0 when the subject has no messages.
+   *
+   *  One ordered consumer at `DeliverPolicy.Last` with this subject's filter: its `num_pending`
+   *  (available from the create, before anything is delivered) is 0 for an empty subject, and
+   *  otherwise one message carries the sequence. Same CREATE/INFO/NEXT/DELETE surface `drainWindow`
+   *  already uses, so no broker authority is added. */
+  /** The oldest stream sequence matching `subject`, or 0 when the subject has no messages.
+   *  Mirror of {@link lastMatchingSeq}: same CREATE/INFO/NEXT/DELETE surface, `DeliverPolicy.All`
+   *  instead of `Last`, first delivered seq instead of last. Read credentials already hold this. */
+  private async firstMatchingSeq(
+    js: ReturnType<typeof jetstream>,
+    stream: string,
+    subject: string,
+  ): Promise<number> {
+    const consumer = await js.consumers.get(stream, {
+      filter_subjects: [subject],
+      deliver_policy: DeliverPolicy.All,
+    });
+    try {
+      if ((await consumer.info(true)).num_pending === 0) return 0;
+      const iter = await consumer.fetch({ max_messages: 1 });
+      for await (const m of iter) return m.seq;
+      throw new Error(`history: the broker reported messages on ${subject} but delivered none - the read was cut short, not empty`);
+    } finally {
+      await consumer.delete().catch(() => { /* already gone, or denied */ });
     }
   }
 
