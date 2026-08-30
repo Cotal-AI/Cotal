@@ -1,0 +1,31 @@
+{
+  "suite": "bin/smoke/shard-stability.smoke.ts",
+  "guard": "the shard-stability gate compares exact parsed suite indices and examines every pre-existing suite, including moves by a whole shard count",
+  "command": "pnpm smoke:shard-stability",
+  "completionMarker": "SUITE COMPLETE",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/shard-stability-index.json",
+  "why": [
+    "The existing gate compared only index modulo shard count. Moving a suite by four positions in the four-shard topology therefore kept the same runner and passed, even though issue #920's append-only invariant says every pre-existing suite must keep its exact parsed index.",
+    "",
+    "The property suite inserts four entries at a deterministic mid-file position so the modulo-only mutant sees zero runner changes. The named property cell must redden, and a separate named cell asserts that every pre-existing suite was examined rather than accepting an empty loop."
+  ],
+  "mutations": [
+    {
+      "name": "compare only derived shard numbers, so whole-shard index moves disappear",
+      "file": "bin/smoke/shard-stability.mjs",
+      "find": "    if (headIndex !== baseIndex) changed.push(suite);",
+      "replace": "    if (headIndex % 4 !== baseIndex % 4) changed.push(suite);",
+      "expectRed": "FAIL: a mid-file whole-shard insert reports every pre-existing suite whose index changed",
+      "cell": "a mid-file whole-shard insert reports every pre-existing suite whose index changed"
+    },
+    {
+      "name": "stop counting examined suites, so an empty property loop can look green",
+      "file": "bin/smoke/shard-stability.mjs",
+      "find": "    examined++;",
+      "replace": "    examined += 0;",
+      "expectRed": "FAIL: the mid-file property examined every pre-existing suite",
+      "cell": "the mid-file property examined every pre-existing suite"
+    }
+  ],
+  "grades": "tool"
+}
