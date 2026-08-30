@@ -99,6 +99,8 @@
     "smoke:jcode-lifecycle": "tsx extensions/connector-jcode/smoke/jcode-lifecycle.smoke.ts",
     "smoke:jcode-private-lifecycle": "tsx extensions/connector-jcode/smoke/private-lifecycle.smoke.ts",
     "smoke:jcode-provider-disconnect": "tsx extensions/connector-jcode/smoke/jcode-provider-disconnect.smoke.ts",
+    "smoke:jcode-provider-permanent-refusal": "tsx extensions/connector-jcode/smoke/jcode-provider-permanent-refusal.smoke.ts",
+    "smoke:jcode-recovery-classifier": "tsx extensions/connector-jcode/smoke/jcode-recovery-classifier.smoke.ts",
     "smoke:jcode-mid-turn-delivery": "tsx extensions/connector-jcode/smoke/jcode-mid-turn-delivery.smoke.ts",
     "smoke:jcode-live": "tsx extensions/connector-jcode/smoke/jcode-live.smoke.ts",
     "smoke:view": "tsx implementations/cli/smoke/view.smoke.ts",
@@ -332,6 +334,7 @@
     "smoke:ep-serve-gate": "tsx packages/core/smoke/endpoint-serve-gate.smoke.ts",
     "smoke:manager-service": "tsx implementations/manager/smoke/manager-service.smoke.ts",
     "smoke:manager-service-ops": "tsx implementations/manager/smoke/manager-service-ops.smoke.ts",
+    "smoke:manager-persona-show-auth": "tsx implementations/manager/smoke/persona-show-auth.smoke.ts",
     "smoke:manager-service-invoke": "tsx implementations/manager/smoke/manager-service-invoke.smoke.ts",
     "smoke:journal-model-b": "tsx implementations/manager/smoke/journal-model-b.smoke.ts",
     "smoke:journal-declaration": "tsx implementations/manager/smoke/journal-declaration.smoke.ts",
@@ -481,6 +484,7 @@
     "smoke:workspace-import-exports": "tsx bin/smoke/workspace-import-exports.smoke.ts",
     "smoke:required-arg-seam": "tsx bin/smoke/required-arg-seam.smoke.ts",
     "smoke:ci-suites": "tsx bin/smoke/ci-suites.smoke.ts",
+    "smoke:package-test-contract": "tsx bin/smoke/package-test-contract.smoke.ts",
     "smoke:ci-fragments": "tsx bin/smoke/ci-fragments.smoke.ts",
     "smoke:ci-declarations": "tsx bin/smoke/ci-declarations.smoke.ts",
     "smoke:shard-stability": "tsx bin/smoke/shard-stability.smoke.ts",
@@ -494,6 +498,7 @@
     "smoke:ps-operator-path": "tsx implementations/auth/smoke/ps-operator-path.smoke.ts",
     "smoke:ps-user-mode": "tsx implementations/auth/smoke/ps-user-mode.smoke.ts",
     "smoke:persona-input-closed": "tsx implementations/manager/smoke/persona-input-closed.smoke.ts",
+    "smoke:persona-catalog-read": "tsx packages/core/smoke/persona-catalog-read.smoke.ts",
     "smoke:herdr:soak": "tsx extensions/herdr/soak.ts",
     "smoke:herdr:probe": "tsx extensions/herdr/probe.smoke.ts",
     "smoke:herdr-e2e:live": "tsx bin/smoke/herdr-e2e-live.smoke.ts",
@@ -558,6 +563,7 @@
     "@types/node": "^22.20.0",
     "ts-json-schema-generator": "^2.9.0",
     "tsx": "^4.23.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "yaml": "^2.9.0"
   }
 }

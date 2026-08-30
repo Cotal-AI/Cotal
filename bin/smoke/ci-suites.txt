@@ -156,7 +156,6 @@ smoke:codex-dist
 smoke:codex-installed
 smoke:jcode-args
 smoke:jcode-host
-smoke:jcode-startup-diagnostics
 smoke:jcode-private-state
 smoke:jcode-security
 smoke:web-harness
