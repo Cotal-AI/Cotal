@@ -30,11 +30,12 @@
     {
       "name": "the dashboard starts channel reads without its response-deadline signal",
       "file": "implementations/web/src/web.ts",
-      "command": "pnpm smoke:web-bounded-aggregation",
+      "command": "pnpm smoke:web-history-cancellation",
+      "completionMarker": "WEB HISTORY CANCELLATION:",
       "find": "          (await ep.channelHistory(ch.channel, { limit, signal })).map((msg) => ({ mode: \"chat\" as const, channel: ch.channel, msg })),",
       "replace": "          (await ep.channelHistory(ch.channel, { limit })).map((msg) => ({ mode: \"chat\" as const, channel: ch.channel, msg })),",
-      "expectRed": "4.11 every started history source receives the shared cancellation signal",
-      "cell": "4.11 every started history source receives the shared cancellation signal"
+      "expectRed": "every started history source receives the shared cancellation signal",
+      "cell": "every started history source receives the shared cancellation signal"
     }
   ]
 }
