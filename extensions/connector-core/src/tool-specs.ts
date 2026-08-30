@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, channelInAllow, AmbiguousPeerError, isPermissionDenied, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, channelInAllow, AmbiguousPeerError, isPermissionDenied, renderLifecycleBlocked, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 import { FEEDBACK_URL, PUBLIC_FEEDBACK_URL, isAuthed, type AgentConfig } from "./config.js";
 import { buildOrientation, renderOrientation, type OrientationTool } from "./orientation.js";
@@ -1096,7 +1096,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       async run(agent, _config, { name, role, agent: agentType, model, variant, launchOptions, cwd, prompt }: { name: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string }) {
         try {
           const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt });
-          if (!reply.ok) return err(`Couldn't spawn ${name}: ${reply.error ?? "manager refused"}`);
+          if (!reply.ok) return err(`Couldn't spawn ${name}: ${renderLifecycleBlocked(reply.error ?? "manager refused", reply)}`);
           const d = reply.data as { name?: string; mode?: string } | undefined;
           const actual = d?.name ?? name; // the manager auto-numbers on a collision — report what it spawned
           const mode = d?.mode;

@@ -60,6 +60,7 @@ function presenceLine(ev: PresenceEvent): string {
 export async function runLog(ep: CotalEndpoint, space: string, tapSubject?: string): Promise<void> {
   const view = new MeshView(ep, tapSubject ? { tapSubject } : {});
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
+  view.on("warning", (e: Error) => console.error(c.yellow("! " + e.message)));
   view.on("presence", (ev) => console.log(presenceLine(ev as PresenceEvent)));
   view.on("entry", (e) => console.log(feedLine(e as FeedEntry)));
   await view.start();

@@ -133,6 +133,8 @@ import {
   epeSubject,
   submissionFingerprint,
   EpEnvelopeError,
+  lifecycleBlocked,
+  renderLifecycleBlocked,
   type EpCommandDef,
   type EpServeContext,
   type EpServeGrant,
@@ -1052,9 +1054,11 @@ export class Manager {
       watchChannels: false,
       card: { id, ...(this.remoteAuthority ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.supervisor } : {}), name: this.name, role: "manager", kind: "endpoint" },
     });
-    // Surface endpoint errors (incl. NATS permission denials) — without a listener an
-    // emitted "error" would crash the supervisor.
-    this.ep.on("error", (e: Error) => console.error(`! manager endpoint: ${e.message}`));
+    // Raw failures ride error; conditions the endpoint is already surviving ride warning. Both
+    // matter to a supervisor operator, especially a failed standing-credential renewal.
+    const reportEndpoint = (e: Error) => console.error(`! manager endpoint: ${e.message}`);
+    this.ep.on("error", reportEndpoint);
+    this.ep.on("warning", reportEndpoint);
     await this.ep.start();
     await this.ep.setActivity(`supervisor (${this.runtime.kind})`);
     // Per-instance liveness lease (P2 item 3 — the old per-space singleton is DEMOTED per D9). Acquire
@@ -3602,10 +3606,10 @@ export class Manager {
     const held = this.retiring.get(identityName);
     if (held !== undefined) {
       void this.deprovision({ id: held.agentId, name: identityName, lifecycleUid: held.lifecycleUid, userOwner: held.userOwner, secretPaths: held.secretPaths }).catch(() => {});
-      return {
-        ok: false,
-        error: `the name "${identityName}" is reserved pending retirement: its previous agent's despawn started that lifecycle's teardown (footprint + standing-authority revoke + auth-side retirement), and the name frees only when all of it completes${held.lastError !== undefined ? ` (last attempt: ${held.lastError})` : ""}. NEXT: wait a moment and retry this spawn (retrying re-drives the whole teardown), or pick another name.`,
-      };
+      const err = lifecycleBlocked("failed-precondition",
+        `the name "${identityName}" is reserved pending retirement: its previous agent's despawn started that lifecycle's teardown (footprint + standing-authority revoke + auth-side retirement), and the name frees only when all of it completes${held.lastError !== undefined ? ` (last attempt: ${held.lastError})` : ""}. NEXT: wait a moment and retry this spawn (retrying re-drives the whole teardown), or pick another name.`,
+        { blockedOp: "retirement", headState: "retiring", opId: held.opId, remedy: "retry" });
+      return { ok: false, error: renderLifecycleBlocked(err.message, err), details: err.details };
     }
     if (variant && !connector.supportsModelVariant)
       return { ok: false, error: `${agent} connector does not support model variants (variant)` };
@@ -3984,6 +3988,10 @@ export class Manager {
     } catch (e) {
       // Failure after reserve (provision / launch threw): the slot was never live, so no cold-start
       // was paid — the reserved rollback (finally) is enough, no cooling stamp.
+      // A lifecycle-blocked envelope already named the barrier; keep its details on the ControlReply
+      // so follow/CLI/cotal_spawn do not collapse it to a generic string (#873).
+      if (e instanceof EpEnvelopeError)
+        return { ok: false, error: renderLifecycleBlocked(e.message, e), ...(e.details ? { details: e.details } : {}) };
       return { ok: false, error: (e as Error).message };
     } finally {
       this.reserved.delete(name);
@@ -5716,17 +5724,23 @@ export class Manager {
     });
     bg.then((reply) => {
       // Refused BEFORE onAccepted (M6 hard-pin collision, capacity, persona-not-found) — no goal bound.
-      if (acceptance === undefined) { rejectAccept(new EpEnvelopeError("failed-precondition", reply.error ?? "spawn refused at accept")); return; }
+      if (acceptance === undefined) {
+        const details = reply.details;
+        rejectAccept(new EpEnvelopeError("failed-precondition", reply.error ?? "spawn refused at accept", details));
+        return;
+      }
       // H1: `run` CATCHES its own body (a throw in buildLaunch/runtime.spawn) and RESOLVES `{ok:false}`
       // rather than rejecting, so a post-accept failure arrives here, not in the catch below, and
       // reaches none of the onOutcome sites. Without this the goal stays accepted-but-unanswered:
       // the caller follows epe to a terminal that never comes, and the reconcile index that would
       // settle it is only swept at BOOT, so a manager that stays up never converges it.
-      if (reply.ok === false && !terminalEntered) return onOutcome({ kind: "failed", data: { error: reply.error ?? "spawn failed after accept" } });
+      if (reply.ok === false && !terminalEntered)
+        return onOutcome({ kind: "failed", data: { error: reply.error ?? "spawn failed after accept", ...(reply.details ? { details: reply.details } : {}) } });
     }).catch((e) => {
       if (acceptance === undefined) { rejectAccept(e); return; }
       // Same obligation for a genuine rejection (one that escaped `run`'s own catch).
-      if (!terminalEntered) return onOutcome({ kind: "failed", data: { error: (e as Error)?.message ?? String(e) } });
+      if (!terminalEntered)
+        return onOutcome({ kind: "failed", data: { error: (e as Error)?.message ?? String(e), ...(e instanceof EpEnvelopeError && e.details ? { details: e.details } : {}) } });
       console.error(`! spawn-as-action async body for ${goalId}: ${(e as Error)?.message ?? String(e)}`);
     }).catch((e) => console.error(`! goal terminal fallback for ${goalId}: ${(e as Error)?.message ?? String(e)}`));
     return acceptP;

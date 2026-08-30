@@ -89,6 +89,7 @@ export function serveIssuanceGateKv(kv: KV, space: string, args: { endpoint: str
         state: gate.state, generation: gate.generation, processEpoch: gate.processEpoch,
         registrationRevision: gate.registrationRevision, nameAuthorityRevision: gate.nameAuthorityRevision,
         revision: entry.revision,
+        ...(gate.op !== undefined ? { op: gate.op } : {}),
       };
     },
     stage: async (row: EpServeLedgerRow) => {
@@ -356,6 +357,7 @@ export function endpointRegistrationBarrier(
         state: cur.row.state, generation: cur.row.generation, processEpoch: cur.row.processEpoch,
         registrationRevision: cur.row.registrationRevision, nameAuthorityRevision: cur.row.nameAuthorityRevision,
         revision: cur.revision,
+        ...(cur.row.op !== undefined ? { op: cur.row.op } : {}),
       };
     },
     freeze: async (expectedRevision: number) => {

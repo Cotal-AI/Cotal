@@ -13,6 +13,7 @@ import {
   respondedButUnbound,
   unansweredRequest,
   registryReadFailed,
+  renderLifecycleBlocked,
   submitAndFollowGoal,
   scatterCommand,
   mintLifecycleUid,
@@ -280,8 +281,9 @@ async function askManagerEp(
     if (r.reply.ok !== true)
       return {
         ok: false,
-        error: r.reply.error?.message ?? r.reply.error?.code ?? "error",
+        error: renderLifecycleBlocked(r.reply.error?.message ?? r.reply.error?.code ?? "error", r.reply.error),
         ...(r.reply.error?.code ? { code: r.reply.error.code } : {}),
+        ...(r.reply.error?.details ? { details: r.reply.error.details } : {}),
       };
     // The ep `models` reply is normalized to `{catalogs}` — unwrap so call sites keep the ctl shape.
     const data = mapped.command === "models" ? (r.reply.data as { catalogs: unknown }).catalogs : r.reply.data;
