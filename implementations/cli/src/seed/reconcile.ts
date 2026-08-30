@@ -120,7 +120,7 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
           throw new Error(`a connector seed may be mid-flight (marker ${child.path}) - if no cotal process is running, remove it, then run \`cotal ext seed --repair\``);
         throw new Error("a previous connector seed or repair was interrupted - run `cotal ext seed --repair`");
       }
-    } else if (readWitness() && authorityIntact() && builtinsAccounted() && readStamp()?.generation === generation && !reconcileLockActive()) {
+    } else if (readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && readStamp()?.generation === generation && !reconcileLockActive()) {
       // Steady state AND no reconcile in flight. The lock check is LAST (immediately before NOOP) so
       // it is the linearization point: a `--force` that link-publishes the lock during the slower
       // health/stamp reads is still caught here, and we fall through to acquire/wait rather than
@@ -169,6 +169,18 @@ function builtinsAccounted(): boolean {
   } catch {
     return false;
   }
+}
+
+/** A package can add a registry provider without changing the seed generation in a source checkout.
+ * The fast path must not preserve an older manifest that advertises only a subset of what the packed
+ * built-in now registers, or lazy materialization of the new provider can never find its owner. */
+function builtinsMetadataCurrent(): boolean {
+  for (const name of SEED_BUILTINS) {
+    const entry = installedEntry(name);
+    if (!entry || entry.source !== "seeded") continue;
+    if (name === "claude" && !entry.provides?.some((ref) => ref.kind === "connector-setup" && ref.name === "claude")) return false;
+  }
+  return true;
 }
 
 async function runUnderLocks(mode: Mode, generation: string, nonce: string): Promise<ReconcileResult> {
@@ -250,6 +262,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
     !cursor &&
     !recoveryPending() &&
     readWitness() &&
+    builtinsMetadataCurrent() &&
     readStamp()?.generation === generation &&
     SEED_BUILTINS.every((name) => everSeeded.has(name))
   )
@@ -285,7 +298,8 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
       // is never auto-refreshed on upgrade — only --force may replace it.
       const isSeeded = entry.source === "seeded";
       const torn = mode === "repair" && isSeeded && (repairAllSeeded || !isIntact(name));
-      const refresh = mode === "force" || torn || (isSeeded && isStrictlyNewer(generation, stampGen));
+      const metadataStale = isSeeded && name === "claude" && !entry.provides?.some((ref) => ref.kind === "connector-setup" && ref.name === "claude");
+      const refresh = mode === "force" || torn || metadataStale || (isSeeded && isStrictlyNewer(generation, stampGen));
       if (refresh) {
         seedOne(name, generation, nonce, true);
         verifyInstalled(name, generation);

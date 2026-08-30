@@ -1,0 +1,2 @@
+# Status skills rows point at the skills-only setup remedy.
+smoke:status-skills-remedy
