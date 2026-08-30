@@ -80,7 +80,7 @@ import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, typ
 import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, endpointPlaneStreamNames } from "./endpoint-binding.js";
 import { epsSubject, epCallerReplyFilter, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE } from "./endpoint-subjects.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
-import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix } from "./lifecycle-state.js";
+import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix, eprepairKey } from "./lifecycle-state.js";
 import { rawDigest } from "./canonical.js";
 import { credsClaims, type Identity } from "./identity.js";
 import {
@@ -100,7 +100,7 @@ export type Profile =
   | "deprovisioner" // ephemeral, TARGET-PINNED teardown of ONE departed agent's id-keyed footprint (#159 B)
   | "retirement-requester" // ephemeral request+reply on the auth-admin rail (#29 piece 3): asks the AUTH plane to retire a lifecycle; holds NO executing right
   | "lifecycle-executor" // ephemeral, LIFECYCLE-PINNED §13.1 state writes for the STATIC manager (Unit B): exactly ONE incarnation's head/uid/gate/cred-row/slot keys
-  | "endpoint-serve-executor" // ephemeral, ENDPOINT-INSTANCE-PINNED §13.1 endpoint-serve writes (P2 item 1, 1a-serve): exactly ONE (endpoint, instanceId)'s epgate + epcred family
+  | "endpoint-serve-executor" // ephemeral, ENDPOINT-INSTANCE-PINNED §13.1 endpoint-serve writes (P2 item 1, 1a-serve): exactly ONE (endpoint, instanceId)'s epgate + epcred family + eprepair cursor
   | "operator"
   | "purger"
   | "backup"
@@ -200,7 +200,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   deprovisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "target-pinned teardown window only" },
   "retirement-requester": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one despawn's retirement request window; request+reply only" },
   "lifecycle-executor": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one static lifecycle operation's 13.1 state-write window (activation / terminal / renewal ledger append)" },
-  "endpoint-serve-executor": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one endpoint registration/serve-mint window (13.1 epgate CAS + epcred stage/revoke for one (endpoint, instanceId))" },
+  "endpoint-serve-executor": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one endpoint registration/serve-mint window (13.1 epgate CAS + epcred stage/revoke + eprepair cursor for one (endpoint, instanceId))" },
   operator: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "send/dm/join/probe-style operator command" },
   purger: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "history purge command" },
   backup: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "offline snapshot phase; exact stream and delivery subject, memory-only" },
@@ -1403,6 +1403,7 @@ function remoteManagerPermissions(
   const REC = recordsBucket(space);
   const gateKey = epgateKey("manager", iid);
   const credPrefix = epcredFamilyPrefix("manager", iid);
+  const repairKey = eprepairKey("manager", iid);
   const recordKeys = [
     recordSpecKey(RECORD_KINDS.svc, ["manager", iid]),
     recordStatusKey(RECORD_KINDS.svc, ["manager", iid]),
@@ -1425,6 +1426,7 @@ function remoteManagerPermissions(
         "$JS.FC.>",
         // This instance's manager service registration + credential family only.
         `$KV.${AUTH}.${gateKey}`,
+        `$KV.${AUTH}.${repairKey}`,
         `$KV.${AUTH}.${credPrefix}.>`,
         ...recordKeys.map((key) => `$KV.${REC}.${key}`),
         `${spacePrefix(space)}.epc.*`,
@@ -2089,6 +2091,7 @@ function endpointServeExecutorPermissions(
   // DERIVED from (endpoint, instanceId) via the core builders — never a caller literal.
   const gateKey = epgateKey(pin.endpoint, pin.instanceId);
   const credPrefix = epcredFamilyPrefix(pin.endpoint, pin.instanceId);
+  const repairKey = eprepairKey(pin.endpoint, pin.instanceId);
   // The registration writes this ONE instance's spec key plus the endpoint's governance head
   // (`registerServiceInstance` PHASE 1/3b: the slot-take + promote ride the SAME executor), and this
   // instance's own svc STATUS key (P2 item 3: the manager writes its CONVERGED `ready` status so it
@@ -2108,6 +2111,7 @@ function endpointServeExecutorPermissions(
         // two records-store keys (spec CAS + governance slot/promote). The value-publish carries
         // the key on the subject, so each grant names exactly this instance's keys.
         `$KV.${AUTH}.${gateKey}`,
+        `$KV.${AUTH}.${repairKey}`,
         `$KV.${AUTH}.${credPrefix}.>`,
         ...recordKeys.map((k) => `$KV.${REC}.${k}`),
         // §13.7 contract-artifact publication (P2 item 1, 1c): the registration publishes the
