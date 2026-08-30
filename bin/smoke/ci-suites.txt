@@ -690,3 +690,7 @@ smoke:agent-secret-segmentation
 # spellings, one of them the release workflow. The property is only observable on main after a
 # merge, so it needs a static guard. Appended so every existing shard assignment remains unchanged.
 smoke:workflow-concurrency
+# A newer CLI advancing the operator-global seed store announces the generation transition and records
+# its exact entry plus commit time; a later older CLI reports that provenance in its write-free refusal.
+# Broker-free compiled-CLI smoke. Appended so every existing shard assignment remains unchanged.
+smoke:seed-migration-provenance
