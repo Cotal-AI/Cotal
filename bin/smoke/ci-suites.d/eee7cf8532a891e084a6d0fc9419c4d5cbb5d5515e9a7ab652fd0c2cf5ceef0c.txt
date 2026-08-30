@@ -1,0 +1,3 @@
+# The jcode effort-refusal message names the requested model pin, not the session default
+# RuntimeInfo can still report after setModel (#972).
+smoke:jcode-effort-model
