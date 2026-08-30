@@ -8,7 +8,7 @@
  * cells are negative controls proving transport selection did not regress ordinary NATS dials.
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -52,14 +52,17 @@ const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_")) delete cleanEnv[key];
 
 const home = mkdtempSync(join(tmpdir(), "cotal-control-dial-home-"));
+const releaseHome = teardownPathOnSignal(home);
 process.env.COTAL_HOME = home;
 const xdg = join(home, "xdg");
 mkdirSync(xdg);
 const root = mkdtempSync(join(tmpdir(), "cotal-control-dial-root-"));
+const releaseRoot = teardownPathOnSignal(root);
 // The JetStream store gets its own tokened dir rather than living under `root`, because the reaper
 // claims a lost broker by that prefix: a store buried in an untokened tree is not merely unreaped,
 // it is unreachable to the reaper.
 const brokerStore = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}control-dial-js-`));
+const releaseBrokerStore = teardownPathOnSignal(brokerStore);
 const tcpPort = await freePort();
 const wsPort = await freePort();
 const tcpServer = `nats://127.0.0.1:${tcpPort}`;
@@ -80,6 +83,14 @@ const { authDir, recordMesh, saveSpaceAuth } = await import("@cotal-ai/workspace
 
 const auth = await createSpaceAuth(space);
 saveSpaceAuth(authDir(root), auth);
+if (process.env.COTAL_SMOKE_FAIL_CONTROL_DIAL_AFTER_AUTH === "1") {
+  // Exact fault boundary for credential-persistence teardown: the auth bytes exist, but no broker
+  // has spawned and no broker ownership can have been registered yet. The delay lets the parent
+  // prove the credential artifacts exist before this uncaught failure exits the process.
+  console.log("CONTROL_DIAL_AFTER_AUTH_READY");
+  await sleep(5_000);
+  throw new Error("smoke-injected crash after auth persistence and before broker spawn");
+}
 const conf = join(root, "server.conf");
 writeFileSync(
   conf,
@@ -110,20 +121,11 @@ const reachedRails = (result: { status: number | null; out: string }): boolean =
   !/wsconnect|websocket connections must use/i.test(result.out);
 
 let releaseBroker: (() => void) | undefined;
-let releaseRoot: (() => void) | undefined;
-let releaseHome: (() => void) | undefined;
 try {
   const broker = spawnProc("nats-server", ["-c", conf], { stdio: "ignore" });
   // Covers what the finally cannot: a run killed by a signal, and a `process.exit` that skips
   // pending finally blocks. smoke-kit reaps from a process `exit` hook as well as the signals.
   releaseBroker = teardownOnSignal(broker, brokerStore);
-  // The project root and COTAL_HOME hold freshly minted operator/account seeds. They are not broker
-  // stores, but the same exit/signal ownership is required: a suite killed after saveSpaceAuth and
-  // before its finally must not leave credential material in /tmp. The broker handle is the exact
-  // child this fixture owns; registering the two trees against it gives the smoke-kit exit hook an
-  // independently sufficient cleanup path without discovering or broad-matching any process.
-  releaseRoot = teardownOnSignal(broker, root);
-  releaseHome = teardownOnSignal(broker, home);
   kids.push(broker);
   let serving = false;
   for (let i = 0; i < 80; i++) {
@@ -170,5 +172,6 @@ try {
   ok("E: broker store, project root, COTAL_HOME, and XDG artifacts remaining after teardown = 0", remainingArtifacts === 0, remainingArtifacts);
   releaseHome?.();
   releaseRoot?.();
+  releaseBrokerStore();
   releaseBroker?.(); // last: ownership is held until this teardown has actually finished
 }

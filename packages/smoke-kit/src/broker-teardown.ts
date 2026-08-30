@@ -116,7 +116,7 @@ export async function killAndAwaitExit(child: ChildProcess, signal: NodeJS.Signa
 }
 
 interface Owned {
-  readonly child: ChildProcess;
+  readonly child?: ChildProcess;
   readonly storeDir?: string;
 }
 
@@ -128,10 +128,12 @@ let armed = false;
  *  stderr instead of swallowed, so a teardown that could not complete is still visible. */
 function reap(): void {
   for (const o of owned) {
-    try {
-      o.child.kill("SIGKILL");
-    } catch (e) {
-      console.error(`smoke broker teardown: could not kill pid ${o.child.pid}: ${(e as Error).message}`);
+    if (o.child !== undefined) {
+      try {
+        o.child.kill("SIGKILL");
+      } catch (e) {
+        console.error(`smoke broker teardown: could not kill pid ${o.child.pid}: ${(e as Error).message}`);
+      }
     }
     if (o.storeDir !== undefined) {
       try {
@@ -188,6 +190,17 @@ function arm(): void {
 export function teardownOnSignal(child: ChildProcess, storeDir?: string): () => void {
   arm();
   const entry: Owned = { child, ...(storeDir === undefined ? {} : { storeDir }) };
+  owned.add(entry);
+  return () => owned.delete(entry);
+}
+
+/** Own one exact temporary path before it receives credential or broker bytes. Unlike
+ * {@link teardownOnSignal}, this needs no child handle, so registration can precede the dangerous
+ * write instead of leaving a create-before-register crash window. The caller still removes the path
+ * on its normal path, then releases this backstop last. */
+export function teardownPathOnSignal(path: string): () => void {
+  arm();
+  const entry: Owned = { storeDir: path };
   owned.add(entry);
   return () => owned.delete(entry);
 }
