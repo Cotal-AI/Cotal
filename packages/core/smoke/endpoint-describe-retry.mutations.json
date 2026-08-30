@@ -1,0 +1,16 @@
+{
+  "suite": "packages/core/smoke/endpoint-invoke.smoke.ts + implementations/cli/smoke/ep-rail-failure.smoke.ts",
+  "guard": "a describe published just before the responder registers is re-published inside the original deadline, while ordinary request binding and deadline semantics remain intact",
+  "command": "pnpm smoke:ep-invoke && pnpm --filter @cotal-ai/core build && pnpm smoke:ep-rail-failure",
+  "completionMarker": "EP-RAIL-FAILURE POLARITY SMOKE OK",
+  "mutations": [
+    {
+      "name": "describe returns to a one-shot publish, so a responder registering after it misses the whole request",
+      "file": "packages/core/src/endpoint-invoke.ts",
+      "find": "      retryTimer = setInterval(() => nc.publish(subject, request), DESCRIBE_RETRY_MS);",
+      "replace": "      retryTimer = undefined;",
+      "expectRed": "an unanswered describe is re-published within its original deadline when the responder registers after the first request",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    }
+  ]
+}
