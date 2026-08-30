@@ -25,7 +25,7 @@
  * session reads its own card from it. Part of the wire contract's onboarding
  * half, alongside the join link.
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { EndpointKind } from "./types.js";
@@ -295,6 +295,51 @@ export function agentFilePath(root: string, nameOrPath: string): string {
   if (nameOrPath.includes("/") || nameOrPath.includes("\\") || nameOrPath.endsWith(".md"))
     return resolve(root, nameOrPath);
   return join(root, ".cotal", "agents", `${nameOrPath}.md`);
+}
+
+/** One `.cotal/agents/*.md` catalog entry. A malformed file is an `error` row, not a throw —
+ *  a list that crashed on one bad card could not tell the caller which names exist. */
+export interface PersonaCatalogEntry {
+  name: string;
+  path: string;
+  def?: AgentDef;
+  error?: string;
+}
+
+/** The workspace persona catalog: every `.cotal/agents/*.md` under `root`, sorted by filename
+ *  stem. Filesystem-only — no mesh. Missing directory ⇒ empty catalog, not an error. */
+export function listPersonaCatalog(root: string): PersonaCatalogEntry[] {
+  const dir = join(root, ".cotal", "agents");
+  let files: string[];
+  try {
+    files = readdirSync(dir).filter((f) => f.endsWith(".md"));
+  } catch {
+    return [];
+  }
+  return files.sort().map((f) => {
+    const name = f.slice(0, -3);
+    const path = join(dir, f);
+    try {
+      return { name, path, def: loadAgentFile(path) };
+    } catch (e) {
+      return { name, path, error: (e as Error).message };
+    }
+  });
+}
+
+/** The one-line description `cotal personas list` prints: `description:` if set, else the
+ *  first non-empty persona line. Truncated to 100 characters, matching the CLI. */
+export function personaCatalogDescription(def: AgentDef): string | undefined {
+  const raw = def.description ?? def.persona?.split("\n").find((l) => l.trim())?.trim();
+  if (!raw) return undefined;
+  return raw.length > 100 ? `${raw.slice(0, 99)}…` : raw;
+}
+
+/** Same ownership as `definePersona` redefine: the creator, or admin. Ownerless files
+ *  (legacy / operator-written) are admin-only. Used by the mesh catalog read so a peer
+ *  cannot pull role/model/description/body of a card it could not rewrite. */
+export function personaCatalogReadable(owner: string | undefined, caller: string, admin: boolean): boolean {
+  return admin || owner === caller;
 }
 
 /** The separator the auto-numbering scheme appends a counter with. `_`, NOT `-`: in user mode the

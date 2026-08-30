@@ -5,13 +5,14 @@
  * command surface at runtime (describe → fetch the registered contracts from the §13.7 store →
  * recompile the digest-matching validators) and invokes by name.
  *
- * Deliberately imports ONLY the endpoint NAME + core `resolveService`/`invokeCommand` — never
+ * Deliberately imports the endpoint NAME and the shipped cluster document's surface, never
  * MANAGER_CONTRACTS. If this compiled and ran while secretly depending on the hand-written
- * contracts, that would defeat the test; it does not.
+ * contracts, that would defeat the test; it does not. The command-count pin is derived from
+ * `managerShippedSurface()`, not restated, so a later served command cannot silently desync.
  *
- *  1. resolveService(manager) describes + fetches + recompiles the FULL visible surface (17
- *     commands), each with a recompiled input/output contract whose closureDigest MATCHES the
- *     registered declaration.
+ *  1. resolveService(manager) describes + fetches + recompiles the FULL visible surface (the
+ *     shipped cluster document's command set), each with a recompiled input/output contract whose
+ *     closureDigest MATCHES the registered declaration.
  *  2. invoke "status" (untargeted, void) returns the typed ManagerStatus.
  *  3. invoke "spawn" (the 16-field launch) boots a REAL agent; the recompiled input contract
  *     gates a bad field pre-publish (the caller's own closed schema, fetched not hand-written).
@@ -37,9 +38,11 @@ import {
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
-// The endpoint NAME only — NOT the contract module. A generic caller never hand-imports schemas.
-import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
+// Endpoint name + shipped surface pin. Never MANAGER_CONTRACTS: a generic caller does not
+// hand-import schemas. The count comes from the cluster document, not a restated literal.
+import { MANAGER_ENDPOINT, managerShippedSurface } from "../src/manager-service-contract.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+const shipped = managerShippedSurface();
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
@@ -107,7 +110,7 @@ try {
 
   console.log("1. resolveService: describe + fetch + recompile the full surface (no hand-imported schemas)");
   const service = await resolveService(nc, space, MANAGER_ENDPOINT, caller, { deadlineMs: 10_000 });
-  check("the resolved surface is the manager's 18 visible commands", service.commands.size === 18 && service.commands.has("status") && service.commands.has("spawn") && service.commands.has("despawn"), [...service.commands.keys()].sort());
+  check("the resolved surface matches the shipped cluster document", service.commands.size === shipped.commandCount && shipped.names.every((n) => service.commands.has(n)) && service.commands.has("status") && service.commands.has("spawn") && service.commands.has("despawn"), [...service.commands.keys()].sort());
   const statusCmd = service.commands.get("status")!;
   check("status resolved: untargeted, read capability, recompiled contracts carry closure digests",
     statusCmd.targeted === false && statusCmd.capability === "manager.read"

@@ -25,7 +25,7 @@
  * today; the 1c migration table names who mints which capability.
  *
  * Capability labels (describe/grant vocabulary, one per tier class):
- *   manager.read     status / ps / inspect / models        (read-only)
+ *   manager.read     status / ps / inspect / models / list-personas / show-persona
  *   manager.spawn    spawn                                 (privileged-grade creation)
  *   manager.lifecycle despawn / attach / input             (owner-mode terminal/interactive)
  *   manager.self     stop                                  (self-mode halt; baseline)
@@ -268,6 +268,44 @@ const PERSONA_OUTPUT_SCHEMA = {
   properties: { name: { type: "string" }, path: { type: "string" } },
 } as const;
 
+/** Catalog row for the mesh-side persona read (#402). Content only: name / role / model /
+ *  description / owner. Policy (capabilities, ACLs) has no slot — the write path stays closed. */
+const PERSONA_CATALOG_ROW_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["name"],
+  properties: {
+    name: { type: "string" },
+    role: { type: "string" },
+    model: { type: "string" },
+    description: { type: "string" },
+    owner: { type: "string" },
+    error: { type: "string" },
+  },
+} as const;
+const LIST_PERSONAS_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["personas"],
+  properties: { personas: { type: "array", items: PERSONA_CATALOG_ROW_SCHEMA } },
+} as const;
+const SHOW_PERSONA_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["name"],
+  properties: { name: { type: "string", minLength: 1 } },
+} as const;
+const SHOW_PERSONA_OUTPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["name"],
+  properties: {
+    name: { type: "string" },
+    role: { type: "string" },
+    model: { type: "string" },
+    description: { type: "string" },
+    owner: { type: "string" },
+    persona: { type: "string" },
+    error: { type: "string" },
+  },
+} as const;
+
 /** `launch` input. `spec` is the OPTIONAL inline resolved launch spec a REMOTE manifest deploy
  *  pushes when the serving manager lives in another checkout or host (`spawn -f` / `up -f`; the
  *  local form still sends only the runId and the manager derives `.cotal/run/<runId>.json`
@@ -350,6 +388,8 @@ const ROWS: CommandRow[] = [
   { name: "input", capability: "manager.lifecycle", input: INPUT_INPUT_SCHEMA, output: INPUT_OUTPUT_SCHEMA, targeted: true, modes: ["owner", "any"], handler: "input" },
   { name: "stop", capability: "manager.self", input: GRACEFUL_INPUT_SCHEMA, output: STOP_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "stopSelf" },
   { name: "define-persona", capability: "manager.persona", input: PERSONA_INPUT_SCHEMA, output: PERSONA_OUTPUT_SCHEMA, targeted: false, handler: "definePersona" },
+  { name: "list-personas", capability: "manager.read", input: VOID_SCHEMA, output: LIST_PERSONAS_OUTPUT_SCHEMA, targeted: false, handler: "listPersonas" },
+  { name: "show-persona", capability: "manager.read", input: SHOW_PERSONA_INPUT_SCHEMA, output: SHOW_PERSONA_OUTPUT_SCHEMA, targeted: false, handler: "showPersona" },
   { name: "purge", capability: "manager.admin", input: PURGE_INPUT_SCHEMA, output: PURGE_OUTPUT_SCHEMA, targeted: false, handler: "purge" },
   { name: "launch", capability: "manager.admin", input: LAUNCH_INPUT_SCHEMA, output: LAUNCH_OUTPUT_SCHEMA, targeted: false, handler: "launch" },
   { name: "resume-preserved", capability: "manager.admin", input: RESUME_INPUT_SCHEMA, output: OPEN_OBJECT_SCHEMA, targeted: false, handler: "resumePreserved" },
@@ -402,12 +442,9 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  covered that whole branch: when the journal-action work lands, its `action` marker and
  *  `readinessDeadlineMs` declaration join revision 6 rather than minting one of their own.
  *
- *  7 = the `input` command (C3): typing into a running seat's terminal without holding a session.
- *  A NEW SERVED COMMAND is what a revision is for, and it cannot fold into 6: a caller's
- *  `describe` reads this document to learn what the responder serves, so a surface that grew
- *  while the number stood still would leave a cached descriptor naming a command set that is no
- *  longer the served one. (Revision 6's reservation is for fields on commands it ALREADY
- *  declares, which is the opposite case.) */
+ *  8 = `list-personas` / `show-persona` (#402): the mesh-side read of the persona catalog. A NEW
+ *  SERVED COMMAND is what a revision is for, and it cannot fold into 7: a caller's `describe`
+ *  reads this document to learn what the responder serves. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -425,7 +462,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 7,
+    revision: 8,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({
@@ -438,6 +475,17 @@ export function managerClusterDocument(): {
       outputDigest: COMPILED[r.name].output.closureDigest,
     })),
   };
+}
+
+/** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */
+export function managerShippedSurface(): { revision: number; commandCount: number; names: string[] } {
+  const document = managerClusterDocument();
+  const names = document.commands.map((c) => c.name);
+  const compiledCount = Object.keys(MANAGER_CONTRACTS).length;
+  if (names.length !== compiledCount) {
+    throw new Error(`manager cluster document declares ${names.length} commands but MANAGER_CONTRACTS compiles ${compiledCount}`);
+  }
+  return { revision: document.revision, commandCount: names.length, names };
 }
 
 /** The two-digest §13.7 content addressing for the manager document: the registered CLOSURE digest
@@ -480,6 +528,8 @@ export interface ManagerServiceHandlers {
   input(ctx: EpServeContext): unknown | Promise<unknown>;
   stopSelf(ctx: EpServeContext): unknown | Promise<unknown>;
   definePersona(ctx: EpServeContext): unknown | Promise<unknown>;
+  listPersonas(ctx: EpServeContext): unknown | Promise<unknown>;
+  showPersona(ctx: EpServeContext): unknown | Promise<unknown>;
   purge(ctx: EpServeContext): unknown | Promise<unknown>;
   launch(ctx: EpServeContext): unknown | Promise<unknown>;
   resumePreserved(ctx: EpServeContext): unknown | Promise<unknown>;
