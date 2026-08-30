@@ -453,7 +453,7 @@ export async function runJcodeHost(): Promise<void> {
     }
     turnActive = true;
     surfacedIds = [...ids];
-    void agent.setStatus("working").catch(() => {});
+    publishInboundHealth();
     let turnClient: JcodeClient | undefined;
     try {
       turnClient = client;

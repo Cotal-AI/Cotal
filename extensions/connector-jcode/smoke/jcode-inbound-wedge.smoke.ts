@@ -151,18 +151,52 @@ try {
   });
   operator.on("error", () => {});
   let peerId: string | undefined;
+  let peerStatus = "";
   let peerActivity = "";
-  operator.on("presence", (event: { type: string; presence: { card: { id: string; name: string }; activity?: string } }) => {
+  let peerPresenceAt = 0;
+  operator.on("presence", (event: { type: string; presence: { card: { id: string; name: string }; status?: string; activity?: string } }) => {
     if (event.type !== "offline" && event.presence.card.name === "jcodepeer") {
       peerId = event.presence.card.id;
+      peerStatus = event.presence.status ?? "";
       peerActivity = event.presence.activity ?? "";
+      peerPresenceAt = Date.now();
     }
   });
   await operator.start();
 
   const busyMs = 8_000;
 
-  // --- Cell A: advisory idle during a still-open Cotal-owned run() ---
+  // --- Cell A: the initial automatic batch stays visible while its Cotal-owned run() is open ---
+  child = await spawnHost({ FAKE_JCODE_TURN_DELAY_MS: String(busyMs) }, join(root, "ci.sock"));
+  await waitFor("readiness is definitively idle with no stale activity before the initial-drive cell", () =>
+    peerId && peerStatus === "idle" && peerActivity === "" ? peerId : undefined,
+  );
+
+  const initialSentAt = Date.now();
+  await operator.unicast(peerId!, "OPEN_LONG_TURN_INITIAL_1075");
+  await waitFor("the recipient's initial long Harness turn", () =>
+    turnRequests().find((entry) => String(entry.frame?.content).includes("OPEN_LONG_TURN_INITIAL_1075")),
+  );
+  const initialActivity = await waitFor(
+    "presence activity names the initial automatic inbound batch while its run is open (#1075)",
+    () => (peerPresenceAt >= initialSentAt && /^inbound: 1 automatic queued, oldest \d+s$/.test(peerActivity) ? peerActivity : undefined),
+    3_000,
+  );
+  check(
+    "presence activity names the initial automatic inbound batch while its run is open (#1075)",
+    Date.now() - initialSentAt < busyMs && /^inbound: 1 automatic queued, oldest \d+s$/.test(initialActivity),
+    { elapsedMs: Date.now() - initialSentAt, peerActivity: initialActivity },
+  );
+
+  await stopChild(child);
+  child = undefined;
+  writeFileSync(log, "");
+  peerId = undefined;
+  peerStatus = "";
+  peerActivity = "";
+  peerPresenceAt = 0;
+
+  // --- Cell B: advisory idle during a still-open Cotal-owned run() ---
   child = await spawnHost({ FAKE_JCODE_TURN_DELAY_MS: String(busyMs), FAKE_JCODE_IDLE_DURING_TURN: "1" }, join(root, "control-a.sock"));
   await waitFor("mesh presence for the idle-during-drive cell", () => peerId);
   check("Jcode recipient is live before the idle-during-drive probe", Boolean(peerId));
@@ -193,9 +227,11 @@ try {
   child = undefined;
   writeFileSync(log, "");
   peerId = undefined;
+  peerStatus = "";
   peerActivity = "";
+  peerPresenceAt = 0;
 
-  // --- Cell B: TUI-owned working session, host not inside drive() ---
+  // --- Cell C: TUI-owned working session, host not inside drive() ---
   child = await spawnHost({ FAKE_JCODE_TURN_DELAY_MS: "10", FAKE_JCODE_EXTERNAL_TURN_MS: String(busyMs) }, join(root, "control-b.sock"));
   await waitFor("mesh presence for the TUI-owned cell", () => peerId);
   await waitFor("the fake Harness to mark a TUI-owned working session", () =>
@@ -240,7 +276,7 @@ try {
     repeatedTurns: repeated.length,
   });
 
-  console.log(`\nJCODE INBOUND WEDGE PASSED (${pass} checks)`);
+  console.log(`\nJCODE INBOUND WEDGE PASSED (${pass} checks passed)`);
 } catch (error) {
   if (child && (child.exitCode !== null || child.signalCode !== null))
     process.stderr.write(

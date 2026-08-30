@@ -3,7 +3,7 @@
   "guard": "a directed DM reaching a busy Jcode session is accepted through soft_interrupt even when the host is not inside drive() or session_status pulses idle, and a growing automatic queue is published on presence activity",
   "command": "pnpm smoke:jcode-inbound-wedge",
   "progressPattern": "✓",
-  "minTicks": 4,
+  "minTicks": 5,
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/inbound-wedge.json",
   "why": [
     "The remaining #1075 seats were busy without a Cotal-owned drive(), or had session_status idle",
@@ -12,7 +12,8 @@
     "",
     "M1 keeps Cotal-owned drive() steering but restores the TUI-owned skip (sessionBusy -> driving).",
     "M2 restores the inner turnActive abort so an advisory idle pulse during drive() drops the DM.",
-    "M3 keeps delivery but clears the presence activity string, so the queue is invisible from outside."
+    "M3 keeps delivery but clears the presence activity string, so the queue is invisible from outside.",
+    "M4 restores the initial drive's bare working status, so its first uncommitted batch is invisible."
   ],
   "mutations": [
     {
@@ -20,21 +21,32 @@
       "file": "extensions/connector-jcode/src/host.ts",
       "find": "    if (sessionBusy()) {\n      if (directed) void steerPending();",
       "replace": "    if (driving) {\n      if (directed) void steerPending();",
-      "expectRed": "a DM during a TUI-owned working session reaches the recipient session (#1075)"
+      "expectRed": "a DM during a TUI-owned working session reaches the recipient session (#1075)",
+      "cell": "a DM during a TUI-owned working session reaches the recipient session (#1075)"
     },
     {
       "name": "M2 abort steer when session_status reports idle",
       "file": "extensions/connector-jcode/src/host.ts",
       "find": "        if (!items.length || !sessionBusy()) return;",
       "replace": "        if (!items.length || !turnActive) return;",
-      "expectRed": "a DM during advisory idle inside a live Cotal-owned run reaches the recipient session (#1075)"
+      "expectRed": "a DM during advisory idle inside a live Cotal-owned run reaches the recipient session (#1075)",
+      "cell": "a DM during advisory idle inside a live Cotal-owned run reaches the recipient session (#1075)"
     },
     {
       "name": "M3 deliver but do not publish inbound queue activity",
       "file": "extensions/connector-jcode/src/host.ts",
       "find": "    const activity = `inbound: ${queued} automatic queued, oldest ${ageS}s`;",
       "replace": "    const activity = \"\";",
-      "expectRed": "presence activity names the growing automatic inbound queue (#1075)"
+      "expectRed": "presence activity names the growing automatic inbound queue (#1075)",
+      "cell": "presence activity names the growing automatic inbound queue (#1075)"
+    },
+    {
+      "name": "M4 do not publish the initial drive batch",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    turnActive = true;\n    surfacedIds = [...ids];\n    publishInboundHealth();",
+      "replace": "    turnActive = true;\n    surfacedIds = [...ids];\n    void agent.setStatus(\"working\").catch(() => {});",
+      "expectRed": "presence activity names the initial automatic inbound batch while its run is open (#1075)",
+      "cell": "presence activity names the initial automatic inbound batch while its run is open (#1075)"
     }
   ]
 }
