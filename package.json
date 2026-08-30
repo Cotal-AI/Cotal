@@ -457,7 +457,7 @@
     "smoke:agent-skills": "pnpm --filter @cotal-ai/workspace... build && tsx implementations/cli/smoke/agent-skills.smoke.ts",
     "smoke:ext-seed-help": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/ext-seed-help.smoke.ts",
     "smoke:seed": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/seed.smoke.ts",
-    "smoke:seed-migration-provenance": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/seed-migration-provenance.smoke.ts",
+    "smoke:seed-migration-provenance": "pnpm --filter cotal-ai... build && pnpm --dir bin seeded-connectors && tsx implementations/cli/smoke/seed-migration-provenance.smoke.ts",
     "smoke:seed-tarball:live": "pnpm --filter cotal-ai... build && tsx bin/smoke/seed-tarball-live.smoke.ts",
     "smoke:down-manifest-usermode:live": "tsx implementations/auth/smoke/down-manifest-usermode.smoke.ts",
     "smoke:secret-store": "tsx packages/workspace/smoke/secret-store.smoke.ts",
