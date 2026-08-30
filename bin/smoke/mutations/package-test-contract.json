@@ -49,12 +49,12 @@
       "cell": "✗ FAIL: cotal-ai: filtered test command executes at least one counted assertion"
     },
     {
-      "name": "workspace discovery aliases the pinned inventory, so an omitted package can disappear from both sides",
+      "name": "workspace discovery aliases the pinned inventory, so a new package under an existing pattern stays invisible",
       "file": "bin/smoke/package-test-contract.smoke.ts",
-      "find": "const discovered = discoverWorkspacePackages();",
-      "replace": "const discovered = Object.fromEntries(Object.entries(discoverWorkspacePackages()).filter(([name]) => name !== \"@cotal-ai/delivery\"));",
-      "expectRed": "✗ FAIL: independent workspace discovery exactly matches the pinned package inventory",
-      "cell": "✗ FAIL: independent workspace discovery exactly matches the pinned package inventory"
+      "find": "const withControl = discoverWorkspacePackages();",
+      "replace": "const withControl = WORKSPACE_PACKAGE_DIRS;",
+      "expectRed": "✗ FAIL: independent workspace discovery notices a newly added package under an existing workspace pattern",
+      "cell": "✗ FAIL: independent workspace discovery notices a newly added package under an existing workspace pattern"
     }
   ]
 }

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const ROOT = join(import.meta.dirname, "..", "..");
@@ -96,6 +96,22 @@ const pinnedEntries = Object.entries(WORKSPACE_PACKAGE_DIRS).sort(([a], [b]) => 
 const discoveredEntries = Object.entries(discovered).sort(([a], [b]) => a.localeCompare(b));
 check("the pinned workspace inventory contains exactly 26 packages", pinnedEntries.length === 26, pinnedEntries);
 check("independent workspace discovery exactly matches the pinned package inventory", JSON.stringify(discoveredEntries) === JSON.stringify(pinnedEntries), { discoveredEntries, pinnedEntries });
+const discoveryControl = join(ROOT, "packages", ".package-test-contract-discovery-control");
+try {
+  mkdirSync(discoveryControl);
+  writeFileSync(join(discoveryControl, "package.json"), JSON.stringify({
+    name: "@cotal-ai/package-test-contract-discovery-control",
+    version: "0.0.0",
+    private: true,
+    scripts: { test: "node -e \"console.log('  ✓ discovery control executes')\"" },
+  }));
+  const withControl = discoverWorkspacePackages();
+  check("independent workspace discovery notices a newly added package under an existing workspace pattern",
+    withControl["@cotal-ai/package-test-contract-discovery-control"] === "packages/.package-test-contract-discovery-control",
+    withControl);
+} finally {
+  rmSync(discoveryControl, { recursive: true, force: true });
+}
 check("the pinned affected package set contains exactly 11 packages", AFFECTED.length === 11, AFFECTED);
 
 for (const [name, dir] of Object.entries(WORKSPACE_PACKAGE_DIRS)) {
