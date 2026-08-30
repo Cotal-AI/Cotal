@@ -1,0 +1,16 @@
+{
+  "suite": "extensions/connector-claude-code/smoke/setup-provider.smoke.ts",
+  "guard": "the Claude connector declares the connector-owned setup provider it self-registers",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm exec tsx extensions/connector-claude-code/smoke/setup-provider.smoke.ts",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/setup-provider.json",
+  "mutations": [
+    {
+      "name": "Claude connector stops declaring its setup provider",
+      "file": "extensions/connector-claude-code/src/extension.ts",
+      "find": "  setup: { kind: \"connector-setup\", name: \"claude\" },",
+      "replace": "  setup: undefined,",
+      "expectRed": "Claude connector declares its provider ref",
+      "cell": "Claude connector declares its provider ref"
+    }
+  ]
+}

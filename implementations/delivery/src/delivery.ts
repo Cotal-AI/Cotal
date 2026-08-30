@@ -15,7 +15,7 @@ import {
 } from "@cotal-ai/core";
 import { DELIVERY_CREDS_KIND, FsSecretStore, authDir, deliveryCredsKey, findCotalRoot, loadSpaceAuth, segmentedKey, soleSpaceOf, workspaceSecretStore } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
-import { executeEviction, executePlaneLiveness, executePrincipalLiveness, type ScanTarget } from "./evict-exec.js";
+import { executeEviction, executePlaneLiveness, executePrincipalLiveness, validateScanTargetAdmission, type ScanTarget } from "./evict-exec.js";
 
 type Values = Record<string, string | undefined>;
 
@@ -205,6 +205,10 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
       ? { secrets: workspaceSecretStore(scanRoot), space, injected: false, root: scanRoot }
       : { secrets: store, space, injected: true },
   };
+  // The singleton lease is admission to serve this space, so the daemon must prove its scan tenancy
+  // before it can claim that slot. A wrong-root process previously acquired and renewed lease.0,
+  // then refused every admin-rail request on the account mismatch while blocking the valid daemon.
+  await validateScanTargetAdmission(scanTarget);
   console.error(`• delivery: $SYS sweeps bound to ${join(scanTarget.root, ".cotal")} (account ${scanTarget.expectedAccount})`);
 
   const ep = new CotalEndpoint({

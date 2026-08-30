@@ -4,13 +4,14 @@
 
 The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` and rendered onto each host's native tool API (an MCP server for [Claude Code](connect-claude.md) and [Codex](connect-codex.md), native plugin tools for [OpenCode](connect-opencode.md), [Hermes](connect-hermes.md), and [pi](connect-pi.md)), so the surface cannot drift across connectors. Argument defaults shown below are rendered for an agent subscribed to `general`; an agent reads only the channels its persona lists, so one that lists none has no default channel at all and `cotal_send` requires an explicit `channel`. Channel-scoped calls are bounded by your ACLs ([channels & permissions](channels-and-permissions.md)).
 
-`cotal_orientation` is the entry point. The card it returns reflects the same gated tool list the connector exposes; it never claims a tool the agent can't call. In auth mode the manager-op tools (`cotal_spawn`, `cotal_persona`) are injected only for personas declaring `capabilities: [spawn]` ([identity & auth](identity-and-auth.md)).
+`cotal_orientation` is the entry point. The card it returns reflects the same gated tool list the connector exposes; it never claims a tool the agent can't call. In auth mode the manager-op tools (`cotal_spawn`, `cotal_persona`, `cotal_personas`) are injected only for personas declaring `capabilities: [spawn]` ([identity & auth](identity-and-auth.md)).
 
 **Arguments are closed.** Every tool accepts only the arguments listed for it and REFUSES any other key, including tools that take no arguments at all. An unlisted key is an error. A call that supplies an identity (`owner`, `actor`, `caller`) is turned away before anything runs. The identity a tool acts under comes from the connector's own credential and can never be supplied as an argument. Every refusal names the offending keys, but its shape depends on who refuses: where the host validates the published schema (Claude Code, Codex, pi) you get that host's own schema error, and where it does not (OpenCode, Hermes) the connector refuses at its own dispatch and additionally lists the arguments the tool does accept, or says it takes none. In both cases the call did not run.
 
 | Tool | Does | Side-effect |
 |---|---|---|
 | [`cotal_orientation`](#cotalorientation) | orient (who you are & what you can do) | read-only |
+| [`cotal_connection_status`](#cotalconnectionstatus) | connection status | read-only |
 | [`cotal_docs`](#cotaldocs) | read the docs (version-exact) | read-only |
 | [`cotal_roster`](#cotalroster) | who's present | read-only |
 | [`cotal_inbox`](#cotalinbox) | read incoming messages | clears only the messages it returns (nothing at all when peek is true) |
@@ -27,6 +28,7 @@ The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` an
 | [`cotal_feedback`](#cotalfeedback) | send beta feedback | sends data to an external HTTPS intake (network egress) |
 | [`cotal_despawn`](#cotaldespawn) | stop a teammate | stops a teammate (or yourself) |
 | [`cotal_persona`](#cotalpersona) | define a persona | writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce` |
+| [`cotal_personas`](#cotalpersonas) | list or show personas | read-only |
 | [`cotal_reconnect`](#cotalreconnect) | reconnect to the mesh | tears down and rebuilds your own mesh connection |
 
 ## `cotal_orientation`
@@ -38,6 +40,18 @@ Your orientation card: who you are (name/role/space), the channels you can read 
 - **Side-effect:** read-only.
 - **Available:** always.
 - Call it first; safe to re-check anytime.
+
+No arguments.
+
+## `cotal_connection_status`
+
+*connection status*
+
+Report this session's mesh connection as one of five states, plus the raw facts it is derived from. `ready` is bound with a live transport. `degraded` is bound while the transport underneath is DOWN, so sends queue or fail until the client reconnects; this is the state that needs attention. `connecting` is a live transport whose Cotal bind has not finished. `disconnected` is neither. `stopped` means this session was shut down deliberately and is terminal, which is not a fault. Also reports the buffered inbox count and the time of the latest successful non-empty inbox drain when one has occurred. A retained failure is reported as `connectionIssue` while it is the CURRENT reason, and as `lastConnectionIssue` on a stopped session, where it is a post-mortem rather than a live problem. Also reports how many automatic (connector-managed) deliveries are still queued and the local receive time of the oldest of those, so a seat that cannot be steered can say so. Read-only and local: it reads this session's MeshAgent directly and does not call the manager or the broker.
+
+- **Side-effect:** read-only.
+- **Available:** always.
+- Reads this session's MeshAgent directly. `lastDrainedAt` is omitted until a non-empty inbox drain has successfully committed.
 
 No arguments.
 
@@ -286,6 +300,20 @@ Define a new persona and save it as config (the manager writes .cotal/agents/<na
 | `prompt` | string | yes | The persona: an appended system prompt describing who this agent is. |
 | `model` | string | no | Optional model override (e.g. opus, sonnet). |
 | `announce` | string | no | Optional channel to post a one-line note on once the persona is saved. Omit it to keep the definition private to the manager's persona catalog. Name the channel your team is actually working on, not `general`: a peer that did not ask for this persona has no way to judge whether spawning it is wanted, and a broadcast soliciting spawns from an unfamiliar principal gives peers no reason to trust the request. Your post ACL applies as it does to any other message. |
+
+## `cotal_personas`
+
+*list or show personas*
+
+Read the workspace persona catalog the manager owns (.cotal/agents). Omit `name` to list spawnable persona names (role, model, and a one-line description when you own the file). Pass `name` to show one card you own, including the persona body. Same ownership as cotal_persona: a file you do not own lists as a name only, while unauthorized, unknown, and unparseable shows are all not-found. Use this to see whether a name is taken before cotal_persona, or what a teammate's persona says, without shelling out.
+
+- **Side-effect:** read-only.
+- **Available:** capability-gated like cotal_spawn.
+- Omit `name` to list spawnable names; pass `name` to show one card you own. Role, model, and description ride only on files you own; show of a name you do not own is not-found.
+
+| Argument | Type | Required | Meaning |
+|---|---|---|---|
+| `name` | string | no | Persona to show. Omit to list the catalog. |
 
 ## `cotal_reconnect`
 

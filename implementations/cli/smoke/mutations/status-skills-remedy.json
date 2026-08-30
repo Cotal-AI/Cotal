@@ -1,0 +1,48 @@
+{
+  "suite": "implementations/cli/smoke/status-skills-remedy.smoke.ts",
+  "guard": "status skills rows recommend setup --skills, and its generic dispatch contains only provider and cross-vendor reconcile",
+  "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:status-skills-remedy",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/status-skills-remedy.json",
+  "why": [
+    "A status surface that names unscoped cotal setup as the skills remedy routes a read-path user into persona, plugin, and onboard writes.",
+    "Each mutation is compile-clean and unique in the named file. Restoring the unscoped remedy, adding persona setup to the skills-only dispatch, or combining --skills with --full must redden the named cell."
+  ],
+  "mutations": [
+    {
+      "name": "S1 restore unscoped Claude skills remedy",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "return c.yellow(`${skills.version ? `v${skills.version} \u2260 v${cliVersion()} \u00b7 ` : \"\"}stale \u00b7 ${displayCmd()} setup --skills`);",
+      "replace": "return c.yellow(`${skills.version ? `v${skills.version} \u2260 v${cliVersion()} \u00b7 ` : \"\"}stale \u00b7 ${displayCmd()} setup`);",
+      "expectRed": "stale Claude skills recommend setup --skills",
+      "cell": "stale Claude skills recommend setup --skills",
+      "note": "Restores the issue's Claude skills row. Typecheck stays green. The status subprocess still prints the header."
+    },
+    {
+      "name": "S2 restore unscoped .agents skills remedy",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "return c.yellow(`${label} \u00b7 ${displayCmd()} setup --skills`);",
+      "replace": "return c.yellow(`${label} \u00b7 ${displayCmd()} setup`);",
+      "expectRed": "stale .agents skills recommend setup --skills",
+      "cell": "stale .agents skills recommend setup --skills",
+      "note": "Restores the issue's Skills (.agents) row while leaving the Claude row scoped."
+    },
+    {
+      "name": "S3 add persona setup to the skills-only dispatch",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "async function runSkillsOnly(): Promise<void> {\n  await reconcileConnectorSkills();\n  seedAgentSkills();",
+      "replace": "async function runSkillsOnly(): Promise<void> {\n  await reconcileConnectorSkills();\n  seedDefaultAgent();\n  seedAgentSkills();",
+      "expectRed": "setup --skills dispatches only provider and cross-vendor skills reconcile",
+      "cell": "setup --skills dispatches only provider and cross-vendor skills reconcile",
+      "note": "Adds an unrelated persona write to the scoped dispatch; the source-shape cell names it."
+    },
+    {
+      "name": "S4 allow --skills with --full",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "    if (values.full || values.demo) throw new Error(\"--skills cannot be combined with --full or --demo\");",
+      "replace": "    if (false && (values.full || values.demo)) throw new Error(\"--skills cannot be combined with --full or --demo\");",
+      "expectRed": "setup --skills --full is refused",
+      "cell": "setup --skills --full is refused",
+      "note": "Compile-clean no-op of the combination fence. First-run --full then writes personas."
+    }
+  ]
+}

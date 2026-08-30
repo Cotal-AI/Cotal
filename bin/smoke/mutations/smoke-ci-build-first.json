@@ -1,0 +1,23 @@
+{
+  "suite": "bin/smoke/ci-suites.smoke.ts",
+  "guard": "the smoke:ci entrypoint builds before starting the shard",
+  "command": "pnpm smoke:ci-suites",
+  "completionMarker": "SUITE COMPLETE",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/smoke-ci-build-first.json",
+  "why": [
+    "Package-importing smoke suites resolve through dist/. Without a build at the root smoke:ci entrypoint, early cells grade whatever artifacts were already present in the checkout.",
+    "",
+    "The mutation restores the ambient-dist entrypoint and must redden the named build-before-shard assertion. The anchor is the unique package script line, with no comment text in the match."
+  ],
+  "mutations": [
+    {
+      "name": "restore the smoke:ci entrypoint that starts its shard against ambient dist",
+      "file": "package.json",
+      "find": "    \"smoke:ci\": \"pnpm build && node bin/smoke/shard.mjs 0 1\",",
+      "replace": "    \"smoke:ci\": \"node bin/smoke/shard.mjs 0 1\",",
+      "expectRed": "✗ FAIL: smoke:ci builds before starting its shard",
+      "cell": "smoke:ci builds before starting its shard"
+    }
+  ],
+  "grades": "tool"
+}

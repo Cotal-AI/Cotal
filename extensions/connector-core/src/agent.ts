@@ -21,6 +21,7 @@ import {
   type MessageMeta,
   type Presence,
   type PresenceStatus,
+  type TransportState,
   type AttentionMode,
   type ChannelMode,
   type CotalMessage,
@@ -124,6 +125,8 @@ interface Pending {
   ack: () => void;
   /** Receive-time delivery class. Quiet ambient stays pull-only even if the mode later changes. */
   pullOnly: boolean;
+  /** Local receive time. Distinct from `item.ts`, which is the sender's stamp. */
+  receivedAt: number;
 }
 
 /** Where a session's focus-mode recall has been read to: a timestamp plus the id that breaks its ties. */
@@ -199,6 +202,16 @@ function ingestDedupKey(id: string): string | undefined {
  * layer to wake the session now (the Stop→idle flush of held messages); `"error"` (Error) for
  * endpoint faults.
  */
+/**
+ * The five states a caller has to tell apart, derived in one place so every consumer agrees.
+ *
+ * `degraded` is the one that matters and the one a single boolean gets wrong: the endpoint is bound
+ * but the socket underneath it is down, so sends queue or fail while the client reconnects. It is
+ * NOT the same as `disconnected`, and it is not a stopped session either. `stopped` is terminal and
+ * is not a fault at all.
+ */
+export type ConnectionState = "ready" | "degraded" | "connecting" | "disconnected" | "stopped";
+
 export class MeshAgent extends EventEmitter {
   readonly ep: CotalEndpoint;
   readonly config: AgentConfig;
@@ -231,6 +244,12 @@ export class MeshAgent extends EventEmitter {
   private protectedDropIds = new Set<string>();
   private dropUnsafe = false;
   private _connected = false;
+  /** Raw NATS transport liveness, separate from `_connected` (the full Cotal bind/readiness). */
+  private _transportConnected = false;
+  /** Wall-clock time of the latest inbox drain that actually committed at least one delivery.
+   *  This is measured only after the backing acknowledgements succeed, never inferred from a read
+   *  attempt or from an empty inbox. */
+  private _lastInboxDrainedAt?: number;
   /** Latest connection failure, retained until the endpoint binds so a bounded readiness gate can
    * explain why an otherwise healthy host never joined the mesh. */
   private lastConnectionError?: string;
@@ -262,7 +281,7 @@ export class MeshAgent extends EventEmitter {
   private recvKeySeq = 0;
   private focusExcludedIds = new Map<string, string>();
   private focusRecallUnsafeChannels = new Set<string>();
-  private stopping = false;
+  private _stopping = false;
 
   constructor(config: AgentConfig) {
     super();
@@ -305,10 +324,24 @@ export class MeshAgent extends EventEmitter {
     });
     this.ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => this.ingest(m, d, meta));
     this.ep.on("error", (e: Error) => this.handleEndpointError(e));
+    // Two guards, and the comments sit out here so neither anchors a mutation on prose. An
+    // in-flight initial bind or rebuild can finish after stop() cleared local state, and shutdown is
+    // terminal for this MeshAgent, so a late endpoint edge must not resurrect transport. Separately,
+    // nats.js and clean shutdown can both confirm the same edge; a duplicate carries no state change
+    // and must not wake consumers or let an old confirmation look like a new outage.
+    this.ep.on("transport", (e: TransportState) => {
+      if (this._stopping) return;
+      if (this._transportConnected === e.connected) return;
+      this._transportConnected = e.connected;
+      this.emit("transport", e);
+    });
     // The endpoint's (re)binds are the single source of truth for connectedness: this fires on
     // initial start, manual reconnect, AND the background self-heal — so a recovery the endpoint
     // did on its own can't leave us thinking we're offline (which would skip stop() → leak).
+    // Same stop race as the transport handler above: a late connectAndBind completion is not a new
+    // session. Kept out of the block so the guard can be anchored on code alone.
     this.ep.on("connection", (e: { connected: boolean }) => {
+      if (this._stopping) return;
       this._connected = e.connected;
       if (e.connected) {
         this.lastConnectionError = undefined;
@@ -326,9 +359,35 @@ export class MeshAgent extends EventEmitter {
     return this._connected;
   }
 
-  /** The latest safe diagnostic for a connection that has not become live yet. */
+  /** Whether this session's current NATS transport is live, independent of full endpoint readiness. */
+  get transportConnected(): boolean {
+    return this._transportConnected;
+  }
+
+  /** Latest pre-bind failure. A successful bind clears it; stop preserves it for post-mortem diagnosis. */
   get connectionIssue(): string | undefined {
     return this.lastConnectionError;
+  }
+
+  /** The latest successful, non-empty inbox drain in this session. */
+  get lastInboxDrainedAt(): number | undefined {
+    return this._lastInboxDrainedAt;
+  }
+
+  /** Whether {@link stop} has been called. Terminal, and never cleared: a stopped session does not
+   *  serve again. This is the ONLY way to tell a deliberate shutdown from a lost connection, because
+   *  `stop()` clears readiness and transport together, so those two read identically in both cases. */
+  get stopping(): boolean {
+    return this._stopping;
+  }
+
+  /** The three liveness facts combined, in one place. Every combination maps, so a caller never has
+   *  to guess what an unlisted pair means, and a caller that disagrees with this reading can still
+   *  read {@link connected}, {@link transportConnected} and {@link stopping} directly. */
+  get connectionState(): ConnectionState {
+    if (this._stopping) return "stopped";
+    if (this._connected) return this._transportConnected ? "ready" : "degraded";
+    return this._transportConnected ? "connecting" : "disconnected";
   }
 
   /** Wait for the endpoint's real post-bind connection signal. `start()` deliberately stays
@@ -372,7 +431,7 @@ export class MeshAgent extends EventEmitter {
   }
 
   private async connectLoop(retryMs: number): Promise<void> {
-    while (!this.stopping && !this._connected) {
+    while (!this._stopping && !this._connected) {
       try {
         await this.ep.start();
         // _connected is set by the endpoint's "connection" event (fired inside start()), not here.
@@ -381,6 +440,10 @@ export class MeshAgent extends EventEmitter {
         );
       } catch (e) {
         const error = e instanceof Error ? e : new Error(String(e));
+        // stop() can win while the initial endpoint start is still pending. A rejection arriving
+        // after that terminal decision is teardown noise, not a new connectionIssue for the stopped
+        // session, and there is no next retry to explain or sleep toward.
+        if (this._stopping) return;
         this.lastConnectionError = error.message;
         this.log(`mesh unreachable (${error.message}); retrying in ${retryMs}ms`);
         await sleep(retryMs);
@@ -389,7 +452,14 @@ export class MeshAgent extends EventEmitter {
   }
 
   async stop(): Promise<void> {
-    this.stopping = true;
+    this._stopping = true;
+    // stop() is a local terminal fact. Do not wait for an endpoint event that intentionally ignores
+    // its own stopped close, or leave a cleanly stopped session reporting either state as live.
+    this._connected = false;
+    if (this._transportConnected) {
+      this._transportConnected = false;
+      this.emit("transport", { connected: false });
+    }
     // Unconditional: a background self-heal can flip _connected without us, so a `_connected`
     // guard could skip the stop and leak the live connection/heartbeat/supervisor. ep.stop() is
     // idempotent (early-returns once stopped), so calling it when already-down is a noop.
@@ -402,7 +472,7 @@ export class MeshAgent extends EventEmitter {
    *  interruptible. Returns a one-line status for the caller to surface (e.g. the
    *  cotal_reconnect tool → TUI); on failure the endpoint keeps retrying in the background. */
   async reconnect(): Promise<{ ok: boolean; message: string }> {
-    if (this.stopping) {
+    if (this._stopping) {
       return {
         ok: false,
         message: "This session is shutting down, so its Cotal mesh connection cannot be reconnected. Start a new session instead.",
@@ -513,7 +583,7 @@ export class MeshAgent extends EventEmitter {
   }
 
   private buffer(item: InboxItem, ack: () => void, pullOnly: boolean): void {
-    this.inbox.push({ item, ack, pullOnly });
+    this.inbox.push({ item, ack, pullOnly, receivedAt: Date.now() });
     if (this.inbox.length > MAX_INBOX) {
       // Prefer sacrificing pull-only backlog so it cannot crowd out DMs/mentions. Overflow remains
       // bounded local loss: evicted items are acked without being marked handled.
@@ -718,7 +788,9 @@ export class MeshAgent extends EventEmitter {
     // acking only the selected — silent loss by selection. Identity removes exactly what was taken.
     const taken = new Set(selected);
     this.inbox = this.inbox.filter((p) => !taken.has(p));
-    return this.commitPending(selected);
+    const items = this.commitPending(selected);
+    if (items.length) this._lastInboxDrainedAt = Date.now();
+    return items;
   }
 
   /** Ack exact surfaced deliveries without assuming they still form the physical inbox prefix.
@@ -740,6 +812,7 @@ export class MeshAgent extends EventEmitter {
     }
     this.inbox = this.inbox.filter((p) => !present.has(p.item.recvKey));
     const items = this.commitPending(selected);
+    if (items.length) this._lastInboxDrainedAt = Date.now();
     for (const id of requested) {
       // A MINTED key (an id-less delivery) is never handled-authority: its wire id is "", which
       // markHandled already refuses, so skipping it here is the same at-least-once stance rather
@@ -785,6 +858,16 @@ export class MeshAgent extends EventEmitter {
 
   inboxCount(scope: InboxScope = "all"): number {
     return scope === "all" ? this.inbox.length : this.inbox.filter((p) => this.inScope(p, scope)).length;
+  }
+
+  /** Local receive time of the oldest still-buffered automatic delivery, if any. */
+  oldestAutomaticReceivedAt(): number | undefined {
+    let oldest: number | undefined;
+    for (const pending of this.inbox) {
+      if (pending.pullOnly) continue;
+      if (oldest === undefined || pending.receivedAt < oldest) oldest = pending.receivedAt;
+    }
+    return oldest;
   }
 
   /**
@@ -1262,6 +1345,19 @@ export class MeshAgent extends EventEmitter {
     return reply;
   }
 
+  /** Mesh-side persona catalog list: name, role, model, description, scoped by the same
+   *  ownership rule as `definePersona`. */
+  async listPersonas(): Promise<ControlReply> {
+    await this.requireConnected();
+    return this.managerInvoke("list-personas", undefined);
+  }
+
+  /** Mesh-side persona catalog show of one card. Unauthorized / missing names are not-found. */
+  async showPersona(name: string): Promise<ControlReply> {
+    await this.requireConnected();
+    return this.managerInvoke("show-persona", { name });
+  }
+
   // ---- presence ------------------------------------------------------------
 
   /** The full roster, including ourselves. */
@@ -1478,7 +1574,10 @@ export class MeshAgent extends EventEmitter {
    * deduplicating; otherwise every `_71`, `_72`, ... would look like a new fault. */
   private handleEndpointError(error: Error): void {
     const now = Date.now();
-    this.lastConnectionError = error.message;
+    // connectionIssue is the bounded readiness diagnostic documented above: retain failures only
+    // while the endpoint has not bound. Post-bind consumer/permission faults are still logged, but
+    // presenting one as the current connection failure after readiness succeeded is stale and false.
+    if (!this._connected && !this._stopping) this.lastConnectionError = error.message;
     const fingerprint = error.message.replace(/oc_[A-Za-z0-9]+_\d+/g, "oc_*");
     const prior = this.endpointErrorLog.get(fingerprint);
     if (prior && now - prior.lastLoggedAt < ENDPOINT_ERROR_LOG_WINDOW_MS) {

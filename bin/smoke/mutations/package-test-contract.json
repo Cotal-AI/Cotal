@@ -1,0 +1,60 @@
+{
+  "suite": "bin/smoke/package-test-contract.smoke.ts",
+  "guard": "the pinned workspace declares package-local test intent, and each of the 11 formerly silent packages executes a counted assertion",
+  "command": "pnpm smoke:package-test-contract",
+  "completionMarker": "PACKAGE TEST CONTRACT:",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/package-test-contract.json",
+  "grades": "tool",
+  "why": [
+    "FOUR MUTATIONS. M1 removes one affected package from the pinned set, so the size assertion",
+    "catches an incomplete enumeration before any package command runs.",
+    "",
+    "M2 removes one package's test declaration and restores the original silent-success defect. The",
+    "manifest declaration cell turns red even though pnpm itself would still exit zero.",
+    "",
+    "M3 makes the count parser accept no assertion lines. Every package command still exits zero, so",
+    "only the executed-count cell can reject the vacuous green. This is the discriminating mutation:",
+    "an exit-code-only checker would survive it.",
+    "",
+    "M4 disables independent workspace discovery by making it equal the pinned map. The size cell still",
+    "passes, but the exact-set cell reddens because discovery is the control that prevents an omitted new",
+    "workspace package from disappearing out of both the loop and the expected count.",
+    "",
+    "The anchors are unique code-only spans. This config grades a self-testing repository gate, so it is",
+    "classified as a tool config rather than folded into shipped-package mutation coverage."
+  ],
+  "mutations": [
+    {
+      "name": "the affected package enumeration silently drops delivery",
+      "file": "bin/smoke/package-test-contract.smoke.ts",
+      "find": "  \"@cotal-ai/delivery\",\n] as const;",
+      "replace": "] as const;",
+      "expectRed": "✗ FAIL: the pinned affected package set contains exactly 11 packages",
+      "cell": "✗ FAIL: the pinned affected package set contains exactly 11 packages"
+    },
+    {
+      "name": "connector-core loses its test declaration and pnpm can silently succeed again",
+      "file": "extensions/connector-core/package.json",
+      "find": "    \"test\": \"tsx smoke/spawn-args.smoke.ts\",\n",
+      "replace": "",
+      "expectRed": "✗ FAIL: @cotal-ai/connector-core: declares a non-empty test script",
+      "cell": "✗ FAIL: @cotal-ai/connector-core: declares a non-empty test script"
+    },
+    {
+      "name": "the assertion counter recognizes no output, so exit-zero commands cannot prove tests ran",
+      "file": "bin/smoke/package-test-contract.smoke.ts",
+      "find": "  const executed = output.split(/\\r?\\n/).filter((line) => /^\\s*(?:✓|ok\\s{2,})/.test(line)).length;",
+      "replace": "  const executed = output.split(/\\r?\\n/).filter(() => false).length;",
+      "expectRed": "✗ FAIL: cotal-ai: filtered test command executes at least one counted assertion",
+      "cell": "✗ FAIL: cotal-ai: filtered test command executes at least one counted assertion"
+    },
+    {
+      "name": "workspace discovery aliases the pinned inventory, so an omitted package can disappear from both sides",
+      "file": "bin/smoke/package-test-contract.smoke.ts",
+      "find": "const discovered = discoverWorkspacePackages();",
+      "replace": "const discovered = Object.fromEntries(Object.entries(discoverWorkspacePackages()).filter(([name]) => name !== \"@cotal-ai/delivery\"));",
+      "expectRed": "✗ FAIL: independent workspace discovery exactly matches the pinned package inventory",
+      "cell": "✗ FAIL: independent workspace discovery exactly matches the pinned package inventory"
+    }
+  ]
+}

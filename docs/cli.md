@@ -76,7 +76,7 @@ together under [Manifest deploys](#manifest-deploys).
 ## setup
 
 ```bash
-cotal setup [--full] [--demo] [--yes]
+cotal setup [--full] [--demo] [--yes] [--skills]
 ```
 
 | Flag | Default | Meaning |
@@ -84,11 +84,13 @@ cotal setup [--full] [--demo] [--yes]
 | `--full` | off | Redo the full guided flow (implies `--demo`) |
 | `--demo` | off | Also seed the guided expert team (`david`, `sven`, `me`) |
 | `--yes`, `-y` | off | Non-interactive accept-all (for agents / CI) |
+| `--skills` | off | Reconcile Cotal skills only through installed connector providers, plus `~/.agents/skills`. Refused with `--full` or `--demo`. |
 
-Guided setup is **configure-only**: it checks prerequisites, installs the Claude Code plugin, and
+Guided setup is **configure-only**: it checks prerequisites, invokes installed connectors' declared setup providers, and
 seeds persona files, and it launches nothing (no mesh, no web, no manager). First run gets the
 narrated flow; later runs print a status card. By default it seeds one `default` persona; the
-`david`/`sven`/`me` team is opt-in via `--demo`. See [Getting started](getting-started.md) and, for
+`david`/`sven`/`me` team is opt-in via `--demo`. `cotal status` points stale Claude skills and
+out-of-date `.agents` skills at `cotal setup --skills`, not unscoped `setup`. See [Getting started](getting-started.md) and, for
 maintainers, [setup internals](setup-internals.md).
 
 ## update
@@ -478,7 +480,8 @@ machine could write it back.
 including inside another mesh's project. `status` is a read-only report: machine prerequisites
 (starting with the installed `cotal-ai` version), the installed extensions and their versions, this
 folder's `.cotal/`, the recorded meshes, and a live snapshot of the selected mesh (roster, channels,
-membership feed). `status` takes `--space` / `--server` to pick the mesh to inspect; it starts
+membership feed). Stale Claude skills and out-of-date `.agents` skills recommend `cotal setup --skills`,
+not unscoped `cotal setup`. `status` takes `--space` / `--server` to pick the mesh to inspect; it starts
 nothing.
 
 `cotal status --components` adds a fail-loud per-component health pass. It reads **each
@@ -1276,6 +1279,12 @@ command of each boot, so you rarely call it):
 | `--repair` | Recover after an interrupted seed or a lost authority (rebuilds the interrupted connector; restores the removed-vs-never-seeded record from its durable backup). |
 | `--reset` | Discard the record and re-seed all seven built-ins (the six connectors plus the web dashboard). **Resurrects any you removed.** Rebuilds cleanly over corrupt seed state. |
 | `--force` | Re-seed the built-ins even when the version stamp is current or a downgrade. |
+
+When a newer `cotal` advances the operator-global seed store to its generation, it prints one
+migration line naming the old and new generations, the exact CLI entry that wrote the store, the
+commit timestamp, and `seed/stamp.json`. That writer and timestamp are kept in the stamp, so a later
+older CLI refusal can say which executable wrote the generation it will not overwrite and when.
+Legacy generation-only stamps remain readable; their refusal simply has no writer provenance to add.
 
 The default connector for a bare `cotal spawn` (no `--agent`) is the persona's `agent:` pin if it
 has one, else `claude`; set `COTAL_DEFAULT_AGENT` (e.g. `opencode`) to change the fallback. It is
