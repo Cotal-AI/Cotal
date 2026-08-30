@@ -33,6 +33,53 @@ check(
   JSON.stringify(expectedPullRequestWorkflows(workflows, ["package.json"])) === JSON.stringify(["CI", "Windows"]) &&
     JSON.stringify(expectedPullRequestWorkflows(workflows, ["install.sh"])) === JSON.stringify(["CI", "Installer", "Windows"]),
 );
+const declarationForms = expectedPullRequestWorkflows({
+  "comment.yml": "name: Hidden\non: [push, pull_request] # ordinary YAML comment\n",
+  "quoted.yml": "name: 'Quoted name'\n\"on\": \"pull_request\"\n",
+  "sequence.yml": "name: Block sequence\non:\n  - push\n  - pull_request\n",
+  "flow-map.yml": "name: Flow map\non: { push: null, pull_request: { paths: [src/**] } }\n",
+  "alias.yml": "name: Alias\non:\n  push: &filters\n    paths: [src/**]\n  pull_request: *filters\n",
+}, ["src/index.ts"]);
+check(
+  "standards-valid scalar, sequence, mapping, comment, quote, flow, and alias forms declare pull-request workflows",
+  JSON.stringify(declarationForms) === JSON.stringify(["Alias", "Block sequence", "Flow map", "Hidden", "Quoted name"]),
+  declarationForms,
+);
+const successfulCiOnly = classifyPullRequestHead({
+  pr: 1092,
+  headSha: "1".repeat(40),
+  expected: expectedPullRequestWorkflows({
+    "ci.yml": "name: CI\non: pull_request\n",
+    "hidden.yml": "name: Hidden\non: [push, pull_request] # ordinary YAML comment\n",
+  }, ["package.json"]),
+  runs: [{
+    id: 1,
+    name: "CI",
+    event: "pull_request",
+    head_sha: "1".repeat(40),
+    pull_requests: [{ number: 1092 }],
+    status: "completed",
+    conclusion: "success",
+    created_at: "2026-08-30T00:00:00Z",
+  }],
+});
+check(
+  "a successful parsed workflow cannot hide a missing trailing-comment workflow",
+  JSON.stringify(successfulCiOnly.missing) === '["Hidden"]' && !successfulCiOnly.green,
+  successfulCiOnly,
+);
+for (const [label, source, message] of [
+  ["a non-string event scalar", "name: Wrong\non: 42\n", /on declaration must be a string, sequence, or mapping/],
+  ["a non-string event sequence entry", "name: Wrong\non: [pull_request, 42]\n", /event sequence entries must be strings/],
+  ["a non-mapping pull_request configuration", "name: Wrong\non:\n  pull_request: []\n", /pull_request declaration must be null or a mapping/],
+  ["a non-sequence paths filter", "name: Wrong\non:\n  pull_request:\n    paths: ${{ future.paths }}\n", /paths declaration must be a sequence of strings/],
+  ["a non-string paths entry", "name: Wrong\non:\n  pull_request:\n    paths: [src/**, 42]\n", /paths entries must be non-empty strings/],
+] as const) {
+  let refused = false;
+  try { expectedPullRequestWorkflows({ "wrong.yml": source }, ["src/index.ts"]); }
+  catch (error) { refused = message.test(String(error)); }
+  check(`${label} fails closed`, refused);
+}
 let unsupportedRefused = false;
 try {
   expectedPullRequestWorkflows({
@@ -110,7 +157,7 @@ for (const conclusion of ["neutral", "skipped"]) {
   check(`a ${conclusion} expected workflow is failing, never green`, JSON.stringify(verdict.failing) === '["CI"]' && !verdict.green, verdict);
 }
 
-const EXPECTED = 20;
+const EXPECTED = 27;
 check(`every cell ran (${EXPECTED} before sentinel)`, passed + failed === EXPECTED);
 console.log(`PR HEAD GATE SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 console.log("SUITE COMPLETE");

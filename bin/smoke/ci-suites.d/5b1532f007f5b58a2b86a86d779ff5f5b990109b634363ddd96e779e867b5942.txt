@@ -1,0 +1,2 @@
+# Appended suite: mutation coverage must recognize exact root-script source imports.
+smoke:mutation-coverage
