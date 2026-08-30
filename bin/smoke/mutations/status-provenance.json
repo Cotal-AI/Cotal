@@ -1,0 +1,38 @@
+{
+  "suite": "implementations/cli/smoke/status-provenance.smoke.ts",
+  "guard": "the status Machine block identifies its resolved source or installed CLI artifact and names the stale skills version pair",
+  "command": "pnpm smoke:status-provenance",
+  "completionMarker": "STATUS PROVENANCE SMOKE COMPLETE",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/status-provenance.json",
+  "why": [
+    "The suite drives the shipped status command and captures its real Machine block rather than testing a parallel formatter.",
+    "The installed cell passes a package-manager-style symlink as argv[1], so the asserted root proves entry resolution rather than echoing the shim path.",
+    "A fake Claude executable supplies the real plugin-list JSON seam, proving the displayed stale pair comes from the installed plugin version and the running CLI version."
+  ],
+  "mutations": [
+    {
+      "name": "the Machine row drops the artifact identity",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "  row(\"cotal-ai\", `${c.green(`v${cliVersion()}`)} ${c.dim(cliProvenanceLabel())}`);",
+      "replace": "  row(\"cotal-ai\", c.green(`v${cliVersion()}`));",
+      "expectRed": "source status names the source checkout root",
+      "cell": "source status names the source checkout root"
+    },
+    {
+      "name": "package-manager shims are reported instead of their resolved install",
+      "file": "implementations/cli/src/seed/paths.ts",
+      "find": "  const entry = entryScript();",
+      "replace": "  const entry = process.argv[1]!;",
+      "expectRed": "installed status names the installed package root",
+      "cell": "installed status names the installed package root"
+    },
+    {
+      "name": "the stale skills row hides the compared versions",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "      return c.yellow(`${skills.version ? `v${skills.version} \u2260 v${cliVersion()} \u00b7 ` : \"\"}stale \u00b7 ${displayCmd()} setup --skills`);",
+      "replace": "      return c.yellow(`stale \u00b7 ${displayCmd()} setup --skills`);",
+      "expectRed": "source status names the source checkout root",
+      "cell": "source status names the source checkout root"
+    }
+  ]
+}

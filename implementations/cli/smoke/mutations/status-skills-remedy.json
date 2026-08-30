@@ -11,8 +11,8 @@
     {
       "name": "S1 restore unscoped Claude skills remedy",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "return c.yellow(`stale · ${displayCmd()} setup --skills`);",
-      "replace": "return c.yellow(`stale · ${displayCmd()} setup`);",
+      "find": "return c.yellow(`${skills.version ? `v${skills.version} \u2260 v${cliVersion()} \u00b7 ` : \"\"}stale \u00b7 ${displayCmd()} setup --skills`);",
+      "replace": "return c.yellow(`${skills.version ? `v${skills.version} \u2260 v${cliVersion()} \u00b7 ` : \"\"}stale \u00b7 ${displayCmd()} setup`);",
       "expectRed": "stale Claude skills recommend setup --skills",
       "cell": "stale Claude skills recommend setup --skills",
       "note": "Restores the issue's Claude skills row. Typecheck stays green. The status subprocess still prints the header."
@@ -20,8 +20,8 @@
     {
       "name": "S2 restore unscoped .agents skills remedy",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "return c.yellow(`${label} · ${displayCmd()} setup --skills`);",
-      "replace": "return c.yellow(`${label} · ${displayCmd()} setup`);",
+      "find": "return c.yellow(`${label} \u00b7 ${displayCmd()} setup --skills`);",
+      "replace": "return c.yellow(`${label} \u00b7 ${displayCmd()} setup`);",
       "expectRed": "stale .agents skills recommend setup --skills",
       "cell": "stale .agents skills recommend setup --skills",
       "note": "Restores the issue's Skills (.agents) row while leaving the Claude row scoped."

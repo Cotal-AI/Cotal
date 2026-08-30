@@ -22,7 +22,6 @@ import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
-// @ts-expect-error - plain .mjs helper, shared with bin/smoke/shard.mjs so the chain has one parser.
 import { readCiSuites, ciChainBody } from "./ci-suites.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
