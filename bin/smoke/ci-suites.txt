@@ -657,11 +657,6 @@ smoke:up-adopt-resume-lock:live
 # run at all. The adopt suite above enters through a resume with no artifact and stays green through
 # that break, so neither suite substitutes for the other. Appended; shard assignments unchanged.
 smoke:up-restore-reentry:live
-# Issue #977: a focus-mode session must not ack-drop a body that recall cannot return. Drives the
-# real MeshAgent ingest, recallAmbient and the cotal_inbox tool spec against an isolated broker,
-# covering the replay-off concrete channel and the wildcard subscription. Appended so every existing
-# shard assignment remains unchanged.
-smoke:focus-recall-loss
 
 # The space-segmentation foundation (P7/P1 shared design). Hermetic and fast. It asserts the
 # `spaceSegment` collision guarantee over the children of `.cotal/` — a WIDER namespace than the
@@ -701,3 +696,9 @@ smoke:workflow-concurrency
 # the suite. This compiler-API intersection checks every named workspace import against the package's
 # public exports. Appended so every existing shard assignment remains unchanged.
 smoke:workspace-import-exports
+
+# Issue #977: a focus-mode session must not ack-drop a body that recall cannot return. Drives the
+# real MeshAgent ingest, recallAmbient and the cotal_inbox tool spec against an isolated broker,
+# covering the replay-off concrete channel and the wildcard subscription. Appended so every existing
+# shard assignment remains unchanged.
+smoke:focus-recall-loss
