@@ -696,3 +696,7 @@ smoke:workflow-concurrency
 # the suite. This compiler-API intersection checks every named workspace import against the package's
 # public exports. Appended so every existing shard assignment remains unchanged.
 smoke:workspace-import-exports
+# Every published package with a package-local smoke declares a `test` script, and the 11 packages
+# that previously returned success without tests each execute a counted assertion. The named set and
+# its size are pinned so the guard cannot pass by enumerating zero packages. Appended; shards stable.
+smoke:package-test-contract
