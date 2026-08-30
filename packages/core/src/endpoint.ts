@@ -180,8 +180,9 @@ export interface EndpointOptions {
    *  supervisor), a seed-less daemon re-reads its manager-reminted creds file (delivery). A source
    *  requires explicit `card.id` (the pinned identity); every fetched cred MUST carry that same nkey
    *  or the endpoint fails loud — renewal may never silently swap identity. A fetch failure is
-   *  emitted as an "error" event and retried; the connection stays up until its current JWT expires,
-   *  so a dead reminter is loud without instantly dropping the mesh. Once the cached cred expires,
+   *  emitted as a "warning" event and retried; the connection stays up until its current JWT expires,
+   *  so a dead reminter is loud without instantly dropping the mesh. Node rethrows unhandled "error"
+   *  events, so a retry notice must not use that channel (#891). Once the cached cred expires,
    *  the endpoint refuses to present it to the broker and keeps retrying the source with backoff. */
   creds?: string | (() => Promise<string>);
   /** USER-MODE auth: a validated Cotal user bearer (the JWT from `cotal login` → the IdP bridge), or a
@@ -195,8 +196,9 @@ export interface EndpointOptions {
    *  every (re)connect attempt presents the freshest token — so reconnects outlive any single bearer.
    *  A source requires explicit `card.owner` + `card.actor` (there is no bearer to derive them from at
    *  construction); every fetched bearer MUST carry that same principal or the endpoint fails loud.
-   *  A fetch failure is emitted as an "error" event and retried — the connection stays up until its
+   *  A fetch failure is emitted as a "warning" event and retried — the connection stays up until its
    *  current JWT expires, so a dead auth service surfaces loudly without instantly dropping the mesh.
+   *  Node rethrows unhandled "error" events, so a retry notice must not use that channel (#891).
    *  Mutually exclusive with `creds`/`token`/`user`/`pass`; requires `sentinelCreds`. */
   bearer?: string | (() => Promise<string>);
   /** The shared, deny-all auth-account sentinel creds presented alongside {@link bearer} so the connect
@@ -685,9 +687,18 @@ export class CotalEndpoint extends EventEmitter {
   private static readonly BEARER_REFRESH_MARGIN_MS = 60_000;
   private static readonly BEARER_RETRY_MS = 15_000;
 
+  /**
+   * A condition the endpoint is already surviving. Node rethrows `error` when no listener is
+   * attached, so emitting retry notices on `error` killed hosts that the endpoint intended to
+   * keep running (#891). `warning` is observable and never fatal without a listener.
+   */
+  private emitRecoverable(err: Error): void {
+    this.emit("warning", err);
+  }
+
   /** Fetch a fresh bearer from the source, pin its principal to ours, arm the next refresh. On a
    *  fetch/principal failure: THROWS when `initial` (start() must fail loud before first connect);
-   *  otherwise emits "error" and retries — the live connection keeps working until its current JWT
+   *  otherwise emits "warning" and retries — the live connection keeps working until its current JWT
    *  expiry, so a dead auth service is loud without instantly dropping the mesh. */
   private async refreshBearer(initial = false): Promise<void> {
     try {
@@ -699,7 +710,7 @@ export class CotalEndpoint extends EventEmitter {
       this.armBearerRefresh(bearerExpiryMs(bearer) - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS);
     } catch (e) {
       if (initial) throw e;
-      this.emit("error", new Error(`bearer refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying; this connection dies at its current token's expiry if the auth service stays down`));
+      this.emitRecoverable(new Error(`bearer refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying; this connection dies at its current token's expiry if the auth service stays down`));
       this.armBearerRefresh(CotalEndpoint.BEARER_RETRY_MS);
     }
   }
@@ -771,7 +782,7 @@ export class CotalEndpoint extends EventEmitter {
       await this.fetchFreshCreds();
     } catch (e) {
       if (initial) throw e;
-      this.emit("error", new Error(`creds refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying; this connection dies at its current JWT's expiry if renewal keeps failing`));
+      this.emitRecoverable(new Error(`creds refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying; this connection dies at its current JWT's expiry if renewal keeps failing`));
       this.armCredsRefresh(CotalEndpoint.CREDS_RETRY_MS);
     }
   }
@@ -849,7 +860,7 @@ export class CotalEndpoint extends EventEmitter {
       await this.runCredsTxn(() => this.adoptFreshCreds({ deadline }));
       await this.swapConnectionOntoFreshCreds();
     } catch (e) {
-      this.emit("error", new Error(`creds refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying; this connection dies at its current JWT's expiry if renewal keeps failing`));
+      this.emitRecoverable(new Error(`creds refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying; this connection dies at its current JWT's expiry if renewal keeps failing`));
       this.armCredsRefresh(CotalEndpoint.CREDS_RETRY_MS);
     }
   }
@@ -1040,7 +1051,7 @@ export class CotalEndpoint extends EventEmitter {
     if (this.doRegister) {
       await this.publishPresence();
       this.heartbeatTimer = setInterval(() => {
-        this.publishPresence().catch((e) => this.emit("error", e as Error));
+        this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
       }, this.heartbeatMs);
     }
 
@@ -1257,7 +1268,7 @@ export class CotalEndpoint extends EventEmitter {
           this.retryAttempt = 0; // reconnected — the next drop starts from retryMs again
           return; // success — re-armed; the supervisor re-triggers on the next terminal close
         } catch (e) {
-          if (!this.stopped) this.emit("error", e as Error);
+          if (!this.stopped) this.emitRecoverable(e as Error);
           const delay = this.nextRetryDelayMs();
           await new Promise<void>((resolve) => {
             this.backoffResolve = resolve;
@@ -4003,7 +4014,7 @@ export class CotalEndpoint extends EventEmitter {
         if (r.durable) this.plane3Channels.set(channel, r.generation ?? 0);
         else void this.reconcileBootJoin(channel); // present but not yet durable — reconcile to recovery
       } catch (e) {
-        if (!this.isNoResponders(e)) this.emit("error", e as Error); // no daemon ⇒ retry until it recovers
+        if (!this.isNoResponders(e)) this.emitRecoverable(e as Error); // no daemon ⇒ retry until it recovers
         void this.reconcileBootJoin(channel);
       }
     }
@@ -4035,7 +4046,7 @@ export class CotalEndpoint extends EventEmitter {
         // honestly degraded meanwhile, never silently "active".
       } catch (e) {
         if (attempt === 0 && !this.isNoResponders(e))
-          this.emit("error", new Error(`channel "${channel}": boot durable self-join not yet established - retrying until the delivery daemon is reachable (${(e as Error).message})`));
+          this.emitRecoverable(new Error(`channel "${channel}": boot durable self-join not yet established - retrying until the delivery daemon is reachable (${(e as Error).message})`));
       }
     }
   }
