@@ -46,7 +46,7 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "setup",
     group: "Setup",
-    summary: "guided setup (configure-only: installs + seeds, launches nothing) - --yes non-interactive, --full to redo",
+    summary: "guided setup (configure-only: installs + seeds, launches nothing) - --yes non-interactive, --full to redo, --skills for skills only",
     flags: setupFlags,
     run: setup,
   },

@@ -39,7 +39,8 @@
     "dist",
     ".mcp.json",
     "hooks",
-    ".claude-plugin"
+    ".claude-plugin",
+    "skills-plugin"
   ],
   "publishConfig": {
     "access": "public"

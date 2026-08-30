@@ -35,6 +35,13 @@ dashboard, and the manager) and for anything down it prints the exact command to
 (`cotal up --detach`, `cotal web`, `cotal supervise`). Displaying state never depends on it; setup
 still launches nothing.
 
+**`--skills`** is the status-card write: it asks installed connectors with a declared skills setup
+hook to reconcile their own harness, then reconciles `~/.agents/skills`. The base CLI passes only the
+vendor-neutral skills directory, version, and state directory; connector packages own native assets
+and commands. It does not seed personas, install the mesh
+connector, offer a global install, or write the onboarded stamp. Combined with `--full` or
+`--demo` it is refused.
+
 The seeded `default` persona has an empty active `subscribe` set and wildcard
 `allowSubscribe`/`allowPublish` ACLs. A fresh agent receives no channel traffic until it joins a
 channel, but can join, create, read, and post to channels on demand. The guided demo personas keep
