@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import * as p from "@clack/prompts";
-import { type Connector, type ConnectorSetupAction, type ConnectorSetupProvider, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { registry, type Connector, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { homeCotalDir, installedExtensionVersion, loadExtensionsManifest, manifestExtensionNames, provenance } from "@cotal-ai/workspace";
 import { materializeExtension } from "../ext-loader.js";
 import { agentSkillsHome, canonicalSkillNames, canonicalSkillsDir, installAgentSkills, type AgentSkillsResult } from "../lib/agent-skills.js";
@@ -102,21 +102,34 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
   ];
   if (!(await runSteps(core, log, { yes }))) return abort();
 
-  // Connectors: which agents should be able to join. Only Claude needs an install
-  // (its wake channel binds to an installed plugin); OpenCode auto-wires at spawn.
-  const found = { claude: onPath("claude"), opencode: onPath("opencode") };
-  const selected = await pickConnectors(found, yes);
-  if (selected.has("claude")) {
-    if (!found.claude)
-      p.log.warn(`claude isn't on PATH. Install it (https://claude.com/claude-code), then re-run ${displayCmd()} setup.`);
-    else if (!(await runSteps([await claudePluginStep()], log, { yes }))) return abort();
-  }
-  if (found.claude && !(await runSteps([await connectorSetupStep("claude", "skills")], log, { yes }))) return abort();
-  for (const name of ["opencode"] as const) {
-    if (selected.has(name) && found[name]) {
-      p.log.success(`${name} ready (auto-wired when you spawn it)`);
-      log.line(`connector ${name}: ready (no install)`);
+  // Connectors: which agents should be able to join. MEMBERSHIP is the live registry plus the
+  // installed extension manifest — every connector that declares itself is a choice — and each
+  // candidate's hints come from that connector's own declarations (`requires`, `setup`,
+  // `pluginRoot`). No connector name is privileged here: the install itself is whatever the
+  // connector's own setup provider declares.
+  const candidates = setupConnectorCandidates(await setupConnectorSurface());
+  const selected = await pickConnectors(candidates, yes);
+  for (const candidate of candidates) {
+    if (!selected.has(candidate.value)) continue;
+    if (candidate.missing.length) {
+      p.log.warn(`${candidate.value} needs ${candidate.missing.join(", ")} on PATH. Install it, then re-run ${displayCmd()} setup.`);
+      continue;
     }
+    const step = await connectorSetupStep(candidate.connector, "connector");
+    if (step) {
+      if (!(await runSteps([step], log, { yes }))) return abort();
+    } else {
+      p.log.success(`${candidate.value} ready (auto-wired when you spawn it)`);
+      log.line(`connector ${candidate.value}: ready (no install)`);
+    }
+  }
+  // A connector's skills action is independent of the mesh connector selection: it runs for every
+  // connector whose harness is present, so someone using that harness gets Cotal's authored skills
+  // even without joining the mesh through it (Claude Code, for one, does not read `.agents/skills`).
+  for (const candidate of candidates) {
+    if (candidate.missing.length) continue;
+    const step = await connectorSetupStep(candidate.connector, "skills");
+    if (step && !(await runSteps([step], log, { yes }))) return abort();
   }
 
   // Your agent: the generic `default` persona a bare `cotal spawn` launches — one agent, yours to
@@ -227,18 +240,59 @@ function runningVersion(): string | null {
 
 /** Pick which agent connectors to set up. Detected ones are pre-checked (= the "all"
  *  default). Non-interactive / --yes selects all detected without prompting. */
-async function pickConnectors(
-  found: Record<"claude" | "opencode", boolean>,
-  yes: boolean,
-): Promise<Set<string>> {
-  const all = (["claude", "opencode"] as const).filter((n) => found[n]);
+export interface SetupConnectorCandidate {
+  connector: Connector;
+  value: string;
+  label: string;
+  hint: string;
+  missing: string[];
+}
+
+/** Every connector on the setup surface becomes a choice. Its OWN declarations drive the hints —
+ *  `requires` for readiness, `setup` for whether it runs connector-owned setup at all, `pluginRoot`
+ *  for how that reads — and connector names never gate membership. Exported for the genericity smoke. */
+export function setupConnectorCandidates(
+  connectors: readonly Connector[],
+  pathProbe: (bin: string) => boolean = onPath,
+): SetupConnectorCandidate[] {
+  return [...connectors]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((connector) => {
+      const missing = (connector.requires ?? []).filter((bin) => !pathProbe(bin));
+      return {
+        connector,
+        value: connector.name,
+        label: connector.name,
+        missing,
+        hint: missing.length
+          ? `${missing.join(", ")} not on PATH`
+          : connector.setup
+            ? connector.pluginRoot
+              ? "installs a plugin"
+              : "runs its own setup"
+            : "ready at spawn",
+      };
+    });
+}
+
+/** Materialize every connector advertised by the registry or installed manifest. Exported so the
+ *  fail-loud smoke reaches the same discovery boundary as guided setup. */
+export async function setupConnectorSurface(): Promise<Connector[]> {
+  const names = new Set(registry.all<Connector>("connector").map((connector) => connector.name));
+  for (const name of manifestExtensionNames("connector")) names.add(name);
+  return Promise.all([...names].sort().map((name) =>
+    materializeExtension<Connector>({ kind: "connector", name })
+  ));
+}
+
+async function pickConnectors(candidates: readonly SetupConnectorCandidate[], yes: boolean): Promise<Set<string>> {
+  const all = candidates.filter((candidate) => candidate.missing.length === 0).map((candidate) => candidate.value);
   if (yes || !process.stdin.isTTY) return new Set(all);
-  const labels: Record<string, string> = { claude: "Claude Code", opencode: "OpenCode" };
 
   // Common case: show what was detected and offer a visible Continue button (clack's multiselect
   // has no native one). Only "Customize" (or nothing detected) drops into the toggle list.
   if (all.length) {
-    note(all.map((n) => labels[n]).join(", "), "Agents found");
+    note(all.join(", "), "Agents found");
     const go = abortIfCancel(
       await p.confirm({ message: "Set these up?", active: "Continue", inactive: "Customize", initialValue: true }),
     );
@@ -248,39 +302,12 @@ async function pickConnectors(
   const picked = abortIfCancel(
     await p.multiselect({
       message: "Pick the agents to set up (space toggles, enter continues)",
-      options: (["claude", "opencode"] as const).map((n) => ({
-        value: n,
-        label: labels[n],
-        hint: !found[n] ? "not on PATH" : n === "claude" ? "installs a plugin" : "ready at spawn",
-      })),
+      options: [...candidates],
       initialValues: all,
       required: false,
     }),
   );
   return new Set(picked as string[]);
-}
-
-/** The built-in connector step, exported for the removed-vs-broken fail-loud smoke. */
-export async function claudePluginStep(): Promise<Step> {
-  if (!manifestExtensionNames("connector").includes("claude")) {
-    return {
-      name: "connector-plugin",
-      title: "Install the connector plugin",
-      async run() {
-        return "connector not installed - skipping the plugin (re-add its extension package)";
-      },
-    };
-  }
-  const provider = await connectorSetupProvider("claude");
-  if (!provider.connector) throw new Error('connector "claude" does not support connector setup');
-  const setup = provider.connector;
-  return {
-    name: setup.name,
-    title: setup.title,
-    explain: setup.explain,
-    context: [...(setup.context ?? [])],
-    async run() { return setup.run(); },
-  };
 }
 
 /** The compact repeat-run: a one-glance status card, plus re-seeding the default persona if it's
@@ -301,20 +328,24 @@ async function runEnsure(demo: boolean): Promise<void> {
   await readyCard(process.cwd());
 }
 
-/** Resolve one connector's declared setup provider. Missing declarations and unsupported actions
- * fail loud; the base CLI never substitutes a built-in harness implementation. */
-async function connectorSetupProvider(name: string): Promise<ConnectorSetupProvider> {
-  const connector = await materializeExtension<Connector>({ kind: "connector", name });
-  if (!connector.setup) throw new Error(`connector "${name}" does not declare a setup provider`);
+/** Resolve a connector's declared setup provider from the CONNECTOR the surface produced, never
+ * from a name this file knows. A connector that declares none simply owns no setup; a DECLARED
+ * provider that is missing or broken fails loud, because the base CLI never substitutes a built-in
+ * harness implementation. Exported for the fail-loud smoke. */
+export async function connectorSetupProvider(connector: Connector): Promise<ConnectorSetupProvider | null> {
+  if (!connector.setup) return null;
   return materializeExtension<ConnectorSetupProvider>(connector.setup);
 }
 
-async function connectorSetupStep(name: string, action: "connector" | "skills"): Promise<Step> {
-  const provider = await connectorSetupProvider(name);
-  const setup = provider[action] as ConnectorSetupAction | undefined;
-  if (!setup) throw new Error(`connector "${name}" does not support ${action} setup`);
-  if (!setupProviderAvailable(provider)) throw new Error(`connector "${name}" setup requires ${provider.requires!.filter((command) => !onPath(command)).join(", ")} on PATH`);
-  const input = action === "skills" ? { skillsDir: canonicalSkillsDir(), version: cliVersion(), stateDir: homeCotalDir() } : undefined;
+/** One connector-owned setup action as a narrated step, or null when this connector declares no
+ * provider, no such action, or its provider's executables are absent — none of which is a failure
+ * of guided setup (the cross-vendor skills drop still reconciles). Exported for the fail-loud
+ * smoke, which drives this exact seam. */
+export async function connectorSetupStep(connector: Connector, action: "connector" | "skills"): Promise<Step | null> {
+  const provider = await connectorSetupProvider(connector);
+  const setup = provider?.[action] as ConnectorSetupAction | undefined;
+  if (!provider || !setup || !setupProviderAvailable(provider)) return null;
+  const input = action === "skills" ? connectorSkillsInput() : undefined;
   return {
     name: setup.name,
     title: setup.title,
@@ -324,14 +355,17 @@ async function connectorSetupStep(name: string, action: "connector" | "skills"):
   };
 }
 
+/** The generic Cotal inputs every connector-owned skills installer receives. Nothing in it names a
+ * harness: the provider decides how its own harness consumes the cross-vendor skills. */
+function connectorSkillsInput(): ConnectorSkillsSetupInput {
+  return { skillsDir: canonicalSkillsDir(), version: cliVersion(), stateDir: homeCotalDir() };
+}
+
 async function reconcileConnectorSkills(): Promise<void> {
-  for (const name of manifestExtensionNames("connector")) {
-    const connector = await materializeExtension<Connector>({ kind: "connector", name });
-    if (!connector.setup) continue;
-    const provider = await materializeExtension<ConnectorSetupProvider>(connector.setup);
-    if (!provider.skills) continue;
-    if (!setupProviderAvailable(provider)) continue;
-    await provider.skills.run({ skillsDir: canonicalSkillsDir(), version: cliVersion(), stateDir: homeCotalDir() });
+  for (const connector of await setupConnectorSurface()) {
+    const provider = await connectorSetupProvider(connector);
+    if (!provider?.skills || !setupProviderAvailable(provider)) continue;
+    await provider.skills.run(connectorSkillsInput());
   }
 }
 

@@ -98,6 +98,10 @@ export interface LaunchOpts {
    *  only. Connectors never read config themselves. Host-session markers are not forwarded unless
    *  named here. */
   envAllow?: readonly string[];
+  /** Absolute harness executable paths resolved by the manager during boot, keyed by the connector's
+   * declared `requires` names. Managed launches use these exact files rather than resolving PATH
+   * again later. Absent for standalone/foreground launches that have no manager boot inventory. */
+  resolvedBinaries?: Readonly<Record<string, string>>;
   /** The manager's workspace root. Connectors that keep per-agent local state (e.g. the OpenCode
    *  connector's SQLite DB + serve pidfile) pin it here so a per-agent working directory — which can
    *  point at any repo — doesn't scatter that state into the target tree. The per-agent working
@@ -193,8 +197,8 @@ export interface Connector extends Extension {
   eventChannel?(principal: { owner: string; actor: string }): string;
   /** External executables this connector invokes beyond `LaunchSpec.command` (e.g. the
    *  `claude` / `opencode` CLI). A preflight PATH hint, not a full environment validator: the
-   *  manager checks each is on PATH before spawning and fails with a clear error naming the
-   *  missing one, instead of an obscure process-spawn failure. Optional — omit for connectors
+   *  manager resolves each at boot, passes the absolute path through {@link LaunchOpts.resolvedBinaries},
+   *  and fails with a clear error naming a missing one. Optional — omit for connectors
    *  whose harness runs in-process. */
   readonly requires?: readonly string[];
   /** Directory of installable editor-plugin assets shipped with the connector

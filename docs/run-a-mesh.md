@@ -59,6 +59,16 @@ section names the running CLI's source checkout, installed package root, or npx 
 the version. A stale Claude skills row names the installed and CLI versions it compared. `cotal
 setup` (after the first run) prints the compact card.
 
+Before reporting ready, the manager resolves every installed connector's declared harness
+binaries against its own environment. A missing binary does not stop unrelated manager work: boot
+continues, but prints a named `connector <name> unavailable` line and records that reason in the
+manager's `status` response. Available connector rows record the absolute paths boot resolved.
+Spawn keeps the same pre-mint check as a backstop for connectors registered after boot.
+
+There is no supported `cotal service install` command yet. Running the manager as a launchd agent or
+systemd user service remains operator-managed; service installation is separate from this boot-time
+detection behavior.
+
 Stop one part without tearing down the mesh by naming its registered component: `cotal down
 manager`, `cotal down delivery`, or `cotal down web`. Component names from installed extensions
 join the same surface; `cotal down` with no names retains whole-stack behavior.
@@ -319,10 +329,10 @@ that dead op on boot, using the same guard as [`cotal reconcile-gate`](cli.md#re
 acts only when the freeze-holder is affirmatively gone under a complete CONNZ sweep (`gone` and
 `sweepComplete=true`), abort-reopens the gate (generation+1, processEpoch unchanged), and continues
 the normal takeover. A live holder, an incomplete sweep, or an unreachable delivery daemon still
-refuses. Silence is never evidence of death, and there is no TTL. Use `cotal reconcile-gate` when the
-boot
-path cannot run (daemon down, a non-manager endpoint, or you want to lift the freeze without
-starting a manager).
+refuses. Silence is never evidence of death, and there is no TTL. If holder verification is
+interrupted, the frozen operation resumes from its durable, operation-and-gate-revision-bound
+progress after liveness is checked again. Use `cotal reconcile-gate` when the boot path cannot run
+(daemon down, a non-manager endpoint, or you want to lift the freeze without starting a manager).
 
 ## When something looks absent
 

@@ -136,6 +136,7 @@ export const jcodeConnector: Connector = {
       COTAL_CONTROL_SOCKET: control.path,
       COTAL_JCODE_HOME: opts.workspaceRoot ?? process.cwd(),
     };
+    if (opts.resolvedBinaries?.jcode) env.COTAL_JCODE_BIN = opts.resolvedBinaries.jcode;
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;

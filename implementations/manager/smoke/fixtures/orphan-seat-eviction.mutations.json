@@ -1,0 +1,21 @@
+{
+  "suite": "implementations/manager/smoke/static-lifecycle.smoke.ts",
+  "guard": "a successor never retires an orphaned static lifecycle and frees its alias until delivery-admin has verified the old seat principal gone",
+  "command": "pnpm smoke:static-lifecycle",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/fixtures/orphan-seat-eviction.mutations.json",
+  "why": [
+    "The suite builds a real active static lifecycle, removes its in-process managed owner, and drives the shipped boot reconciliation path.",
+    "The graded cell first returns an unverified eviction and requires the durable slot to remain terminalizing with the alias held. The inverse control then verifies eviction and requires retirement to complete.",
+    "The mutation bypasses only the failed-verdict fence. Without it, the lifecycle retires while the old seat may still hold live broker rails, admitting a second owner."
+  ],
+  "mutations": [
+    {
+      "name": "accept an unverified orphan eviction and free the alias",
+      "file": "implementations/manager/src/static-lifecycle.ts",
+      "find": "  if (!result.verifiedGone || !result.scanComplete || result.remaining !== 0)\n    throw new EpEnvelopeError(\"unavailable\", `static retirement could not verify-evict ${principal}; the lifecycle remains terminalizing and the alias stays held (SPEC 13.1)`);",
+      "replace": "  void result;",
+      "expectRed": "an unverified orphan eviction keeps the slot terminalizing (never frees the alias into two owners)",
+      "cell": "an unverified orphan eviction keeps the slot terminalizing (never frees the alias into two owners)"
+    }
+  ]
+}
