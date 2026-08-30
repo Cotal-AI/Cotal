@@ -6,7 +6,7 @@
  * the artifact this suite loads.
  */
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { claudeConnector } from "../dist/index.js";
@@ -37,16 +37,19 @@ try {
   check("Claude uses the private persona-file flag", flag >= 0 && personaFile.length > 0, spec.args);
   check("the persona body is absent from Claude argv", !spec.args.includes(marker), spec.args);
   check("Claude has no text-prompt argv fallback", !spec.args.includes("--append-system-prompt"), spec.args);
-  check("the private persona file preserves the full persona", readFileSync(personaFile, "utf8") === marker);
+  const fileExists = personaFile.length > 0 && existsSync(personaFile);
+  check("the private persona file preserves the full persona", fileExists && readFileSync(personaFile, "utf8") === marker);
 
   if (process.platform !== "win32") {
-    check("the persona carrier is owner-private", (statSync(personaFile).mode & 0o777) === 0o600, (statSync(personaFile).mode & 0o777).toString(8));
-    check("the persona directory is owner-only 0700", (statSync(dirname(personaFile)).mode & 0o777) === 0o700, (statSync(dirname(personaFile)).mode & 0o777).toString(8));
+    const fileMode = fileExists ? statSync(personaFile).mode & 0o777 : -1;
+    const dirMode = fileExists ? statSync(dirname(personaFile)).mode & 0o777 : -1;
+    check("the persona carrier is owner-private", fileMode === 0o600, fileMode < 0 ? "missing" : fileMode.toString(8));
+    check("the persona directory is owner-only 0700", dirMode === 0o700, dirMode < 0 ? "missing" : dirMode.toString(8));
   } else {
     const broadGone = (acl: string): boolean =>
       !/\bEveryone\b/i.test(acl) && !/\bAuthenticated Users\b/i.test(acl) && !/\\Users:/i.test(acl);
-    check("the persona carrier is owner-private", broadGone(execFileSync("icacls", [personaFile], { encoding: "utf8" })));
-    check("the persona directory ACL strips broad Windows principals", broadGone(execFileSync("icacls", [dirname(personaFile)], { encoding: "utf8" })));
+    check("the persona carrier is owner-private", fileExists && broadGone(execFileSync("icacls", [personaFile], { encoding: "utf8" })));
+    check("the persona directory ACL strips broad Windows principals", fileExists && broadGone(execFileSync("icacls", [dirname(personaFile)], { encoding: "utf8" })));
   }
 } finally {
   if (personaFile) rmSync(dirname(personaFile), { recursive: true, force: true });
