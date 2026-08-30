@@ -29,7 +29,8 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import {
   isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, setupSpaceStreams,
   openAclRegistry, readAcl, dmStream, dlvStream, dmDurable, dlvDurable, DEV_OWNER, principalKey,
-  mintLifecycleUid, presenceBucket,
+  mintLifecycleUid, presenceBucket, CotalEndpoint, evictDeniedPrincipalWithCreds,
+  mintConnectionEvictorCreds, mintMembershipObserverCreds,
 } from "@cotal-ai/core";
 import type { Connector, LaunchOpts, LaunchSpec } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
@@ -67,6 +68,7 @@ for (const n of ["w1", "w2", "bad1", "idle1", "nouid1", "wrong1", "wrongreg1", "
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
+let delivery: CotalEndpoint | undefined;
 
 const DM = dmStream(space), DLV = dlvStream(space);
 const provId = newIdentity();
@@ -153,6 +155,21 @@ try {
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
   if (!up) throw new Error(`auth nats-server did not come up on ${PORT}`);
   await setupSpaceStreams({ servers: SERVERS, space, creds: provCreds });
+  const observerCreds = await mintMembershipObserverCreds(auth, newIdentity());
+  const evictorCreds = await mintConnectionEvictorCreds(auth, newIdentity());
+  const deliveryId = newIdentity();
+  delivery = new CotalEndpoint({
+    space, servers: SERVERS, creds: await mintCreds(auth, deliveryId, "delivery"),
+    card: { id: deliveryId.id, name: "delivery", role: "delivery", kind: "endpoint" },
+    channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+  });
+  delivery.on("error", () => {});
+  await delivery.start();
+  await delivery.startPlane3(async () => undefined, {
+    evictPrincipal: (principal) => evictDeniedPrincipalWithCreds({
+      servers: SERVERS, observerCreds, evictorCreds, accountId: auth.account.pub, principal,
+    }),
+  });
   await mgr.start();
 
   // 0 — the manager is the CLASS-2 RENEWAL OWNER (D5 slice 5): a real start runs the ordered
@@ -273,6 +290,7 @@ try {
   process.exitCode = 1;
 } finally {
   try { await mgr.stop(); } catch { /* already stopped */ }
+  await delivery?.stop().catch(() => {});
   srv.kill("SIGKILL");
   await wait(300);
   rmSync(dir, { recursive: true, force: true });

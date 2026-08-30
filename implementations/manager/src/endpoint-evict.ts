@@ -21,13 +21,13 @@ import { CotalEndpoint, mintCreds, newIdentity, type EvictionResult, type SpaceA
 /** Build the registration barrier's `evict(holderPrincipal) → verifiedGone` over the delivery
  *  daemon's `ctl.delivery-admin` rail. Per-call connection (eviction is a rare, heavyweight barrier
  *  step; a standing privileged connection would be a wider surface holding nothing). */
-export function makeManagerEndpointEvictor(opts: {
+export function makeManagerEndpointEvictionEvidence(opts: {
   space: string;
   servers: string;
   auth: SpaceAuth;
   log: (line: string) => void;
-}): (holderPrincipal: string) => Promise<boolean> {
-  return async (principal: string): Promise<boolean> => {
+}): (holderPrincipal: string) => Promise<EvictionResult> {
+  return async (principal: string): Promise<EvictionResult> => {
     const id = newIdentity();
     let ep: CotalEndpoint | undefined;
     try {
@@ -53,7 +53,7 @@ export function makeManagerEndpointEvictor(opts: {
         // The daemon is REACHABLE but refused (e.g. the principal is still connected — a genuine live
         // predecessor). Not verified gone → fail-closed (the barrier leaves the gate frozen).
         opts.log(`manager-endpoint-evict: ${principal}: the delivery daemon refused the eviction: ${r.error ?? "(no error copy)"}`);
-        return false;
+        throw new Error(`the delivery daemon refused eviction of "${principal}": ${r.error ?? "no error copy"}`);
       }
       const d = r.data as Partial<EvictionResult> | undefined;
       if (
@@ -63,14 +63,14 @@ export function makeManagerEndpointEvictor(opts: {
         typeof d.verifiedGone !== "boolean" || typeof d.scanComplete !== "boolean"
       ) {
         opts.log(`manager-endpoint-evict: ${principal}: garbled or foreign eviction result (${JSON.stringify(r.data ?? null)}); a result that does not verifiably describe this principal never authorizes`);
-        return false;
+        throw new Error(`the delivery daemon returned garbled or foreign eviction evidence for "${principal}"`);
       }
       // An internally CONTRADICTORY success never authorizes (verified-gone is (scan complete, none remain)).
       if (d.verifiedGone === true && (d.scanComplete !== true || d.remaining !== 0)) {
         opts.log(`manager-endpoint-evict: ${principal}: verifiedGone with scanComplete=${String(d.scanComplete)} remaining=${d.remaining}; a contradictory result never authorizes`);
-        return false;
+        throw new Error(`the delivery daemon returned contradictory eviction evidence for "${principal}"`);
       }
-      return d.verifiedGone === true;
+      return d as EvictionResult;
     } catch (e) {
       // NO-ORACLE = LOUD (pin 3, SPEC 13.1, no-fallbacks): the delivery-admin rail is unreachable, so
       // eviction is UNKNOWN. THROW naming the cure so the barrier's PHASE-2 error carries it and the
@@ -84,4 +84,10 @@ export function makeManagerEndpointEvictor(opts: {
       await ep?.stop().catch(() => {});
     }
   };
+}
+
+/** Boolean adapter for barriers that only consume the verified-gone decision. */
+export function makeManagerEndpointEvictor(opts: Parameters<typeof makeManagerEndpointEvictionEvidence>[0]): (holderPrincipal: string) => Promise<boolean> {
+  const evidence = makeManagerEndpointEvictionEvidence(opts);
+  return async (principal) => (await evidence(principal)).verifiedGone;
 }
