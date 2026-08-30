@@ -3,7 +3,7 @@
   "guard": "real NATS transport edges reach CotalEndpoint and MeshAgent without flapping readiness",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:transport-liveness:broker",
   "progressPattern": "  \u2713 ",
-  "completionMarker": "SUITE COMPLETE: 9 cells",
+  "completionMarker": "SUITE COMPLETE: 13 cells",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/fixtures/transport-liveness-broker.mutations.json",
   "why": [
     "The unit transport-liveness suite proves the stop-versus-bind race by replacing connectAndBind",
@@ -16,7 +16,14 @@
     "The second mutation covers the sibling edge on the same race. watchStatus seeds transport as soon",
     "as the dial returns, which connectAndBind reaches long before the bind completes, so that seed is",
     "the FIRST thing a stop-versus-bind race can expose. Its cell holds a real dial pending behind a TCP",
-    "proxy rather than stubbing anything, so the endpoint runs unmodified."
+    "proxy rather than stubbing anything, so the endpoint runs unmodified.",
+    "THE REBUILD MUTATION IS PATH-SPECIFIC ON PURPOSE (#1028). start() and doRebuild both await the",
+    "same unbranched connectAndBind tail, so mutating that shared `if (this.stopped) return` reddens",
+    "the START cell and cannot prove a cell reached doRebuild. The third mutation therefore skips only",
+    "doRebuild's tearDownIfStopped. That helper is what prevents a rebuild that already emitted",
+    "connection:true (the shared tail ran before stop completed) from leaving nc+heartbeat+supervisor",
+    "live and from supervising a stopped endpoint. A shared-tail mutation is deliberately NOT used to",
+    "grade the rebuild cell."
   ],
   "mutations": [
     {
@@ -35,6 +42,16 @@
       "replace": "    this.emit(\"transport\", { connected: true, server: nc.getServer() } satisfies TransportState);\n",
       "expectRed": "stop during a pending dial never seeds transport live afterwards",
       "cell": "stop during a pending dial never seeds transport live afterwards",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "doRebuild skips tearDownIfStopped, so a stop mid-rebuild-bind leaves the fresh nc live",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      if (await this.tearDownIfStopped()) return;\n      this.superviseConnection(); // re-arm on the fresh nc",
+      "replace": "      this.superviseConnection(); // re-arm on the fresh nc",
+      "expectRed": "stop during a REAL rebuild bind tears the just-bound connection rather than leaving nc live",
+      "cell": "stop during a REAL rebuild bind tears the just-bound connection rather than leaving nc live",
+      "note": "PATH-SPECIFIC. start()'s tearDownIfStopped call is left intact. A shared-tail mutation of connectAndBind's stopped emit would redden the start() cell and cannot attribute a kill to doRebuild.",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]

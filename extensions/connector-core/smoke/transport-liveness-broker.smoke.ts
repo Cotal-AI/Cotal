@@ -73,6 +73,7 @@ agent.on("connection", (event) => readiness.push(event));
 agent.ep.on("error", (error: Error) => {
   if (/^mesh connection closed/.test(error.message)) terminalIssueAtError = agent.connectionIssue;
 });
+let rebuildAgent: MeshAgent | undefined;
 
 try {
   check("the owned throwaway broker starts", await until(() => false, 0) || await (async () => {
@@ -212,7 +213,51 @@ try {
   );
   for (const socket of dialSockets) socket.destroy();
   await new Promise<void>((resolve) => proxy.close(() => resolve()));
+
+  // #1028: the start() mid-bind cell above does not reach doRebuild. reconnect() is the public
+  // door onto that path. Gate armPlane3 AFTER a successful first bind so the second connectAndBind
+  // (the rebuild) is the one held open; wait on the gate itself, then land stop() inside that
+  // window. Listening on the endpoint, not MeshAgent, for the same reason as the start() cell.
+  rebuildAgent = new MeshAgent({ ...cfg, name: `transport-live-rebuild-${port}` });
+  const rebuildEdges: Array<{ connected: boolean }> = [];
+  rebuildAgent.ep.on("connection", (event: { connected: boolean }) => rebuildEdges.push(event));
+  await rebuildAgent.start(100);
+  check(
+    "rebuild-race setup: first bind completed before the rebuild is forced",
+    await until(() => rebuildAgent.connected, 30_000) && rebuildEdges.some((event) => event.connected === true),
+    { ready: rebuildAgent.connected, rebuildEdges },
+  );
+  const rebuildEp = rebuildAgent.ep as unknown as { armPlane3(): Promise<void>; reconnect(): Promise<void> };
+  let rebuildBindAtFinalStep = false;
+  let releaseRebuildBind: () => void = () => {};
+  const rebuildBindGate = new Promise<void>((resolve) => { releaseRebuildBind = resolve; });
+  rebuildEp.armPlane3 = async () => { rebuildBindAtFinalStep = true; await rebuildBindGate; };
+  const rebuildEdgesBeforeReconnect = rebuildEdges.length;
+  const rebuildWork = rebuildEp.reconnect().catch(() => {});
+  const reachedRebuildFinalStep = await until(() => rebuildBindAtFinalStep, 30_000);
+  check(
+    "rebuild-race wait: stop is landed only after the rebuild bind reached armPlane3",
+    reachedRebuildFinalStep,
+    { reachedRebuildFinalStep, rebuildBindAtFinalStep },
+  );
+  await rebuildAgent.stop();
+  releaseRebuildBind();
+  await rebuildWork;
+  const rebuildNcAfterStop = (rebuildAgent.ep as unknown as { nc?: unknown }).nc;
+  check(
+    "stop during a REAL rebuild bind never announces the connection it then tears down",
+    reachedRebuildFinalStep
+      && !rebuildEdges.slice(rebuildEdgesBeforeReconnect).some((event) => event.connected === true)
+      && rebuildAgent.connected === false,
+    { reachedRebuildFinalStep, afterReconnect: rebuildEdges.slice(rebuildEdgesBeforeReconnect), ready: rebuildAgent.connected },
+  );
+  check(
+    "stop during a REAL rebuild bind tears the just-bound connection rather than leaving nc live",
+    reachedRebuildFinalStep && rebuildNcAfterStop === undefined,
+    { reachedRebuildFinalStep, rebuildNcAfterStop: rebuildNcAfterStop === undefined ? "absent" : "present" },
+  );
 } finally {
+  await rebuildAgent?.stop().catch(() => {});
   await agent.stop().catch(() => {});
   broker.kill("SIGKILL");
   await awaitExit(broker);
@@ -220,7 +265,7 @@ try {
   for (const release of releases) release();
 }
 
-const EXPECTED_CELLS = 9;
+const EXPECTED_CELLS = 13;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);

@@ -1038,10 +1038,10 @@ export class CotalEndpoint extends EventEmitter {
     // every listener reads the same edge; MeshAgent carries its own `stopping` guard and so was
     // never the one exposed, which is the point.
     //
-    // Measured for the start() caller only, by the broker suite's mid-bind cell. doRebuild is
-    // covered by this being one shared unbranched statement both callers await. If this tail ever
-    // becomes caller-aware, or the emit splits per path, that reasoning expires and the rebuild
-    // race needs a cell of its own.
+    // Measured for the start() caller by the broker suite's mid-bind cell. doRebuild is
+    // also measured, by a separate cell that holds the rebuild's connectAndBind at
+    // armPlane3 after a successful first bind and lands stop() in that window (#1028).
+    // Shared-line reasoning is no longer the rebuild proof.
     if (this.stopped) return;
     this.emit("connection", { connected: true });
   }
