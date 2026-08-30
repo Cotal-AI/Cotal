@@ -1,0 +1,57 @@
+{
+  "suite": "bin/smoke/pr-head-gate.smoke.ts",
+  "guard": "an exact pull request head is green only when every workflow derived from the repository declarations exists for that PR and SHA and completed successfully",
+  "command": "pnpm smoke:pr-head-gate",
+  "completionMarker": "SUITE COMPLETE",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/pr-head-gate.json",
+  "mutations": [
+    {
+      "name": "missing expected workflow stops failing closed",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "if (candidates.length === 0) { missing.push(name); continue; }",
+      "replace": "if (candidates.length === 0) { continue; }",
+      "expectRed": "PR #921 head 711d69e0: Code Quality or another PR's run does not satisfy this PR",
+      "cell": "Code Quality or another PR's run does not satisfy this PR"
+    },
+    {
+      "name": "runs from another pull request satisfy the named workflow",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "run.pull_requests.some((pull) => pull.number === pr),",
+      "replace": "run.pull_requests.some((pull) => pull.number !== pr),",
+      "expectRed": "PR #921 head 71331c9a: Code Quality or another PR's run does not satisfy this PR",
+      "cell": "Code Quality or another PR's run does not satisfy this PR"
+    },
+    {
+      "name": "a run for another commit satisfies the exact head",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "run.head_sha === headSha &&",
+      "replace": "run.head_sha !== headSha &&",
+      "expectRed": "PR #921 head 71331c9a: Code Quality or another PR's run does not satisfy this PR",
+      "cell": "Code Quality or another PR's run does not satisfy this PR"
+    },
+    {
+      "name": "queued and running expected workflows count as green",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "if (run.status !== \"completed\") { pending.push(name); continue; }",
+      "replace": "if (run.status !== \"completed\") { continue; }",
+      "expectRed": "PR #1087 head 87e61678 positive mint control: minted but unfinished workflows are pending",
+      "cell": "minted but unfinished workflows are pending"
+    },
+    {
+      "name": "failed expected workflows count as green",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "if (run.conclusion !== \"success\") failing.push(name);",
+      "replace": "if (run.conclusion === \"success\") failing.push(name);",
+      "expectRed": "a completed non-success workflow is reported as failing, not missing or pending",
+      "cell": "completed non-success workflow is reported as failing"
+    },
+    {
+      "name": "unsupported workflow path glob is silently literalized",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "if (/[\\\\[\\]{}()+|]/.test(pattern)) throw new Error(`unsupported workflow path pattern: ${pattern}`);",
+      "replace": "if (false) throw new Error(`unsupported workflow path pattern: ${pattern}`);",
+      "expectRed": "unsupported GitHub glob syntax fails closed instead of being treated as a literal",
+      "cell": "unsupported GitHub glob syntax fails closed"
+    }
+  ]
+}
