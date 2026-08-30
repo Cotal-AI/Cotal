@@ -3,4 +3,4 @@
 "@cotal-ai/connector-core": patch
 ---
 
-Jcode credential mirroring pins copy and unlink through a Linux `/dev/fd` parent, and names a refusal when that traversal is missing.
+Jcode credential mirroring pins copy, mkdir, and unlink through one Linux `/dev/fd` parent walk, and names a refusal when that traversal is missing.

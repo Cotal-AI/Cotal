@@ -3,7 +3,7 @@
   "guard": "Jcode credential mirrors exactly reconcile all four source families, remove absent credentials, preserve unrelated state, and keep path safety intact",
   "command": "pnpm smoke:jcode-private-state",
   "progressPattern": "✓",
-  "minTicks": 16,
+  "minTicks": 19,
   "mutations": [
     {
       "name": "Jcode short socket alias targets managed home",
@@ -44,6 +44,22 @@
       "replace": "      renameSync(temp, join(dirname(destination), base));",
       "expectRed": "parent-swap after the write parent is pinned does not copy outside",
       "cell": "parent-swap after the write parent is pinned does not copy outside"
+    },
+    {
+      "name": "Jcode privateDirectory replace-symlink mkdir follows the destination path",
+      "file": "extensions/connector-jcode/src/private-state.ts",
+      "find": "        unlinkSync(leaf);\n        mkdirSync(leaf, { mode: 0o700 }); // pin-mkdir-replace-symlink",
+      "replace": "        rmSync(path, { force: true });\n        mkdirSync(path, { mode: 0o700 }); // pin-mkdir-replace-symlink",
+      "expectRed": "parent-swap after privateDirectory parent is pinned does not replace the outside file",
+      "cell": "parent-swap after privateDirectory parent is pinned does not replace the outside file"
+    },
+    {
+      "name": "Jcode privateDirectory absent mkdir follows the destination path",
+      "file": "extensions/connector-jcode/src/private-state.ts",
+      "find": "      mkdirSync(leaf, { mode: 0o700 }); // pin-mkdir-absent",
+      "replace": "      mkdirSync(path, { mode: 0o700 }); // pin-mkdir-absent",
+      "expectRed": "parent-swap after privateDirectory parent is pinned does not mkdir outside",
+      "cell": "parent-swap after privateDirectory parent is pinned does not mkdir outside"
     }
   ]
 }

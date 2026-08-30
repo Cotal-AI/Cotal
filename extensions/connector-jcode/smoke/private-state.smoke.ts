@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { copyFileSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { copyCredentialFile, jcodeCredentialMirrorInventory, mirrorJcodeCredentials, removeCredentialMirror, shortSocketHome } from "../src/private-state.js";
+import { copyCredentialFile, ensurePinnedPrivateDirectory, jcodeCredentialMirrorInventory, mirrorJcodeCredentials, removeCredentialMirror, shortSocketHome } from "../src/private-state.js";
 
 let pass = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
@@ -11,6 +11,17 @@ const check = (name: string, condition: boolean, actual?: unknown): void => {
   console.log(`  ✓ ${name}`);
 };
 const mode = (path: string) => statSync(path).mode & 0o777;
+const leafKind = (path: string): { kind: "file" | "dir" | "other" | "absent"; bytes: string | null } => {
+  try {
+    const st = lstatSync(path);
+    if (st.isDirectory()) return { kind: "dir", bytes: null };
+    if (st.isFile()) return { kind: "file", bytes: readFileSync(path, "utf8") };
+    return { kind: "other", bytes: null };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { kind: "absent", bytes: null };
+    throw error;
+  }
+};
 
 const root = mkdtempSync(join(tmpdir(), "cotal-jcode-private-state-"));
 try {
@@ -208,6 +219,85 @@ try {
         !existsSync(join(writePinOutside, "auth.json")) &&
         lstatSync(writePinParent).isSymbolicLink(),
     );
+
+    const pdControlParent = join(root, "pd-control-parent");
+    const pdControlOutside = join(root, "pd-control-outside");
+    mkdirSync(pdControlParent, { mode: 0o700 });
+    mkdirSync(pdControlOutside, { mode: 0o700 });
+    symlinkSync(join(pdControlParent, "elsewhere"), join(pdControlParent, "managed"));
+    writeFileSync(join(pdControlOutside, "managed"), "VICTIM-BYTES", { mode: 0o600 });
+    const pdControlPath = join(pdControlParent, "managed");
+    const pdControlSaved = `${pdControlParent}.real`;
+    lstatSync(pdControlPath);
+    renameSync(pdControlParent, pdControlSaved);
+    symlinkSync(pdControlOutside, pdControlParent, "dir");
+    rmSync(pdControlPath, { force: true });
+    mkdirSync(pdControlPath, { mode: 0o700 });
+    const pdControlVictim = leafKind(join(pdControlOutside, "managed"));
+    check(
+      "control: rmSync after privateDirectory lstat replaces the namesake file",
+      // existsSync stays true on the replacement directory. Inode numbers can reuse immediately, so
+      // the oracle is kind plus bytes, not existence and not inode equality.
+      pdControlVictim.kind === "dir" &&
+        pdControlVictim.bytes === null &&
+        existsSync(join(pdControlOutside, "managed")),
+      pdControlVictim,
+    );
+
+    const pdPinParent = join(root, "pd-pin-parent");
+    const pdPinOutside = join(root, "pd-pin-outside");
+    mkdirSync(pdPinParent, { mode: 0o700 });
+    mkdirSync(pdPinOutside, { mode: 0o700 });
+    symlinkSync(join(pdPinParent, "elsewhere"), join(pdPinParent, "managed"));
+    writeFileSync(join(pdPinOutside, "managed"), "VICTIM-BYTES", { mode: 0o600 });
+    const pdPinPath = join(pdPinParent, "managed");
+    const pdPinSaved = `${pdPinParent}.real`;
+    let pdPinError: unknown;
+    try {
+      ensurePinnedPrivateDirectory(pdPinPath, {
+        replaceSymlink: true,
+        beforeEnsure: () => {
+          renameSync(pdPinParent, pdPinSaved);
+          symlinkSync(pdPinOutside, pdPinParent, "dir");
+        },
+      });
+    } catch (error) {
+      pdPinError = error;
+    }
+    const pdPinVictim = leafKind(join(pdPinOutside, "managed"));
+    check(
+      "parent-swap after privateDirectory parent is pinned does not replace the outside file",
+      pdPinError === undefined &&
+        pdPinVictim.kind === "file" &&
+        pdPinVictim.bytes === "VICTIM-BYTES" &&
+        lstatSync(join(pdPinSaved, "managed")).isDirectory(),
+      { pdPinError: pdPinError instanceof Error ? pdPinError.message : pdPinError, pdPinVictim },
+    );
+
+    const pdMkParent = join(root, "pd-mkdir-parent");
+    const pdMkOutside = join(root, "pd-mkdir-outside");
+    mkdirSync(pdMkParent, { mode: 0o700 });
+    mkdirSync(pdMkOutside, { mode: 0o700 });
+    const pdMkPath = join(pdMkParent, "managed");
+    const pdMkSaved = `${pdMkParent}.real`;
+    let pdMkError: unknown;
+    try {
+      ensurePinnedPrivateDirectory(pdMkPath, {
+        beforeEnsure: () => {
+          renameSync(pdMkParent, pdMkSaved);
+          symlinkSync(pdMkOutside, pdMkParent, "dir");
+        },
+      });
+    } catch (error) {
+      pdMkError = error;
+    }
+    check(
+      "parent-swap after privateDirectory parent is pinned does not mkdir outside",
+      pdMkError === undefined &&
+        lstatSync(join(pdMkSaved, "managed")).isDirectory() &&
+        leafKind(join(pdMkOutside, "managed")).kind === "absent",
+      { pdMkError: pdMkError instanceof Error ? pdMkError.message : pdMkError },
+    );
   } else {
     const refuseHome = join(root, "managed");
     mkdirSync(refuseHome, { recursive: true, mode: 0o700 });
@@ -233,6 +323,9 @@ try {
     check("destination-symlink unlink keeps the outside target", true);
     check("control: copyFileSync after a parent-walk lstat writes the credential outside", true);
     check("parent-swap after the write parent is pinned does not copy outside", true);
+    check("control: rmSync after privateDirectory lstat replaces the namesake file", true);
+    check("parent-swap after privateDirectory parent is pinned does not replace the outside file", true);
+    check("parent-swap after privateDirectory parent is pinned does not mkdir outside", true);
   }
 
   console.log(`\n${pass} checks passed`);

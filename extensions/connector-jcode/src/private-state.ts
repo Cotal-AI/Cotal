@@ -43,11 +43,23 @@ function assertRelative(relativePath: string): void {
     throw new Error(`unsafe Jcode credential mirror path: ${relativePath}`);
 }
 
-function privateDirectory(path: string, { replaceSymlink = false, requireOwner = false }: { replaceSymlink?: boolean; requireOwner?: boolean } = {}): void {
+function privateDirectory(
+  path: string,
+  { replaceSymlink = false, requireOwner = false, beforeEnsure, pin }: { replaceSymlink?: boolean; requireOwner?: boolean; beforeEnsure?: () => void; pin: boolean },
+): void {
+  if (pin) {
+    ensurePinnedPrivateDirectory(path, { replaceSymlink, requireOwner, beforeEnsure });
+    return;
+  }
+  ensureUnpinnedPrivateDirectory(path, { replaceSymlink, requireOwner, beforeEnsure });
+}
+
+function ensureUnpinnedPrivateDirectory(path: string, { replaceSymlink = false, requireOwner = false, beforeEnsure }: { replaceSymlink?: boolean; requireOwner?: boolean; beforeEnsure?: () => void }): void {
   try {
     const stats = lstatSync(path);
     if (stats.isSymbolicLink()) {
       if (!replaceSymlink) throw new Error(`refusing symlinked Jcode private directory: ${path}`);
+      beforeEnsure?.();
       rmSync(path, { force: true });
       mkdirSync(path, { mode: 0o700 });
     } else if (!stats.isDirectory()) {
@@ -57,12 +69,49 @@ function privateDirectory(path: string, { replaceSymlink = false, requireOwner =
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    beforeEnsure?.();
     mkdirSync(path, { mode: 0o700 });
   }
   hardenPrivate(path, "dir");
   // Verify owner after creation and hardening as well. On POSIX a privileged process can chmod an
   // attacker-owned /tmp directory, so permissions alone never establish namespace ownership.
   if (requireOwner) assertCurrentUserOwns(path, lstatSync(path).uid);
+}
+
+/** Ensure one directory through a pinned parent fd. `beforeEnsure` runs after the parent is
+ * pinned and the leaf is classified, before unlink/mkdir, so the smoke can swap that parent. */
+export function ensurePinnedPrivateDirectory(
+  path: string,
+  { replaceSymlink = false, requireOwner = false, beforeEnsure }: { replaceSymlink?: boolean; requireOwner?: boolean; beforeEnsure?: () => void } = {},
+): void {
+  const parent = dirname(path);
+  const name = basename(path);
+  if (name === "" || name === "." || name === "..") throw new Error(`unsafe Jcode private directory: ${path}`);
+  const dirFd = openPinnedRoot(parent);
+  try {
+    const leaf = containedPath(dirFd, name);
+    try {
+      const stats = lstatSync(leaf);
+      if (stats.isSymbolicLink()) {
+        if (!replaceSymlink) throw new Error(`refusing symlinked Jcode private directory: ${path}`);
+        beforeEnsure?.();
+        unlinkSync(leaf);
+        mkdirSync(leaf, { mode: 0o700 }); // pin-mkdir-replace-symlink
+      } else if (!stats.isDirectory()) {
+        throw new Error(`Jcode private path is not a directory: ${path}`);
+      } else if (requireOwner) {
+        assertCurrentUserOwns(path, stats.uid);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      beforeEnsure?.();
+      mkdirSync(leaf, { mode: 0o700 }); // pin-mkdir-absent
+    }
+    hardenPrivate(leaf, "dir");
+    if (requireOwner) assertCurrentUserOwns(path, lstatSync(leaf).uid);
+  } finally {
+    closeSync(dirFd);
+  }
 }
 
 function assertCurrentUserOwns(path: string, uid: number): void {
@@ -181,6 +230,22 @@ function openOrCreateContainedDir(dirFd: number, name: string, displayPath: stri
   }
 }
 
+function walkPinnedParents(home: string, parentRelative: string, holder: { fd: number }, create: boolean): void {
+  let current = home;
+  for (const part of parentRelative.split(sep).filter(Boolean)) {
+    current = join(current, part);
+    let next: number;
+    try {
+      next = create ? openOrCreateContainedDir(holder.fd, part, current) : openContainedDir(holder.fd, part);
+    } catch (error) {
+      if (create || (error as NodeJS.ErrnoException).code === "ENOENT") throw error;
+      mapPinnedOpenError(error, holder.fd, part, current);
+    }
+    closeSync(holder.fd);
+    holder.fd = next;
+  }
+}
+
 /** Remove only one exact connector-owned mirror destination. Each parent is opened with
  * O_NOFOLLOW|O_DIRECTORY through the previous fd, then the leaf is unlinked through that pinned
  * parent. A parent swapped for a symlink after it was walked cannot redirect the unlink. Optional
@@ -192,31 +257,24 @@ export function removeCredentialMirror(home: string, destinationRelative: string
   assertRelative(parentRelative);
   const base = basename(destination);
 
-  let dirFd: number;
+  let holder: { fd: number };
   try {
-    dirFd = openPinnedRoot(home);
+    holder = { fd: openPinnedRoot(home) };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
   }
 
   try {
-    let current = home;
-    for (const part of parentRelative.split(sep).filter(Boolean)) {
-      current = join(current, part);
-      let next: number;
-      try {
-        next = openContainedDir(dirFd, part);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-        mapPinnedOpenError(error, dirFd, part, current);
-      }
-      closeSync(dirFd);
-      dirFd = next;
+    try {
+      walkPinnedParents(home, parentRelative, holder, false);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
     }
 
     try {
-      if (lstatSync(containedPath(dirFd, base)).isDirectory())
+      if (lstatSync(containedPath(holder.fd, base)).isDirectory())
         throw new Error(`Jcode credential mirror destination is a directory: ${destination}`);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
@@ -225,14 +283,14 @@ export function removeCredentialMirror(home: string, destinationRelative: string
 
     beforeUnlink?.();
     try {
-      unlinkSync(containedPath(dirFd, base));
+      unlinkSync(containedPath(holder.fd, base));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
       throw error;
     }
     return true;
   } finally {
-    closeSync(dirFd);
+    closeSync(holder.fd);
   }
 }
 
@@ -259,18 +317,12 @@ export function copyCredentialFile(home: string, source: string, destinationRela
   const parentRelative = relative(home, dirname(destination));
   assertRelative(parentRelative);
   const base = basename(destination);
-  let dirFd = openPinnedRoot(home);
+  const holder = { fd: openPinnedRoot(home) };
   try {
-    let current = home;
-    for (const part of parentRelative.split(sep).filter(Boolean)) {
-      current = join(current, part);
-      const next = openOrCreateContainedDir(dirFd, part, current);
-      closeSync(dirFd);
-      dirFd = next;
-    }
+    walkPinnedParents(home, parentRelative, holder, true);
 
     try {
-      if (lstatSync(containedPath(dirFd, base)).isDirectory())
+      if (lstatSync(containedPath(holder.fd, base)).isDirectory())
         throw new Error(`Jcode credential mirror destination is a directory: ${destination}`);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -279,19 +331,19 @@ export function copyCredentialFile(home: string, source: string, destinationRela
     beforeCopy?.();
     // Single-component temp under the pinned parent. A full-path temp re-resolves swapped ancestors.
     const tempName = `.${randomBytes(6).toString("hex")}.tmp`;
-    const temp = containedPath(dirFd, tempName);
+    const temp = containedPath(holder.fd, tempName);
     try {
       copyFileSync(source, temp, constants.COPYFILE_EXCL);
       hardenPrivate(temp, "file");
-      renameSync(temp, containedPath(dirFd, base));
+      renameSync(temp, containedPath(holder.fd, base));
     } finally {
       rmSync(temp, { force: true });
     }
-    if (lstatSync(containedPath(dirFd, base)).isSymbolicLink())
+    if (lstatSync(containedPath(holder.fd, base)).isSymbolicLink())
       throw new Error(`Jcode credential mirror remained symlinked: ${destination}`);
     return true;
   } finally {
-    closeSync(dirFd);
+    closeSync(holder.fd);
   }
 }
 
@@ -358,7 +410,7 @@ export function jcodeCredentialMirrorInventory(home: string, sources: Credential
  * rotating auth files; current jcode rejects those links in its external mirror, so the connector
  * owns a fresh, owner-only copy instead. */
 export function mirrorJcodeCredentials(home: string, sources = credentialSources()): void {
-  privateDirectory(home);
+  privateDirectory(home, { pin: true });
   for (const entry of jcodeCredentialMirrorInventory(home, sources))
     copyCredentialFile(home, entry.source, entry.destinationRelative);
 }
@@ -379,7 +431,7 @@ export interface ShortSocketHome {
 export function shortSocketHome(home: string): ShortSocketHome {
   const id = createHash("sha256").update(resolve(home)).digest("hex").slice(0, 12);
   const socketDir = join("/tmp", `jc-${id}`);
-  privateDirectory(socketDir, { requireOwner: true });
+  privateDirectory(socketDir, { requireOwner: true, pin: false });
   const alias = join(socketDir, "home");
   try {
     const stats = lstatSync(alias);
