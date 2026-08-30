@@ -1055,7 +1055,9 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         role: z
           .string()
           .optional()
-          .describe("Optional role for the new peer (e.g. worker, reviewer); overrides the persona file's role."),
+          .describe(
+            "Optional role for the new peer (e.g. worker, reviewer); overrides the persona file's role. A role of `manager` requires the persona to carry capabilities: [spawn]: a seat that presents as a manager but cannot spawn is refused at spawn time. Ask an operator to add the grant to the persona file (a persona you defined with cotal_persona cannot declare it itself).",
+          ),
         agent: z
           .string()
           .optional()
