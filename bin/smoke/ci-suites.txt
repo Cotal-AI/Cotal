@@ -723,6 +723,15 @@ smoke:transport-liveness:broker
 # unchanged.
 smoke:connection-status
 
+# A membership-watch CONSUMER.DELETE timeout is best-effort cleanup, never a process kill.
+# Mutation-proofed - packages/core/smoke/mutations/disarm-delete-timeout.json. Appended so every
+# existing shard assignment remains unchanged.
+smoke:disarm-delete-timeout
+# Credential-bearing control-transport paths must be owned before auth persistence and broker spawn.
+# Mutation-proofed - bin/smoke/mutations/control-transport-crash-cleanup.json. Appended so every
+# existing shard assignment remains unchanged.
+smoke:control-transport-crash-cleanup
+
 # #912: the pure function shard.mjs calls at its break point to name the suites its own partition
 # never reached. Appended so every existing shard assignment remains unchanged.
 smoke:shard-never-ran
