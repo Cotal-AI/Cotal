@@ -47,7 +47,7 @@ import {
   controlServiceSubject,
   eventChannelPrincipal,
 } from "@cotal-ai/core";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, findCotalRoot, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SecretStore, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -56,7 +56,7 @@ import {
   type RuntimeMode,
 } from "./runtime/index.js";
 import { AttachEndpoint, type SessionEstablishment } from "./attach-endpoint.js";
-import { makeManagerEndpointEvictor } from "./endpoint-evict.js";
+import { makeManagerEndpointEvictionEvidence, makeManagerEndpointEvictor } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec } from "./launch.js";
@@ -141,7 +141,7 @@ import {
   type Identity,
   type ServiceNameAuthority,
 } from "@cotal-ai/core";
-import { MANAGER_ENDPOINT, managerClusterArtifacts, managerCommandDefs, managerContractArtifactValues, type ManagerStatus } from "./manager-service-contract.js";
+import { MANAGER_ENDPOINT, managerClusterArtifacts, managerCommandDefs, managerContractArtifactValues, type ManagerConnectorStatus, type ManagerStatus } from "./manager-service-contract.js";
 import type { NatsConnection, Subscription } from "@nats-io/transport-node";
 import type { KV } from "@nats-io/kv";
 import {
@@ -701,6 +701,8 @@ export class Manager {
   /** See {@link ManagerOptions.installedExtensions}. */
   private readonly installedExtensions: boolean;
   private readonly runtime: Runtime;
+  /** Internal test seam. Production leaves this undefined and uses the scoped delivery-admin evictor. */
+  private staticLifecycleEvict?: (principal: string) => Promise<import("@cotal-ai/core").EvictionResult>;
   private readonly preserveStopTimeoutMs: number;
   private readonly agents = new Map<string, ManagedAgent>();
   /** Names whose spawn is in flight (reserved synchronously before the provision await) — counted
@@ -803,6 +805,9 @@ export class Manager {
   private agentGoals = new Map<string, GoalRef>();
   /** Process start, for the served `status` uptime. */
   private readonly startedAtMs = Date.now();
+  /** Connector harness paths resolved ONCE at boot. Missing binaries do not stop unrelated manager
+   * work, but they are named before the manager reports ready and remain visible in manager status. */
+  private connectorStatuses: ManagerConnectorStatus[] = [];
   /** Static aliases whose startup exact-op terminal is still in flight. Scoped per alias: control
    * serves during the sweep, but no caller can reuse or attach an alias the sweep still owns. */
   private readonly reconcilingAliases = new Set<string>();
@@ -951,6 +956,7 @@ export class Manager {
   }
 
   async start(): Promise<void> {
+    await this.inspectConnectorsAtBoot();
     await this.attach.start();
     // In auth mode the manager is just another user in the space's account — it mints
     // itself creds from the same signing key it uses for the agents it spawns. The signer comes
@@ -1665,18 +1671,32 @@ export class Manager {
    *  touches NEITHER the lease NOR the endpoints — the caller owns those. */
   private async teardownManagedAgents(): Promise<void> {
     const managed = [...this.agents.values()];
+    const failures: string[] = [];
     for (const a of managed) {
       // Free the slot + hard-stop each; `stopHandle` is best-effort (never throws — see it), so one bad
       // stop can't strand the rest, and every snapshot entry is deprovisioned below regardless.
       this.agents.delete(a.name);
       this.stopHandle(a, false);
     }
+    // A runtime stop request is not exit proof. Do not release the manager lease or registration
+    // while any seat may still hold this instance's broker rails: that creates the exact orphan
+    // window where a successor sees a dead manager but live predecessor authority. Every shipped
+    // runtime now supplies waitForExit; absence or timeout is a failed shutdown, never a clean one.
+    await Promise.all(managed.map(async (a) => {
+      try {
+        await this.awaitHandleExit(a.handle);
+      } catch (e) {
+        failures.push(`${a.name}: ${(e as Error).message}`);
+      }
+    }));
     // Deprovision EVERY snapshot entry regardless of whether its stop failed (allSettled + a loud log).
     await Promise.allSettled(
       managed.filter((a) => !a.suppressCleanup).map((a) =>
         this.deprovision(a).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${(e as Error).message}`)),
       ),
     );
+    if (failures.length)
+      throw new Error(`manager shutdown could not prove every seat exited: ${failures.join("; ")}`);
   }
 
   private async stopRetainedAgentsOnExit(): Promise<void> {
@@ -3192,6 +3212,44 @@ export class Manager {
     return this.installedExtensions ? manifestExtensionNames("connector") : registry.all<Connector>("connector").map((c) => c.name);
   }
 
+  /** Resolve every installed/registered connector's declared harness binaries before the manager
+   * reports ready. A missing harness degrades only that connector, never unrelated lifecycle work:
+   * boot continues, but prints a named refusal and records it on both manager status surfaces. */
+  private async inspectConnectorsAtBoot(): Promise<void> {
+    const rows: ManagerConnectorStatus[] = [];
+    let declared: Array<{ name: string; requires: readonly string[] }>;
+    if (this.installedExtensions) {
+      try {
+        declared = loadExtensionsManifest().extensions.flatMap((ext) => extensionConnectors(ext));
+      } catch (error) {
+        const reason = (error as Error).message;
+        console.error(`! manager boot: connector inventory unavailable - ${reason}`);
+        this.connectorStatuses = [{ agent: "(inventory)", state: "unavailable", binaries: {}, reason }];
+        return;
+      }
+    } else {
+      declared = registry.all<Connector>("connector").map((connector) => ({ name: connector.name, requires: connector.requires ?? [] }));
+    }
+    for (const connector of declared) {
+      const name = connector.name;
+      const binaries: Record<string, string> = {};
+      const missing: string[] = [];
+      for (const bin of connector.requires) {
+        const path = resolveOnPath(bin);
+        if (path) binaries[bin] = path;
+        else missing.push(bin);
+      }
+      if (missing.length) {
+        const reason = `${name} harness needs ${missing.join(", ")} on PATH - not found`;
+        rows.push({ agent: name, state: "unavailable", binaries, reason });
+        console.error(`! manager boot: connector ${name} unavailable - ${reason}`);
+      } else {
+        rows.push({ agent: name, state: "available", binaries });
+      }
+    }
+    this.connectorStatuses = rows.sort((a, b) => a.agent.localeCompare(b.agent));
+  }
+
   /** Return connector-provided model catalogs for selector UIs. Optional by connector: a host with no
    *  local model-list API reports `supported:false` rather than blocking the manager. A connector that
    *  fails to import shows an `error:` row (from manifest enumeration) and never blocks the others. */
@@ -3426,9 +3484,15 @@ export class Manager {
     // Harness preflight before reserving a slot or minting — a missing `claude`/`opencode` binary
     // fails here with a clear name, not obscurely at process spawn. No fallback. All synchronous, so
     // the reserve gate stays atomic. (The connector itself was resolved up top, before the capacity gate.)
-    const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(bin));
-    if (missing.length)
-      return { ok: false, error: `${agent} harness needs ${missing.join(", ")} on PATH - not found` };
+    const bootStatus = this.connectorStatuses.find((row) => row.agent === agent);
+    if (bootStatus?.state === "unavailable") return { ok: false, error: bootStatus.reason };
+    // A connector registered after boot has no inventory row. Keep the existing pre-mint backstop
+    // for that dynamic library-composition case; ordinary installed connectors were checked at boot.
+    if (!bootStatus) {
+      const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(bin));
+      if (missing.length)
+        return { ok: false, error: `${agent} harness needs ${missing.join(", ")} on PATH - not found` };
+    }
     // Resume is a connector capability: reject an unsupported resume HERE, before the reserve/mint, so
     // it can never provision creds + durables and then throw at buildLaunch (mint-then-orphan). Same
     // reject-before-side-effects window as the harness preflight above; buildLaunch stays the backstop.
@@ -3776,6 +3840,7 @@ export class Manager {
         events,
         mcpServers,
         envAllow,
+        resolvedBinaries: bootStatus?.binaries,
         // So a connector that keeps per-agent local state can root it at the workspace, not the
         // (possibly per-agent) launch cwd below. The cwd itself rides runtime.spawn, not the launch.
         workspaceRoot: this.workspaceRoot,
@@ -4680,6 +4745,7 @@ export class Manager {
       runtime: this.runtime.kind,
       agentCount: this.agents.size,
       uptimeMs: Date.now() - this.startedAtMs,
+      connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),
     };
   }
 
@@ -4892,7 +4958,12 @@ export class Manager {
       // one). Key-pinned to this instance's own status key on the SAME executor.
       await writeServiceStatus(recordsKv, {
         endpoint: MANAGER_ENDPOINT, instanceId: iid, epoch: observed.processEpoch,
-        status: { state: SERVICE_READY, epoch: observed.processEpoch, observedSpecRevision: registrationRevision },
+        status: {
+          state: SERVICE_READY,
+          epoch: observed.processEpoch,
+          observedSpecRevision: registrationRevision,
+          connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),
+        },
         readProcessEpoch: async () => {
           const g = await fence.observe();
           if (g === null) throw new Error(`no issuance gate for ${MANAGER_ENDPOINT}/${iid}`);
@@ -5703,6 +5774,12 @@ export class Manager {
     const acceptedRenewal = a.staticCredentialRenewal;
     if (acceptedRenewal) await acceptedRenewal.catch(() => {});
     const opId = retireOpId(a.lifecycleUid);
+    const evict = this.staticLifecycleEvict ?? makeManagerEndpointEvictionEvidence({
+      space: this.space,
+      servers: this.servers ?? DEFAULT_SERVER,
+      auth: this.auth!,
+      log: (line) => console.error(`static retirement ${a.name}: ${line}`),
+    });
     const cleanup = async (): Promise<void> => {
       const secrets = this.secrets;
       const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid);
@@ -5723,8 +5800,11 @@ export class Manager {
         }
         await runStaticTerminal(
           t,
-          { owner: DEV_OWNER, alias: a.name, actor: a.id, lifecycleUid: a.lifecycleUid, opId },
-          { cleanup, log: (line) => console.error(`static retirement ${a.name}: ${line}`) },
+          {
+            owner: DEV_OWNER, alias: a.name, actor: a.id, lifecycleUid: a.lifecycleUid, opId,
+            managerInstance: this.managerInstanceId, managerProcessUid: this.managerLifecycleUid,
+          },
+          { cleanup, evict, log: (line) => console.error(`static retirement ${a.name}: ${line}`) },
         );
       });
       this.retiredPrincipals.add(principalKey(DEV_OWNER, a.id).key);
@@ -5786,8 +5866,8 @@ export class Manager {
   /** The Unit B reconciliation (F3 "no active orphan"): ensure the authority stores, then sweep
    *  every durable slot row and act by the TOTAL resume table — `provisioning`/`terminalizing`
    *  re-drive the exact-op terminal; an `active` row survives ONLY when a LIVE managed agent this
-   *  process owns backs it at the same uid (`adopted`), else its process is gone and it
-   *  terminalizes; `retired` rows seed the F5 refusal index. Two call sites: the BOOT sweep
+   *  manager process owns backs it at the same uid (`adopted`), else no managed owner claimed it and
+   *  its broker authority is contained and terminalized; `retired` rows seed the F5 refusal index. Two call sites: the BOOT sweep
    *  (`postAdoption=false`, under the lease before control serving) DEFERS active-non-adopted
    *  slots while a resume is still pending (adoption runs after it); the POST-ADOPTION sweep
    *  (`postAdoption=true`, inside finalizeResume while `resumeRequired` still fences ordinary

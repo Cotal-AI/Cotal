@@ -74,7 +74,10 @@ export function resolveOnPath(bin: string, env: NodeJS.ProcessEnv = process.env)
     for (const cand of candidates(base)) {
       try {
         accessSync(cand, constants.X_OK);
-        return cand;
+        // A relative PATH entry is resolved against this process's cwd during lookup. Return that
+        // exact ABSOLUTE executable: a managed launch may use a different cwd, where replaying the
+        // relative spelling would select another file or fail after boot had declared it available.
+        return resolve(cand);
       } catch {
         // not this candidate — keep trying
       }

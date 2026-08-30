@@ -116,7 +116,7 @@ export const piConnector: Connector = {
 
     env.COTAL_CONTROL_SOCKET = control.path;
     if (sessionStatePath) env.COTAL_PI_SESSION_STATE = sessionStatePath;
-    return { command: "pi", args, env, control, sessionStatePath };
+    return { command: opts.resolvedBinaries?.pi ?? "pi", args, env, control, sessionStatePath };
   },
 };
 

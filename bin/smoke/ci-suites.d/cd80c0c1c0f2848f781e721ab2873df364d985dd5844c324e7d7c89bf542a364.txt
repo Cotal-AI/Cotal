@@ -1,0 +1,3 @@
+# PATH permits relative directory entries, but manager-supervised launches can use another cwd.
+# This pins the shared resolver to the exact absolute executable found at lookup time.
+smoke:bin-path

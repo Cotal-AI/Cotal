@@ -170,7 +170,7 @@ try {
   const s1 = r1.reply.data as ManagerStatus;
   check("epCall(one, status) answers ok with the digest-bound typed reply", r1.reply.ok === true, r1.reply);
   check("the status is the manager's real health (instanceId = uid, runtime pty, 0 agents)",
-    s1.instanceId === iid && s1.runtime === "pty" && s1.agentCount === 0 && s1.uptimeMs >= 0, s1);
+    s1.instanceId === iid && s1.runtime === "pty" && s1.agentCount === 0 && s1.uptimeMs >= 0 && Array.isArray(s1.connectors), s1);
   check("the reply subject attributes the registered incarnation (instanceId + epoch 0)",
     r1.responder.instanceId === iid && r1.responder.epoch === 0, r1.responder);
 

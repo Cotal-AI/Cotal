@@ -1,0 +1,21 @@
+{
+  "suite": "extensions/connector-claude-code/smoke/activation-wake.smoke.ts",
+  "guard": "a false-to-true claude/channel activation re-fires the remembered focus mention before considering buffered wake state",
+  "command": "pnpm --filter @cotal-ai/connector-core... build && pnpm smoke:claude-activation-wake",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/activation-wake-reconcile.json",
+  "why": [
+    "The focus mention is ack-dropped at ingest, so pendingWake() is zero and no inbox or JetStream redelivery can satisfy the activation assertion.",
+    "The mutation deletes the unique mention-first reconcile line only. The buffered-wake fallback remains, which proves the focus assertion depends on the exact production path rather than merely on activation doing some work."
+  ],
+  "mutations": [
+    {
+      "name": "activation skips the remembered focus mention and falls through to buffered wake state",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "        if (pendingMentionWake) nudge(pendingMentionWake.item, pendingMentionWake.hint, true);\n        else if (agent.pendingWake() > 0) nudge();",
+      "replace": "        if (agent.pendingWake() > 0) nudge();",
+      "expectRed": "activation re-fires the remembered focus mention",
+      "cell": "activation re-fires the remembered focus mention",
+      "note": "The buffered fallback cannot recover this message: focus ingest already acknowledged and removed its body, so the activation notice remains absent."
+    }
+  ]
+}
