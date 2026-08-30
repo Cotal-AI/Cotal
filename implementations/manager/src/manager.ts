@@ -602,6 +602,9 @@ export interface SpawnAcceptance {
   uid: string;
   goalId: string;
   fingerprint: string;
+  /** The connector-selected readiness budget persisted on this goal. A synchronous follower must
+   *  outlive it; otherwise it can time out while the manager is still legitimately waiting. */
+  readinessDeadlineMs: number;
   executor: { lifecycleUid: string; epoch: number };
 }
 
@@ -5631,13 +5634,13 @@ export class Manager {
         // exists that early — the goal spec does not carry it and the terminal does not exist yet.
         // A same-goalId attempt that loses the bind while the winner is still in flight can then
         // serve what the winner actually allocated instead of inventing an empty identity.
-        const idx = await recordGoalIndex(gw.ctx, ref, executor.lifecycleUid, { name, actor: agentTriple.actor, uid: agentTriple.uid });
+        const idx = await recordGoalIndex(gw.ctx, ref, executor.lifecycleUid, { name, actor: agentTriple.actor, uid: agentTriple.uid, readinessDeadlineMs: readinessTimeoutMs });
         // A create loss is an idempotent retry ONLY for the same incarnation. A FOREIGN iid means a
         // sibling instance accepted this goalId (the live vector is a client retry over ANYCAST, not
         // a journal consumer): this attempt provisions nothing and answers with the winner's floor,
         // or refuses if that instance never persisted one.
         if (!idx.recorded && idx.existing.iid !== executor.lifecycleUid) {
-          acceptance = this.acceptanceFromIndex(idx.existing, goalId, fingerprint, executor);
+          acceptance = await this.acceptanceFromIndex(idx.existing, ref, goalId, fingerprint, executor);
           resolveAccept(acceptance);
           // No claim needed here: `ownsGoal` is still false, so the commit path refuses this attempt.
           throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted by instance "${idx.existing.iid}"; that instance's acceptance is served and this attempt provisions nothing (SPEC 13.6)`);
@@ -5673,7 +5676,7 @@ export class Manager {
           acceptedAt,
           readinessDeadlineMs: readinessTimeoutMs,
         });
-        acceptance = { name, owner: agentTriple.owner, actor: agentTriple.actor, uid: agentTriple.uid, goalId, fingerprint, executor };
+        acceptance = { name, owner: agentTriple.owner, actor: agentTriple.actor, uid: agentTriple.uid, goalId, fingerprint, readinessDeadlineMs: readinessTimeoutMs, executor };
         this.goalAcceptances.set(goalId, acceptance);
         this.agentGoals.set(name, ref); // M4: a despawn of this name mid-goal drives the cancel path
         resolveAccept(acceptance);
@@ -5708,10 +5711,13 @@ export class Manager {
   /** H2: an acceptance served from a WINNER'S durable acceptance floor (the goal-index entry it
    *  wrote before its own ack). Refuses `unavailable` rather than inventing one — see
    *  {@link cachedSpawnAcceptance} for why an empty identity is never an acceptable answer. */
-  private acceptanceFromIndex(entry: GoalIndexEntry, goalId: string, fingerprint: string, executor: { lifecycleUid: string; epoch: number }): SpawnAcceptance {
+  private async acceptanceFromIndex(entry: GoalIndexEntry, ref: GoalRef, goalId: string, fingerprint: string, executor: { lifecycleUid: string; epoch: number }): Promise<SpawnAcceptance> {
     if (entry.allocated === undefined)
       throw new EpEnvelopeError("unavailable", `goal "${goalId}" was accepted by instance "${entry.iid}", which persisted no acceptance floor; its allocated identity is not readable from here (SPEC 13.6)`);
-    return { name: entry.allocated.name, owner: DEV_OWNER, actor: entry.allocated.actor, uid: entry.allocated.uid, goalId, fingerprint, executor };
+    const readinessDeadlineMs = entry.allocated.readinessDeadlineMs ?? (await readGoalSpec(this.goalWriter!.ctx, ref))?.value.readinessDeadlineMs;
+    if (readinessDeadlineMs === undefined)
+      throw new EpEnvelopeError("unavailable", `goal "${goalId}" is accepted but its readiness deadline is not readable; a synchronous follower cannot bound its wait honestly (SPEC 13.6)`);
+    return { name: entry.allocated.name, owner: DEV_OWNER, actor: entry.allocated.actor, uid: entry.allocated.uid, goalId, fingerprint, readinessDeadlineMs, executor };
   }
 
   /** Reconstruct a cached acceptance for a same-goalId retry NOT in the live map (a prior incarnation
@@ -5727,13 +5733,15 @@ export class Manager {
    *  `unavailable`, never a hollow success. */
   private async cachedSpawnAcceptance(ref: GoalRef, goalId: string, fingerprint: string, executor: { lifecycleUid: string; epoch: number }): Promise<SpawnAcceptance> {
     const entry = await readGoalIndex(this.goalWriter!.ctx, ref);
-    if (entry?.allocated !== undefined) return this.acceptanceFromIndex(entry, goalId, fingerprint, executor);
+    if (entry?.allocated !== undefined) return this.acceptanceFromIndex(entry, ref, goalId, fingerprint, executor);
     // The index is CLEARED at terminal, so a settled goal legitimately has no entry: fall back to
     // the terminal's data, which carries the same identity for exactly that case.
     const result = await readGoalResult(this.goalWriter!.ctx, ref);
     const d = (result?.data ?? {}) as { name?: string; id?: string; lifecycleUid?: string };
-    if (typeof d.name === "string" && d.name.length > 0 && typeof d.id === "string" && d.id.length > 0 && typeof d.lifecycleUid === "string" && d.lifecycleUid.length > 0)
-      return { name: d.name, owner: DEV_OWNER, actor: d.id, uid: d.lifecycleUid, goalId, fingerprint, executor };
+    const spec = await readGoalSpec(this.goalWriter!.ctx, ref);
+    const readinessDeadlineMs = spec?.value.readinessDeadlineMs;
+    if (typeof d.name === "string" && d.name.length > 0 && typeof d.id === "string" && d.id.length > 0 && typeof d.lifecycleUid === "string" && d.lifecycleUid.length > 0 && readinessDeadlineMs !== undefined)
+      return { name: d.name, owner: DEV_OWNER, actor: d.id, uid: d.lifecycleUid, goalId, fingerprint, readinessDeadlineMs, executor };
     throw new EpEnvelopeError("unavailable", `goal "${goalId}" is already accepted but its allocated identity is not readable (no acceptance floor, and no terminal carrying one); retry (SPEC 13.6)`);
   }
 

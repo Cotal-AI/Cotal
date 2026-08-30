@@ -71,7 +71,8 @@ watching. See [transport.md](transport.md).
 `cotal up` reports the daemon **only when it is actually serving**. If a daemon it started exits
 without taking the single-flight lease because another daemon holds it, or because a crashed
 holder's lease has not expired yet. `up` says so and exits non-zero instead of printing a healthy control plane over a
-daemon that is not there. The daemon writes its own reason to `.cotal/delivery.log`.
+daemon that is not there. The daemon writes its own reason to `.cotal/delivery.<key>.log`, the log
+for the space it serves ([Config](config.md#project-files)).
 
 **Open dev mode has no delivery daemon.** Open mode is deliberately **live-only**: there is no
 trusted reader, so there is no durable backstop. Run an auth mesh if you need durable channels.

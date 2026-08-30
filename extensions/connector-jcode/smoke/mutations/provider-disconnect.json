@@ -34,7 +34,7 @@
     {
       "name": "M4 restore the shipped losing-race exit: one transient replacement failure kills the seat",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "          process.stderr.write(\n            `[cotal-jcode] private Harness replacement not ready yet; retrying inside its one recovery window: ${(error as Error).message}\\n`,\n          );\n          await sleep(Math.min(BRIDGE_RECOVERY_RETRY_MS, remaining));",
+      "find": "          writeJcodeDiagnostic(\n            `[cotal-jcode] private Harness replacement not ready yet; retrying inside its one recovery window: ${(error as Error).message}\\n`,\n          );\n          await sleep(Math.min(BRIDGE_RECOVERY_RETRY_MS, remaining));",
       "replace": "          throw error;",
       "expectRed": "provider disconnect survives a transient replacement loss inside the bounded recovery window (#971)",
       "cell": "provider disconnect survives a transient replacement loss inside the bounded recovery window (#971)"

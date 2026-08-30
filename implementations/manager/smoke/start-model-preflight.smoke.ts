@@ -187,7 +187,7 @@ registry.register(recNoResumeCon);
 
   check("claude.requires == [claude]", JSON.stringify(claudeConnector.requires) === '["claude"]');
   check("opencode.requires == [opencode]", JSON.stringify(opencodeConnector.requires) === '["opencode"]');
-  check("hermes.requires == [hermes]", JSON.stringify(hermesConnector.requires) === '["hermes"]');
+  check("hermes.requires == [uv]", JSON.stringify(hermesConnector.requires) === '["uv"]');
 
   // Hermes is Unix-only: on win32 buildLaunch throws BEFORE producing a spec — assert that guard here
   // and skip the Hermes model rows below (they'd all throw). claude + opencode still run on both OSes.

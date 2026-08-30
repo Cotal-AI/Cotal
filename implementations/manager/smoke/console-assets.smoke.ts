@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
 import { createConnection } from "node:net";
 import { join } from "node:path";
-import { AttachEndpoint } from "../dist/attach-endpoint.js";
+
+const { AttachEndpoint } = await import(new URL("../dist/attach-endpoint.js", import.meta.url).href) as typeof import("../src/attach-endpoint.js");
 
 let failures = 0;
 

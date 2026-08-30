@@ -120,6 +120,10 @@ try {
   let expiringReads = 0;
   let failedRebuildLogStart = -1;
   const expiringErrors: string[] = [];
+  // Recoverable notices — the failed renewal and the pre-dial refusal below — ride `warning`,
+  // not `error`: Node rethrows an unhandled `error` and would kill a host the endpoint is still
+  // surviving (#891). The subject here is that the refusal is LOUD and names the renewal path.
+  const expiringWarnings: string[] = [];
   const expiringSource = () => {
     expiringReads++;
     if (expiringReads <= 3) {
@@ -142,6 +146,7 @@ try {
     watchPresence: false,
   });
   expiringEp.on("error", (e: Error) => { expiringErrors.push(e.message); });
+  expiringEp.on("warning", (e: Error) => { expiringWarnings.push(e.message); });
   await expiringEp.start();
   let recovered = false;
   const recoveryDeadline = Date.now() + 15_000;
@@ -167,8 +172,8 @@ try {
   );
   check(
     "the pre-dial refusal is loud and names the failing renewal path",
-    expiringErrors.some((m) => /creds have expired.*renewal.*failing/.test(m)),
-    expiringErrors,
+    expiringWarnings.some((m) => /creds have expired.*renewal.*failing/.test(m)),
+    { warnings: expiringWarnings, errors: expiringErrors },
   );
   await expiringEp.stop();
 

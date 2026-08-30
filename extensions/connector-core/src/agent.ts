@@ -32,11 +32,10 @@ import type { AgentConfig } from "./config.js";
 // re-exported so connector consumers keep importing them from `@cotal-ai/connector-core`.
 export type { AttentionMode, ChannelMode };
 
-/** Client-side request window for the manager's readiness-waiting `start` op (#159 B1): the manager
- *  replies only on a REAL outcome — presence join, process exit, or its ~30s readiness backstop —
- *  so a spawn request must OUTLIVE that window, not the 5s op default. The tier rule forbids
- *  importing the manager's READINESS_TIMEOUT_MS here; the launch-parity smoke enforces the
- *  relation by test. */
+/** Client-side floor for a spawn action's submit + follow. The manager acceptance carries the exact
+ *  connector-selected readiness budget, and core extends the follow through that budget plus
+ *  delivery margin. This floor still outlives the manager's generic 30s default and protects
+ *  older responders whose acceptance predates that field. */
 export const SPAWN_TIMEOUT_MS = 40_000;
 
 /** Grace for a mesh op issued while the link is still coming up. `start()` deliberately returns
@@ -1185,10 +1184,9 @@ export class MeshAgent extends EventEmitter {
 
   // ---- supervision ---------------------------------------------------------
 
-  /** Ask the manager to spawn a new teammate into this space (its `start` op).
-   *  #159 B1: the manager replies to `start` only on a REAL outcome — presence join, process exit,
-   *  or its ~30s readiness backstop — so the request must outlive that window ({@link SPAWN_TIMEOUT_MS}),
-   *  not the 5s op default.
+  /** Ask the manager to spawn a new teammate into this space (its `spawn` action).
+   *  The request uses {@link SPAWN_TIMEOUT_MS} as its floor; after acceptance, core follows through
+   *  the exact connector-selected readiness budget carried by the acceptance.
    *  How it lands — a detached PTY, a tmux window, a cmux tab — is the manager's
    *  runtime; from here it just joins the mesh as a lateral peer. `opts.agent` picks
    *  the harness (default the manager's `COTAL_DEFAULT_AGENT`, else `cotal`/Claude), `opts.model` /

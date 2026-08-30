@@ -1,0 +1,25 @@
+{
+  "suite": "extensions/connector-hermes/smoke/boot-requirement.smoke.ts",
+  "guard": "the real installed-extension manager boot classifies Hermes from the external uv harness, not the project-provided command",
+  "command": "pnpm smoke:hermes-boot-requirement",
+  "progressPattern": "✓",
+  "minTicks": 2,
+  "mutations": [
+    {
+      "name": "Hermes boot inspection still requires the project-provided command",
+      "file": "extensions/connector-hermes/src/extension.ts",
+      "find": "  requires: [\"uv\"],",
+      "replace": "  requires: [\"hermes\"],",
+      "expectRed": "Hermes is available when uv is the only harness executable",
+      "cell": "Hermes is available when uv is the only harness executable"
+    },
+    {
+      "name": "Hermes boot inspection admits a connector with no external harness",
+      "file": "extensions/connector-hermes/src/extension.ts",
+      "find": "  requires: [\"uv\"],",
+      "replace": "  requires: [],",
+      "expectRed": "Hermes is unavailable when only the project command is on PATH",
+      "cell": "Hermes is unavailable when only the project command is on PATH"
+    }
+  ]
+}

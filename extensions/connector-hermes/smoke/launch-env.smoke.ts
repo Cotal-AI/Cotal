@@ -8,7 +8,10 @@
  * Run: pnpm --filter @cotal-ai/connector-hermes test
  */
 import { strict as assert } from "node:assert";
+import type { ChildProcess } from "node:child_process";
+import { hermesUvCommand, spawnHermesGateway } from "../src/binary.js";
 import { hermesConnector } from "../src/extension.js";
+import { assertHermesVersion } from "../src/launch.js";
 
 if (process.platform === "win32") {
   console.log("✓ launch-env smoke skipped on Windows (the Hermes connector is Unix-only; buildLaunch throws)");
@@ -40,6 +43,7 @@ const HOST_MARKERS = [
 const PER_SESSION = [
   "COTAL_LAUNCH_MATERIAL", "COTAL_CREDS", "COTAL_SERVERS", "COTAL_CONTROL_TOKEN",
   "COTAL_CONTROL_SOCKET", "COTAL_OWNER", "COTAL_ACTOR", "COTAL_SENTINEL_CREDS", "COTAL_BEARER_CMD",
+  "COTAL_HERMES_UV_BIN",
   "COTAL_LIFECYCLE_UID", "COTAL_ID", "COTAL_ROLE", "COTAL_MODEL", "COTAL_VARIANT",
   "COTAL_AGENT_FILE", "COTAL_LINK", "COTAL_SUBSCRIBE", "COTAL_ALLOW_SUBSCRIBE",
   "COTAL_ALLOW_PUBLISH", "COTAL_CAPABILITIES", "COTAL_EVENTS", "COTAL_WORKSPACE_ROOT",
@@ -104,6 +108,53 @@ assert.throws(
   "a prompt the connector cannot submit must refuse the launch",
 );
 
+const bootResolved = hermesConnector.buildLaunch({
+  space: "smoke",
+  name: "hermes-boot-resolved",
+  resolvedBinaries: { uv: "/manager/boot/uv" },
+}).env ?? {};
+assert.equal(bootResolved.COTAL_HERMES_UV_BIN, "/manager/boot/uv", "the exact manager-boot uv path reaches the launcher");
+assert.equal(hermesUvCommand(bootResolved), "/manager/boot/uv", "the launcher executes the exact manager-boot uv path");
+
+let spawned: { command: string; args: readonly string[]; env?: NodeJS.ProcessEnv } | undefined;
+spawnHermesGateway({
+  pkgDir: "/connector/hermes",
+  env: bootResolved,
+  spawnImpl: ((command: string, args: readonly string[], options: { env?: NodeJS.ProcessEnv }) => {
+    spawned = { command, args, env: options.env };
+    return {} as ChildProcess;
+  }) as typeof import("node:child_process").spawn,
+});
+assert.deepEqual(
+  spawned,
+  {
+    command: "/manager/boot/uv",
+    args: ["run", "--project", "/connector/hermes", "hermes", "gateway", "run"],
+    env: bootResolved,
+  },
+  "the gateway spawn executes the exact manager-boot uv path",
+);
+
+let inspected: { command: string; args: readonly string[] } | undefined;
+assertHermesVersion({
+  env: bootResolved,
+  pkgDir: "/connector/hermes",
+  execFileImpl: (command, args) => {
+    inspected = { command, args };
+    return "0.16.7\n";
+  },
+  logImpl: () => {},
+});
+assert.deepEqual(
+  inspected,
+  {
+    command: "/manager/boot/uv",
+    args: ["run", "--project", "/connector/hermes", "--quiet", "python", "-c", "from importlib.metadata import version; print(version('hermes-agent'))"],
+  },
+  "version inspection executes the exact manager-boot uv path",
+);
+
+console.log("4 checks passed");
 console.log(
   `launch-env smoke: ${PROVIDER_KEYS.length} declared provider keys forwarded, ` +
     `${FORMERLY_EXCLUDED.length + HOST_MARKERS.length + 1} undeclared names withheld, ` +

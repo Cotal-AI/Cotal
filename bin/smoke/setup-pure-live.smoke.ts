@@ -14,7 +14,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { findCotalRoot, localProcessPath } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, findCotalRoot, localProcessPath, spaceKey, DELIVERY_LOGFILE, MANAGER_PIDFILE } from "@cotal-ai/workspace";
+import { DEFAULT_SPACE } from "@cotal-ai/core";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-setup-home-"));
 const configHome = mkdtempSync(join(tmpdir(), "cotal-setup-config-"));
@@ -68,20 +69,25 @@ mkdirSync(join(proj, ".cotal"), { recursive: true });
 ok("resolution is CONTAINED in the project dir (an escaped root writes into a real tree)",
   findCotalRoot(proj) === proj, { resolved: findCotalRoot(proj), proj });
 
-// The product does NOT resolve these through `localProcessPath`. It writes every pidfile and
-// runtime log through `cotalPath` — `join(findCotalRoot(), ".cotal", …)` (paths.ts:12-13) — at
-// manager-proc.ts:11 (`manager.pid`), up.ts:1965 (`nats.log`), delivery-proc.ts:99 (`delivery.log`).
-// `localProcessPath` is a DIFFERENT helper that yields the same `<root>/.cotal/<name>` shape,
-// joining `.cotal` unconditionally (local-process.ts:50) and THROWING on an absolute or traversing
-// template (:48-49). The two agree by layout, not by shared code, and it is the hand-built oracle in
-// the CONTROL below that ties them — so that oracle is what makes this probe stand in for the
-// product's path, and it must be re-derived if either helper's layout changes.
+// TWO probes, because the runtime artifacts no longer share one namespace.
+//
+// The RECORDS (`manager.pid`, `delivery.pid`, and their logs) are per-space now: the product writes
+// them through `canonicalLocalProcessPath` (manager-proc.ts / delivery-proc.ts), so their names
+// carry the injective hex space key and `runtimeRecord` calls the SAME function the product calls —
+// not a hand-built lookalike. The space passed is the one a fresh, auth-less project resolves to.
+//
+// `nats.log`/`nats.pid` are still root-scoped and still written through `cotalPath` —
+// `join(findCotalRoot(), ".cotal", …)` (paths.ts:12-13) — at up.ts:1965. `localProcessPath` is a
+// DIFFERENT helper that yields the same `<root>/.cotal/<name>` shape, joining `.cotal`
+// unconditionally and THROWING on an absolute or traversing template. Those two agree by layout,
+// not by shared code, and it is the hand-built oracle in the CONTROL below that ties them — so that
+// oracle is what makes this probe stand in for the product's path, and it must be re-derived if
+// either helper's layout changes.
 // Rebuilding these paths by hand is what let the B-cells below drift: they checked
 // `join(home, "manager.pid")` — wrong root AND no `.cotal` segment — which no configuration can
 // produce, so they could not fail and would have passed with a manager running.
-// `manager.pid`/`nats.log`/`delivery.log` carry no `{space}` token, so the space here only satisfies
-// the resolver's signature.
-const runtimeArtifact = (name: string) => localProcessPath(name, { root: proj, space: "main" });
+const runtimeArtifact = (name: string) => localProcessPath(name, { root: proj, space: DEFAULT_SPACE });
+const runtimeRecord = (template: string) => canonicalLocalProcessPath(template, { root: proj, space: DEFAULT_SPACE });
 
 // MUST-PASS CONTROLS, before any of the absence cells run. They are POSITIVE CONTROLS on the path
 // SHAPE and on the detector. They prove NOTHING about whether the later absence cells were reached,
@@ -102,9 +108,10 @@ const runtimeArtifact = (name: string) => localProcessPath(name, { root: proj, s
 // So pin the SHAPE of the resolved path first, against the layout `localProcessPath` documents
 // (`<root>/.cotal/<name>`, local-process.ts:50). A wrong root or a lost `.cotal` segment reddens
 // this cell, which is exactly the defect class the B-cells below drifted into.
-const pidProbe = runtimeArtifact("manager.pid");
-ok("CONTROL: the probed path IS the product's — under the project's own `.cotal/`, not hand-built",
-  pidProbe === join(proj, ".cotal", "manager.pid"), { pidProbe, expected: join(proj, ".cotal", "manager.pid") });
+const pidProbe = runtimeRecord(MANAGER_PIDFILE);
+const expectedPid = join(proj, ".cotal", `manager.${spaceKey(DEFAULT_SPACE)}.pid`);
+ok("CONTROL: the probed path IS the product's — under the project's own `.cotal/`, space-keyed, not hand-built",
+  pidProbe === expectedPid, { pidProbe, expected: expectedPid });
 writeFileSync(pidProbe, "0\n");
 ok("CONTROL: a planted pidfile at that path IS detected (else every absence cell is vacuous)",
   existsSync(pidProbe), { pidProbe });
@@ -119,8 +126,8 @@ ok("first run exits 0", first.status === 0, { status: first.status, err: first.s
 // through `runtimeArtifact`, i.e. `<proj>/.cotal/`, NOT the sandboxed home — and setup spawned no
 // broker (we can't own :4222, but the pid file + the absence of any `up`-style output is the
 // contract).
-ok("no manager pid file", !existsSync(runtimeArtifact("manager.pid")));
-ok("no nats/delivery logs (nothing started)", !existsSync(runtimeArtifact("nats.log")) && !existsSync(runtimeArtifact("delivery.log")));
+ok("no manager pid file", !existsSync(runtimeRecord(MANAGER_PIDFILE)));
+ok("no nats/delivery logs (nothing started)", !existsSync(runtimeArtifact("nats.log")) && !existsSync(runtimeRecord(DELIVERY_LOGFILE)));
 ok("output never claims to start anything", !/running at|manager up|mesh running/i.test(first.stdout + first.stderr), (first.stdout + first.stderr).slice(-300));
 
 // C — the default persona write happened (in the INVOKING folder's .cotal) and was announced.
@@ -141,13 +148,13 @@ for (const f of ["david.md", "sven.md", "me.md"]) {
   ok(`demo persona ${f} written`, existsSync(join(proj, ".cotal", "agents", f)));
 }
 ok("demo provenance announces persona writes", /→ wrote persona: .*david\.md/.test(demo.stderr), demo.stderr.slice(-500));
-ok("demo setup still launches nothing", !existsSync(runtimeArtifact("manager.pid")) && !existsSync(runtimeArtifact("nats.log")));
+ok("demo setup still launches nothing", !existsSync(runtimeRecord(MANAGER_PIDFILE)) && !existsSync(runtimeArtifact("nats.log")));
 
 // E — repeat run: status card, still nothing launched, exit 0.
 const second = cotal(["setup"], proj);
 ok("repeat run exits 0", second.status === 0, { status: second.status, err: second.stderr.slice(-300) });
 ok("repeat run shows the status card", /cotal · status/.test(second.stdout + second.stderr), (second.stdout + second.stderr).slice(-300));
-ok("repeat run still launches nothing", !existsSync(runtimeArtifact("manager.pid")) && !existsSync(runtimeArtifact("nats.log")));
+ok("repeat run still launches nothing", !existsSync(runtimeRecord(MANAGER_PIDFILE)) && !existsSync(runtimeArtifact("nats.log")));
 
 // F — removed surface fails loud.
 const open = cotal(["setup", "--open"], proj);
