@@ -570,7 +570,8 @@
     "smoke:core-history-limit": "tsx packages/core/smoke/history-limit.smoke.ts",
     "smoke:sparse-history-walk": "tsx packages/core/smoke/sparse-history-walk.smoke.ts",
     "smoke:web-graph-boot": "tsx implementations/web/smoke/graph-boot.smoke.ts",
-    "smoke:expiry-renewal:auth": "tsx implementations/auth/smoke/expiry-renewal.smoke.ts"
+    "smoke:expiry-renewal:auth": "tsx implementations/auth/smoke/expiry-renewal.smoke.ts",
+    "smoke:manager-log-guidance": "tsx bin/smoke/manager-log-guidance.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/auth": "workspace:*",

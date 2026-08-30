@@ -109,7 +109,7 @@ import { resolveNatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
 import { renderDetachedSummary } from "../lib/up-report.js";
 import { deliveryUp, ensureControlPlane, stopDelivery } from "../lib/delivery-proc.js";
-import { managerHasDeliveryMarker, managerUp, stopManager } from "../lib/manager-proc.js";
+import { managerHasDeliveryMarker, managerLogDisplayPath, managerUp, stopManager } from "../lib/manager-proc.js";
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, genRunId, manifestToChannels, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
 import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/render.js";
@@ -1893,7 +1893,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // degraded control plane (announced above) means the agents are NOT coming up.
   if (controlPlane) {
     // U6: on a user mesh the agents run under the OPERATOR's identity — say whose they are.
-    console.log(c.green(`✓ launching ${eff.agents.length} agent(s)`) + c.dim(` via manager (${runtime})${owner ? ` as you (owner ${owner})` : ""} - see .cotal/manager.log`));
+    console.log(c.green(`✓ launching ${eff.agents.length} agent(s)`) + c.dim(` via manager (${runtime})${owner ? ` as you (owner ${owner})` : ""} - see ${managerLogDisplayPath(m.space)}`));
   } else {
     console.error(c.red(`✗ ${eff.agents.length} agent(s) NOT launched - the control plane did not come up (see above)`));
   }
