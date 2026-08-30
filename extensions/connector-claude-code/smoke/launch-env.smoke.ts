@@ -73,7 +73,29 @@ for (const k of UNRELATED) {
   check(`${k} was withheld (not a declared auth var)`, !(k in env));
 }
 
-check("PATH present so the seat still launches", typeof env.PATH === "string" && env.PATH.length > 0);
+// PATH reaches the child under either spelling. Windows env names are case-insensitive but keep
+// their source casing, so a host spelling `Path` must forward as `Path` and one spelling `PATH` must
+// forward as `PATH` — exactly once each, never both, since a case-duplicate chokes Windows process
+// creation. Both rows run on every platform on purpose: fixturing one spelling leaves the other free
+// to regress unseen, and asserting only `env.PATH` is how the `Path` failure (#1141) reached CI.
+const ambientPath = process.env.PATH ?? process.env.Path ?? "";
+check("the ambient PATH fixture is non-empty, so the rows below can discriminate", ambientPath.length > 0);
+for (const spelling of ["PATH", "Path"] as const) {
+  delete process.env.PATH;
+  delete process.env.Path;
+  process.env[spelling] = ambientPath;
+  const row =
+    claudeConnector.buildLaunch({ space: "smoke", name: `claude-path-${spelling}` } as never).env ?? {};
+  const forwarded = Object.keys(row).filter((k) => k.toLowerCase() === "path");
+  check(
+    `a host spelling of ${spelling} is forwarded exactly once, keeping its source casing`,
+    forwarded.length === 1 && forwarded[0] === spelling,
+    forwarded,
+  );
+  check(`${spelling} reaches the child with its value unchanged`, row[spelling] === ambientPath, row[spelling]);
+}
+delete process.env.Path;
+process.env.PATH = ambientPath;
 
 const opted = claudeConnector.buildLaunch({
   space: "smoke",
