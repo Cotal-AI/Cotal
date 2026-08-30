@@ -1,0 +1,14 @@
+{
+  "suite": "packages/core/smoke/recoverable-error-channel.smoke.ts",
+  "command": "pnpm smoke:recoverable-error-channel",
+  "mutations": [
+    {
+      "name": "M1 restore the fatal error channel for recoverable retries, which is the listenerless host crash",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "  private emitRecoverable(err: Error): void {\n    this.emit(\"warning\", err);\n  }",
+      "replace": "  private emitRecoverable(err: Error): void {\n    this.emit(\"error\", err);\n  }",
+      "expectRed": "a consumer with NO error listener survives a recoverable bearer retry",
+      "cell": "a consumer with NO error listener survives a recoverable bearer retry"
+    }
+  ]
+}

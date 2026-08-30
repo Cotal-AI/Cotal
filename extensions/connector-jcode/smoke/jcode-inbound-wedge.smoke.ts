@@ -69,8 +69,14 @@ const check = (name: string, condition: boolean, actual?: unknown): void => {
   pass++;
   console.log(`  ✓ ${name}`);
 };
-const entries = (): Entry[] =>
-  existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as Entry) : [];
+function readJsonLines<T>(path: string): T[] {
+  if (!existsSync(path)) return [];
+  const raw = readFileSync(path, "utf8");
+  const lines = raw.split("\n");
+  if (!raw.endsWith("\n")) lines.pop();
+  return lines.filter(Boolean).map((line) => JSON.parse(line) as T);
+}
+const entries = (): Entry[] => readJsonLines<Entry>(log);
 const turnRequests = (): Entry[] => entries().filter((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame.no_reply);
 const steerText = (): string =>
   entries()
