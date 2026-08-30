@@ -5798,8 +5798,8 @@ export class Manager {
   /** The Unit B reconciliation (F3 "no active orphan"): ensure the authority stores, then sweep
    *  every durable slot row and act by the TOTAL resume table — `provisioning`/`terminalizing`
    *  re-drive the exact-op terminal; an `active` row survives ONLY when a LIVE managed agent this
-   *  process owns backs it at the same uid (`adopted`), else its process is gone and it
-   *  terminalizes; `retired` rows seed the F5 refusal index. Two call sites: the BOOT sweep
+   *  manager process owns backs it at the same uid (`adopted`), else no managed owner claimed it and
+   *  its broker authority is contained and terminalized; `retired` rows seed the F5 refusal index. Two call sites: the BOOT sweep
    *  (`postAdoption=false`, under the lease before control serving) DEFERS active-non-adopted
    *  slots while a resume is still pending (adoption runs after it); the POST-ADOPTION sweep
    *  (`postAdoption=true`, inside finalizeResume while `resumeRequired` still fences ordinary
