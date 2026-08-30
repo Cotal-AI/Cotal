@@ -722,3 +722,6 @@ smoke:transport-liveness:broker
 # including a measured successful inbox drain. Appended so every existing shard assignment remains
 # unchanged.
 smoke:connection-status
+# A real broker crash must remove the exact control-transport credential roots and broker store.
+# Appended so every existing shard assignment remains unchanged.
+smoke:control-transport-crash-cleanup
