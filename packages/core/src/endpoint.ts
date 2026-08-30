@@ -1182,7 +1182,8 @@ export class CotalEndpoint extends EventEmitter {
       // supervisor on a stopped endpoint. (Reads this.nc in its own scope — a bare `this.nc`
       // here in doRebuild narrows to `never` via TS inlining connectAndBind's assignment.)
       if (await this.tearDownIfStopped()) return;
-      this.superviseConnection(); // re-arm on the fresh nc
+      // Re-arm on the fresh nc only after the stopped fence above accepts it.
+      this.superviseConnection();
     } finally {
       this.reconnecting = false;
     }
