@@ -1,7 +1,7 @@
 {
   "suite": "extensions/connector-claude-code/smoke/activation-wake.smoke.ts",
   "guard": "a false-to-true claude/channel activation re-fires the remembered focus mention before considering buffered wake state",
-  "command": "pnpm smoke:claude-activation-wake",
+  "command": "pnpm --filter @cotal-ai/connector-core... build && pnpm smoke:claude-activation-wake",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/activation-wake-reconcile.json",
   "why": [
     "The focus mention is ack-dropped at ingest, so pendingWake() is zero and no inbox or JetStream redelivery can satisfy the activation assertion.",
