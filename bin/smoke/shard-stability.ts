@@ -68,6 +68,8 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+// @ts-expect-error plain .mjs helper shared with the property smoke.
+import { changedSuiteIndices } from "./shard-stability.mjs";
 
 // FIRST LINE OF OUTPUT, BEFORE ANY WORK: a gate can grep for this to prove the detector
 // actually ran. `npx tsx <missing-file>` exits 1, which is indistinguishable from
@@ -497,11 +499,17 @@ const replaceRefRuntimeControl = (): boolean => {
 const A = read(base), B = read(head);
 const AF = fragments(base), BF = fragments(head);
 const changed = movedRegistry(A, AF, B, BF, baseCount, headCount);
+const indices = changedSuiteIndices(A, B) as { changed: string[]; examined: number };
 
 // --- controls, printed before the verdict ---
 const forced = moved(A, [...A.slice(0, 10), "smoke:FORCED-CONTROL", ...A.slice(10)], baseCount, baseCount);
 const identity = moved(A, A, baseCount, baseCount);
 const topologyProbe = Array.from({ length: 20 }, (_, index) => `smoke:TOPOLOGY-CONTROL-${index}`);
+const indexRotation = changedSuiteIndices(
+  topologyProbe,
+  [...topologyProbe.slice(4), ...topologyProbe.slice(0, 4)],
+) as { changed: string[]; examined: number };
+const indexIdentity = changedSuiteIndices(topologyProbe, topologyProbe) as { changed: string[]; examined: number };
 const countIncrease = moved(topologyProbe, topologyProbe, 4, 5);
 const countDecrease = moved(topologyProbe, topologyProbe, 5, 4);
 const commentShadowCount = shardCountFromWorkflow(`jobs:
@@ -696,6 +704,8 @@ const claimHistorical = appendedClaimViolations(claimControlBase,
   `${claimSentence}\nsmoke:a\n${claimSentence}\nsmoke:b\n${claimSentence}\nsmoke:c\n`);
 console.log(`CONTROL forced mid-file insert -> ${forced.length} moved  (must be > 0)`);
 console.log(`CONTROL identity               -> ${identity.length} moved  (must be 0)`);
+console.log(`CONTROL same-shard reindex     -> ${indexRotation.changed.length} of ${indexRotation.examined} examined  (must be 20 of 20)`);
+console.log(`CONTROL index identity         -> ${indexIdentity.changed.length} of ${indexIdentity.examined} examined  (must be 0 of 20)`);
 console.log(`CONTROL shard count 4 -> 5     -> ${countIncrease.length} moved  (must be 16)`);
 console.log(`CONTROL shard count 5 -> 4     -> ${countDecrease.length} moved  (must be 16)`);
 console.log(`CONTROL matrix comment shadow  -> ${commentShadowCount ?? "unreadable"} shards (must be 4)`);
@@ -714,7 +724,9 @@ console.log(`CONTROL mid-file "Appended" claim -> ${claimMidFile.length} named  
 console.log(`CONTROL tail "Appended" claim     -> ${claimTail.length} named  (must be 0)`);
 console.log(`CONTROL historical claims         -> ${claimHistorical.length} named  (must be 0)`);
 if (
-  forced.length === 0 || identity.length !== 0 || countIncrease.length !== 16 ||
+  forced.length === 0 || identity.length !== 0 ||
+  indexRotation.changed.length !== 20 || indexRotation.examined !== 20 ||
+  indexIdentity.changed.length !== 0 || indexIdentity.examined !== 20 || countIncrease.length !== 16 ||
   countDecrease.length !== 16 || commentShadowCount !== 4 ||
   commandMismatchCount !== null || duplicateMatrixCount !== null || emptyMatrixCount !== null || excludedMatrixCount !== null ||
   conditionalJobCount !== null || conditionalStepCount !== null || unguardedRunnerCount !== null || !replaceRefRefused ||
@@ -732,6 +744,8 @@ const removed = allA.filter((suite) => !allB.includes(suite));
 const claimViolations = appendedClaimViolations(A, readRaw(head));
 console.log(`\n${base.slice(0, 8)} -> ${head.slice(0, 8)}  @${baseCount}->${headCount} shards`);
 console.log(`  suites: ${allA.length} -> ${allB.length} · added ${added.length} · removed ${removed.length}`);
+console.log(`  frozen legacy suites CHANGING INDEX: ${indices.changed.length} of ${indices.examined} examined`);
+if (indices.changed.length > 0) console.log(`  first few reindexed: ${indices.changed.slice(0, 5).join(", ")}`);
 console.log(`  pre-existing suites CHANGING SHARD: ${changed.length} of ${allA.length}`);
 if (changed.length > 0) {
   console.log(`  first few: ${changed.slice(0, 5).join(", ")}`);
@@ -739,14 +753,16 @@ if (changed.length > 0) {
 if (claimViolations.length > 0) {
   console.log(`  NEW entries claiming "Appended" while mid-file: ${claimViolations.join(", ")}`);
 }
-if (changed.length > 0 || claimViolations.length > 0) {
+if (indices.changed.length > 0 || removed.length > 0 || changed.length > 0 || claimViolations.length > 0) {
   const remedy = baseCount === headCount
     ? "Keep ci-suites.txt frozen; add new suites as one-file fragments under ci-suites.d."
     : `The shard matrix changed ${baseCount} -> ${headCount}; review every reassignment as deliberate.`;
   const claimNote = claimViolations.length > 0
     ? ` FALSE "Appended" CLAIM on ${claimViolations.join(", ")}: the sentence is validated against position (#1011); a new entry carrying it must sit after every pre-existing suite.`
     : "";
-  const headline = changed.length > 0 ? `RE-SHARD DETECTED. ${remedy}` : "NO pre-existing suite moved, but the registry lies about how it grew.";
+  const headline = indices.changed.length > 0 || removed.length > 0 || changed.length > 0
+    ? `RE-SHARD DETECTED. ${remedy}`
+    : "NO pre-existing suite moved, but the registry lies about how it grew.";
   verdict("RESHARD", `${headline}${claimNote}`, 1);
 }
-verdict("STABLE", "STABLE - no pre-existing suite changes runner, no false append claims.", 0);
+verdict("STABLE", "STABLE - every frozen legacy suite keeps its index, every pre-existing suite keeps its runner, no false append claims.", 0);
