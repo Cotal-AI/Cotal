@@ -26,3 +26,4 @@ export * from "./space-segmentation.js";
 export * from "./system-rotation.js";
 export * from "./win-cmd.js";
 export * from "./pid.js";
+export * from "./process-reap.js";
