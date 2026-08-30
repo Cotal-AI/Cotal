@@ -13,13 +13,14 @@
  *
  * The manager runs this in a PTY; stdio is inherited so the gateway's output is what you attach to.
  */
-import { spawn, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync, cpSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LAUNCH_MATERIAL_ENV, discardLaunchMaterial, loadAgentFile, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
 import { hasIdentity, configFromEnv, controlEndpoint, ORIENTATION_BOOTSTRAP, MESH_FIRST_STEER } from "@cotal-ai/connector-core";
+import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
 import { startSidecar } from "./sidecar.js";
 
 /** Hermes API line this connector is written + pinned against (see pyproject.toml). A different
@@ -78,12 +79,18 @@ function setupProfile(home: string, opts: { model?: string; persona?: string }):
 
 /** Assert the installed hermes-agent is on the pinned API line, or throw. No silent degrade: a
  *  different major.minor can shift the plugin/platform/hook contract this connector depends on. */
-function assertHermesVersion(): void {
+export function assertHermesVersion(opts: {
+  env?: NodeJS.ProcessEnv;
+  pkgDir?: string;
+  execFileImpl?: (file: string, args: readonly string[], options: { encoding: "utf8" }) => string;
+  logImpl?: (message: string) => void;
+} = {}): void {
   let raw: string;
   try {
-    raw = execFileSync(
-      "uv",
-      ["run", "--project", PKG_DIR, "--quiet", "python", "-c", "from importlib.metadata import version; print(version('hermes-agent'))"],
+    const execFileImpl = opts.execFileImpl ?? ((file, args, options) => execFileSync(file, args, options));
+    raw = execFileImpl(
+      hermesUvCommand(opts.env),
+      ["run", "--project", opts.pkgDir ?? PKG_DIR, "--quiet", "python", "-c", "from importlib.metadata import version; print(version('hermes-agent'))"],
       { encoding: "utf8" },
     ).trim();
   } catch (e) {
@@ -92,7 +99,7 @@ function assertHermesVersion(): void {
   const line = raw.split(".").slice(0, 2).join(".");
   if (line !== HERMES_PIN)
     throw new Error(`hermes-agent ${raw} is not on the pinned ${HERMES_PIN} line this connector targets — pin ${HERMES_PIN}.x or update src/launch.ts + pyproject.toml together`);
-  log(`hermes-agent ${raw} (pinned line ${HERMES_PIN}) ✓`);
+  (opts.logImpl ?? log)(`hermes-agent ${raw} (pinned line ${HERMES_PIN}) ✓`);
 }
 
 async function main(): Promise<void> {
@@ -164,10 +171,7 @@ async function main(): Promise<void> {
   };
 
   log(`launching hermes gateway as ${config.name}${config.role ? `/${config.role}` : ""} (HERMES_HOME=${home})`);
-  const child = spawn("uv", ["run", "--project", PKG_DIR, "hermes", "gateway", "run"], {
-    env: childEnv,
-    stdio: "inherit",
-  });
+  const child = spawnHermesGateway({ pkgDir: PKG_DIR, env: childEnv });
 
   let shuttingDown = false;
   const shutdown = async (code: number): Promise<void> => {
@@ -194,7 +198,9 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => void shutdown(0));
 }
 
-main().catch((e) => {
-  log(`fatal: ${(e as Error).stack ?? String(e)}`);
-  process.exit(1);
-});
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  main().catch((e) => {
+    log(`fatal: ${(e as Error).stack ?? String(e)}`);
+    process.exit(1);
+  });
+}

@@ -1,0 +1,48 @@
+{
+  "suite": "extensions/connector-core/smoke/send-channel-receipt.smoke.ts",
+  "guard": "cotal_send still creates unknown channels, but the success receipt lets a caller tell a new name from a known one",
+  "command": "pnpm smoke:send-channel-receipt",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/send-channel-receipt.json",
+  "why": [
+    "Issue #989. A typo'd channel used to return the same success line as a send into a known",
+    "room. The discriminating assertion is that a caller can TELL, not that bogus send fails.",
+    "",
+    "N1 restores the old identical success TEMPLATE (drop the receipt). The cell that",
+    "normalized success lines differ must redden. Raw strings still differ by channel name.",
+    "",
+    "N2 makes closeChannelNames always empty, so a one-edit typo no longer names the match.",
+    "",
+    "N3 makes every name look pre-existing, so the tool receipt never says new channel.",
+    "",
+    "NO BUILD STEP: the suite imports ../src."
+  ],
+  "mutations": [
+    {
+      "name": "N1 the success line ignores the receipt, restoring identical words for typo and known",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "          const dest = `Sent to #${m.channel}${m.mentions?.length ? ` (mentioned @${m.mentions.join(\", @\")})` : \"\"}`;\n          return ok(receipt ? `${dest} (${receipt}).` : `${dest}.`);",
+      "replace": "          const dest = `Sent to #${m.channel}${m.mentions?.length ? ` (mentioned @${m.mentions.join(\", @\")})` : \"\"}`;\n          return ok(`${dest}.`);",
+      "expectRed": "cotal_send on a typo says new channel so the caller can TELL",
+      "cell": "cotal_send on a typo says new channel so the caller can TELL",
+      "note": "The reported defect: success words no longer distinguish a typo from a known room."
+    },
+    {
+      "name": "N2 close matches are never suggested",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (name !== channel && editDistanceAtMostOne(channel, name)) out.push(name);",
+      "replace": "    if (false && name !== channel && editDistanceAtMostOne(channel, name)) out.push(name);",
+      "expectRed": "send to a one-edit typo reports new and names the close match",
+      "cell": "send to a one-edit typo reports new and names the close match",
+      "note": "Without close matches the caller can still see new but cannot see the likely intended name."
+    },
+    {
+      "name": "N3 describeSendChannel always reports existing, so a typo looks like a known room",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (this.ep.getChannelConfig(channel)) return \"existing channel\";",
+      "replace": "    if (true) return \"existing channel\";",
+      "expectRed": "cotal_send on a typo says new channel so the caller can TELL",
+      "cell": "cotal_send on a typo says new channel so the caller can TELL",
+      "note": "If every name is 'existing', the tool receipt is identical to the old success line."
+    }
+  ]
+}

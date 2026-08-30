@@ -4,13 +4,19 @@ import { existsSync, lstatSync, mkdirSync, openSync, closeSync, rmSync, writeFil
 import { createServer, type Server } from "node:net";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { JcodeClient, launchInstance, type ApiEvent, type LaunchedInstance } from "@1jehuang/jcode-sdk";
+import { HarnessError, JcodeClient, launchInstance, type ApiEvent, type LaunchedInstance } from "@1jehuang/jcode-sdk";
 import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
 import { mirrorJcodeCredentials, shortSocketHome } from "./private-state.js";
 import { captureProcessIdentity, launchIdentityEnv, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
 import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
 import { bareModelId, describeRoute } from "./route-identity.js";
-import { classifyReadinessProviderRefusal, jcodeEffortRefusal } from "./startup-diagnostics.js";
+import {
+  classifyReadinessProviderRefusal,
+  installJcodeDiagnosticLog,
+  JcodeConnectorError,
+  jcodeEffortRefusal,
+  writeJcodeDiagnostic,
+} from "./startup-diagnostics.js";
 import { ERROR_RETRY_INITIAL_MS, nextRetryDelay, shouldRetry } from "./retry-policy.js";
 import {
   MeshAgent,
@@ -31,6 +37,25 @@ import {
 
 const MAX_RELAY_BYTES = 4 * 1024 * 1024;
 const RELAY_TIMEOUT_MS = 30_000;
+export const PERMANENT_BRIDGE_RECOVERY_CODES = new Set([
+  "handshake_failed",
+  "invalid_instance_home",
+  "invalid_request",
+  "jcode_not_found",
+  "unknown_request",
+  "unknown_session",
+  "unsupported_version",
+]);
+export const PERMANENT_BRIDGE_CONNECT_CAUSE_CODES = new Set(["EACCES"]);
+
+/** Recovery retries availability races, not a refusal that another attempt cannot change. */
+export function permanentBridgeRecoveryFailure(error: unknown): error is HarnessError {
+  if (!(error instanceof HarnessError)) return false;
+  if (PERMANENT_BRIDGE_RECOVERY_CODES.has(error.code)) return true;
+  if (error.code === "connect_failed")
+    return PERMANENT_BRIDGE_CONNECT_CAUSE_CODES.has((error.cause as NodeJS.ErrnoException | undefined)?.code ?? "");
+  return false;
+}
 
 interface RelayEndpoint {
   path: string;
@@ -221,13 +246,14 @@ export async function runJcodeHost(): Promise<void> {
   config.connector = "jcode";
   const control = controlFromEnv();
   if (!control) throw new Error("jcode connector: managed session has no control endpoint");
-  const binary = "jcode";
+  const binary = process.env.COTAL_JCODE_BIN?.trim() || "jcode";
   const tuiOverride = process.env.COTAL_JCODE_TUI?.trim();
   const bootPrompt = process.env.COTAL_JCODE_PROMPT?.trim();
   const def = process.env.COTAL_AGENT_FILE?.trim() ? loadAgentFile(process.env.COTAL_AGENT_FILE.trim()) : undefined;
   const cwd = process.cwd();
   assertNoProjectMcpConfig(cwd);
   const home = privateAgentHome(config.space, config.name);
+  installJcodeDiagnosticLog(home);
   // SDK 1.1.0 has no socket-path launch option: it derives `run/jcode-api.sock` below jcodeHome.
   // The managed home stays in the workspace, but this private short alias keeps that fixed API
   // path below AF_UNIX's platform limit. Failure is fatal; a long-path fallback is the reported bug.
@@ -258,6 +284,16 @@ export async function runJcodeHost(): Promise<void> {
   let briefed = false;
   let initialized = false;
   let wakeQueued = false;
+  /** Exact Cotal deliveries the active Harness turn has accepted, either in its initial prompt or
+   *  through Jcode's session-owned soft-interrupt queue. They commit only when that containing turn
+   *  finishes cleanly. A soft_interrupt `ok` proves the live recipient session queued the text; it
+   *  does not prove the model consumed it yet, so the turn boundary remains the sole ack site. */
+  let surfacedIds: string[] = [];
+  let steering = false;
+  /** The last in-flight steer request. `drive()` waits for it before deciding which ids the clean
+   *  boundary owns, so a soft_interrupt reply racing turn_done can never be recorded after the ack. */
+  let steerSettled: Promise<unknown> = Promise.resolve();
+  const receivedAt = new Map<string, number>();
 
   // The SDK trusts mutable servers.json PIDs and can signal a stale foreign process. Remove its
   // exit hook once the launch handle exists and own teardown here instead: every record is checked
@@ -273,7 +309,8 @@ export async function runJcodeHost(): Promise<void> {
   // handle itself: the bridge PID for teardown, and a shutdown it can follow with verification.
   // Bridge recovery relaunches through here too, so the identity slots always name the live tree
   // that stopPrivateJcode must target.
-  const launchPrivateJcode = async (): Promise<JcodeClient> => {
+  const launchPrivateJcode = async (deadline?: number): Promise<JcodeClient> => {
+    const remaining = (): number | undefined => deadline === undefined ? undefined : Math.max(1, deadline - Date.now());
     const exitListenersBefore = new Set(process.listeners("exit"));
     const launchBound = launchIdentityEnv();
     launchIdentityValue = launchBound.value;
@@ -297,13 +334,14 @@ export async function runJcodeHost(): Promise<void> {
         JCODE_NO_AUTO_UPDATE: "1",
         [launchBound.key]: launchBound.value,
       },
+      ...(remaining() !== undefined ? { startupTimeoutMs: remaining() } : {}),
     });
     const sdkExitListeners = process.listeners("exit").filter((listener) => !exitListenersBefore.has(listener));
     for (const listener of sdkExitListeners) process.removeListener("exit", listener);
     if (sdkExitListeners.length !== 1)
       throw new Error(`jcode connector: expected one SDK instance exit hook, found ${sdkExitListeners.length} — refusing unsafe lifecycle ownership`);
     launchIdentity = captureProcessIdentity(instance.process.pid!);
-    return JcodeClient.connect({ socketPath: instance.socketPath });
+    return JcodeClient.connect({ socketPath: instance.socketPath, ...(remaining() !== undefined ? { requestTimeoutMs: remaining() } : {}) });
   };
 
   const launchTui = (): void => {
@@ -329,7 +367,7 @@ export async function runJcodeHost(): Promise<void> {
     try {
       await stopPrivateJcode();
     } catch (error) {
-      process.stderr.write(`[cotal-jcode] ${(error as Error).message}\n`);
+      writeJcodeDiagnostic(`[cotal-jcode] ${(error as Error).message}\n`);
       exit = 1;
     }
     socketHome.dispose();
@@ -347,12 +385,18 @@ export async function runJcodeHost(): Promise<void> {
   let errorRetryMs = ERROR_RETRY_INITIAL_MS;
   let errorRetryTimer: ReturnType<typeof setTimeout> | undefined;
   let consecutiveFailures = 0;
+  /** One bridge recovery remains bounded, but it is bounded by time rather than one launch/attach
+   *  outcome. A loaded host can lose a transient replacement race without turning that into a
+   *  second provider close or an unbounded relaunch loop. */
+  const BRIDGE_RECOVERY_WINDOW_MS = 60_000;
+  const BRIDGE_RECOVERY_RETRY_MS = 1_000;
+  const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
   /** Re-drive after a growing delay, at most one timer in flight, never while shutting down. */
   const scheduleErrorRetry = (): void => {
     if (stopping || errorRetryTimer) return;
     if (consecutiveFailures >= ERROR_RETRY_GIVE_UP) {
-      process.stderr.write(
+      writeJcodeDiagnostic(
         `[cotal-jcode] giving up after ${consecutiveFailures} consecutive failed turns - the batch stays ` +
           `un-acked and will redeliver; the seat stays degraded until a new wake arrives\n`,
       );
@@ -370,8 +414,58 @@ export async function runJcodeHost(): Promise<void> {
     errorRetryTimer.unref?.();
   };
 
+  const sessionBusy = (): boolean => driving || turnActive;
+
+  const publishInboundHealth = (): void => {
+    const pending = agent.peekInbox("automatic");
+    const live = new Set(pending.map((item) => item.recvKey));
+    for (const key of receivedAt.keys()) if (!live.has(key)) receivedAt.delete(key);
+    const queued = pending.length;
+    if (queued === 0) {
+      void agent.setStatus(sessionBusy() ? "working" : "idle", "").catch(() => {});
+      return;
+    }
+    let oldest: number | undefined;
+    for (const item of pending) {
+      const at = receivedAt.get(item.recvKey);
+      if (at === undefined) continue;
+      if (oldest === undefined || at < oldest) oldest = at;
+    }
+    const ageS = oldest === undefined ? 0 : Math.max(0, Math.round((Date.now() - oldest) / 1000));
+    const activity = `inbound: ${queued} automatic queued, oldest ${ageS}s`;
+    void agent.setStatus(sessionBusy() ? "working" : "waiting", activity).catch(() => {});
+  };
+
+  /** Commit ids the live session already accepted when the host does not own `run()`. A Cotal-owned
+   *  `drive()` still commits only in its own try path, so a TUI-owned turn cannot ack that batch. */
+  const commitSteeredIfHostIdle = async (): Promise<void> => {
+    if (driving) return;
+    await steerSettled;
+    if (driving || !surfacedIds.length) return;
+    const committed = surfacedIds;
+    surfacedIds = [];
+    agent.drainInboxDeliveries(committed);
+    publishInboundHealth();
+  };
+
+  const finishHostIdleTurn = async (): Promise<void> => {
+    await commitSteeredIfHostIdle();
+    if (!sessionBusy() && !reconnecting && (agent.pendingWake() > 0 || wakeQueued)) void drive();
+  };
+
   const drive = async (override?: string): Promise<void> => {
     if (stopping || reconnecting || !initialized || driving || turnActive || !client || !sessionId) return;
+    driving = true;
+    await steerSettled;
+    if (stopping || reconnecting || turnActive || !client || !sessionId) {
+      driving = false;
+      return;
+    }
+    if (surfacedIds.length) {
+      const committed = surfacedIds;
+      surfacedIds = [];
+      agent.drainInboxDeliveries(committed);
+    }
     wakeQueued = false;
     const parts: string[] = [];
     let ids: string[] = [];
@@ -379,7 +473,10 @@ export async function runJcodeHost(): Promise<void> {
     else {
       const inbox = agent.peekInbox("automatic");
       const injection = formatInjection(inbox);
-      if (!injection) return;
+      if (!injection) {
+        driving = false;
+        return;
+      }
       ids = inbox.map((item) => item.recvKey);
       parts.push(injection);
     }
@@ -388,9 +485,9 @@ export async function runJcodeHost(): Promise<void> {
       const briefing = agent.channelBriefing();
       if (briefing) parts.unshift(briefing);
     }
-    driving = true;
     turnActive = true;
-    void agent.setStatus("working").catch(() => {});
+    surfacedIds = [...ids];
+    publishInboundHealth();
     let turnClient: JcodeClient | undefined;
     try {
       turnClient = client;
@@ -400,14 +497,21 @@ export async function runJcodeHost(): Promise<void> {
       // only safe outcome. The reconnect path redrives it after it reattaches the owned session.
       if (reconnecting || client !== turnClient)
         throw new Error("Jcode Harness connection closed during the turn; leaving the inbox batch unacknowledged");
-      if (ids.length) agent.drainInboxDeliveries(ids);
+      // A directed DM can be accepted into Jcode's persistent soft-interrupt queue while this run is
+      // active. Wait for that request to settle before reading the exact containing-turn ledger.
+      await steerSettled;
+      const committed = surfacedIds;
+      surfacedIds = [];
+      if (committed.length) agent.drainInboxDeliveries(committed);
+      publishInboundHealth();
       // A turn that SUCCEEDS clears the backoff: the next failure starts from the short delay again
       // rather than inheriting a penalty the seat has already recovered from.
       errorRetryMs = ERROR_RETRY_INITIAL_MS;
       consecutiveFailures = 0;
     } catch (error) {
+      surfacedIds = [];
       consecutiveFailures++;
-      process.stderr.write(
+      writeJcodeDiagnostic(
         `[cotal-jcode] turn failed (${consecutiveFailures} in a row): ${(error as Error).message}\n`,
       );
     } finally {
@@ -437,6 +541,39 @@ export async function runJcodeHost(): Promise<void> {
     }
   };
 
+  /** Queue directed automatic traffic in Jcode's live session while a turn owns the provider. Jcode
+   *  incorporates soft interrupts at its documented safe points (after provider streaming / tools),
+   *  including a persisted fallback across a private bridge replacement. Ambient channel chatter
+   *  stays buffered for the next turn. Exact-id accounting makes the accepted set independent of
+   *  physical inbox order, and the containing turn's clean completion remains the only commit. */
+  const steerPending = async (): Promise<void> => {
+    if (steering || !sessionBusy() || !client || !sessionId) return;
+    steering = true;
+    try {
+      for (;;) {
+        const surfaced = new Set(surfacedIds);
+        const items = agent
+          .peekInbox("automatic")
+          .filter((item) => !surfaced.has(item.recvKey) && (item.kind !== "channel" || item.mentionsMe));
+        if (!items.length || !sessionBusy()) return;
+        const injection = formatInjection(items);
+        if (!injection) return;
+        const current: JcodeClient = client;
+        const request = current.softInterrupt(sessionId, injection, false);
+        steerSettled = request.catch(() => {});
+        await request;
+        // If the turn closed or the client was replaced while acceptance was in flight, retain the
+        // inbox copy. Jcode may also have queued it, so this deliberately chooses at-least-once.
+        if (!sessionBusy() || client !== current) return;
+        surfacedIds.push(...items.map((item) => item.recvKey));
+      }
+    } catch (error) {
+      writeJcodeDiagnostic(`[cotal-jcode] soft interrupt failed: ${(error as Error).message}\n`);
+    } finally {
+      steering = false;
+    }
+  };
+
   /**
    * A provider stall can take down Jcode's bridge while leaving the private session and its inbox
    * batch intact. Give that owned instance one clean replacement: the failed turn remains unacked,
@@ -447,7 +584,7 @@ export async function runJcodeHost(): Promise<void> {
   const recoverBridge = async (lost: JcodeClient): Promise<void> => {
     if (stopping || lost !== client || reconnecting) return;
     if (bridgeRecoveryUsed) {
-      process.stderr.write("[cotal-jcode] private Harness connection closed after its one recovery attempt\n");
+      writeJcodeDiagnostic("[cotal-jcode] private Harness connection closed after its one recovery attempt\n");
       await shutdown(1);
       return;
     }
@@ -455,7 +592,10 @@ export async function runJcodeHost(): Promise<void> {
     reconnecting = true;
     turnActive = false;
     driving = false;
+    surfacedIds = []; // deliberately unacked; the replacement redrives the durable inbox batch
     void agent.setStatus("waiting").catch(() => {});
+    let lastError: unknown;
+    const deadline = Date.now() + BRIDGE_RECOVERY_WINDOW_MS;
     try {
       // The connector owns the private instance. Stop the whole broken tree before replacing it:
       // a surviving daemon still holds the private home's registry and socket, so a replacement
@@ -463,15 +603,46 @@ export async function runJcodeHost(): Promise<void> {
       // because reconnecting is already true, and the relaunch goes through the same
       // identity-capturing path as startup so teardown targets the replacement tree, not the corpse.
       await stopPrivateJcode();
-      const replacement = await launchPrivateJcode();
       if (!sessionId) throw new Error("jcode connector: Harness connection closed before a session was established");
-      await replacement.attachSession(sessionId);
-      client = replacement;
-      watchClient(replacement);
-      process.stderr.write(`[cotal-jcode] recovered private Harness connection for session ${sessionId}\n`);
-      void agent.setStatus("idle").catch(() => {});
-    } catch {
-      process.stderr.write("[cotal-jcode] private Harness connection closed and its one recovery attempt failed\n");
+      for (;;) {
+        let replacement: JcodeClient | undefined;
+        try {
+          replacement = await launchPrivateJcode(deadline);
+          const attachRemaining = Math.max(1, deadline - Date.now());
+          let attachDeadline: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([
+              replacement.attachSession(sessionId),
+              new Promise<never>((_, reject) => {
+                attachDeadline = setTimeout(() => reject(new Error("jcode connector: recovery attach exceeded its bounded window")), attachRemaining);
+              }),
+            ]);
+          } finally {
+            if (attachDeadline !== undefined) clearTimeout(attachDeadline);
+          }
+          client = replacement;
+          watchClient(replacement);
+          writeJcodeDiagnostic(`[cotal-jcode] recovered private Harness connection for session ${sessionId}\n`);
+          void agent.setStatus("idle").catch(() => {});
+          break;
+        } catch (error) {
+          lastError = error;
+          await replacement?.close().catch(() => {});
+          await stopPrivateJcode();
+          if (stopping) return;
+          if (permanentBridgeRecoveryFailure(error)) throw error;
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) throw error;
+          writeJcodeDiagnostic(
+            `[cotal-jcode] private Harness replacement not ready yet; retrying inside its one recovery window: ${(error as Error).message}\n`,
+          );
+          await sleep(Math.min(BRIDGE_RECOVERY_RETRY_MS, remaining));
+        }
+      }
+    } catch (error) {
+      writeJcodeDiagnostic(
+        `[cotal-jcode] private Harness connection closed and recovery failed: ${((lastError ?? error) as Error).message}\n`,
+      );
       await shutdown(1);
     } finally {
       reconnecting = false;
@@ -483,22 +654,32 @@ export async function runJcodeHost(): Promise<void> {
     connected.on("close", () => void recoverBridge(connected));
     connected.on("session_status", (event: ApiEvent) => {
       if (!("session_id" in event) || event.session_id !== sessionId || event.ev !== "session_status") return;
+      // Advisory idle between tool rounds does not mean the Cotal-owned run() has ended.
+      // steerPending keys off sessionBusy() (driving || turnActive) so that pulse cannot drop a DM.
       turnActive = event.status !== "idle";
-      void agent.setStatus(turnActive ? "working" : "idle").catch(() => {});
-      if (!turnActive && !reconnecting && (agent.pendingWake() > 0 || wakeQueued)) void drive();
+      if (!turnActive) void finishHostIdleTurn();
+      else publishInboundHealth();
     });
     connected.on("turn_done", (event: ApiEvent) => {
       if ("session_id" in event && event.session_id === sessionId) {
         turnActive = false;
-        if (!reconnecting && (agent.pendingWake() > 0 || wakeQueued)) void drive();
+        void finishHostIdleTurn();
       }
     });
   };
 
   agent.on("incoming", (item: InboxItem) => {
-    void item;
+    const automatic = agent.inboxScope(item.recvKey) === "automatic";
+    if (!automatic) return;
     wakeQueued = true;
-    void drive();
+    if (!receivedAt.has(item.recvKey)) receivedAt.set(item.recvKey, Date.now());
+    const directed = item.kind !== "channel" || item.mentionsMe;
+    if (sessionBusy()) {
+      if (directed) void steerPending();
+      publishInboundHealth();
+      return;
+    }
+    if (directed || agent.attention === "open") void drive();
   });
 
   let startControl: ReturnType<typeof startControlServer> | undefined;
@@ -525,19 +706,19 @@ export async function runJcodeHost(): Promise<void> {
     try {
       prior = chooseSessionToResume(await client.listSessions(), cwd);
     } catch (error) {
-      process.stderr.write(
+      writeJcodeDiagnostic(
         `[cotal-jcode] could not list prior sessions, starting fresh: ${(error as Error).message}\n`,
       );
     }
     let session;
     if (prior) {
       session = await client.attachSession(prior.session_id);
-      process.stderr.write(
+      writeJcodeDiagnostic(
         `[cotal-jcode] resumed session ${prior.session_id} (${prior.transcript_bytes} bytes of transcript)\n`,
       );
     } else {
       session = await client.createSession(cwd);
-      process.stderr.write(`[cotal-jcode] started a fresh session (no resumable prior session in this home)\n`);
+      writeJcodeDiagnostic(`[cotal-jcode] started a fresh session (no resumable prior session in this home)\n`);
     }
     const resumed = prior !== undefined;
     sessionId = session.session_id;
@@ -548,11 +729,18 @@ export async function runJcodeHost(): Promise<void> {
     if (config.model) {
       const spec = bareModelId(config.model);
       if (!spec.ok)
-        throw new Error(
+        throw new JcodeConnectorError(
+          "model_prefix_rejected",
           `jcode connector: model ${JSON.stringify(config.model)} carries a provider prefix, but the Harness API expects a bare model id — pass ${JSON.stringify(spec.bare)} (the ${JSON.stringify(spec.prefix)} provider is selected by configuration, not by the model id)`,
         );
     }
-    if (config.model) await client.setModel(sessionId, config.model);
+    if (config.model) {
+      try {
+        await client.setModel(sessionId, config.model);
+      } catch (error) {
+        throw new JcodeConnectorError("model_refused", "Jcode refused the requested model", { cause: error });
+      }
+    }
     // The Cotal variant is Jcode's per-session reasoning effort. Apply it after model selection
     // and before any instructions or readiness turn, so no served turn uses an unrequested tier.
     // Jcode owns the provider/model ladder and validates the requested tier at this API boundary.
@@ -599,7 +787,8 @@ export async function runJcodeHost(): Promise<void> {
     if (config.model) {
       const runtime = await client.getRuntimeInfo(sessionId);
       if (runtime.model !== config.model)
-        throw new Error(
+        throw new JcodeConnectorError(
+          "model_mismatch",
           `jcode connector: requested model ${JSON.stringify(config.model)} but the Harness API reports ${JSON.stringify(runtime.model)} — refusing a mislabelled mesh seat`,
         );
       // The model is checked above; the PROVIDER carrying it was fetched in the same response and
@@ -607,7 +796,7 @@ export async function runJcodeHost(): Promise<void> {
       // second provider's name and died inside a third component, and establishing which was true
       // meant reading the seat's private log by hand. RuntimeInfo already knows, so record it where
       // an operator looks first (#785).
-      process.stderr.write(`[cotal-jcode] ${describeRoute(runtime, config.model)}\n`);
+      writeJcodeDiagnostic(`[cotal-jcode] ${describeRoute(runtime, config.model)}\n`);
     }
 
     initialized = true;
@@ -633,7 +822,7 @@ export async function runJcodeHost(): Promise<void> {
     try {
       await stopPrivateJcode();
     } catch (teardown) {
-      process.stderr.write(`[cotal-jcode] ${(teardown as Error).message}\n`);
+      writeJcodeDiagnostic(`[cotal-jcode] ${(teardown as Error).message}\n`);
     }
     socketHome.dispose();
     await agent.stop().catch(() => {});

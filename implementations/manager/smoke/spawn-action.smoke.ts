@@ -6,7 +6,8 @@
  * musts run on the AUTH leg (broker-enforced), added with the must-5 auth wiring.
  *
  *   M1 ACCEPT SHAPE    spawn replies the acceptance floor {name, owner, actor, uid, goalId,
- *                      fingerprint, executor{lifecycleUid, epoch}} — NOT the ~30s blocking reply —
+ *                      fingerprint, readinessDeadlineMs, executor{lifecycleUid, epoch}} — NOT the
+ *                      ~30s blocking reply —
  *                      goalId === the request id (Q3); executor.lifecycleUid is the manager
  *                      incarnation; the payload carries no secret material (pin 7).
  *   M2 PROGRESS ORDER  the goal's progress rides the caller-scoped epe subtree: handoff -> launched
@@ -179,8 +180,10 @@ try {
     const ex = d.executor as { lifecycleUid?: string; epoch?: number } | undefined;
     check("M1 accept carries executor {lifecycleUid, epoch}", typeof ex?.lifecycleUid === "string" && Number.isSafeInteger(ex?.epoch), ex);
     check("M1 executor.lifecycleUid is the manager incarnation (fence coordinate)", ex?.lifecycleUid === managerIid, { got: ex?.lifecycleUid, mgr: managerIid });
-    check("M1 accept payload is the floor {name,owner,actor,uid,goalId,fingerprint,executor}, no secret material (pin 7)",
-      Object.keys(d).sort().join(",") === "actor,executor,fingerprint,goalId,name,owner,uid", Object.keys(d));
+    check("M1 accept carries the exact readiness budget a synchronous follower must outlive",
+      d.readinessDeadlineMs === 2_000, d.readinessDeadlineMs);
+    check("M1 accept payload is the floor {name,owner,actor,uid,goalId,fingerprint,readinessDeadlineMs,executor}, no secret material (pin 7)",
+      Object.keys(d).sort().join(",") === "actor,executor,fingerprint,goalId,name,owner,readinessDeadlineMs,uid", Object.keys(d));
     check("M1 accept names the ALLOCATED identity (name a1, owner DEV_OWNER, uid present)", d.name === "a1" && d.owner === DEV_OWNER && typeof d.uid === "string" && (d.uid as string).length > 0, d);
   }
 

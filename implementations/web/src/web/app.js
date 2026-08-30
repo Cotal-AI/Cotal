@@ -137,6 +137,18 @@ function markStale(name, entry) {
   const rest = staleNow.filter((s) => s.name !== name);
   setStale(entry ? [...rest, entry] : rest);
 }
+
+/** The observer's own presence watch, not a peer. A stall past TTL is "the window went
+ *  blind", not "everyone left". Keep last-known online rows and name the view stale. */
+function applyPresenceView(view) {
+  if (!view || view.fresh) {
+    markStale("roster", null);
+    return;
+  }
+  const since = typeof view.staleSince === "number" ? new Date(view.staleSince).toISOString() : "unknown";
+  markStale("roster", { name: "roster", reason: `observer presence watch silent since ${since}` });
+}
+
 function renderStale() {
   const el = $("stale");
   if (!el) return;
@@ -731,8 +743,9 @@ function renderAgentDetail() {
   const meta = card.meta || {};
   const waiting = p.status === "waiting";
   const who = card.role ? `${esc(card.name)}<span class="crole">${esc(card.role)}</span>` : esc(card.name);
-  // p.ts is last heartbeat (Presence.ts), not status-entered-at — never say "waiting 4m".
-  const since = `${esc(p.status)} · seen ${esc(ago(p.ts))}`;
+  // p.ts is last heartbeat (Presence.ts), not work progress or status-entered-at.
+  const progress = p.status === "working" && p.progress?.kind === "unknown" ? "working · progress unknown" : p.status;
+  const since = `${esc(progress)} · heartbeat ${esc(ago(p.ts))} ago`;
 
   // Model when known; harness agent with no model → "not reported"; no harness and no model → nothing.
   const modelBadge = meta.model
@@ -1039,6 +1052,8 @@ async function refresh() {
         name: "activity",
         reason: `${activityPage.read} of ${activityPage.of} sources answered within ${activityPage.deadlineMs}ms; missing ${activityPage.missing.join(", ")}`,
       });
+    const rosterView = staleNow.find((s) => s.name === "roster");
+    if (rosterView && !stale.some((s) => s.name === "roster")) stale.push(rosterView);
     setStale(stale);
     // The order machine's own failure arm keeps its own note: a refused history read is what makes a
     // backfill incomplete, and the notice that draws it is about ordering. The other three sources
@@ -1173,6 +1188,7 @@ function connect() {
     roster = JSON.parse(e.data);
     refreshDerived();
   });
+  es.addEventListener("presence-view", (e) => applyPresenceView(JSON.parse(e.data)));
   es.addEventListener("message", (e) => onMessage(JSON.parse(e.data)));
   es.addEventListener("error", () => setConn(false));
 }

@@ -436,8 +436,8 @@ async function runBackfillFunction(code: string, call: string, file: string, ent
     // bootstrap must pair with one settle, so coalescing overlapping callers is part of the backfill
     // path, and a hand-written stand-in would let this harness keep running after the real declaration
     // changed underneath it.
-    const decls = read("../src/web/app.js").match(/^let (?:refreshing|selecting) = .*$/gm) ?? [];
-    assert.equal(decls.length, 2, "app.js must declare the single-flight state this harness runs");
+    const decls = read("../src/web/app.js").match(/^let (?:refreshing|selecting|staleNow) = .*$/gm) ?? [];
+    assert.equal(decls.length, 3, "app.js must declare the single-flight and stale-source state this harness runs");
     runInContext(decls.join("\n"), c, { filename: "app.js (state)" });
   }
   runInContext(`${code}\n__p = ${call};`, c, { filename: file });

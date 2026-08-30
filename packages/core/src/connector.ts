@@ -1,4 +1,4 @@
-import type { Extension } from "./registry.js";
+import type { Extension, ExtensionRef } from "./registry.js";
 import type { McpServerSpec } from "./connector-config.js";
 
 /** Identity + mesh coordinates the manager hands a connector to launch an agent. */
@@ -98,6 +98,10 @@ export interface LaunchOpts {
    *  only. Connectors never read config themselves. Host-session markers are not forwarded unless
    *  named here. */
   envAllow?: readonly string[];
+  /** Absolute harness executable paths resolved by the manager during boot, keyed by the connector's
+   * declared `requires` names. Managed launches use these exact files rather than resolving PATH
+   * again later. Absent for standalone/foreground launches that have no manager boot inventory. */
+  resolvedBinaries?: Readonly<Record<string, string>>;
   /** The manager's workspace root. Connectors that keep per-agent local state (e.g. the OpenCode
    *  connector's SQLite DB + serve pidfile) pin it here so a per-agent working directory — which can
    *  point at any repo — doesn't scatter that state into the target tree. The per-agent working
@@ -172,6 +176,9 @@ export interface ConnectorModelCatalog extends ModelCatalog {
 export interface Connector extends Extension {
   readonly kind: "connector";
   readonly name: string;
+  /** Connector-owned setup surface. The base CLI resolves this through the extension registry and
+   * never carries a harness's asset names or native install commands itself. */
+  readonly setup?: ExtensionRef;
   buildLaunch(opts: LaunchOpts): LaunchSpec;
   /** Optional model catalog hook. The manager calls this for selector UIs; launch remains authority-free
    *  and still accepts any string the operator supplies. */
@@ -190,8 +197,8 @@ export interface Connector extends Extension {
   eventChannel?(principal: { owner: string; actor: string }): string;
   /** External executables this connector invokes beyond `LaunchSpec.command` (e.g. the
    *  `claude` / `opencode` CLI). A preflight PATH hint, not a full environment validator: the
-   *  manager checks each is on PATH before spawning and fails with a clear error naming the
-   *  missing one, instead of an obscure process-spawn failure. Optional — omit for connectors
+   *  manager resolves each at boot, passes the absolute path through {@link LaunchOpts.resolvedBinaries},
+   *  and fails with a clear error naming a missing one. Optional — omit for connectors
    *  whose harness runs in-process. */
   readonly requires?: readonly string[];
   /** Directory of installable editor-plugin assets shipped with the connector
@@ -210,6 +217,19 @@ export interface Connector extends Extension {
   /** Whether this connector can reopen the exact host session named by
    *  {@link LaunchOpts.continueSession} after a supervised process crash. Default-deny. */
   readonly supportsSessionContinuation?: boolean;
+  /**
+   * Whether this connector can tell its host that the advertised `cotal_*` list changed.
+   *
+   * Default-deny. The advertised `cotal_*` list is a function of the session's mesh
+   * config (spawn tools appear or vanish with the connection). A session that changes
+   * connection therefore changes the advertised surface. Some hosts can tell the
+   * session the list changed; some take a tool map once and cannot. Consumers above
+   * this boundary branch on THIS FLAG, never on the connector's name and never on
+   * the transport. A connection-changing op against a connector that does not declare
+   * this MUST fail loud ({@link refuseUnannouncedToolListChange}) rather than leave a
+   * stale list that still accepts the call and is denied at the wire.
+   */
+  readonly supportsToolListAnnounce?: boolean;
   /** Whether this connector can honor {@link LaunchOpts.variant}. Default-deny so a variant request
    *  fails before provisioning side effects in the manager. */
   readonly supportsModelVariant?: boolean;
@@ -228,4 +248,18 @@ export interface Connector extends Extension {
    *  one is worse than none: someone waits for a prompt that will never appear and reads the
    *  startup as hung. Omit when there is nothing specific to say. */
   readonly launchHint?: string;
+}
+
+/**
+ * Refuse a connection-changing op when the connector cannot announce the resulting
+ * tool-list change. Name-blind: callers pass the connector they resolved, never a
+ * string of known harnesses, and the refusal itself names none. Default-deny:
+ * absent/false throws. Returns void when the connector declared
+ * {@link Connector.supportsToolListAnnounce}.
+ */
+export function refuseUnannouncedToolListChange(connector: Pick<Connector, "supportsToolListAnnounce">): void {
+  if (connector.supportsToolListAnnounce === true) return;
+  throw new Error(
+    "this connector cannot announce a tool-list change, so a connection change is refused rather than leaving a stale advertised surface",
+  );
 }

@@ -36,6 +36,12 @@ const ANNOTATIONS = {
     availability: "always",
     notes: "Call it first; safe to re-check anytime.",
   },
+  cotal_connection_status: {
+    effect: "read-only",
+    availability: "always",
+    notes:
+      "Reads this session's MeshAgent directly. `lastDrainedAt` is omitted until a non-empty inbox drain has successfully committed.",
+  },
   cotal_roster: { effect: "read-only", availability: "always" },
   cotal_docs: {
     effect: "read-only",
@@ -53,7 +59,7 @@ const ANNOTATIONS = {
     effect: "publishes to a channel",
     availability: "always (the broker enforces your post ACL)",
     notes:
-      "Fails loud when the channel is outside your `allowPublish`. An unknown name in `mentions` aborts the whole broadcast.",
+      "Fails loud when the channel is outside your `allowPublish`. An unknown name in `mentions` aborts the whole broadcast. A send to a name with no registry entry and no prior traffic still succeeds (ad hoc create is allowed) but the receipt says so, and names close matches when it can, so a typo is not identical to a send into a known room.",
   },
   cotal_dm: { effect: "sends a private message to one peer", availability: "always" },
   cotal_anycast: {
@@ -66,7 +72,12 @@ const ANNOTATIONS = {
     availability: "always",
     notes: "With no arguments it just reports the current values.",
   },
-  cotal_channel_info: { effect: "read-only", availability: "always" },
+  cotal_channel_info: {
+    effect: "read-only",
+    availability: "always",
+    notes:
+      "An unregistered name is reported as not in the channel registry. It is still a real channel if it has traffic.",
+  },
   cotal_channels: { effect: "read-only", availability: "always" },
   cotal_channel_mode: {
     effect: "sets your own per-channel receive preference (quiet / muted / normal)",
@@ -102,6 +113,12 @@ const ANNOTATIONS = {
     notes:
       "Content only (`prompt`, `model`): role, ACLs, capabilities, and ownership have no slot here; they are policy. " +
       "Defining is silent by default. `announce` is the only way it emits, and then only to the channel you name.",
+  },
+  cotal_personas: {
+    effect: "read-only",
+    availability: "capability-gated like cotal_spawn",
+    notes:
+      "Omit `name` to list spawnable names; pass `name` to show one card you own. Role, model, and description ride only on files you own; show of a name you do not own is not-found.",
   },
   cotal_reconnect: {
     effect: "tears down and rebuilds your own mesh connection",
@@ -167,7 +184,7 @@ lines.push(
 );
 lines.push("");
 lines.push(
-  "`cotal_orientation` is the entry point. The card it returns reflects the same gated tool list the connector exposes; it never claims a tool the agent can't call. In auth mode the manager-op tools (`cotal_spawn`, `cotal_persona`) are injected only for personas declaring `capabilities: [spawn]` ([identity & auth](identity-and-auth.md)).",
+  "`cotal_orientation` is the entry point. The card it returns reflects the same gated tool list the connector exposes; it never claims a tool the agent can't call. In auth mode the manager-op tools (`cotal_spawn`, `cotal_persona`, `cotal_personas`) are injected only for personas declaring `capabilities: [spawn]` ([identity & auth](identity-and-auth.md)).",
 );
 lines.push("");
 lines.push(

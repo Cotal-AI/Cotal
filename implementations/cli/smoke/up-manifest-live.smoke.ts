@@ -14,6 +14,7 @@ import { createConnection, createServer, type AddressInfo } from "node:net";
 import { mkdtempSync, rmSync, writeFileSync, existsSync, statSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { canonicalLocalProcessPath, MANAGER_PIDFILE } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 // Ephemeral free ports + a per-run space: repeated or concurrent runs never collide on a fixed port
@@ -102,7 +103,7 @@ try {
   await sleep(1500);
   ok("broker bound the --server OVERRIDE port (not the manifest's)", await portOpen(PORT));
   ok("manifest's declared port was NOT used (override won)", !(await portOpen(DECOY_PORT)));
-  mgrPid = Number(readFileSync(join(root, ".cotal", "manager.pid"), "utf8").trim());
+  mgrPid = Number(readFileSync(canonicalLocalProcessPath(MANAGER_PIDFILE, { root, space: SPACE }), "utf8").trim());
   ok("the recorded manager is alive (not a lease-race loser)", Number.isFinite(mgrPid) && alive(mgrPid), mgrPid);
   const mgrCmd = spawnSync("ps", ["-p", String(mgrPid), "-o", "command="], { encoding: "utf8" }).stdout;
   ok("the recorded manager carries the launch spec", /--launch\b/.test(mgrCmd), mgrCmd);

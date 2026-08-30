@@ -46,9 +46,16 @@ const shimDir = join(root, "bin");
 const shim = join(shimDir, "jcode");
 const log = join(root, "fake.jsonl");
 const closeOnce = join(root, "first-bridge-closed");
+const failAttachOnce = join(root, "recovery-attach-failed");
 const sessionState = join(root, "fake-session.json");
+const safetyLog = join(root, "safety.jsonl");
+const safetyCloseOnce = join(root, "safety-first-bridge-closed");
+const safetyFailAttachOnce = join(root, "safety-recovery-attach-failed");
+const safetySessionState = join(root, "safety-session.json");
+const safetyLaunchCount = join(root, "safety-launch-count");
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
 let child: ChildProcess | undefined;
+let safetyChild: ChildProcess | undefined;
 let operator: CotalEndpoint | undefined;
 let pass = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
@@ -56,8 +63,24 @@ const check = (name: string, condition: boolean, actual?: unknown): void => {
   pass++;
   console.log(`  ✓ ${name}`);
 };
-const entries = (): Array<{ ev: string; [key: string]: unknown }> =>
-  existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
+function readJsonLines<T>(path: string): T[] {
+  if (!existsSync(path)) return [];
+  const raw = readFileSync(path, "utf8");
+  const lines = raw.split("\n");
+  if (!raw.endsWith("\n")) lines.pop();
+  return lines.filter(Boolean).map((line) => JSON.parse(line) as T);
+}
+const entriesOf = (path: string): Array<{ ev: string; [key: string]: unknown }> =>
+  readJsonLines(path);
+const entries = (): Array<{ ev: string; [key: string]: unknown }> => entriesOf(log);
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 try {
   mkdirSync(shimDir, { recursive: true });
@@ -73,8 +96,10 @@ try {
   });
   operator.on("error", () => {});
   let peerId: string | undefined;
+  let safetyPeerId: string | undefined;
   operator.on("presence", (event: { type: string; presence: { card: { id: string; name: string } } }) => {
     if (event.type !== "offline" && event.presence.card.name === "jcodepeer") peerId = event.presence.card.id;
+    if (event.type !== "offline" && event.presence.card.name === "jcodesafety") safetyPeerId = event.presence.card.id;
   });
   await operator.start();
 
@@ -90,7 +115,9 @@ try {
       PATH: `${shimDir}:${env.PATH ?? ""}`,
       FAKE_JCODE_LOG: log,
       FAKE_JCODE_CLOSE_ON_CONTENT: "SIMULATE_PROVIDER_STALL",
+      FAKE_JCODE_CLOSE_ALWAYS_ON_CONTENT: "SIMULATE_SECOND_PROVIDER_STALL",
       FAKE_JCODE_CLOSE_ONCE_FILE: closeOnce,
+      FAKE_JCODE_FAIL_ATTACH_ONCE_FILE: failAttachOnce,
       FAKE_JCODE_SESSION_STATE: sessionState,
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodeclose",
@@ -116,21 +143,35 @@ try {
 
   await operator.unicast(peerId!, "SIMULATE_PROVIDER_STALL");
   await waitFor("simulated provider disconnect", () => existsSync(closeOnce) ? closeOnce : undefined);
-  // The unfixed host reacts immediately through `client.on("close") → shutdown(1)`. Let that
-  // path settle before the assertion; a reconnecting host remains live and proceeds to its one
-  // reattach attempt below.
-  await sleep(500);
-  check("provider disconnect does not exit the mesh seat (#781)", child.exitCode === null, { code: child.exitCode, stderr });
+  await waitFor("synthetic transient recovery attach failure", () => existsSync(failAttachOnce) ? failAttachOnce : undefined);
+  check("the recovery attempt deterministically loses its first attach race (#971)", entries().some((entry) => entry.ev === "attach_failed_once"), entries());
+  await waitFor("recovery retry or seat exit after the transient attach loss", () =>
+    stderr.includes("private Harness replacement not ready yet; retrying inside its one recovery window") || child.exitCode !== null
+      ? true
+      : undefined,
+  );
+  check("provider disconnect survives a transient replacement loss inside the bounded recovery window (#971)", child.exitCode === null && stderr.includes("private Harness replacement not ready yet; retrying inside its one recovery window"), { code: child.exitCode, stderr });
   await waitFor("recovery Harness connection", () => {
     const hellos = entries().filter(
       (entry) => entry.ev === "request" && (entry.frame as { req?: string }).req === "hello",
     );
-    return hellos.length >= 2 ? hellos : undefined;
+    return hellos.length >= 3 ? hellos : undefined;
   });
-  const reattachments = entries().filter(
-    (entry) => entry.ev === "session_path" && entry.req === "attach_session" && entry.session_id === "fake-session",
+  const transientBridges = entries().filter(
+    (entry): entry is { ev: string; pid: number } => entry.ev === "listening" && typeof entry.pid === "number",
   );
-  check("recovered Harness client reattaches the existing private session (#781)", reattachments.length >= 1, reattachments);
+  check(
+    "the failed transient replacement is stopped before the successful retry",
+    transientBridges.length >= 3 && !alive(transientBridges[1]!.pid) && alive(transientBridges[2]!.pid),
+    transientBridges,
+  );
+  const reattachments = await waitFor("recovery session reattachment after the transient loss", () => {
+    const attempts = entries().filter(
+      (entry) => entry.ev === "session_path" && entry.req === "attach_session" && entry.session_id === "fake-session",
+    );
+    return attempts.length >= 2 ? attempts : undefined;
+  });
+  check("recovered Harness client reattaches the existing private session after the transient loss (#971)", reattachments.length >= 2, reattachments);
 
   await operator.unicast(peerId!, "RECOVERED_MESH_WORK");
   const retriedTurn = await waitFor("unacknowledged stalled turn redelivery", () => {
@@ -156,13 +197,93 @@ try {
     ),
   );
   check("recovered seat accepts a later mesh turn (#781)", JSON.stringify(recoveredTurn).includes("RECOVERED_MESH_WORK"), recoveredTurn);
+  await waitFor("post-recovery turn boundary", () =>
+    entries().find(
+      (entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("RECOVERED_MESH_WORK"),
+    ),
+  );
 
-  child.kill("SIGTERM");
+  const secondCloseStarted = Date.now();
+  await operator.unicast(peerId!, "SIMULATE_SECOND_PROVIDER_STALL");
+  await waitFor("second provider disconnect remains terminal", () =>
+    stderr.includes("private Harness connection closed after its one recovery attempt") ? stderr : undefined,
+  );
   await Promise.race([once(child, "exit"), sleep(10_000)]);
-  check("recovered host still exits cleanly on operator stop", child.exitCode === 0, { code: child.exitCode, stderr });
-  console.log(`\nJCODE PROVIDER-DISCONNECT SMOKE PASSED (${pass} checks)`);
+  check("a second provider disconnect stays terminal without opening an unbounded recovery loop", child.exitCode === 1 && Date.now() - secondCloseStarted < 10_000, { code: child.exitCode, elapsedMs: Date.now() - secondCloseStarted, stderr });
+
+  // A failed replacement may be retried only after its exact private tree is proven gone. Strip the
+  // launch identity from replacement 2 so stopPrivateTree takes its documented fail-loud path; the
+  // host must exit while that identity is still current, rather than launch replacement 3 and lose
+  // the only safe handle for the unproven tree.
+  writeFileSync(
+    shim,
+    `#!/bin/sh\nn=0\n[ ! -f "${safetyLaunchCount}" ] || n=$(cat "${safetyLaunchCount}")\nn=$((n+1))\nprintf '%s' "$n" > "${safetyLaunchCount}"\nif [ "$n" -eq 2 ]; then exec env -u JCODE_COTAL_LAUNCH_IDENTITY "${process.execPath}" "${fake}" "$@"; fi\nexec "${process.execPath}" "${fake}" "$@"\n`,
+  );
+  safetyChild = spawn(tsx, [host], {
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: safetyLog,
+      FAKE_JCODE_CLOSE_ON_CONTENT: "SIMULATE_UNPROVEN_TEARDOWN",
+      FAKE_JCODE_CLOSE_ONCE_FILE: safetyCloseOnce,
+      FAKE_JCODE_FAIL_ATTACH_ONCE_FILE: safetyFailAttachOnce,
+      FAKE_JCODE_SESSION_STATE: safetySessionState,
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodeclose",
+      COTAL_NAME: "jcodesafety",
+      COTAL_ID: "jcodesafety",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_CONTROL_SOCKET: join(root, "safety-control.sock"),
+      COTAL_CONTROL_TOKEN: "jcode-provider-disconnect-safety-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let safetyStderr = "";
+  safetyChild.stderr?.on("data", (chunk: Buffer) => (safetyStderr += chunk.toString()));
+  await waitFor("safety initial bridge", () => entriesOf(safetyLog).find((entry) => entry.ev === "listening"));
+  await waitFor("safety mesh presence", () => safetyPeerId);
+  await operator.unicast(safetyPeerId!, "SIMULATE_UNPROVEN_TEARDOWN");
+  await waitFor("safety replacement attach failure", () => existsSync(safetyFailAttachOnce) ? true : undefined);
+  const safetyDeadline = Date.now() + 10_000;
+  while (
+    safetyChild.exitCode === null &&
+    (!existsSync(safetyLaunchCount) || Number(readFileSync(safetyLaunchCount, "utf8")) < 3) &&
+    Date.now() < safetyDeadline
+  ) await sleep(100);
+  const safetyLaunches = Number(readFileSync(safetyLaunchCount, "utf8"));
+  const safetyBridges = entriesOf(safetyLog).filter(
+    (entry): entry is { ev: string; pid: number } => entry.ev === "listening" && typeof entry.pid === "number",
+  );
+  check(
+    "terminal ownership refusal or unsafe third launch",
+    safetyChild.exitCode === 1 &&
+      safetyLaunches === 2 &&
+      safetyStderr.includes("does not carry its launch-bound identity — refusing unsafe teardown"),
+    { code: safetyChild.exitCode, launches: safetyLaunches, bridges: safetyBridges, stderr: safetyStderr },
+  );
+  check(
+    "the ownership-refused replacement stays live until exact harness cleanup (instrument control)",
+    safetyBridges.length === 2 && alive(safetyBridges[1]!.pid),
+    safetyBridges,
+  );
+  console.log(`\nJCODE PROVIDER-DISCONNECT SMOKE: ${pass} checks passed`);
 } finally {
   if (child && child.exitCode === null) child.kill("SIGKILL");
+  if (safetyChild && safetyChild.exitCode === null) safetyChild.kill("SIGKILL");
+  for (const entry of [...entriesOf(log), ...entriesOf(safetyLog)]) {
+    if (entry.ev !== "listening" || typeof entry.pid !== "number") continue;
+    try {
+      process.kill(entry.pid, "SIGKILL");
+    } catch {
+      /* already gone */
+    }
+  }
   await operator?.stop().catch(() => {});
   nats.kill("SIGKILL");
   await sleep(100);

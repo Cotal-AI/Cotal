@@ -1,0 +1,4 @@
+# A crashed manager may leave an externally-owned seat broker-live. The same logical successor must
+# verify-evict that predecessor before the alias can admit a replacement; normal shutdown separately
+# waits for AgentHandle exit proof. Real manager/seat processes, ephemeral auth broker, exact PIDs.
+smoke:orphan-seat-succession

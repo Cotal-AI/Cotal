@@ -1,0 +1,54 @@
+{
+  "suite": "bin/smoke/suite-own-process-material.smoke.ts",
+  "guard": "every file that defaults COTAL_SERVERS and then calls configFromEnv() on process.env must drop the COTAL_LAUNCH_MATERIAL pointer first",
+  "command": "pnpm smoke:suite-own-process-material",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/suite-own-process-material.json",
+  "why": [
+    "Issue #995. A launcher-spawned seat exports COTAL_LAUNCH_MATERIAL. A suite that then",
+    "defaults COTAL_SERVERS and calls configFromEnv() on process.env manufactures the two-carrier",
+    "launch the connector refuses. The ambient-env census cannot see this: it grades spreads into",
+    "children, and the refusal happens in the suite's OWN process.",
+    "",
+    "N1 restores the reported defect: hermes tool-parity loses its pointer drop. It must redden",
+    "the per-file cell, which is the census's only real output for a missing drop.",
+    "",
+    "N2 is order, not presence. A drop after configFromEnv still looks like a scrub and still",
+    "throws. The cell that names 'before configFromEnv' is the one that has to go red.",
+    "",
+    "N3 is the census shrinking silently. Every per-file cell is generated from the census, so",
+    "walking only connector-hermes deletes cells rather than failing them, and a suite with",
+    "fewer cells still exits 0. The package-span cell is what makes that red.",
+    "",
+    "NO BUILD STEP: the suite reads source files off disk and imports nothing from a built",
+    "package, so there is no dist/ copy that could disagree with the mutation."
+  ],
+  "mutations": [
+    {
+      "name": "N1 hermes tool-parity loses its COTAL_LAUNCH_MATERIAL drop, which is the reported defect",
+      "file": "extensions/connector-hermes/smoke/tool-parity.smoke.ts",
+      "find": "delete process.env.COTAL_LAUNCH_MATERIAL;\nconst config = configFromEnv();\nconst specNames = cotalToolSpecs(config, \"hermes\").map((s) => s.name);",
+      "replace": "const config = configFromEnv();\nconst specNames = cotalToolSpecs(config, \"hermes\").map((s) => s.name);",
+      "expectRed": "extensions/connector-hermes/smoke/tool-parity.smoke.ts drops COTAL_LAUNCH_MATERIAL from process.env",
+      "cell": "extensions/connector-hermes/smoke/tool-parity.smoke.ts drops COTAL_LAUNCH_MATERIAL from process.env",
+      "note": "The exact regression #995 names. Without the drop, a managed seat's pnpm test manufactures the two-carrier launch and is refused."
+    },
+    {
+      "name": "N2 the drop sits AFTER configFromEnv, so the pair is still present when the refusal runs",
+      "file": "extensions/connector-core/smoke/tool-input-closed.smoke.ts",
+      "find": "delete process.env.COTAL_LAUNCH_MATERIAL;\nconst config = configFromEnv();\nconst specs = cotalToolSpecs(config, \"smoke\");",
+      "replace": "const config = configFromEnv();\ndelete process.env.COTAL_LAUNCH_MATERIAL;\nconst specs = cotalToolSpecs(config, \"smoke\");",
+      "expectRed": "extensions/connector-core/smoke/tool-input-closed.smoke.ts drops the pointer before configFromEnv() reads the pair",
+      "cell": "extensions/connector-core/smoke/tool-input-closed.smoke.ts drops the pointer before configFromEnv() reads the pair",
+      "note": "Presence-not-position: the drop is still in the file, so a census that only asked 'is the line there' would stay green while the live refusal still fires."
+    },
+    {
+      "name": "N3 the census is scoped to connector-hermes, the package that reported the defect",
+      "file": "bin/smoke/suite-own-process-material.smoke.ts",
+      "find": "for (const file of sources(repoRoot)) {",
+      "replace": "for (const file of sources(join(repoRoot, \"extensions\", \"connector-hermes\"))) {",
+      "expectRed": "the census spans more than one package directory, so it is keyed on content and not on one connector",
+      "cell": "the census spans more than one package directory, so it is keyed on content and not on one connector",
+      "note": "Narrowing the walk does not FAIL the per-file cells, it stops emitting them. A suite with two files instead of six still exits 0 unless the span cell fires."
+    }
+  ]
+}

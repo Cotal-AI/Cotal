@@ -1,0 +1,35 @@
+{
+  "suite": "implementations/cli/smoke/backup-kv-consumer.smoke.ts",
+  "guard": "backup accepts the exact stopped whole-KV scanner shape without accepting arbitrary ordered consumers",
+  "command": "pnpm --filter @cotal-ai/cli... build && pnpm smoke:backup-kv-consumer",
+  "completionMarker": "BACKUP KV CONSUMER SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/backup-kv-consumer.json",
+  "why": [
+    "The behavior is a boundary, not a one-way relaxation. One mutation restores the shipped false",
+    "refusal by dropping DeliverPolicy.All. The other removes the exact filter-subject check, which",
+    "would accept a genuinely unhealthy lookalike. Both run backup create against disposable real",
+    "broker stores, so the proof reaches the inventory guard through the public command path."
+  ],
+  "mutations": [
+    {
+      "name": "the sanctioned whole-KV scanner policy is refused again",
+      "file": "implementations/cli/src/commands/backup.ts",
+      "find": "    (config.deliver_policy === \"last_per_subject\" || config.deliver_policy === \"all\") &&",
+      "replace": "    config.deliver_policy === \"last_per_subject\" &&",
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build",
+      "expectRed": "backup accepts a healthy stamp with stopped kv-scan residue",
+      "cell": "backup accepts a healthy stamp with stopped kv-scan residue",
+      "note": "This is the exact pre-fix guard and reproduces issue #991."
+    },
+    {
+      "name": "the exact KV filter boundary is removed",
+      "file": "implementations/cli/src/commands/backup.ts",
+      "find": "    config.filter_subject === `$KV.${stream.slice(3)}.>` &&",
+      "replace": "    typeof config.filter_subject === \"string\" &&",
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build",
+      "expectRed": "backup still refuses an unhealthy ordered-consumer lookalike",
+      "cell": "backup still refuses an unhealthy ordered-consumer lookalike",
+      "note": "The lookalike keeps every ordered-consumer field except the bucket filter, so accepting it would turn the false-positive fix into a custody hole."
+    }
+  ]
+}

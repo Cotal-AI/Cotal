@@ -51,6 +51,8 @@ import { spawnSync, spawn as spawnProc } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DEFAULT_SPACE } from "@cotal-ai/core";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE } from "@cotal-ai/workspace";
 import net from "node:net";
 import tls from "node:tls";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
@@ -925,7 +927,7 @@ async function main(): Promise<void> {
     // Stop ONLY the delivery daemon, so the refresh below has one to relaunch — and so the argv
     // grepped afterwards is provably the NEW child. Without this control the assertion would be
     // satisfied by the original, correctly-flagged daemon still running.
-    const pidFile = join(cwd, ".cotal", "delivery.pid");
+    const pidFile = canonicalLocalProcessPath(DELIVERY_PIDFILE, { root: cwd, space: DEFAULT_SPACE });
     assert.ok(existsSync(pidFile), `CONTROL: fresh TLS up must leave a delivery pidfile:\n${up.out}`);
     const oldPid = Number(readFileSync(pidFile, "utf8").trim());
     try { process.kill(oldPid, "SIGTERM"); } catch { /* already gone */ }

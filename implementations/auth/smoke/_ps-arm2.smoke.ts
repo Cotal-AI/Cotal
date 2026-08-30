@@ -28,6 +28,7 @@ import type { AddressInfo } from "node:net";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { canonicalLocalProcessPath, MANAGER_PIDFILE } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
@@ -172,7 +173,7 @@ agents:
   console.log("\n4') ARM 2: cotal ps --space against the ORIGINAL, still-live manager");
 
   // HAZARD CONTROL 1: a ps that fails because no manager is up is not this defect.
-  const mgrPidFile = join(root, ".cotal", "manager.pid");
+  const mgrPidFile = canonicalLocalProcessPath(MANAGER_PIDFILE, { root, space: SPACE });
   const mgrAlive = (() => {
     try { process.kill(Number(readFileSync(mgrPidFile, "utf8").trim()), 0); return true; } catch { return false; }
   })();

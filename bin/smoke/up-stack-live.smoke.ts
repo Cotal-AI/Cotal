@@ -22,6 +22,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { renderDetachedSummary } from "../../implementations/cli/src/lib/up-report.js";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { DEFAULT_SPACE } from "@cotal-ai/core";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE } from "@cotal-ai/workspace";
 
 // Ephemeral OS-assigned port: no fixed-port collision across back-to-back / concurrent runs.
 const freePort = (): Promise<number> =>
@@ -72,6 +74,10 @@ const alive = (pid: number) => {
   }
 };
 const pidOf = (file: string) => Number(readFileSync(join(root, ".cotal", file), "utf8").trim());
+// The runtime records are per-space now, so their names come from the SHIPPED expansion rather than
+// a literal. This suite ups without `--space`, which is the default space.
+const record = (template: string) => canonicalLocalProcessPath(template, { root, space: DEFAULT_SPACE });
+const recordName = (template: string) => record(template).slice(join(root, ".cotal").length + 1);
 const portOpenAt = (port: number) =>
   new Promise<boolean>((res) => {
     const s = createConnection({ host: "127.0.0.1", port }, () => { s.destroy(); res(true); });
@@ -121,12 +127,12 @@ try {
     up.stdout,
   );
   ok("old generic background wording is absent", !/mesh running in the background/.test(up.stdout), up.stdout);
-  for (const [file, label] of [["nats.pid", "nats-server"], ["delivery.pid", "delivery daemon"], ["manager.pid", "manager"]] as const) {
+  for (const [file, label] of [["nats.pid", "nats-server"], [recordName(DELIVERY_PIDFILE), "delivery daemon"], [recordName(MANAGER_PIDFILE), "manager"]] as const) {
     const pid = pidOf(file);
     pids.push(pid);
     ok(`${label} is up (${file} + alive)`, Number.isFinite(pid) && alive(pid), pid);
   }
-  ok("delivery-aware marker is bound to the manager pid", pidOf("manager.delivery-aware") === pidOf("manager.pid"));
+  ok("delivery-aware marker is bound to the manager pid", pidOf(recordName(MANAGER_DELIVERY_AWARE_MARKER)) === pidOf(recordName(MANAGER_PIDFILE)));
   ok("auth material was provisioned (.cotal/auth)", existsSync(join(root, ".cotal", "auth")));
 
   // 2) the manager ANSWERS a real `cotal ps` — no pre-arranged creds, resolved from the folder's
@@ -149,7 +155,7 @@ try {
   //     daemon's, and report a healthy control plane over a child that was already dead.
   //     A LIVE holder rather than a SIGKILLed one's expiring record: the same code path, with no
   //     dependence on how much of the bucket TTL is left by the time the refresh reaches its CAS.
-  const deliveryPidFile = join(root, ".cotal", "delivery.pid");
+  const deliveryPidFile = record(DELIVERY_PIDFILE);
   const liveDelivery = readFileSync(deliveryPidFile, "utf8");
   rmSync(deliveryPidFile);
   const lost = cli("up", "--server", SERVER);
@@ -170,7 +176,7 @@ try {
     await sleep(500);
     dead = pids.every((p) => !alive(p)) && !(await portOpen());
   }
-  ok("all pid files removed by down", (["nats.pid", "delivery.pid", "manager.pid"] as const).every((f) => !existsSync(join(root, ".cotal", f))));
+  ok("all pid files removed by down", [join(root, ".cotal", "nats.pid"), record(DELIVERY_PIDFILE), record(MANAGER_PIDFILE)].every((f) => !existsSync(f)));
   ok("all three processes are dead + broker port closed", dead, pids.filter(alive));
 
   // Open mode in the SAME root retains static-auth files from the prior boot. Reporting follows the

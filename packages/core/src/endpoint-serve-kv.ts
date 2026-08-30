@@ -16,7 +16,7 @@ import type { KV } from "@nats-io/kv";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { isCasLoss as isRawCasLoss } from "./endpoint-records.js";
 import { endpointToken, assertLifecycleToken } from "./endpoint-subjects.js";
-import { epgateKey, epcredRowKey, parseEndpointGate, parseLedgerRow, type CredentialLedgerRow } from "./lifecycle-state.js";
+import { epgateKey, epcredRowKey, eprepairKey, parseEndpointGate, parseLedgerRow, parseEndpointRepairCursor, type CredentialLedgerRow, type EndpointRepairCursor } from "./lifecycle-state.js";
 import type { EpIssuanceGate, EpServeLedgerRow } from "./endpoint-service.js";
 
 const enc = new TextEncoder();
@@ -217,6 +217,80 @@ export async function commitSiblingIssuance(
     pin = now.revision; // a concurrent sibling mint's identical-bytes touch; re-pin and retry
   }
   return refuse(`the issuance gate for "${at}" stayed contended across every retry; this mint released nothing (SPEC 13.1)`, "unavailable");
+}
+
+export async function loadEndpointRepairCursor(
+  kv: KV,
+  endpoint: string,
+  instanceId: string,
+): Promise<{ cursor: EndpointRepairCursor; revision: number } | null> {
+  const key = eprepairKey(endpoint, instanceId);
+  const entry = await kv.get(key);
+  if (!entry || entry.operation !== "PUT") return null;
+  return { cursor: parseEndpointRepairCursor(entry.value, key), revision: entry.revision };
+}
+
+/** Create-or-CAS the repair cursor. `expectedRevision` null means create-only (or identical retry).
+ *  A CAS loss is loud: the caller leaves the gate frozen rather than skipping on uncommitted progress. */
+export async function saveEndpointRepairCursor(
+  kv: KV,
+  endpoint: string,
+  instanceId: string,
+  cursor: EndpointRepairCursor,
+  expectedRevision: number | null,
+): Promise<number> {
+  const key = eprepairKey(endpoint, instanceId);
+  parseEndpointRepairCursor(enc.encode(JSON.stringify(cursor)), key);
+  const bytes = enc.encode(JSON.stringify(cursor));
+  if (expectedRevision === null) {
+    try {
+      return await kv.create(key, bytes);
+    } catch (e) {
+      if (!isRawCasLoss(e))
+        throw new EpEnvelopeError("unavailable", `creating the repair cursor ${key} is ambiguous; the repair stays frozen (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
+      const existing = await kv.get(key);
+      if (!existing || existing.operation !== "PUT" || dec.decode(existing.value) !== JSON.stringify(cursor))
+        throw new EpEnvelopeError("conflict", `the repair cursor ${key} exists with FOREIGN content; refusing to reuse another repair's progress`);
+      return existing.revision;
+    }
+  }
+  try {
+    return await kv.update(key, bytes, expectedRevision);
+  } catch (e) {
+    if (isRawCasLoss(e))
+      throw new EpEnvelopeError("conflict", `the repair cursor ${key} lost its CAS; re-observe before skipping any holder`);
+    throw new EpEnvelopeError("unavailable", `writing the repair cursor ${key} is ambiguous; the repair stays frozen (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
+  }
+}
+
+/** Revision-pinned cleanup after the gate has reopened. A cleanup failure is safe to retain: every
+ *  future repair rebinds the cursor to its own gate revision before it may skip a holder. */
+export async function deleteEndpointRepairCursor(
+  kv: KV,
+  endpoint: string,
+  instanceId: string,
+  expectedRevision: number,
+): Promise<void> {
+  const key = eprepairKey(endpoint, instanceId);
+  try {
+    await kv.delete(key, { previousSeq: expectedRevision });
+  } catch (e) {
+    if (isRawCasLoss(e))
+      throw new EpEnvelopeError("conflict", `the repair cursor ${key} changed before cleanup; its freeze binding remains required before any later skip`);
+    throw new EpEnvelopeError("unavailable", `cleaning up the repair cursor ${key} is ambiguous; its freeze binding remains required before any later skip: ${(e as Error)?.message ?? String(e)}`);
+  }
+}
+
+/** True only when the stored cursor is the SAME freeze op, freeze token, and holder set. */
+export function repairCursorMatches(
+  cursor: EndpointRepairCursor,
+  binding: { opId: string; freezeToken: number; holders: readonly string[] },
+): boolean {
+  const holders = [...new Set(binding.holders)].sort();
+  return cursor.opId === binding.opId
+    && cursor.freezeToken === binding.freezeToken
+    && cursor.holders.length === holders.length
+    && cursor.holders.every((h, i) => h === holders[i]);
 }
 
 /** Provision the endpoint's issuance gate OPEN (create-only), the §13.1 pre-registration a

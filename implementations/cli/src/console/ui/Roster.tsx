@@ -1,18 +1,25 @@
 import { useEffect, useState } from "react";
 import { Box, Text, useFocus, useInput } from "ink";
 import type { Presence } from "@cotal-ai/core";
+import { progressSignal } from "@cotal-ai/workspace";
 import { agentColor, STATUS, ago } from "./theme.js";
+
+function progressText(p: Presence): string {
+  if (p.card.kind !== "agent" || p.status !== "working") return ago(p.ts);
+  return progressSignal(undefined, Date.now()).kind === "unknown" ? "progress unknown" : "progress observed";
+}
 
 function RosterRow({ p, selected, wide }: { p: Presence; selected: boolean; wide: boolean }) {
   const isAgent = p.card.kind === "agent";
   const s = STATUS[p.status];
+  const age = progressText(p);
   // Selected: one uniform cyan bar (like the tabs); unselected: the normal colored row.
   if (selected) {
     const kind = wide ? (isAgent ? "  " + s.word : "  endpoint") : "";
     const act = p.activity ? "  " + p.activity : "";
     return (
       <Text inverse bold color="cyan" wrap="truncate-end">
-        {(isAgent ? s.dot : "⚙") + " " + p.card.name + kind + act + "  " + ago(p.ts)}
+        {(isAgent ? s.dot : "⚙") + " " + p.card.name + kind + act + "  " + age}
       </Text>
     );
   }
@@ -30,7 +37,7 @@ function RosterRow({ p, selected, wide }: { p: Presence; selected: boolean; wide
         )
       ) : null}
       {p.activity ? <Text dimColor>{"  " + p.activity}</Text> : null}
-      <Text dimColor>{"  " + ago(p.ts)}</Text>
+      <Text dimColor>{"  " + age}</Text>
     </Text>
   );
 }

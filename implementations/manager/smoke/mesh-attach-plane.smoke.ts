@@ -189,7 +189,7 @@ let cliEnd: string | undefined;
 const cliRx: Buffer[] = [];
 const transport = meshSessionTransport(ncCli, r2.grant);
 transport.onReady(() => { cliReady = true; });
-transport.onData((b) => cliRx.push(b));
+transport.onData((b) => { cliRx.push(b); });
 transport.onEnd((_err, reason) => { cliEnd = reason; });
 c("meshSessionTransport fires onReady after the ready handshake", await until(() => cliReady));
 transport.send(Buffer.from("CLITYPE\n", "utf8"));

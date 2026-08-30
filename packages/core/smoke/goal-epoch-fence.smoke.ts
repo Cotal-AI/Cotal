@@ -178,7 +178,7 @@ try {
   // the index pointed at ITS acceptance when it pointed at a sibling's.
   {
     const g = await newGoal(ctx, "g-index", 0);
-    const mine = { name: "agent-a", actor: "act-a", uid: "uid-a" };
+    const mine = { name: "agent-a", actor: "act-a", uid: "uid-a", readinessDeadlineMs: 30_000 };
     const first = await recordGoalIndex(ctx, g, MGR, mine);
     c("the first incarnation to record an accepted goal wins the create-only CAS", first.recorded === true);
 
@@ -193,6 +193,8 @@ try {
     c("...and the loser reads the WINNER's allocated identity, never its own",
       JSON.stringify((foreign as { existing: { allocated?: unknown } }).existing.allocated) === JSON.stringify(mine),
       (foreign as { existing: { allocated?: unknown } }).existing.allocated);
+    c("...including the readiness budget a synchronous follower must outlive before the goal spec exists",
+      (foreign as { existing: { allocated?: { readinessDeadlineMs?: number } } }).existing.allocated?.readinessDeadlineMs === 30_000);
 
     // The floor is readable from the moment of acceptance — BEFORE any terminal exists. That is the
     // whole point: the window a same-goalId retry actually lands in is the one where the winner is

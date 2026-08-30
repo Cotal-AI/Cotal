@@ -113,7 +113,7 @@ const participantStore = workspaceSecretStore(participantRoot);
 const authDiagnosticCap = 32 * 1024;
 const closedChildren = new WeakSet<ChildProcess>();
 let authService: ChildProcess | undefined;
-let authServiceDiagnostics = Buffer.alloc(0);
+let authServiceDiagnostics: Buffer<ArrayBufferLike> = Buffer.alloc(0);
 let authServiceSpawnError: Error | undefined;
 let broker: ChildProcess | undefined;
 let idpServer: ReturnType<typeof createServer> | undefined;
@@ -250,7 +250,7 @@ try {
     emailAndPassword: { enabled: true },
     plugins: [
       jwt({ jwt: { issuer: origin, audience: origin } }),
-      deviceAuthorization({ expiresIn: "2m", interval: "1s", validateClient: (id) => id === clientId }),
+      deviceAuthorization({ expiresIn: "2m", interval: "1s", validateClient: (id: string) => id === clientId }),
       betterAuthBearer(),
     ],
   });
@@ -312,7 +312,7 @@ try {
     dir: participantHome,
     idpUrl,
     clientId,
-    onPrompt: (prompt) => void approve(prompt.userCode),
+    onPrompt: (prompt: { userCode: string }) => void approve(prompt.userCode),
   });
   const owner = await cotalAuthProvider.ownerForLogin({ store: hostStore, dir: hostDir, space });
   check("participant login is established", typeof sub === "string" && sub.length > 0);
@@ -349,7 +349,7 @@ try {
   endpoint = new CotalEndpoint({
     space,
     servers: server,
-    bearer: () => cotalAuthProvider.userCredentials({ store: participantStore, dir: participantDir, space, actor: "cli" }).then((value) => value.bearer),
+    bearer: () => cotalAuthProvider.userCredentials({ store: participantStore, dir: participantDir, space, actor: "cli" }).then((value: { bearer: string }) => value.bearer),
     sentinelCreds: material.sentinelCreds,
     lifecycleUid: payload.act.lifecycleUid,
     channels: [],

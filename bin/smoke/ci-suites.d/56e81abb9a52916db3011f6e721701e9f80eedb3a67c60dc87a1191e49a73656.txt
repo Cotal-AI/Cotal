@@ -1,0 +1,6 @@
+# #903: the agent profile's grant template emitted the JetStream consumer-create deny triple on
+# DM/TASK/DLV and bound EPC without ever granting the matching $JS.API.STREAM.INFO, so a
+# provisioned actor (a board endpoint was the live report) was refused every stream-level state
+# read. The suite drives the read path live on all four streams and asserts the deny triple's
+# polarity survives. Moved from the frozen ci-suites.txt tail during the merge with main (#1052 fragments).
+smoke:provision-stream-info

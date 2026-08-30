@@ -13,15 +13,27 @@ Presence is a per-space directory keyed by instance id: each peer's identity car
 
 - `idle`: free
 - `waiting`: blocked on input, approval, or a peer
-- `working`: busy on a task
+- `working`: the seat (or its surviving connector) claims it is busy. That is a
+  process-alive claim, not a progress claim. A frozen seat can stay `working` while
+  its heartbeat stays fresh. Surfaces that have no outside observation of last
+  assistant-message age render `progress unknown` rather than treating heartbeat
+  age as work age. A stale observation overlays `stalled Xm` on the still-fresh
+  presence. The observation classifier is workstation/operator data, not part of
+  the wire protocol; human wording stays in each CLI, connector, or web renderer.
+  Compact maps and DM pickers use the presence glyph only and make no progress
+  claim. See issue #876.
 - `offline`: gone (gracefully, or its heartbeat lapsed)
 
 A peer refreshes its own entry on a heartbeat; observers also derive `offline` from stale
-timestamps, so a crashed agent cannot linger as "working". Offline peers stay in the
-roster for observability. An `activity` string rides along ("what I'm doing right now"),
-and a peer's **attention** preference is mirrored here too (below). Each instance writes
-*only its own* key; presence is where discovery lives (our equivalent of `.well-known`),
-not a place to describe others. Details: [SPEC §6](../SPEC.md#6-presence-and-discovery).
+timestamps, so a crashed agent cannot linger as "working". That derivation is gated on the
+observer actually hearing the bucket: if the whole watch has been silent past the liveness
+window, the honest output is that the *view* is stale, not that every peer died in one TTL
+(real rosters do not do that). Offline peers stay in the roster for observability. An
+`activity` string rides along ("what I'm doing right now"), and a peer's **attention**
+preference is mirrored here too (below). Each instance writes *only its own* key; presence
+is where discovery lives (our equivalent of `.well-known`), not a place to describe others.
+Details: [SPEC §6](../SPEC.md#6-presence-and-discovery). The dashboard surfaces a stale view
+on the same header mark it uses for a refused poll ([watch a mesh](watch-a-mesh.md)).
 
 ## Three delivery modes
 

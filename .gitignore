@@ -5,6 +5,7 @@ dist/
 # pi-CLI task transcripts: per-developer working state, never committed
 .pi/
 *.log
+*.out
 .DS_Store
 remotion/out/
 # generated at prepack from the built connectors (bin/scripts/copy-seeded-connectors.mjs)
