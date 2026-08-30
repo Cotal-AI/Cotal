@@ -52,7 +52,7 @@ import {
 import { extensionNames, localProcessSurface } from "../ext-loader.js";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
-import { parsePid, probeLiveness } from "@cotal-ai/workspace";
+import { parsePid, probeLiveness, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin } from "@cotal-ai/workspace";
 import { resolveSpace } from "../lib/status.js";
 import { downManifest } from "./down-manifest.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
@@ -310,6 +310,12 @@ export async function stopLocalProcess(component: LocalProcess, context: LocalPr
         `${component.label} has an unattributable pidfile at ${pidPath} (${JSON.stringify(rawPid)}) - it may still front a running process; refusing to remove it or report a clean stop. Stop that process and remove the file manually.`,
       );
     }
+    // #969 OPEN-VERIFY-TERMINATE: identity before signal, the same rule the manager, delivery and
+    // auth helpers apply. This is the path `cotal down` uses for the BROKER, the web dashboard and
+    // every extension component, so all four teardown surfaces share one identity rule.
+    const identity = verifyIdentityPin(pidPath);
+    if (identity.kind === "mismatch") throw identityRefusal(component.label, pidPath, identity.record, identity.liveToken);
+    if (identity.kind !== "match" && identity.kind !== "gone") throw identityUncertaintyRefusal(component.label, pidPath, identity);
     try {
       process.kill(pid, "SIGTERM");
     } catch (e) {
@@ -344,7 +350,10 @@ export async function stopLocalProcess(component: LocalProcess, context: LocalPr
     // a throw that must PRESERVE the record - an unattributable pidfile, a process we could not
     // signal, or a death we could not confirm (`unknown`). The old `|| !isAlive(pid)` clause treated
     // `unknown` as gone and deleted a live process's record; it is gone.
-    if (stopped) rmSync(pidPath, { force: true });
+    if (stopped) {
+      removeIdentityPin(pidPath); // proven death: the pin goes with the pidfile (#969)
+      rmSync(pidPath, { force: true });
+    }
     rmSync(marker, { force: true });
   }
 }

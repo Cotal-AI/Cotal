@@ -7,6 +7,7 @@ import { cotalPath } from "./paths.js";
 import {
   commandIsCotalSupervisor, parsePid, probeLiveness, readProcessCommand,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, type CommandReader, type LivenessProbe,
+  identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin,
 } from "@cotal-ai/workspace";
 
 /** Exported so the delivery cutover preflight can NAME the pid it refused on: an error that says
@@ -154,6 +155,10 @@ export function startManagerDetached(
   closeSync(fd);
   child.unref();
   writeFileSync(PID_PATH(), String(child.pid));
+  // #969: pin the pid to the start of the process behind it, so a later teardown can refuse a pid
+  // that was reused by an unrelated process. Sibling of the pidfile (marker pattern); absent on a
+  // platform that cannot produce a start token, which reads as a legacy record to every reader.
+  writeIdentityPin(PID_PATH(), child.pid ?? 0);
   // Mark this manager as delivery-aware (non-hosting) so the delivery preflight can tell it apart from
   // an old Plane-3-hosting manager. Written next to the pid, removed together in stopManager / down.
   writeFileSync(DELIVERY_AWARE_MARKER(), String(child.pid));
@@ -241,8 +246,11 @@ export async function stopManager(
   const send: SignalFn = signal ?? ((pid, sig) => process.kill(pid, sig));
   const p = PID_PATH();
   const marker = DELIVERY_AWARE_MARKER();
+  // Records are cleared only on PROVEN death; the identity pin is removed with them so the next
+  // start does not inherit a pin for a process that no longer exists (#969).
   const clear = (): void => {
     rmSync(marker, { force: true });
+    removeIdentityPin(p);
     rmSync(p, { force: true });
   };
   if (!existsSync(p)) {
@@ -292,6 +300,15 @@ export async function stopManager(
         `The pidfile and delivery-aware marker are LEFT IN PLACE: deleting them would orphan a process that may still be bound to the control plane.\n` +
         `NEXT: verify with \`ps -p ${pid}\`, then stop it yourself or remove \`.cotal/manager.pid\` if it is gone.`,
     );
+  // #969 OPEN-VERIFY-TERMINATE: establish target identity BEFORE any signal. A pinned record whose
+  // live process carries a DIFFERENT start means the pid was reused and fronts an unrelated process
+  // (attribution above cannot catch a reused pid that happens to run a supervisor-shaped command);
+  // a legacy (unpinned) live record or a torn pin cannot prove identity either. Only a MATCH may be
+  // signalled - the ESRCH-dead case already cleared above, and a `gone` verdict is unreachable past
+  // the `dead` branch, but is admitted harmlessly for races.
+  const identity = verifyIdentityPin(p);
+  if (identity.kind === "mismatch") throw identityRefusal("the manager", p, identity.record, identity.liveToken);
+  if (identity.kind !== "match" && identity.kind !== "gone") throw identityUncertaintyRefusal("the manager", p, identity);
   try {
     send(pid, "SIGTERM");
   } catch (e) {

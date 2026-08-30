@@ -310,7 +310,10 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     ]) rm(join(root, ".cotal", f), `.cotal/${f}`);
     // Crash residue: after a clean `down` none of this exists; after a crash the dead pidfiles and
     // transient launch artifacts are exactly the leftovers a "full local reset" must not keep.
-    for (const [file] of pidfileTargets(space)) rm(join(root, ".cotal", file), `.cotal/${file} (stale pidfile)`);
+    for (const [file] of pidfileTargets(space)) {
+      rm(join(root, ".cotal", file), `.cotal/${file} (stale pidfile)`);
+      rm(join(root, ".cotal", `${file}.identity`), `.cotal/${file}.identity (stale identity pin)`); // #969 sibling of the record
+    }
     rm(join(root, ".cotal", "run"), ".cotal/run (launch artifacts)");
     // The auth dir's NON-namer contents (callout, creds, server.conf, the user-auth state dir, any
     // stray) are removed BEFORE the trust records — a locked/immutable stray UNDER `.cotal/auth`
