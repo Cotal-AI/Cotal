@@ -69,6 +69,7 @@
     "smoke:orientation": "tsx extensions/connector-core/smoke/orientation.smoke.ts",
     "smoke:presence-progress": "tsx packages/workspace/smoke/presence-progress.smoke.ts",
     "smoke:presence-render-census": "tsx packages/workspace/smoke/presence-render-census.smoke.ts",
+    "smoke:endpoint-warning-consumers": "pnpm --filter @cotal-ai/connector-core... build && pnpm --filter @cotal-ai/connector-claude-code --filter @cotal-ai/connector-codex --filter @cotal-ai/connector-hermes --filter @cotal-ai/connector-jcode --filter @cotal-ai/connector-opencode --filter @cotal-ai/pi --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
     "smoke:docs": "tsx extensions/connector-core/smoke/docs.smoke.ts",
     "smoke:disarm-delete-timeout": "tsx packages/core/smoke/disarm-delete-timeout.smoke.ts",
     "smoke:pi": "tsx extensions/pi/pi.smoke.ts && tsx extensions/pi/pi-sdk.smoke.ts",

@@ -19,6 +19,22 @@
       "replace": "; connection is still starting",
       "expectRed": "orientation names the live connection fault",
       "cell": "orientation names the live connection fault"
+    },
+    {
+      "name": "recoverable warnings are mislabeled as endpoint errors",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    this.logEndpointNotice(\"warning\", error);",
+      "replace": "    this.logEndpointNotice(\"error\", error);",
+      "expectRed": "MeshAgent's own warning listener reaches its operator log",
+      "cell": "MeshAgent's own warning listener reaches its operator log"
+    },
+    {
+      "name": "recoverable warnings become false connection issues",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "  private handleEndpointWarning(error: Error): void {\n    this.logEndpointNotice(\"warning\", error);\n  }",
+      "replace": "  private handleEndpointWarning(error: Error): void {\n    this.lastConnectionError = error.message;\n    this.logEndpointNotice(\"warning\", error);\n  }",
+      "expectRed": "a recoverable endpoint warning does not become a connection issue",
+      "cell": "a recoverable endpoint warning does not become a connection issue"
     }
   ]
 }

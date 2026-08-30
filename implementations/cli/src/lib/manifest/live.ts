@@ -44,6 +44,9 @@ export async function connectProbe(conn: MeshConn): Promise<CotalEndpoint> {
     watchPresence: true,
   });
   ep.on("error", () => {}); // a presence/control hiccup must never crash the deploy
+  // A recoverable bearer refresh failure must remain visible during a long user-mode deploy even
+  // though this advisory probe never blocks the operation on its side channel.
+  ep.on("warning", (e: Error) => console.error(`! spawn-f probe: ${e.message}`));
   await ep.start();
   return ep;
 }

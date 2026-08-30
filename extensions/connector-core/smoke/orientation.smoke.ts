@@ -236,4 +236,24 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   assert.match(result.text, /last error: NATS permission denied/, "orientation names the live connection fault");
 }
 
+// 8 — recoverable endpoint notices are owned by MeshAgent's shipped warning registration. They use
+// the bounded operator log, but must not become the readiness fault: the endpoint is still alive.
+{
+  const realAgent = new MeshAgent(cfg({ id: "warning_agent", connector: "codex" }));
+  const endpoint = (realAgent as unknown as { ep: { emit(name: string, error: Error): void } }).ep;
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  let stderr = "";
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    stderr += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    endpoint.emit("warning", new Error("bearer refresh failed - retrying"));
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+  assert.match(stderr, /endpoint warning: bearer refresh failed - retrying/, "MeshAgent's own warning listener reaches its operator log");
+  assert.equal(realAgent.connectionIssue, undefined, "a recoverable endpoint warning does not become a connection issue");
+}
+
 console.log("✓ orientation smoke passed");

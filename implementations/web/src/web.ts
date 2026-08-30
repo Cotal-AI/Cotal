@@ -807,7 +807,9 @@ export async function web(args: ParsedArgs): Promise<void> {
     registerPresence: false,
     watchPresence: true,
   });
-  ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
+  const reportEndpoint = (e: Error) => console.error(c.red("! " + e.message));
+  ep.on("error", reportEndpoint);
+  ep.on("warning", (e: Error) => console.error(c.yellow("! " + e.message)));
   await ep.start();
 
   // The dashboard does not yet have a manager/session-store observer. Carry the absence as data so
