@@ -24,10 +24,11 @@ const freePort = (): Promise<number> => new Promise((resolve, reject) => {
 });
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 let pass = 0;
+let fail = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
-  if (!condition) throw new Error(`${name}${actual === undefined ? "" : ` - ${JSON.stringify(actual)}`}`);
-  pass++;
-  console.log(`  ✓ ${name}`);
+  if (condition) pass++;
+  else fail++;
+  console.log(`  ${condition ? "✓" : "✗"} ${name}${condition || actual === undefined ? "" : ` - ${JSON.stringify(actual)}`}`);
 };
 
 const root = mkdtempSync(join(tmpdir(), "cotal-hermes-boot-"));
@@ -98,5 +99,6 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
-if (pass !== 2) throw new Error(`expected 2 checks, ran ${pass}`);
-console.log(`\n${pass} checks passed`);
+if (pass + fail !== 2) throw new Error(`expected 2 checks, ran ${pass + fail}`);
+console.log(`\n${pass} passed, ${fail} failed`);
+if (fail) process.exitCode = 1;
