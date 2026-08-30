@@ -20,7 +20,7 @@
     {
       "name": "Jcode fatal excludes captured child stderr",
       "file": "extensions/connector-jcode/src/host-main.ts",
-      "find": "  process.stderr.write(`[cotal-jcode] fatal: Jcode host startup failed (${startupFailureCode(error)}); inspect the private Jcode logs.\\n`);",
+      "find": "  writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode host startup failed (${startupFailureCode(error)}); inspect the private Jcode logs.\\n`);",
       "replace": "  process.stderr.write(`[cotal-jcode] fatal: ${String(error)}\\n`);",
       "expectRed": "host launch failure never prints captured Jcode child stderr canary"
     }
