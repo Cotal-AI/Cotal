@@ -690,6 +690,13 @@ smoke:agent-secret-segmentation
 # spellings, one of them the release workflow. The property is only observable on main after a
 # merge, so it needs a static guard. Appended so every existing shard assignment remains unchanged.
 smoke:workflow-concurrency
+# #878: a crash between the retirement barrier's gate terminal and its head terminal wedges the
+# alias (the boot resume's gate-only owed-ness skipped the intent forever). The suite stages that
+# window deterministically and proves BOTH repair triggers the issue's refined criteria demand:
+# the next auth boot and the same-op rail re-request. Mutation-proofed -
+# implementations/auth/smoke/mutations/retirement-wedge-resume.json. Appended; shard
+# assignments unchanged.
+smoke:retirement-wedge:auth
 
 # Most smoke trees are still outside their package TypeScript projects. A type-only import from a
 # workspace package can therefore name something the package never exported and vanish when tsx runs
