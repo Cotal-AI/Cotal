@@ -85,10 +85,10 @@ c("baseline: the reply rail is ALWAYS granted (no capability required)",
   baseline.sub.length === 1 && baseline.sub[0] === epCallerReplyGrantRow("demo", caller));
 c("baseline: no journal rows (the baseline is ephemeral request forms only)",
   baseline.pub.every((r) => !r.includes(".epj.")));
-c("the spawn set: spawn is UNTARGETED (virgin child); despawn/attach ride owner-mode (no owner-stop synonym of despawn); define-persona + inspect ride untargeted (the 1c table's connector reads)",
-  spawnCallerCapabilities("u_abc").length === 5
+c("the spawn set: spawn is UNTARGETED (virgin child); despawn/attach ride owner-mode (no owner-stop synonym of despawn); define-persona + inspect + list-personas + show-persona ride untargeted (the 1c table's connector reads)",
+  spawnCallerCapabilities("u_abc").length === 7
   && epCallerGrantRows("demo", spawnCallerCapabilities("u_abc"), caller).pub.join("|")
-  === `cotal.demo.ep.one.manager.spawn.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.despawn.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.attach.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.define-persona.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.inspect.u_abc.cli.${UID}.*`);
+  === `cotal.demo.ep.one.manager.spawn.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.despawn.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.attach.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.define-persona.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.inspect.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.list-personas.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.show-persona.u_abc.cli.${UID}.*`);
 // THE REGRESSION GUARD FOR THE `input` PLACEMENT, and it is a cell rather than a comment because
 // the mistake it stops is a ONE-WORD edit that reads as tidying: adding "input" to
 // SPAWN_OWNER_LIFECYCLE_COMMANDS beside its two obvious siblings. That edit hands every
@@ -105,12 +105,12 @@ c("the spawn capability grants NO `input` row in either mode: seat input is oper
 // only, §13.2 - the broker grant IS the tier boundary), BOTH modes of `input` (granted nowhere
 // else), and the untargeted `manager.admin` family.
 c("the privileged instrument set: reads + spawn + define-persona, NOTHING targeted",
-  operatorInstrumentCapabilities("privileged").length === 6
+  operatorInstrumentCapabilities("privileged").length === 8
   && operatorInstrumentCapabilities("privileged").every((cap) => cap.target === undefined)
-  && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,inspect,models,spawn,define-persona");
+  && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,inspect,models,list-personas,show-persona,spawn,define-persona");
 const adminCaps = operatorInstrumentCapabilities("admin", "u_abc");
 c("the admin instrument set adds any-mode despawn/attach + BOTH modes of input + the manager.admin family",
-  adminCaps.length === 18
+  adminCaps.length === 20
   && adminCaps.filter((cap) => cap.target?.mode === "any").map((cap) => cap.command).join(",") === "despawn,attach,input"
   && adminCaps.filter((cap) => cap.target?.mode === "owner").map((cap) => cap.command).join(",") === "input"
   && adminCaps.filter((cap) => cap.target?.mode === "owner").every((cap) => (cap.target as { tOwner?: string }).tOwner === "u_abc")

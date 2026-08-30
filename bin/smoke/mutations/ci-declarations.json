@@ -1,0 +1,31 @@
+{
+  "suite": "bin/smoke/ci-declarations.smoke.ts",
+  "guard": "generated declarations remain byte-exact with both CI registry helper modules",
+  "command": "pnpm smoke:ci-declarations",
+  "completionMarker": "CI DECLARATIONS SMOKE",
+  "grades": "tool",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/ci-declarations.json",
+  "why": [
+    "The declarations are compiler output, not hand-written types. Each mutation changes one module's",
+    "exported signature without regenerating its committed declaration, so the corresponding drift",
+    "cell must redden by name while the other module's cell remains green."
+  ],
+  "mutations": [
+    {
+      "name": "ci-suites export changes without regenerating its declaration",
+      "file": "bin/smoke/ci-suites.mjs",
+      "find": "export function fragmentShard(suite, count) {",
+      "replace": "export function fragmentShard(suite, count, salt = 0) {\n  void salt;",
+      "expectRed": "ci-suites.d.mts matches compiler output from its .mjs module",
+      "cell": "ci-suites.d.mts matches compiler output from its .mjs module"
+    },
+    {
+      "name": "shard-stability export changes without regenerating its declaration",
+      "file": "bin/smoke/shard-stability.mjs",
+      "find": "export function changedSuiteIndices(base, head) {",
+      "replace": "export function changedSuiteIndices(base, head, strict = true) {\n  void strict;",
+      "expectRed": "shard-stability.d.mts matches compiler output from its .mjs module",
+      "cell": "shard-stability.d.mts matches compiler output from its .mjs module"
+    }
+  ]
+}

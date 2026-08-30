@@ -54,8 +54,10 @@ the configured HTTPS origin. To change these listener flags, stop and restart th
 of an already-running service does not replace its bind or proxy policy. See
 [Identity & auth](identity-and-auth.md#per-user-authentication) for the trust boundary.
 
-`cotal status` prints the detailed setup, process, registry, and live mesh status;
-`cotal setup` (after the first run) prints the compact card.
+`cotal status` prints the detailed setup, process, registry, and live mesh status. Its Machine
+section names the running CLI's source checkout, installed package root, or npx package root beside
+the version. A stale Claude skills row names the installed and CLI versions it compared. `cotal
+setup` (after the first run) prints the compact card.
 
 Stop one part without tearing down the mesh by naming its registered component: `cotal down
 manager`, `cotal down delivery`, or `cotal down web`. Component names from installed extensions
@@ -306,8 +308,8 @@ disaster-consent, and degraded-recovery details.
 
 `cotal personas` manages the local catalog offline: `list` (`--running` overlays live
 markers), `show <name>`, `edit <name>` (re-validates on save), `new <name>`, `rm <name>
---force`. The runtime counterpart is the `cotal_persona` tool, which goes over the wire
-with the manager's ownership checks. Fields: [agent files](agent-files.md).
+--force`. The runtime write is `cotal_persona`; the runtime read is `cotal_personas`
+(list / show), both over the wire with the manager's ownership checks. Fields: [agent files](agent-files.md).
 
 ## Gate recovery
 

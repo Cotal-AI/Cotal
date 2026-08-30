@@ -1063,10 +1063,10 @@ export class CotalEndpoint extends EventEmitter {
     // every listener reads the same edge; MeshAgent carries its own `stopping` guard and so was
     // never the one exposed, which is the point.
     //
-    // Measured for the start() caller only, by the broker suite's mid-bind cell. doRebuild is
-    // covered by this being one shared unbranched statement both callers await. If this tail ever
-    // becomes caller-aware, or the emit splits per path, that reasoning expires and the rebuild
-    // race needs a cell of its own.
+    // Measured for the start() caller by the broker suite's mid-bind cell. doRebuild is
+    // also measured, by a separate cell that holds the rebuild's connectAndBind at
+    // armPlane3 after a successful first bind and lands stop() in that window (#1028).
+    // Shared-line reasoning is no longer the rebuild proof.
     if (this.stopped) return;
     this.emit("connection", { connected: true });
   }
@@ -1120,7 +1120,7 @@ export class CotalEndpoint extends EventEmitter {
     this.channelConfigs.clear();
     this.channelDefaults = {};
     for (const watch of this.membershipFeedWatches)
-      watch.arm = watch.arm.catch(() => {}).then(() => this.disarmMembershipWatch(watch));
+      watch.arm = watch.arm.catch(() => {}).then(() => this.disarmMembershipWatch(watch)).catch((err) => { this.emit("error", err as Error); });
   }
 
   /** If stop() ran during a rebuild's `await connectAndBind`, the just-bound connection +
@@ -1220,8 +1220,9 @@ export class CotalEndpoint extends EventEmitter {
       // stop() may have run during the await — don't leave a live connection + heartbeat +
       // supervisor on a stopped endpoint. (Reads this.nc in its own scope — a bare `this.nc`
       // here in doRebuild narrows to `never` via TS inlining connectAndBind's assignment.)
+      // Re-arm on the fresh nc only after this stopped fence accepts it.
       if (await this.tearDownIfStopped()) return;
-      this.superviseConnection(); // re-arm on the fresh nc
+      this.superviseConnection();
     } finally {
       this.reconnecting = false;
     }
@@ -2401,10 +2402,17 @@ export class CotalEndpoint extends EventEmitter {
           watch.consumerStream = undefined;
           watch.consumerName = undefined;
         } else {
-          // A timeout is deferred only for an epoch that is actually closing/rebuilding; live timeouts stay loud.
           const closedEpoch = (err as Error).name === "ClosedConnectionError" || /^closed connection$/i.test((err as Error).message);
-          const dyingEpochTimeout = /timeout/i.test((err as Error).message) && (this.reconnecting || !this.nc || this.nc.isClosed());
-          if (!closedEpoch && !dyingEpochTimeout) throw err;
+          const timeout = (err as Error).name === "TimeoutError" || /timeout/i.test((err as Error).message);
+          const dyingEpochTimeout = timeout && (this.reconnecting || !this.nc || this.nc.isClosed());
+          // Cleanup of an ordered consumer: a delete timeout means the broker did not answer in time,
+          // not that the endpoint is unusable. The broker reaps an idle/ephemeral consumer anyway.
+          // Throwing here killed a live observer over a slow VPN (#1047). Catch, surface, continue.
+          if (timeout || closedEpoch || dyingEpochTimeout) {
+            this.emit("error", err as Error);
+          } else {
+            throw err;
+          }
         }
         // A terminal close leaves stream/name intact. The endpoint-owned stopped intent is retried
         // through the fresh JetStream manager before its public stop promise may resolve.
