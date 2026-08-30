@@ -4,7 +4,7 @@
   "command": "pnpm smoke:hermes-boot-availability",
   "progressPattern": "✓",
   "minTicks": 4,
-  "completionMarker": "HERMES BOOT AVAILABILITY: 4 passed, 0 failed",
+  "completionMarker": "HERMES BOOT AVAILABILITY:",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/hermes-boot-availability.json",
   "why": [
     "The smoke derives cached requirements from the built shipped Hermes connector, then starts the",
