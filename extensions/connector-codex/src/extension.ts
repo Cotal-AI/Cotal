@@ -162,6 +162,7 @@ export const codexConnector: Connector = {
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
+    if (opts.resolvedBinaries?.codex) env.COTAL_CODEX_BIN = opts.resolvedBinaries.codex;
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;

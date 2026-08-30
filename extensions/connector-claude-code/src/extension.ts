@@ -278,7 +278,7 @@ export const claudeConnector: Connector = {
     }
 
     return {
-      command: "claude",
+      command: opts.resolvedBinaries?.claude ?? "claude",
       args,
       env,
       // The dev-channels flag shows a one-time "Enter to confirm" prompt; the

@@ -27,6 +27,14 @@
       "replace": "        if (path) binaries[bin] = bin;",
       "expectRed": "boot records the resolved absolute harness path",
       "cell": "boot records the resolved absolute harness path"
+    },
+    {
+      "name": "managed launches discard the boot-resolved binary map",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        resolvedBinaries: bootStatus?.binaries,",
+      "replace": "        resolvedBinaries: undefined,",
+      "expectRed": "managed spawn uses the exact path resolved at boot",
+      "cell": "managed spawn uses the exact path resolved at boot"
     }
   ]
 }

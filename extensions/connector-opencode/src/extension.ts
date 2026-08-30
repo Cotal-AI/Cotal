@@ -160,6 +160,7 @@ export const opencodeConnector: Connector = {
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
+    if (opts.resolvedBinaries?.opencode) env.COTAL_OPENCODE_BIN = opts.resolvedBinaries.opencode;
     // The AG-UI event plane. `COTAL_EVENTS` ARMS the emitter, and arming is not authorization: a
     // publish grant on a channel is not a request to publish to it, so an agent file that can write
     // `allowPublish` cannot turn on a stream of another seat's tool inputs and outputs by doing so.

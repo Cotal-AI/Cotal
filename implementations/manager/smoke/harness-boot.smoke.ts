@@ -10,7 +10,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isReachable } from "@cotal-ai/core";
+import { isReachable, registry, type Connector, type LaunchOpts } from "@cotal-ai/core";
 import { extensionsDir, saveExtensionsManifest } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -35,6 +35,7 @@ const root = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const workspaceRoot = join(root, "ws");
 const binDir = join(root, "bin");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
+writeFileSync(join(workspaceRoot, ".cotal", "agents", "pin-probe.md"), "---\nname: pin-probe\nagent: boot-present\n---\n");
 mkdirSync(binDir);
 const present = join(binDir, process.platform === "win32" ? "present-harness.cmd" : "present-harness");
 writeFileSync(present, process.platform === "win32" ? "@exit /b 0\r\n" : "#!/bin/sh\nexit 0\n", { mode: 0o700 });
@@ -95,6 +96,25 @@ try {
   check("boot records the resolved absolute harness path", available?.binaries["present-harness"] === present, available);
   const status = M.managerStatusData();
   check("typed manager status retains the named boot-time unavailable reason", status.connectors.find((row) => row.agent === "boot-missing")?.reason === missing?.reason, status);
+
+  let launchOpts: LaunchOpts | undefined;
+  const connector: Connector = {
+    kind: "connector",
+    name: "boot-present",
+    requires: ["present-harness"],
+    buildLaunch: (opts) => {
+      launchOpts = opts;
+      return { command: opts.resolvedBinaries?.["present-harness"] ?? "present-harness", args: [] };
+    },
+  };
+  registry.register(connector);
+  const fakeSession = { cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} };
+  (manager as unknown as { runtime: unknown }).runtime = {
+    kind: "fake",
+    spawn: (name: string) => ({ name, kind: "fake", status: () => "exited", stop: () => {}, interrupt: () => {}, attach: () => fakeSession }),
+  };
+  await manager.startAgent({ name: "pin-probe", agent: "boot-present" });
+  check("managed spawn uses the exact path resolved at boot", launchOpts?.resolvedBinaries?.["present-harness"] === present, launchOpts);
 } finally {
   console.error = oldError;
   if (oldPath === undefined) delete process.env.PATH;

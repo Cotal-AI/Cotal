@@ -3811,6 +3811,7 @@ export class Manager {
         events,
         mcpServers,
         envAllow,
+        resolvedBinaries: bootStatus?.binaries,
         // So a connector that keeps per-agent local state can root it at the workspace, not the
         // (possibly per-agent) launch cwd below. The cwd itself rides runtime.spawn, not the launch.
         workspaceRoot: this.workspaceRoot,
