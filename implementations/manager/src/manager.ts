@@ -44,7 +44,7 @@ import {
   controlServiceSubject,
   eventChannelPrincipal,
 } from "@cotal-ai/core";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, findCotalRoot, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SecretStore, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -138,7 +138,7 @@ import {
   type Identity,
   type ServiceNameAuthority,
 } from "@cotal-ai/core";
-import { MANAGER_ENDPOINT, managerClusterArtifacts, managerCommandDefs, managerContractArtifactValues, type ManagerStatus } from "./manager-service-contract.js";
+import { MANAGER_ENDPOINT, managerClusterArtifacts, managerCommandDefs, managerContractArtifactValues, type ManagerConnectorStatus, type ManagerStatus } from "./manager-service-contract.js";
 import type { NatsConnection, Subscription } from "@nats-io/transport-node";
 import type { KV } from "@nats-io/kv";
 import {
@@ -800,6 +800,9 @@ export class Manager {
   private agentGoals = new Map<string, GoalRef>();
   /** Process start, for the served `status` uptime. */
   private readonly startedAtMs = Date.now();
+  /** Connector harness paths resolved ONCE at boot. Missing binaries do not stop unrelated manager
+   * work, but they are named before the manager reports ready and remain visible in manager status. */
+  private connectorStatuses: ManagerConnectorStatus[] = [];
   /** Static aliases whose startup exact-op terminal is still in flight. Scoped per alias: control
    * serves during the sweep, but no caller can reuse or attach an alias the sweep still owns. */
   private readonly reconcilingAliases = new Set<string>();
@@ -948,6 +951,7 @@ export class Manager {
   }
 
   async start(): Promise<void> {
+    await this.inspectConnectorsAtBoot();
     await this.attach.start();
     // In auth mode the manager is just another user in the space's account — it mints
     // itself creds from the same signing key it uses for the agents it spawns. The signer comes
@@ -3179,6 +3183,44 @@ export class Manager {
     return this.installedExtensions ? manifestExtensionNames("connector") : registry.all<Connector>("connector").map((c) => c.name);
   }
 
+  /** Resolve every installed/registered connector's declared harness binaries before the manager
+   * reports ready. A missing harness degrades only that connector, never unrelated lifecycle work:
+   * boot continues, but prints a named refusal and records it on both manager status surfaces. */
+  private async inspectConnectorsAtBoot(): Promise<void> {
+    const rows: ManagerConnectorStatus[] = [];
+    let declared: Array<{ name: string; requires: readonly string[] }>;
+    if (this.installedExtensions) {
+      try {
+        declared = loadExtensionsManifest().extensions.flatMap((ext) => extensionConnectors(ext));
+      } catch (error) {
+        const reason = (error as Error).message;
+        console.error(`! manager boot: connector inventory unavailable - ${reason}`);
+        this.connectorStatuses = [{ agent: "(inventory)", state: "unavailable", binaries: {}, reason }];
+        return;
+      }
+    } else {
+      declared = registry.all<Connector>("connector").map((connector) => ({ name: connector.name, requires: connector.requires ?? [] }));
+    }
+    for (const connector of declared) {
+      const name = connector.name;
+      const binaries: Record<string, string> = {};
+      const missing: string[] = [];
+      for (const bin of connector.requires) {
+        const path = resolveOnPath(bin);
+        if (path) binaries[bin] = path;
+        else missing.push(bin);
+      }
+      if (missing.length) {
+        const reason = `${name} harness needs ${missing.join(", ")} on PATH - not found`;
+        rows.push({ agent: name, state: "unavailable", binaries, reason });
+        console.error(`! manager boot: connector ${name} unavailable - ${reason}`);
+      } else {
+        rows.push({ agent: name, state: "available", binaries });
+      }
+    }
+    this.connectorStatuses = rows.sort((a, b) => a.agent.localeCompare(b.agent));
+  }
+
   /** Return connector-provided model catalogs for selector UIs. Optional by connector: a host with no
    *  local model-list API reports `supported:false` rather than blocking the manager. A connector that
    *  fails to import shows an `error:` row (from manifest enumeration) and never blocks the others. */
@@ -3413,9 +3455,15 @@ export class Manager {
     // Harness preflight before reserving a slot or minting — a missing `claude`/`opencode` binary
     // fails here with a clear name, not obscurely at process spawn. No fallback. All synchronous, so
     // the reserve gate stays atomic. (The connector itself was resolved up top, before the capacity gate.)
-    const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(bin));
-    if (missing.length)
-      return { ok: false, error: `${agent} harness needs ${missing.join(", ")} on PATH - not found` };
+    const bootStatus = this.connectorStatuses.find((row) => row.agent === agent);
+    if (bootStatus?.state === "unavailable") return { ok: false, error: bootStatus.reason };
+    // A connector registered after boot has no inventory row. Keep the existing pre-mint backstop
+    // for that dynamic library-composition case; ordinary installed connectors were checked at boot.
+    if (!bootStatus) {
+      const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(bin));
+      if (missing.length)
+        return { ok: false, error: `${agent} harness needs ${missing.join(", ")} on PATH - not found` };
+    }
     // Resume is a connector capability: reject an unsupported resume HERE, before the reserve/mint, so
     // it can never provision creds + durables and then throw at buildLaunch (mint-then-orphan). Same
     // reject-before-side-effects window as the harness preflight above; buildLaunch stays the backstop.
@@ -4667,6 +4715,7 @@ export class Manager {
       runtime: this.runtime.kind,
       agentCount: this.agents.size,
       uptimeMs: Date.now() - this.startedAtMs,
+      connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),
     };
   }
 
@@ -4879,7 +4928,12 @@ export class Manager {
       // one). Key-pinned to this instance's own status key on the SAME executor.
       await writeServiceStatus(recordsKv, {
         endpoint: MANAGER_ENDPOINT, instanceId: iid, epoch: observed.processEpoch,
-        status: { state: SERVICE_READY, epoch: observed.processEpoch, observedSpecRevision: registrationRevision },
+        status: {
+          state: SERVICE_READY,
+          epoch: observed.processEpoch,
+          observedSpecRevision: registrationRevision,
+          connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),
+        },
         readProcessEpoch: async () => {
           const g = await fence.observe();
           if (g === null) throw new Error(`no issuance gate for ${MANAGER_ENDPOINT}/${iid}`);

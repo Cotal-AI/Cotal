@@ -319,6 +319,7 @@
     "smoke:unfenced-responder": "tsx packages/core/smoke/unfenced-responder.smoke.ts",
     "smoke:ep-serve-gate": "tsx packages/core/smoke/endpoint-serve-gate.smoke.ts",
     "smoke:manager-service": "tsx implementations/manager/smoke/manager-service.smoke.ts",
+    "smoke:manager-harness-boot": "tsx implementations/manager/smoke/harness-boot.smoke.ts",
     "smoke:manager-service-ops": "tsx implementations/manager/smoke/manager-service-ops.smoke.ts",
     "smoke:manager-service-invoke": "tsx implementations/manager/smoke/manager-service-invoke.smoke.ts",
     "smoke:journal-model-b": "tsx implementations/manager/smoke/journal-model-b.smoke.ts",

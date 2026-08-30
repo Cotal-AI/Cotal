@@ -181,7 +181,7 @@ try {
     const stopDecl = doc?.commands?.find((c) => c.name === "stop");
     const inputDecl = doc?.commands?.find((c) => c.name === "input");
     check("the document is revision 7 (the C3 `input` command); despawn AND input declare owner+any modes (the 1c operator reach), stop declares self mode (child/ledger ABSENT everywhere)",
-      doc?.revision === 7 && despawnDecl?.targeted === true && JSON.stringify(despawnDecl?.modes) === '["owner","any"]'
+      doc?.revision === 8 && despawnDecl?.targeted === true && JSON.stringify(despawnDecl?.modes) === '["owner","any"]'
       && inputDecl?.targeted === true && JSON.stringify(inputDecl?.modes) === '["owner","any"]'
       && stopDecl?.targeted === true && JSON.stringify(stopDecl?.modes) === '["self"]'
       && doc?.commands?.every((c) => !(c.modes ?? []).includes("child") && !(c.modes ?? []).includes("ledger")) === true, doc?.commands);
@@ -448,7 +448,7 @@ try {
     const { manifest: docManifest, artifacts: docArts } = await fetchContractClosure(storeCtx, clusterDigest!, () => []);
     const fetchedDoc = JSON.parse(dec.decode(docArts.get(contractRefToHex(docManifest.root))!)) as { revision?: number; urn?: string };
     check("the cluster document is fetchable at its REGISTERED closure digest (verify-on-read walk, baseline caller grant)",
-      fetchedDoc.revision === 7 && fetchedDoc.urn === "ai.cotal.manager", fetchedDoc);
+      fetchedDoc.revision === 8 && fetchedDoc.urn === "ai.cotal.manager", fetchedDoc);
     // THE DOOR-LEVEL PROOF REVISION 6 EXISTS FOR. The handler branch for a remote manifest deploy's
     // inline `spec` merged in ahead of the schema, so the compiled input validator refused every
     // request carrying the field and the feature was unreachable THROUGH THIS DOOR while the
