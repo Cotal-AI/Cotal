@@ -2,7 +2,7 @@
   "suite": "packages/core/smoke/endpoint-invoke.smoke.ts + implementations/cli/smoke/ep-rail-failure.smoke.ts",
   "guard": "a describe published just before the responder registers is re-published inside the original deadline, while ordinary request binding and deadline semantics remain intact",
   "command": "pnpm smoke:ep-invoke && pnpm --filter @cotal-ai/core build && pnpm smoke:ep-rail-failure",
-  "completionMarker": "EP-RAIL-FAILURE POLARITY SMOKE OK",
+  "completionMarker": "ENDPOINT-INVOKE BINDING SMOKE",
   "mutations": [
     {
       "name": "describe returns to a one-shot publish, so a responder registering after it misses the whole request",
