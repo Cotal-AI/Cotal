@@ -76,7 +76,7 @@ together under [Manifest deploys](#manifest-deploys).
 ## setup
 
 ```bash
-cotal setup [--full] [--demo] [--yes]
+cotal setup [--full] [--demo] [--yes] [--skills]
 ```
 
 | Flag | Default | Meaning |
@@ -84,11 +84,13 @@ cotal setup [--full] [--demo] [--yes]
 | `--full` | off | Redo the full guided flow (implies `--demo`) |
 | `--demo` | off | Also seed the guided expert team (`david`, `sven`, `me`) |
 | `--yes`, `-y` | off | Non-interactive accept-all (for agents / CI) |
+| `--skills` | off | Reconcile Cotal skills only through installed connector providers, plus `~/.agents/skills`. Refused with `--full` or `--demo`. |
 
-Guided setup is **configure-only**: it checks prerequisites, installs the Claude Code plugin, and
+Guided setup is **configure-only**: it checks prerequisites, invokes installed connectors' declared setup providers, and
 seeds persona files, and it launches nothing (no mesh, no web, no manager). First run gets the
 narrated flow; later runs print a status card. By default it seeds one `default` persona; the
-`david`/`sven`/`me` team is opt-in via `--demo`. See [Getting started](getting-started.md) and, for
+`david`/`sven`/`me` team is opt-in via `--demo`. `cotal status` points stale Claude skills and
+out-of-date `.agents` skills at `cotal setup --skills`, not unscoped `setup`. See [Getting started](getting-started.md) and, for
 maintainers, [setup internals](setup-internals.md).
 
 ## update
@@ -478,7 +480,8 @@ machine could write it back.
 including inside another mesh's project. `status` is a read-only report: machine prerequisites
 (starting with the installed `cotal-ai` version), the installed extensions and their versions, this
 folder's `.cotal/`, the recorded meshes, and a live snapshot of the selected mesh (roster, channels,
-membership feed). `status` takes `--space` / `--server` to pick the mesh to inspect; it starts
+membership feed). Stale Claude skills and out-of-date `.agents` skills recommend `cotal setup --skills`,
+not unscoped `cotal setup`. `status` takes `--space` / `--server` to pick the mesh to inspect; it starts
 nothing.
 
 `cotal status --components` adds a fail-loud per-component health pass. It reads **each
@@ -868,6 +871,16 @@ directly to recover a dead manager or drive a custom runtime. Default runtime is
 optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, `@cotal-ai/cmux`, or `@cotal-ai/herdr`) and
 select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.md).
 
+On a normal `SIGINT`/`SIGTERM`, the manager stops every seat and requires the selected runtime to
+prove the seat is gone before it releases the manager lease or service registration. A stop that
+cannot prove exit fails loud and keeps manager authority instead of reporting a clean shutdown while
+an orphan still holds broker rails. After an abrupt manager death, the same logical successor
+terminalizes only its own durable static slots, verify-evicts the predecessor's broker principal,
+records that result in the lifecycle's caller-readable audit detail, and only then retires the
+lifecycle and frees the alias. Missing or unverified broker evidence keeps the slot terminalizing.
+Delivery-admin does not terminate the orphan OS process; safe successor process reaping requires
+durable process start-identity pinning and is tracked separately.
+
 A `meshes add --mode user` entry is a **participant** registration, not hosting authority. A
 participant may run `supervise` only when the host advertises the remote manager authority service
 and the signed-in actor has the dedicated `supervise` ledger scope. The CLI obtains the closed,
@@ -909,6 +922,13 @@ non-manager endpoint, or you want to lift the freeze without starting a manager.
 holder really is gone, prints what it found, and then finishes the dead operation the same way as the
 interrupted restart would have: revoke the old credentials, evict their holders with verification,
 and reopen the gate.
+
+If verification is interrupted, the command leaves the gate frozen and durably records each holder
+whose eviction was already verified. A retry still repeats the freeze-holder liveness check, then
+skips only progress bound to the same registration operation, frozen-gate revision, and holder set.
+The output reports holders completed before this attempt, completed now, and still remaining. A new
+freeze or changed holder set starts from zero. Cursor cleanup happens only after reopen; a retained
+cursor is harmless because its old gate revision cannot authorize a later freeze.
 
 **It refuses far more often than it acts, on purpose**, and always says which check stopped it:
 
@@ -1276,6 +1296,12 @@ command of each boot, so you rarely call it):
 | `--repair` | Recover after an interrupted seed or a lost authority (rebuilds the interrupted connector; restores the removed-vs-never-seeded record from its durable backup). |
 | `--reset` | Discard the record and re-seed all seven built-ins (the six connectors plus the web dashboard). **Resurrects any you removed.** Rebuilds cleanly over corrupt seed state. |
 | `--force` | Re-seed the built-ins even when the version stamp is current or a downgrade. |
+
+When a newer `cotal` advances the operator-global seed store to its generation, it prints one
+migration line naming the old and new generations, the exact CLI entry that wrote the store, the
+commit timestamp, and `seed/stamp.json`. That writer and timestamp are kept in the stamp, so a later
+older CLI refusal can say which executable wrote the generation it will not overwrite and when.
+Legacy generation-only stamps remain readable; their refusal simply has no writer provenance to add.
 
 The default connector for a bare `cotal spawn` (no `--agent`) is the persona's `agent:` pin if it
 has one, else `claude`; set `COTAL_DEFAULT_AGENT` (e.g. `opencode`) to change the fallback. It is

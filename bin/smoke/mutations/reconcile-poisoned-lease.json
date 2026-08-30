@@ -1,7 +1,7 @@
 {
   "suite": "implementations/manager/smoke/gate-reconcile-cli-e2e.smoke.ts",
   "guard": "a wrong-root delivery daemon validates its scan tenancy before acquiring the singleton lease",
-  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/manager build && pnpm --filter @cotal-ai/delivery build && pnpm smoke:gate-reconcile-cli:auth",
+  "command": "pnpm --filter cotal-ai... build && pnpm smoke:gate-reconcile-cli:auth",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/reconcile-poisoned-lease.json",
   "why": [
     "The suite starts real delivery daemon processes against a two-account ephemeral broker.",
@@ -12,7 +12,7 @@
     {
       "name": "restore lease admission before scan-tenancy validation",
       "file": "implementations/delivery/src/delivery.ts",
-      "find": "  validateScanTarget(scanTarget);",
+      "find": "  await validateScanTargetAdmission(scanTarget);",
       "replace": "  void scanTarget;",
       "expectRed": "POISONED LEASE: account A with account B root exits before holding lease.0",
       "cell": "POISONED LEASE: account A with account B root exits before holding lease.0"
