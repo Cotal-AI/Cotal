@@ -406,7 +406,6 @@ smoke:lang-differential
 smoke:freeslot-barrier:live
 smoke:int2-revoke:live
 smoke:operator-env-keep
-smoke:bin-path
 smoke:spawn-env-config
 smoke:spawn-env-e2e
 smoke:hermes-launch-env
@@ -702,3 +701,4 @@ smoke:workspace-import-exports
 # the discriminating assertion, and proves the missing binary is named at boot while unrelated
 # connectors remain available. Appended so every existing shard assignment remains unchanged.
 smoke:manager-harness-boot
+smoke:bin-path
