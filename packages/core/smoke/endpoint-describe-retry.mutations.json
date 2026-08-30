@@ -7,7 +7,7 @@
     {
       "name": "describe returns to a one-shot publish, so a responder registering after it misses the whole request",
       "file": "packages/core/src/endpoint-invoke.ts",
-      "find": "      retryTimer = setInterval(() => {\n        try { nc.publish(subject, request); }\n        catch (e) {\n          // `publish` throws synchronously after close/drain. A timer throw escapes the caller's\n          // promise and crashes the process, so make transport loss settle this describe instead.\n          reject(new EpEnvelopeError(\"unavailable\", `the describe retry for ${endpoint} could not publish: ${e instanceof Error ? e.message : String(e)}`));\n        }\n      }, DESCRIBE_RETRY_MS);",
+      "find": "      retryTimer = setInterval(() => {\n        try { nc.publish(subject, request); }\n        catch (e) {\n          reject(new EpEnvelopeError(\"unavailable\", `the describe retry for ${endpoint} could not publish: ${e instanceof Error ? e.message : String(e)}`));\n        }\n      }, DESCRIBE_RETRY_MS);",
       "replace": "      retryTimer = undefined;",
       "expectRed": "an unanswered describe is re-published within its original deadline when the responder registers after the first request",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
@@ -15,7 +15,7 @@
     {
       "name": "describe retry publication failure escapes its timer and becomes an uncaught exception",
       "file": "packages/core/src/endpoint-invoke.ts",
-      "find": "      retryTimer = setInterval(() => {\n        try { nc.publish(subject, request); }\n        catch (e) {\n          // `publish` throws synchronously after close/drain. A timer throw escapes the caller's\n          // promise and crashes the process, so make transport loss settle this describe instead.\n          reject(new EpEnvelopeError(\"unavailable\", `the describe retry for ${endpoint} could not publish: ${e instanceof Error ? e.message : String(e)}`));\n        }\n      }, DESCRIBE_RETRY_MS);",
+      "find": "      retryTimer = setInterval(() => {\n        try { nc.publish(subject, request); }\n        catch (e) {\n          reject(new EpEnvelopeError(\"unavailable\", `the describe retry for ${endpoint} could not publish: ${e instanceof Error ? e.message : String(e)}`));\n        }\n      }, DESCRIBE_RETRY_MS);",
       "replace": "      retryTimer = setInterval(() => nc.publish(subject, request), DESCRIBE_RETRY_MS);",
       "expectRed": "a retry publish failure rejects the pending describe as unavailable and never escapes the timer",
       "afterRestore": "pnpm --filter @cotal-ai/core build"

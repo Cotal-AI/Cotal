@@ -145,11 +145,11 @@ export async function describeEndpoint(
       // The first publish may precede the responder's subscription during startup. Re-publish the
       // SAME read-only describe under the SAME request binding until one answer wins or the original
       // deadline expires; this neither extends the budget nor retries the command being resolved.
+      // `publish` throws synchronously after close/drain. A timer throw escapes the caller's promise
+      // and crashes the process, so make transport loss settle this describe instead.
       retryTimer = setInterval(() => {
         try { nc.publish(subject, request); }
         catch (e) {
-          // `publish` throws synchronously after close/drain. A timer throw escapes the caller's
-          // promise and crashes the process, so make transport loss settle this describe instead.
           reject(new EpEnvelopeError("unavailable", `the describe retry for ${endpoint} could not publish: ${e instanceof Error ? e.message : String(e)}`));
         }
       }, DESCRIBE_RETRY_MS);
