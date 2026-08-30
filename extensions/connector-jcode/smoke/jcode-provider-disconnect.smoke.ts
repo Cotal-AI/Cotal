@@ -150,6 +150,14 @@ try {
     );
     return hellos.length >= 3 ? hellos : undefined;
   });
+  const transientBridges = entries().filter(
+    (entry): entry is { ev: string; pid: number } => entry.ev === "listening" && typeof entry.pid === "number",
+  );
+  check(
+    "the failed transient replacement is stopped before the successful retry",
+    transientBridges.length >= 3 && !alive(transientBridges[1]!.pid) && alive(transientBridges[2]!.pid),
+    transientBridges,
+  );
   const reattachments = await waitFor("recovery session reattachment after the transient loss", () => {
     const attempts = entries().filter(
       (entry) => entry.ev === "session_path" && entry.req === "attach_session" && entry.session_id === "fake-session",

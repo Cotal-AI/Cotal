@@ -3,7 +3,7 @@
   "guard": "a provider-induced Harness API close during a delivered mesh turn leaves the seat alive after a transient replacement failure only when that failed tree is proven stopped; unproven teardown is terminal before another launch, and a second disconnect remains terminal",
   "command": "pnpm smoke:jcode-provider-disconnect",
   "progressPattern": "✓",
-  "minTicks": 5,
+  "minTicks": 6,
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/provider-disconnect.json",
   "_note": "The first failure is deliberately after a real mesh delivery and real Unix-socket close. The replacement then loses one synthetic attach race before the same bounded recovery window succeeds. The final close proves the design did not become an unbounded relaunch loop.",
   "mutations": [
@@ -40,7 +40,7 @@
       "file": "extensions/connector-jcode/src/host.ts",
       "find": "          await replacement?.close().catch(() => {});\n          await stopPrivateJcode();\n          if (stopping) return;",
       "replace": "          await replacement?.close().catch(() => {});\n          if (stopping) return;",
-      "expectRed": "terminal ownership refusal or unsafe third launch"
+      "expectRed": "the failed transient replacement is stopped before the successful retry"
     },
     {
       "name": "M6 swallow terminal replacement teardown refusal",
