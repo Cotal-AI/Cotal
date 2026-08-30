@@ -1202,10 +1202,62 @@ export class MeshAgent extends EventEmitter {
    *  operator-local intent, kept off the peer-facing spawn door — see #159.) */
   async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string }): Promise<ControlReply> {
     await this.requireConnected();
-    const args = { name, role, agent: opts?.agent, model: opts?.model, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt };
+    const raw = opts?.model;
+    if (raw !== undefined && !raw.trim())
+      return { ok: false, error: "model: must not be empty" };
+    const requested = raw?.trim();
+    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt };
     // P2 item 2 (2b): spawn is an ACTION — follow the acceptance to the terminal so cotal_spawn
     // stays synchronous (the MCP reply carries the live outcome, not the pre-launch acceptance).
-    return this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true });
+    const reply = await this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true });
+    if (!requested) return reply;
+    // A requested pin that the manager did not record is the silent-drop failure (#972): the spawn
+    // looks successful, the seat comes up on the harness default, and nothing in the spawn result
+    // names the mismatch. Inspect is the manager's recorded pin (persona file or this override).
+    // A wait-timeout is still a timeout, not evidence the pin landed — annotate it, never upgrade it.
+    const actual = reply.data as { name?: string } | undefined;
+    const seat = actual?.name ?? name;
+    const recorded = await this.inspectModel(seat);
+    const recordedLabel = !recorded.ok
+      ? `could not inspect the recorded pin: ${recorded.error}`
+      : recorded.model === undefined
+        ? "the manager recorded no model pin"
+        : `the manager recorded ${JSON.stringify(recorded.model)}`;
+    if (recorded.ok && recorded.model !== requested) {
+      return {
+        ok: false,
+        error:
+          `requested model ${JSON.stringify(requested)} but ${recordedLabel} for "${seat}" — refusing a spawn whose pin did not land. The seat may already be live; inspect it before retrying, because a retry duplicates the spawn`,
+      };
+    }
+    if (!reply.ok) {
+      return {
+        ok: false,
+        error: `${reply.error ?? "manager refused"} (requested model ${JSON.stringify(requested)}; ${recordedLabel} for "${seat}")`,
+      };
+    }
+    if (!recorded.ok) {
+      return {
+        ok: false,
+        error:
+          `requested model ${JSON.stringify(requested)} for "${seat}" but ${recordedLabel} — refusing to report a pin that cannot be audited`,
+      };
+    }
+    return {
+      ok: true,
+      data: { ...(reply.data as Record<string, unknown> | undefined), model: recorded.model },
+    };
+  }
+
+  /** The manager's recorded model pin for a managed seat (`inspect.model`). Absence is a real
+   *  state: a launch may pin none. Distinct from a failed inspect, which cannot attest. */
+  async inspectModel(name: string): Promise<{ ok: true; model?: string } | { ok: false; error: string }> {
+    const info = await this.managerInvoke("inspect", { name });
+    if (!info.ok) return { ok: false, error: info.error ?? "inspect refused" };
+    const model = (info.data as { model?: unknown } | undefined)?.model;
+    if (model === undefined) return { ok: true };
+    if (typeof model !== "string") return { ok: false, error: `inspect returned a non-string model for "${name}"` };
+    return { ok: true, model };
   }
 
   /** One v0.4 manager-endpoint invoke (P2 item 1, 1c.2b): the generic {@link CotalEndpoint.invokeService}

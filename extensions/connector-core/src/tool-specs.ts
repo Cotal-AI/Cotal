@@ -531,7 +531,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_orientation",
       title: "Cotal: orient (who you are & what you can do)",
       description:
-        "Your orientation card: who you are (name/role/space), the channels you can read and post to, " +
+        "Your orientation card: who you are (name/role/space), the recorded model pin if one was set, the channels you can read and post to, " +
         "your capabilities, the tools available to you (grouped into a core loop plus the rest), who's " +
         "present, your status/attention, and how many messages are unread. Call this first to get your " +
         "bearings; it's read-only and safe to re-check anytime.",
@@ -1055,15 +1055,18 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         role: z
           .string()
           .optional()
-          .describe("Optional role for the new peer (e.g. worker, reviewer); overrides the persona file's role."),
+          .describe(
+            "Optional role for the new peer (e.g. worker, reviewer); overrides the persona file's role. A role of `manager` requires the persona to carry capabilities: [spawn]: a seat that presents as a manager but cannot spawn is refused at spawn time. Ask an operator to add the grant to the persona file (a persona you defined with cotal_persona cannot declare it itself).",
+          ),
         agent: z
           .string()
           .optional()
           .describe("Optional harness the new peer runs on: the agent/connector type (claude, jcode, opencode, hermes), NOT the persona to spawn (that's `name`). Resolution order: this explicit agent > the persona's agent: pin > the caller's COTAL_DEFAULT_AGENT > the manager's COTAL_DEFAULT_AGENT > the product default (Claude)."),
         model: z
           .string()
+          .min(1)
           .optional()
-          .describe("Optional model override (e.g. opus, sonnet); it wins over the persona file's model:."),
+          .describe("Optional model override (e.g. opus, sonnet); it wins over the persona file's model:. The spawn fails if the manager does not record this pin. The result names the recorded model; do not treat a spawn as cross-vendor unless that name matches what you requested."),
         variant: z
           .string()
           .optional()
@@ -1095,14 +1098,15 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         try {
           const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt });
           if (!reply.ok) return err(`Couldn't spawn ${name}: ${renderLifecycleBlocked(reply.error ?? "manager refused", reply)}`);
-          const d = reply.data as { name?: string; mode?: string } | undefined;
+          const d = reply.data as { name?: string; mode?: string; model?: string } | undefined;
           const actual = d?.name ?? name; // the manager auto-numbers on a collision — report what it spawned
           const mode = d?.mode;
           const who = role ? `${actual}/${role}` : actual;
           // Make the rename unmissable: a colliding caller must see it asked for `name` but got
           // `actual`, not silently address the wrong peer later (the tool result is the only channel).
           const lead = actual !== name ? `"${name}" was taken — spawning ${who} instead` : `Spawning ${who}`;
-          return ok(`${lead}${mode ? ` (${mode})` : ""} — it will appear in the roster shortly.`);
+          const pin = d?.model ? ` recorded model ${JSON.stringify(d.model)}` : "";
+          return ok(`${lead}${mode ? ` (${mode})` : ""}${pin} — it will appear in the roster shortly.`);
         } catch (e) {
           return controlFailure(`Couldn't spawn ${name}`, e);
         }

@@ -299,12 +299,14 @@ try {
   const inheritedJcodeHome = join(root, "source-jcode");
   mkdirSync(inheritedJcodeHome, { recursive: true, mode: 0o700 });
   writeFileSync(join(inheritedJcodeHome, "auth.json"), "host-smoke-token", { mode: 0o600 });
+  const journal = join(root, "session.journal.jsonl");
   child = spawnHost({
     cwd: root,
     env: {
       ...env,
       PATH: `${shimDir}:${env.PATH ?? ""}`,
       FAKE_JCODE_LOG: log,
+      FAKE_JCODE_JOURNAL: journal,
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodehost",
       COTAL_NAME: "jcodepeer",
@@ -329,6 +331,19 @@ try {
   await waitFor("fake bridge", () => entries().find((entry) => entry.ev === "listening"));
   await waitFor("mesh presence", () => peerId);
   check("Jcode host joins the mesh", Boolean(peerId));
+  const journalModel = existsSync(journal)
+    ? (JSON.parse(readFileSync(journal, "utf8").split("\n").filter(Boolean).at(-1) ?? "{}") as { meta?: { model?: string } }).meta?.model
+    : undefined;
+  check(
+    "session journal records the requested model pin, not the harness default",
+    journalModel === "fake-model",
+    journalModel,
+  );
+  check(
+    "session journal does not keep the harness default after setModel",
+    journalModel !== "deepseek-v4-pro",
+    journalModel,
+  );
   const argv = entries().find((entry) => entry.ev === "argv") as { argv?: string[]; env?: Record<string, string> };
   check("host uses api-bridge with its private socket", argv.argv?.[0] === "api-bridge" && argv.argv?.[1] === "--api-socket", argv);
   check("host scrubs Cotal material before launching Jcode", Object.keys(argv.env ?? {}).every((key) => !key.startsWith("COTAL_")), argv.env);
