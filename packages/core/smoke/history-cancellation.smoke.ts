@@ -92,7 +92,7 @@ try {
   poster.on("error", () => {});
   await poster.start();
   const payload = "x".repeat(8 * 1024);
-  for (let i = 0; i < 160; i++) await poster.multicast(`${i}:${payload}`, { channel: "general" });
+  for (let i = 0; i < 96; i++) await poster.multicast(`${i}:${payload}`, { channel: "general" });
 
   proxy = await bandwidthProxy(proxyPort, brokerPort, 64 * 1024);
   reader = new CotalEndpoint({ space, servers: proxyUrl, card: { name: "reader", kind: "endpoint" }, consume: false, registerPresence: false, watchPresence: false, watchChannels: false });
@@ -101,10 +101,15 @@ try {
   control = await connect({ servers: brokerUrl });
   const jsm = await jetstreamManager(control);
   const consumers = async () => (await jsm.streams.info(chatStream(space))).state.consumer_count;
+  const consumerNames = async (): Promise<string[]> => {
+    const names: string[] = [];
+    for await (const info of jsm.consumers.list(chatStream(space))) names.push(info.name);
+    return names;
+  };
 
   const controller = new AbortController();
   let outcome = "pending";
-  const read = reader.channelHistory("general", { limit: 160, signal: controller.signal }).then(
+  const read = reader.channelHistory("general", { limit: 96, signal: controller.signal }).then(
     (rows) => { outcome = `resolved:${rows.length}`; },
     (error) => { outcome = `rejected:${(error as Error).name}:${(error as Error).message}`; },
   );
@@ -112,6 +117,8 @@ try {
   const startedBy = Date.now() + 5000;
   while (Date.now() < startedBy && (await consumers()) === 0) await wait(25);
   check("positive control: the public read created a live JetStream consumer", (await consumers()) > 0, await consumers());
+  const activeNames = await consumerNames();
+  check("positive control: the active read consumer identity is observable", activeNames.length === 1, activeNames);
 
   controller.abort(new DOMException("history read cancelled by caller", "AbortError"));
   const settled = await Promise.race([read.then(() => true), wait(1500).then(() => false)]);
@@ -119,8 +126,14 @@ try {
     settled && /^rejected:AbortError:/.test(outcome), outcome);
 
   const deletedBy = Date.now() + 1500;
-  while (Date.now() < deletedBy && (await consumers()) > 0) await wait(25);
-  check("aborting the public read promptly deletes its ephemeral consumer", (await consumers()) === 0, await consumers());
+  let remaining = activeNames;
+  while (Date.now() < deletedBy) {
+    remaining = await consumerNames();
+    if (!remaining.some((name) => activeNames.includes(name))) break;
+    await wait(25);
+  }
+  check("aborting the public read promptly deletes the exact ephemeral consumer",
+    !remaining.some((name) => activeNames.includes(name)), remaining);
 
   // The same endpoint must serve the next request once the constrained link is no longer occupied.
   await reader.stop();
