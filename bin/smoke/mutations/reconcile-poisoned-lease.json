@@ -2,7 +2,6 @@
   "suite": "implementations/manager/smoke/gate-reconcile-cli-e2e.smoke.ts",
   "guard": "a wrong-root delivery daemon validates its scan tenancy before acquiring the singleton lease",
   "command": "pnpm --filter @cotal-ai/delivery build && pnpm smoke:gate-reconcile-cli:auth",
-  "completionMarker": "GATE-RECONCILE CLI E2E",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/reconcile-poisoned-lease.json",
   "why": [
     "The suite starts real delivery daemon processes against a two-account ephemeral broker.",
