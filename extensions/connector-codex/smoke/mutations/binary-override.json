@@ -1,0 +1,17 @@
+{
+  "suite": "extensions/connector-codex/smoke/codex-args.smoke.ts",
+  "guard": "an operator COTAL_CODEX_BIN pin wins over the manager's boot-resolved fallback",
+  "command": "pnpm smoke:codex-args",
+  "progressPattern": "✓",
+  "minTicks": 10,
+  "mutations": [
+    {
+      "name": "manager boot fallback overwrites the operator Codex binary pin",
+      "file": "extensions/connector-codex/src/extension.ts",
+      "find": "    if (opts.resolvedBinaries?.codex) env.COTAL_CODEX_RESOLVED_BIN = opts.resolvedBinaries.codex;",
+      "replace": "    if (opts.resolvedBinaries?.codex) env.COTAL_CODEX_BIN = opts.resolvedBinaries.codex;",
+      "expectRed": "operator COTAL_CODEX_BIN wins over the manager boot fallback",
+      "cell": "operator COTAL_CODEX_BIN wins over the manager boot fallback"
+    }
+  ]
+}

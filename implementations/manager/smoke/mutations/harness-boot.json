@@ -25,8 +25,8 @@
       "file": "implementations/manager/src/manager.ts",
       "find": "        if (path) binaries[bin] = path;",
       "replace": "        if (path) binaries[bin] = bin;",
-      "expectRed": "boot records the resolved absolute harness path",
-      "cell": "boot records the resolved absolute harness path"
+      "expectRed": "boot records the resolved absolute harness path from a relative PATH entry",
+      "cell": "boot records the resolved absolute harness path from a relative PATH entry"
     },
     {
       "name": "managed launches discard the boot-resolved binary map",

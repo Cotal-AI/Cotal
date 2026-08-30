@@ -5,11 +5,11 @@
  * startAgent call. Boot stays live for unrelated work and publishes the same unavailable row through
  * the typed manager status surface. A present harness is recorded as an absolute executable path.
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { isReachable, registry, type Connector, type LaunchOpts } from "@cotal-ai/core";
 import { extensionsDir, saveExtensionsManifest } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
@@ -67,7 +67,9 @@ const servers = `nats://127.0.0.1:${port}`;
 const broker = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(broker, root);
 const oldPath = process.env.PATH;
-process.env.PATH = binDir;
+// A valid relative PATH entry is resolved at manager boot. The managed seat starts in workspaceRoot,
+// not this process cwd, so retaining the relative spelling would fail from the launch cwd.
+process.env.PATH = relative(process.cwd(), binDir);
 const manager = new Manager({ space: "harness-boot", servers, runtime: "pty", workspaceRoot, installedExtensions: true });
 const M = manager as unknown as {
   connectorStatuses: Array<{ agent: string; state: string; binaries: Record<string, string>; reason?: string }>;
@@ -93,7 +95,11 @@ try {
     bootErr,
   );
   check("manager boot continues so unrelated connectors remain usable", missing?.state === "unavailable" && available?.state === "available", M.connectorStatuses);
-  check("boot records the resolved absolute harness path", available?.binaries["present-harness"] === present, available);
+  check(
+    "boot records the resolved absolute harness path from a relative PATH entry",
+    available?.binaries["present-harness"] === present && isAbsolute(available.binaries["present-harness"]!),
+    available,
+  );
   const status = M.managerStatusData();
   check("typed manager status retains the named boot-time unavailable reason", status.connectors.find((row) => row.agent === "boot-missing")?.reason === missing?.reason, status);
 
@@ -109,12 +115,21 @@ try {
   };
   registry.register(connector);
   const fakeSession = { cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} };
+  let launchExec: ReturnType<typeof spawnSync> | undefined;
   (manager as unknown as { runtime: unknown }).runtime = {
     kind: "fake",
-    spawn: (name: string) => ({ name, kind: "fake", status: () => "exited", stop: () => {}, interrupt: () => {}, attach: () => fakeSession }),
+    spawn: (name: string, spec: { command: string; args: string[]; env?: Record<string, string> }, cwd: string) => {
+      launchExec = spawnSync(spec.command, spec.args, { cwd, env: spec.env, encoding: "utf8" });
+      return { name, kind: "fake", status: () => "exited", stop: () => {}, interrupt: () => {}, attach: () => fakeSession };
+    },
   };
   await manager.startAgent({ name: "pin-probe", agent: "boot-present" });
   check("managed spawn uses the exact path resolved at boot", launchOpts?.resolvedBinaries?.["present-harness"] === present, launchOpts);
+  check(
+    "managed spawn executes that exact harness when its launch cwd differs from manager boot cwd",
+    launchExec?.status === 0 && launchExec.error === undefined,
+    { status: launchExec?.status, error: launchExec?.error?.message, cwd: workspaceRoot, command: launchOpts?.resolvedBinaries?.["present-harness"] },
+  );
 } finally {
   console.error = oldError;
   if (oldPath === undefined) delete process.env.PATH;

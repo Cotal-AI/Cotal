@@ -406,6 +406,7 @@ smoke:lang-differential
 smoke:freeslot-barrier:live
 smoke:int2-revoke:live
 smoke:operator-env-keep
+smoke:bin-path
 smoke:spawn-env-config
 smoke:spawn-env-e2e
 smoke:hermes-launch-env

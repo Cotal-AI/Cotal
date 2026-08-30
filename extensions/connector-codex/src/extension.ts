@@ -162,7 +162,10 @@ export const codexConnector: Connector = {
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
-    if (opts.resolvedBinaries?.codex) env.COTAL_CODEX_BIN = opts.resolvedBinaries.codex;
+    // The machine-wide COTAL_CODEX_BIN is an operator pin and already rides launchEnv. The boot
+    // inventory is a fallback for the common no-override case, carried separately so a managed spawn
+    // never silently replaces the binary the operator chose.
+    if (opts.resolvedBinaries?.codex) env.COTAL_CODEX_RESOLVED_BIN = opts.resolvedBinaries.codex;
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
