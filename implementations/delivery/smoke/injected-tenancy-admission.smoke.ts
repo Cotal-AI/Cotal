@@ -6,8 +6,9 @@
  *
  * The pre-fix process reads only delivery.creds, acquires lease.0, and reaches READY before it ever
  * consults the foreign observer. The fixed process reads the observer/evictor pair, refuses naming
- * both accounts, and leaves no lease. A correctly populated injected store then boots in the same
- * process as the positive control.
+ * both accounts, and leaves no lease. Missing-observer and torn-pair startup are covered too, while
+ * an absent evictor retains the documented pre-eviction deny-new-only posture. A correctly populated
+ * injected store then boots in the same process as the positive control.
  */
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -101,6 +102,7 @@ try {
   const observerA = await mintMembershipObserverCreds(authA, newIdentity());
   const observerB = await mintMembershipObserverCreds(authB, newIdentity());
   const evictor = await mintConnectionEvictorCreds(authA, newIdentity());
+  const foreignEvictor = await mintConnectionEvictorCreds(authB, newIdentity());
 
   const inspectorId = newIdentity();
   inspector = new CotalEndpoint({
@@ -111,42 +113,72 @@ try {
   inspector.on("error", () => {});
   await inspector.start();
 
-  const poisoned = new MemoryStore();
-  await poisoned.put(deliveryKey, deliveryCreds);
-  await poisoned.put(rwKey, rwCreds);
+  const args: ParsedArgs = { values: { space: spaceA, server: servers }, positionals: [], raw: [] };
+  const baseStore = async (): Promise<MemoryStore> => {
+    const value = new MemoryStore();
+    await value.put(deliveryKey, deliveryCreds);
+    await value.put(rwKey, rwCreds);
+    return value;
+  };
+  const rejectedStartup = async (store: MemoryStore): Promise<{ outcome?: string; refusal?: Error; lease: unknown }> => {
+    let refusal: Error | undefined;
+    void runDelivery(args, store).catch((error) => { refusal = error as Error; });
+    const outcome = await until(async () => {
+      if (refusal) return "refused";
+      if (await inspector!.readDeliveryLease(0)) return "leased";
+      return undefined;
+    });
+    return { outcome, refusal, lease: await inspector!.readDeliveryLease(0) };
+  };
+
+  const poisoned = await baseStore();
   await poisoned.put(observerKey, observerB);
   await poisoned.put(evictorKey, evictor);
-  const args: ParsedArgs = { values: { space: spaceA, server: servers }, positionals: [], raw: [] };
-  let refusal: Error | undefined;
-  void runDelivery(args, poisoned).catch((error) => { refusal = error as Error; });
-  const outcome = await until(async () => {
-    if (refusal) return "refused";
-    if (await inspector!.readDeliveryLease(0)) return "leased";
-    return undefined;
-  });
-  const leaseAfterRefusal = await inspector.readDeliveryLease(0);
+  const foreign = await rejectedStartup(poisoned);
   check(
     "INJECTED ADMISSION: foreign observer refuses before endpoint construction and lease.0 acquisition",
-    outcome === "refused" && leaseAfterRefusal === undefined &&
-      refusal?.message.includes(accountA.account.pub) && refusal.message.includes(accountB.account.pub),
-    { outcome, lease: leaseAfterRefusal, error: refusal?.message, reads: poisoned.reads },
+    foreign.outcome === "refused" && foreign.lease === undefined &&
+      foreign.refusal?.message.includes(accountA.account.pub) && foreign.refusal.message.includes(accountB.account.pub),
+    { ...foreign, error: foreign.refusal?.message, reads: poisoned.reads },
   );
   check(
     "INJECTED ADMISSION: startup reads the required observer/evictor pair through target.source",
     poisoned.reads.includes(observerKey) && poisoned.reads.includes(evictorKey),
     poisoned.reads,
   );
+  check(
+    "INJECTED ADMISSION: refusal happens before endpoint start re-reads the delivery credential",
+    poisoned.reads.filter((key) => key === deliveryKey).length === 1,
+    poisoned.reads,
+  );
 
-  // Positive control: the same composition with tenant A's observer is admitted and reaches READY.
-  if (outcome === "refused") {
-    const correct = new MemoryStore();
-    await correct.put(deliveryKey, deliveryCreds);
-    await correct.put(rwKey, rwCreds);
+  const missing = await baseStore();
+  await missing.put(evictorKey, evictor);
+  const absent = await rejectedStartup(missing);
+  check(
+    "INJECTED ADMISSION: missing observer refuses before lease.0 instead of serving an unscannable rail",
+    absent.outcome === "refused" && absent.lease === undefined && /observer cred is not provisioned/.test(absent.refusal?.message ?? ""),
+    { ...absent, error: absent.refusal?.message, reads: missing.reads },
+  );
+
+  const torn = await baseStore();
+  await torn.put(observerKey, observerA);
+  await torn.put(evictorKey, foreignEvictor);
+  const mixed = await rejectedStartup(torn);
+  check(
+    "INJECTED ADMISSION: a present torn observer/evictor generation refuses before lease.0",
+    mixed.outcome === "refused" && mixed.lease === undefined && /DIFFERENT system accounts/.test(mixed.refusal?.message ?? ""),
+    { ...mixed, error: mixed.refusal?.message, reads: torn.reads },
+  );
+
+  // Positive control: an intact observer with no evictor keeps the pre-feature deny-new-only posture
+  // and reaches READY. Eviction itself will still refuse loudly until the evictor is provisioned.
+  if (foreign.outcome === "refused" && absent.outcome === "refused" && mixed.outcome === "refused") {
+    const correct = await baseStore();
     await correct.put(observerKey, observerA);
-    await correct.put(evictorKey, evictor);
     void runDelivery(args, correct);
     const ready = await until(async () => (await inspector!.readDeliveryLease(0))?.ready === true ? true : undefined, 20_000);
-    check("INJECTED ADMISSION control: the correctly tenanted injected composition reaches READY", ready === true, {
+    check("INJECTED ADMISSION control: correctly tenanted observer with no evictor reaches READY", ready === true, {
       lease: await inspector.readDeliveryLease(0), reads: correct.reads,
     });
   }

@@ -3,7 +3,7 @@
   "guard": "an injected two-account delivery composition validates its observer tenancy before endpoint construction and lease.0 acquisition",
   "command": "pnpm --filter @cotal-ai/delivery... build && pnpm smoke:delivery-injected-tenancy-admission",
   "progressPattern": "✓",
-  "minTicks": 4,
+  "minTicks": 7,
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/delivery/smoke/mutations/injected-tenancy-admission.json",
   "mutations": [
     {
