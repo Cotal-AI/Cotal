@@ -2406,8 +2406,6 @@ export class CotalEndpoint extends EventEmitter {
       chatStream(this.space),
       chatSubject(this.space, "*", "*", channel),
       opts?.limit ?? 100,
-      undefined,
-      opts?.signal,
     );
   }
 
