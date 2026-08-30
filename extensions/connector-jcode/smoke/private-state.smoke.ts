@@ -108,7 +108,7 @@ try {
     check("absent-source cleanup refuses a symlinked mirror parent and deletes nothing outside", refused && !existsSync(join(outside, "auth.json")));
   }
 
-  console.log(`\nJCODE PRIVATE STATE SMOKE PASSED (${pass} checks)`);
+  console.log(`\nJCODE PRIVATE STATE SMOKE PASSED (${pass} checks passed)`);
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
