@@ -153,8 +153,11 @@ console.log("describe REQUEST-BINDING (freelance HIGH #1):");
 {
   let publishes = 0;
   const nc = fakeNc((req) => ++publishes === 1 ? [] : [reply(HONEST, req.nonce, req.id)]);
-  const { responder } = await describeEndpoint(nc, SPACE, ENDPOINT, CALLER, { deadlineMs: 800 });
-  c("an unanswered describe is re-published within its original deadline when the responder registers after the first request", publishes === 2 && responder.instanceId === HONEST.instanceId, { publishes, responder });
+  let responder: { instanceId: string; epoch: number } | undefined;
+  let error: unknown;
+  try { ({ responder } = await describeEndpoint(nc, SPACE, ENDPOINT, CALLER, { deadlineMs: 800 })); }
+  catch (e) { error = e; }
+  c("an unanswered describe is re-published within its original deadline when the responder registers after the first request", publishes === 2 && responder?.instanceId === HONEST.instanceId, { publishes, responder, error });
 }
 
 console.log(`\n${fail === 0 ? "ENDPOINT-INVOKE BINDING SMOKE OK ✅" : "ENDPOINT-INVOKE BINDING SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
