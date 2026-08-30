@@ -108,8 +108,9 @@
       "file": "implementations/cli/src/commands/down.ts",
       "find": "  const folderCtx = (): LocalProcessContext => (folderContext ??= { root: cotalRoot(), space: resolveRuntimeSpace(process.cwd()) });",
       "replace": "  const folderCtx = (): LocalProcessContext => (folderContext ??= { root: cotalRoot(), space: \"main\" });",
-      "command": "pnpm smoke:up-manifest:live",
-      "expectRed": "broker + manager are gone after down (no orphaned supervise)"
+      "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:up-manifest:live",
+      "expectRed": "broker + manager are gone after down (no orphaned supervise)",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ]
 }
