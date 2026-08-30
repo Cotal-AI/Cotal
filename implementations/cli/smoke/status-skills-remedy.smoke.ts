@@ -100,14 +100,14 @@ try {
 
   const claudeRow = skillRow(status.stdout, "Claude skills");
   const agentsRow = skillRow(status.stdout, "Skills (.agents)");
-  assert.match(claudeRow, /stale · cotal setup --skills/, claudeRow);
-  assert.doesNotMatch(claudeRow, /stale · cotal setup$/);
-  assert.match(agentsRow, /1\/1 out of date · cotal setup --skills/, agentsRow);
-  assert.doesNotMatch(agentsRow, /out of date · cotal setup$/);
+  assert.match(claudeRow, /stale · cotal setup --skills/, "stale Claude skills recommend setup --skills");
+  assert.doesNotMatch(claudeRow, /stale · cotal setup$/, "Claude skills row is not unscoped setup");
+  assert.match(agentsRow, /1\/1 out of date · cotal setup --skills/, "stale .agents skills recommend setup --skills");
+  assert.doesNotMatch(agentsRow, /out of date · cotal setup$/, ".agents skills row is not unscoped setup");
 
   const refused = await run(["setup", "--skills", "--full"], first.env, first.cwd);
   assert.notEqual(refused.code, 0, "setup --skills --full is refused");
-  assert.match(refused.stderr, /--skills cannot be combined with --full or --demo/);
+  assert.match(refused.stderr, /--skills cannot be combined with --full or --demo/, "refusal names the --skills combination fence");
   const refusedDemo = await run(["setup", "--skills", "--demo"], first.env, first.cwd);
   assert.notEqual(refusedDemo.code, 0, "setup --skills --demo is refused");
 

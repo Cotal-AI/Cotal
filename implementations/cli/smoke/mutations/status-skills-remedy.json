@@ -2,7 +2,6 @@
   "suite": "implementations/cli/smoke/status-skills-remedy.smoke.ts",
   "guard": "status skills rows recommend setup --skills, and setup --skills is the only write that path performs",
   "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:status-skills-remedy",
-  "completionMarker": "status-skills-remedy.smoke: all assertions passed",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/status-skills-remedy.json",
   "why": [
     "A status surface that names unscoped cotal setup as the skills remedy routes a read-path user into persona, plugin, and onboard writes.",
@@ -14,8 +13,8 @@
       "file": "implementations/cli/src/commands/status.ts",
       "find": "return c.yellow(`stale · ${displayCmd()} setup --skills`);",
       "replace": "return c.yellow(`stale · ${displayCmd()} setup`);",
-      "expectRed": "stale · cotal setup --skills",
-      "cell": "stale · cotal setup --skills",
+      "expectRed": "stale Claude skills recommend setup --skills",
+      "cell": "stale Claude skills recommend setup --skills",
       "note": "Restores the issue's Claude skills row. Typecheck stays green. The status subprocess still prints the header."
     },
     {
@@ -23,8 +22,8 @@
       "file": "implementations/cli/src/commands/status.ts",
       "find": "return c.yellow(`${label} · ${displayCmd()} setup --skills`);",
       "replace": "return c.yellow(`${label} · ${displayCmd()} setup`);",
-      "expectRed": "1/1 out of date · cotal setup --skills",
-      "cell": "1/1 out of date · cotal setup --skills",
+      "expectRed": "stale .agents skills recommend setup --skills",
+      "cell": "stale .agents skills recommend setup --skills",
       "note": "Restores the issue's Skills (.agents) row while leaving the Claude row scoped."
     },
     {
