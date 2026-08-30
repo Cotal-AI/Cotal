@@ -14,8 +14,8 @@
     {
       "name": "D1 restore the duplicate JCode retry-policy script",
       "file": "package.json",
-      "find": "    \"smoke:jcode-provider-disconnect\": \"tsx extensions/connector-jcode/smoke/jcode-provider-disconnect.smoke.ts\",\n    \"smoke:jcode-live\": \"tsx extensions/connector-jcode/smoke/jcode-live.smoke.ts\",",
-      "replace": "    \"smoke:jcode-provider-disconnect\": \"tsx extensions/connector-jcode/smoke/jcode-provider-disconnect.smoke.ts\",\n    \"smoke:jcode-retry-policy\": \"tsx extensions/connector-jcode/smoke/retry-policy.smoke.ts\",\n    \"smoke:jcode-live\": \"tsx extensions/connector-jcode/smoke/jcode-live.smoke.ts\",",
+      "find": "    \"smoke:jcode-provider-disconnect\": \"tsx extensions/connector-jcode/smoke/jcode-provider-disconnect.smoke.ts\",\n    \"smoke:jcode-mid-turn-delivery\": \"tsx extensions/connector-jcode/smoke/jcode-mid-turn-delivery.smoke.ts\",\n    \"smoke:jcode-live\": \"tsx extensions/connector-jcode/smoke/jcode-live.smoke.ts\",",
+      "replace": "    \"smoke:jcode-provider-disconnect\": \"tsx extensions/connector-jcode/smoke/jcode-provider-disconnect.smoke.ts\",\n    \"smoke:jcode-mid-turn-delivery\": \"tsx extensions/connector-jcode/smoke/jcode-mid-turn-delivery.smoke.ts\",\n    \"smoke:jcode-retry-policy\": \"tsx extensions/connector-jcode/smoke/retry-policy.smoke.ts\",\n    \"smoke:jcode-live\": \"tsx extensions/connector-jcode/smoke/jcode-live.smoke.ts\",",
       "expectRed": "root package JSON has 1 duplicate object key(s)"
     }
   ]

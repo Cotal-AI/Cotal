@@ -1,0 +1,2 @@
+# Generated CI helper declaration drift check.
+smoke:ci-declarations

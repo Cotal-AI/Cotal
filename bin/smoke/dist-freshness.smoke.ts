@@ -21,11 +21,12 @@
  * exactly when it lies. Freshness is not correctness, and only a source/build identity manifest
  * would close that.
  *
- * BE HONEST ABOUT WHERE THIS BITES. In `smoke:ci` it is nearly inert, because the gate builds
- * before it runs — it can only catch a build that silently produced nothing for a package. Its real
- * use is the ad-hoc case: run it after editing core and before trusting a manager-side suite. That
- * makes it a better instruction, not yet a ratchet, and the distinction matters because instructions
- * are the form that leaks — the person who most needs one is the person not thinking about it.
+ * BE HONEST ABOUT WHERE THIS BITES. `pnpm smoke:ci` builds before starting its shard, and the hosted
+ * CI workflow likewise builds before invoking the shard directly, so this check is nearly inert in
+ * those gates: it can only catch a build that silently produced nothing for a package. Its real use
+ * is the ad-hoc case: run it after editing core and before trusting a manager-side suite. That makes
+ * it a better instruction, not yet a ratchet, and the distinction matters because instructions are
+ * the form that leaks — the person who most needs one is the person not thinking about it.
  *
  * THE VERSION THAT WOULD ACTUALLY RATCHET is a startup assertion inside every suite that reads
  * `dist`, so the check runs whether or not anyone remembered. 104 suites import `@cotal-ai/core`,
