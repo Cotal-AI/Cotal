@@ -608,7 +608,7 @@ credential diverge (§2): the principal keys subjects/durables/presence; the con
 
 | Profile | Application publish | Read surface | Notes |
 | --- | --- | --- | --- |
-| `agent` | own `chat.<owner>.<actor>.<ch>` for each `allowPublish` channel (post ACL, default-deny), `inst.*.*.<owner>.<actor>`, `svc.*.<owner>.<actor>`; endpoint request forms per minted capability (`ep.one`/`ep.all`/`ep.inst` with the capability's authz-mode/target pattern, caller triple `<owner>.<actor>.<uid>` pinned; `describe` by default; `epj` submissions for journaled capabilities; §13.9); own presence key | own `_INBOX_<connId>.>` + own endpoint reply rail (`ep.reply.*.*.*.<owner>.<actor>.<uid>.*`, exact arity); channel live tail via native `sub.allow` subscriptions to `chat.*.*.<channel>` per `allowSubscribe` (wildcards preserved); presence and channel-registry KV watches, including create/info/delete of their client-managed ordered consumers on those two streams only; CHAT history via single-filter `chathist_<owner>-<actor>-<uid>` creates, one per `allowSubscribe` channel (ACL-bounded); own lifecycle-scoped `dm_…`/`svc_…` bind-only; durable backstop via own bind-only lifecycle-scoped `dlv_…` DELIVER consumer, **no** grant on the mixed pre-auth fan-out stream; granted record-key/event-topic read subtrees per capability | read bounded by `allowSubscribe`; ordered-consumer cleanup cannot delete KV records or streams; durable copies re-authorized (current ACL + membership + lifecycle) by the trusted reader before the `dlv` handoff; no Direct Get; DM/TASK/DLV create denied |
+| `agent` | own `chat.<owner>.<actor>.<ch>` for each `allowPublish` channel (post ACL, default-deny), `inst.*.*.<owner>.<actor>`, `svc.*.<owner>.<actor>`; endpoint request forms per minted capability (`ep.one`/`ep.all`/`ep.inst` with the capability's authz-mode/target pattern, caller triple `<owner>.<actor>.<uid>` pinned; `describe` by default; `epj` submissions for journaled capabilities; §13.9); own presence key | own `_INBOX_<connId>.>` + own endpoint reply rail (`ep.reply.*.*.*.<owner>.<actor>.<uid>.*`, exact arity); channel live tail via native `sub.allow` subscriptions to `chat.*.*.<channel>` per `allowSubscribe` (wildcards preserved); `STREAM.INFO` (stream-level state only, no body read) on `CHAT` and the world-readable KVs, plus `TASK` when the credential carries a `role`; presence and channel-registry KV watches, including create/info/delete of their client-managed ordered consumers on those two streams only; CHAT history via single-filter `chathist_<owner>-<actor>-<uid>` creates, one per `allowSubscribe` channel (ACL-bounded); own lifecycle-scoped `dm_…`/`svc_…` bind-only; durable backstop via own bind-only lifecycle-scoped `dlv_…` DELIVER consumer, **no** grant on the mixed pre-auth fan-out stream; granted record-key/event-topic read subtrees per capability | read bounded by `allowSubscribe`; ordered-consumer cleanup cannot delete KV records or streams; durable copies re-authorized (current ACL + membership + lifecycle) by the trusted reader before the `dlv` handoff; no Direct Get; DM/TASK/DLV create denied |
 | `observer` | none | chat, CHAT history, presence, channel registry | DMs invisible |
 | `admin` | none | whole space live tap plus DM history | plaintext god-view, opt-in |
 | scoped host profiles | least-privilege per function | least-privilege per function | The former allow-all `manager` is **deleted**; its host duties split into scoped, single-function creds (`supervisor`, `provisioner`, `delivery`, `membership-rw`, `operator`, `purger`, `teardown`, `channel-writer`, …). No allow-all credential exists. Appendix B summarizes them; the concrete grant lists are **generated from the §13.9 ownership matrix** into `provision.ts` (the matrix is the single oracle; `provision.ts` is its artifact, Appendix B its summary). |
@@ -665,8 +665,15 @@ non-repudiation, does not survive an untrusted relay, and DMs are plaintext to t
 to `admin`. The read bound is on **content**, not metadata: agents hold `STREAM.INFO` on CHAT
 (for the join watermark, the recall drop-marker, and channel-list counts), so a `subjects_filter`
 query leaks chat subject *metadata* (channel names, sender ids, and per-subject counts) for
-channels outside `allowSubscribe` (channel names are already public via the registry). Hiding
-that metadata is deferred strict-containment work. See [docs/security.md](docs/security.md).
+channels outside `allowSubscribe` (channel names are already public via the registry). A
+credential minted with a `role` also holds it on TASK, under the same gate as that role's
+`svc_<role>` bind grants, so a `subjects_filter` there leaks anycast subject metadata
+(`svc.<role>.<owner>.<actor>`, who anycast which role) to an operator-chosen role profile. DM,
+DLV, and EPC carry **no** agent `STREAM.INFO` grant: `subjects_filter` is a request-body field no
+ACL can narrow to counts alone, so INFO there would enumerate who DMed whom, and no agent-side
+reader needs it (§13.1 reaches DM and DLV by durable name, EPC by subject-scoped `DIRECT.GET`).
+Hiding the remaining metadata is deferred strict-containment work.
+See [docs/security.md](docs/security.md).
 
 **Consumer-delivery confused deputy on the read grants.** A JetStream consumer delivers stored
 bytes to a **caller-chosen destination the broker does NOT confine to the requester's
@@ -3908,7 +3915,7 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
   subscription to granted `P.epe.…` subtrees within `allowSubscribe` (bytes land only on its
   own subscription, never a caller-chosen subject)
 - `$JS.API.INFO`
-- `$JS.API.STREAM.INFO.<CHAT|KV|CHKV|DLVKV>`: CHAT plus the world-readable presence/registry/lease KVs only; **not** DM/TASK (agents bind those by name and never inspect them, so INFO there would only leak inbox/task metadata)
+- `$JS.API.STREAM.INFO.<CHAT|KV|CHKV|DLVKV>`: CHAT plus the world-readable presence/registry/lease KVs only; **not** DM/DLV/EPC (an agent reaches those by name — its own pre-created `dmD`/`dlvD`, or a subject-scoped `DIRECT.GET` on EPC — and `subjects_filter` is a request-body field, so INFO there would only leak inbox/delivery subject metadata). `TASK` rides the `role` gate below, not this row.
 - `$JS.API.CONSUMER.CREATE.<CHAT>.<chatHistD>.<P.chat.*.*.<ch>>` for every `allowSubscribe` channel (history reads; the single filter the server pins to the body, the agent's only CHAT consumer create. The live tail is the core `sub.allow` subscription above, not a JetStream consumer)
 - `$JS.API.CONSUMER.INFO.<CHAT>.<chatHistD>`
 - `$JS.API.CONSUMER.MSG.NEXT.<CHAT>.<chatHistD>`
@@ -3927,8 +3934,9 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `$JS.API.CONSUMER.CREATE.<CHKV>.>`
 - `$JS.API.CONSUMER.INFO.<CHKV>.>`
 - `$JS.API.STREAM.MSG.GET.<DLVKV>` (delivery lease/readiness; read-only, non-gating)
-- if `role` is set: `$JS.API.CONSUMER.INFO.<TASK>.<svcD>`,
-  `$JS.API.CONSUMER.MSG.NEXT.<TASK>.<svcD>`, `$JS.ACK.<TASK>.<svcD>.>`
+- if `role` is set: `$JS.API.STREAM.INFO.<TASK>`, `$JS.API.CONSUMER.INFO.<TASK>.<svcD>`,
+  `$JS.API.CONSUMER.MSG.NEXT.<TASK>.<svcD>`, `$JS.ACK.<TASK>.<svcD>.>` (stream-level state is
+  gated with the bind grants, so a role-less agent holds nothing at all on `TASK`)
 
 `pub.deny` (the agent binds these consumers, never creates them; its only consumer-create grant is the pinned per-channel `chatHistD` history create):
 

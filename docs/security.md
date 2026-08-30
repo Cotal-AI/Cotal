@@ -72,6 +72,12 @@ The guarantees, at a glance, each enforced by the broker per
     never message content, and channel *names* are already public via the registry. Hiding
     even the existence/volume of other channels requires the per-channel-stream model and is
     deferred strict-containment work ([roadmap](roadmap.md)).
+  - **The same leak on the task stream, gated by role:** a credential minted with a `role` also
+    holds `STREAM.INFO` on the task stream, under the same gate as that role's consumer grants, so
+    the same `subjects_filter` query enumerates task subjects (`svc.<role>.<owner>.<actor>`): who
+    anycast which role. Metadata again, never message content, and confined to a role profile the
+    operator chose. An agent minted without a role holds no grant on the task stream at all, and no
+    agent holds one on the DM, delivery, or contract streams, so who DMed whom stays unreadable.
 - **DM / task peer confidentiality**: per-identity inbox prefixes plus
   provisioner-created bind-only consumers, so an agent cannot read someone else's inbox or
   steal another role's work; durable-channel backstop reads are re-authorized by a trusted

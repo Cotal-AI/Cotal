@@ -1,0 +1,61 @@
+{
+  "suite": "packages/core/smoke/provision-stream-info.smoke.ts",
+  "guard": "`$JS.API.STREAM.INFO.TASK` is granted by the `role` gate and by nothing else: a role-carrying agent reads task stream state, a role-less one does not, and neither reads DM, DLV or EPC.",
+  "command": "pnpm smoke:provision-stream-info",
+  "completionMarker": "PROVISION STREAM.INFO SMOKE",
+  "progressPattern": "^  [✓✗] ",
+  "minTicks": 17,
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/provision-stream-info-role-gate.json   # --config resolves against the repo root, never the cwd",
+  "why": [
+    "The agent profile emits a JetStream consumer-create DENY triple on DM, TASK and DLV, and for a",
+    "while it emitted no matching `$JS.API.STREAM.INFO` row for any of them. The first repair granted",
+    "STREAM.INFO on all four of DM, TASK, DLV and EPC, unconditionally, to every agent. That is wider",
+    "than the deny triple's shape suggests, because `subjects_filter` is a REQUEST-BODY field: no ACL",
+    "can split `STREAM.INFO` into 'message counts' and 'enumerate every retained subject'. A role-less",
+    "agent holding it on DM reads the whole DM social graph (who DMed whom, per-pair volume) and the",
+    "task-routing graph, on streams it has no other grant on at all.",
+    "",
+    "The narrowed grammar: `STREAM.INFO.TASK` moved inside the existing `if (svcD)` role gate, next to",
+    "the `svc_<role>` bind rows it belongs with, and the DM/DLV/EPC rows removed outright (an agent",
+    "reaches DM and DLV through a pre-created durable by name and EPC through a subject-scoped",
+    "DIRECT.GET, so no agent-side caller reads any of them at stream level).",
+    "",
+    "These mutations re-broaden the grant one stream at a time, so each deny cell is shown to measure",
+    "its OWN row rather than riding on a neighbour's. Re-broadening is the honest mutation here: it is",
+    "the exact code state the cells were reconciled against, so a cell that stays green under it is a",
+    "cell that would have blessed the wider grant.",
+    "",
+    "This config grades the gate from both sides. Removing the gated row must redden the positive",
+    "cell, and re-broadening past the gate must redden the role-less deny cell; a suite that only",
+    "checked the role-carrying agent would call an ungated grant correct, which is the bug."
+  ],
+  "mutations": [
+    {
+      "name": "the role gate stops granting STREAM.INFO on TASK at all",
+      "file": "packages/core/src/provision.ts",
+      "find": "      `$JS.API.STREAM.INFO.${TASK}`,\n      `$JS.API.CONSUMER.INFO.${TASK}.${svcD}`,\n",
+      "replace": "      `$JS.API.CONSUMER.INFO.${TASK}.${svcD}`,\n",
+      "expectRed": "STREAM.INFO TASK succeeds for the role-carrying agent",
+      "cell": "STREAM.INFO TASK succeeds for the role-carrying agent",
+      "note": "The positive direction. Without this the suite would be all deny cells, which an empty grant list also satisfies."
+    },
+    {
+      "name": "STREAM.INFO on TASK escapes the role gate",
+      "file": "packages/core/src/provision.ts",
+      "find": "    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,\n",
+      "replace": "    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,\n    `$JS.API.STREAM.INFO.${TASK}`,\n",
+      "expectRed": "STREAM.INFO TASK is denied to the role-less agent (the role gate is what grants it)",
+      "cell": "STREAM.INFO TASK is denied to the role-less agent (the role gate is what grants it)",
+      "note": "Same mutation as the G2 cell in the sibling config, graded here against a live role-less credential provisioned alongside the role-carrying one, so the gate is measured as a difference between two agents rather than as one agent's refusal."
+    },
+    {
+      "name": "STREAM.INFO on the DM stream is granted to every agent again",
+      "file": "packages/core/src/provision.ts",
+      "find": "    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,\n",
+      "replace": "    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,\n    `$JS.API.STREAM.INFO.${DM}`,\n",
+      "expectRed": "STREAM.INFO DM is denied to the role-carrying agent (no subject enumeration)",
+      "cell": "STREAM.INFO DM is denied to the role-carrying agent (no subject enumeration)",
+      "note": "Carrying a role must not buy DM stream state either: the gate widens TASK and only TASK."
+    }
+  ]
+}
