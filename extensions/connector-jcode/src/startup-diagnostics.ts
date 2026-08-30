@@ -1,6 +1,7 @@
 import { HarnessError } from "@1jehuang/jcode-sdk";
-import { chmodSync, mkdirSync, openSync, writeSync } from "node:fs";
+import { constants, lstatSync, mkdirSync, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
+import { hardenPrivate } from "@cotal-ai/core";
 
 export type JcodeConnectorFailureCode = "model_prefix_rejected" | "model_refused" | "model_mismatch";
 
@@ -16,12 +17,23 @@ let diagnosticLogFd: number | undefined;
 /** Start the per-seat connector diagnostic log before any private Jcode process is launched. */
 export function installJcodeDiagnosticLog(home: string): string {
   const logs = join(home, "logs");
-  mkdirSync(logs, { recursive: true, mode: 0o700 });
-  if (process.platform !== "win32") chmodSync(logs, 0o700);
+  try {
+    const stats = lstatSync(logs);
+    if (stats.isSymbolicLink()) throw new Error(`refusing symlinked Jcode connector log directory: ${logs}`);
+    if (!stats.isDirectory()) throw new Error(`Jcode connector log path is not a directory: ${logs}`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    mkdirSync(logs, { mode: 0o700 });
+  }
+  hardenPrivate(logs, "dir");
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const path = join(logs, `connector-${timestamp}-${process.pid}.log`);
-  diagnosticLogFd = openSync(path, "wx", 0o600);
-  if (process.platform !== "win32") chmodSync(path, 0o600);
+  diagnosticLogFd = openSync(
+    path,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+    0o600,
+  );
+  hardenPrivate(path, "file");
   return path;
 }
 

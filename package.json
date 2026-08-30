@@ -91,6 +91,7 @@
     "smoke:jcode-route-identity": "tsx extensions/connector-jcode/smoke/route-identity.smoke.ts",
     "smoke:jcode-retry-policy": "tsx extensions/connector-jcode/smoke/retry-policy.smoke.ts",
     "smoke:jcode-security": "tsx extensions/connector-jcode/smoke/jcode-security.smoke.ts",
+    "smoke:jcode-startup-diagnostics": "tsx extensions/connector-jcode/smoke/startup-diagnostics.smoke.ts",
     "smoke:jcode-lifecycle": "tsx extensions/connector-jcode/smoke/jcode-lifecycle.smoke.ts",
     "smoke:jcode-private-lifecycle": "tsx extensions/connector-jcode/smoke/private-lifecycle.smoke.ts",
     "smoke:jcode-provider-disconnect": "tsx extensions/connector-jcode/smoke/jcode-provider-disconnect.smoke.ts",
