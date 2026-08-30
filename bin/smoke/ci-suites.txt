@@ -713,10 +713,6 @@ smoke:web-presence-view
 # sequence 1. Discriminator is drainWindow minStart, not the returned page. Appended so
 # every existing shard assignment remains unchanged.
 smoke:sparse-history-walk
-# The path-bound merge driver is the enforcement behind concurrent tail appends: two real branch
-# merges in both orders keep every base suite on its original shard and keep comment blocks attached.
-# Appended so every existing shard assignment remains unchanged.
-smoke:ci-suites-merge-driver
 # Raw NATS transport state is separate from full endpoint readiness. The deterministic suite grades
 # epoch staleness and state contracts; its companion owns a throwaway broker and proves real
 # disconnect/reconnect delivery. Appended so every existing shard assignment remains unchanged.
@@ -726,3 +722,7 @@ smoke:transport-liveness:broker
 # including a measured successful inbox drain. Appended so every existing shard assignment remains
 # unchanged.
 smoke:connection-status
+# The path-bound merge driver is the enforcement behind concurrent tail appends: two real branch
+# merges in both orders keep every base suite on its original shard and keep comment blocks attached.
+# Appended so every existing shard assignment remains unchanged.
+smoke:ci-suites-merge-driver
