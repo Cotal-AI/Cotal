@@ -246,6 +246,69 @@ export function epcredFamilyPrefix(endpoint: string, instanceId: string): string
   return `epcred.${endpointToken(endpoint)}.${assertLifecycleToken(instanceId, "instanceId")}`;
 }
 
+/** Durable interrupted-repair cursor for ONE frozen registration (`eprepair.<endpoint>.<instanceId>`).
+ *  Distinct from the closed-schema gate and from `epcred` rows: those cannot carry a verification
+ *  journal. Bound to the freeze op, freeze token, and current holder set so old liveness evidence
+ *  is never reused for a different repair. */
+export function eprepairKey(endpoint: string, instanceId: string): string {
+  return `eprepair.${endpointToken(endpoint)}.${assertLifecycleToken(instanceId, "instanceId")}`;
+}
+
+export interface EndpointRepairCursor {
+  v: 1;
+  opId: string;
+  freezeToken: number;
+  /** Sorted unique holders this freeze must verify-evict. */
+  holders: string[];
+  /** Holders whose eviction was already verified under THIS binding. Subset of `holders`. */
+  verified: string[];
+}
+
+export function parseEndpointRepairCursor(raw: Uint8Array, key: string): EndpointRepairCursor {
+  let o: unknown;
+  try {
+    o = JSON.parse(dec.decode(raw));
+  } catch {
+    throw new EpEnvelopeError("internal", `the repair cursor ${key} is not JSON; garbled progress never authorizes a skip (SPEC 13.1)`);
+  }
+  if (!isRec(o)) throw new EpEnvelopeError("internal", `the repair cursor ${key} is not an object`);
+  const allowed = new Set(["v", "opId", "freezeToken", "holders", "verified"]);
+  for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the repair cursor ${key} carries the unknown field "${k}" (closed schema)`);
+  if (o.v !== 1 || typeof o.opId !== "string" || !uint(o.freezeToken) || o.freezeToken < 1)
+    throw new EpEnvelopeError("internal", `the repair cursor ${key} does not validate (v/opId/freezeToken)`);
+  try {
+    assertLifecycleToken(o.opId, "opId");
+  } catch {
+    throw new EpEnvelopeError("internal", `the repair cursor ${key} carries a malformed opId`);
+  }
+  if (!Array.isArray(o.holders) || !Array.isArray(o.verified))
+    throw new EpEnvelopeError("internal", `the repair cursor ${key} holders/verified are not arrays`);
+  const holders: string[] = [];
+  for (const h of o.holders) holders.push(assertHolderPrincipal(h, `repair cursor ${key} holder`));
+  const verified: string[] = [];
+  for (const h of o.verified) verified.push(assertHolderPrincipal(h, `repair cursor ${key} verified holder`));
+  const sortedHolders = [...new Set(holders)].sort();
+  if (holders.length !== sortedHolders.length || holders.some((h, i) => h !== sortedHolders[i]))
+    throw new EpEnvelopeError("internal", `the repair cursor ${key} holders are not unique and sorted`);
+  const holderSet = new Set(sortedHolders);
+  const sortedVerified = [...new Set(verified)].sort();
+  if (verified.length !== sortedVerified.length || verified.some((h, i) => h !== sortedVerified[i]))
+    throw new EpEnvelopeError("internal", `the repair cursor ${key} verified holders are not unique and sorted`);
+  for (const h of sortedVerified) {
+    if (!holderSet.has(h))
+      throw new EpEnvelopeError("internal", `the repair cursor ${key} verified holder ${h} is not in the bound holder set`);
+  }
+  const parts = key.split(".");
+  if (parts.length !== 3 || parts[0] !== "eprepair")
+    throw new EpEnvelopeError("internal", `the repair cursor key ${key} is not an eprepair key`);
+  try {
+    if (eprepairKey(parts[1], parts[2]) !== key) throw new Error("rebuild mismatch");
+  } catch {
+    throw new EpEnvelopeError("internal", `the repair cursor key ${key} does not rebuild from its endpoint/instanceId`);
+  }
+  return { v: 1, opId: o.opId, freezeToken: o.freezeToken, holders: sortedHolders, verified: sortedVerified };
+}
+
 // ---- the endpoint-instance issuance gate (auth store, endpoint family `epgate.<endpoint>.<instanceId>`) ----
 
 /** The ENDPOINT-instance issuance gate row (§13.1: a DISJOINT family from the agent

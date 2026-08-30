@@ -5,7 +5,8 @@
  *   - a channel @-mention: wakes ("mention-wake") but is NOT buffered;
  *   - a DM: buffered (kind="dm") + "incoming";
  *   - recallAmbient: replays the ack-dropped ambient + mention from the replay=on channel as
- *     historical, and returns NOTHING from a replay=off channel (the gate).
+ *     historical, and returns NOTHING from a replay=off channel (the gate) while REPORTING it in
+ *     `droppedChannels` (#977: the gate must not also claim the window was empty and complete).
  * Run: pnpm smoke:attention
  */
 import { strict as assert } from "node:assert";
@@ -111,6 +112,9 @@ try {
   check("recall returns ambient + mention from the replay=on channel", texts.includes("ambient-1") && texts.includes("mention-1"));
   check("recalled items are historical", r.items.every((i) => i.historical));
   check("recall GATES OUT the replay=off channel", !texts.includes("quiet-1"));
+  // #977: the gate must not also claim the replay=off channel's window was empty and complete —
+  // it ack-dropped ambient on the promise recall would cover it, and recall cannot, so it must say so.
+  check("recall REPORTS the replay=off channel as dropped, not silently", r.droppedChannels.includes("quiet-ch"));
 
   console.log(`\nATTENTION TESTS PASSED ✅  (${pass} checks)`);
   await agent.stop();

@@ -537,8 +537,10 @@ export class MeshAgent extends EventEmitter {
     //  - `quiet` → buffer ambient as pull-only; an @mention remains automatic. Overrides global
     //    `focus` so "retain this channel, but only surface ambient on explicit pull" stays expressible.
     // Focus (global, only when NOT overridden): channel ambient AND @mentions are acked-and-dropped —
-    // they stay recallable via cotal_inbox (recallAmbient); an @mention still *wakes* (mention-wake),
-    // body pulled (F4=B), never auto-injected (the mention tag is payload-forgeable).
+    // they stay recallable via cotal_inbox (recallAmbient), or if recall itself cannot vouch for the
+    // channel (replay=off, or a wildcard join — #977), that is reported rather than left silent; an
+    // @mention still *wakes* (mention-wake), body pulled (F4=B), never auto-injected (the mention
+    // tag is payload-forgeable).
     if (item.kind === "channel") {
       const cm = this.channelModes.get(item.channel ?? "");
       // chatFrontier() is asynchronous. Channel traffic retained while entering focus must not also
@@ -1083,18 +1085,24 @@ export class MeshAgent extends EventEmitter {
 
   /** Focus recall: the channel ambient + @mentions ack-dropped since this agent entered focus,
    *  read back from the chat stream on demand and **replay-gated per channel** (a `replay=off`
-   *  channel yields nothing — recall must not become a history bypass). Items are marked
-   *  `historical` (catch-up framing). `droppedChannels` names channels whose earliest retained
-   *  message postdates the focus-watermark — older ambient may have aged out of the per-channel
-   *  window (never-silent). Empty unless in focus. Wildcard subscriptions (`team.>`) are skipped
-   *  (can't Direct-Get a wildcard). */
+   *  channel yields nothing, and is named in `droppedChannels` — recall must not become a history
+   *  bypass, and it must not claim a suppressed channel's window was empty and complete either).
+   *  Items are marked `historical` (catch-up framing). `droppedChannels` also names channels whose
+   *  earliest retained message postdates the focus-watermark — older ambient may have aged out of
+   *  the per-channel window — and wildcard subscriptions (`team.>`), which recall cannot read back
+   *  per concrete sub-channel (#977: a wildcard join is not itself a channel ingest can consult a
+   *  replay policy for) and so cannot vouch for either (never-silent throughout). Empty unless in
+   *  focus. */
   async recallAmbient(): Promise<{ items: InboxItem[]; droppedChannels: string[] }> {
     if (this._attention !== "focus" || this.focusSince === undefined)
       return { items: [], droppedChannels: [] };
     const items: InboxItem[] = [];
     const droppedChannels: string[] = [];
     for (const channel of this.ep.joinedChannels()) {
-      if (!isConcreteChannel(channel)) continue;
+      if (!isConcreteChannel(channel)) {
+        droppedChannels.push(channel);
+        continue;
+      }
       if (this.focusRecallUnsafeChannels.has(channel)) {
         droppedChannels.push(channel);
         continue;
@@ -1116,6 +1124,27 @@ export class MeshAgent extends EventEmitter {
     const clean = normalizeMentions(mentions);
     if (clean) this.assertKnownMentions(clean);
     return this.ep.multicast(text, { channel, mentions: clean, contextId: this._contextId });
+  }
+
+  /**
+   * What a caller can TELL about a send target BEFORE the publish: whether the name
+   * already existed (joined, registry, or prior traffic) and close matches when it
+   * did not. Does not refuse create. Graded before multicast so the new message cannot
+   * make the name look pre-existing.
+   */
+  async describeSendChannel(channel: string): Promise<string> {
+    if (this.ep.getChannelConfig(channel)) return "existing channel";
+    const known = new Set<string>(this.ep.joinedChannels().filter(isConcreteChannel));
+    try {
+      for (const row of await this.ep.listChannels()) known.add(row.channel);
+    } catch {
+      /* no stream: joined + registry cache still distinguish a typo of a channel we are on */
+    }
+    if (known.has(channel)) return "existing channel";
+    const hints = closeChannelNames(channel, [...known]);
+    if (hints.length)
+      return `new channel - no registry entry and no prior traffic; did you mean ${hints.map((h) => "#" + h).join(", ")}?`;
+    return "new channel - no registry entry and no prior traffic";
   }
 
   /** Throw if any name isn't a peer we've observed. Validates against the FULL roster
@@ -1403,12 +1432,13 @@ export class MeshAgent extends EventEmitter {
 
   /** A channel's registry config + effective replay policy, from the endpoint's live cache.
    *  Config only — never membership (that view is kept off agents on purpose). */
-  channelInfo(channel: string): { description?: string; instructions?: string; replay: boolean } {
+  channelInfo(channel: string): { description?: string; instructions?: string; replay: boolean; registered: boolean } {
     const cfg = this.ep.getChannelConfig(channel);
     return {
       description: cfg?.description,
       instructions: cfg?.instructions,
       replay: this.ep.channelReplay(channel),
+      registered: cfg !== undefined,
     };
   }
 
@@ -1592,4 +1622,39 @@ export class MeshAgent extends EventEmitter {
   private log(msg: string): void {
     process.stderr.write(`[cotal-connector] ${msg}\n`);
   }
+}
+
+/** Names already known that differ from `channel` by one insertion, deletion, or substitution. */
+export function closeChannelNames(channel: string, known: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const name of known) {
+    if (name !== channel && editDistanceAtMostOne(channel, name)) out.push(name);
+  }
+  out.sort((a, b) => a.localeCompare(b));
+  return out.slice(0, 3);
+}
+
+function editDistanceAtMostOne(a: string, b: string): boolean {
+  if (a === b) return true;
+  const da = a.length - b.length;
+  if (da > 1 || da < -1) return false;
+  let i = 0;
+  let j = 0;
+  let skipped = false;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) {
+      i++;
+      j++;
+      continue;
+    }
+    if (skipped) return false;
+    skipped = true;
+    if (a.length > b.length) i++;
+    else if (b.length > a.length) j++;
+    else {
+      i++;
+      j++;
+    }
+  }
+  return true;
 }
