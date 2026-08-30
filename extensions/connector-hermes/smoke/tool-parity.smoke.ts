@@ -31,6 +31,11 @@ const brokerFromEnv = process.env.COTAL_SERVERS !== undefined;
 process.env.COTAL_SERVERS ||= "nats://127.0.0.1:4222";
 console.log(`• broker: ${process.env.COTAL_SERVERS} (${brokerFromEnv ? "INHERITED from the environment" : "suite default"})`);
 
+// A launcher-spawned seat exports COTAL_LAUNCH_MATERIAL. This suite then defaults
+// COTAL_SERVERS, a direct material var, and configFromEnv refuses the pair. Drop the
+// POINTER only. Unlinking the file is wrong: the session that launched this process
+// may still need it.
+delete process.env.COTAL_LAUNCH_MATERIAL;
 const config = configFromEnv();
 const specNames = cotalToolSpecs(config, "hermes").map((s) => s.name);
 const descriptors = hermesToolDescriptors(config);

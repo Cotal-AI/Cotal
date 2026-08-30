@@ -696,3 +696,9 @@ smoke:workflow-concurrency
 # the suite. This compiler-API intersection checks every named workspace import against the package's
 # public exports. Appended so every existing shard assignment remains unchanged.
 smoke:workspace-import-exports
+
+# Own-process launch-material census. Sibling of suite-ambient-env: that grades
+# spreads into children, this grades a suite that defaults COTAL_SERVERS then
+# calls configFromEnv() on its own process.env. Issue #995. Appended so every
+# existing shard assignment remains unchanged.
+smoke:suite-own-process-material
