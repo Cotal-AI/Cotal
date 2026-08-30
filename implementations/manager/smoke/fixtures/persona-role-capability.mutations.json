@@ -1,35 +1,38 @@
 {
   "command": "pnpm smoke:persona-role-capability",
   "progressPattern": "^\\d+\\. ",
-  "afterRestore": "pnpm --filter cotal-ai... build",
   "mutations": [
     {
       "name": "G1 the role/capability guard is dropped: a wire-defined persona spawned with role manager is accepted again and joins as a manager that silently cannot spawn (issue #966 verbatim)",
       "file": "implementations/manager/src/manager.ts",
       "find": "    if (role === \"manager\" && !capabilities?.includes(\"spawn\"))\n      return {\n        ok: false,\n        error:\n          `persona \"${ref}\" would join with role \"manager\" but no spawn capability: it presents as a manager ` +\n          `while being unable to seat workers, and it would discover that only on first use. ` +\n          `An operator adds \\`capabilities: [spawn]\\` to ${configPath}; a peer-defined persona ` +\n          `(cotal_persona) cannot declare capabilities by design — ask an operator to grant it.`,\n      };",
       "replace": "",
-      "expectRed": "the spawn is refused (the tool result is an error)"
+      "expectRed": "the spawn is refused (the tool result is an error)",
+      "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
       "name": "G2 the guard stops keying on the EFFECTIVE role and reads the file's instead: the spawn-time role override — the exact call in the issue, cotal_spawn(name, role: \"manager\") — slips past it and the seat joins mislabelled again",
       "file": "implementations/manager/src/manager.ts",
       "find": "    if (role === \"manager\" && !capabilities?.includes(\"spawn\"))",
       "replace": "    if (def?.role === \"manager\" && !capabilities?.includes(\"spawn\"))",
-      "expectRed": "the spawn is refused (the tool result is an error)"
+      "expectRed": "the spawn is refused (the tool result is an error)",
+      "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
       "name": "G3 the refusal loses its remediation: an operator peer reading the error is told the spawn failed but not that capabilities: [spawn] on the persona file is the fix",
       "file": "implementations/manager/src/manager.ts",
       "find": "          `An operator adds \\`capabilities: [spawn]\\` to ${configPath}; a peer-defined persona ` +",
       "replace": "          `An operator can fix this; a peer-defined persona ` +",
-      "expectRed": "the refusal tells an operator the file remedy (capabilities: [spawn])"
+      "expectRed": "the refusal tells an operator the file remedy (capabilities: [spawn])",
+      "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
       "name": "G4 the refusal loses the peer half of the remediation: a peer that defined the persona over the wire is left with no route to the grant, which is the silence this change exists to remove",
       "file": "implementations/manager/src/manager.ts",
       "find": "          `(cotal_persona) cannot declare capabilities by design — ask an operator to grant it.`,",
       "replace": "          `(cotal_persona) cannot declare capabilities by design.`,",
-      "expectRed": "the refusal tells a peer author to ask an operator (it cannot self-serve the grant)"
+      "expectRed": "the refusal tells a peer author to ask an operator (it cannot self-serve the grant)",
+      "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]
 }
