@@ -98,6 +98,8 @@
     "smoke:jcode-lifecycle": "tsx extensions/connector-jcode/smoke/jcode-lifecycle.smoke.ts",
     "smoke:jcode-private-lifecycle": "tsx extensions/connector-jcode/smoke/private-lifecycle.smoke.ts",
     "smoke:jcode-provider-disconnect": "tsx extensions/connector-jcode/smoke/jcode-provider-disconnect.smoke.ts",
+    "smoke:jcode-provider-permanent-refusal": "tsx extensions/connector-jcode/smoke/jcode-provider-permanent-refusal.smoke.ts",
+    "smoke:jcode-recovery-classifier": "tsx extensions/connector-jcode/smoke/jcode-recovery-classifier.smoke.ts",
     "smoke:jcode-mid-turn-delivery": "tsx extensions/connector-jcode/smoke/jcode-mid-turn-delivery.smoke.ts",
     "smoke:jcode-live": "tsx extensions/connector-jcode/smoke/jcode-live.smoke.ts",
     "smoke:view": "tsx implementations/cli/smoke/view.smoke.ts",
@@ -561,6 +563,7 @@
     "@types/node": "^22.20.0",
     "ts-json-schema-generator": "^2.9.0",
     "tsx": "^4.23.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "yaml": "^2.9.0"
   }
 }

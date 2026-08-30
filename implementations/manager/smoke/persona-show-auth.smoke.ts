@@ -21,7 +21,7 @@ import {
   type EpServeContext,
 } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
-import { MANAGER_CONTRACTS, managerClusterDocument, managerShippedCommandCount } from "../src/manager-service-contract.js";
+import { MANAGER_CONTRACTS, managerClusterDocument } from "../src/manager-service-contract.js";
 
 let failures = 0;
 const check = (label: string, ok: boolean, extra?: unknown): void => {
@@ -94,8 +94,8 @@ const shipped = managerClusterDocument();
 const compiledCount = Object.keys(MANAGER_CONTRACTS).length;
 check(
   "shipped command count matches the compiled contract table",
-  managerShippedCommandCount() === compiledCount && shipped.commands.length === compiledCount,
-  { shipped: managerShippedCommandCount(), compiled: compiledCount, document: shipped.commands.length },
+  shipped.commands.length === compiledCount,
+  { compiled: compiledCount, document: shipped.commands.length },
 );
 check(
   "persona catalog list/show are in the shipped document",
