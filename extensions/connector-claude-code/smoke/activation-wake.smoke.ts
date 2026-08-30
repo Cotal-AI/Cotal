@@ -136,7 +136,7 @@ try {
     wake.stop();
   }
 
-  console.log(`\nCLAUDE ACTIVATION-WAKE TEST PASSED ✅  (${pass} checks)`);
+  console.log(`\nCLAUDE ACTIVATION-WAKE TEST PASSED ✅  (${pass} checks passed)`);
 } finally {
   await agent.stop().catch(() => {});
   await publisher.stop().catch(() => {});
