@@ -88,6 +88,16 @@ request deadline as a floor and waits through the accepted readiness budget plus
 so a connector-specific slow boot cannot be reported as a caller timeout while the manager is
 still legitimately waiting for its terminal.
 
+A spawn that is **refused** because a lifecycle barrier already holds the actor (a frozen
+issuance gate, a retiring alias, a retired uid) is not a wait-timeout. The manager already
+knows the blocked op (`registration` / `retirement` / `activation` / `takeover`), the head
+state (`active` / `retiring` / `retired`), the `opId` holding it, and the remedy when one
+exists (`retry`, `cotal reconcile-gate`). Those facts ride `error.details[]` as
+`kind = ai.cotal.ep.lifecycle-blocked` and are also appended to the error string, so a
+caller that only prints `error.message` still sees them. A connector that collapses the
+refusal to "startup failed (unknown)" or a SPEC 13.6 wait-timeout is hiding a knowable
+state, not reporting a missing one.
+
 ## Instance routing
 
 A space can run more than one manager. Each manager persists a stable logical instance id

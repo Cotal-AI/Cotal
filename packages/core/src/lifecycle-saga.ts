@@ -17,7 +17,7 @@
  * that already holds its stores' authenticated bindings; every fence below is the store's own
  * revision-pinned CAS, and an `opId` is an identifier, never a bearer capability (§13.1).
  */
-import { EpEnvelopeError } from "./endpoint-envelope.js";
+import { EpEnvelopeError, lifecycleBlocked } from "./endpoint-envelope.js";
 import { isCasLoss as isRawCasLoss } from "./endpoint-records.js";
 import { mintLifecycleUid, assertLifecycleToken } from "./subjects.js";
 import {
@@ -341,7 +341,12 @@ export async function runActivationSaga(
   if (current !== undefined && current.mapping.state === "active")
     throw new EpEnvelopeError("already-exists", `lifecycle "${owner}/${actor}" is already active (uid ${current.mapping.lifecycleUid}); a takeover advances the epoch through its barrier, it does not re-activate (SPEC 13.1)`);
   if (current !== undefined && current.mapping.state === "retiring")
-    throw new EpEnvelopeError("failed-precondition", `lifecycle "${owner}/${actor}" is retiring (op ${current.mapping.op?.opId}); a retiring alias is not replaceable until its barrier completes (SPEC 13.1)`);
+    throw lifecycleBlocked("failed-precondition", `lifecycle "${owner}/${actor}" is retiring (op ${current.mapping.op?.opId}); a retiring alias is not replaceable until its barrier completes (SPEC 13.1)`, {
+      blockedOp: "retirement",
+      headState: "retiring",
+      ...(current.mapping.op?.opId !== undefined ? { opId: current.mapping.op.opId } : {}),
+      remedy: "retry",
+    });
   const opId = mintLifecycleUid();
   // 1. Win the space-global UID reservation.
   const lifecycleUid = await uidReserveFresh(t, { owner, actor, mintedBy: args.managerInstance });
@@ -394,7 +399,12 @@ export async function runActivationSagaAtUid(
   if (current !== undefined && current.mapping.state === "active" && current.mapping.lifecycleUid !== lifecycleUid)
     throw new EpEnvelopeError("already-exists", `lifecycle "${owner}/${actor}" is active at uid ${current.mapping.lifecycleUid}, not this grant's ${lifecycleUid}; retiring a live predecessor is the takeover barrier's job and production issuance does not run it (R1) - despawn/retire the predecessor first, or grant a fresh actor name (SPEC 13.1)`);
   if (current !== undefined && current.mapping.state === "retiring")
-    throw new EpEnvelopeError("failed-precondition", `lifecycle "${owner}/${actor}" is retiring (op ${current.mapping.op?.opId}); a retiring alias is not replaceable until its barrier completes (SPEC 13.1)`);
+    throw lifecycleBlocked("failed-precondition", `lifecycle "${owner}/${actor}" is retiring (op ${current.mapping.op?.opId}); a retiring alias is not replaceable until its barrier completes (SPEC 13.1)`, {
+      blockedOp: "retirement",
+      headState: "retiring",
+      ...(current.mapping.op?.opId !== undefined ? { opId: current.mapping.op.opId } : {}),
+      remedy: "retry",
+    });
   const headIsOurs = current !== undefined && current.mapping.state === "active"; // same uid, by the guard above
 
   // 1. The uid reservation: win it, or adopt a prior attempt's — SAME alias only.
@@ -422,10 +432,19 @@ export async function runActivationSagaAtUid(
       opId = gate.row.op!.opId;
     } else if (gate.row.state === "frozen") {
       if (gate.row.op?.kind !== "activation")
-        throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${lifecycleUid} is frozen by a ${gate.row.op?.kind ?? "<unknown>"} (op ${gate.row.op?.opId ?? "<none>"}); a barrier is in flight - issuance activation neither adopts nor overrides it (SPEC 13.1)`);
+        throw lifecycleBlocked("failed-precondition", `the issuance gate for ${lifecycleUid} is frozen by a ${gate.row.op?.kind ?? "<unknown>"} (op ${gate.row.op?.opId ?? "<none>"}); a barrier is in flight - issuance activation neither adopts nor overrides it (SPEC 13.1)`, {
+          blockedOp: (gate.row.op?.kind === "retirement" || gate.row.op?.kind === "takeover" || gate.row.op?.kind === "registration") ? gate.row.op.kind : "registration",
+          headState: "retiring",
+          ...(gate.row.op?.opId !== undefined ? { opId: gate.row.op.opId } : {}),
+          remedy: gate.row.op?.kind === "registration" ? "cotal reconcile-gate" : "retry",
+        });
       opId = gate.row.op.opId;
     } else if (gate.row.state === "retired") {
-      throw new EpEnvelopeError("permission-denied", `uid ${lifecycleUid} has a terminally retired issuance gate; a burned uid never re-activates - re-grant the actor for a fresh incarnation (SPEC 13.1)`);
+      throw lifecycleBlocked("permission-denied", `uid ${lifecycleUid} has a terminally retired issuance gate; a burned uid never re-activates - re-grant the actor for a fresh incarnation (SPEC 13.1)`, {
+        blockedOp: gate.row.op?.kind === "activation" ? "activation" : "retirement",
+        headState: "retired",
+        ...(gate.row.op?.opId !== undefined ? { opId: gate.row.op.opId } : {}),
+      });
     } else {
       // Open gate: the saga writes the head BEFORE its reopen, so an open gate with the head
       // active at our uid is a COMPLETED activation; anything else is foreign movement.
