@@ -257,6 +257,19 @@ it works from any directory; the other components always stop under the folder y
 and cannot be combined with component names. Stopping `nats` alone is refused while an unselected
 registered daemon is still live; include those components or use bare `cotal down`.
 
+**Teardown never signals a pid it cannot identify.** PIDs are recycled by every OS, so a
+recorded pid alone is not a target identity: after the original process exits, the same number
+can front an unrelated process. `up` therefore records each stack process's creation identity in
+a sibling `<pidfile>.identity` pin (the pid plus the process's start, as the OS reports it), and
+every stop path — `down` for the broker, web and extension components, and the manager, delivery
+and auth-service stops — runs the same open-verify-terminate rule: a record whose live process
+carries a different start (a reused pid) is refused and preserved, never signalled; a legacy
+record with no pin, or a torn pin, is refused loudly with the operator's next step; only a
+process proven dead (or a pin that matches) is signalled, and its record is cleared once its
+death is confirmed. On Windows, where no cheap stable start token exists, the pin is not
+written and every record is the loud legacy shape until the native launcher integrates with this
+seam.
+
 Normal `down` remains destructive at the logical identity/durable layer. `--preserve-state` is a
 different maintenance transition: it suppresses leave/deprovision cleanup, persists the manager's
 same-principal resume inventory, stops the entire stack without removing run/auth artifacts, and

@@ -118,6 +118,12 @@ the full set and stops it in dependency order; `cotal down manager` (or another 
 selects only that descriptor. Installed extensions cache their contributed registry keys, so the
 base CLI does not hardcode optional package pidfiles.
 
+Each recorded pidfile also carries a sibling `<pidfile>.identity` pin (pid plus the process's
+start, where the OS reports one). Teardown never signals a bare pid: PIDs are recycled, so the
+pin is what proves the live process is still the recorded one. A reused pid, a legacy record with
+no pin, and a torn pin are all refused loudly and preserved; only a proven death (or a matching
+pin) is signalled, and the record clears once death is confirmed.
+
 All re-execs resolve this CLI via `selfArgv()` / `selfCotal()`
 ([`lib/self-exec.ts`](../implementations/cli/src/lib/self-exec.ts)) = `[node, ...loaderFlags,
 entry]` (tsx loader in dev, compiled JS in prod), so they never need `cotal` on PATH; the stack
