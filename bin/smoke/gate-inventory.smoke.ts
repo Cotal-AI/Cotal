@@ -62,12 +62,16 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
  *  decision, which needs no fuse and is written as a plain reason. */
 const BROKEN = "BROKEN:";
 
-const UNGATED: Record<string, string> = {
+type UngatedExemption = { reason: string; recheckBy: string };
+const RECHECK = "2026-11-30";
+const exemption = (reason: string): UngatedExemption => ({ reason, recheckBy: RECHECK });
+
+const UNGATED: Record<string, UngatedExemption> = {
   // Need external tooling no CI runner has.
-  "smoke:orca:live": "drives the public orca CLI",
-  "smoke:orca-e2e:live": "drives the public orca CLI", "smoke:pi": "needs a pi install", "smoke:codex-live": "needs a logged-in codex CLI",
-  "smoke:codex-tui-live": "needs a codex TUI session",
-  "smoke:jcode-live": "needs an installed, authenticated jcode CLI (COTAL_E2E_JCODE=1)",
+  "smoke:orca:live": exemption("drives the public orca CLI"),
+  "smoke:orca-e2e:live": exemption("drives the public orca CLI"), "smoke:pi": exemption("needs a pi install"), "smoke:codex-live": exemption("needs a logged-in codex CLI"),
+  "smoke:codex-tui-live": exemption("needs a codex TUI session"),
+  "smoke:jcode-live": exemption("needs an installed, authenticated jcode CLI (COTAL_E2E_JCODE=1)"),
   // A STANDING DECISION, and only for the REAL-SESSION arm. The same suite is GATED as
   // `smoke:agui-map`, pointed at a fixture DERIVED from a real session by
   // `scripts/redact-claude-session.mjs` (whitelist by construction, identifiers pseudonymised
@@ -76,22 +80,22 @@ const UNGATED: Record<string, string> = {
   // TODAY's harness rather than a snapshot, so a new `origin.kind` shows up here as a throw before
   // it shows up in production; and it shares no assumption with the redactor, which itself encodes
   // a belief about which fields matter and could be wrong in the same direction as the mapper.
-  "smoke:agui-map:real": "names an operator's own uncommittable session JSONL (COTAL_AGUI_SESSION); the fixture arm is gated as smoke:agui-map",
+  "smoke:agui-map:real": exemption("names an operator's own uncommittable session JSONL (COTAL_AGUI_SESSION); the fixture arm is gated as smoke:agui-map"),
   // Full-stack live suites: boot a real broker + install tree, too slow/stateful for the PR gate.
-  "smoke:manager-singleton:live": "full live stack", "smoke:seed-tarball:live": "packs a tarball",
+  "smoke:manager-singleton:live": exemption("full live stack"), "smoke:seed-tarball:live": exemption("packs a tarball"),
   // `smoke:user-spawn:live` left this list when it was gated: it had thrown at section B1e on a
   // missing explicit `tls` and stopped after 14 of its 66 cells, and being ungated is why nobody
   // heard about it. "Too slow for the gate" was 105 seconds.
   // Untriaged debt. These are the ones that should shrink.
-  "smoke:attention": "UNTRIAGED",
-  "smoke:attention:auth": "UNTRIAGED",
- "smoke:delivery-boot-retry:auth": "UNTRIAGED",
-  "smoke:delivery-broker-coupling": "UNTRIAGED", "smoke:delivery-old-manager": "UNTRIAGED",
-  "smoke:feedback": "UNTRIAGED",
-  "smoke:lifecycle-files": "UNTRIAGED", "smoke:manager-console": "UNTRIAGED",
-  "smoke:plane3-activation:auth": "UNTRIAGED",
-  "smoke:plane3-gate:auth": "UNTRIAGED",
-  "smoke:self-serve-join-coverage:auth": "UNTRIAGED",
+  "smoke:attention": exemption("UNTRIAGED"),
+  "smoke:attention:auth": exemption("UNTRIAGED"),
+ "smoke:delivery-boot-retry:auth": exemption("UNTRIAGED"),
+  "smoke:delivery-broker-coupling": exemption("UNTRIAGED"), "smoke:delivery-old-manager": exemption("UNTRIAGED"),
+  "smoke:feedback": exemption("UNTRIAGED"),
+  "smoke:lifecycle-files": exemption("UNTRIAGED"), "smoke:manager-console": exemption("UNTRIAGED"),
+  "smoke:plane3-activation:auth": exemption("UNTRIAGED"),
+  "smoke:plane3-gate:auth": exemption("UNTRIAGED"),
+  "smoke:self-serve-join-coverage:auth": exemption("UNTRIAGED"),
 };
 
 /**
@@ -196,8 +200,30 @@ const ungated = [...all].filter((s) => !reached.has(s)).sort();
 // them apart. `UNTRIAGED` is a legitimate value — it is honest debt — but it is counted separately
 // below rather than being allowed to read as a justification.
 const MIN_REASON = 8;
-const unexplained = ungated.filter((s) => !(s in UNGATED) || (UNGATED[s] ?? "").trim().length < MIN_REASON);
+const unexplained = ungated.filter((s) => !(s in UNGATED) || (UNGATED[s]?.reason ?? "").trim().length < MIN_REASON);
 const staleAllowlist = Object.keys(UNGATED).filter((s) => !all.has(s) || reached.has(s)).sort();
+
+const reviewDate = (value: string): string | null => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return Number.isNaN(parsed.valueOf()) || parsed.toISOString().slice(0, 10) !== value ? null : value;
+};
+const reviewExemptions = (
+  entries: Record<string, UngatedExemption>,
+  today: string,
+): { examined: number; invalid: string[]; expired: string[] } => {
+  const invalid: string[] = [];
+  const expired: string[] = [];
+  for (const [name, entry] of Object.entries(entries)) {
+    const date = reviewDate(entry.recheckBy);
+    if (date === null) invalid.push(name);
+    else if (date < today) expired.push(name);
+  }
+  return { examined: Object.keys(entries).length, invalid, expired };
+};
+const today = new Date().toISOString().slice(0, 10);
+const exemptionReviews = reviewExemptions(UNGATED, today);
+const expiryControl = reviewExemptions({ control: { reason: "control", recheckBy: "2000-01-01" } }, "2026-08-30");
 
 let fail = 0;
 console.log(`gate inventory: ${all.size} smoke scripts, ${all.size - ungated.length} reached, ${ungated.length} not run by anything\n`);
@@ -218,6 +244,28 @@ if (unexplained.length) {
   console.log(`    Gate it in smoke:ci, or add it to UNGATED with the reason it is excluded.`);
 } else {
   console.log(`  ✓ every ungated suite is listed with a reason`);
+}
+
+console.log(`  exemption freshness examined: ${exemptionReviews.examined} of ${Object.keys(UNGATED).length}`);
+if (exemptionReviews.examined !== Object.keys(UNGATED).length) {
+  fail++;
+  console.log(`  ✗ FAIL: exemption freshness did not examine every UNGATED entry`);
+} else if (expiryControl.examined !== 1 || expiryControl.expired.length !== 1) {
+  fail++;
+  console.log(`  ✗ FAIL: exemption expiry control did not expire its one past-due entry`);
+} else if (exemptionReviews.invalid.length || exemptionReviews.expired.length) {
+  fail++;
+  if (exemptionReviews.invalid.length) {
+    console.log(`  ✗ FAIL: ${exemptionReviews.invalid.length} UNGATED exemption(s) have an invalid recheckBy date:`);
+    for (const s of exemptionReviews.invalid) console.log(`      ${s}`);
+  }
+  if (exemptionReviews.expired.length) {
+    console.log(`  ✗ FAIL: ${exemptionReviews.expired.length} UNGATED exemption(s) are past their recheckBy date ${today}:`);
+    for (const s of exemptionReviews.expired) console.log(`      ${s}`);
+    console.log(`    Re-verify the premise, gate the suite, or set a new review date with the decision.`);
+  }
+} else {
+  console.log(`  ✓ all ${exemptionReviews.examined} UNGATED exemptions have a current recheckBy date`);
 }
 
 // THE REVERSE DIRECTION, and the gate needs both. Everything above asks "is this script reached?".
@@ -307,7 +355,7 @@ if (staleAllowlist.length) {
   console.log(`  ✓ no stale UNGATED entries`);
 }
 
-const untriaged = ungated.filter((s) => UNGATED[s] === "UNTRIAGED");
+const untriaged = ungated.filter((s) => UNGATED[s]?.reason === "UNTRIAGED");
 console.log(`\n  ${untriaged.length} of the ungated set are UNTRIAGED debt (not a failure; the number should go down).`);
 
 // The debt-with-a-fuse class, named so the list can say how much of itself is broken rather than
@@ -316,9 +364,9 @@ console.log(`\n  ${untriaged.length} of the ungated set are UNTRIAGED debt (not 
 // was consciously taken. What was missing was never enforcement — it was the COUNT. `smoke:auth`
 // sat in this list for six weeks with its cause correctly written in its own reason string, and
 // nothing anywhere said "one suite here is broken and is supposed to stop being broken".
-const broken = ungated.filter((s) => (UNGATED[s] ?? "").startsWith(BROKEN)).sort();
+const broken = ungated.filter((s) => (UNGATED[s]?.reason ?? "").startsWith(BROKEN)).sort();
 console.log(`  ${broken.length} are BROKEN — red or flaky, and expected to be fixed and removed, not kept:`);
-for (const s of broken) console.log(`      ${s} — ${(UNGATED[s] ?? "").slice(BROKEN.length).trim()}`);
+for (const s of broken) console.log(`      ${s} — ${(UNGATED[s]?.reason ?? "").slice(BROKEN.length).trim()}`);
 
 // Reported, not enforced: every entry here is already an accepted exclusion, so failing on them
 // would just block the gate on debt that was consciously taken. The number is the point.
