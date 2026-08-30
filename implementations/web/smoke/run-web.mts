@@ -16,7 +16,9 @@ if (process.env.COTAL_WEB_SMOKE_REJECT_HISTORY === "1") {
 }
 
 if (process.env.COTAL_WEB_SMOKE_HANG_DMS === "1")
-  CotalEndpoint.prototype.dmHistory = () => new Promise(() => {});
+  CotalEndpoint.prototype.dmHistory = (opts) => new Promise((_resolve, reject) => {
+    opts?.signal?.addEventListener("abort", () => reject(opts.signal?.reason), { once: true });
+  });
 
 const raw = process.argv.slice(2);
 const values: Record<string, string | boolean> = {};

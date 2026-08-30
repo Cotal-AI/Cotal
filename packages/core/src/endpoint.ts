@@ -2370,16 +2370,19 @@ export class CotalEndpoint extends EventEmitter {
     }));
   }
 
-  /** Fetch recent messages from a channel's JetStream backlog. */
+  /** Fetch recent messages from a channel's JetStream backlog. `signal` cancels the active pull and
+   *  reclaims its ephemeral consumer before the promise rejects. */
   async channelHistory(
     channel: string,
-    opts?: { limit?: number },
+    opts?: { limit?: number; signal?: AbortSignal },
   ): Promise<CotalMessage[]> {
     // history from any sender
     return this.streamHistory(
       chatStream(this.space),
       chatSubject(this.space, "*", "*", channel),
       opts?.limit ?? 100,
+      undefined,
+      opts?.signal,
     );
   }
 
@@ -2422,15 +2425,18 @@ export class CotalEndpoint extends EventEmitter {
     return { items: data.items as CotalMessage[], complete: data.complete };
   }
 
-  /** Fetch recent DMs (any sender→any recipient) from the space's DM backlog. God-view only:
+  /** Fetch recent DMs (any sender→any recipient) from the space's DM backlog. `signal` cancels the
+   *  active pull and reclaims its ephemeral consumer. God-view only:
    *  a normal agent/observer's ACL denies CONSUMER.CREATE on DM_<space>, so this throws-and-
    *  skips for them — only an `admin`-profile cred can read it. */
-  async dmHistory(opts?: { limit?: number }): Promise<CotalMessage[]> {
+  async dmHistory(opts?: { limit?: number; signal?: AbortSignal }): Promise<CotalMessage[]> {
     // every inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor> DM — the whole DM subtree (god-view)
     return this.streamHistory(
       dmStream(this.space),
       `${spacePrefix(this.space)}.inst.>`,
       opts?.limit ?? 100,
+      undefined,
+      opts?.signal,
     );
   }
 
@@ -2460,8 +2466,10 @@ export class CotalEndpoint extends EventEmitter {
     subject: string,
     limit: number,
     before?: number,
+    signal?: AbortSignal,
   ): Promise<CotalMessage[]> {
     if (!this.nc) throw new Error("endpoint not started");
+    signal?.throwIfAborted();
     // A LIMIT THAT IS NOT A FINITE NUMBER HAS NO ANSWER, AND THE SEARCH BELOW CANNOT REFUSE IT.
     // Every comparison against NaN is false, so `limit <= 0` does not fire for one, and neither of
     // the widening loop's exits can ever be true either: `page.length >= NaN` is false forever and
@@ -2496,7 +2504,7 @@ export class CotalEndpoint extends EventEmitter {
       // Deliberately NOT `getMessage({ last_by_subj })`, which would be the obvious way to ask: it
       // needs `$JS.API.STREAM.MSG.GET`, which read credentials do not hold. That grant hole already
       // shipped once from this function and turned every non-admin history read into an empty list.
-      const ceiling = before !== undefined ? before - 1 : await this.lastMatchingSeq(js, stream, subject);
+      const ceiling = before !== undefined ? before - 1 : await this.lastMatchingSeq(js, stream, subject, signal);
       if (ceiling < 1) return [];
 
       // Widen from the exact ceiling until a window holds a full page, or until the window IS the
@@ -2513,8 +2521,9 @@ export class CotalEndpoint extends EventEmitter {
       // only by real sparsity WITHIN a channel, never by the channel simply being quiet lately.
       let span = Math.max(limit * 4, 64);
       for (;;) {
+        signal?.throwIfAborted();
         const start = Math.max(1, ceiling - span + 1);
-        const page = await this.drainWindow(js, stream, subject, start, ceiling);
+        const page = await this.drainWindow(js, stream, subject, start, ceiling, signal);
         if (page.length >= limit || start === 1) return page.slice(-limit);
         span *= 4;
       }
@@ -2550,7 +2559,9 @@ export class CotalEndpoint extends EventEmitter {
     js: ReturnType<typeof jetstream>,
     stream: string,
     subject: string,
+    signal?: AbortSignal,
   ): Promise<number> {
+    signal?.throwIfAborted();
     const consumer = await js.consumers.get(stream, {
       filter_subjects: [subject],
       deliver_policy: DeliverPolicy.Last,
@@ -2558,8 +2569,17 @@ export class CotalEndpoint extends EventEmitter {
     try {
       // Bind-time zero is the ONLY thing that means "this subject has no messages".
       if ((await consumer.info(true)).num_pending === 0) return 0;
+      signal?.throwIfAborted();
       const iter = await consumer.fetch({ max_messages: 1 });
-      for await (const m of iter) return m.seq;
+      const stop = () => iter.stop(abortReason(signal));
+      signal?.addEventListener("abort", stop, { once: true });
+      try {
+        signal?.throwIfAborted();
+        for await (const m of iter) return m.seq;
+      } finally {
+        signal?.removeEventListener("abort", stop);
+        iter.stop();
+      }
       // Bind said a message was pending and none arrived. The pinned client's pull iterator ends
       // CLEANLY when the connection closes ("we don't propagate the error here"), so this is what a
       // dropped link looks like from here. Returning 0 would make the caller report an empty
@@ -2584,7 +2604,9 @@ export class CotalEndpoint extends EventEmitter {
     subject: string,
     start: number,
     ceiling: number,
+    signal?: AbortSignal,
   ): Promise<CotalMessage[]> {
+    signal?.throwIfAborted();
     const out: CotalMessage[] = [];
     const consumer = await js.consumers.get(stream, { filter_subjects: [subject], opt_start_seq: start });
     try {
@@ -2592,28 +2614,37 @@ export class CotalEndpoint extends EventEmitter {
       // explicit uncached `info()` this used to call was a round trip for data we already had.
       const pending = (await consumer.info(true)).num_pending;
       if (pending === 0) return out;
+      signal?.throwIfAborted();
       const iter = await consumer.fetch({ max_messages: pending });
+      const stop = () => iter.stop(abortReason(signal));
+      signal?.addEventListener("abort", stop, { once: true });
       // PROVE THE WINDOW COMPLETED. The pull iterator ends cleanly on a dropped connection, so a
       // close after three of ten deliveries would otherwise return a convincing three-message page.
       // The window is done when we have reached its upper bound or consumed everything bind said
       // was pending; anything else is a cut-short read and must say so.
       let delivered = 0;
       let complete = false;
-      for await (const m of iter) {
-        delivered++;
-        if (m.seq >= ceiling) { // reached the page's upper bound
-          if (m.seq === ceiling) {
-            try { out.push(m.json<CotalMessage>()); } catch { /* skip undecodable */ }
+      try {
+        signal?.throwIfAborted();
+        for await (const m of iter) {
+          delivered++;
+          if (m.seq >= ceiling) { // reached the page's upper bound
+            if (m.seq === ceiling) {
+              try { out.push(m.json<CotalMessage>()); } catch { /* skip undecodable */ }
+            }
+            complete = true;
+            break;
           }
-          complete = true;
-          break;
+          try {
+            out.push(m.json<CotalMessage>());
+          } catch {
+            /* skip undecodable */
+          }
+          if (delivered >= pending) { complete = true; break; }
         }
-        try {
-          out.push(m.json<CotalMessage>());
-        } catch {
-          /* skip undecodable */
-        }
-        if (delivered >= pending) { complete = true; break; }
+      } finally {
+        signal?.removeEventListener("abort", stop);
+        iter.stop();
       }
       if (!complete)
         throw new Error(`history: read ${delivered} of ${pending} messages on ${subject} before the stream ended early - the window was cut short, not empty`);
@@ -4742,6 +4773,13 @@ export function isPermissionDenied(e: unknown): boolean {
  * result, so a permission denial, timeout, or protocol failure must never pass as "not found". */
 function isJetStreamMissing(e: unknown, ...codes: number[]): boolean {
   return e instanceof JetStreamApiError && codes.includes(e.code);
+}
+
+/** The signal's exact abort reason, or the platform-standard AbortError when none was supplied. */
+function abortReason(signal: AbortSignal | undefined): Error {
+  return signal?.reason instanceof Error
+    ? signal.reason
+    : new DOMException("This operation was aborted", "AbortError");
 }
 
 /** True ONLY for a denial on a **publish** — the single case that proves the message was never

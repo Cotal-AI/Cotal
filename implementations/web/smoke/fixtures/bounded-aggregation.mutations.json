@@ -4,8 +4,8 @@
     {
       "name": "B1 the per-source deadline is dropped: every source is read to completion, so the request is unbounded again and the caller waits for the slowest read however long that takes - the 34-second success half of the measured defect",
       "file": "implementations/web/src/web.ts",
-      "find": "        if (i >= sources.length || expired) return;\n        try {\n          const r = await within(sources[i].read(), clock.until);\n          if (r !== LATE) settled[i] = r;",
-      "replace": "        if (i >= sources.length) return;\n        try {\n          const r = await sources[i].read();\n          settled[i] = r;",
+      "find": "        if (i >= sources.length || expired) return;\n        try {\n          const r = await within(sources[i].read(clock.signal), clock.until);\n          if (r !== LATE) settled[i] = r;",
+      "replace": "        if (i >= sources.length) return;\n        try {\n          const r = await sources[i].read(clock.signal);\n          settled[i] = r;",
       "expectRed": "2.2 and it answers inside its own deadline"
     },
     {
@@ -32,15 +32,15 @@
     {
       "name": "B5 a failing source takes the whole page with it again, which is the `Promise.all` shape that turned one channel's rejection into the route's 500 while every channel that had already answered was discarded",
       "file": "implementations/web/src/web.ts",
-      "find": "        try {\n          const r = await within(sources[i].read(), clock.until);\n          if (r !== LATE) settled[i] = r;\n        } catch {",
-      "replace": "        {\n          const r = await within(sources[i].read(), clock.until);\n          if (r !== LATE) settled[i] = r;\n        }\n        if (false) {",
+      "find": "        try {\n          const r = await within(sources[i].read(clock.signal), clock.until);\n          if (r !== LATE) settled[i] = r;\n        } catch {",
+      "replace": "        {\n          const r = await within(sources[i].read(clock.signal), clock.until);\n          if (r !== LATE) settled[i] = r;\n        }\n        if (false) {",
       "expectRed": "4.0 one failing channel does not make the whole aggregation throw"
     },
     {
       "name": "B6 the dms route's deadline is dropped: an inner history walk that never ends holds the browser until its own abort instead of returning the route's named refusal",
       "file": "implementations/web/src/web.ts",
-      "find": "        const dms = await within(\n          ep.dmHistory({ limit }).catch((e: unknown) => {\n            throw new Error(`direct messages: the read failed: ${e instanceof Error ? e.message : String(e)}`);\n          }),\n          clock.until,\n        );\n        if (dms === LATE)\n          return json(res, { error: `direct messages: the read did not finish within ${AGGREGATION_DEADLINE_MS}ms` }, 503);",
-      "replace": "        const dms = await ep.dmHistory({ limit }).catch((e: unknown) => {\n          throw new Error(`direct messages: the read failed: ${e instanceof Error ? e.message : String(e)}`);\n        });",
+      "find": "        const dms = await within(\n          ep.dmHistory({ limit, signal: clock.signal }).catch((e: unknown) => {\n            throw new Error(`direct messages: the read failed: ${e instanceof Error ? e.message : String(e)}`);\n          }),\n          clock.until,\n        );\n        if (dms === LATE)\n          return json(res, { error: `direct messages: the read did not finish within ${AGGREGATION_DEADLINE_MS}ms` }, 503);",
+      "replace": "        const dms = await ep.dmHistory({ limit, signal: clock.signal }).catch((e: unknown) => {\n          throw new Error(`direct messages: the read failed: ${e instanceof Error ? e.message : String(e)}`);\n        });",
       "expectRed": "5.4 `/api/dms` REFUSES at its own deadline when the inner read never ends"
     },
     {
@@ -67,15 +67,15 @@
     {
       "name": "B10 the dms route stops naming an inner rejection and lets the broker's bare reason escape through the generic 500 again",
       "file": "implementations/web/src/web.ts",
-      "find": "          ep.dmHistory({ limit }).catch((e: unknown) => {\n            throw new Error(`direct messages: the read failed: ${e instanceof Error ? e.message : String(e)}`);\n          }),",
-      "replace": "          ep.dmHistory({ limit }),",
+      "find": "          ep.dmHistory({ limit, signal: clock.signal }).catch((e: unknown) => {\n            throw new Error(`direct messages: the read failed: ${e instanceof Error ? e.message : String(e)}`);\n          }),",
+      "replace": "          ep.dmHistory({ limit, signal: clock.signal }),",
       "expectRed": "5.1 `/api/dms` names a read that REJECTS instead of returning the bare 500"
     },
     {
       "name": "B11 the channel history route stops naming an inner rejection and lets the broker's bare reason escape through the generic 500 again",
       "file": "implementations/web/src/web.ts",
-      "find": "          ep.channelHistory(name, { limit }).catch((e: unknown) => {\n            throw new Error(`#${name}: the read failed: ${e instanceof Error ? e.message : String(e)}`);\n          }),",
-      "replace": "          ep.channelHistory(name, { limit }),",
+      "find": "          ep.channelHistory(name, { limit, signal: clock.signal }).catch((e: unknown) => {\n            throw new Error(`#${name}: the read failed: ${e instanceof Error ? e.message : String(e)}`);\n          }),",
+      "replace": "          ep.channelHistory(name, { limit, signal: clock.signal }),",
       "expectRed": "5.2 `/api/channels/<name>/history` names a read that REJECTS instead of returning the bare 500"
     }
   ]

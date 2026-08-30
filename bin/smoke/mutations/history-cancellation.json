@@ -1,0 +1,40 @@
+{
+  "suite": "packages/core/smoke/history-cancellation.smoke.ts and implementations/web/smoke/bounded-aggregation.smoke.ts",
+  "guard": "public history abort stops the active JetStream pull and dashboard deadlines pass that abort to every unfinished source",
+  "command": "pnpm smoke:history-cancellation",
+  "completionMarker": "HISTORY CANCELLATION:",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/history-cancellation.json",
+  "why": [
+    "TWO MUTATIONS, two boundaries.",
+    "",
+    "M1 removes the abort listener from the active drainWindow iterator. It restores the live defect:",
+    "the public channelHistory promise stays pending and its consumer remains on the broker after the",
+    "caller aborts. The suite drives the real public API over a real constrained connection.",
+    "",
+    "M2 removes the dashboard's signal from channel history calls. It uses the existing bounded",
+    "aggregation suite's deterministic source seam, which asserts every started source receives the",
+    "shared signal and observes it aborted at the response deadline. This is a constructed seam for",
+    "the web threading only; M1 is the real entry-point proof for broker work cancellation.",
+    "",
+    "Both anchors are unique code-only lines. Each mutation names the first assertion that must turn red."
+  ],
+  "mutations": [
+    {
+      "name": "drainWindow no longer stops its live pull when the public signal aborts",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      const iter = await consumer.fetch({ max_messages: pending });\n      const stop = () => iter.stop(abortReason(signal));\n      signal?.addEventListener(\"abort\", stop, { once: true });",
+      "replace": "      const iter = await consumer.fetch({ max_messages: pending });\n      const stop = () => iter.stop(abortReason(signal));",
+      "expectRed": "✗ FAIL: PUBLIC REPRO: abort settles channelHistory as AbortError instead of leaving it pending",
+      "cell": "✗ FAIL: PUBLIC REPRO: abort settles channelHistory as AbortError instead of leaving it pending"
+    },
+    {
+      "name": "the dashboard starts channel reads without its response-deadline signal",
+      "file": "implementations/web/src/web.ts",
+      "command": "pnpm smoke:web-bounded-aggregation",
+      "find": "          (await ep.channelHistory(ch.channel, { limit, signal })).map((msg) => ({ mode: \"chat\" as const, channel: ch.channel, msg })),",
+      "replace": "          (await ep.channelHistory(ch.channel, { limit })).map((msg) => ({ mode: \"chat\" as const, channel: ch.channel, msg })),",
+      "expectRed": "4.11 every started history source receives the shared cancellation signal",
+      "cell": "4.11 every started history source receives the shared cancellation signal"
+    }
+  ]
+}

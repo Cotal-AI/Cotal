@@ -82,9 +82,9 @@ function slowLink(opts: { listen: number; target: number; oneWayMs: number; byte
   return { close: () => { for (const s of sockets) s.destroy(); srv.close(); } };
 }
 
-/** How long the link is left idle between arms. A deadline stops the response, not the broker work:
- *  a read that was abandoned at the deadline keeps moving bytes, and an arm measured on top of the
- *  previous arm's leftovers is measuring the leftovers. */
+/** How long the link is left idle between arms. Kept as isolation between measured link arms even
+ *  though shipped history reads now cancel at their deadline: the flood baseline below deliberately
+ *  uses uncancelled direct reads, and TCP/proxy queues still need to drain between experiments. */
 const SETTLE_MS = 15_000;
 const LATE = Symbol("late");
 
@@ -113,8 +113,8 @@ const clockOf = (ms: number) => {
 const CEILING_MS = AGGREGATION_DEADLINE_MS * 3;
 const within = async <T>(work: Promise<T>, ms: number): Promise<T | typeof LATE> => {
   const clock = clockOf(ms);
-  // The abandoned work keeps running: a read in flight has no cancel (#661). Swallowing its later
-  // rejection keeps a mutant's failure on the cell that names it rather than on an unhandled reject.
+  // Some baseline/control arms in this file deliberately call history without a signal. Swallowing a
+  // later rejection keeps a mutant's failure on the cell that names it rather than an unhandled reject.
   work.catch(() => {});
   try { return await Promise.race([work, clock.until]); } finally { clock.done(); }
 };
@@ -209,7 +209,6 @@ try {
     ok("1.5 CONTROL: and it carries a full page", page.entries.length === 100, page.entries.length);
     await ep.stop();
   }
-
   // ── 2. THE SAME READS ACROSS THE LINK ─────────────────────────────────────────────────────────
   link = slowLink({ listen: PROXY, target: PORT, oneWayMs: ONE_WAY_MS, bytesPerSec: BYTES_PER_SEC });
   await wait(200);
@@ -243,9 +242,9 @@ try {
   // when the implementation does. An arm the implementation controls is an arm a regression mutates
   // along with the thing it is supposed to catch.
   //
-  // ORDER AND SETTLING ARE PART OF THE EXPERIMENT. A deadline bounds the RESPONSE, not the broker
-  // work: an arm's abandoned reads keep moving bytes after it has answered, and the next arm on the
-  // same link inherits them. So the baseline runs FIRST and the implementation runs LAST, which
+  // ORDER AND SETTLING ARE PART OF THE EXPERIMENT. The flood baseline deliberately has no signal, so
+  // its abandoned reads keep moving bytes after it has answered. Run it FIRST and settle before the
+  // cancellation-aware implementation arm, or the second measurement inherits the baseline's work.
   // biases the comparison AGAINST the claim being made, and the link is left idle in between.
   {
     // §2 abandoned reads of its own and they are still on the link. Settling first means the flood
@@ -336,6 +335,30 @@ try {
     ok("4.9 a channel list that REJECTS names the read that failed, not just the broker's bare word",
       /channel list could not be read/.test(threw?.message ?? ""), threw?.message);
     ok("4.10 and it carries the underlying reason rather than replacing it", /timeout/.test(threw?.message ?? ""), threw?.message);
+  }
+
+  // THE ISSUE #661 SEAM: once the aggregation deadline answers, every source that did not finish must
+  // receive the SAME aborted signal. A response deadline without this abort only stops the HTTP answer;
+  // its JetStream reads keep occupying the shared link and starve the next poll.
+  {
+    const signals: AbortSignal[] = [];
+    const stalled = (signal?: AbortSignal): Promise<CotalMessage[]> => {
+      if (!signal) return Promise.reject(new Error("source received no cancellation signal"));
+      signals.push(signal);
+      return new Promise((resolve) => signal.addEventListener("abort", () => resolve([]), { once: true }));
+    };
+    const src: ActivitySource = {
+      listChannels: async () => [
+        { channel: "slow-a", messages: 1 },
+        { channel: "slow-b", messages: 1 },
+      ],
+      channelHistory: async (_channel, opts) => stalled(opts.signal),
+      dmHistory: async (opts) => stalled(opts.signal),
+    };
+    const page = await activityBackfill(src, 10, 100, 3);
+    ok("4.11 every started history source receives the shared cancellation signal", signals.length === 3, signals.length);
+    ok("4.12 the response deadline aborts every abandoned source", signals.every((signal) => signal.aborted), signals.map((signal) => signal.aborted));
+    ok("4.13 cancellation keeps the deadline response partial and named", page.partial && page.read === 0 && page.missing.length === 3, page);
   }
 
   // ── 5. BOTH ENDINGS OF EACH SINGLE-READ ROUTE ──────────────────────────────────────────────────
@@ -526,22 +549,17 @@ try {
       /direct messages: the read (did not finish within 8000ms|failed: )/.test(String(dBody?.error)), dBody);
     ok("6.8 bounded in wall time, not just in words", dMs < AGGREGATION_DEADLINE_MS + 5000, dMs);
 
-    // A NAMED LIMIT, DRIVEN RATHER THAN DESCRIBED. The deadline bounds the RESPONSE, not the broker
-    // work: a JetStream read in flight has no cancel, so the read abandoned above keeps moving bytes
-    // and the NEXT request on this link can be starved by it. Measured: at 128 KiB/s the poll right
-    // after a refused DM read was itself refused. This suite does not assert that it fails, because
-    // that would pin a defect in place; it asserts the part that must hold either way - whatever the
-    // route answers, a reader can act on it. A bare `{"error":"timeout"}`, which is what the shipped
-    // build sent, is the thing being forbidden.
+    // THE #661 OUTCOME THROUGH THE REAL HTTP SURFACE. The DM deadline above aborts the unfinished
+    // JetStream pull and deletes its consumer. The next activity request may still be partial on this
+    // constrained link, but it must answer as an activity page rather than be starved into a refusal by
+    // work the previous response already abandoned.
     const nRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/activity?limit=100`, {
       headers: authed, signal: AbortSignal.timeout(CEILING_MS),
     }).catch((e) => e as Error);
     const nBody = nRes instanceof Error ? undefined : await nRes.json().catch(() => undefined);
     const nStatus = nRes instanceof Error ? 0 : nRes.status;
-    ok("6.9 the request following a refused read either answers or REFUSES LEGIBLY, never with a bare broker word",
-      nStatus === 200
-        ? nBody?.partial !== undefined
-        : typeof nBody?.error === "string" && /channel list|did not finish|deadline/.test(nBody.error),
+    ok("6.9 the request following a cancelled read answers instead of being starved by abandoned work",
+      nStatus === 200 && nBody?.partial !== undefined,
       { nStatus, body: nBody?.error ?? `partial=${nBody?.partial} read=${nBody?.read}` });
 
     // The operator watching the server log is the one who can tell a slow link from a broken channel,

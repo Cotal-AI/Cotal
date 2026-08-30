@@ -703,3 +703,9 @@ smoke:workspace-import-exports
 # Mutation-proofed - bin/smoke/mutations/endpoint-permission-results.json. Appended so every existing
 # shard assignment remains unchanged.
 smoke:endpoint-permission-results:auth
+
+# Public history cancellation: a real constrained read is aborted through channelHistory, its pull
+# iterator stops, its ephemeral consumer is deleted, and a later read still succeeds. The dashboard
+# seam separately proves its shared response deadline reaches every unfinished source.
+# Mutation-proofed - bin/smoke/mutations/history-cancellation.json. Appended; shards stable.
+smoke:history-cancellation
