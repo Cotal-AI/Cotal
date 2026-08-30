@@ -19,7 +19,7 @@
       "file": "extensions/connector-jcode/src/host.ts",
       "find": "              replacement.attachSession(sessionId),",
       "replace": "              new Promise(() => {}),",
-      "expectRed": "recovery retry or seat exit after the transient attach loss"
+      "expectRed": "synthetic transient recovery attach failure"
     },
     {
       "name": "M3 attach the replacement but leave the broken client active",
