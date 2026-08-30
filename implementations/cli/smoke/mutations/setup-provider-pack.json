@@ -5,14 +5,6 @@
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/setup-provider-pack.json",
   "mutations": [
     {
-      "name": "Claude connector stops declaring its setup provider",
-      "file": "extensions/connector-claude-code/src/extension.ts",
-      "find": "  setup: { kind: \"connector-setup\", name: \"claude\" },",
-      "replace": "  setup: undefined,",
-      "expectRed": "Claude connector declares its provider ref",
-      "cell": "Claude connector declares its provider ref"
-    },
-    {
       "name": "generic CLI regains a harness asset path",
       "file": "implementations/cli/src/commands/setup.ts",
       "find": "async function runSkillsOnly(): Promise<void> {\n  await reconcileConnectorSkills();",

@@ -11,6 +11,9 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { setup } from "../src/commands/setup.js";
+
+void setup; // source-path import: setup.ts mutations execute through this suite's module graph
 
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 const created: string[] = [];
@@ -117,7 +120,7 @@ try {
   assert.doesNotMatch(skillsOnly, /seedDefaultAgent|runEnsure/, "setup --skills dispatch contains no persona or full-setup path");
   assert.doesNotMatch(setupSource, /plugin", "(?:install|update)"|\.claude-plugin|--scope/, "generic setup owns no harness plugin command or asset path");
 
-  console.log("status-skills-remedy.smoke: all assertions passed");
+  console.log("status-skills-remedy.smoke: 15 checks passed");
 } finally {
   for (const p of created) rmSync(p, { recursive: true, force: true });
 }

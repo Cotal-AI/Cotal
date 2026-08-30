@@ -59,7 +59,7 @@ try {
   assert.deepEqual(connector.setup, { kind: "connector-setup", name: "claude" }, "packed installed connector exposes its setup ref after lazy import");
   const provider = await materializeExtension<{ kind: "connector-setup"; name: string; skills?: unknown }>({ kind: "connector-setup", name: "claude" });
   assert.equal(typeof provider.skills, "object", "packed installed extension lazily materializes connector-setup:claude");
-  console.log("setup-provider-pack.smoke: all assertions passed");
+  console.log("setup-provider-pack.smoke: 8 checks passed");
 } finally {
   rmSync(out, { recursive: true, force: true });
 }
