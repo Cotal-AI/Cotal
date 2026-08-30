@@ -67,10 +67,18 @@
       "expectRed": "honest-text entry lacks output/shared-renderer proof"
     },
     {
+      "name": "M9 join working acknowledgement drops unknown progress",
+      "file": "implementations/cli/src/commands/join.ts",
+      "find": "    const acknowledgedStatus = status === \"working\" ? \"working · progress unknown\" : status;",
+      "replace": "    const acknowledgedStatus = status;",
+      "command": "pnpm build && pnpm smoke:cli-seat-locality",
+      "expectRed": "join /working acknowledgement names unknown progress"
+    },
+    {
       "name": "M8 expected AST candidate total drifts by one",
       "file": "packages/workspace/smoke/fixtures/presence-render-sinks.json",
-      "find": "    \"total\": 302,",
-      "replace": "    \"total\": 301,",
+      "find": "    \"total\": 303,",
+      "replace": "    \"total\": 302,",
       "expectRed": "presence render census count drifted"
     }
   ]

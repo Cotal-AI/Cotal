@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 302,
+    "total": 303,
     "honest-text": 32,
     "presence-only-glyph/count": 41,
-    "command-ack": 6,
-    "non-render/control": 223
+    "command-ack": 8,
+    "non-render/control": 222
   },
   "renderers": [
     {
@@ -459,9 +459,9 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "derived-output",
-      "anchor": "`(you are now ${status}${activity ? \": \" + activity : \"\"})`",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "anchor": "`(you are now ${acknowledgedStatus}${activity ? \": \" + activity : \"\"})`",
+      "class": "command-ack",
+      "rationale": "The interactive status command acknowledges the requested presence state; working additionally names that no progress observation exists."
     },
     {
       "path": "implementations/cli/src/commands/join.ts",
@@ -495,7 +495,14 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "status-token",
-      "anchor": "\"working\"",
+      "anchor": "dgedStatus = status === \"working\" ? \"working · progress u",
+      "class": "command-ack",
+      "rationale": "The working-only acknowledgement label explicitly distinguishes presence from unavailable progress observation."
+    },
+    {
+      "path": "implementations/cli/src/commands/join.ts",
+      "kind": "status-token",
+      "anchor": "        await setStatus(\"working\", line.slice(8).trim() |",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },

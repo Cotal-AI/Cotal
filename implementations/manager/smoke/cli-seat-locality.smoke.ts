@@ -31,6 +31,7 @@ import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import * as pty from "@lydell/node-pty";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   registry, type Connector, type LaunchOpts, type LaunchSpec,
@@ -108,6 +109,36 @@ const cotal = (args: string[], cwd: string, timeoutMs = 90_000): Promise<Run> =>
     child.on("error", (e) => { clearTimeout(timer); res({ status: null, out: `launch error: ${e.message}` }); });
   });
 
+const interactiveJoin = (cwd: string): Promise<Run> =>
+  new Promise((res) => {
+    const child = pty.spawn("npx", ["tsx", BIN, "join", "--space", space, "--server", SERVERS], {
+      cwd,
+      env: { ...process.env, COTAL_HOME: home, COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" },
+      cols: 120,
+      rows: 30,
+    });
+    let out = "";
+    let phase = 0;
+    child.onData((data) => {
+      out += data;
+      if (phase === 0 && out.includes("Type to broadcast.")) {
+        phase = 1;
+        child.write("/working focused repair\r");
+      } else if (phase === 1 && out.includes("(you are now working")) {
+        phase = 2;
+        child.write("/waiting blocked\r");
+      } else if (phase === 2 && out.includes("(you are now waiting: blocked)")) {
+        phase = 3;
+        child.write("/idle\r");
+      } else if (phase === 3 && out.includes("(you are now idle)")) {
+        phase = 4;
+        child.write("/quit\r");
+      }
+    });
+    const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
+    child.onExit(({ exitCode }) => { clearTimeout(timer); res({ status: exitCode, out }); });
+  });
+
 type MgrPriv = { managerInstanceId: string };
 let m1: InstanceType<typeof Manager> | undefined;
 let m2: InstanceType<typeof Manager> | undefined;
@@ -153,6 +184,13 @@ try {
   check("ps exits 0", ps.status === 0, { status: ps.status, out: ps.out.slice(-300) });
   check("ps reports the seat", ps.out.includes("seatA"), ps.out.slice(-300));
   check("ps textual working mesh row names unknown progress", /working · progress unknown/.test(ps.out), ps.out.slice(-1200));
+
+  console.log("\n1b. interactive `cotal join /working` acknowledges presence without claiming observed progress");
+  const joined = await interactiveJoin(root1);
+  check("interactive join exits 0", joined.status === 0, { status: joined.status, out: joined.out.slice(-1200) });
+  check("join /working acknowledgement names unknown progress", joined.out.includes("(you are now working · progress unknown: focused repair)"), joined.out.slice(-1600));
+  check("join /waiting acknowledgement semantics stay unchanged", joined.out.includes("(you are now waiting: blocked)"), joined.out.slice(-1600));
+  check("join /idle acknowledgement semantics stay unchanged", joined.out.includes("(you are now idle)"), joined.out.slice(-1600));
 
   console.log("\n2. `cotal ps --on <instance>` is answered by THAT instance (the flag reaches the mint)");
   const psA = await cotal(["ps", "--on", IID1, "--space", space, "--server", SERVERS], root1);
