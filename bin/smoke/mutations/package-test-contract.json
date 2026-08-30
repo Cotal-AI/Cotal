@@ -4,6 +4,7 @@
   "command": "pnpm smoke:package-test-contract",
   "completionMarker": "PACKAGE TEST CONTRACT:",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/package-test-contract.json",
+  "grades": "tool",
   "why": [
     "THREE MUTATIONS. M1 removes one affected package from the pinned set, so the size assertion",
     "catches an incomplete enumeration before any package command runs.",

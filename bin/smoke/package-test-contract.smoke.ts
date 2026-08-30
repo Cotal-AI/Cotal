@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const ROOT = join(import.meta.dirname, "..", "..");
@@ -53,6 +53,32 @@ const PRIVATE_NO_TESTS = new Set([
   "@cotal-ai/example-05-scale-showcase",
 ]);
 
+const discoverWorkspacePackages = (): Record<string, string> => {
+  const found: Record<string, string> = {};
+  const visit = (relative: string, depth: number): void => {
+    const base = join(ROOT, relative);
+    for (const entry of readdirSync(base, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const dir = relative ? `${relative}/${entry.name}` : entry.name;
+      const manifestPath = join(ROOT, dir, "package.json");
+      try {
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { name?: string };
+        if (typeof manifest.name === "string") found[manifest.name] = dir;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      if (depth > 1) visit(dir, depth - 1);
+    }
+  };
+  visit("packages", 1);
+  visit("extensions", 1);
+  visit("implementations", 1);
+  visit("examples", 2);
+  const binManifest = JSON.parse(readFileSync(join(ROOT, "bin", "package.json"), "utf8")) as { name?: string };
+  if (typeof binManifest.name === "string") found[binManifest.name] = "bin";
+  return found;
+};
+
 let pass = 0;
 let fail = 0;
 const check = (name: string, condition: boolean, detail?: unknown): void => {
@@ -65,7 +91,11 @@ const check = (name: string, condition: boolean, detail?: unknown): void => {
   }
 };
 
-check("the pinned workspace inventory contains exactly 26 packages", Object.keys(WORKSPACE_PACKAGE_DIRS).length === 26, Object.keys(WORKSPACE_PACKAGE_DIRS));
+const discovered = discoverWorkspacePackages();
+const pinnedEntries = Object.entries(WORKSPACE_PACKAGE_DIRS).sort(([a], [b]) => a.localeCompare(b));
+const discoveredEntries = Object.entries(discovered).sort(([a], [b]) => a.localeCompare(b));
+check("the pinned workspace inventory contains exactly 26 packages", pinnedEntries.length === 26, pinnedEntries);
+check("independent workspace discovery exactly matches the pinned package inventory", JSON.stringify(discoveredEntries) === JSON.stringify(pinnedEntries), { discoveredEntries, pinnedEntries });
 check("the pinned affected package set contains exactly 11 packages", AFFECTED.length === 11, AFFECTED);
 
 for (const [name, dir] of Object.entries(WORKSPACE_PACKAGE_DIRS)) {
