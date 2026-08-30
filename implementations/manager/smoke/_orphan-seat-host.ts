@@ -2,8 +2,7 @@ import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Manager } from "../src/manager.js";
-import { registry, type AgentHandle, type AttachSession, type Connector, type LaunchOpts, type LaunchSpec, type Runtime, type RuntimeProvider } from "@cotal-ai/core";
-import { processStartToken, reapProcess } from "@cotal-ai/workspace";
+import { registry, type AgentHandle, type AttachSession, type Connector, type LaunchOpts, type LaunchSpec, type Runtime } from "@cotal-ai/core";
 
 const root = process.env.REPRO_ROOT!;
 const space = process.env.REPRO_SPACE!;
@@ -18,23 +17,17 @@ registry.register({ kind: "connector", name: "orphan-repro", requires: ["node"],
 const session: AttachSession = { cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} };
 class DetachedRuntime implements Runtime {
   readonly kind = "orphan-repro";
-  async reap(locator: string): Promise<void> {
-    const row = JSON.parse(locator) as { pid?: unknown; startToken?: unknown; killScope?: unknown };
-    if (!Number.isInteger(row.pid) || (row.pid as number) <= 0 || typeof row.startToken !== "string" || row.killScope !== "process-group" || Object.keys(row).length !== 3) throw new Error("invalid orphan-repro locator");
-    await reapProcess(row as { pid: number; startToken: string; killScope: "process-group" });
-  }
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     const child = spawn(spec.command, spec.args, { cwd, env: spec.env, detached: true, stdio: "ignore" });
     const pid = child.pid!; child.unref();
-    const startToken = processStartToken(pid); if (!startToken) throw new Error(`cannot capture seat ${pid} start token`);
-    return { name, kind: this.kind, pid, locator: JSON.stringify({ pid, startToken, killScope: "process-group" }), status: () => alive(pid) ? "running" : "exited", stop: () => { try { process.kill(-pid, "SIGKILL"); } catch { try { process.kill(pid, "SIGKILL"); } catch {} } }, waitForExit: async () => { for (let i = 0; i < 100 && alive(pid); i++) await wait(50); if (alive(pid)) throw new Error(`seat ${pid} survived stop`); }, interrupt: () => {}, attach: () => session };
+    return { name, kind: this.kind, pid, status: () => alive(pid) ? "running" : "exited", stop: () => { try { process.kill(-pid, "SIGKILL"); } catch { try { process.kill(pid, "SIGKILL"); } catch {} } }, waitForExit: async () => { for (let i = 0; i < 100 && alive(pid); i++) await wait(50); if (alive(pid)) throw new Error(`seat ${pid} survived stop`); }, interrupt: () => {}, attach: () => session };
   }
 }
-registry.register({ kind: "runtime", name: "orphan-repro", available: () => true, create: () => new DetachedRuntime() } as RuntimeProvider);
-const manager = new Manager({ space, servers, runtime: "orphan-repro", workspaceRoot: root, consolePort: 0 });
+const manager = new Manager({ space, servers, runtime: "pty", workspaceRoot: root, consolePort: 0 });
 await manager.start();
 const managerInstanceId = (manager as unknown as { managerInstanceId: string }).managerInstanceId;
 process.stdout.write(`REPRO_MANAGER ${JSON.stringify({ managerPid: process.pid, managerInstanceId })}\n`);
+(manager as unknown as { runtime: Runtime }).runtime = new DetachedRuntime();
 let reply = await manager.startAgent({ name: "worker", agent: "orphan-repro", cwd: repo });
 for (let i = 0; !reply.ok && /reconcil|terminal|standing slot|held/i.test(reply.error ?? "") && i < 320; i++) { await wait(250); reply = await manager.startAgent({ name: "worker", agent: "orphan-repro", cwd: repo }); }
 if (!reply.ok) {
