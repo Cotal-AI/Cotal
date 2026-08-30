@@ -1,7 +1,7 @@
 {
   "suite": "implementations/cli/smoke/setup-connectors.smoke.ts",
   "guard": "guided setup enumerates every registered connector and derives readiness and plugin hints from connector declarations rather than connector names",
-  "command": "pnpm smoke:setup-connectors",
+  "command": "rm -rf implementations/cli/dist && pnpm --filter @cotal-ai/cli... build && pnpm exec tsx implementations/cli/smoke/setup-connectors.smoke.ts",
   "completionMarker": "SUITE COMPLETE",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/setup-connectors.json",
   "why": [
@@ -17,8 +17,8 @@
       "replace": "  return [...connectors]\n    .filter((connector) => connector.name === \"claude\" || connector.name === \"opencode\")\n    .sort((a, b) => a.name.localeCompare(b.name))\n    .map((connector) => {",
       "expectRed": "every registered connector appears in setup candidates",
       "cell": "every registered connector appears in setup candidates",
-      "command": "pnpm --filter @cotal-ai/cli... build && pnpm exec tsx implementations/cli/smoke/setup-connectors.smoke.ts",
-      "afterRestore": "pnpm --filter @cotal-ai/cli... build"
+      "command": "rm -rf implementations/cli/dist && pnpm --filter @cotal-ai/cli... build && pnpm exec tsx implementations/cli/smoke/setup-connectors.smoke.ts",
+      "afterRestore": "rm -rf implementations/cli/dist && pnpm --filter @cotal-ai/cli... build"
     },
     {
       "name": "restore the claude name check for plugin hints",
@@ -27,8 +27,8 @@
       "replace": "          : connector.name === \"claude\"\n            ? \"installs a plugin\"\n            : \"ready at spawn\",",
       "expectRed": "a non-claude connector with pluginRoot gets the plugin hint",
       "cell": "a non-claude connector with pluginRoot gets the plugin hint",
-      "command": "pnpm --filter @cotal-ai/cli... build && pnpm exec tsx implementations/cli/smoke/setup-connectors.smoke.ts",
-      "afterRestore": "pnpm --filter @cotal-ai/cli... build"
+      "command": "rm -rf implementations/cli/dist && pnpm --filter @cotal-ai/cli... build && pnpm exec tsx implementations/cli/smoke/setup-connectors.smoke.ts",
+      "afterRestore": "rm -rf implementations/cli/dist && pnpm --filter @cotal-ai/cli... build"
     }
   ],
   "grades": "tool"
