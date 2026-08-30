@@ -45,7 +45,6 @@
       "file": "packages/core/src/endpoint.ts",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:history-recent",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
-      "completionMarker": "history-recent smoke:",
       "find": "          if (delivered >= pending) { complete = true; break; }",
       "replace": "          if (delivered >= Math.min(pending, limit)) { complete = true; break; }",
       "expectRed": "limit=10 returns the NEWEST ten",
