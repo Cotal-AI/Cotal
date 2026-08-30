@@ -94,7 +94,11 @@ writes the same file; a later `cotal_spawn(name, role?, agent?, model?, variant?
 it online, so a peer can mint a teammate with no hand-written file
 ([tool catalog](mcp-tools.md)). The write path takes **content only** (`model` /
 `persona`); `role`, `allowPublish`, `capabilities`, and `owner` are policy and have no
-slot, so a peer cannot grant itself a capability by redefining a file.
+slot, so a peer cannot grant itself a capability by redefining a file. A persona with no
+`capabilities:` line (every wire-defined one) therefore spawns **without** `spawn`, and a
+spawn whose effective role is `manager` is **refused at spawn time** rather than joining as
+a labelled manager that silently cannot seat workers: either put `capabilities: [spawn]` on
+the file (an operator edit) or spawn it under another role.
 
 **Defining is silent.** Nothing goes out on the mesh unless you pass `announce: <channel>`,
 and then it goes to that channel only. A peer that did not ask for the persona has no way
