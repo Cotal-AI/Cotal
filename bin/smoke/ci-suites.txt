@@ -703,6 +703,25 @@ smoke:workspace-import-exports
 # Mutation-proofed - bin/smoke/mutations/endpoint-permission-results.json. Appended so every existing
 # shard assignment remains unchanged.
 smoke:endpoint-permission-results:auth
+# A stalled presence KV-watch must mark the observer view stale rather than sweep every
+# peer offline. The endpoint cell holds the watch through a TCP proxy; the web cell drives
+# the shipped presence-view → stale-pill path. Appended so every existing shard assignment
+# remains unchanged.
+smoke:presence-watch-stall
+smoke:web-presence-view
+# A sparse channelHistory must stop at the subject's first matching sequence, not stream
+# sequence 1. Discriminator is drainWindow minStart, not the returned page. Appended so
+# every existing shard assignment remains unchanged.
+smoke:sparse-history-walk
+# Raw NATS transport state is separate from full endpoint readiness. The deterministic suite grades
+# epoch staleness and state contracts; its companion owns a throwaway broker and proves real
+# disconnect/reconnect delivery. Appended so every existing shard assignment remains unchanged.
+smoke:transport-liveness
+smoke:transport-liveness:broker
+# The connection status tool reaches MeshAgent state through a real in-memory MCP server and client,
+# including a measured successful inbox drain. Appended so every existing shard assignment remains
+# unchanged.
+smoke:connection-status
 
 # Status's skills rows must recommend cotal setup --skills, not unscoped setup.
 # Mutation-proofed - implementations/cli/smoke/mutations/status-skills-remedy.json.
