@@ -286,6 +286,7 @@
     "smoke:frame-size": "tsx packages/core/smoke/frame-size.smoke.ts",
     "smoke:valid-name": "tsx packages/core/smoke/valid-name.smoke.ts",
     "smoke:actor-ephemeral": "tsx packages/core/smoke/actor-ephemeral.smoke.ts",
+    "smoke:recoverable-error-channel": "tsx packages/core/smoke/recoverable-error-channel.smoke.ts",
     "smoke:principal-channel-witness": "tsx packages/core/smoke/principal-channel-witness.smoke.ts",
     "smoke:part-renderer": "tsx packages/core/smoke/part-renderer.smoke.ts",
     "smoke:run-journal-auth": "tsx packages/core/smoke/run-journal-auth.smoke.ts",

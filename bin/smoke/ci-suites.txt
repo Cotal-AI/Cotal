@@ -740,3 +740,10 @@ smoke:jcode-mid-turn-delivery
 # the real Claude plugin-list JSON seam. Mutation-proofed - bin/smoke/mutations/status-provenance.json.
 # Appended so every existing shard assignment remains unchanged.
 smoke:status-provenance
+
+# Recoverable endpoint retry notices must not use EventEmitter `error`, which Node
+# rethrows with no listener and kills the host the endpoint intended to survive.
+# Discriminating cell: a consumer with NO error listener survives refreshBearer(false).
+# Mutation-proofed - packages/core/smoke/fixtures/recoverable-error-channel.mutations.json.
+# Appended so every existing shard assignment remains unchanged.
+smoke:recoverable-error-channel
