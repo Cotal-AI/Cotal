@@ -817,7 +817,13 @@ export async function web(args: ParsedArgs): Promise<void> {
   };
 
   // Presence changes → push the whole roster; the client just re-renders it.
-  ep.on("presence", () => broadcast("roster", ep.getRoster()));
+  // Trailing-edge debounce: a stall-recovery replay is one burst of N keys, and pushing
+  // per key would empty-to-fill the online-only sidebar once per key. Settle first.
+  const pushRoster = debounce(() => broadcast("roster", ep.getRoster()), 150);
+  ep.on("presence", () => pushRoster());
+  ep.on("presence-view", (view: { fresh: boolean; staleSince?: number }) =>
+    broadcast("presence-view", view),
+  );
 
   // Broker-sourced channel membership (the authoritative graph spokes): push a `membership` SSE event
   // on every feed change (debounced; the client re-reads the snapshot). Best-effort — a space without the
@@ -895,6 +901,7 @@ export async function web(args: ParsedArgs): Promise<void> {
       });
       clients.add(res);
       send(res, "roster", ep.getRoster());
+      send(res, "presence-view", ep.presenceView());
       // Seed this client's graph with the current membership snapshot (the live tap only carries
       // post-connect traffic; membership is state, so a fresh client needs it explicitly).
       void ep.readMembership()
@@ -1409,7 +1416,7 @@ function json(res: ServerResponse, data: unknown, status = 200): void {
   res.end(JSON.stringify(data));
 }
 
-/** Trailing-edge debounce — coalesces a burst of membership-feed deltas into one push. */
+/** Trailing-edge debounce — coalesces a burst of deltas (membership feed, presence replay) into one push. */
 function debounce(fn: () => void, ms: number): () => void {
   let t: ReturnType<typeof setTimeout> | undefined;
   return () => {

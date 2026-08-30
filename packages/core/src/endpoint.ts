@@ -448,6 +448,15 @@ export class CotalEndpoint extends EventEmitter {
   private readonly roster = new Map<string, Presence>();
   /** Resolves when the current presence watch has consumed its complete initial KV snapshot. */
   private presenceSnapshot = Promise.resolve();
+  /**
+   * Observer-local age of the last presence-KV delivery (any key, including DEL/PURGE). Distinct
+   * from each peer's `ts`: that is the publisher's heartbeat. Whole-bucket silence past TTL is
+   * the observer going deaf, not  N  simultaneous deaths, and sweep must not treat it as the
+   * latter (#1045).
+   */
+  private lastPresenceWatchAt = 0;
+  /** Last emitted presence-view freshness. Suppresses duplicate `presence-view` events. */
+  private presenceViewFresh = true;
   private status: PresenceStatus = "idle";
   private activity?: string;
   /** Mirror of the connector's authoritative attention state, published in presence (advisory). The
@@ -1078,6 +1087,8 @@ export class CotalEndpoint extends EventEmitter {
     this.chatSubDenied.clear();
     this.confirmingChatSubs.clear();
     this.roster.clear();
+    this.lastPresenceWatchAt = 0;
+    this.presenceViewFresh = true;
     this.joinSeq.clear();
     this.channelConfigs.clear();
     this.channelDefaults = {};
@@ -1913,6 +1924,20 @@ export class CotalEndpoint extends EventEmitter {
     );
   }
 
+  /**
+   * Freshness of THIS observer's presence watch, not of any peer. `fresh: false` means the
+   * whole bucket has been silent past the liveness window — the view is stale as of
+   * `staleSince`, and {@link getRoster} is last-known rather than a current offline verdict.
+   * A watch that has not yet delivered anything is not stale (there is no T to name).
+   */
+  presenceView(): { fresh: boolean; staleSince?: number } {
+    if (!this.doWatch) return { fresh: true };
+    if (this.lastPresenceWatchAt === 0) return { fresh: true };
+    const staleSince = this.lastPresenceWatchAt + this.ttlMs;
+    if (Date.now() < staleSince) return { fresh: true };
+    return { fresh: false, staleSince };
+  }
+
   /** Wait until the current presence watch has consumed its initial KV snapshot. An empty bucket
    * emits no watch entry, so the timeout keeps a genuinely empty mesh bounded. */
   async waitForPresenceSnapshot(timeoutMs = 1_000): Promise<void> {
@@ -2456,8 +2481,10 @@ export class CotalEndpoint extends EventEmitter {
    * A filtered subject's sequences are non-contiguous (other channels interleave in the same
    * stream), so the window cannot be computed arithmetically. A FAILED attempt holds fewer than a
    * page by definition, so wasted transfer stays page-sized and geometric growth keeps the number of
-   * attempts logarithmic. The one unbounded case is named in the body: a channel whose matches are
-   * all old and sparse walks back to the start of the stream and reads its whole retained set.
+   * attempts logarithmic. A channel with fewer than `limit` matches used to keep widening until
+   * sequence 1 and drain the stream's whole retained set (#840). The walk now stops at the
+   * subject's FIRST matching sequence (the mirror of the last-matching ceiling), probed on the
+   * same CREATE surface, and only after a short drain so a dense page never pays for the floor.
    *
    * `before` pages toward the past: pass the `seq` of the oldest message you already have.
    */
@@ -2513,18 +2540,27 @@ export class CotalEndpoint extends EventEmitter {
       // Geometric growth keeps the number of attempts logarithmic, so total wasted transfer is a
       // small multiple of a page.
       //
-      // NAMED POLICY for the remaining case: when a channel's matches are all old and sparse, the
-      // search walks back to sequence 1 and the final drain transfers that subject's whole retained
-      // set. That is chosen deliberately — a FULL page of genuinely recent messages, at the cost of
-      // an unbounded read on a channel that has not been used in a long time — over returning a
-      // short page while older messages exist. The exact ceiling above means this is now reached
-      // only by real sparsity WITHIN a channel, never by the channel simply being quiet lately.
+      // A SHORT PAGE is either "the channel is exhausted" or "the window is still above the
+      // first match". Sequence 1 is the wrong floor for the first of those: three matches at
+      // the high end of a busy stream are exhausted as soon as the window's lower edge passes
+      // the subject's first matching sequence, and walking on to 1 re-reads everyone else's
+      // retained set (#840). Probe that floor only after a short drain so a dense page (one
+      // drain, full) never pays for it. The remaining unbounded-looking case is a subject
+      // whose FIRST match really is near sequence 1; that span is the channel's own, not the
+      // stream's.
       let span = Math.max(limit * 4, 64);
+      let floor = 1;
+      let floorKnown = false;
       for (;;) {
         signal?.throwIfAborted();
-        const start = Math.max(1, ceiling - span + 1);
+        const start = Math.max(floor, ceiling - span + 1);
         const page = await this.drainWindow(js, stream, subject, start, ceiling, signal);
-        if (page.length >= limit || start === 1) return page.slice(-limit);
+        if (page.length >= limit) return page.slice(-limit);
+        if (!floorKnown) {
+          floor = Math.max(1, await this.firstMatchingSeq(js, stream, subject, signal));
+          floorKnown = true;
+        }
+        if (start <= floor) return page.slice(-limit);
         span *= 4;
       }
     } catch (e) {
@@ -2546,6 +2582,48 @@ export class CotalEndpoint extends EventEmitter {
       if (/stream not found/i.test(msg) || (e as { code?: number } | null)?.code === 404) return [];
       if (isPermissionDenied(e) && stream === dmStream(this.space)) return [];
       throw e;
+    }
+  }
+
+  /** The newest stream sequence matching `subject`, or 0 when the subject has no messages.
+   *
+   *  One ordered consumer at `DeliverPolicy.Last` with this subject's filter: its `num_pending`
+   *  (available from the create, before anything is delivered) is 0 for an empty subject, and
+   *  otherwise one message carries the sequence. Same CREATE/INFO/NEXT/DELETE surface `drainWindow`
+   *  already uses, so no broker authority is added. */
+  /** The oldest stream sequence matching `subject`, or 0 when the subject has no messages.
+   *  Mirror of {@link lastMatchingSeq}: same CREATE/INFO/NEXT/DELETE surface, `DeliverPolicy.All`
+   *  instead of `Last`, first delivered seq instead of last. Read credentials already hold this. */
+  private async firstMatchingSeq(
+    js: ReturnType<typeof jetstream>,
+    stream: string,
+    subject: string,
+    signal?: AbortSignal,
+  ): Promise<number> {
+    signal?.throwIfAborted();
+    const consumer = await js.consumers.get(stream, {
+      filter_subjects: [subject],
+      deliver_policy: DeliverPolicy.All,
+    });
+    try {
+      if ((await consumer.info(true)).num_pending === 0) return 0;
+      signal?.throwIfAborted();
+      const iter = await consumer.fetch({ max_messages: 1 });
+      const stop = () => iter.stop(abortReason(signal));
+      signal?.addEventListener("abort", stop, { once: true });
+      try {
+        signal?.throwIfAborted();
+        for await (const m of iter) return m.seq;
+      } finally {
+        signal?.removeEventListener("abort", stop);
+        iter.stop();
+      }
+      throw new Error(`history: the broker reported messages on ${subject} but delivered none - the read was cut short, not empty`);
+    } finally {
+      try { await consumer.delete(); }
+      catch (e) {
+        if (!isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound)) throw e;
+      }
     }
   }
 
@@ -4469,6 +4547,7 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   private handleKvEntry(e: KvEntry): void {
+    this.lastPresenceWatchAt = Date.now();
     if (e.operation === "DEL" || e.operation === "PURGE") {
       this.markOffline(e.key);
       return;
@@ -4491,6 +4570,18 @@ export class CotalEndpoint extends EventEmitter {
     if (raw.card?.id !== id) return;
     const prev = this.roster.get(id);
     const stale = Date.now() - raw.ts > this.ttlMs;
+    // A watch recovering from a stall replays the bucket. Those PUTs still carry the publisher's
+    // pre-stall timestamps, so they look TTL-expired even though the peers kept heartbeating on
+    // the broker. Materializing them as offline is the empty-to-full flicker #1045 named: the
+    // observer's catch-up, not N deaths. Keep last-known rows, stay view-stale, and wait for a
+    // live timestamp (or an explicit offline/delete) before changing a known peer.
+    if (stale && raw.status !== "offline") {
+      if (prev) return;
+      this.roster.set(id, this.toOffline(raw));
+      this.emit("roster", this.getRoster());
+      return;
+    }
+    this.setPresenceViewFresh(true);
     // Any offline materialization (a stale snapshot OR a graceful-leave record) drops the advisory
     // attention fields — an offline peer must not carry a stale `[focus]`/`locally muted` hint.
     const p: Presence =
@@ -4553,8 +4644,22 @@ export class CotalEndpoint extends EventEmitter {
     this.emit("roster", this.getRoster());
   }
 
+  private setPresenceViewFresh(fresh: boolean): void {
+    if (fresh === this.presenceViewFresh) return;
+    this.presenceViewFresh = fresh;
+    this.emit("presence-view", this.presenceView());
+  }
+
   private sweep(): void {
     const now = Date.now();
+    // Whole-bucket silence past TTL is THIS observer going deaf. Real rosters do not lose every
+    // peer in one window, and treating that silence as N offline verdicts empties an online-only
+    // sidebar with nothing saying the window went blind (#1045). Gate the per-peer age-out on
+    // watch freshness; surface the view as stale instead.
+    if (this.lastPresenceWatchAt !== 0 && now - this.lastPresenceWatchAt > this.ttlMs) {
+      this.setPresenceViewFresh(false);
+      return;
+    }
     let changed = false;
     for (const [id, p] of this.roster) {
       if (p.status !== "offline" && now - p.ts > this.ttlMs) {

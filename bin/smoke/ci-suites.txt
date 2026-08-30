@@ -704,6 +704,17 @@ smoke:workspace-import-exports
 # shard assignment remains unchanged.
 smoke:endpoint-permission-results:auth
 
+# A stalled presence KV-watch must mark the observer view stale rather than sweep every
+# peer offline. The endpoint cell holds the watch through a TCP proxy; the web cell drives
+# the shipped presence-view → stale-pill path. Appended so every existing shard assignment
+# remains unchanged.
+smoke:presence-watch-stall
+smoke:web-presence-view
+# A sparse channelHistory must stop at the subject's first matching sequence, not stream
+# sequence 1. Discriminator is drainWindow minStart, not the returned page. Appended so
+# every existing shard assignment remains unchanged.
+smoke:sparse-history-walk
+
 # Public history cancellation: a real constrained read is aborted through channelHistory, its pull
 # iterator stops, its ephemeral consumer is deleted, and a later read still succeeds. The dashboard
 # seam separately proves its shared response deadline reaches every unfinished source.
