@@ -42,7 +42,7 @@
       "name": "mint ignores conflicting cwd trust instead of refusing the incoherent authority",
       "file": "implementations/cli/src/commands/mint.ts",
       "find": "  if (cwdAuth && (!auth || cwdAuth.space !== resolvedTarget.space || cwdAuth.account.pub !== auth.account.pub)) {",
-      "replace": "  if (false && cwdAuth && (!auth || cwdAuth.space !== resolvedTarget.space || cwdAuth.account.pub !== auth.account.pub)) {",
+      "replace": "  if (cwdAuth && (!auth || cwdAuth.space !== resolvedTarget.space || cwdAuth.account.pub !== auth.account.pub) && process.pid < 0) {",
       "expectRed": "mint: a cwd trust root that differs from the selected mesh authority is REFUSED",
       "cell": "mint: a cwd trust root that differs from the selected mesh authority is REFUSED",
       "note": "This compile-clean mutation reverts only the new B2 refusal guard and lets the exact conflicting-root input proceed."
