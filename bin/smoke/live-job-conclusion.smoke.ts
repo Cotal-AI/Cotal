@@ -57,17 +57,18 @@ const supersededVerdict = await inspectLiveConclusion({ ...base, event: "pull_re
 check("the API path identifies the newer run for the same PR as intentional supersession",
   supersededVerdict.kind === "superseded" && supersededVerdict.supersedingRunId === 11, supersededVerdict);
 
-console.log("\nB. the real CI workflow reaches the classifier and gates on its result");
-check("the timeout-legibility job runs after live under always()",
-  /  live-conclusion:\n(?:.|\n)*?    if: always\(\)\n    needs: \[live\]/.test(workflow));
-check("the job grants only read access needed for checkout and the Actions jobs API",
-  /  live-conclusion:\n(?:.|\n)*?    permissions:\n      actions: read\n      contents: read/.test(workflow));
+console.log("\nB. the real CI aggregate reaches the classifier without adding another queued job");
+check("ci-ok remains the one dependent aggregate over unit, smoke and live",
+  /  ci-ok:\n(?:.|\n)*?    if: always\(\)\n    needs: \[unit, smoke, live\]/.test(workflow));
+check("the aggregate check name makes its live-outcome role visible",
+  workflow.includes("name: ci-ok (live outcome classified)"));
+check("the aggregate grants only read access needed for checkout and the Actions jobs API",
+  /  ci-ok:\n(?:.|\n)*?    permissions:\n      actions: read\n      contents: read/.test(workflow));
 check("the workflow calls the committed classifier with the measured 25-minute budget",
   workflow.includes("node scripts/live-job-conclusion.mjs")
   && workflow.includes("--timeout-seconds 1500"));
-check("ci-ok requires the legibility result as well as the live result",
-  workflow.includes("needs: [unit, smoke, live, live-conclusion]")
-  && workflow.includes('[ "${{ needs[\'live-conclusion\'].result }}" = "success" ]'));
+check("the classifier is inside ci-ok and runs before the aggregate gate",
+  workflow.indexOf("node scripts/live-job-conclusion.mjs") < workflow.indexOf("      - name: Gate"));
 
 console.log(`\n${fail === 0 ? "LIVE JOB CONCLUSION SMOKE OK ✅" : "LIVE JOB CONCLUSION SMOKE FAILED ❌"}  (${pass} passed, ${fail} failed)`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);

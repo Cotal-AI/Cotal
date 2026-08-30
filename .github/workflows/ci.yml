@@ -219,15 +219,13 @@ jobs:
       - name: OpenCode cooperative-stop smoke test
         run: pnpm smoke:opencode-coop
 
-  live-conclusion:
-    name: live conclusion (timeout legibility)
-    # A job that reaches its own timeout is badged `cancelled`, the same badge as an intentionally
-    # superseded PR revision. Run after `live` either way, then use this run-attempt's timings plus a
-    # newer run for the same PR as the evidence that separates those causes. Unknown cancellations
-    # fail loud; they never inherit the benign supersession story by default.
+  ci-ok:
+    # Single required status. It owns the explicit live diagnosis too: adding a separate dependent
+    # job was measured on PR #1043 and left a superseded run queued through TWO later runner jobs,
+    # which held the replacement run behind it. One existing aggregate is the minimal queue shape.
+    name: ci-ok (live outcome classified)
     if: always()
-    needs: [live]
-    timeout-minutes: 2
+    needs: [unit, smoke, live]
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -252,15 +250,7 @@ jobs:
           --event "$GITHUB_EVENT_NAME"
           --pr-number "$PR_NUMBER"
           --head-ref "$HEAD_REF"
-
-  ci-ok:
-    # Single required status: green only if unit + every smoke shard + live and its explicit
-    # cancellation diagnosis all passed.
-    if: always()
-    needs: [unit, smoke, live, live-conclusion]
-    runs-on: ubuntu-latest
-    steps:
       - name: Gate
         run: |
-          echo "unit=${{ needs.unit.result }} smoke=${{ needs.smoke.result }} live=${{ needs.live.result }} live-conclusion=${{ needs['live-conclusion'].result }}"
-          [ "${{ needs.unit.result }}" = "success" ] && [ "${{ needs.smoke.result }}" = "success" ] && [ "${{ needs.live.result }}" = "success" ] && [ "${{ needs['live-conclusion'].result }}" = "success" ]
+          echo "unit=${{ needs.unit.result }} smoke=${{ needs.smoke.result }} live=${{ needs.live.result }}"
+          [ "${{ needs.unit.result }}" = "success" ] && [ "${{ needs.smoke.result }}" = "success" ] && [ "${{ needs.live.result }}" = "success" ]
