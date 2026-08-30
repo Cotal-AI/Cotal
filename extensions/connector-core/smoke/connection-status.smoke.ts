@@ -103,6 +103,7 @@ stage._connected = true;
 stage._transportConnected = true;
 
 const acked: string[] = [];
+const oldestAutomaticReceivedAt = Date.now() - 2_000;
 const item = (id: string): InboxItem => ({
   id,
   recvKey: id,
@@ -114,9 +115,9 @@ const item = (id: string): InboxItem => ({
   historical: false,
   text: `message ${id}`,
 });
-(agent as unknown as { inbox: Array<{ item: InboxItem; ack: () => void; pullOnly: boolean }> }).inbox = [
-  { item: item("one"), ack: () => acked.push("one"), pullOnly: false },
-  { item: item("two"), ack: () => acked.push("two"), pullOnly: false },
+(agent as unknown as { inbox: Array<{ item: InboxItem; ack: () => void; pullOnly: boolean; receivedAt: number }> }).inbox = [
+  { item: item("one"), ack: () => acked.push("one"), pullOnly: false, receivedAt: oldestAutomaticReceivedAt },
+  { item: item("two"), ack: () => acked.push("two"), pullOnly: true, receivedAt: Date.now() - 1_000 },
 ];
 
 const server = new McpServer({ name: "connection-status-smoke", version: "0.0.0" });
@@ -159,6 +160,12 @@ const initial = await status();
 check("the real MCP route reports the MeshAgent's live connected=true state", initial.connected === true, initial);
 check("the first status has no synthesized lastDrainedAt", !("lastDrainedAt" in initial), initial);
 check("the status route reports the live buffered count before the drain", initial.bufferedCount === 2, initial);
+check("the status route counts only automatic deliveries before the drain", initial.automaticCount === 1, initial);
+check(
+  "the status route reports the oldest automatic local receive time",
+  initial.oldestAutomaticAt === new Date(oldestAutomaticReceivedAt).toISOString(),
+  initial,
+);
 
 const beforeDrain = Date.now();
 await text("cotal_inbox");
@@ -177,6 +184,11 @@ check(
   { drainedAt: drained.lastDrainedAt, beforeDrain, afterDrain },
 );
 check("the status route reports the live buffered count after the drain", drained.bufferedCount === 0, drained);
+check(
+  "the status route clears automatic queue depth and oldest time after the drain",
+  drained.automaticCount === 0 && !("oldestAutomaticAt" in drained),
+  drained,
+);
 
 check("a bound session with a live transport reports ready", (await status()).state === "ready", await status());
 
@@ -244,7 +256,7 @@ check(
 
 await Promise.all([client.close(), server.close()]);
 
-const EXPECTED_CELLS = 15;
+const EXPECTED_CELLS = 18;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);
