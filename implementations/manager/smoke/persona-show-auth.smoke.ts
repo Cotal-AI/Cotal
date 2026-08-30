@@ -21,6 +21,7 @@ import {
   type EpServeContext,
 } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
+import { MANAGER_CONTRACTS, managerClusterDocument, managerShippedCommandCount } from "../src/manager-service-contract.js";
 
 let failures = 0;
 const check = (label: string, ok: boolean, extra?: unknown): void => {
@@ -87,6 +88,19 @@ check(
     && !refusal.message.includes("frontmatter")
     && !refusal.message.includes(agentsDir),
   refusal instanceof Error ? { name: refusal.name, message: refusal.message } : refusal,
+);
+
+const shipped = managerClusterDocument();
+const compiledCount = Object.keys(MANAGER_CONTRACTS).length;
+check(
+  "shipped command count matches the compiled contract table",
+  managerShippedCommandCount() === compiledCount && shipped.commands.length === compiledCount,
+  { shipped: managerShippedCommandCount(), compiled: compiledCount, document: shipped.commands.length },
+);
+check(
+  "persona catalog list/show are in the shipped document",
+  shipped.commands.some((c) => c.name === "list-personas") && shipped.commands.some((c) => c.name === "show-persona"),
+  shipped.commands.map((c) => c.name),
 );
 
 console.log(`\nMANAGER PERSONA SHOW AUTH ${failures === 0 ? "OK" : "FAILED"}`);

@@ -474,6 +474,11 @@ export function managerClusterDocument(): {
   };
 }
 
+/** Served command count, always the cluster document's list. Smokes must read this instead of restating 18 or 20. */
+export function managerShippedCommandCount(): number {
+  return managerClusterDocument().commands.length;
+}
+
 /** The two-digest §13.7 content addressing for the manager document: the registered CLOSURE digest
  *  names a `{v:1, root:<artifactDigest>, members:[]}` manifest whose root names the DOCUMENT. Both
  *  artifacts are published to the `epc` store at their own digest; `clusterDigests` in the service
