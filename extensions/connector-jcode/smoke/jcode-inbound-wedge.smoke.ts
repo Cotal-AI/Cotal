@@ -58,7 +58,6 @@ const shimDir = join(root, "bin");
 const shim = join(shimDir, "jcode");
 const log = join(root, "fake.jsonl");
 const sessionState = join(root, "fake-session.json");
-const lifecycleUid = mintLifecycleUid();
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(nats, root);
 let child: ChildProcess | undefined;
@@ -87,6 +86,7 @@ function baseEnv(): NodeJS.ProcessEnv {
 
 async function spawnHost(extra: NodeJS.ProcessEnv, controlSock: string): Promise<ChildProcess> {
   const env = baseEnv();
+  rmSync(sessionState, { force: true });
   const inheritedJcodeHome = join(root, "source-jcode");
   mkdirSync(inheritedJcodeHome, { recursive: true, mode: 0o700 });
   writeFileSync(join(inheritedJcodeHome, "auth.json"), "jcode-inbound-wedge-smoke-token", { mode: 0o600 });
@@ -102,7 +102,7 @@ async function spawnHost(extra: NodeJS.ProcessEnv, controlSock: string): Promise
       COTAL_SPACE: "jcodewedge",
       COTAL_NAME: "jcodepeer",
       COTAL_ID: "jcodepeer",
-      COTAL_LIFECYCLE_UID: lifecycleUid,
+      COTAL_LIFECYCLE_UID: mintLifecycleUid(),
       COTAL_SERVERS: servers,
       COTAL_SUBSCRIBE: "team",
       COTAL_ALLOW_SUBSCRIBE: "team",

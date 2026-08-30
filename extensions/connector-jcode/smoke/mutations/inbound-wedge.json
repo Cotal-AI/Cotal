@@ -33,10 +33,10 @@
       "cell": "a DM during advisory idle inside a live Cotal-owned run reaches the recipient session (#1075)"
     },
     {
-      "name": "M3 deliver but do not publish inbound queue activity",
+      "name": "M3 do not publish queue growth during a busy session",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "    const activity = `inbound: ${queued} automatic queued, oldest ${ageS}s`;",
-      "replace": "    const activity = \"\";",
+      "find": "    if (sessionBusy()) {\n      if (directed) void steerPending();\n      publishInboundHealth();\n      return;\n    }",
+      "replace": "    if (sessionBusy()) {\n      if (directed) void steerPending();\n      return;\n    }",
       "expectRed": "presence activity names the growing automatic inbound queue (#1075)",
       "cell": "presence activity names the growing automatic inbound queue (#1075)"
     },
