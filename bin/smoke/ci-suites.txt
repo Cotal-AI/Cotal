@@ -12,8 +12,8 @@
 # that passes.
 #
 # ORDER IS EXECUTION ORDER and it is not alphabetical: `smoke:dist-freshness` runs first because a
-# stale build makes every later result a statement about code that is not in the tree. Append at
-# the end unless you have a reason, and say the reason here.
+# stale build makes every later result a statement about code that is not in the tree. This legacy
+# list is now FROZEN; add new suites one-file-per-suite under `ci-suites.d/`.
 smoke:dist-freshness
 smoke:gate-inventory
 smoke:dep-pins
