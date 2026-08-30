@@ -22,8 +22,8 @@
     {
       "name": "channelHistory drops the caller signal before either JetStream pull stage",
       "file": "packages/core/src/endpoint.ts",
-      "find": "      opts?.limit ?? 100,\n      undefined,\n      opts?.signal,\n    );",
-      "replace": "      opts?.limit ?? 100,\n    );",
+      "find": "      chatSubject(this.space, \"*\", \"*\", channel),\n      opts?.limit ?? 100,\n      undefined,\n      opts?.signal,\n    );",
+      "replace": "      chatSubject(this.space, \"*\", \"*\", channel),\n      opts?.limit ?? 100,\n    );",
       "expectRed": "✗ FAIL: PUBLIC REPRO: abort settles channelHistory as AbortError instead of leaving it pending",
       "cell": "✗ FAIL: PUBLIC REPRO: abort settles channelHistory as AbortError instead of leaving it pending"
     },
