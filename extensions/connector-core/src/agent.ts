@@ -252,7 +252,7 @@ export class MeshAgent extends EventEmitter {
   /** Latest connection failure, retained until the endpoint binds so a bounded readiness gate can
    * explain why an otherwise healthy host never joined the mesh. */
   private lastConnectionError?: string;
-  private endpointErrorLog = new Map<string, { lastLoggedAt: number; suppressed: number }>();
+  private endpointNoticeLog = new Map<string, { lastLoggedAt: number; suppressed: number }>();
   private _status: PresenceStatus = "idle";
   private _attention: AttentionMode = "open"; // F3: fail-open default; reset to open on SessionStart
   private _recallCursor: RecallMark = { ts: 0, id: "" };
@@ -323,6 +323,9 @@ export class MeshAgent extends EventEmitter {
     });
     this.ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => this.ingest(m, d, meta));
     this.ep.on("error", (e: Error) => this.handleEndpointError(e));
+    // A warning is a condition the endpoint is already surviving. Log it through the same bounded
+    // operator sink, but never turn it into connectionIssue: readiness is still true.
+    this.ep.on("warning", (e: Error) => this.handleEndpointWarning(e));
     // Two guards, and the comments sit out here so neither anchors a mutation on prose. An
     // in-flight initial bind or rebuild can finish after stop() cleared local state, and shutdown is
     // terminal for this MeshAgent, so a late endpoint edge must not resurrect transport. Separately,
@@ -344,7 +347,7 @@ export class MeshAgent extends EventEmitter {
       this._connected = e.connected;
       if (e.connected) {
         this.lastConnectionError = undefined;
-        this.endpointErrorLog.clear();
+        this.endpointNoticeLog.clear();
       }
       this.emit("connection", e);
     });
@@ -1601,22 +1604,30 @@ export class MeshAgent extends EventEmitter {
    * attached Codex TUI. Consumer names are generated per reset, so normalize them before
    * deduplicating; otherwise every `_71`, `_72`, ... would look like a new fault. */
   private handleEndpointError(error: Error): void {
-    const now = Date.now();
     // connectionIssue is the bounded readiness diagnostic documented above: retain failures only
     // while the endpoint has not bound. Post-bind consumer/permission faults are still logged, but
     // presenting one as the current connection failure after readiness succeeded is stale and false.
     if (!this._connected && !this._stopping) this.lastConnectionError = error.message;
+    this.logEndpointNotice("error", error);
+  }
+
+  private handleEndpointWarning(error: Error): void {
+    this.logEndpointNotice("warning", error);
+  }
+
+  private logEndpointNotice(kind: "error" | "warning", error: Error): void {
+    const now = Date.now();
     const fingerprint = error.message.replace(/oc_[A-Za-z0-9]+_\d+/g, "oc_*");
-    const prior = this.endpointErrorLog.get(fingerprint);
+    const prior = this.endpointNoticeLog.get(fingerprint);
     if (prior && now - prior.lastLoggedAt < ENDPOINT_ERROR_LOG_WINDOW_MS) {
       prior.suppressed++;
       return;
     }
     const suffix = prior?.suppressed ? ` (${prior.suppressed} repeats suppressed)` : "";
-    this.endpointErrorLog.set(fingerprint, { lastLoggedAt: now, suppressed: 0 });
+    this.endpointNoticeLog.set(fingerprint, { lastLoggedAt: now, suppressed: 0 });
     // Bound the map even for a server producing novel error text on every request.
-    if (this.endpointErrorLog.size > 16) this.endpointErrorLog.delete(this.endpointErrorLog.keys().next().value!);
-    this.log(`endpoint error: ${error.message}${suffix}`);
+    if (this.endpointNoticeLog.size > 16) this.endpointNoticeLog.delete(this.endpointNoticeLog.keys().next().value!);
+    this.log(`endpoint ${kind}: ${error.message}${suffix}`);
   }
 
   private log(msg: string): void {

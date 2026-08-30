@@ -46,6 +46,8 @@ export function StatusBar({
         {canWrite ? null : <Text color="yellow">{"  read-only"}</Text>}
         {status.error ? (
           <Text color="red">{"  ! " + status.error}</Text>
+        ) : status.warning ? (
+          <Text color="yellow">{"  ! " + status.warning}</Text>
         ) : (
           <Text dimColor>{"   " + keys}</Text>
         )}

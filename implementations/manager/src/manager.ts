@@ -1052,9 +1052,11 @@ export class Manager {
       watchChannels: false,
       card: { id, ...(this.remoteAuthority ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.supervisor } : {}), name: this.name, role: "manager", kind: "endpoint" },
     });
-    // Surface endpoint errors (incl. NATS permission denials) — without a listener an
-    // emitted "error" would crash the supervisor.
-    this.ep.on("error", (e: Error) => console.error(`! manager endpoint: ${e.message}`));
+    // Raw failures ride error; conditions the endpoint is already surviving ride warning. Both
+    // matter to a supervisor operator, especially a failed standing-credential renewal.
+    const reportEndpoint = (e: Error) => console.error(`! manager endpoint: ${e.message}`);
+    this.ep.on("error", reportEndpoint);
+    this.ep.on("warning", reportEndpoint);
     await this.ep.start();
     await this.ep.setActivity(`supervisor (${this.runtime.kind})`);
     // Per-instance liveness lease (P2 item 3 — the old per-space singleton is DEMOTED per D9). Acquire

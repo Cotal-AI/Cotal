@@ -44,6 +44,7 @@ export async function openTransient(
     card: { name, kind: "endpoint" },
   });
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
+  ep.on("warning", (e: Error) => console.error(c.yellow("! " + e.message)));
   await ep.start();
   return { ep, space: conn.space };
 }
