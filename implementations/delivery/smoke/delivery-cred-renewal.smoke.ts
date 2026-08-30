@@ -13,6 +13,10 @@
  *      "file written" can never masquerade as "daemon adopted".
  *   4. CLEAN SWAP: a final explicit reload before the old JWT's exp — the run never logs
  *      "User Authentication Expired" and ends with a READY delivery lease.
+ *   4b. CROSS-HOST TWO-ROOT REFUSAL (#773): the renewal owner re-signs into a SEPARATE workspace
+ *      root, as a manager on another host does, and sends only the fingerprint. The daemon re-reads
+ *      its OWN root and refuses. The refusal is proven PERMANENT, which is what separates this from
+ *      the torn/stale read the same message also covers.
  *
  * NOTE: runs the BUILT dist — `pnpm build` first (the smoke:ci wiring builds).
  * Run: pnpm smoke:delivery-renewal   (needs `nats-server` on PATH; auth/JetStream, local-only; ~30s)
@@ -29,6 +33,7 @@ import {
   identityFromCreds,
   isReachable,
   createSpaceAuth,
+  credsFingerprint,
   mintConnectionEvictorCreds,
   mintCreds,
   mintMembershipObserverCreds,
@@ -164,6 +169,41 @@ try {
   writeFileSync(credsPath, await mintCreds(auth, identityFromCreds(credA), "delivery"), { mode: 0o600 });
   const recovered = await adminReq(sup, "reloadCreds");
   check("explicit reload after re-sign recovers from the stale state", recovered.ok === true, JSON.stringify(recovered));
+
+  // Phase 4b - #773, and it is numbered 4b so the eviction phase below keeps the number it has.
+  //
+  // First a CONTROL, which isolates transport from store semantics. `expected` is proven in-process
+  // by packages/core/smoke/membership-rw-renewal.smoke.ts case 3, but that calls reloadRwCreds()
+  // directly and nothing proves the fingerprint SURVIVES the delivery-admin rail. A value that
+  // cannot match anything must be refused. Were this to adopt, every manager adoption would be
+  // unverified and the two-root question below would not even be reachable.
+  const bogus = await adminReq2(sup, "reloadCreds", { expected: { delivery: "0".repeat(64) } });
+  check("an impossible expected fingerprint is refused over the ADMIN RAIL (expected survives transport)", bogus.ok === false && (bogus.error ?? "").includes("did not match the expected re-signed generation"), JSON.stringify(bogus));
+
+  // Now the two-root shape itself. Every phase above re-signs into the daemon's OWN root, so the
+  // renewal owner's store and the daemon's store are the same file and this suite cannot observe the
+  // stock cross-host composition at all. Here the owner writes its re-signed generation into a
+  // SEPARATE workspace root, which is what a manager on another host does, and sends the
+  // fingerprint, which is all `reloadCreds` transports. The daemon re-reads ITS root, finds the
+  // generation it already held, and refuses. The candidate is rejected before the preflight, so the
+  // resident connection is untouched and the phases after this one still run against a live daemon.
+  const managerRoot = mkdtempSync(join(tmpdir(), "cotal-dlv-renew-mgrroot-"));
+  mkdirSync(join(managerRoot, ".cotal"), { recursive: true });
+  // A DISTINCT TTL, so this generation cannot come out byte-identical to the one phase 4 wrote into
+  // the daemon's root. Two mints of the same identity with the same default TTL inside one second
+  // produce the same JWT and so the same fingerprint, which makes the daemon adopt correctly and
+  // hides the mismatch this phase exists to show.
+  const crossHostGen = await mintCreds(auth, identityFromCreds(credA), "delivery", { expiresInSeconds: 4200 });
+  writeFileSync(join(managerRoot, ".cotal", "delivery.creds"), crossHostGen, { mode: 0o600 });
+  const crossHost = await adminReq2(sup, "reloadCreds", { expected: { delivery: credsFingerprint(crossHostGen) } });
+  check("#773: a generation re-signed into the MANAGER's root is refused by a daemon reading its own root", crossHost.ok === false && (crossHost.error ?? "").includes("did not match the expected re-signed generation"), JSON.stringify(crossHost));
+  // The message returned covers "a different store, or a torn/stale read" without separating them,
+  // and that is the defect rather than an incidental wording choice: a torn read converges on the
+  // next attempt, two different stores never do. Retrying is therefore not a repair here, and an
+  // identical second pass failing identically is what proves which of the two conditions this is.
+  const crossHostAgain = await adminReq2(sup, "reloadCreds", { expected: { delivery: credsFingerprint(crossHostGen) } });
+  check("#773: that refusal is PERMANENT, not transient - an identical retry fails identically", crossHostAgain.ok === false && (crossHostAgain.error ?? "").includes("did not match the expected re-signed generation"), JSON.stringify(crossHostAgain));
+  rmSync(managerRoot, { recursive: true, force: true });
 
   // Phase 5 — the LIVE-EVICTION EXECUTOR on the same rail (D5 slice 6): a victim connection is
   // force-dropped by principal via the daemon's per-call $SYS observer+evictor, structured result.
