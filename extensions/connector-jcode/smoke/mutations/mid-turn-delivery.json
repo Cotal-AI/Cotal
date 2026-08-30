@@ -21,8 +21,8 @@
     {
       "name": "M1 leave directed mid-turn DMs parked in the connector inbox",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "        const current = client;\n        const request = current.softInterrupt(sessionId, injection, false);",
-      "replace": "        const current = client;\n        return;",
+      "find": "        const current: JcodeClient = client;\n        const request = current.softInterrupt(sessionId, injection, false);",
+      "replace": "        const current: JcodeClient = client;\n        return;",
       "expectRed": "short, 4 KiB, and 64 KiB DMs reach the recipient session before the active turn ends (#910)"
     },
     {

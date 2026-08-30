@@ -470,7 +470,7 @@ export async function runJcodeHost(): Promise<void> {
         if (!items.length || !turnActive) return;
         const injection = formatInjection(items);
         if (!injection) return;
-        const current = client;
+        const current: JcodeClient = client;
         const request = current.softInterrupt(sessionId, injection, false);
         steerSettled = request.catch(() => {});
         await request;
