@@ -85,6 +85,23 @@ const BOOT_TEXT = "Introduce yourself in #general, then wait.";
     refused = (e as Error).message;
   }
   check("a blank initial prompt is refused at launch, not silently ignored", /empty/i.test(refused), refused);
+
+  process.env.COTAL_OPENCODE_BIN = "/operator/pinned-opencode";
+  try {
+    const pinned = opencodeConnector.buildLaunch({
+      space: "bootspace",
+      name: "boot-pinned",
+      resolvedBinaries: { opencode: "/boot/resolved-opencode" },
+    });
+    check(
+      "operator COTAL_OPENCODE_BIN wins over the manager boot fallback",
+      pinned.env?.COTAL_OPENCODE_BIN === "/operator/pinned-opencode" &&
+        pinned.env?.COTAL_OPENCODE_RESOLVED_BIN === "/boot/resolved-opencode",
+      pinned.env,
+    );
+  } finally {
+    delete process.env.COTAL_OPENCODE_BIN;
+  }
 }
 
 // ── 2. the plugin: does a boot with a prompt actually drive a turn? ──────────────────────────────
@@ -343,7 +360,7 @@ try {
 // from a finished red run cannot grade this suite at all.
 console.log(
   fail === 0
-    ? `\nOPENCODE BOOT-PROMPT TEST PASSED ✅  (${pass} checks)`
-    : `\nOPENCODE BOOT-PROMPT TEST FAILED ❌  (${pass} passed, ${fail} failed)`,
+    ? `\nOPENCODE BOOT-PROMPT TEST PASSED ✅ — ${pass} passed, ${fail} failed`
+    : `\nOPENCODE BOOT-PROMPT TEST FAILED ❌ — ${pass} passed, ${fail} failed`,
 );
 process.exit(fail === 0 ? 0 : 1);

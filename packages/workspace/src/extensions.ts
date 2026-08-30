@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, 
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Command, Extension, ExtensionRef, FlagSpec } from "@cotal-ai/core";
+import type { Command, Connector, Extension, ExtensionRef, FlagSpec } from "@cotal-ai/core";
 import { globalConfigDir } from "@cotal-ai/core";
 import { inspectLock } from "./advisory-lock.js";
 import { localProcessPath, type LocalProcess } from "./local-process.js";
@@ -35,6 +35,13 @@ export interface CachedCommand {
   readonly positionals?: string;
 }
 
+/** Connector boot metadata cached at install time so the manager can inspect harness availability
+ * without importing every connector package and defeating lazy materialization. */
+export interface CachedConnector {
+  readonly name: string;
+  readonly requires: readonly string[];
+}
+
 export interface InstalledExtension {
   /** The npm package name (the import + `node_modules` key). */
   readonly pkg: string;
@@ -49,6 +56,8 @@ export interface InstalledExtension {
    *  loader derives `command:<name>` entries from `commands` for compatibility. */
   readonly provides?: readonly ExtensionRef[];
   readonly commands: readonly CachedCommand[];
+  /** Declarative connector harness metadata used at manager boot without importing package code. */
+  readonly connectors?: readonly CachedConnector[];
   /** Declarative process metadata used without importing package code. */
   readonly localProcesses?: readonly LocalProcess[];
 }
@@ -130,6 +139,23 @@ export function cacheCommand(cmd: Command): CachedCommand {
     flags: cmd.flags,
     positionals: cmd.positionals,
   };
+}
+
+export function cacheConnector(connector: Connector): CachedConnector {
+  return { name: connector.name, requires: [...(connector.requires ?? [])] };
+}
+
+/** Connector boot metadata from one installed package. An older manifest that advertised a
+ * connector but lacks this cache is loud and repairable, never silently treated as requirement-free. */
+export function extensionConnectors(ext: InstalledExtension): readonly CachedConnector[] {
+  const advertised = extensionProvides(ext).filter((ref) => ref.kind === "connector");
+  if (!advertised.length) return [];
+  if (!ext.connectors)
+    throw new Error(`installed extension ${ext.pkg}@${ext.version} has no cached connector requirements - re-run \`cotal ext add ${ext.pkg}\``);
+  for (const ref of advertised)
+    if (!ext.connectors.some((connector) => connector.name === ref.name))
+      throw new Error(`installed extension ${ext.pkg}@${ext.version} advertises connector ${ref.name} without cached requirements - re-run \`cotal ext add ${ext.pkg}\``);
+  return ext.connectors;
 }
 
 /** Stable, serializable registry keys contributed by one imported package. */

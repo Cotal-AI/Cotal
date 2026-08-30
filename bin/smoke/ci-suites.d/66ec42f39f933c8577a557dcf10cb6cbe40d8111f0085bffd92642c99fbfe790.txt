@@ -1,0 +1,2 @@
+# Moved from the frozen ci-suites.txt tail during the merge with main (#1052 fragments).
+smoke:tool-list-announce

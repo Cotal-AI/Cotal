@@ -1,0 +1,33 @@
+{
+  "suite": "extensions/connector-hermes/smoke/launch-env.smoke.ts",
+  "guard": "the manager's boot-resolved uv executable reaches the Hermes launcher and is the command it executes",
+  "command": "pnpm smoke:hermes-launch-env",
+  "progressPattern": "launch-env smoke:",
+  "minTicks": 1,
+  "mutations": [
+    {
+      "name": "Hermes launch drops the manager-boot uv path",
+      "file": "extensions/connector-hermes/src/extension.ts",
+      "find": "    if (opts.resolvedBinaries?.uv) env.COTAL_HERMES_UV_BIN = opts.resolvedBinaries.uv;",
+      "replace": "    void opts.resolvedBinaries?.uv;",
+      "expectRed": "the exact manager-boot uv path reaches the launcher",
+      "cell": "the exact manager-boot uv path reaches the launcher"
+    },
+    {
+      "name": "Hermes gateway spawn ignores the manager-boot uv path",
+      "file": "extensions/connector-hermes/src/binary.ts",
+      "find": "  return spawnImpl(hermesUvCommand(opts.env), [\"run\", \"--project\", opts.pkgDir, \"hermes\", \"gateway\", \"run\"], spawnOptions);",
+      "replace": "  return spawnImpl(\"uv\", [\"run\", \"--project\", opts.pkgDir, \"hermes\", \"gateway\", \"run\"], spawnOptions);",
+      "expectRed": "the gateway spawn executes the exact manager-boot uv path",
+      "cell": "the gateway spawn executes the exact manager-boot uv path"
+    },
+    {
+      "name": "Hermes version inspection ignores the manager-boot uv path",
+      "file": "extensions/connector-hermes/src/launch.ts",
+      "find": "      hermesUvCommand(opts.env),",
+      "replace": "      \"uv\",",
+      "expectRed": "version inspection executes the exact manager-boot uv path",
+      "cell": "version inspection executes the exact manager-boot uv path"
+    }
+  ]
+}

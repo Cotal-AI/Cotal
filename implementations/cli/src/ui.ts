@@ -8,7 +8,7 @@ export { c, color256 } from "@cotal-ai/workspace";
 export function statusBadge(status: PresenceStatus): string {
   switch (status) {
     case "working":
-      return c.green("● working");
+      return c.green("● working · progress unknown");
     case "waiting":
       return c.yellow("◐ waiting");
     case "idle":

@@ -1,0 +1,3 @@
+# A focus mention ack-dropped before Claude channel activation must be re-notified on activation.
+# Mutation-proofed - extensions/connector-claude-code/smoke/mutations/activation-wake-reconcile.json.
+smoke:claude-activation-wake

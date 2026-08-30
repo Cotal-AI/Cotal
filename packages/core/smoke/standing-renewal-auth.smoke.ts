@@ -56,7 +56,10 @@ const space = `renewal-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
-const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+let brokerLog = "";
+const srv = spawn("nats-server", ["-D", "-c", join(dir, "server.conf")], { stdio: ["ignore", "pipe", "pipe"] });
+srv.stdout?.on("data", (d: Buffer) => { brokerLog += d.toString(); });
+srv.stderr?.on("data", (d: Buffer) => { brokerLog += d.toString(); });
 const releaseBroker = teardownOnSignal(srv, dir);
 
 try {
@@ -109,6 +112,70 @@ try {
   check("endpoint survives its first cred's expiry (round-trip after exp on the renewed cred)", aliveAfterExp);
   check("no renewal errors on the happy path", errors.length === 0, errors);
   await ep.stop();
+
+  // A failed renewal must never leave the reconnect path presenting the cached, now-expired cred.
+  // The source recovers after the first rebuild so this also proves the guard does not strand a
+  // renewable endpoint: it refuses dead material locally, then reconnects on the fresh cred.
+  const expiring = newIdentity();
+  let expiringReads = 0;
+  let failedRebuildLogStart = -1;
+  const expiringErrors: string[] = [];
+  // Recoverable notices — the failed renewal and the pre-dial refusal below — ride `warning`,
+  // not `error`: Node rethrows an unhandled `error` and would kill a host the endpoint is still
+  // surviving (#891). The subject here is that the refusal is LOUD and names the renewal path.
+  const expiringWarnings: string[] = [];
+  const expiringSource = () => {
+    expiringReads++;
+    if (expiringReads <= 3) {
+      if (expiringReads === 1)
+        return mintCreds(auth, expiring, "supervisor", { expiresInSeconds: 3 });
+      if (expiringReads === 3) failedRebuildLogStart = brokerLog.length;
+      throw new Error("fixture renewal source offline");
+    }
+    return mintCreds(auth, expiring, "supervisor", { expiresInSeconds: 60 });
+  };
+  const expiringEp = new CotalEndpoint({
+    space,
+    servers: SERVERS,
+    creds: expiringSource,
+    card: { id: expiring.id, name: "expired-creds", kind: "endpoint" },
+    consume: false,
+    lifecycleUid: mintLifecycleUid(),
+    registerPresence: false,
+    watchChannels: false,
+    watchPresence: false,
+  });
+  expiringEp.on("error", (e: Error) => { expiringErrors.push(e.message); });
+  expiringEp.on("warning", (e: Error) => { expiringWarnings.push(e.message); });
+  await expiringEp.start();
+  let recovered = false;
+  const recoveryDeadline = Date.now() + 15_000;
+  while (!recovered && Date.now() < recoveryDeadline) {
+    if (expiringReads >= 4) {
+      try { await expiringEp.setActivity("recovered"); recovered = true; }
+      catch { /* still rebuilding */ }
+    }
+    if (!recovered) await wait(50);
+  }
+  check(
+    "an endpoint whose creds renewal fails recovers when its source returns",
+    recovered,
+    { reads: expiringReads, errors: expiringErrors },
+  );
+  const expiredCredDenials = brokerLog.slice(failedRebuildLogStart).split("\n").filter((l) =>
+    /User JWT no longer valid.*claim is expired|cotal:expired-creds.*User Authentication Expired/.test(l),
+  );
+  check(
+    "a rebuild presents cached expired creds to the broker ZERO times after renewal fails",
+    failedRebuildLogStart >= 0 && expiredCredDenials.length === 0,
+    { failedRebuildLogStart, denials: expiredCredDenials },
+  );
+  check(
+    "the pre-dial refusal is loud and names the failing renewal path",
+    expiringWarnings.some((m) => /creds have expired.*renewal.*failing/.test(m)),
+    { warnings: expiringWarnings, errors: expiringErrors },
+  );
+  await expiringEp.stop();
 
   // ── Fail-loud edges.
   const other = newIdentity();

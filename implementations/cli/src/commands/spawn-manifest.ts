@@ -31,7 +31,7 @@ import { findMesh } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
-import { assertManagerRecordReplaceable, startManagerDetached } from "../lib/manager-proc.js";
+import { assertManagerRecordReplaceable, managerLogDisplayPath, startManagerDetached } from "../lib/manager-proc.js";
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, channelsSeed, genRunId, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
 import { buildLedger, buildLedgerAgentRow, hashManifestSource, listLedgers, writeLedger, type LedgerAgent } from "../lib/manifest/ledger.js";
@@ -229,17 +229,17 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
         // Nobody owns the space — stand up a manager (it acquires the lease on boot). The lease says
         // nobody is ANSWERING; it does not say the recorded pid is dead, so the pidfile is checked
         // before we overwrite it. This path used to skip that entirely.
-        assertManagerRecordReplaceable();
+        assertManagerRecordReplaceable(undefined, undefined, space);
         startManagerDetached({ space, server: connection.server, runtime, attachHost });
       } else if (!launchReady) {
         // A lease exists but its holder doesn't answer control — a STALE key a crashed manager left. It
         // blocks a replacement's acquire until the bucket TTL expires; wait it out, then stand one up.
         console.log(c.dim(`  ~ a manager lease for "${space}" is present but unanswered (holder pid ${launchHeld.pid}); waiting up to ${Math.ceil(MANAGER_LEASE_TTL_MS / 1000)}s for it to expire…`));
         if (!(await waitLeaseGone(ep, MANAGER_LEASE_TTL_MS + 5_000))) {
-          console.error(c.red(`✗ a manager lease for "${space}" is still held by an unresponsive holder (pid ${launchHeld.pid}) after its TTL - stop it or check .cotal/manager.log`));
+          console.error(c.red(`✗ a manager lease for "${space}" is still held by an unresponsive holder (pid ${launchHeld.pid}) after its TTL - stop it or check ${managerLogDisplayPath(space)}`));
           process.exit(1);
         }
-        assertManagerRecordReplaceable(); // an expired lease still says nothing about the recorded pid
+        assertManagerRecordReplaceable(undefined, undefined, space); // an expired lease still says nothing about the recorded pid
         startManagerDetached({ space, server: connection.server, runtime, attachHost });
       }
       // else: a live manager already answered — reuse it. All paths converge here: confirm a manager is
@@ -247,7 +247,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
       // `held` snapshot, which can turn over during the probe / a concurrent start — TOCTOU). Fail LOUD if
       // a foreign-checkout or wrong-runtime manager won the space before we launch into it.
       if (!(await waitManagerReady(ep))) {
-        console.error(c.red("✗ manager did not become ready for control - see .cotal/manager.log"));
+        console.error(c.red(`✗ manager did not become ready for control - see ${managerLogDisplayPath(space)}`));
         process.exit(1);
       }
       const live = await ep.readManagerLease();

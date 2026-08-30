@@ -23,7 +23,9 @@ completes. The no-race boundary is per alias: `spawn` for an alias still reconci
 that exact lifecycle terminal attempt returns; unrelated aliases and read-only control remain
 available. A terminal error releases that alias fence so the sweep can continue, but leaves the
 slot wedged until the next manager start re-drives it; `k/N` is sweep progress, not a count of
-successful terminals.
+successful terminals. An active orphan retires only after delivery-admin has verified its broker
+principal gone. The broker result is persisted in the lifecycle's per-UID audit record before
+cleanup and alias reuse. The orphan OS process is not reaped by this reconciliation path.
 
 ## Maintenance API
 

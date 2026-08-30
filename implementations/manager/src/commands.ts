@@ -23,7 +23,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  authDir, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, loadManagerInstanceIdentity, resolveMeshTarget, soleSpaceOf, workspaceSecretStore,
+  authDir, canonicalLocalProcessPath, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, loadManagerInstanceIdentity, reclaimDeadPreUpgradeRecord, resolveMeshTarget, soleSpaceOf, workspaceSecretStore,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE,
 } from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
@@ -60,14 +60,21 @@ type Values = Record<string, string | undefined>;
  * A folder with no `.cotal/` is not a workspace and gets no record: creating one here would plant a
  * stray workspace root wherever a manager happened to be started.
  */
-function recordManagerPid(root: string): () => void {
+export function recordManagerPid(root: string, space: string): () => void {
   const dir = join(root, ".cotal");
   if (!existsSync(dir)) {
     console.error(c.dim(`• no ${dir} here, so this manager is not recorded in a pidfile (nothing local will find it by pid)`));
     return () => {};
   }
-  const pidPath = join(dir, MANAGER_PIDFILE);
-  const markerPath = join(dir, MANAGER_DELIVERY_AWARE_MARKER);
+  // The names are `{space}` TEMPLATES, so they go through the local-process expansion rather than
+  // `join`: a `join(dir, MANAGER_PIDFILE)` would now write a file literally called
+  // `manager.{space}.pid` that no reader resolves. The CANONICAL path, and the pre-upgrade record is
+  // reclaimed first so an upgraded root does not end up holding both names.
+  const ctx = { root, space };
+  reclaimDeadPreUpgradeRecord(MANAGER_PIDFILE, ctx);
+  reclaimDeadPreUpgradeRecord(MANAGER_DELIVERY_AWARE_MARKER, ctx);
+  const pidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, ctx);
+  const markerPath = canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, ctx);
   const mine = String(process.pid);
   writeFileSync(pidPath, mine);
   // Written together and removed together: the marker proves the LIVE pid is a non-hosting build,
@@ -302,7 +309,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
   await mgr.start();
   // AFTER start, not before: a manager that failed to come up must not leave a record claiming it
   // did. `findCotalRoot` is the same root the Manager itself defaulted to.
-  const releasePidRecord = recordManagerPid(findCotalRoot());
+  const releasePidRecord = recordManagerPid(findCotalRoot(), space);
   console.log(
     c.green("✓ manager up") +
       c.dim(` (space ${space} · ${mgr.runtimeKind})`) +
@@ -433,7 +440,7 @@ async function runReconcileGate(args: ParsedArgs): Promise<void> {
     });
     console.log(
       c.green(`✓ ${endpoint}/${instanceId}: gate reopened at generation ${report.reopenedAtGeneration}`) +
-        ` (processEpoch unchanged at ${report.before.processEpoch}; ${report.revoked.length} credential(s) revoked, ${report.evicted.length} holder(s) verify-evicted). Start the manager to let its normal takeover run.`,
+        ` (processEpoch unchanged at ${report.before.processEpoch}; ${report.revoked.length} credential(s) revoked this attempt, ${report.holdersVerifiedThisAttempt.length} holder(s) verify-evicted this attempt, ${report.holdersVerifiedBeforeAttempt.length} already verified, ${report.holdersRemaining.length} remaining; repair cursor ${report.repairCursorCleanup}). Start the manager to let its normal takeover run.`,
     );
   } catch (e) {
     // A refusal is the DESIGNED outcome for every state this does not repair, so it prints the

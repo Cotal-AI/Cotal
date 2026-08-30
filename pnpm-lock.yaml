@@ -57,6 +57,9 @@ importers:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
 
   bin:
     dependencies:
@@ -452,6 +455,9 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@cotal-ai/auth':
+        specifier: workspace:*
+        version: link:../auth
       '@cotal-ai/smoke-kit':
         specifier: workspace:*
         version: link:../../packages/smoke-kit
@@ -542,9 +548,21 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@cotal-ai/auth':
+        specifier: workspace:*
+        version: link:../auth
+      '@cotal-ai/connector-claude-code':
+        specifier: workspace:*
+        version: link:../../extensions/connector-claude-code
+      '@cotal-ai/connector-codex':
+        specifier: workspace:*
+        version: link:../../extensions/connector-codex
       '@cotal-ai/connector-core':
         specifier: workspace:*
         version: link:../../extensions/connector-core
+      '@cotal-ai/connector-opencode':
+        specifier: workspace:*
+        version: link:../../extensions/connector-opencode
       '@cotal-ai/smoke-kit':
         specifier: workspace:*
         version: link:../../packages/smoke-kit
