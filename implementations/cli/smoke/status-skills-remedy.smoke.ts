@@ -112,7 +112,9 @@ try {
   assert.notEqual(refusedDemo.code, 0, "setup --skills --demo is refused");
 
   const setupSource = readFileSync(join(repoRoot, "implementations", "cli", "src", "commands", "setup.ts"), "utf8");
-  assert.match(setupSource, /await reconcileConnectorSkills\(\);\s*seedAgentSkills\(\);/, "setup --skills dispatches only provider and cross-vendor skills reconcile");
+  const skillsOnly = setupSource.slice(setupSource.indexOf("async function runSkillsOnly"), setupSource.indexOf("\n}\n", setupSource.indexOf("async function runSkillsOnly")) + 2);
+  assert.match(skillsOnly, /await reconcileConnectorSkills\(\);\s*seedAgentSkills\(\);/, "setup --skills dispatches only provider and cross-vendor skills reconcile");
+  assert.doesNotMatch(skillsOnly, /seedDefaultAgent|runEnsure/, "setup --skills dispatch contains no persona or full-setup path");
   assert.doesNotMatch(setupSource, /plugin", "(?:install|update)"|\.claude-plugin|--scope/, "generic setup owns no harness plugin command or asset path");
 
   console.log("status-skills-remedy.smoke: all assertions passed");
