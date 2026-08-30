@@ -1,0 +1,17 @@
+{
+  "suite": "extensions/connector-opencode/smoke/boot-prompt.smoke.ts",
+  "guard": "an operator COTAL_OPENCODE_BIN pin wins over the manager's boot-resolved fallback",
+  "command": "pnpm smoke:opencode-boot-prompt",
+  "progressPattern": "✓",
+  "minTicks": 6,
+  "mutations": [
+    {
+      "name": "manager boot fallback overwrites the operator OpenCode binary pin",
+      "file": "extensions/connector-opencode/src/extension.ts",
+      "find": "    if (opts.resolvedBinaries?.opencode) env.COTAL_OPENCODE_RESOLVED_BIN = opts.resolvedBinaries.opencode;",
+      "replace": "    if (opts.resolvedBinaries?.opencode) env.COTAL_OPENCODE_BIN = opts.resolvedBinaries.opencode;",
+      "expectRed": "operator COTAL_OPENCODE_BIN wins over the manager boot fallback",
+      "cell": "operator COTAL_OPENCODE_BIN wins over the manager boot fallback"
+    }
+  ]
+}

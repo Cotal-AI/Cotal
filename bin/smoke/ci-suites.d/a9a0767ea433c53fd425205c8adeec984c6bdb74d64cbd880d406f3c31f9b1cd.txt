@@ -1,0 +1,1 @@
+smoke:web-history-cancellation

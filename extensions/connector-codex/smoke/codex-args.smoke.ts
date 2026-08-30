@@ -54,6 +54,18 @@ try {
   check("declared provider key is forwarded", base.env?.OPENAI_API_KEY === "sk-test-canary");
   check("ambient per-session COTAL_* is withheld", base.env?.COTAL_CREDS === undefined && base.env?.COTAL_LIFECYCLE_UID === undefined);
 
+  process.env.COTAL_CODEX_BIN = "/operator/pinned-codex";
+  try {
+    const pinned = codexConnector.buildLaunch({ space: "s", name: "n", resolvedBinaries: { codex: "/boot/resolved-codex" } });
+    check(
+      "operator COTAL_CODEX_BIN wins over the manager boot fallback",
+      pinned.env?.COTAL_CODEX_BIN === "/operator/pinned-codex" && pinned.env?.COTAL_CODEX_RESOLVED_BIN === "/boot/resolved-codex",
+      pinned.env,
+    );
+  } finally {
+    delete process.env.COTAL_CODEX_BIN;
+  }
+
   // Workspace root pins the data root.
   const rooted = codexConnector.buildLaunch({ space: "s", name: "n", workspaceRoot: dir });
   check("workspaceRoot pins the codex data root", rooted.env?.COTAL_CODEX_HOME === dir);
@@ -229,7 +241,7 @@ try {
   check("resume support is NOT declared (pre-mint preflight)", codexConnector.supportsResume !== true);
   check("requires names the codex binary", Array.isArray(codexConnector.requires) && codexConnector.requires.includes("codex"));
 
-  console.log(`\nCODEX ARGS SMOKE PASSED ✅  (${pass} checks)`);
+  console.log(`\n${pass} checks passed`);
 } finally {
   delete process.env.SUPER_SECRET_LEAK_CANARY;
   rmSync(dir, { recursive: true, force: true });

@@ -1,0 +1,17 @@
+{
+  "suite": "extensions/connector-jcode/smoke/startup-diagnostics.smoke.ts",
+  "guard": "the per-seat Jcode connector log is owner-only and refuses a pre-planted logs symlink rather than writing outside the managed home",
+  "command": "pnpm smoke:jcode-startup-diagnostics",
+  "progressPattern": "✓",
+  "minTicks": 3,
+  "mutations": [
+    {
+      "name": "Jcode connector logs follow a pre-planted directory symlink",
+      "file": "extensions/connector-jcode/src/startup-diagnostics.ts",
+      "find": "    if (stats.isSymbolicLink()) throw new Error(`refusing symlinked Jcode connector log directory: ${logs}`);",
+      "replace": "    if (false) throw new Error(\"mutant\");",
+      "expectRed": "connector diagnostic log refuses a pre-planted logs symlink",
+      "cell": "connector diagnostic log refuses a pre-planted logs symlink"
+    }
+  ]
+}

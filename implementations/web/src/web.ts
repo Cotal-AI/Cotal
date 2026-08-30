@@ -309,8 +309,8 @@ export const PAGE: Record<string, { path: string; type: string }> = {
  *  is measured through, and a mock satisfying six methods it never calls would prove less. */
 export interface ActivitySource {
   listChannels(): Promise<{ channel: string; messages: number; config?: unknown }[]>;
-  channelHistory(channel: string, opts: { limit: number }): Promise<CotalMessage[]>;
-  dmHistory(opts: { limit: number }): Promise<CotalMessage[]>;
+  channelHistory(channel: string, opts: { limit: number; signal?: AbortSignal }): Promise<CotalMessage[]>;
+  dmHistory(opts: { limit: number; signal?: AbortSignal }): Promise<CotalMessage[]>;
 }
 
 /** The channels this dashboard LISTS and BACKFILLS: chat only.
@@ -388,21 +388,22 @@ const LATE = Symbol("late");
 
 /** A promise that resolves at `ms`, plus the handle to cancel its timer. `unref` alone is not
  *  enough: an 8-second timer in a long-lived server would hold a poll's worth of state per request. */
-function deadline(ms: number): { until: Promise<typeof LATE>; done(): void } {
+function deadline(ms: number): { until: Promise<typeof LATE>; signal: AbortSignal; done(): void } {
+  const controller = new AbortController();
   let timer: NodeJS.Timeout;
   const until = new Promise<typeof LATE>((resolve) => {
-    timer = setTimeout(() => resolve(LATE), ms);
+    timer = setTimeout(() => {
+      resolve(LATE);
+      controller.abort(new DOMException(`history read deadline exceeded after ${ms}ms`, "AbortError"));
+    }, ms);
     timer.unref();
   });
-  return { until, done: () => clearTimeout(timer) };
+  return { until, signal: controller.signal, done: () => clearTimeout(timer) };
 }
 
-/** Race one source against the request's deadline.
- *
- *  THE WORK IS ABANDONED, NOT CANCELLED, and that is stated rather than implied: a JetStream read in
- *  flight has no cancel, so a late read keeps running until it finishes and its ephemeral consumer is
- *  reclaimed by its own inactivity threshold. "Bounded" here means the RESPONSE is bounded. Claiming
- *  it bounds broker work would be the silent half of the defect this deadline exists to fix. */
+/** Race one source against the request's deadline. History sources receive the deadline signal, so
+ *  a late JetStream read stops its pull iterator and deletes its ephemeral consumer instead of keeping
+ *  the shared link busy after this response has moved on. */
 async function within<T>(p: Promise<T>, until: Promise<typeof LATE>): Promise<T | typeof LATE> {
   return Promise.race([p, until]);
 }
@@ -652,18 +653,18 @@ export async function activityBackfill(
       throw new Error(`the channel list did not arrive within ${deadlineMs}ms`);
     const chans = chatOnly(listed);
 
-    type Src = { name: string; read: () => Promise<ActivityPage["entries"]> };
+    type Src = { name: string; read: (signal: AbortSignal) => Promise<ActivityPage["entries"]> };
     const sources: Src[] = [
       ...chans.map((ch) => ({
         name: `#${ch.channel}`,
         // Each message is tagged with the channel this server REQUESTED, so the backfill path does
         // not depend on the payload claim either.
-        read: async () =>
-          (await ep.channelHistory(ch.channel, { limit })).map((msg) => ({ mode: "chat" as const, channel: ch.channel, msg })),
+        read: async (signal: AbortSignal) =>
+          (await ep.channelHistory(ch.channel, { limit, signal })).map((msg) => ({ mode: "chat" as const, channel: ch.channel, msg })),
       })),
       {
         name: "direct messages",
-        read: async () => (await ep.dmHistory({ limit })).map((msg) => ({ mode: "unicast" as const, msg })),
+        read: async (signal: AbortSignal) => (await ep.dmHistory({ limit, signal })).map((msg) => ({ mode: "unicast" as const, msg })),
       },
     ];
 
@@ -680,7 +681,7 @@ export async function activityBackfill(
         const i = next++;
         if (i >= sources.length || expired) return;
         try {
-          const r = await within(sources[i].read(), clock.until);
+          const r = await within(sources[i].read(clock.signal), clock.until);
           if (r !== LATE) settled[i] = r;
         } catch {
           // A source that FAILED is missing for the same reason a late one is: it has nothing to
@@ -986,7 +987,7 @@ export async function web(args: ParsedArgs): Promise<void> {
       const clock = deadline(AGGREGATION_DEADLINE_MS);
       try {
         const dms = await within(
-          ep.dmHistory({ limit }).catch((e: unknown) => {
+          ep.dmHistory({ limit, signal: clock.signal }).catch((e: unknown) => {
             throw new Error(`direct messages: the read failed: ${e instanceof Error ? e.message : String(e)}`);
           }),
           clock.until,
@@ -1013,7 +1014,7 @@ export async function web(args: ParsedArgs): Promise<void> {
       const clock = deadline(AGGREGATION_DEADLINE_MS);
       try {
         const page = await within(
-          ep.channelHistory(name, { limit }).catch((e: unknown) => {
+          ep.channelHistory(name, { limit, signal: clock.signal }).catch((e: unknown) => {
             throw new Error(`#${name}: the read failed: ${e instanceof Error ? e.message : String(e)}`);
           }),
           clock.until,

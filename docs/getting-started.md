@@ -66,9 +66,10 @@ time, it walks you through:
 
 1. **Checks.** Verifies Node 22+ and locates a `nats-server` (the bundled one, or your
    own on PATH). Located only; nothing starts.
-2. **Picks connectors.** Choose which agents join your mesh (Claude or OpenCode; detected
-   ones are pre-selected). Claude installs a plugin, because its wake channel needs one.
-   OpenCode needs no install; it auto-wires when you `cotal spawn` it.
+2. **Picks connectors.** Choose from every installed connector; detected ones are pre-selected.
+   The list and its hints come from the connectors themselves, never from a name the CLI knows: a
+   connector that declares its own setup runs it (Claude installs its plugin that way), a connector
+   missing a required executable is named, and the rest are ready at spawn.
 3. **Seeds one agent.** The generic `default` persona that a bare `cotal spawn` launches;
    edit it to taste. It joins no channels at boot, but may join, create, read, and post to
    channels on demand. `cotal setup --demo` additionally seeds a guided team to talk to:

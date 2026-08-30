@@ -178,6 +178,16 @@ const server = createServer((socket) => {
           reply({ ev: "attached", session: { session_id: "fake-session", working_dir: sessionWorkingDir, status: "idle" } });
           break;
         case "set_model":
+          if (process.env.FAKE_JCODE_REFUSE_MODEL === frame.model) {
+            reply({
+              ev: "error",
+              code: "invalid_request",
+              message: process.env.FAKE_JCODE_MODEL_ERROR ?? `model ${frame.model} was refused`,
+            });
+          } else {
+            reply({ ev: "ok" });
+          }
+          break;
         case "detach_session":
         case "ping":
           reply({ ev: frame.req === "ping" ? "pong" : "ok" });
@@ -197,7 +207,7 @@ const server = createServer((socket) => {
           reply({ ev: "ok" });
           break;
         case "get_runtime_info":
-          reply({ ev: "runtime_info", session_id: frame.session_id, model: "fake-model", routes: [] });
+          reply({ ev: "runtime_info", session_id: frame.session_id, model: process.env.FAKE_JCODE_RUNTIME_MODEL ?? "fake-model", routes: [] });
           break;
         case "send_message":
           if (process.env.FAKE_JCODE_READINESS_REFUSAL === "1" && !frame.no_reply && String(frame.content).includes("Call the cotal_orientation tool exactly once now")) {

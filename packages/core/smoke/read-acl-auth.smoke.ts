@@ -34,6 +34,8 @@ import {
   chatStream,
   dmStream,
   taskStream,
+  dlvStream,
+  epcStreamName,
   chatSubject,
   chatDurable,
   chatHistDurable,
@@ -156,12 +158,22 @@ try {
   });
   check("F: an agent cannot create a CHAT-stream consumer (no grant — probed via the removed chat_<id> name)", f.kind === "blocked", f);
 
-  // G — STREAM.INFO on DM/TASK is NOT granted (agents bind by name; granting it would leak DM-inbox
-  // and task subject metadata across peers). CHAT STREAM.INFO IS granted (documented metadata surface).
+  // G — this agent carries NO role, and a role-less agent gets no stream-level read on any per-peer
+  // stream. It reaches DM and DLV through a pre-created durable by name and EPC through a
+  // subject-scoped DIRECT.GET, so none of them needs INFO; TASK it has no grant on at all, because
+  // `STREAM.INFO.TASK` rides the same `if (svcD)` role gate as the svc_<role> bind rows (the
+  // role-carrying side of that gate is proven in provision-stream-info.smoke.ts). Granting INFO on
+  // any of these would leak DM-inbox, task, and delivery subject metadata across peers:
+  // `subjects_filter` is a request-body field, so no ACL can narrow INFO to counts alone. CHAT
+  // STREAM.INFO IS granted (a documented metadata surface, SPEC §9).
   const gdm = await jsApi(ag, `$JS.API.STREAM.INFO.${dmStream(space)}`, {});
   check("G1: STREAM.INFO on DM is blocked (no DM metadata leak)", gdm.kind === "blocked", gdm);
   const gtask = await jsApi(ag, `$JS.API.STREAM.INFO.${taskStream(space)}`, {});
   check("G2: STREAM.INFO on TASK is blocked", gtask.kind === "blocked", gtask);
+  const gdlv = await jsApi(ag, `$JS.API.STREAM.INFO.${dlvStream(space)}`, {});
+  check("G3: STREAM.INFO on DLV is blocked (no delivery metadata leak)", gdlv.kind === "blocked", gdlv);
+  const gepc = await jsApi(ag, `$JS.API.STREAM.INFO.${epcStreamName(space)}`, {});
+  check("G4: STREAM.INFO on EPC is blocked", gepc.kind === "blocked", gepc);
 
   // H — direct message-body read on CHAT (STREAM.MSG.GET) is NOT granted: history must ride the
   // ACL-bounded ephemeral consumers, never a raw per-seq fetch.

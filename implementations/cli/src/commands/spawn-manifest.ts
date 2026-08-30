@@ -229,7 +229,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
         // Nobody owns the space — stand up a manager (it acquires the lease on boot). The lease says
         // nobody is ANSWERING; it does not say the recorded pid is dead, so the pidfile is checked
         // before we overwrite it. This path used to skip that entirely.
-        assertManagerRecordReplaceable();
+        assertManagerRecordReplaceable(undefined, undefined, space);
         startManagerDetached({ space, server: connection.server, runtime, attachHost });
       } else if (!launchReady) {
         // A lease exists but its holder doesn't answer control — a STALE key a crashed manager left. It
@@ -239,7 +239,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
           console.error(c.red(`✗ a manager lease for "${space}" is still held by an unresponsive holder (pid ${launchHeld.pid}) after its TTL - stop it or check .cotal/manager.log`));
           process.exit(1);
         }
-        assertManagerRecordReplaceable(); // an expired lease still says nothing about the recorded pid
+        assertManagerRecordReplaceable(undefined, undefined, space); // an expired lease still says nothing about the recorded pid
         startManagerDetached({ space, server: connection.server, runtime, attachHost });
       }
       // else: a live manager already answered — reuse it. All paths converge here: confirm a manager is

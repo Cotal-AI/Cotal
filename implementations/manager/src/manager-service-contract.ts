@@ -55,7 +55,7 @@ export const MANAGER_CLUSTER_URN = "ai.cotal.manager";
 const STATUS_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["instanceId", "runtime", "agentCount", "uptimeMs"],
+  required: ["instanceId", "runtime", "agentCount", "uptimeMs", "connectors"],
   properties: {
     /** The manager's stable service instance id (its per-process incarnation uid). */
     instanceId: { type: "string" },
@@ -65,6 +65,21 @@ const STATUS_OUTPUT_SCHEMA = {
     agentCount: { type: "integer", minimum: 0 },
     /** Milliseconds since this manager process started serving. */
     uptimeMs: { type: "integer", minimum: 0 },
+    /** Connector harness availability measured once during manager boot. */
+    connectors: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["agent", "state", "binaries"],
+        properties: {
+          agent: { type: "string" },
+          state: { enum: ["available", "unavailable"] },
+          binaries: { type: "object", additionalProperties: { type: "string" } },
+          reason: { type: "string" },
+        },
+      },
+    },
   },
 } as const;
 
@@ -74,6 +89,14 @@ export interface ManagerStatus {
   runtime: string;
   agentCount: number;
   uptimeMs: number;
+  connectors: ManagerConnectorStatus[];
+}
+
+export interface ManagerConnectorStatus {
+  agent: string;
+  state: "available" | "unavailable";
+  binaries: Record<string, string>;
+  reason?: string;
 }
 
 /** One managed-agent row (`ps`/`inspect`), the ctl `list()` shape plus `lifecycleUid` — the
@@ -439,9 +462,19 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  covered that whole branch: when the journal-action work lands, its `action` marker and
  *  `readinessDeadlineMs` declaration join revision 6 rather than minting one of their own.
  *
+ *  7 = the `input` command (C3): typing into a running seat's terminal without holding a session.
+ *  A NEW SERVED COMMAND is what a revision is for, and it cannot fold into 6: a caller's
+ *  `describe` reads this document to learn what the responder serves, so a surface that grew
+ *  while the number stood still would leave a cached descriptor naming a command set that is no
+ *  longer the served one. (Revision 6's reservation is for fields on commands it ALREADY
+ *  declares, which is the opposite case.)
+ *
  *  8 = `list-personas` / `show-persona` (#402): the mesh-side read of the persona catalog. A NEW
  *  SERVED COMMAND is what a revision is for, and it cannot fold into 7: a caller's `describe`
- *  reads this document to learn what the responder serves. */
+ *  reads this document to learn what the responder serves.
+ *
+ *  9 = manager `status` records connector harness availability resolved at boot. A changed output
+ *  contract is a changed described surface even though the command name is unchanged. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -459,7 +492,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 8,
+    revision: 9,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({

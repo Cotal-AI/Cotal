@@ -156,6 +156,10 @@ try {
   assert.equal(isStoppedKvWatcher("KV_bucket", watcher), true);
   assert.equal(isStoppedKvWatcher("KV_bucket", {
     ...watcher,
+    config: { ...watcher.config, deliver_policy: "all" },
+  }), true);
+  assert.equal(isStoppedKvWatcher("KV_bucket", {
+    ...watcher,
     config: {
       ...watcher.config,
       max_deliver: -1,

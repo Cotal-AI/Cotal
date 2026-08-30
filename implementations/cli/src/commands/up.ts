@@ -838,7 +838,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         // delivery marker) is stopped and REPLACED by the ensure below carrying the requested runtime,
         // so that's not a reuse - don't claim the runtime is fixed. A dead/absent manager is (re)started
         // with it.
-        if (values.runtime && managerUp() && managerHasDeliveryMarker())
+        if (values.runtime && managerUp(held.space) && managerHasDeliveryMarker(held.space))
           console.error(
             c.dim(`! manager already running for "${held.space}" - its runtime is fixed at start; \`cotal down\` then \`cotal up --runtime ${values.runtime}\` to change it`),
           );
@@ -1023,10 +1023,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // must run even if it fails — the failure is logged, never swallowed silently, and the daemon kill
   // itself happens inside stopDelivery's finally. Order preserved: delivery, manager, auth, broker.
   const stop = () => {
-    void stopDelivery()
+    void stopDelivery(undefined, undefined, space)
       .catch((e: Error) => console.error(`! delivery teardown: ${e.message}`))
       .then(() => {
-        void stopManager()
+        void stopManager(undefined, undefined, undefined, space)
           .then(() => stopAuthService(space))
           .catch((e: Error) => console.error(`! teardown: ${e.message}`));
         child.kill("SIGTERM");
@@ -1039,8 +1039,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   child.on("exit", async (code) => {
     rmSync(cotalPath("nats.pid"), { force: true });
     // Logged, never silently swallowed; the daemon kill runs in stopDelivery's finally regardless.
-    await stopDelivery().catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
-    await stopManager().catch((e: Error) => console.error(`! manager teardown: ${e.message}`));
+    await stopDelivery(undefined, undefined, space).catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
+    await stopManager(undefined, undefined, undefined, space).catch((e: Error) => console.error(`! manager teardown: ${e.message}`));
     await stopAuthService(space).catch((e: Error) => console.error(`! auth teardown: ${e.message}`));
     // Only unrecord if the registry still points at THIS broker. A newer broker for the same space
     // (a concurrent `up`, or a different-port re-up that recorded after us) may have replaced our
@@ -1874,7 +1874,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // A leftover detached manager (its broker is gone — the reachability check above proved nothing
   // lives at this address) would win the fresh mesh's lease and the launch manager would refuse.
   // Stop it, so the manager started below WITH the launch spec is THE manager.
-  await stopManager();
+  await stopManager(undefined, undefined, undefined, m.space);
   let pid: number;
   let controlPlane = false;
   let authService = true;
@@ -2184,8 +2184,8 @@ export async function startMeshDetached(
     source,
     controlPlane,
     authService: svc.ok,
-    delivery: useAuth && deliveryUp(),
-    manager: managerUp(),
+    delivery: useAuth && deliveryUp(space),
+    manager: managerUp(space),
   };
 }
 
