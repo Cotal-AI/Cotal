@@ -56,6 +56,12 @@ credential** co-located with the broker: never an allow-all cred, and it never h
 signing key. One daemon serves a space (a single-flight lease guards against a second binding the
 same durables).
 
+Before it constructs its endpoint or claims that lease, the daemon reads the account-scoped `$SYS`
+observer from the same source it will use for scans, whether that source is the workstation store or
+an injected hosted store. It refuses if the observer belongs to another account, is missing, or is
+part of a present but torn observer/evictor rotation. An absent evictor keeps the documented
+pre-eviction, deny-new-only posture; eviction itself remains unavailable until it is provisioned.
+
 It inherits the mesh's transport on **every** launch, including the relaunch a bare `cotal up`
 performs when the daemon is missing. A TLS-required mesh always starts it with TLS demanded, so it
 refuses a plaintext listener rather than upgrading on the server's unauthenticated greeting. It

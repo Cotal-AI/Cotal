@@ -1,0 +1,2 @@
+# A hosted two-account composition must validate its injected scan creds before claiming lease.0.
+smoke:delivery-injected-tenancy-admission
