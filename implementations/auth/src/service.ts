@@ -537,17 +537,47 @@ export async function openAuthAuthorityPlane(opts: {
 
 /**
  * Boot crash-resume (SPEC 13.1): enumerate the durable operation intents and finish every
- * barrier this executor OWES — an intent is owed exactly when its gate is still FROZEN by that
- * opId (completed and lost operations leave their intent behind by design and are skipped).
- * A frozen TAKEOVER resumes through {@link resumeAgentTakeover}; session-derived descendants
- * fail loud inside the barrier until the session reconciler is wired (the #29 trigger slice).
- * A frozen RETIREMENT resumes through {@link resumeAgentRetirement} with the plane's assembled
- * {@link RetirementDeps} (#29 piece 4); its failure is equally loud and non-fatal.
+ * barrier this executor OWES. Owed-ness is the CROSS-OBJECT invariant spanning the gate AND the
+ * lifecycle alias head — completed and lost operations leave their intent behind by design and
+ * are skipped:
+ *  - a TAKEOVER is owed while its gate is still FROZEN by that opId, and complete once the gate
+ *    reopened (the head epoch advanced in the same op);
+ *  - a RETIREMENT is owed while its gate is still FROZEN by that opId, and ALSO when the gate
+ *    terminal landed by that op but the head terminal did not (a crash between the barrier's
+ *    last two steps): the head is then `retiring`, which per SPEC 13.1 is non-current AND not
+ *    replaceable, so the alias can neither mint nor be replaced on any boot — the gate-only
+ *    predicate skipped that intent forever (#878). The head decides completion: `retired` at this
+ *    op's uid means the barrier's last step ran (skipped), and a head at ANOTHER uid means a
+ *    successor already replaced the retired predecessor (skipped, never touched).
+ *
+ * A resume always re-enters the SAME operation: a frozen TAKEOVER through
+ * {@link resumeAgentTakeover}; a RETIREMENT (either owed cell) through
+ * {@link resumeAgentRetirement} with the plane's assembled {@link RetirementDeps} (#29 piece 4),
+ * whose gate-retired branch finishes ONLY the head terminal from the durable coordinates — it
+ * never re-revokes or re-drains a world past the gate terminal. Session-derived descendants
+ * fail loud inside the barrier until the session reconciler is wired (the #29 trigger slice);
+ * a resume failure is equally loud and non-fatal.
  */
 async function resumeOpenOperations(reg: LifecycleRegistry, evictPrincipal: EvictPrincipal, retirement: RetirementDeps, log: (line: string) => void): Promise<void> {
   for (const it of await enumerateOperationIntents(reg)) {
     const gate = await observeGate(reg, it.lifecycleUid);
-    if (gate === undefined || gate.row.state !== "frozen" || gate.row.op?.opId !== it.opId) continue;
+    // Owed by the gate: a freeze by THIS op is the barrier's live claim (the bar of every
+    // barrier). A takeover completed under this predicate reopens the gate, so its completed
+    // intent stays skipped exactly as before.
+    let owed = gate !== undefined && gate.row.state === "frozen" && gate.row.op?.opId === it.opId;
+    // #878: a retirement whose gate terminal landed by THIS op but whose head terminal did not.
+    // The head decides the completed cell: `retired` at this uid means the barrier's last step ran
+    // (skip), and a head at ANOTHER uid means a successor already replaced the retired predecessor
+    // — the op completed and is never this resume's touch. A head still `retiring` at this uid is
+    // the wedged crash window, and `active` at this uid is a backward head (impossible; a head
+    // never un-retires) — both resume, so the barrier either finishes the tail or refuses loud; an
+    // absent head is corruption the barrier refuses loud (a head is never deleted, SPEC 13.12).
+    if (!owed && it.kind === "retirement" && gate !== undefined && gate.row.state === "retired" && gate.row.op?.opId === it.opId) {
+      const head = await readLifecycleHeadForOperation(reg, it.owner, it.actor);
+      owed = head === undefined
+        || (head.mapping.lifecycleUid === it.lifecycleUid && head.mapping.state !== "retired");
+    }
+    if (!owed) continue;
     if (it.kind === "retirement") {
       try {
         const r = await resumeAgentRetirement(reg, it.opId, retirement);

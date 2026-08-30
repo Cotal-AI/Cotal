@@ -1,0 +1,32 @@
+{
+  "suite": "bin/smoke/ci-fragments.smoke.ts",
+  "guard": "independent suite fragments merge without conflict and an existing fragment keeps its shard when another is added",
+  "command": "pnpm smoke:ci-fragments",
+  "completionMarker": "CI FRAGMENTS SMOKE",
+  "grades": "tool",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/ci-fragments.json",
+  "why": [
+    "Issue #998 has two separable costs. Distinct paths must remove the shared-tail merge conflict,",
+    "and fragment assignment must not recreate #983 by depending on sorted directory position.",
+    "The first mutation makes both simulated PRs add the same path. The second restores positional",
+    "fragment sharding. Each reddens its own named cell through the production registry helper."
+  ],
+  "mutations": [
+    {
+      "name": "simultaneous suite additions share one fragment path again",
+      "file": "bin/smoke/ci-fragments.smoke.ts",
+      "find": "  writeFileSync(join(mergeRoot, \"bin/smoke/ci-suites.d\", fileFor(\"smoke:branch\")), \"smoke:branch\\n\");",
+      "replace": "  writeFileSync(join(mergeRoot, \"bin/smoke/ci-suites.d\", fileFor(\"smoke:main\")), \"smoke:branch\\n\");",
+      "expectRed": "simultaneous additions on distinct fragment paths merge cleanly with the standard driver",
+      "cell": "simultaneous additions on distinct fragment paths merge cleanly with the standard driver"
+    },
+    {
+      "name": "fragment sharding goes back to sorted-position modulo",
+      "file": "bin/smoke/ci-suites.mjs",
+      "find": "    ...fragments.filter((suite) => fragmentShard(suite, count) === shard),",
+      "replace": "    ...fragments.filter((_, index) => index % count === shard),",
+      "expectRed": "adding another fragment before it cannot move an existing suite to another shard",
+      "cell": "adding another fragment before it cannot move an existing suite to another shard"
+    }
+  ]
+}
