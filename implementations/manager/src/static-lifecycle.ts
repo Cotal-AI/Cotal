@@ -28,6 +28,8 @@ import {
   credRowKey,
   parseLedgerRow,
   SOURCE_ROOT,
+  RECORD_KINDS,
+  recordSpecKey,
   createRecordEntry,
   updateRecordEntry,
   runActivationSagaAtUid,
@@ -38,10 +40,55 @@ import {
   headCandidate,
   headBeginRetirement,
   headCompleteRetirement,
+  type EvictionResult,
 } from "@cotal-ai/core";
 import type { KV } from "@nats-io/kv";
 
 const enc = new TextEncoder();
+
+export interface StaticLifecycleAuditSpec {
+  v: 1; principal: string; alias: string; lifecycleUid: string;
+  managerInstance: string; managerProcessUid: string; retirementOpId: string;
+  broker: Pick<EvictionResult, "kicked" | "remaining" | "scanComplete" | "verifiedGone">;
+  timestamp: string;
+}
+
+function sameAudit(a: StaticLifecycleAuditSpec, b: StaticLifecycleAuditSpec): boolean {
+  return a.v === b.v && a.principal === b.principal && a.alias === b.alias && a.lifecycleUid === b.lifecycleUid &&
+    a.managerInstance === b.managerInstance && a.managerProcessUid === b.managerProcessUid && a.retirementOpId === b.retirementOpId &&
+    a.broker.kicked === b.broker.kicked && a.broker.remaining === b.broker.remaining &&
+    a.broker.scanComplete === b.broker.scanComplete && a.broker.verifiedGone === b.broker.verifiedGone;
+}
+
+async function evictAndAudit(
+  t: LifecycleStateTransport,
+  args: { owner: string; alias: string; actor: string; lifecycleUid: string; opId: string; managerInstance: string; managerProcessUid: string },
+  evict: (principal: string) => Promise<EvictionResult>,
+): Promise<string> {
+  const principal = principalKey(args.owner, args.actor).key;
+  const result = await evict(principal);
+  if (!result.verifiedGone || !result.scanComplete || result.remaining !== 0)
+    throw new EpEnvelopeError("unavailable", `static retirement could not verify-evict ${principal}; the lifecycle remains terminalizing and the alias stays held (SPEC 13.1)`);
+  const key = recordSpecKey(RECORD_KINDS.lifecycle, [args.owner, args.actor, args.lifecycleUid]);
+  const spec: StaticLifecycleAuditSpec = {
+    v: 1, principal, alias: args.alias, lifecycleUid: args.lifecycleUid, managerInstance: args.managerInstance,
+    managerProcessUid: args.managerProcessUid, retirementOpId: args.opId,
+    broker: { kicked: result.kicked, remaining: result.remaining, scanComplete: result.scanComplete, verifiedGone: result.verifiedGone },
+    timestamp: new Date().toISOString(),
+  };
+  try { await t.createRecord(key, spec); }
+  catch (e) {
+    if (!(e instanceof EpEnvelopeError) || e.code !== "conflict") throw e;
+    const existing = await t.getRecord(key);
+    if (!existing || existing.operation !== "PUT") throw new EpEnvelopeError("failed-precondition", `lifecycle audit ${key} conflict is unreadable`);
+    let value: unknown;
+    try { value = JSON.parse(new TextDecoder().decode(existing.value)); }
+    catch { throw new EpEnvelopeError("failed-precondition", `lifecycle audit ${key} conflict is malformed`); }
+    if (!sameAudit(value as StaticLifecycleAuditSpec, spec)) throw new EpEnvelopeError("already-exists", `lifecycle audit ${key} records different evidence`);
+    // Timestamp may differ only after the stable manager identities and retirement op prove the same retry.
+  }
+  return principal;
+}
 
 /** The direct-KV transport over the two authority stores, bound per lifecycle OPERATION on an
  *  ephemeral, key-pinned `lifecycle-executor` connection (the manager mints it; see
@@ -208,8 +255,8 @@ export async function activateStaticLifecycle(
  *  retirement F3 requires. */
 export async function runStaticTerminal(
   t: LifecycleStateTransport,
-  args: { owner: string; alias: string; actor: string; lifecycleUid: string; opId: string },
-  hooks: { cleanup: () => Promise<void>; evict: (holderPrincipal: string) => Promise<boolean>; log: (line: string) => void },
+  args: { owner: string; alias: string; actor: string; lifecycleUid: string; opId: string; managerInstance: string; managerProcessUid: string },
+  hooks: { cleanup: () => Promise<void>; evict: (holderPrincipal: string) => Promise<EvictionResult>; log: (line: string) => void },
 ): Promise<"retired"> {
   const slot = await readStaticSlot(t, args.owner, args.alias);
   if (slot === undefined)
@@ -230,9 +277,7 @@ export async function runStaticTerminal(
     if (head !== undefined && head.mapping.lifecycleUid === args.lifecycleUid)
       throw new EpEnvelopeError("internal", `the head for "${args.owner}/${args.actor}" names uid ${args.lifecycleUid} but its gate does not exist; an active head without a gate is corruption (SPEC 13.1)`);
     await revokeStaticCredentialRows(t, args.lifecycleUid, slot.row.credentialIds, hooks.log);
-    const principal = principalKey(args.owner, args.actor).key;
-    if (!(await hooks.evict(principal)))
-      throw new EpEnvelopeError("unavailable", `static retirement could not verify-evict ${principal}; the lifecycle remains terminalizing and the alias stays held (SPEC 13.1)`);
+    await evictAndAudit(t, args, hooks.evict);
     await hooks.cleanup();
     await casStaticSlot(t, { ...slot.row, phase: "retired" }, slotRevision);
     return "retired";
@@ -250,9 +295,7 @@ export async function runStaticTerminal(
       // static retirement), then settle the slot — there is no head to retire.
       await gateRetire(t, { lifecycleUid: args.lifecycleUid, revision: gate.revision, opId: gate.row.op.opId });
       await revokeStaticCredentialRows(t, args.lifecycleUid, slot.row.credentialIds, hooks.log);
-      const principal = principalKey(args.owner, args.actor).key;
-      if (!(await hooks.evict(principal)))
-        throw new EpEnvelopeError("unavailable", `static retirement could not verify-evict ${principal}; the lifecycle remains terminalizing and the alias stays held (SPEC 13.1)`);
+      await evictAndAudit(t, args, hooks.evict);
       await hooks.cleanup();
       const cur = await readStaticSlot(t, args.owner, args.alias);
       if (cur !== undefined && cur.row.lifecycleUid === args.lifecycleUid && cur.row.phase !== "retired")
@@ -288,8 +331,7 @@ export async function runStaticTerminal(
   // the successor can never coexist with the orphan.
   const principal = principalKey(args.owner, args.actor).key;
   hooks.log(`verify-evicting orphan seat principal ${principal} before lifecycle cleanup`);
-  if (!(await hooks.evict(principal)))
-    throw new EpEnvelopeError("unavailable", `static retirement could not verify-evict ${principal}; the lifecycle remains terminalizing and the alias stays held (SPEC 13.1)`);
+  await evictAndAudit(t, args, hooks.evict);
   hooks.log(`verified orphan seat principal gone: ${principal}`);
   await hooks.cleanup();
   // The terminal tail, in the (b2) order: gate frozen->retired FIRST (retains the opId, the

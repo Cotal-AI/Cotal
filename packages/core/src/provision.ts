@@ -1981,7 +1981,10 @@ function lifecycleExecutorPermissions(
   // NOT a caller-supplied literal, so a mis-constructed pin can only ever name ONE coherent
   // incarnation's rows (guard the core: the profile enforces the "one incarnation" promise, it
   // does not merely assert it). The builders throw on any non-KV-safe segment.
-  const recordKeys = [lifecycleHeadKey(pin.owner, pin.actor), uidReservationKey(pin.lifecycleUid), staticSlotKey(pin.owner, pin.alias)];
+  const recordKeys = [
+    lifecycleHeadKey(pin.owner, pin.actor), uidReservationKey(pin.lifecycleUid), staticSlotKey(pin.owner, pin.alias),
+    recordSpecKey(RECORD_KINDS.lifecycle, [pin.owner, pin.actor, pin.lifecycleUid]),
+  ];
   return {
     pub: {
       allow: [
