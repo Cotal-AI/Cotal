@@ -77,6 +77,13 @@
       "find": "          ep.channelHistory(name, { limit, signal: clock.signal }).catch((e: unknown) => {\n            throw new Error(`#${name}: the read failed: ${e instanceof Error ? e.message : String(e)}`);\n          }),",
       "replace": "          ep.channelHistory(name, { limit, signal: clock.signal }),",
       "expectRed": "5.2 `/api/channels/<name>/history` names a read that REJECTS instead of returning the bare 500"
+    },
+    {
+      "name": "B12 the slow-link scheduler arms every chunk independently, allowing same-deadline writes to reorder NATS frames",
+      "file": "implementations/web/smoke/bounded-aggregation.smoke.ts",
+      "find": "    const writer = throttledWriter(to, opts);\n    from.on(\"data\", (chunk: Buffer) => writer.push(chunk));\n    from.on(\"error\", () => to.destroy());\n    from.on(\"close\", () => writer.close());",
+      "replace": "    let clear = 0;\n    from.on(\"data\", (chunk: Buffer) => {\n      const now = Date.now();\n      const at = Math.max(now + opts.oneWayMs, clear) + (chunk.length / opts.bytesPerSec) * 1000;\n      clear = at;\n      setTimeout(() => { if (!to.destroyed) to.write(chunk); }, Math.max(0, at - now)).unref();\n    });\n    from.on(\"error\", () => to.destroy());",
+      "expectRed": "0.1 slow-link serialization arms only one chunk callback at a time"
     }
   ]
 }
