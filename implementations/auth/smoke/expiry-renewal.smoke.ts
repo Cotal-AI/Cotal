@@ -124,6 +124,7 @@ try {
     registerPresence: false, watchPresence: false, watchChannels: false, consume: false,
   });
   epA.on("error", (e: Error) => errorsA.push({ ms: Date.now() - t0, msg: e.message }));
+  epA.on("warning", (e: Error) => errorsA.push({ ms: Date.now() - t0, msg: e.message }));
   await epA.start();
   const denialsBeforeA = denials.length;
 
