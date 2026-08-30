@@ -98,8 +98,8 @@ try {
     check("the inactive mention nudge emits no notice", notices.length === 0, notices);
 
     wake.setChannelActive(true);
-    await waitFor("the activation mention notice", () => notices.length === 1);
-    check("activation re-fires the remembered focus mention", notices[0].includes("pull it with cotal_inbox"), notices);
+    await sleep(500);
+    check("activation re-fires the remembered focus mention", notices.length === 1 && notices[0].includes("pull it with cotal_inbox"), notices);
     wake.setChannelActive(true);
     await sleep(500);
     check("repeated active state emits no duplicate mention notice", notices.length === 1, notices);
