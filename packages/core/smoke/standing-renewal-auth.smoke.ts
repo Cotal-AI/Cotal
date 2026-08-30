@@ -118,12 +118,14 @@ try {
   // renewable endpoint: it refuses dead material locally, then reconnects on the fresh cred.
   const expiring = newIdentity();
   let expiringReads = 0;
+  let failedRebuildLogStart = -1;
   const expiringErrors: string[] = [];
   const expiringSource = () => {
     expiringReads++;
     if (expiringReads <= 3) {
       if (expiringReads === 1)
         return mintCreds(auth, expiring, "supervisor", { expiresInSeconds: 3 });
+      if (expiringReads === 3) failedRebuildLogStart = brokerLog.length;
       throw new Error("fixture renewal source offline");
     }
     return mintCreds(auth, expiring, "supervisor", { expiresInSeconds: 60 });
@@ -141,7 +143,6 @@ try {
   });
   expiringEp.on("error", (e: Error) => { expiringErrors.push(e.message); });
   await expiringEp.start();
-  const expiredLogStart = brokerLog.length;
   let recovered = false;
   const recoveryDeadline = Date.now() + 15_000;
   while (!recovered && Date.now() < recoveryDeadline) {
@@ -156,13 +157,13 @@ try {
     recovered,
     { reads: expiringReads, errors: expiringErrors },
   );
-  const expiredCredDenials = brokerLog.slice(expiredLogStart).split("\n").filter((l) =>
-    /User JWT no longer valid.*claim is expired|User Authentication Expired$/.test(l),
+  const expiredCredDenials = brokerLog.slice(failedRebuildLogStart).split("\n").filter((l) =>
+    /User JWT no longer valid.*claim is expired|cotal:expired-creds.*User Authentication Expired/.test(l),
   );
   check(
-    "expired creds are presented to the broker ZERO times after renewal fails",
-    expiredCredDenials.length === 0,
-    expiredCredDenials,
+    "a rebuild presents cached expired creds to the broker ZERO times after renewal fails",
+    failedRebuildLogStart >= 0 && expiredCredDenials.length === 0,
+    { failedRebuildLogStart, denials: expiredCredDenials },
   );
   check(
     "the pre-dial refusal is loud and names the failing renewal path",
