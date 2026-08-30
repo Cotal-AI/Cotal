@@ -39,9 +39,17 @@ const declarationForms = [
   ["block mapping", "name: Block Mapping\non:\n  pull_request:\n", "Block Mapping"],
 ] as const;
 for (const [label, source, name] of declarationForms) {
+  let detected = false;
+  let detail: unknown;
+  try {
+    detected = JSON.stringify(expectedPullRequestWorkflows({ [`${label}.yml`]: source }, ["package.json"])) === JSON.stringify([name]);
+  } catch (error) {
+    detail = error;
+  }
   check(
     `${label} pull_request declaration is detected`,
-    JSON.stringify(expectedPullRequestWorkflows({ [`${label}.yml`]: source }, ["package.json"])) === JSON.stringify([name]),
+    detected,
+    detail,
   );
 }
 check("every supported pull_request declaration form ran (3)", declarationForms.length === 3);
