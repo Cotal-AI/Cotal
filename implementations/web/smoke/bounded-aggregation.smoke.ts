@@ -516,7 +516,14 @@ try {
     const dBody = dRes instanceof Error ? undefined : await dRes.json().catch(() => undefined);
     const dStatus = dRes instanceof Error ? 0 : dRes.status;
     ok("6.6 `/api/dms` REFUSES at its deadline rather than answering long after the reader left", dStatus === 503, { dStatus, dMs });
-    ok("6.7 and the refusal names the deadline it exceeded", /did not finish within 8000ms/.test(String(dBody?.error)), dBody);
+    // WHICH ending wins here is the runner's call, not this suite's: the inner read's own timeout
+    // races the route's 8000ms clock across a loaded link, and both are legitimate bounded endings —
+    // #902 measured both on the same tree in CI. Section 5 pins each ending deterministically and
+    // asserts its exact wording (5.1 the rejected read, 5.5 the deadline); this cell asserts the part
+    // that must hold on EITHER path: the refusal is the route's NAMED refusal, never the bare broker
+    // word the shipped build once sent.
+    ok("6.7 and the refusal is named — the deadline or the failed read, never a bare broker word",
+      /direct messages: the read (did not finish within 8000ms|failed: )/.test(String(dBody?.error)), dBody);
     ok("6.8 bounded in wall time, not just in words", dMs < AGGREGATION_DEADLINE_MS + 5000, dMs);
 
     // A NAMED LIMIT, DRIVEN RATHER THAN DESCRIBED. The deadline bounds the RESPONSE, not the broker
