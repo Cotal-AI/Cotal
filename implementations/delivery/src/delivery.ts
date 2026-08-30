@@ -225,7 +225,13 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     registerPresence: false, // … but NEVER publish the daemon onto the roster (it's infra, not a peer)
     card: { id: idFromCreds(creds.initial), name: "delivery", role: "delivery", kind: "endpoint" },
   });
-  ep.on("error", (e: Error) => console.error(`! delivery endpoint: ${e.message}`));
+  // Both channels: raw connection errors ride `error`, while every condition the endpoint is
+  // already surviving — a failed 75% renewal, the passive backstop's "still holds the previous
+  // cred" repair line — rides `warning` (#891). An operator who only sees the first watches the
+  // daemon go silent and then die at `exp` with no word of the remint it was waiting for.
+  const say = (e: Error) => console.error(`! delivery endpoint: ${e.message}`);
+  ep.on("error", say);
+  ep.on("warning", say);
   await ep.start();
 
   // Acquire the single-flight lease BEFORE binding the loops: a loud refusal-to-bind if another daemon
