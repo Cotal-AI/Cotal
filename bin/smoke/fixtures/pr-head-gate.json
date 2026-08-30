@@ -1,0 +1,122 @@
+{
+  "cases": [
+    {
+      "label": "PR #921 head 711d69e0",
+      "pr": 921,
+      "headSha": "711d69e0c07f0818804fcd308cefa4da21f55a2f",
+      "changedPaths": ["docs/cli.md", "implementations/cli/src/commands/status.ts", "package.json"],
+      "runs": [
+        {
+          "id": 33288641194,
+          "name": "Code Quality: PR #921",
+          "event": "dynamic",
+          "head_sha": "711d69e0c07f0818804fcd308cefa4da21f55a2f",
+          "status": "completed",
+          "conclusion": "success",
+          "pull_requests": []
+        }
+      ]
+    },
+    {
+      "label": "PR #921 head 71331c9a",
+      "pr": 921,
+      "headSha": "71331c9a840bae97d3877023b53ce38fb854deff",
+      "changedPaths": ["docs/cli.md", "implementations/cli/src/commands/status.ts", "package.json"],
+      "runs": [
+        {
+          "id": 33291510307,
+          "name": "Code Quality: PR #921",
+          "event": "dynamic",
+          "head_sha": "71331c9a840bae97d3877023b53ce38fb854deff",
+          "status": "completed",
+          "conclusion": "success",
+          "pull_requests": []
+        },
+        {
+          "id": 33292609999,
+          "name": "CI",
+          "event": "pull_request",
+          "head_sha": "71331c9a840bae97d3877023b53ce38fb854deff",
+          "status": "completed",
+          "conclusion": "success",
+          "created_at": "2026-08-30T04:29:29Z",
+          "pull_requests": [{ "number": 1085 }]
+        },
+        {
+          "id": 33291500000,
+          "name": "Windows",
+          "event": "pull_request",
+          "head_sha": "0000000000000000000000000000000000000000",
+          "status": "completed",
+          "conclusion": "success",
+          "created_at": "2026-08-30T03:59:00Z",
+          "pull_requests": [{ "number": 921 }]
+        }
+      ]
+    },
+    {
+      "label": "PR #1040 head 2101365e",
+      "pr": 1040,
+      "headSha": "2101365e40da33c0b45245371bb984ebcc182d94",
+      "changedPaths": ["SPEC.md", "packages/core/src/provision.ts", "package.json"],
+      "runs": [
+        {
+          "id": 33290117134,
+          "name": "Code Quality: PR #1040",
+          "event": "dynamic",
+          "head_sha": "2101365e40da33c0b45245371bb984ebcc182d94",
+          "status": "completed",
+          "conclusion": "success",
+          "pull_requests": []
+        }
+      ]
+    },
+    {
+      "label": "PR #1087 head 87e61678 positive mint control",
+      "pr": 1087,
+      "headSha": "87e61678161bf8314659074c6bcf166191b0bed7",
+      "changedPaths": ["docs/cli.md", "implementations/cli/src/commands/status.ts", "package.json"],
+      "runs": [
+        {
+          "id": 33294044295,
+          "name": "Windows",
+          "event": "pull_request",
+          "head_sha": "87e61678161bf8314659074c6bcf166191b0bed7",
+          "status": "pending",
+          "conclusion": null,
+          "created_at": "2026-08-30T05:08:49Z",
+          "pull_requests": [{ "number": 1087 }]
+        },
+        {
+          "id": 33294044250,
+          "name": "Docs",
+          "event": "pull_request",
+          "head_sha": "87e61678161bf8314659074c6bcf166191b0bed7",
+          "status": "queued",
+          "conclusion": null,
+          "created_at": "2026-08-30T05:08:48Z",
+          "pull_requests": [{ "number": 1087 }]
+        },
+        {
+          "id": 33294044252,
+          "name": "CI",
+          "event": "pull_request",
+          "head_sha": "87e61678161bf8314659074c6bcf166191b0bed7",
+          "status": "pending",
+          "conclusion": null,
+          "created_at": "2026-08-30T05:08:48Z",
+          "pull_requests": [{ "number": 1087 }]
+        },
+        {
+          "id": 33294042730,
+          "name": "Code Quality: PR #1087",
+          "event": "dynamic",
+          "head_sha": "87e61678161bf8314659074c6bcf166191b0bed7",
+          "status": "queued",
+          "conclusion": null,
+          "pull_requests": []
+        }
+      ]
+    }
+  ]
+}

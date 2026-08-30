@@ -65,7 +65,7 @@ export interface ScanTarget {
  * (see the cases above) and a second independent-ish source costs nothing. It is no longer
  * REQUIRED: its absence is not an error, and a hosted composition never has one.
  */
-function resolveScan(target: ScanTarget, verb: string): { accountId: string } {
+export function validateScanTarget(target: ScanTarget, verb = "delivery startup"): { accountId: string } {
   const live = findCotalRoot();
   if (live !== target.root)
     throw new Error(
@@ -141,7 +141,7 @@ export async function executeEviction(server: string, target: ScanTarget, princi
   const parsed = parsePrincipalKey(principal);
   if (!parsed || !isPrincipalOwnerToken(parsed.owner))
     throw new Error(`evictPrincipal: "${principal}" is not a real owner.actor principal (owner must be \`local\` or a derived \`u_…\` token — the only shapes CONNZ attribution can surface)`);
-  const { accountId } = resolveScan(target, "evictPrincipal");
+  const { accountId } = validateScanTarget(target, "evictPrincipal");
   const sys = await loadCheckedSys(target, "evictPrincipal", "both");
   return evictDeniedPrincipalWithCreds({
     servers: server,
@@ -172,7 +172,7 @@ export async function executePlaneLiveness(server: string, target: ScanTarget, q
       Object.keys(q).some((k) => k !== "ledger" && k !== "records") || // closed top-level shape
       !isPlaneConnTuple(q.ledger) || !isPlaneConnTuple(q.records))
     throw new Error("planeConnLiveness: the query must be exactly { ledger, records } connection tuples ({ serverId, cid, userNkey }); refusing a malformed or wider query");
-  const { accountId } = resolveScan(target, "planeConnLiveness");
+  const { accountId } = validateScanTarget(target, "planeConnLiveness");
   const sys = await loadCheckedSys(target, "planeConnLiveness", "observer");
   return observePlaneLivenessWithCreds({
     servers: server,
@@ -206,7 +206,7 @@ export async function executePrincipalLiveness(server: string, target: ScanTarge
   const parsed = parsePrincipalKey(wanted);
   if (!parsed || !isPrincipalOwnerToken(parsed.owner))
     throw new Error(`principalLiveness: "${wanted}" is not a real owner.actor principal (owner must be \`local\` or a derived \`u_…\` token — the only shapes CONNZ attribution can surface)`);
-  const { accountId } = resolveScan(target, "principalLiveness");
+  const { accountId } = validateScanTarget(target, "principalLiveness");
   const sys = await loadCheckedSys(target, "principalLiveness", "observer");
   return observePrincipalLivenessWithCreds({
     servers: server,
