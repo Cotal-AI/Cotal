@@ -277,7 +277,9 @@ const SEAMS: Seam[] = [
   // 102/75 -> 108/79: component status and remote manager registration add two typechecked calls;
   // the manager boot self-heal and registered-user-authority smokes add four untypechecked calls.
   // Every added site states the transport decision explicitly.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 108, untypecheckedSites: 79 },
+  // 108/79 -> 109/80: the manager lifecycle eviction audit smoke reads the records bucket over one
+  // untypechecked probe connection with an explicit plaintext-broker `tls: false` decision.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 109, untypecheckedSites: 80 },
 ];
 
 /**
