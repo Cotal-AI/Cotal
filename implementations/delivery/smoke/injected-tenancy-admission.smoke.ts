@@ -36,6 +36,7 @@ import {
   findCotalRoot,
   membershipObserverCredsKey,
   membershipRwCredsKey,
+  workspaceSecretStore,
 } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { runDelivery } from "../src/delivery.js";
@@ -170,6 +171,30 @@ try {
     "INJECTED ADMISSION: a present torn observer/evictor generation refuses before lease.0",
     mixed.outcome === "refused" && mixed.lease === undefined && /DIFFERENT system accounts/.test(mixed.refusal?.message ?? ""),
     { ...mixed, error: mixed.refusal?.message, reads: torn.reads },
+  );
+
+  // Workstation sibling: no membership.json is present, so the only evidence that can reject this
+  // composition is the observer loaded through scanTarget.source itself. An explicit --creds file
+  // supplies A's daemon identity while the root's per-space observer belongs to B.
+  const workstation = { injected: false as const, root };
+  const workstationSecrets = workspaceSecretStore(root);
+  await workstationSecrets.put(membershipObserverCredsKey(spaceA, workstation), observerB);
+  await workstationSecrets.put(connectionEvictorCredsKey(spaceA, workstation), evictor);
+  const deliveryPath = join(root, "workstation-delivery.creds");
+  writeFileSync(deliveryPath, deliveryCreds, { mode: 0o600 });
+  let workstationRefusal: Error | undefined;
+  void runDelivery({ values: { space: spaceA, server: servers, creds: deliveryPath }, positionals: [], raw: [] })
+    .catch((error) => { workstationRefusal = error as Error; });
+  const workstationOutcome = await until(async () => {
+    if (workstationRefusal) return "refused";
+    if (await inspector!.readDeliveryLease(0)) return "leased";
+    return undefined;
+  });
+  check(
+    "WORKSTATION ADMISSION: source observer tenancy refuses before lease.0 with no membership.json",
+    workstationOutcome === "refused" && (await inspector.readDeliveryLease(0)) === undefined &&
+      workstationRefusal?.message.includes(accountA.account.pub) && workstationRefusal.message.includes(accountB.account.pub),
+    { outcome: workstationOutcome, error: workstationRefusal?.message, lease: await inspector.readDeliveryLease(0) },
   );
 
   // Positive control: an intact observer with no evictor keeps the pre-feature deny-new-only posture
