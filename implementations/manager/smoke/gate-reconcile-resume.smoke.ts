@@ -258,5 +258,7 @@ console.log("C. cursor binding and executor authority are exact");
   check("the executor has no wildcard or sibling repair-key grant", !publish.includes(foreign) && !publish.some((row) => row.includes("eprepair") && row.includes(">")), publish);
 }
 
+const EXPECTED = 21;
+check(`every cell ran (${EXPECTED} before the sentinel)`, passed + failed === EXPECTED, { passed, failed });
 console.log(`\nGATE-RECONCILE RESUME SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 if (failed) process.exitCode = 1;

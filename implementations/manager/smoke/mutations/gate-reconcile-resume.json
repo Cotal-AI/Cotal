@@ -23,6 +23,15 @@
       "expectRed": "retry skips only durable holder1 and verifies every remaining holder",
       "cell": "retry skips only durable holder1 and verifies every remaining holder",
       "note": "The cursor is still written and the gate still reopens. Only the resume behavior is removed."
+    },
+    {
+      "name": "the sibling and wildcard grant assertion disappears",
+      "file": "implementations/manager/smoke/gate-reconcile-resume.smoke.ts",
+      "find": "  check(\"the executor has no wildcard or sibling repair-key grant\", !publish.includes(foreign) && !publish.some((row) => row.includes(\"eprepair\") && row.includes(\">\")), publish);\n",
+      "replace": "",
+      "expectRed": "every cell ran (21 before the sentinel)",
+      "cell": "every cell ran (21 before the sentinel)",
+      "note": "Deleting one security assertion used to leave the suite green at 20/0. The sentinel must make that disappearing cell a named failure."
     }
   ]
 }
