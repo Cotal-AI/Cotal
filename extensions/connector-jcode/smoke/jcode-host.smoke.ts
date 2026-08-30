@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
@@ -97,6 +98,19 @@ const check = (name: string, condition: boolean, actual?: unknown): void => {
 };
 const entries = (): Array<{ ev: string; [key: string]: unknown }> =>
   existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
+
+function managedHome(space: string, name: string): string {
+  const slug = `${space}-${name}`.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+  const key = createHash("sha256").update(`${space}\0${name}`).digest("hex").slice(0, 12);
+  return join(root, ".cotal", "jcode", `${slug || "agent"}-${key}`);
+}
+
+function connectorLog(home: string): string {
+  const logs = join(home, "logs");
+  const files = readdirSync(logs).filter((file) => /^connector-.*\.log$/.test(file));
+  assert.equal(files.length, 1, `expected one connector log in ${logs}, found ${files.join(", ")}`);
+  return readFileSync(join(logs, files[0]!), "utf8");
+}
 
 type JcodeMcpEntry = { command: string; args: string[]; env: Record<string, string> };
 
@@ -311,21 +325,21 @@ try {
   // the Jcode server counts as a client; nothing re-attaches, and the server's idle reaper kills
   // the seat mid-turn five minutes later. The seat's version is fixed at spawn time.
   check("host pins the seat binary against background self-update", argv.env?.JCODE_NO_AUTO_UPDATE === "1", argv.env);
-  const managedHome = join(root, ".cotal", "jcode", "jcodehost-jcodepeer-3276792e8714");
-  check("host copies auth mirror rather than linking it", lstatSync(join(managedHome, "auth.json")).isFile() && !lstatSync(join(managedHome, "auth.json")).isSymbolicLink());
-  check("host copied auth mirror is owner-only", (statSync(join(managedHome, "auth.json")).mode & 0o777) === 0o600);
+  const peerHome = managedHome("jcodehost", "jcodepeer");
+  check("host copies auth mirror rather than linking it", lstatSync(join(peerHome, "auth.json")).isFile() && !lstatSync(join(peerHome, "auth.json")).isSymbolicLink());
+  check("host copied auth mirror is owner-only", (statSync(join(peerHome, "auth.json")).mode & 0o777) === 0o600);
 
   // Jcode invokes this actual stdio MCP bridge, which relays across the live per-seat Unix socket
   // into the host's MeshAgent. A schema-valid explicit `peek:false` must not be rejected by either
   // hop: the bug was an adapter-only no-argument branch that advertised this input then refused it.
-  const privateMcp = JSON.parse(readFileSync(join(managedHome, "mcp.json"), "utf8")) as {
+  const privateMcp = JSON.parse(readFileSync(join(peerHome, "mcp.json"), "utf8")) as {
     servers: { cotal: { env: Record<string, string> } };
   };
   const relaySocket = privateMcp.servers.cotal.env.COTAL_JCODE_MCP_SOCKET!;
   const relayToken = privateMcp.servers.cotal.env.COTAL_JCODE_MCP_TOKEN!;
   await operator.multicast("quiet buffered", { channel: "team" });
   await sleep(100);
-  const peekFalse = await callJcodeMcp(managedHome, relaySocket, relayToken, {
+  const peekFalse = await callJcodeMcp(peerHome, relaySocket, relayToken, {
     peek: false,
     accept_large_output: true,
     intent: "read buffered messages",
@@ -334,19 +348,19 @@ try {
 
   await operator.multicast("peek survives", { channel: "team" });
   await sleep(100);
-  const peekTrue = await callJcodeMcp(managedHome, relaySocket, relayToken, { peek: true });
+  const peekTrue = await callJcodeMcp(peerHome, relaySocket, relayToken, { peek: true });
   check("Jcode cotal_inbox peek:true reaches the host and returns buffered traffic", !peekTrue.isError && peekTrue.text.includes("peek survives"), peekTrue);
-  const afterPeek = await callJcodeMcp(managedHome, relaySocket, relayToken, {});
+  const afterPeek = await callJcodeMcp(peerHome, relaySocket, relayToken, {});
   check("Jcode cotal_inbox peek:true leaves the returned message for the following normal read", !afterPeek.isError && afterPeek.text.includes("peek survives"), afterPeek);
-  const unknownInboxArg = await callJcodeMcp(managedHome, relaySocket, relayToken, { unknown: true });
+  const unknownInboxArg = await callJcodeMcp(peerHome, relaySocket, relayToken, { unknown: true });
   check("Jcode cotal_inbox still refuses unknown non-metadata arguments", unknownInboxArg.isError === true && unknownInboxArg.text.includes("unknown"), unknownInboxArg);
 
   // JSON.parse is required: an object-literal __proto__ is special syntax, not an own JSON key.
   // A rejected unknown argument must not fall through to the destructive default inbox read.
   await operator.multicast("prototype-key witness", { channel: "team" });
   await sleep(100);
-  const protoInboxArg = await callJcodeMcpRaw(managedHome, relaySocket, relayToken, '{"__proto__":true}');
-  const afterProtoInboxArg = await callJcodeMcp(managedHome, relaySocket, relayToken, {});
+  const protoInboxArg = await callJcodeMcpRaw(peerHome, relaySocket, relayToken, '{"__proto__":true}');
+  const afterProtoInboxArg = await callJcodeMcp(peerHome, relaySocket, relayToken, {});
   check(
     "Jcode cotal_inbox refuses JSON-own __proto__ without consuming the buffered message",
     protoInboxArg.isError === true && protoInboxArg.text.includes("__proto__") &&
@@ -358,8 +372,8 @@ try {
     const witness = `${key}-key witness`;
     await operator.multicast(witness, { channel: "team" });
     await sleep(100);
-    const rejected = await callJcodeMcp(managedHome, relaySocket, relayToken, { [key]: true });
-    const afterRejected = await callJcodeMcp(managedHome, relaySocket, relayToken, {});
+    const rejected = await callJcodeMcp(peerHome, relaySocket, relayToken, { [key]: true });
+    const afterRejected = await callJcodeMcp(peerHome, relaySocket, relayToken, {});
     check(
       `Jcode cotal_inbox refuses ${key} without consuming the buffered message`,
       rejected.isError === true && rejected.text.includes(key) && !afterRejected.isError && afterRejected.text.includes(witness),
@@ -512,6 +526,69 @@ try {
     !refusedEntries.some((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply),
     refusedEntries.filter((entry) => entry.ev === "request").map((entry) => entry.frame?.req),
   );
+
+  const modelCanary = "MODEL-REFUSAL-CANARY-985-DO-NOT-PRINT";
+  const modelCases = [
+    {
+      name: "prefixmodel",
+      model: "cliproxy/fake-model",
+      code: "model_prefix_rejected",
+      env: {},
+      request: "create_session",
+    },
+    {
+      name: "refusedmodel",
+      model: "refused-model",
+      code: "model_refused",
+      env: { FAKE_JCODE_REFUSE_MODEL: "refused-model", FAKE_JCODE_MODEL_ERROR: `invalid_request: ${modelCanary}` },
+      request: "set_model",
+    },
+    {
+      name: "mismatchedmodel",
+      model: "requested-model",
+      code: "model_mismatch",
+      env: { FAKE_JCODE_RUNTIME_MODEL: "different-model" },
+      request: "get_runtime_info",
+    },
+  ] as const;
+  for (const modelCase of modelCases) {
+    const caseLog = join(root, `${modelCase.name}.jsonl`);
+    const failed = spawnHost({
+      cwd: root,
+      env: {
+        ...env,
+        PATH: `${shimDir}:${env.PATH ?? ""}`,
+        FAKE_JCODE_LOG: caseLog,
+        ...modelCase.env,
+        JCODE_HOME: inheritedJcodeHome,
+        COTAL_SPACE: "jcodehost",
+        COTAL_NAME: modelCase.name,
+        COTAL_ID: modelCase.name,
+        COTAL_SERVERS: servers,
+        COTAL_SUBSCRIBE: "team",
+        COTAL_ALLOW_SUBSCRIBE: "team",
+        COTAL_ALLOW_PUBLISH: "team",
+        COTAL_JCODE_HOME: root,
+        COTAL_JCODE_TUI: "0",
+        COTAL_MODEL: modelCase.model,
+        COTAL_CONTROL_SOCKET: join(root, `${modelCase.name}-control.sock`),
+        COTAL_CONTROL_TOKEN: `${modelCase.name}-control-token`,
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let failedErr = "";
+    failed.stderr?.on("data", (chunk: Buffer) => (failedErr += chunk.toString()));
+    await Promise.race([once(failed, "exit"), sleep(20_000)]);
+    const failedCode = failed.exitCode;
+    await stopHostTree(failed, "SIGKILL");
+    const expected = `Jcode host startup failed (${modelCase.code})`;
+    const persisted = connectorLog(managedHome("jcodehost", modelCase.name));
+    check(`${modelCase.code} names the connector-owned refusal`, failedCode === 1 && failedErr.includes(expected), { failedCode, failedErr });
+    check(`${modelCase.code} fatal is persisted in the seat connector log`, persisted.includes(expected), persisted);
+    check(`${modelCase.code} keeps downstream model text scrubbed`, !failedErr.includes(modelCanary) && !persisted.includes(modelCanary), { failedErr, persisted });
+    const caseEntries = readFileSync(caseLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev?: string; frame?: { req?: string } }>;
+    check(`${modelCase.code} reaches its real startup boundary`, caseEntries.some((entry) => entry.ev === "request" && entry.frame?.req === modelCase.request), caseEntries);
+  }
 
   // #845 reproduction: `MeshAgent.start()` retries in the background. A post-join notice sent
   // immediately after it is not evidence of a completed join: the broker below is deliberately

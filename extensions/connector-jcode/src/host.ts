@@ -10,7 +10,13 @@ import { mirrorJcodeCredentials, shortSocketHome } from "./private-state.js";
 import { captureProcessIdentity, launchIdentityEnv, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
 import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
 import { bareModelId, describeRoute } from "./route-identity.js";
-import { classifyReadinessProviderRefusal, jcodeEffortRefusal } from "./startup-diagnostics.js";
+import {
+  classifyReadinessProviderRefusal,
+  installJcodeDiagnosticLog,
+  JcodeConnectorError,
+  jcodeEffortRefusal,
+  writeJcodeDiagnostic,
+} from "./startup-diagnostics.js";
 import { ERROR_RETRY_INITIAL_MS, nextRetryDelay, shouldRetry } from "./retry-policy.js";
 import {
   MeshAgent,
@@ -228,6 +234,7 @@ export async function runJcodeHost(): Promise<void> {
   const cwd = process.cwd();
   assertNoProjectMcpConfig(cwd);
   const home = privateAgentHome(config.space, config.name);
+  installJcodeDiagnosticLog(home);
   // SDK 1.1.0 has no socket-path launch option: it derives `run/jcode-api.sock` below jcodeHome.
   // The managed home stays in the workspace, but this private short alias keeps that fixed API
   // path below AF_UNIX's platform limit. Failure is fatal; a long-path fallback is the reported bug.
@@ -329,7 +336,7 @@ export async function runJcodeHost(): Promise<void> {
     try {
       await stopPrivateJcode();
     } catch (error) {
-      process.stderr.write(`[cotal-jcode] ${(error as Error).message}\n`);
+      writeJcodeDiagnostic(`[cotal-jcode] ${(error as Error).message}\n`);
       exit = 1;
     }
     socketHome.dispose();
@@ -352,7 +359,7 @@ export async function runJcodeHost(): Promise<void> {
   const scheduleErrorRetry = (): void => {
     if (stopping || errorRetryTimer) return;
     if (consecutiveFailures >= ERROR_RETRY_GIVE_UP) {
-      process.stderr.write(
+      writeJcodeDiagnostic(
         `[cotal-jcode] giving up after ${consecutiveFailures} consecutive failed turns - the batch stays ` +
           `un-acked and will redeliver; the seat stays degraded until a new wake arrives\n`,
       );
@@ -407,7 +414,7 @@ export async function runJcodeHost(): Promise<void> {
       consecutiveFailures = 0;
     } catch (error) {
       consecutiveFailures++;
-      process.stderr.write(
+      writeJcodeDiagnostic(
         `[cotal-jcode] turn failed (${consecutiveFailures} in a row): ${(error as Error).message}\n`,
       );
     } finally {
@@ -447,7 +454,7 @@ export async function runJcodeHost(): Promise<void> {
   const recoverBridge = async (lost: JcodeClient): Promise<void> => {
     if (stopping || lost !== client || reconnecting) return;
     if (bridgeRecoveryUsed) {
-      process.stderr.write("[cotal-jcode] private Harness connection closed after its one recovery attempt\n");
+      writeJcodeDiagnostic("[cotal-jcode] private Harness connection closed after its one recovery attempt\n");
       await shutdown(1);
       return;
     }
@@ -468,10 +475,10 @@ export async function runJcodeHost(): Promise<void> {
       await replacement.attachSession(sessionId);
       client = replacement;
       watchClient(replacement);
-      process.stderr.write(`[cotal-jcode] recovered private Harness connection for session ${sessionId}\n`);
+      writeJcodeDiagnostic(`[cotal-jcode] recovered private Harness connection for session ${sessionId}\n`);
       void agent.setStatus("idle").catch(() => {});
     } catch {
-      process.stderr.write("[cotal-jcode] private Harness connection closed and its one recovery attempt failed\n");
+      writeJcodeDiagnostic("[cotal-jcode] private Harness connection closed and its one recovery attempt failed\n");
       await shutdown(1);
     } finally {
       reconnecting = false;
@@ -525,19 +532,19 @@ export async function runJcodeHost(): Promise<void> {
     try {
       prior = chooseSessionToResume(await client.listSessions(), cwd);
     } catch (error) {
-      process.stderr.write(
+      writeJcodeDiagnostic(
         `[cotal-jcode] could not list prior sessions, starting fresh: ${(error as Error).message}\n`,
       );
     }
     let session;
     if (prior) {
       session = await client.attachSession(prior.session_id);
-      process.stderr.write(
+      writeJcodeDiagnostic(
         `[cotal-jcode] resumed session ${prior.session_id} (${prior.transcript_bytes} bytes of transcript)\n`,
       );
     } else {
       session = await client.createSession(cwd);
-      process.stderr.write(`[cotal-jcode] started a fresh session (no resumable prior session in this home)\n`);
+      writeJcodeDiagnostic(`[cotal-jcode] started a fresh session (no resumable prior session in this home)\n`);
     }
     const resumed = prior !== undefined;
     sessionId = session.session_id;
@@ -548,11 +555,18 @@ export async function runJcodeHost(): Promise<void> {
     if (config.model) {
       const spec = bareModelId(config.model);
       if (!spec.ok)
-        throw new Error(
+        throw new JcodeConnectorError(
+          "model_prefix_rejected",
           `jcode connector: model ${JSON.stringify(config.model)} carries a provider prefix, but the Harness API expects a bare model id — pass ${JSON.stringify(spec.bare)} (the ${JSON.stringify(spec.prefix)} provider is selected by configuration, not by the model id)`,
         );
     }
-    if (config.model) await client.setModel(sessionId, config.model);
+    if (config.model) {
+      try {
+        await client.setModel(sessionId, config.model);
+      } catch (error) {
+        throw new JcodeConnectorError("model_refused", "Jcode refused the requested model", { cause: error });
+      }
+    }
     // The Cotal variant is Jcode's per-session reasoning effort. Apply it after model selection
     // and before any instructions or readiness turn, so no served turn uses an unrequested tier.
     // Jcode owns the provider/model ladder and validates the requested tier at this API boundary.
@@ -599,7 +613,8 @@ export async function runJcodeHost(): Promise<void> {
     if (config.model) {
       const runtime = await client.getRuntimeInfo(sessionId);
       if (runtime.model !== config.model)
-        throw new Error(
+        throw new JcodeConnectorError(
+          "model_mismatch",
           `jcode connector: requested model ${JSON.stringify(config.model)} but the Harness API reports ${JSON.stringify(runtime.model)} — refusing a mislabelled mesh seat`,
         );
       // The model is checked above; the PROVIDER carrying it was fetched in the same response and
@@ -607,7 +622,7 @@ export async function runJcodeHost(): Promise<void> {
       // second provider's name and died inside a third component, and establishing which was true
       // meant reading the seat's private log by hand. RuntimeInfo already knows, so record it where
       // an operator looks first (#785).
-      process.stderr.write(`[cotal-jcode] ${describeRoute(runtime, config.model)}\n`);
+      writeJcodeDiagnostic(`[cotal-jcode] ${describeRoute(runtime, config.model)}\n`);
     }
 
     initialized = true;
@@ -633,7 +648,7 @@ export async function runJcodeHost(): Promise<void> {
     try {
       await stopPrivateJcode();
     } catch (teardown) {
-      process.stderr.write(`[cotal-jcode] ${(teardown as Error).message}\n`);
+      writeJcodeDiagnostic(`[cotal-jcode] ${(teardown as Error).message}\n`);
     }
     socketHome.dispose();
     await agent.stop().catch(() => {});

@@ -1,4 +1,35 @@
 import { HarnessError } from "@1jehuang/jcode-sdk";
+import { chmodSync, mkdirSync, openSync, writeSync } from "node:fs";
+import { join } from "node:path";
+
+export type JcodeConnectorFailureCode = "model_prefix_rejected" | "model_refused" | "model_mismatch";
+
+/** A bounded connector-owned startup refusal. Only its allow-listed code is rendered publicly. */
+export class JcodeConnectorError extends Error {
+  constructor(readonly code: JcodeConnectorFailureCode, message: string, options?: ErrorOptions) {
+    super(message, options);
+  }
+}
+
+let diagnosticLogFd: number | undefined;
+
+/** Start the per-seat connector diagnostic log before any private Jcode process is launched. */
+export function installJcodeDiagnosticLog(home: string): string {
+  const logs = join(home, "logs");
+  mkdirSync(logs, { recursive: true, mode: 0o700 });
+  if (process.platform !== "win32") chmodSync(logs, 0o700);
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const path = join(logs, `connector-${timestamp}-${process.pid}.log`);
+  diagnosticLogFd = openSync(path, "wx", 0o600);
+  if (process.platform !== "win32") chmodSync(path, 0o600);
+  return path;
+}
+
+/** Write one connector-owned diagnostic to the terminal and the seat's private connector log. */
+export function writeJcodeDiagnostic(message: string): void {
+  process.stderr.write(message);
+  if (diagnosticLogFd !== undefined) writeSync(diagnosticLogFd, message);
+}
 
 /** A bounded, connector-owned account of a provider refusal during the mandatory readiness turn.
  * It deliberately contains only a provider error code and a model/effort value the connector could
