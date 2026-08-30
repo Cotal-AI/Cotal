@@ -53,8 +53,8 @@
     {
       "name": "the active static terminal no longer revokes its recorded credential rows",
       "file": "implementations/manager/src/static-lifecycle.ts",
-      "find": "  if (headNow.mapping.state !== \"retired\")\n    await headBeginRetirement(t, { owner: args.owner, actor: args.actor, lifecycleUid: args.lifecycleUid, opId: args.opId });\n  await revokeStaticCredentialRows(t, args.lifecycleUid, slot.row.credentialIds, hooks.log);\n  // A crash may leave the prior seat process alive after its manager disappeared.",
-      "replace": "  if (headNow.mapping.state !== \"retired\")\n    await headBeginRetirement(t, { owner: args.owner, actor: args.actor, lifecycleUid: args.lifecycleUid, opId: args.opId });\n  // A crash may leave the prior seat process alive after its manager disappeared.",
+      "find": "  if (headNow.mapping.state !== \"retired\")\n    await headBeginRetirement(t, { owner: args.owner, actor: args.actor, lifecycleUid: args.lifecycleUid, opId: args.opId });\n  await revokeStaticCredentialRows(t, args.lifecycleUid, slot.row.credentialIds, hooks.log);",
+      "replace": "  if (headNow.mapping.state !== \"retired\")\n    await headBeginRetirement(t, { owner: args.owner, actor: args.actor, lifecycleUid: args.lifecycleUid, opId: args.opId });",
       "expectRed": "no credential row remains active after retirement",
       "cell": "no credential row remains active after retirement"
     },
