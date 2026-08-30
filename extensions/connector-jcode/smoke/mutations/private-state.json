@@ -40,8 +40,8 @@
     {
       "name": "Jcode credential mirror copy follows the destination path",
       "file": "extensions/connector-jcode/src/private-state.ts",
-      "find": "    const temp = containedPath(dirFd, tempName);",
-      "replace": "    const temp = join(dirname(destination), tempName);",
+      "find": "      renameSync(temp, containedPath(dirFd, base));",
+      "replace": "      renameSync(temp, join(dirname(destination), base));",
       "expectRed": "parent-swap after the write parent is pinned does not copy outside",
       "cell": "parent-swap after the write parent is pinned does not copy outside"
     }
