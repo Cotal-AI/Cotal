@@ -715,10 +715,7 @@ export async function epScatter(
   const responded = new Set<string>(); // frozen slots that produced ANY reply (live)
   const gone = new Set<string>();      // frozen slots the BROKER affirmed hold no subscription
   const regChurned = new Set<string>();
-  const failMsg = (e: unknown) => {
-    try { return e instanceof Error ? e.message : String(e); }
-    catch { return "unknown failure"; }
-  };
+  const failMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
   let respondedAtDeadline: Set<string> | undefined; // `responded` snapshotted at the classification point
   let deadlinePassed = false;
   let subError: unknown;

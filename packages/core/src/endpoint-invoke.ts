@@ -482,8 +482,7 @@ export async function submitAndFollowGoal(
       if (err) {
         // Keep the FIRST error (later ones are consequences) and wake every waiter: once this
         // subscription is refused, no further waiting can change the answer.
-        try { subError ??= err instanceof Error ? err : new Error(String(err)); }
-        catch { subError ??= new Error("unknown subscription failure"); }
+        subError ??= err instanceof Error ? err : new Error(String(err));
         for (const wake of waiters.values()) wake();
         return;
       }
