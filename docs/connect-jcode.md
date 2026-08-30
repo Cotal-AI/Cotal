@@ -83,9 +83,11 @@ codes rather than arbitrary Harness API messages.
 Credential mirroring is mandatory for managed Jcode seats: each launch atomically refreshes the
 allowlisted Jcode, provider-config, and external-login destinations, and removes a destination when
 its source login was removed. Cleanup addresses only that explicit inventory; transcripts, MCP
-configuration, logs, and other private-home state are untouched. There is no credential-free opt-out
-today because the private instance must reproduce the operator's current provider-login state rather
-than silently start with stale or partial authorization.
+configuration, logs, and other private-home state are untouched. Removal opens each parent with
+`O_NOFOLLOW` through the previous directory fd and unlinks the leaf through that pinned parent, so
+replacing a walked directory with a symlink cannot delete a namesake file outside the private home.
+There is no credential-free opt-out today because the private instance must reproduce the operator's
+current provider-login state rather than silently start with stale or partial authorization.
 
 If a provider failure closes the private Harness API connection during a mesh-driven turn, the
 connector leaves that turn's inbox batch unacknowledged and opens one bounded recovery window for a

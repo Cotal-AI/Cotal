@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
-import { constants, copyFileSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, symlinkSync, type Dirent } from "node:fs";
+import { closeSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, symlinkSync, unlinkSync, type Dirent } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { userAppConfigDir, userJcodeHome } from "@1jehuang/jcode-sdk";
 import { hardenPrivate } from "@cotal-ai/core";
 
@@ -96,31 +96,87 @@ function credentialDestination(home: string, destinationRelative: string): strin
   return destination;
 }
 
-/** Remove only one exact connector-owned mirror destination. Parent components are checked without
- * following symlinks, so reconciling an absent source can never turn into deletion outside `home`. */
-function removeCredentialMirror(home: string, destinationRelative: string): boolean {
+const PIN_DIRECTORY = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
+
+/** Path relative to an already-open directory fd. O_NOFOLLOW on `open` only applies to the last
+ * component, so a swapped ancestor still redirects a full-path open. `/dev/fd/<fd>/<name>` is the
+ * openat/unlinkat equivalent Node does not expose; it names the pinned inode, not the original path. */
+function containedPath(dirFd: number, name: string): string {
+  if (name === "" || name === "." || name === ".." || name.includes("/") || name.includes("\\") || name.includes("\0"))
+    throw new Error(`unsafe Jcode credential mirror path component: ${name}`);
+  return `/dev/fd/${dirFd}/${name}`;
+}
+
+function openContainedDir(dirFd: number, name: string): number {
+  return openSync(containedPath(dirFd, name), PIN_DIRECTORY);
+}
+
+function mapPinnedOpenError(error: unknown, dirFd: number, name: string, displayPath: string): never {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === "ELOOP") throw new Error(`refusing symlinked Jcode credential mirror parent: ${displayPath}`);
+  if (code === "ENOTDIR") {
+    // O_NOFOLLOW|O_DIRECTORY against a symlink returns ENOTDIR on this kernel, not ELOOP.
+    if (lstatSync(containedPath(dirFd, name)).isSymbolicLink())
+      throw new Error(`refusing symlinked Jcode credential mirror parent: ${displayPath}`);
+    throw new Error(`Jcode credential mirror parent is not a directory: ${displayPath}`);
+  }
+  throw error;
+}
+
+/** Remove only one exact connector-owned mirror destination. Each parent is opened with
+ * O_NOFOLLOW|O_DIRECTORY through the previous fd, then the leaf is unlinked through that pinned
+ * parent. A parent swapped for a symlink after it was walked cannot redirect the unlink. Optional
+ * `beforeUnlink` exists so the smoke can swap a parent between pin and unlink; production callers
+ * omit it. */
+export function removeCredentialMirror(home: string, destinationRelative: string, beforeUnlink?: () => void): boolean {
   const destination = credentialDestination(home, destinationRelative);
-  let current = home;
   const parentRelative = relative(home, dirname(destination));
   assertRelative(parentRelative);
-  for (const part of parentRelative.split(sep).filter(Boolean)) {
-    current = join(current, part);
+  const base = basename(destination);
+  if (!existsSync("/dev/fd"))
+    throw new Error("Jcode credential mirror removal requires /dev/fd to unlink through a pinned parent directory");
+
+  let dirFd: number;
+  try {
+    dirFd = openSync(home, constants.O_RDONLY | constants.O_DIRECTORY);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+
+  try {
+    let current = home;
+    for (const part of parentRelative.split(sep).filter(Boolean)) {
+      current = join(current, part);
+      let next: number;
+      try {
+        next = openContainedDir(dirFd, part);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+        mapPinnedOpenError(error, dirFd, part, current);
+      }
+      closeSync(dirFd);
+      dirFd = next;
+    }
+
     try {
-      const stats = lstatSync(current);
-      if (stats.isSymbolicLink()) throw new Error(`refusing symlinked Jcode credential mirror parent: ${current}`);
-      if (!stats.isDirectory()) throw new Error(`Jcode credential mirror parent is not a directory: ${current}`);
+      if (lstatSync(containedPath(dirFd, base)).isDirectory())
+        throw new Error(`Jcode credential mirror destination is a directory: ${destination}`);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
       throw error;
     }
-  }
-  try {
-    if (lstatSync(destination).isDirectory()) throw new Error(`Jcode credential mirror destination is a directory: ${destination}`);
-    rmSync(destination, { force: true });
+
+    beforeUnlink?.();
+    try {
+      unlinkSync(containedPath(dirFd, base));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
     return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw error;
+  } finally {
+    closeSync(dirFd);
   }
 }
 

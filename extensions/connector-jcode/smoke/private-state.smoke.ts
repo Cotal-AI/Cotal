@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { jcodeCredentialMirrorInventory, mirrorJcodeCredentials, shortSocketHome } from "../src/private-state.js";
+import { jcodeCredentialMirrorInventory, mirrorJcodeCredentials, removeCredentialMirror, shortSocketHome } from "../src/private-state.js";
 
 let pass = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
@@ -94,6 +94,9 @@ try {
 
   if (process.platform === "win32") {
     check("absent-source symlink escape guard is unreachable on unsupported Windows", true);
+    check("parent-walk TOCTOU control is unreachable on unsupported Windows", true);
+    check("parent-swap after the parent is pinned does not delete outside", true);
+    check("destination-symlink unlink keeps the outside target", true);
   } else {
     const outside = join(root, "outside-removal");
     mkdirSync(outside, { mode: 0o700 });
@@ -107,6 +110,61 @@ try {
       refused = /refusing symlinked Jcode credential mirror parent/.test((error as Error).message);
     }
     check("absent-source cleanup refuses a symlinked mirror parent and deletes nothing outside", refused && !existsSync(join(outside, "auth.json")));
+
+    const controlHome = join(root, "toctou-control-home");
+    const controlOutside = join(root, "toctou-control-outside");
+    mkdirSync(join(controlHome, "external", ".hermes"), { recursive: true, mode: 0o700 });
+    mkdirSync(controlOutside, { mode: 0o700 });
+    writeFileSync(join(controlHome, "external", ".hermes", "auth.json"), "mirror", { mode: 0o600 });
+    writeFileSync(join(controlOutside, "auth.json"), "victim", { mode: 0o600 });
+    const controlParent = join(controlHome, "external", ".hermes");
+    const controlDest = join(controlParent, "auth.json");
+    const controlSaved = `${controlParent}.real`;
+    lstatSync(join(controlHome, "external"));
+    lstatSync(controlParent);
+    renameSync(controlParent, controlSaved);
+    symlinkSync(controlOutside, controlParent, "dir");
+    rmSync(controlDest, { force: true });
+    check(
+      "control: rmSync after a parent-walk lstat deletes the symlink target",
+      !existsSync(join(controlOutside, "auth.json")) && existsSync(join(controlSaved, "auth.json")),
+    );
+
+    const pinHome = join(root, "toctou-pin-home");
+    const pinOutside = join(root, "toctou-pin-outside");
+    mkdirSync(join(pinHome, "external", ".hermes"), { recursive: true, mode: 0o700 });
+    mkdirSync(pinOutside, { mode: 0o700 });
+    writeFileSync(join(pinHome, "external", ".hermes", "auth.json"), "mirror", { mode: 0o600 });
+    writeFileSync(join(pinOutside, "auth.json"), "victim", { mode: 0o600 });
+    const pinParent = join(pinHome, "external", ".hermes");
+    const pinSaved = `${pinParent}.real`;
+    const removed = removeCredentialMirror(pinHome, join("external", ".hermes", "auth.json"), () => {
+      renameSync(pinParent, pinSaved);
+      symlinkSync(pinOutside, pinParent, "dir");
+    });
+    check(
+      "parent-swap after the parent is pinned does not delete outside",
+      removed &&
+        lstatSync(pinParent).isSymbolicLink() &&
+        existsSync(join(pinOutside, "auth.json")) &&
+        readFileSync(join(pinOutside, "auth.json"), "utf8") === "victim" &&
+        !existsSync(join(pinSaved, "auth.json")),
+    );
+
+    const leafHome = join(root, "toctou-leaf-home");
+    const leafOutside = join(root, "toctou-leaf-outside");
+    mkdirSync(join(leafHome, "external", ".hermes"), { recursive: true, mode: 0o700 });
+    mkdirSync(leafOutside, { mode: 0o700 });
+    writeFileSync(join(leafOutside, "auth.json"), "victim", { mode: 0o600 });
+    symlinkSync(join(leafOutside, "auth.json"), join(leafHome, "external", ".hermes", "auth.json"));
+    const leafRemoved = removeCredentialMirror(leafHome, join("external", ".hermes", "auth.json"));
+    check(
+      "destination-symlink unlink keeps the outside target",
+      leafRemoved &&
+        !existsSync(join(leafHome, "external", ".hermes", "auth.json")) &&
+        existsSync(join(leafOutside, "auth.json")) &&
+        readFileSync(join(leafOutside, "auth.json"), "utf8") === "victim",
+    );
   }
 
   console.log(`\n${pass} checks passed`);
