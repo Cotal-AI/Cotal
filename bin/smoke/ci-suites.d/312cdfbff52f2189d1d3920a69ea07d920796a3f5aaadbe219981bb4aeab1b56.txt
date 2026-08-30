@@ -1,0 +1,3 @@
+# #876: roster presence must never be answered as task progress; the suite drives the shipped
+# working-status path. Registered as a fragment (ci-suites.txt is frozen since #1052).
+smoke:presence-progress

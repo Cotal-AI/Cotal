@@ -47,6 +47,7 @@ const ep = new CotalEndpoint({
 });
 ep.on("error", (err) => console.error("STUB_ERR", err?.message ?? err));
 await ep.start();
+if (e.COTAL_E2E_STATUS) await ep.setStatus(e.COTAL_E2E_STATUS);
 console.log("STUB_JOINED", e.COTAL_NAME, e.COTAL_ID);
 const keep = setInterval(() => {}, 1 << 30);
 const bye = () => { clearInterval(keep); ep.stop().finally(() => process.exit(0)); };

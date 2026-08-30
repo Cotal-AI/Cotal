@@ -298,7 +298,8 @@ export async function join(args: ParsedArgs): Promise<void> {
   const setStatus = async (status: PresenceStatus, activity?: string) => {
     if (activity) await ep.setActivity(activity);
     await ep.setStatus(status);
-    print(c.dim(`(you are now ${status}${activity ? ": " + activity : ""})`));
+    const acknowledgedStatus = status === "working" ? "working · progress unknown" : status;
+    print(c.dim(`(you are now ${acknowledgedStatus}${activity ? ": " + activity : ""})`));
   };
 
   rl.on("line", async (raw) => {
