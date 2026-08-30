@@ -139,7 +139,7 @@ const stub: Connector = {
 };
 registry.register(stub);
 
-const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot, auth });
+const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 let provisioner: CotalEndpoint | undefined;
 let definer: MeshAgent | undefined;
 
