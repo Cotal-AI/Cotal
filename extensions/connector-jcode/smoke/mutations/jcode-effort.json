@@ -14,7 +14,7 @@
     {
       "name": "Jcode host refuses the launch when the provider rejects the tier",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "        throw jcodeEffortRefusal(error, config.variant, model ?? \"(the provider default)\");",
+      "find": "        throw jcodeEffortRefusal(error, config.variant, model);",
       "replace": "        void error;",
       "expectRed": "a tier the provider refuses ends the launch",
       "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build"

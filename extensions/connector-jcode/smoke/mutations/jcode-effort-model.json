@@ -1,0 +1,34 @@
+{
+  "suite": "extensions/connector-jcode/smoke/jcode-effort-model.smoke.ts",
+  "guard": "an effort-refusal diagnostic names the requested model pin, not the session default RuntimeInfo still reports after setModel",
+  "command": "pnpm smoke:jcode-effort-model",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/jcode-effort-model.json",
+  "completionMarker": "JCODE EFFORT-MODEL SMOKE",
+  "why": [
+    "A CLI spawn that died on a variant-tier refusal recorded deepseek-v4-pro despite --model grok-4.6.",
+    "The host asked RuntimeInfo first, and that value is the session default, not the pin.",
+    "",
+    "A1 restores the measured defect: RuntimeInfo wins over the requested pin.",
+    "A2 drops the pin entirely so a requested model becomes the provider-default placeholder.",
+    "",
+    "This suite grades the helper the host calls. It does not execute host.ts; a host that stopped",
+    "calling the helper would not redden these cells (named gap: needs smoke:jcode-host with a",
+    "RuntimeInfo model distinct from COTAL_MODEL)."
+  ],
+  "mutations": [
+    {
+      "name": "A1 RuntimeInfo wins over the requested pin, the measured defect",
+      "file": "extensions/connector-jcode/src/startup-diagnostics.ts",
+      "find": "  return requested ?? runtime ?? \"(the provider default)\";",
+      "replace": "  return runtime ?? requested ?? \"(the provider default)\";",
+      "expectRed": "a requested pin wins over a different RuntimeInfo model"
+    },
+    {
+      "name": "A2 drop the requested pin so the diagnostic cannot name it",
+      "file": "extensions/connector-jcode/src/startup-diagnostics.ts",
+      "find": "  return requested ?? runtime ?? \"(the provider default)\";",
+      "replace": "  return runtime ?? \"(the provider default)\";",
+      "expectRed": "a requested pin wins over a different RuntimeInfo model"
+    }
+  ]
+}

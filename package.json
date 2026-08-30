@@ -92,6 +92,7 @@
     "smoke:codex-live": "tsx extensions/connector-codex/smoke/codex-live.smoke.ts",
     "smoke:codex-tui-live": "tsx extensions/connector-codex/smoke/codex-tui-live.smoke.ts",
     "smoke:jcode-args": "tsx extensions/connector-jcode/smoke/jcode-args.smoke.ts",
+    "smoke:jcode-effort-model": "tsx extensions/connector-jcode/smoke/jcode-effort-model.smoke.ts",
     "smoke:ps-provenance": "tsx implementations/cli/smoke/agents-provenance.smoke.ts",
     "smoke:status-provenance": "tsx implementations/cli/smoke/status-provenance.smoke.ts",
     "smoke:jcode-host": "tsx extensions/connector-jcode/smoke/jcode-host.smoke.ts",

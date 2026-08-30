@@ -1,0 +1,21 @@
+{
+  "suite": "extensions/connector-jcode/smoke/jcode-host.smoke.ts",
+  "guard": "the session journal records the requested model pin after setModel, not the harness default",
+  "command": "pnpm smoke:jcode-host",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/jcode-journal-model.json",
+  "why": [
+    "The honest instrument for #972 on a jcode seat is the session journal model field. Tonight's",
+    "MCP spawn of w972 recorded deepseek-v4-pro despite grok-4.6. Skipping setModel leaves that",
+    "default in the journal while the spawn still succeeds."
+  ],
+  "mutations": [
+    {
+      "name": "A1 skip setModel so the journal keeps the harness default",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    if (config.model) {\n      try {\n        await client.setModel(sessionId, config.model);",
+      "replace": "    if (false) {\n      try {\n        await client.setModel(sessionId, config.model);",
+      "expectRed": "session journal records the requested model pin, not the harness default"
+    }
+  ],
+  "_note": "No completionMarker: this suite is fail-fast (node:assert throws at the first red)."
+}

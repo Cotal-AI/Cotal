@@ -12,6 +12,7 @@ import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js
 import { bareModelId, describeRoute } from "./route-identity.js";
 import {
   classifyReadinessProviderRefusal,
+  effortRefusalModel,
   installJcodeDiagnosticLog,
   JcodeConnectorError,
   jcodeEffortRefusal,
@@ -745,11 +746,15 @@ export async function runJcodeHost(): Promise<void> {
     // and before any instructions or readiness turn, so no served turn uses an unrequested tier.
     // Jcode owns the provider/model ladder and validates the requested tier at this API boundary.
     if (config.variant) {
-      const model = (await client.getRuntimeInfo(sessionId)).model ?? config.model;
+      // The requested pin is the operator-visible model. RuntimeInfo can still name the session
+      // default after setModel (measured: a CLI spawn that died on a variant-tier refusal recorded
+      // deepseek-v4-pro despite --model grok-4.6). Prefer the pin; fall back to RuntimeInfo only
+      // when no pin was requested.
+      const model = effortRefusalModel(config.model, (await client.getRuntimeInfo(sessionId)).model);
       try {
         await client.setReasoningEffort(sessionId, config.variant);
       } catch (error) {
-        throw jcodeEffortRefusal(error, config.variant, model ?? "(the provider default)");
+        throw jcodeEffortRefusal(error, config.variant, model);
       }
     }
     // On a resume the persona/instructions are already the first thing in this transcript. Re-sending
