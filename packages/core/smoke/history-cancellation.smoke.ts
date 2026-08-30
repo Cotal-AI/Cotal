@@ -94,7 +94,7 @@ try {
   const payload = "x".repeat(8 * 1024);
   for (let i = 0; i < 96; i++) await poster.multicast(`${i}:${payload}`, { channel: "general" });
 
-  proxy = await bandwidthProxy(proxyPort, brokerPort, 64 * 1024);
+  proxy = await bandwidthProxy(proxyPort, brokerPort, 8 * 1024);
   reader = new CotalEndpoint({ space, servers: proxyUrl, card: { name: "reader", kind: "endpoint" }, consume: false, registerPresence: false, watchPresence: false, watchChannels: false });
   reader.on("error", () => {});
   await reader.start();
