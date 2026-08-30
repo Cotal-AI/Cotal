@@ -35,7 +35,7 @@ export const HERMES_PROVIDER_KEYS: readonly string[] = [
 export const hermesConnector: Connector = {
   kind: "connector",
   name: "hermes",
-  requires: ["hermes"],
+  requires: ["uv"],
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("the Hermes connector does not support exact-session continuation");
     // Hermes is Unix-only: its sidecar bridge + hook relay use AF_UNIX `.sock` paths and a Python
@@ -68,7 +68,7 @@ export const hermesConnector: Connector = {
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
-    if (opts.resolvedBinaries?.hermes) env.COTAL_HERMES_BIN = opts.resolvedBinaries.hermes;
+    if (opts.resolvedBinaries?.uv) env.COTAL_UV_BIN = opts.resolvedBinaries.uv;
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;

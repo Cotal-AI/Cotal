@@ -347,6 +347,7 @@
     "smoke:ep-serve-gate": "tsx packages/core/smoke/endpoint-serve-gate.smoke.ts",
     "smoke:manager-service": "tsx implementations/manager/smoke/manager-service.smoke.ts",
     "smoke:manager-harness-boot": "tsx implementations/manager/smoke/harness-boot.smoke.ts",
+    "smoke:hermes-boot-availability": "pnpm --filter @cotal-ai/connector-hermes... build && tsx implementations/manager/smoke/hermes-boot-availability.smoke.ts",
     "smoke:manager-service-ops": "tsx implementations/manager/smoke/manager-service-ops.smoke.ts",
     "smoke:manager-persona-show-auth": "tsx implementations/manager/smoke/persona-show-auth.smoke.ts",
     "smoke:manager-service-invoke": "tsx implementations/manager/smoke/manager-service-invoke.smoke.ts",

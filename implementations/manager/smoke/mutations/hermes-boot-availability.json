@@ -1,0 +1,32 @@
+{
+  "suite": "implementations/manager/smoke/hermes-boot-availability.smoke.ts",
+  "guard": "installed Hermes metadata makes manager boot accept the documented uv-only setup and reject a hermes-only PATH that the shipped launcher cannot use",
+  "command": "pnpm smoke:hermes-boot-availability",
+  "progressPattern": "✓",
+  "minTicks": 4,
+  "completionMarker": "HERMES BOOT AVAILABILITY: 4 passed, 0 failed",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/hermes-boot-availability.json",
+  "why": [
+    "The smoke derives cached requirements from the built shipped Hermes connector, then starts the",
+    "real manager boot inspection against an owned broker for uv-only and hermes-only PATH arms.",
+    "Each mutation rebuilds Hermes first, so source changes reach the bundled artifact the smoke imports."
+  ],
+  "mutations": [
+    {
+      "name": "Hermes metadata inspects the unused hermes executable instead of uv, restoring the uv-only false negative",
+      "file": "extensions/connector-hermes/src/extension.ts",
+      "find": "  requires: [\"uv\"],",
+      "replace": "  requires: [\"hermes\"],",
+      "expectRed": "documented uv-only Hermes install is available at manager boot",
+      "cell": "documented uv-only Hermes install is available at manager boot"
+    },
+    {
+      "name": "Hermes metadata inspects the unused hermes executable instead of uv, restoring the hermes-only false positive",
+      "file": "extensions/connector-hermes/src/extension.ts",
+      "find": "  requires: [\"uv\"],",
+      "replace": "  requires: [\"hermes\"],",
+      "expectRed": "hermes-only PATH is unavailable because the shipped launcher requires uv",
+      "cell": "hermes-only PATH is unavailable because the shipped launcher requires uv"
+    }
+  ]
+}

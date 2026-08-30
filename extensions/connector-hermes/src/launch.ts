@@ -164,7 +164,7 @@ async function main(): Promise<void> {
   };
 
   log(`launching hermes gateway as ${config.name}${config.role ? `/${config.role}` : ""} (HERMES_HOME=${home})`);
-  const child = spawn("uv", ["run", "--project", PKG_DIR, process.env.COTAL_HERMES_BIN?.trim() || "hermes", "gateway", "run"], {
+  const child = spawn(process.env.COTAL_UV_BIN?.trim() || "uv", ["run", "--project", PKG_DIR, "hermes", "gateway", "run"], {
     env: childEnv,
     stdio: "inherit",
   });
