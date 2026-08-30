@@ -43,7 +43,10 @@ let cells = 0;
 let failed = 0;
 const ok = (name: string, cond: boolean, detail?: unknown): void => {
   cells++;
-  if (cond) return;
+  if (cond) {
+    console.log(`  ✓ ${name}`);
+    return;
+  }
   failed++;
   console.log(`  x FAIL  ${name}${detail === undefined ? "" : `: ${JSON.stringify(detail)}`}`);
 };
