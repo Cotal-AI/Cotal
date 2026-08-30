@@ -116,23 +116,21 @@ export async function killAndAwaitExit(child: ChildProcess, signal: NodeJS.Signa
 }
 
 interface Owned {
-  readonly child: ChildProcess;
+  readonly child?: ChildProcess;
   readonly storeDir?: string;
 }
 
 const owned = new Set<Owned>();
 let armed = false;
 
-/** Kill everything owned. Never throws: this runs while the process is already on its way out, where
- *  a throw would replace the real cause of death with a teardown error. Failures are reported on
- *  stderr instead of swallowed, so a teardown that could not complete is still visible. */
-function reap(): void {
-  for (const o of owned) {
-    try {
-      o.child.kill("SIGKILL");
-    } catch (e) {
-      console.error(`smoke broker teardown: could not kill pid ${o.child.pid}: ${(e as Error).message}`);
-    }
+function takeOwned(): Owned[] {
+  const entries = [...owned];
+  owned.clear();
+  return entries;
+}
+
+function removeOwnedPaths(entries: readonly Owned[]): void {
+  for (const o of entries) {
     if (o.storeDir !== undefined) {
       try {
         rmSync(o.storeDir, { recursive: true, force: true });
@@ -141,7 +139,31 @@ function reap(): void {
       }
     }
   }
-  owned.clear();
+}
+
+const stillAlive = (pid: number): boolean => {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+};
+
+/** Synchronously stop an exact child by OS pid. Exit/signal hooks cannot await promises reliably:
+ * the runner can terminate the process while a promise is pending. Waiting on OS liveness before
+ * removing paths closes the opposite race, where nats-server recreates store files after rmSync. */
+function killOwnedChild(child: ChildProcess): void {
+  const pid = child.pid;
+  if (pid === undefined) return;
+  try { child.kill("SIGKILL"); } catch { return; }
+  const deadline = Date.now() + 3_000;
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  while (stillAlive(pid) && Date.now() < deadline) Atomics.wait(pause, 0, 0, 10);
+  if (stillAlive(pid)) console.error(`smoke broker teardown: pid ${pid} did not exit before path cleanup`);
+}
+
+/** Synchronous exit/signal teardown. Never throws: this runs while the process is already exiting. */
+function reap(): void {
+  const entries = takeOwned();
+  for (const o of entries) if (o.child !== undefined) killOwnedChild(o.child);
+  removeOwnedPaths(entries);
 }
 
 function arm(): void {
@@ -170,11 +192,10 @@ function arm(): void {
     // suite had already registered, then re-raise so the default kills the process before the
     // disabled handler could ever matter.
     const onSignal = (): void => {
-      reap();
-      // Registering a listener suppresses the default termination, so re-raise it after cleaning up:
-      // a killed seat must still LOOK killed (exit status 128+signo), or a supervisor reading the
-      // status learns the wrong thing about why it died.
       process.off(sig, onSignal);
+      reap();
+      // Registering a listener suppresses the default termination, so re-raise after synchronous
+      // cleanup. A killed seat must still report the signal rather than a clean exit.
       process.kill(process.pid, sig);
     };
     process.on(sig, onSignal);
@@ -188,6 +209,17 @@ function arm(): void {
 export function teardownOnSignal(child: ChildProcess, storeDir?: string): () => void {
   arm();
   const entry: Owned = { child, ...(storeDir === undefined ? {} : { storeDir }) };
+  owned.add(entry);
+  return () => owned.delete(entry);
+}
+
+/** Own one exact temporary path before it receives credential or broker bytes. Unlike
+ * {@link teardownOnSignal}, this needs no child handle, so registration can precede the dangerous
+ * write instead of leaving a create-before-register crash window. The caller still removes the path
+ * on its normal path, then releases this backstop last. */
+export function teardownPathOnSignal(path: string): () => void {
+  arm();
+  const entry: Owned = { storeDir: path };
   owned.add(entry);
   return () => owned.delete(entry);
 }

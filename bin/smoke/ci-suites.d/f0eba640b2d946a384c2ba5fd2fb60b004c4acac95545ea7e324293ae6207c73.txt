@@ -1,0 +1,4 @@
+# #977: a focus-mode @mention/ambient ack dropped on a channel reached only via a wildcard join
+# (team.>) was silently unrecallable - recallAmbient skipped it before it ever reached
+# droppedChannels. Mutation-proofed - bin/smoke/mutations/focus-recall-honesty.json.
+smoke:focus-recall-wildcard

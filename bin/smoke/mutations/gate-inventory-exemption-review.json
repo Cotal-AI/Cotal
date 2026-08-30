@@ -1,0 +1,31 @@
+{
+  "suite": "bin/smoke/gate-inventory.smoke.ts",
+  "guard": "every UNGATED exemption has a current machine-checked recheck date and the inventory reports the exact number examined",
+  "command": "pnpm smoke:gate-inventory",
+  "completionMarker": "GATE INVENTORY",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/gate-inventory-exemption-review.json",
+  "why": [
+    "Most current exemption premises are external environment or policy prose that this repository cannot truthfully evaluate. A required recheckBy date does not claim to prove those premises; it guarantees they expire loudly and receive another decision.",
+    "",
+    "The first mutation disables expiry, and the built-in past-due control must redden on its named cell. The second mutation falsifies the examined count, and the suite must report that the inventory did not inspect all 20 current exemptions."
+  ],
+  "mutations": [
+    {
+      "name": "disable exemption expiry so a stale premise remains certified indefinitely",
+      "file": "bin/smoke/gate-inventory.smoke.ts",
+      "find": "    else if (date < today) expired.push(name);",
+      "replace": "    else if (false) expired.push(name);",
+      "expectRed": "FAIL: exemption expiry control did not expire its one past-due entry",
+      "cell": "exemption expiry control did not expire its one past-due entry"
+    },
+    {
+      "name": "report zero exemptions examined so an empty freshness walk looks complete",
+      "file": "bin/smoke/gate-inventory.smoke.ts",
+      "find": "  return { examined: Object.keys(entries).length, invalid, expired };",
+      "replace": "  return { examined: 0, invalid, expired };",
+      "expectRed": "FAIL: exemption freshness did not examine every UNGATED entry",
+      "cell": "exemption freshness did not examine every UNGATED entry"
+    }
+  ],
+  "grades": "tool"
+}

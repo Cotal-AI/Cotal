@@ -711,11 +711,25 @@
   function setStale(stale) {
     const el = $("stale");
     if (!el) return;
+    staleNow = stale;
     const label = window.COTAL_SNAPSHOT.staleLabel(stale);
     el.hidden = !label;
-    if (!label) return;
     el.querySelector(".t").textContent = label;
     el.title = stale.map((s) => `${s.name}: ${s.reason}`).join("\n");
+  }
+  let staleNow = [];
+  function markStale(name, entry) {
+    const rest = staleNow.filter((s) => s.name !== name);
+    staleNow = entry ? [...rest, entry] : rest;
+    setStale(staleNow);
+  }
+  function applyPresenceView(view) {
+    if (!view || view.fresh) {
+      markStale("roster", null);
+      return;
+    }
+    const since = typeof view.staleSince === "number" ? new Date(view.staleSince).toISOString() : "unknown";
+    markStale("roster", { name: "roster", reason: `observer presence watch silent since ${since}` });
   }
 
   // ── boot ──
@@ -762,6 +776,8 @@
         name: "activity",
         reason: `${activityPage.read} of ${activityPage.of} sources answered within ${activityPage.deadlineMs}ms; missing ${activityPage.missing.join(", ")}`,
       });
+    const rosterView = staleNow.find((s) => s.name === "roster");
+    if (rosterView && !stale.some((s) => s.name === "roster")) stale.push(rosterView);
     setStale(stale);
     // A bootstrap read that REFUSED is a sentence about the membership source like any other, so it
     // obeys the same rule as the snapshot beside it: it is a fact about that one read, and the live
@@ -789,7 +805,7 @@
   function seedDms(dmHist) {
     for (const m of dmHist) { const a = m.from?.id && agents.get(m.from.id), b = typeof m.to === "string" && agents.get(m.to); if (a && b && a !== b) dmHit(a, b, m.ts || now()); }
   }
-  function connect() { const es = new EventSource("/feed"); es.onopen = () => setConn(true); es.onerror = () => setConn(false); es.addEventListener("roster", (e) => { liveApplied.add("peers"); updateRoster(JSON.parse(e.data)); }); es.addEventListener("membership", (e) => { liveApplied.add("membership"); applyMembership(JSON.parse(e.data)); }); es.addEventListener("membership-read-failed", () => { liveApplied.add("membership"); membershipUnreadable(); }); es.addEventListener("message", (e) => onMessage(JSON.parse(e.data))); }
+  function connect() { const es = new EventSource("/feed"); es.onopen = () => setConn(true); es.onerror = () => setConn(false); es.addEventListener("roster", (e) => { liveApplied.add("peers"); updateRoster(JSON.parse(e.data)); }); es.addEventListener("presence-view", (e) => { applyPresenceView(JSON.parse(e.data)); }); es.addEventListener("membership", (e) => { liveApplied.add("membership"); applyMembership(JSON.parse(e.data)); }); es.addEventListener("membership-read-failed", () => { liveApplied.add("membership"); membershipUnreadable(); }); es.addEventListener("message", (e) => onMessage(JSON.parse(e.data))); }
 
   resize();
   setInterval(setFeed, 5000); // age "live" → "stale" even without new events

@@ -1,0 +1,2 @@
+# Merge-safe one-file-per-suite registry and stable fragment sharding.
+smoke:ci-fragments
