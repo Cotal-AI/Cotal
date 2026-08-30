@@ -19,6 +19,7 @@
  */
 import { readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
+import { dirname, resolve } from "node:path";
 
 /**
  * The config list is DISCOVERED from the tree, never a remembered list of directories: a config
@@ -74,6 +75,12 @@ const REQUIRED_MAY_BE_EMPTY = ["replace"];
 /** `packages/core/src/x.ts` -> `packages/core`; `implementations/runtime/smoke/y.ts` -> `implementations/runtime`. */
 const packageRoot = (p) => p.split("/").slice(0, 2).join("/");
 
+function directRelativeImports(suite) {
+  const source = readFileSync(suite, "utf8");
+  return [...source.matchAll(/(?:\bfrom\s*|\bimport\s*\()(["'])(\.{1,2}\/[^"']+)\1/g)]
+    .map((match) => resolve(dirname(suite), match[2]));
+}
+
 /**
  * A mutation is only gradable if the suite runs the file it mutates. A suite that imports its
  * target's package BY NAME gets `dist`, so mutating the source cannot reach the running code and
@@ -83,6 +90,7 @@ const packageRoot = (p) => p.split("/").slice(0, 2).join("/");
  * remembering it is the rule that just failed.
  */
 const assertGradable = (configPath, suite, m) => {
+  if (directRelativeImports(suite).includes(resolve(m.file))) return;
   if (packageRoot(m.file) === packageRoot(suite) && readFileSync(suite, "utf8").includes("../src/")) return;
   throw new Error(
     `${configPath}: mutation "${m.name}" targets ${m.file}, which ${suite} does not import by source path — ` +

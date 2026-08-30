@@ -29,10 +29,31 @@ function check(name: string, condition: unknown, detail?: unknown): void {
 
 const expectedNames = ["CI", "Docs", "Windows"];
 check(
-  "path-filtered workflows are included only when a changed path matches their declaration",
+  "the real repository workflows and path filters yield the exact expected names",
   JSON.stringify(expectedPullRequestWorkflows(workflows, ["package.json"])) === JSON.stringify(["CI", "Windows"]) &&
     JSON.stringify(expectedPullRequestWorkflows(workflows, ["install.sh"])) === JSON.stringify(["CI", "Installer", "Windows"]),
 );
+const declarationForms = [
+  ["plain flow sequence", "name: Plain Flow\non: [push, pull_request]\n", "Plain Flow"],
+  ["commented flow sequence", "name: Commented Flow\non: [push, pull_request] # ordinary YAML comment\n", "Commented Flow"],
+  ["block mapping", "name: Block Mapping\non:\n  pull_request:\n", "Block Mapping"],
+] as const;
+for (const [label, source, name] of declarationForms) {
+  check(
+    `${label} pull_request declaration is detected`,
+    JSON.stringify(expectedPullRequestWorkflows({ [`${label}.yml`]: source }, ["package.json"])) === JSON.stringify([name]),
+  );
+}
+check("every supported pull_request declaration form ran (3)", declarationForms.length === 3);
+let malformedOnRefused = false;
+try {
+  expectedPullRequestWorkflows({
+    "malformed.yml": "name: Malformed\non: push pull_request\n",
+  }, ["package.json"]);
+} catch (error) {
+  malformedOnRefused = /unsupported top-level on declaration/.test(String(error));
+}
+check("an unrecognised top-level on declaration fails closed instead of omitting a workflow", malformedOnRefused);
 let unsupportedRefused = false;
 try {
   expectedPullRequestWorkflows({
@@ -110,7 +131,7 @@ for (const conclusion of ["neutral", "skipped"]) {
   check(`a ${conclusion} expected workflow is failing, never green`, JSON.stringify(verdict.failing) === '["CI"]' && !verdict.green, verdict);
 }
 
-const EXPECTED = 20;
+const EXPECTED = 25;
 check(`every cell ran (${EXPECTED} before sentinel)`, passed + failed === EXPECTED);
 console.log(`PR HEAD GATE SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 console.log("SUITE COMPLETE");

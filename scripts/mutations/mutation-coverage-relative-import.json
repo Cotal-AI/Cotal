@@ -1,0 +1,17 @@
+{
+  "suite": "bin/smoke/mutation-coverage-gradability.smoke.ts",
+  "guard": "the mutation coverage auditor recognizes an exact direct relative source import across repository directories without misclassifying a product smoke as an instrument self-test",
+  "command": "pnpm smoke:mutation-coverage-gradability",
+  "completionMarker": "MUTATION COVERAGE GRADABILITY",
+  "grades": "tool",
+  "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/mutation-coverage-relative-import.json",
+  "mutations": [
+    {
+      "name": "the auditor ignores exact direct relative imports outside the suite's package directory",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  if (directRelativeImports(suite).includes(resolve(m.file))) return;",
+      "replace": "  if (false) return;",
+      "expectRed": "a direct cross-directory source import is accepted as product-smoke gradability"
+    }
+  ]
+}

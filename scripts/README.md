@@ -22,6 +22,8 @@ non-green categories are distinct:
 
 The path-filter reader understands the declaration and glob forms used in this repository. A new
 form it does not understand is an error, not a silently ignored or literal filter.
+Top-level flow event lists may carry a trailing YAML comment; any other unrecognised `on` form is
+also an error rather than a workflow silently removed from the expected set.
 
 The guard is read-only. It does not drain GitHub's queue, retrigger a run, or diagnose or fix the
 external scheduler that creates workflow runs.

@@ -14,6 +14,19 @@ function unquote(value) {
   return trimmed;
 }
 
+function stripYamlComment(value) {
+  let quote;
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i];
+    if (quote === '"' && ch === "\\") { i += 1; continue; }
+    if (quote === "'" && ch === "'" && value[i + 1] === "'") { i += 1; continue; }
+    if (quote) { if (ch === quote) quote = undefined; continue; }
+    if (ch === "'" || ch === '"') { quote = ch; continue; }
+    if (ch === "#" && (i === 0 || /\s/.test(value[i - 1]))) return value.slice(0, i);
+  }
+  return value;
+}
+
 function bracketList(value, file, line) {
   const inner = value.trim().slice(1, -1).trim();
   if (!inner) return [];
@@ -28,14 +41,16 @@ function pullRequestDeclaration(file, text) {
   const lines = text.split("\n");
   const onIndex = lines.findIndex((line) => /^on:\s*(?:$|\S)/.test(line));
   if (onIndex < 0) throw new Error(`${file}: missing top-level on declaration`);
-  const onHead = lines[onIndex].replace(/^on:\s*/, "").trim();
+  const onHead = stripYamlComment(lines[onIndex].replace(/^on:\s*/, "")).trim();
   let handlesPullRequest = false;
   if (onHead) {
     if (/^\[.*\]$/.test(onHead)) {
       const events = bracketList(onHead, file, onIndex + 1);
       handlesPullRequest = events.includes("pull_request");
-    } else {
+    } else if (/^[A-Za-z_][A-Za-z0-9_-]*$/.test(onHead)) {
       handlesPullRequest = onHead === "pull_request";
+    } else {
+      throw new Error(`${file}:${onIndex + 1}: unsupported top-level on declaration`);
     }
     if (!handlesPullRequest) return undefined;
     const nameLine = lines.find((line) => /^name:\s*\S/.test(line));

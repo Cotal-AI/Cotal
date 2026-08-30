@@ -19,6 +19,7 @@
     "gen:ci-suites-dts": "tsx bin/smoke/gen-ci-suites-dts.mts",
     "mutation-proof": "node scripts/mutation-proof.mjs",
     "mutation-coverage": "node scripts/mutation-coverage.mjs",
+    "smoke:mutation-coverage-gradability": "tsx bin/smoke/mutation-coverage-gradability.smoke.ts",
     "doc-binding": "node scripts/doc-binding.mjs",
     "smoke:doc-binding": "node scripts/doc-binding.mjs --self-test",
     "smoke:sandbox-guard": "tsx packages/smoke-kit/smoke/sandbox-guard.smoke.ts",

@@ -52,6 +52,22 @@
       "replace": "if (false) throw new Error(`unsupported workflow path pattern: ${pattern}`);",
       "expectRed": "unsupported GitHub glob syntax fails closed instead of being treated as a literal",
       "cell": "unsupported GitHub glob syntax fails closed"
+    },
+    {
+      "name": "a trailing YAML comment hides a pull_request flow sequence",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "  const onHead = stripYamlComment(lines[onIndex].replace(/^on:\\s*/, \"\")).trim();",
+      "replace": "  const onHead = lines[onIndex].replace(/^on:\\s*/, \"\").trim();",
+      "expectRed": "commented flow sequence pull_request declaration is detected",
+      "cell": "commented flow sequence pull_request declaration is detected"
+    },
+    {
+      "name": "an unrecognised top-level on declaration silently omits its workflow",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "      throw new Error(`${file}:${onIndex + 1}: unsupported top-level on declaration`);",
+      "replace": "      return undefined;",
+      "expectRed": "an unrecognised top-level on declaration fails closed instead of omitting a workflow",
+      "cell": "an unrecognised top-level on declaration fails closed instead of omitting a workflow"
     }
   ]
 }
