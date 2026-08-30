@@ -1087,6 +1087,65 @@ let c = await sleep("1s")
     })()) === 2, "the two effects that were NOT recorded");
 }
 
+// ── and a release inside a CONCURRENCY SCOPE is not an outcome either ────────────────────────
+//
+// The cell above is the sequential seam. This is the same stop landing while the walker is inside a
+// scope, and it is the case that was wrong (#862): the release fell past the scope's ladder of
+// classes that must not be recorded, settled as an `L4000` scope-fault carrying the release's own
+// text, and a resume with a HEALTHY host then replayed that entry and threw. A plain host stop
+// permanently ended any run that happened to be inside a scope, while the identical stop one
+// statement earlier resumed cleanly.
+//
+// Both scopes that launch thunks are covered, because they share the path. The resume is the point:
+// settling nothing leaves the scope pending, a pending scope re-enters, and settling is idempotent,
+// so the run finishes where it stopped rather than carrying a durable failure.
+for (const [label, P] of [
+  ["parallel", `
+await parallel({
+  a: async () => { await sleep("1m"); return 1; },
+  b: async () => { await sleep("2m"); return 2; },
+}, { name: "both" });
+`],
+  ["fanOut", `
+await fanOut([1, 2], async (n) => { await sleep("1m"); return n; }, { name: "each", key: (n) => "k" + n });
+`],
+] as const) {
+  const runId = `r-stop-${label}`;
+  const journal = new Journal({ run: runId });
+  const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+  let effects = 0;
+  let released: unknown;
+  try {
+    await run(P, {
+      runId,
+      handler: new SimHandler({}),
+      journal,
+      pins,
+      shouldStop: () => (effects++ === 1 ? "host stop" : undefined),
+    });
+  } catch (e) { released = e; }
+  ok(`a host stop inside ${label} releases the run rather than failing it`,
+    released instanceof RunReleased, `${(released as Error)?.name}`);
+
+  // The defect was here: an entry settled `failed` with the release text as its error.
+  const entries = journal.entries();
+  const recordedRelease = entries.filter((e) => {
+    const err = (e as { error?: { message?: string } }).error;
+    return err !== undefined && String(err.message).includes("released before its next effect");
+  });
+  ok(`and ${label} records the release as NO entry's outcome`,
+    recordedRelease.length === 0,
+    recordedRelease.map((e) => (e as { error?: { code?: string } }).error?.code));
+
+  // And the consequence that made it critical rather than cosmetic.
+  let resumeErr: unknown;
+  try {
+    await resume(P, new Journal({ run: runId, entries }), { runId, pins, handler: new SimHandler({}) });
+  } catch (e) { resumeErr = e; }
+  ok(`so a healthy driver resumes past a ${label} it was stopped inside`,
+    resumeErr === undefined, `${(resumeErr as Error)?.name}: ${(resumeErr as Error)?.message}`);
+}
+
 // ── a program cannot catch its host leaving ──────────────────────────────────────────────────
 //
 // `try` is the workflow's own handling of the world going wrong, and a driver's shutdown is not the
