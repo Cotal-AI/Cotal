@@ -8,6 +8,7 @@
  * cells are negative controls proving transport selection did not regress ordinary NATS dials.
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
@@ -50,18 +51,22 @@ const must = (name: string, condition: boolean, extra?: unknown): void => {
 
 const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_")) delete cleanEnv[key];
+const fixtureId = process.env.COTAL_SMOKE_CONTROL_DIAL_ID ?? randomUUID().replaceAll("-", "");
+if (!/^[A-Za-z0-9_-]+$/.test(fixtureId)) throw new Error("invalid control-dial smoke fixture id");
+if (process.env.COTAL_SMOKE_CONTROL_DIAL_PID_FILE)
+  writeFileSync(process.env.COTAL_SMOKE_CONTROL_DIAL_PID_FILE, `${process.pid}\n`, { mode: 0o600 });
 
-const home = mkdtempSync(join(tmpdir(), "cotal-control-dial-home-"));
+const home = mkdtempSync(join(tmpdir(), `cotal-control-dial-home-${fixtureId}-`));
 const releaseHome = teardownPathOnSignal(home);
 process.env.COTAL_HOME = home;
 const xdg = join(home, "xdg");
 mkdirSync(xdg);
-const root = mkdtempSync(join(tmpdir(), "cotal-control-dial-root-"));
+const root = mkdtempSync(join(tmpdir(), `cotal-control-dial-root-${fixtureId}-`));
 const releaseRoot = teardownPathOnSignal(root);
 // The JetStream store gets its own tokened dir rather than living under `root`, because the reaper
 // claims a lost broker by that prefix: a store buried in an untokened tree is not merely unreaped,
 // it is unreachable to the reaper.
-const brokerStore = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}control-dial-js-`));
+const brokerStore = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}control-dial-js-${fixtureId}-`));
 const releaseBrokerStore = teardownPathOnSignal(brokerStore);
 const tcpPort = await freePort();
 const wsPort = await freePort();

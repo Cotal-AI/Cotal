@@ -1,13 +1,14 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { reapSmokeBrokers } from "../reap-smoke-brokers.mjs";
 
-const rootPrefix = "cotal-control-dial-root-";
-const homePrefix = "cotal-control-dial-home-";
-const storeTag = "-control-dial-js-";
-const before = new Set(readdirSync(tmpdir()));
+const fixtureId = randomUUID().replaceAll("-", "");
+const rootPrefix = `cotal-control-dial-root-${fixtureId}-`;
+const homePrefix = `cotal-control-dial-home-${fixtureId}-`;
+const storeTag = `-control-dial-js-${fixtureId}-`;
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const nestedKeys = (value: unknown, keys: string[] = []): string[] => {
   if (!value || typeof value !== "object") return keys;
@@ -30,7 +31,11 @@ const child = spawn(process.execPath, [
   join(process.cwd(), "bin", "smoke", "control-transport-dial.smoke.ts"),
 ], {
   cwd: process.cwd(),
-  env: { ...process.env, COTAL_SMOKE_FAIL_CONTROL_DIAL_AFTER_AUTH: "1" },
+  env: {
+    ...process.env,
+    COTAL_SMOKE_FAIL_CONTROL_DIAL_AFTER_AUTH: "1",
+    COTAL_SMOKE_CONTROL_DIAL_ID: fixtureId,
+  },
   stdio: ["ignore", "pipe", "ignore"],
 });
 let reached = false;
@@ -45,10 +50,10 @@ let authJson = 0;
 let seedFiles = 0;
 try {
   for (let i = 0; i < 100; i++) {
-    const created = readdirSync(tmpdir()).filter((name) => !before.has(name));
-    roots = created.filter((name) => name.startsWith(rootPrefix));
-    homes = created.filter((name) => name.startsWith(homePrefix));
-    stores = created.filter((name) => name.startsWith("cotal-smoke-broker-") && name.includes(storeTag));
+    const entries = readdirSync(tmpdir());
+    roots = entries.filter((name) => name.startsWith(rootPrefix));
+    homes = entries.filter((name) => name.startsWith(homePrefix));
+    stores = entries.filter((name) => name.startsWith("cotal-smoke-broker-") && name.includes(storeTag));
     authJson = 0; seedFiles = 0;
     for (const name of roots) {
       const dir = join(tmpdir(), name, ".cotal", "auth");
