@@ -1,0 +1,3 @@
+# Hermes runs its gateway through uv, which supplies the project-pinned command. Drive the real
+# installed-extension manager boot and prove uv-only is available while hermes-only is refused.
+smoke:hermes-boot-requirement

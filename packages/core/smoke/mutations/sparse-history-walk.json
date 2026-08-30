@@ -1,0 +1,12 @@
+{
+  "command": "pnpm smoke:sparse-history-walk",
+  "mutations": [
+    {
+      "name": "S1 restore the unbounded walk-to-1 so a sparse channel with fewer than limit matches drains from stream sequence 1",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        if (page.length >= limit) return page.slice(-limit);\n        if (!floorKnown) {\n          floor = Math.max(1, await this.firstMatchingSeq(js, stream, subject, signal));\n          floorKnown = true;\n        }\n        if (start <= floor) return page.slice(-limit);\n",
+      "replace": "        if (page.length >= limit || start === 1) return page.slice(-limit);\n",
+      "expectRed": "1.2 the walk does NOT start at stream sequence 1"
+    }
+  ]
+}

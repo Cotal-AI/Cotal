@@ -84,8 +84,8 @@ export function seedStorePath(generation: string, name: string): string {
   return join(seedStoreDir(), generation, name);
 }
 
-/** Resolve package-manager bin symlinks before looking for package-owned files. */
-function entryScript(): string {
+/** Resolve package-manager bin symlinks to the exact CLI entry this process is running. */
+export function entryScript(): string {
   const entry = process.argv[1];
   if (!entry) throw new Error("cannot resolve the cotal entry script: no entry script (process.argv[1])");
   try {
@@ -95,24 +95,30 @@ function entryScript(): string {
   }
 }
 
+/** The package root that owns this process's resolved entry script. This is the shared artifact
+ *  identity for version and provenance reporting, so a package-manager bin symlink cannot make the
+ *  two surfaces describe different installs. */
+export function cliPackageRoot(): string {
+  const entry = entryScript();
+  let dir = dirname(entry);
+  for (;;) {
+    if (existsSync(join(dir, "package.json"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) throw new Error(`cannot determine the cotal package root: no package.json above ${entry}`);
+    dir = parent;
+  }
+}
+
 /**
  * This `cotal-ai` binary's published version — the nearest `package.json` above the {@link entryScript}
  * (`cotal-ai` published, or `bin/package.json` in a dev `tsx bin/cotal.ts` run). Surfaced by
  * `cotal --version` / `cotal -v` and `cotal status`. Fails loud if unreadable.
  */
 export function cliVersion(): string {
-  const entry = entryScript();
-  let dir = dirname(entry);
-  for (;;) {
-    const pj = join(dir, "package.json");
-    if (existsSync(pj)) {
-      const version = (JSON.parse(readFileSync(pj, "utf8")) as { version?: string }).version;
-      if (typeof version === "string" && version) return version;
-    }
-    const parent = dirname(dir);
-    if (parent === dir) throw new Error(`cannot determine the cotal version: no versioned package.json above ${entry}`);
-    dir = parent;
-  }
+  const root = cliPackageRoot();
+  const version = (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version?: string }).version;
+  if (typeof version === "string" && version) return version;
+  throw new Error(`cannot determine the cotal version: ${join(root, "package.json")} has no version`);
 }
 
 /**

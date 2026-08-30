@@ -22,7 +22,9 @@
  *  6. F3 rollback: a spawn that throws AFTER activation (buildLaunch) drives the exact-op static
  *     terminal — no active orphan survives.
  *  7. RECONCILE (boot sweep): an active slot with no live process is terminalized by
- *     reconcileStaticLifecycles (no active orphan across manager restarts).
+ *     reconcileStaticLifecycles (no active orphan across manager restarts). A ledgerless
+ *     orphan (never minted) retires without a broker eviction. A ledgered orphan whose
+ *     eviction is unverified stays terminalizing so the alias cannot land in two owners.
  *  8. F2: a static spawn carrying endpointCapabilities is REFUSED at spawn-accept.
  *
  * Run: pnpm smoke:static-lifecycle   (needs nats-server + node on PATH; boots its own broker)
@@ -45,6 +47,8 @@ import {
   DEV_OWNER,
   mintLifecycleUid,
   recordsBucket,
+  RECORD_KINDS,
+  recordSpecKey,
   epAuthBucket,
   credRowKey,
   parseLedgerRow,
@@ -61,6 +65,7 @@ import {
   type LifecycleMapping,
   type EpGateRow,
   type StaticManagedSlotRow,
+  type EvictionResult,
 } from "@cotal-ai/core";
 import { workspaceSecretStore } from "@cotal-ai/workspace";
 import {
@@ -68,6 +73,8 @@ import {
   readStaticSlot,
   activateStaticLifecycle,
   casStaticSlot,
+  recordSlotCredential,
+  appendStaticCredentialRow,
 } from "../src/static-lifecycle.js";
 import { bootBroker } from "./_boot-broker.js";
 
@@ -88,7 +95,7 @@ let ran = 0;
  * when a `check` is deliberately added or removed, because completeness is something only this
  * suite knows, so it has to be the thing that says it.
  */
-const EXPECTED_CHECKS = 37;
+const EXPECTED_CHECKS = 40;
 function check(label: string, cond: boolean, extra?: unknown): void {
   console.log(`${cond ? "✓" : "✗"} ${label}${cond ? "" : ` — ${JSON.stringify(extra) ?? ""}`}`);
   ran++;
@@ -123,8 +130,11 @@ for (const alias of ["worker", "crashy", "epcap"])
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 (mgr as unknown as { auth: unknown }).auth = auth;
 const fakeSession = { cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} };
-const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status: () => "running", stop: () => {}, interrupt: () => {}, attach: () => fakeSession });
-(mgr as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle } }).runtime = { kind: "fake", spawn: (name) => fakeHandle(name) };
+const fakeHandle = (name: string): AgentHandle => {
+  let running = true;
+  return { name, kind: "fake", status: () => running ? "running" : "exited", stop: () => { running = false; }, waitForExit: async () => { running = false; }, interrupt: () => {}, attach: () => fakeSession };
+};
+(mgr as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle; reap: (locator: string) => Promise<void> } }).runtime = { kind: "fake", spawn: (name) => fakeHandle(name), reap: async () => {} };
 (mgr as unknown as { ep: Record<string, unknown> }).ep = {
   ref: () => ({ id: "smoke-mgr" }),
   on: () => {},
@@ -158,6 +168,17 @@ const M = mgr as unknown as {
   lifecycleMembershipRefusal: (caller: string) => string | undefined;
   renewManagedStaticCred: (a: unknown) => Promise<void>;
   reconcileStaticLifecycles: () => Promise<void>;
+};
+M.managerInstanceId = "smoke-manager-instance";
+
+// The real delivery-admin executor is covered by the restart/eviction suites. This lifecycle suite
+// grades the terminal's use of the seam and its ordering. Default verified-gone keeps existing cells
+// on their intended state-machine subject; the orphan cell below flips it false first.
+let evictionVerified = true;
+let evictionCalls: string[] = [];
+(mgr as unknown as { staticLifecycleEvict?: (principal: string) => Promise<EvictionResult> }).staticLifecycleEvict = async (principal) => {
+  evictionCalls.push(principal);
+  return { principal, kicked: evictionVerified ? 2 : 0, remaining: evictionVerified ? 0 : 1, scanComplete: true, verifiedGone: evictionVerified };
 };
 
 /** Durable-state reader: slot rows ride a provisioner cred (keyed direct-get on `mgrslot.>`);
@@ -197,6 +218,41 @@ async function readSlotOnly(alias: string): Promise<StaticManagedSlotRow | undef
     const kvm = new Kvm(nc);
     const t = staticLifecycleTransport(await kvm.open(recordsBucket(space)), await kvm.open(recordsBucket(space)));
     return (await readStaticSlot(t, DEV_OWNER, alias))?.row;
+  } finally {
+    await nc.drain().catch(() => nc.close());
+  }
+}
+
+async function readLifecycleAudit(actor: string, uid: string): Promise<Record<string, unknown> | undefined> {
+  const creds = await mintCreds(auth, newIdentity(), "lifecycle-executor", { lifecycleExecutor: { owner: DEV_OWNER, actor, lifecycleUid: uid, alias: "worker" } });
+  const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+  try {
+    const e = await (await new Kvm(nc).open(recordsBucket(space))).get(recordSpecKey(RECORD_KINDS.lifecycle, [DEV_OWNER, actor, uid]));
+    return e ? JSON.parse(new TextDecoder().decode(e.value)) as Record<string, unknown> : undefined;
+  } finally { await nc.drain().catch(() => nc.close()); }
+}
+
+async function plantActiveOrphan(alias: string, actor: string, uid: string, ledger: boolean): Promise<void> {
+  const creds = await mintCreds(auth, newIdentity(), "lifecycle-executor", {
+    lifecycleExecutor: { owner: DEV_OWNER, actor, lifecycleUid: uid, alias },
+  });
+  const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+  try {
+    const kvm = new Kvm(nc);
+    const t = staticLifecycleTransport(await kvm.open(recordsBucket(space)), await kvm.open(epAuthBucket(space)));
+    await activateStaticLifecycle(t, { owner: DEV_OWNER, alias, actor, lifecycleUid: uid, managerInstance: "smoke", ownerInstanceId: M.managerInstanceId });
+    if (ledger) {
+      const credentialId = `cred-${alias}`;
+      await recordSlotCredential(t, DEV_OWNER, alias, uid, credentialId);
+      await appendStaticCredentialRow(t, {
+        lifecycleUid: uid,
+        credentialId,
+        holderPrincipal: principalKey(DEV_OWNER, actor).key,
+        exp: Math.floor(Date.now() / 1000) + 3600,
+      });
+    }
+    const slot = await readStaticSlot(t, DEV_OWNER, alias);
+    await casStaticSlot(t, { ...slot!.row, phase: "active" }, slot!.revision);
   } finally {
     await nc.drain().catch(() => nc.close());
   }
@@ -264,6 +320,12 @@ try {
   check("slot is RETIRED", s4.slot?.phase === "retired", s4.slot);
   check("A's creds file is gone (cleanup ran inside the barrier)", credsPathA !== undefined && !existsSync(credsPathA));
   check("the RETIRED principal is now refused at the control surface (F5(a))", typeof M.lifecycleMembershipRefusal(principalA) === "string");
+  const auditA = await readLifecycleAudit(idA, uidA);
+  const brokerA = auditA?.broker as Record<string, unknown> | undefined;
+  check("terminal persisted queryable v1 broker eviction evidence before freeing the alias",
+    auditA?.v === 1 && auditA.principal === principalA && auditA.alias === "worker" && auditA.lifecycleUid === uidA &&
+      typeof auditA.managerInstance === "string" && typeof auditA.managerProcessUid === "string" && typeof auditA.timestamp === "string" &&
+      brokerA?.kicked === 2 && brokerA.remaining === 0 && brokerA.scanComplete === true && brokerA.verifiedGone === true, auditA);
 
   // ── 5. Same-name respawn over the retired slot ─────────────────────────────
   const spawnB = await mgr.startAgent({ name: "worker", agent: "smoke-sl" });
@@ -289,28 +351,31 @@ try {
     check("the crashed spawn's head is RETIRED and its gate terminally retired", sc.head?.state === "retired" && sc.gate?.state === "retired", { head: sc.head?.state, gate: sc.gate?.state });
   }
 
-  // ── 7. Reconcile: an active slot with no live process terminalizes ─────────
+  // ── 7. Reconcile: ledgerless-vacuous vs fail-closed holder ─────────────────
   const orphanId = newIdentity();
   const orphanUid = mintLifecycleUid();
-  {
-    const creds = await mintCreds(auth, newIdentity(), "lifecycle-executor", {
-      lifecycleExecutor: { owner: DEV_OWNER, actor: orphanId.id, lifecycleUid: orphanUid, alias: "orphan" },
-    });
-    const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
-    try {
-      const kvm = new Kvm(nc);
-      const t = staticLifecycleTransport(await kvm.open(recordsBucket(space)), await kvm.open(epAuthBucket(space)));
-      await activateStaticLifecycle(t, { owner: DEV_OWNER, alias: "orphan", actor: orphanId.id, lifecycleUid: orphanUid, managerInstance: "smoke", ownerInstanceId: M.managerInstanceId });
-      const slot = await readStaticSlot(t, DEV_OWNER, "orphan");
-      await casStaticSlot(t, { ...slot!.row, phase: "active" }, slot!.revision);
-    } finally {
-      await nc.drain().catch(() => nc.close());
-    }
-  }
+  await plantActiveOrphan("orphan", orphanId.id, orphanUid, false);
+  evictionVerified = false;
+  evictionCalls = [];
   await M.reconcileStaticLifecycles();
-  const oSettled = await until(async () => (await readSlotOnly("orphan"))?.phase === "retired", 30_000, "the orphan's reconcile terminal");
+  check("a ledgerless orphan retires without a broker eviction (vacuous SPEC 13.1 set)",
+    (await readSlotOnly("orphan"))?.phase === "retired" && evictionCalls.length === 0,
+    { slot: await readSlotOnly("orphan"), evictionCalls });
+
+  const heldId = newIdentity();
+  const heldUid = mintLifecycleUid();
+  await plantActiveOrphan("heldorphan", heldId.id, heldUid, true);
+  evictionVerified = false;
+  evictionCalls = [];
+  await M.reconcileStaticLifecycles();
+  check("an unverified orphan eviction keeps the slot terminalizing (never frees the alias into two owners)",
+    (await readSlotOnly("heldorphan"))?.phase === "terminalizing" && evictionCalls.includes(principalKey(DEV_OWNER, heldId.id).key),
+    { slot: await readSlotOnly("heldorphan"), evictionCalls });
+  evictionVerified = true;
+  await M.reconcileStaticLifecycles();
+  const oSettled = await until(async () => (await readSlotOnly("heldorphan"))?.phase === "retired", 30_000, "the ledgered orphan's reconcile terminal");
   check("reconcile terminalized the dead-but-active slot (no active orphan across restarts)", oSettled);
-  check("the orphan's principal is refused at the control surface after reconcile", typeof M.lifecycleMembershipRefusal(principalKey(DEV_OWNER, orphanId.id).key) === "string");
+  check("the orphan's principal is refused at the control surface after reconcile", typeof M.lifecycleMembershipRefusal(principalKey(DEV_OWNER, heldId.id).key) === "string");
   check("the LIVE agent (worker B) survived the reconcile untouched", M.agents.get("worker")?.lifecycleUid === uidB && (await readSlotOnly("worker"))?.phase === "active");
 
   // ── 7b. F3 RESUME-PATH orphan (distsys/security4 CONDITIONAL @ 9e13648) ─────
@@ -365,3 +430,4 @@ if (ran !== EXPECTED_CHECKS) {
   process.exit(1);
 }
 console.log(`STATIC-LIFECYCLE SMOKE OK ✅ (${ran}/${EXPECTED_CHECKS} assertions)`);
+console.log(`${ran} checks passed`);

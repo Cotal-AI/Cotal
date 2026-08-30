@@ -23,7 +23,12 @@ import { connect } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import {
   createSpaceAuth,
+  CotalEndpoint,
+  CONTROL_DELIVERY_ADMIN,
+  evictDeniedPrincipalWithCreds,
+  mintConnectionEvictorCreds,
   mintCreds,
+  mintMembershipObserverCreds,
   newIdentity,
   mintLifecycleUid,
   setupSpaceStreams,
@@ -34,10 +39,11 @@ import {
   epCall,
   registry,
   type Connector,
+  type ControlReply,
   type EpCaller,
   type LaunchSpec,
 } from "@cotal-ai/core";
-import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, saveManagerInstanceIdentity, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
 import { activateStaticLifecycle, casStaticSlot, readStaticSlot, staticLifecycleTransport } from "../src/static-lifecycle.js";
@@ -64,8 +70,11 @@ const space = `reconcile-start-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const broker = await bootBroker(auth);
 const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-reconcile-start-ws-"));
+const managerInstanceId = mintLifecycleUid();
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
+const managerServeIdentity = newIdentity();
+saveManagerInstanceIdentity(workspaceRoot, space, { instanceId: managerInstanceId, serveIdentity: managerServeIdentity });
 for (let n = 0; n < ORPHANS; n++)
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `orphan-${n}.md`), `---\nname: orphan-${n}\nrole: worker\n---\nbody\n`);
 // The connector is deliberately valid. If the alias guard is removed, the request gets past
@@ -84,6 +93,7 @@ const caller: EpCaller = { owner: DEV_OWNER, actor: callerIdentity.id, uid: mint
 let manager: Manager | undefined;
 let callerNc: Awaited<ReturnType<typeof connect>> | undefined;
 let observerNc: Awaited<ReturnType<typeof connect>> | undefined;
+let delivery: CotalEndpoint | undefined;
 
 /** An ACTIVE durable static row with no manager-owned process: the exact orphan shape after a crash. */
 async function writeOrphan(alias: string): Promise<void> {
@@ -96,7 +106,7 @@ async function writeOrphan(alias: string): Promise<void> {
   try {
     const kvm = new Kvm(nc);
     const transport = staticLifecycleTransport(await kvm.open(recordsBucket(space)), await kvm.open(epAuthBucket(space)));
-    await activateStaticLifecycle(transport, { owner: DEV_OWNER, alias, actor: identity.id, lifecycleUid, managerInstance: "repro-755" });
+    await activateStaticLifecycle(transport, { owner: DEV_OWNER, alias, actor: identity.id, lifecycleUid, managerInstance: managerInstanceId, ownerInstanceId: managerInstanceId });
     const current = await readStaticSlot(transport, DEV_OWNER, alias);
     if (!current) throw new Error(`missing just-created slot ${alias}`);
     await casStaticSlot(transport, { ...current.row, phase: "active" }, current.revision);
@@ -112,6 +122,36 @@ async function phase(alias: string): Promise<string | undefined> {
 
 try {
   await setupSpaceStreams({ servers: broker.servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
+  const observerCreds = await mintMembershipObserverCreds(auth, newIdentity());
+  const evictorCreds = await mintConnectionEvictorCreds(auth, newIdentity());
+  const deliveryIdentity = newIdentity();
+  delivery = new CotalEndpoint({
+    space,
+    servers: broker.servers,
+    creds: await mintCreds(auth, deliveryIdentity, "delivery"),
+    card: { id: deliveryIdentity.id, name: "delivery", role: "delivery", kind: "endpoint" },
+    channels: [],
+    consume: false,
+    registerPresence: false,
+    watchPresence: false,
+    watchChannels: false,
+  });
+  delivery.on("error", () => {});
+  await delivery.start();
+  delivery.serveControl(CONTROL_DELIVERY_ADMIN, async (req): Promise<ControlReply> => {
+    if (req.op !== "evictPrincipal") return { ok: false, error: `unsupported delivery-admin op "${req.op}"` };
+    const principal = String((req.args as { principal?: unknown })?.principal ?? "");
+    return {
+      ok: true,
+      data: await evictDeniedPrincipalWithCreds({
+        servers: broker.servers,
+        observerCreds,
+        evictorCreds,
+        accountId: auth.account.pub,
+        principal,
+      }),
+    };
+  }, { boundReply: true });
   for (let n = 0; n < ORPHANS; n++) await writeOrphan(`orphan-${n}`);
 
   observerNc = await connect({
@@ -184,6 +224,7 @@ try {
   await callerNc?.drain().catch(() => callerNc?.close());
   await observerNc?.drain().catch(() => observerNc?.close());
   await manager?.stop().catch(() => {});
+  await delivery?.stop().catch(() => {});
   await broker.stop().catch(() => {});
 }
 

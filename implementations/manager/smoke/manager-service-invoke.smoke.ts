@@ -5,13 +5,14 @@
  * command surface at runtime (describe → fetch the registered contracts from the §13.7 store →
  * recompile the digest-matching validators) and invokes by name.
  *
- * Deliberately imports ONLY the endpoint NAME + core `resolveService`/`invokeCommand` — never
+ * Deliberately imports the endpoint NAME and the shipped cluster document's surface, never
  * MANAGER_CONTRACTS. If this compiled and ran while secretly depending on the hand-written
- * contracts, that would defeat the test; it does not.
+ * contracts, that would defeat the test; it does not. The command-count pin is derived from
+ * `managerShippedSurface()`, not restated, so a later served command cannot silently desync.
  *
- *  1. resolveService(manager) describes + fetches + recompiles the FULL visible surface (17
- *     commands), each with a recompiled input/output contract whose closureDigest MATCHES the
- *     registered declaration.
+ *  1. resolveService(manager) describes + fetches + recompiles the FULL visible surface (the
+ *     shipped cluster document's command set), each with a recompiled input/output contract whose
+ *     closureDigest MATCHES the registered declaration.
  *  2. invoke "status" (untargeted, void) returns the typed ManagerStatus.
  *  3. invoke "spawn" (the 16-field launch) boots a REAL agent; the recompiled input contract
  *     gates a bad field pre-publish (the caller's own closed schema, fetched not hand-written).
@@ -37,9 +38,11 @@ import {
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
-// The endpoint NAME only — NOT the contract module. A generic caller never hand-imports schemas.
-import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
+// Endpoint name + shipped surface pin. Never MANAGER_CONTRACTS: a generic caller does not
+// hand-import schemas. The count comes from the cluster document, not a restated literal.
+import { MANAGER_ENDPOINT, managerShippedSurface } from "../src/manager-service-contract.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+const shipped = managerShippedSurface();
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
@@ -75,7 +78,8 @@ const envFor = (o: LaunchOpts): Record<string, string> => ({
   COTAL_ID: String(o.id), COTAL_NAME: o.name, PATH: process.env.PATH ?? "",
   ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
 });
-registry.register({ kind: "connector", name: "e2e-stub", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: "node", args: [STUB], env: envFor(o) }) } as Connector);
+const CONNECTOR_READINESS_MS = 45_000;
+registry.register({ kind: "connector", name: "e2e-stub", requires: ["node"], readinessTimeoutMs: CONNECTOR_READINESS_MS, buildLaunch: (o): LaunchSpec => ({ command: "node", args: [STUB], env: envFor(o) }) } as Connector);
 
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 // The §13.2 one-rail currency reader for a static mesh: the manager's processEpoch is 0 (no
@@ -106,7 +110,7 @@ try {
 
   console.log("1. resolveService: describe + fetch + recompile the full surface (no hand-imported schemas)");
   const service = await resolveService(nc, space, MANAGER_ENDPOINT, caller, { deadlineMs: 10_000 });
-  check("the resolved surface is the manager's 18 visible commands", service.commands.size === 18 && service.commands.has("status") && service.commands.has("spawn") && service.commands.has("despawn"), [...service.commands.keys()].sort());
+  check("the resolved surface matches the shipped cluster document", service.commands.size === shipped.commandCount && shipped.names.every((n) => service.commands.has(n)) && service.commands.has("status") && service.commands.has("spawn") && service.commands.has("despawn"), [...service.commands.keys()].sort());
   const statusCmd = service.commands.get("status")!;
   check("status resolved: untargeted, read capability, recompiled contracts carry closure digests",
     statusCmd.targeted === false && statusCmd.capability === "manager.read"
@@ -117,8 +121,8 @@ try {
 
   console.log("2. invoke status (generic, by name)");
   const rStatus = await invokeCommand(nc, space, service, "status", undefined, { currentEpoch });
-  const status = rStatus.reply.data as { instanceId: string; runtime: string; agentCount: number };
-  check("invoke status returns the typed ManagerStatus", rStatus.reply.ok === true && status.runtime === "pty" && typeof status.agentCount === "number", rStatus.reply);
+  const status = rStatus.reply.data as { instanceId: string; runtime: string; agentCount: number; connectors: unknown[] };
+  check("invoke status returns the typed ManagerStatus", rStatus.reply.ok === true && status.runtime === "pty" && typeof status.agentCount === "number" && Array.isArray(status.connectors), rStatus.reply);
 
   console.log("3. invoke spawn (the recompiled input contract gates args)");
   let badCode: string | undefined;
@@ -127,8 +131,9 @@ try {
   check("a bad spawn field is bad-request at the FETCHED-then-recompiled input contract (not a hand-written schema)", badCode === "bad-request", badCode);
   // P2 item 2: spawn is an ACTION - invoke returns the acceptance floor (before the agent is live).
   const rSpawn = await invokeCommand(nc, space, service, "spawn", { name: "w1", agent: "e2e-stub", cwd: repoRoot }, { currentEpoch, deadlineMs: 30_000 });
-  const acc = (rSpawn.reply.data ?? {}) as { name?: string; goalId?: string };
-  check("invoke spawn accepts the goal (acceptance floor: name + goalId)", rSpawn.reply.ok === true && acc.name === "w1" && typeof acc.goalId === "string", rSpawn.reply);
+  const acc = (rSpawn.reply.data ?? {}) as { name?: string; goalId?: string; readinessDeadlineMs?: number };
+  check("invoke spawn accepts the goal with the exact connector readiness budget a follower must outlive",
+    rSpawn.reply.ok === true && acc.name === "w1" && typeof acc.goalId === "string" && acc.readinessDeadlineMs === CONNECTOR_READINESS_MS, rSpawn.reply);
   // Poll the managed set until the agent joins - its id + lifecycleUid are the targeting coordinates.
   const M = mgr as unknown as { agents: Map<string, { id: string; lifecycleUid: string }> };
   let live: { id: string; lifecycleUid: string } | undefined;

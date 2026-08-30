@@ -12,8 +12,8 @@
 # that passes.
 #
 # ORDER IS EXECUTION ORDER and it is not alphabetical: `smoke:dist-freshness` runs first because a
-# stale build makes every later result a statement about code that is not in the tree. Append at
-# the end unless you have a reason, and say the reason here.
+# stale build makes every later result a statement about code that is not in the tree. This legacy
+# list is now FROZEN; add new suites one-file-per-suite under `ci-suites.d/`.
 smoke:dist-freshness
 smoke:gate-inventory
 smoke:dep-pins
@@ -361,9 +361,6 @@ smoke:opencode-run-error
 # one drain past the swap bound on purpose, so it is the slower of the pair.
 smoke:opencode-events-release
 smoke:goal-follow
-# Spawn refusals carry the lifecycle facts the manager already has (blocked op, head
-# state, opId, remedy) instead of collapsing to a connector timeout (#873).
-smoke:spawn-lifecycle-state
 smoke:required-arg-seam
 smoke:attach-stdin
 
@@ -693,3 +690,53 @@ smoke:agent-secret-segmentation
 # spellings, one of them the release workflow. The property is only observable on main after a
 # merge, so it needs a static guard. Appended so every existing shard assignment remains unchanged.
 smoke:workflow-concurrency
+# #878: a crash between the retirement barrier's gate terminal and its head terminal wedges the
+# alias (the boot resume's gate-only owed-ness skipped the intent forever). The suite stages that
+# window deterministically and proves BOTH repair triggers the issue's refined criteria demand:
+# the next auth boot and the same-op rail re-request. Mutation-proofed -
+# implementations/auth/smoke/mutations/retirement-wedge-resume.json. Appended; shard
+# assignments unchanged.
+smoke:retirement-wedge:auth
+
+# Most smoke trees are still outside their package TypeScript projects. A type-only import from a
+# workspace package can therefore name something the package never exported and vanish when tsx runs
+# the suite. This compiler-API intersection checks every named workspace import against the package's
+# public exports. Appended so every existing shard assignment remains unchanged.
+smoke:workspace-import-exports
+
+# A denied JetStream metadata read must reject the endpoint call, never return a well-formed partial
+# result that callers mistake for genuine emptiness. A real narrowed JWT cred drives listChannels
+# through a denied CHAT STREAM.INFO, paired with an actually absent CHAT-stream control.
+# Mutation-proofed - bin/smoke/mutations/endpoint-permission-results.json. Appended so every existing
+# shard assignment remains unchanged.
+smoke:endpoint-permission-results:auth
+# A stalled presence KV-watch must mark the observer view stale rather than sweep every
+# peer offline. The endpoint cell holds the watch through a TCP proxy; the web cell drives
+# the shipped presence-view → stale-pill path. Appended so every existing shard assignment
+# remains unchanged.
+smoke:presence-watch-stall
+smoke:web-presence-view
+# A sparse channelHistory must stop at the subject's first matching sequence, not stream
+# sequence 1. Discriminator is drainWindow minStart, not the returned page. Appended so
+# every existing shard assignment remains unchanged.
+smoke:sparse-history-walk
+# Raw NATS transport state is separate from full endpoint readiness. The deterministic suite grades
+# epoch staleness and state contracts; its companion owns a throwaway broker and proves real
+# disconnect/reconnect delivery. Appended so every existing shard assignment remains unchanged.
+smoke:transport-liveness
+smoke:transport-liveness:broker
+# The connection status tool reaches MeshAgent state through a real in-memory MCP server and client,
+# including a measured successful inbox drain. Appended so every existing shard assignment remains
+# unchanged.
+smoke:connection-status
+
+# A directed DM arriving during a live Jcode turn must reach the recipient session through Jcode's
+# soft-interrupt queue and commit only at the clean containing-turn boundary. Real loopback broker
+# plus shipped host; mutation-proofed. Appended so every existing shard assignment remains unchanged.
+smoke:jcode-mid-turn-delivery
+
+# Mixed source, installed, and plugin generations must be self-identifying in the status Machine
+# block. The installed cell enters through a package-manager-style symlink and the skills cell uses
+# the real Claude plugin-list JSON seam. Mutation-proofed - bin/smoke/mutations/status-provenance.json.
+# Appended so every existing shard assignment remains unchanged.
+smoke:status-provenance

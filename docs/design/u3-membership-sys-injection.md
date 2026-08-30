@@ -241,6 +241,12 @@ accountId := expectedAccount                              // from the daemon's o
 assert connzAccountOf(observer) == accountId              // local, pre-connect, names both sides
 ```
 
+The composition root performs this read and check during delivery startup, before constructing the
+endpoint or acquiring `lease.0`. Deferring it until the first admin request lets a hosted store hand
+tenant A's daemon tenant B's observer, claim A's singleton lease, and only then refuse every scan.
+Startup also reads the optional evictor so a present but torn observer/evictor generation is refused;
+an absent evictor keeps the documented pre-eviction, deny-new-only posture.
+
 **Two mechanisms, not one (F4).** The earlier phrasing called this single assert "intrinsic,
 broker-enforced", which conflates two independent things and oversells the assert. Stated correctly:
 

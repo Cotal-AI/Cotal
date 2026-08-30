@@ -178,14 +178,15 @@ export const SPAWN_OWNER_LIFECYCLE_COMMANDS = Object.freeze(["despawn", "attach"
  *  would leave `cotal input` broker-denied on exactly the mesh mode the feature is for. */
 export const OPERATOR_INPUT_COMMANDS = Object.freeze(["input"] as const);
 /** The spawn capability's UNTARGETED additions (the 1c grant-migration table): the connector's
- *  persona write (`define-persona`, caller-scoped by the pinned triple) and per-agent status read
- *  (`inspect` - the responder narrows the view to the caller's owner domain, like `ps`). These
- *  ride the v0.3 privileged tier today; minting them with `spawn` keeps that tier's surface 1:1. */
-export const SPAWN_SERVICE_COMMANDS = Object.freeze(["define-persona", "inspect"] as const);
+ *  persona write (`define-persona`, caller-scoped by the pinned triple), per-agent status read
+ *  (`inspect` - the responder narrows the view to the caller's owner domain, like `ps`), and the
+ *  persona-catalog reads (`list-personas` / `show-persona`). These ride the v0.3 privileged tier
+ *  today; minting them with `spawn` keeps that tier's surface 1:1. */
+export const SPAWN_SERVICE_COMMANDS = Object.freeze(["define-persona", "inspect", "list-personas", "show-persona"] as const);
 
 // ---- operator INSTRUMENT capability sets (the 1c grant-migration table's admin row) --------------
 /** The manager endpoint's read commands (`manager.read` class). */
-export const MANAGER_READ_COMMANDS = Object.freeze(["status", "ps", "inspect", "models"] as const);
+export const MANAGER_READ_COMMANDS = Object.freeze(["status", "ps", "inspect", "models", "list-personas", "show-persona"] as const);
 /** The manager endpoint's admin-class commands (`manager.admin`): capability-only + untargeted -
  *  the broker grant (who holds the row) IS the boundary; minted ONLY into operator instruments,
  *  NEVER an agent/spawn profile (the ratified 1c pin). */
@@ -230,7 +231,7 @@ const GOAL_BEARING_SET: ReadonlySet<string> = new Set(GOAL_BEARING_COMMANDS);
  *  it derives nothing from a descriptor, which is the part §13.7 forbids. `smoke:unfenced-responder`
  *  tripwires that pin so the version cannot move without this table being named. */
 export const REPEAT_SAFE_COMMANDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  [BASELINE_LIFECYCLE_ENDPOINT]: Object.freeze(["status", "ps", "inspect"]),
+  [BASELINE_LIFECYCLE_ENDPOINT]: Object.freeze(["status", "ps", "inspect", "list-personas", "show-persona"]),
   [BASELINE_DELIVERY_ENDPOINT]: Object.freeze(["list"]),
 });
 /** `describe` is a read on every endpoint by construction, so it is repeat-safe without one: no
@@ -305,8 +306,8 @@ export function spawnCallerCapabilities(callerOwner: string): EpCapability[] {
  *  instrument's v0.3 control tier - the SAME mint sites that grant a `ctl.<tier>` row today
  *  (`control-caller-*` / `deployer`) consume this for the ep rails; no new minting authority.
  *
- *  `privileged` (the ps/start instrument): the manager reads + untargeted `spawn` +
- *  `define-persona` - structurally barred from cross-agent reach, exactly like its ctl row.
+ *  `privileged` (the ps/start instrument): the manager reads (incl. persona catalog list/show) +
+ *  untargeted `spawn` + `define-persona` - structurally barred from cross-agent reach, exactly like its ctl row.
  *
  *  `admin` (the stop/attach/deploy instrument): everything above plus ANY-mode `despawn`/`attach`
  *  (tOwner `"*"`), BOTH modes of `input` (which no other profile grants at all), and the

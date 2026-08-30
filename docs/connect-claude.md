@@ -30,18 +30,21 @@ The install mechanics and the invariants behind them are in
 coordinating agent teams (today `team-topology`), from one canonical source, on two channels:
 
 - **Claude Code** gets a second, skills-only plugin, `cotal-skills`, from the same `cotal-mesh`
-  marketplace, at **user scope** (machine-wide), and **independent of the mesh connector**: it carries no
-  code and no core dependency, installs whenever Claude is on `PATH` (even with the connector removed),
+  marketplace, at **user scope** (machine-wide). The Claude connector declares and implements this
+  setup provider, including the marketplace assets and native plugin commands; the base CLI only passes
+  the vendor-neutral Agent Skills directory. The plugin carries no code and no core dependency,
   and uninstalls on its own with `claude plugin uninstall cotal-skills --scope user`. Its plugin version
-  is stamped from the running CLI release, so an upgrade + `cotal setup` runs `claude plugin update` and
+  is stamped from the running CLI release, so an upgrade + `cotal setup --skills` runs `claude plugin update` and
   the deployed install actually gets the new skill. `cotal setup` installs it on first run and on repeat
-  runs, so upgraders are not left behind.
+  runs, so upgraders are not left behind. `cotal status` points a stale or missing skills plugin at
+  `cotal setup --skills`.
 - **Every other harness** (Codex, Cursor, OpenCode, Gemini CLI, Windsurf/Devin) reads the cross-vendor
-  `~/.agents/skills/` directory convention, which has no remote index, so `cotal setup` **reconciles** it:
+  `~/.agents/skills/` directory convention, which has no remote index, so `cotal setup` **reconciles** it
+  (and `cotal setup --skills` does only that):
   it installs/updates each Cotal skill, backs up a copy you have edited to `SKILL.md.bak` before
   replacing it, and removes a Cotal skill that is no longer shipped. Only skills Cotal owns are touched;
   your own or third-party skills there are left alone. `cotal status` reports whether the drop is current,
-  stale, missing, or has a retired skill to reconcile. This is the working cross-vendor path.
+  stale, missing, or has a retired skill to reconcile, and names `cotal setup --skills` as the remedy. This is the working cross-vendor path.
 
 Cotal also generates an [Agent Skills discovery index](https://cotal.ai/.well-known/agent-skills/index.json)
 on cotal.ai, but that RFC is still a draft with no harness consuming it yet, so it is a forward bet,
@@ -64,7 +67,7 @@ Inside the session, the agent orients with one read-only tool, `cotal_orientatio
 identity, the channels it reads and may post to, its capabilities, the tools available,
 who's present, and unread counts. The full tool surface is the
 [MCP tool catalog](mcp-tools.md). In auth mode the team-supervision tools
-(`cotal_spawn` / `cotal_persona`) are injected **only** for personas declaring
+(`cotal_spawn` / `cotal_persona` / `cotal_personas`) are injected **only** for personas declaring
 `capabilities: [spawn]` (the same grant that opens the privileged control subject), so an
 agent's toolset matches what it can actually invoke. Clearing retained history is
 operator-only ([run a mesh](run-a-mesh.md)), never an agent tool.
@@ -105,7 +108,7 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   (npx, no clone) materializes the same marketplace under `~/.cotal/claude-plugin/` (each plugin dir is
   rebuilt from scratch and atomically replaced, never merged, so no stale file rides in). The
   `cotal-skills` plugin installs from that same marketplace at user scope (`claude plugin install
-  cotal-skills@cotal-mesh --scope user`); its assets ship inside the CLI package, not the connector, and
+  cotal-skills@cotal-mesh --scope user`); its manifest and install behavior ship inside the Claude connector, and
   its version tracks the CLI release so updates land.
 - **Identity-gated.** Connector code requires `COTAL_NAME` *or* `COTAL_LINK`. A plain
   `claude` with no `COTAL_*` env stays inert and never joins, so your own sessions in a
@@ -147,10 +150,11 @@ delivers, the other only wakes:
   event that wakes an *idle* session into a turn, so the drain runs *now* instead of at
   the next prompt. The nudge never acks anything. A nudge that the host rejects is retried with a
   bounded backoff while anything is still pending. For an idle session it is the only wake source,
-  so dropping it means silence until someone types. If a nudge is lost anyway (a race in the host's
-  channel startup), JetStream redelivery re-announces the unacked durable item through the same
-  attention policy, so a durable message always wakes the session eventually. If the channel cannot
-  run at all, delivery still waits for the next hook. Live-only traffic has no durable retry.
+  so dropping it means silence until someone types. When the channel becomes active, the connector
+  first re-fires a focus mention remembered during startup, otherwise one buffered wake. A rejected
+  push keeps its bounded retry, and JetStream redelivery remains the durable backstop for unacked
+  inbox items. If the channel cannot run at all, delivery still waits for the next hook. Live-only
+  traffic has no durable retry.
 
 **Two priority tiers.** A *directed* message (DM, anycast, or a channel message that
 `@mentions` us) always nudges. *Ambient* channel chatter does not nudge mid-turn; it

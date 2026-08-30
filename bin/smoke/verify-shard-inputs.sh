@@ -25,6 +25,23 @@ do
   fi
 done
 
+committed_fragments="$(/usr/bin/git --no-replace-objects ls-tree -r --name-only "$sha" -- bin/smoke/ci-suites.d | /usr/bin/grep '\.txt$' || true)"
+working_fragments="$(/usr/bin/find bin/smoke/ci-suites.d -maxdepth 1 -type f -name '*.txt' -printf '%p\n' | /usr/bin/sort)"
+if [ "$committed_fragments" != "$working_fragments" ]; then
+  echo "tracked shard fragment inventory changed after checkout" >&2
+  exit 2
+fi
+while IFS= read -r path; do
+  [ -n "$path" ] || continue
+  /usr/bin/git --no-replace-objects show "$sha:$path" > "$tmp"
+  if ! /usr/bin/cmp -s "$tmp" "$path"; then
+    echo "tracked shard input changed after checkout: $path" >&2
+    exit 2
+  fi
+done <<EOF
+$committed_fragments
+EOF
+
 if [ "$#" -eq 1 ]; then
   exit 0
 fi

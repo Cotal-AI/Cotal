@@ -19,8 +19,10 @@
  *
  * Run: pnpm smoke:ci-suites
  */
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-// @ts-expect-error - plain .mjs helper, the one parser shared by shard.mjs and gate-inventory.
 import { parseCiSuites, readCiSuites, CI_SUITES_PATH } from "./ci-suites.mjs";
 
 let pass = 0;
@@ -44,6 +46,18 @@ const parse = (raw: string): string[] | string => {
 const same = (a: unknown, b: string[]) => JSON.stringify(a) === JSON.stringify(b);
 
 console.log("ci-suites: the chain file's parser");
+
+// The root entrypoint must produce the dist/ that package-importing suites grade. The hosted CI
+// workflow also builds before invoking shard.mjs directly, but `pnpm smoke:ci` is the documented
+// local gate and must not depend on ambient artifacts from an earlier checkout or edit.
+const packageScripts = (JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as {
+  scripts?: Record<string, string>;
+}).scripts ?? {};
+check(
+  "smoke:ci builds before starting its shard",
+  packageScripts["smoke:ci"] === "pnpm build && node bin/smoke/shard.mjs 0 1",
+  packageScripts["smoke:ci"],
+);
 
 // ---- Comments and blanks are removed, and are NOT entries --------------------------------------
 const withNoise = ["# a heading", "", "smoke:alpha", "   ", "# trailing note", "smoke:beta", ""].join("\n");
@@ -116,7 +130,51 @@ check(
   realError || real?.length,
 );
 
-const EXPECTED = 22;
+// ---- Simultaneous tail appends must stop for ordering ------------------------------------------------
+// `merge=union` kept both additions but placed the incoming branch block before main's newer block.
+// Because the chain is assigned by index, that clean merge silently moved main's suites to different
+// runners. Exercise Git itself here: both additions survive only after an explicit resolution.
+const mergeRoot = mkdtempSync(join(tmpdir(), "ci-suites-merge-"));
+let simultaneousAppendsConflict = false;
+try {
+  mkdirSync(join(mergeRoot, "bin/smoke"), { recursive: true });
+  writeFileSync(join(mergeRoot, ".gitattributes"), readFileSync(join(process.cwd(), ".gitattributes")));
+  writeFileSync(join(mergeRoot, "bin/smoke/ci-suites.txt"), "smoke:base\n");
+  const git = (args: string[]) => execFileSync("git", args, {
+    cwd: mergeRoot,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  git(["init", "-q"]);
+  git(["config", "user.name", "CI suites smoke"]);
+  git(["config", "user.email", "ci-suites-smoke@example.invalid"]);
+  git(["add", "."]);
+  git(["commit", "-qm", "base"]);
+  git(["branch", "incoming"]);
+  writeFileSync(join(mergeRoot, "bin/smoke/ci-suites.txt"), "smoke:base\nsmoke:main\n");
+  git(["add", "bin/smoke/ci-suites.txt"]);
+  git(["commit", "-qm", "main append"]);
+  git(["branch", "main-side"]);
+  git(["checkout", "-q", "incoming"]);
+  writeFileSync(join(mergeRoot, "bin/smoke/ci-suites.txt"), "smoke:base\nsmoke:branch\n");
+  git(["add", "bin/smoke/ci-suites.txt"]);
+  git(["commit", "-qm", "branch append"]);
+  const merged = spawnSync("git", ["merge", "main-side", "--no-edit"], {
+    cwd: mergeRoot,
+    encoding: "utf8",
+  });
+  simultaneousAppendsConflict = merged.status === 1 &&
+    git(["status", "--short", "bin/smoke/ci-suites.txt"]).trim() === "UU bin/smoke/ci-suites.txt" &&
+    git(["ls-files", "-u", "bin/smoke/ci-suites.txt"]).trim().split("\n").length === 3;
+} finally {
+  rmSync(mergeRoot, { recursive: true, force: true });
+}
+check(
+  "simultaneous tail appends conflict instead of silently choosing shard-changing order",
+  simultaneousAppendsConflict,
+);
+
+const EXPECTED = 24;
 check(
   `every cell ran - ${EXPECTED} expected, so a cell that stops existing is not mistaken for one that passed`,
   pass + fail === EXPECTED,

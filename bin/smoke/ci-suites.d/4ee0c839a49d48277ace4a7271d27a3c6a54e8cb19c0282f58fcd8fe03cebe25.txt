@@ -1,0 +1,2 @@
+# #1095: per-space runtime pid/log namespace. Registered as a fragment (ci-suites.txt frozen since #1052).
+smoke:segmented-runtime-records

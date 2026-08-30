@@ -35,6 +35,10 @@ export interface Witness {
 export interface Stamp {
   /** The generation the last completed reconcile ran for. */
   readonly generation: string;
+  /** The exact CLI entry script that committed this generation. Absent on legacy stamps. */
+  readonly writtenBy?: string;
+  /** ISO-8601 commit time. Absent on legacy stamps. */
+  readonly writtenAt?: string;
 }
 
 /** Every seed-state file is schema-validated on read: a syntactically-valid but wrong-shaped file is
@@ -63,7 +67,14 @@ export function readWitness(): Witness | undefined {
 }
 
 export function readStamp(): Stamp | undefined {
-  return validate(stampPath(), readJsonFile<Stamp>(stampPath()), (v) => typeof (v as Stamp).generation === "string");
+  return validate(stampPath(), readJsonFile<Stamp>(stampPath()), (v) => {
+    const stamp = v as Stamp;
+    return (
+      typeof stamp.generation === "string" &&
+      (stamp.writtenBy === undefined || typeof stamp.writtenBy === "string") &&
+      (stamp.writtenAt === undefined || (typeof stamp.writtenAt === "string" && Number.isFinite(Date.parse(stamp.writtenAt))))
+    );
+  });
 }
 
 /** The ever-seeded set unioned with its monotonic backup. A live authority that lost ids (a truncated
@@ -96,8 +107,10 @@ export function ensureWitness(generation: string): void {
 }
 
 /** Write the version stamp LAST — the only thing that flips the fast path to "reconcile complete". */
-export function writeStamp(generation: string): void {
-  writeJsonAtomic(stampPath(), { generation });
+export function writeStamp(generation: string, writtenBy: string): Stamp {
+  const writtenAt = new Date().toISOString();
+  writeJsonAtomic(stampPath(), { generation, writtenBy, writtenAt });
+  return { generation, writtenBy, writtenAt };
 }
 
 /** Recover a lost authority from the durable backup (for `--repair`). Undefined when even the backup

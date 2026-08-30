@@ -50,7 +50,9 @@ import { opencodeConnector } from "@cotal-ai/connector-opencode";
 import { hermesConnector } from "@cotal-ai/connector-hermes";
 
 let failures = 0;
+let checks = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
+  checks++;
   console.log(`${cond ? "✓" : "✗"} ${label}${cond ? "" : ` — ${extra ?? ""}`}`);
   if (!cond) failures++;
 }
@@ -185,7 +187,7 @@ registry.register(recNoResumeCon);
 
   check("claude.requires == [claude]", JSON.stringify(claudeConnector.requires) === '["claude"]');
   check("opencode.requires == [opencode]", JSON.stringify(opencodeConnector.requires) === '["opencode"]');
-  check("hermes.requires == [hermes]", JSON.stringify(hermesConnector.requires) === '["hermes"]');
+  check("hermes.requires == [uv]", JSON.stringify(hermesConnector.requires) === '["uv"]');
 
   // Hermes is Unix-only: on win32 buildLaunch throws BEFORE producing a spec — assert that guard here
   // and skip the Hermes model rows below (they'd all throw). claude + opencode still run on both OSes.
@@ -403,10 +405,14 @@ registry.register(recNoResumeCon);
 // emptied. Broker deprovision is a no-op in open mode (its footprint teardown is proven under auth in
 // deprovision-agent-auth.smoke); this proves the stop() wiring. Stub ep/attach so stop() has no live mesh.
 {
+  agentsMap().clear();
   const stopped: string[] = [];
+  const exited = new Set<string>();
+  const exitProofs = new Set<string>();
   const liveHandle = (name: string): AgentHandle => ({
-    name, kind: "fake", status: () => "running",
-    stop: () => { stopped.push(name); }, interrupt: () => {}, attach: () => fakeSession,
+    name, kind: "fake", status: () => exited.has(name) ? "exited" : "running",
+    stop: () => { stopped.push(name); },
+    waitForExit: async () => { exitProofs.add(name); exited.add(name); }, interrupt: () => {}, attach: () => fakeSession,
   });
   (mgr as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle } }).runtime = {
     kind: "fake",
@@ -419,6 +425,7 @@ registry.register(recNoResumeCon);
   check("shutdown: two managed agents present before stop", agentCount() >= 2, agentCount());
   await mgr.stop();
   check("shutdown: stop() hard-stops every managed child", stopped.includes("shut1") && stopped.includes("shut2"), stopped);
+  check("shutdown: stop() proves every managed child exited before releasing manager authority", exitProofs.has("shut1") && exitProofs.has("shut2"), [...exitProofs]);
   check("shutdown: stop() empties the managed-agents map (no orphaned footprint)", agentCount() === 0, agentCount());
 }
 
@@ -429,19 +436,25 @@ registry.register(recNoResumeCon);
   // First child's hard-stop THROWS (the tmux `closeWindow` / cmux `closeWorkspace` failure the panel
   // named) — the teardown must be best-effort per agent: still stop + free + deprovision the rest and
   // empty the map, never abort on one throw.
+  agentsMap().clear();
   const stopped: string[] = [];
+  const exited = new Set<string>();
   (mgr as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle } }).runtime = {
     kind: "fake",
     spawn: (name) => ({
-      name, kind: "fake", status: () => "running",
-      stop: () => { stopped.push(name); if (name === "lease1") throw new Error("simulated runtime close failure"); },
+      name, kind: "fake", status: () => exited.has(name) ? "exited" : "running",
+      stop: () => { stopped.push(name); if (name === "lease1") throw new Error("simulated runtime close failure"); exited.add(name); },
+      waitForExit: async () => { if (!exited.has(name)) throw new Error("still running"); },
       interrupt: () => {}, attach: () => fakeSession,
     }),
   };
   await mgr.startAgent({ name: "lease1", agent: "smoke-rec" });
   await mgr.startAgent({ name: "lease2", agent: "smoke-rec" });
-  await (mgr as unknown as { teardownManagedAgents: () => Promise<void> }).teardownManagedAgents();
+  let teardownError = "";
+  try { await (mgr as unknown as { teardownManagedAgents: () => Promise<void> }).teardownManagedAgents(); }
+  catch (e) { teardownError = (e as Error).message; }
   check("teardown: a throwing hard-stop doesn't abort teardown (every child attempted)", stopped.includes("lease1") && stopped.includes("lease2"), stopped);
+  check("teardown: an unverified survivor makes shutdown fail loud (never releases into split brain)", /lease1.*still running/.test(teardownError), teardownError);
   check("teardown: shared teardown empties the map despite a throwing stop", agentCount() === 0, agentCount());
 }
 
@@ -483,4 +496,5 @@ registry.register(recNoResumeCon);
 }
 
 console.log(`\nSTART-MODEL/PREFLIGHT SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);
+if (failures === 0) console.log(`${checks} checks passed`);
 process.exit(failures === 0 ? 0 : 1);

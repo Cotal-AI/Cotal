@@ -15,7 +15,7 @@ import {
 } from "@cotal-ai/core";
 import { DELIVERY_CREDS_KIND, FsSecretStore, authDir, deliveryCredsKey, findCotalRoot, loadSpaceAuth, segmentedKey, soleSpaceOf, workspaceSecretStore } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
-import { executeEviction, executePlaneLiveness, executePrincipalLiveness, type ScanTarget } from "./evict-exec.js";
+import { executeEviction, executePlaneLiveness, executePrincipalLiveness, validateScanTargetAdmission, type ScanTarget } from "./evict-exec.js";
 
 type Values = Record<string, string | undefined>;
 
@@ -205,6 +205,10 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
       ? { secrets: workspaceSecretStore(scanRoot), space, injected: false, root: scanRoot }
       : { secrets: store, space, injected: true },
   };
+  // The singleton lease is admission to serve this space, so the daemon must prove its scan tenancy
+  // before it can claim that slot. A wrong-root process previously acquired and renewed lease.0,
+  // then refused every admin-rail request on the account mismatch while blocking the valid daemon.
+  await validateScanTargetAdmission(scanTarget);
   console.error(`• delivery: $SYS sweeps bound to ${join(scanTarget.root, ".cotal")} (account ${scanTarget.expectedAccount})`);
 
   const ep = new CotalEndpoint({
@@ -221,7 +225,13 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     registerPresence: false, // … but NEVER publish the daemon onto the roster (it's infra, not a peer)
     card: { id: idFromCreds(creds.initial), name: "delivery", role: "delivery", kind: "endpoint" },
   });
-  ep.on("error", (e: Error) => console.error(`! delivery endpoint: ${e.message}`));
+  // Both channels: raw connection errors ride `error`, while every condition the endpoint is
+  // already surviving — a failed 75% renewal, the passive backstop's "still holds the previous
+  // cred" repair line — rides `warning` (#891). An operator who only sees the first watches the
+  // daemon go silent and then die at `exp` with no word of the remint it was waiting for.
+  const say = (e: Error) => console.error(`! delivery endpoint: ${e.message}`);
+  ep.on("error", say);
+  ep.on("warning", say);
   await ep.start();
 
   // Acquire the single-flight lease BEFORE binding the loops: a loud refusal-to-bind if another daemon

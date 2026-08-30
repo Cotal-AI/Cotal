@@ -47,7 +47,7 @@ import {
   newIdentity,
   standaloneConnectOpts,
 } from "@cotal-ai/core";
-import { getSpaceAuth, MEMBERSHIP_RW_CREDS_KIND, putSpaceAuth, spaceMaterialDir, SYSTEM_CREDS_FILES, workspaceSecretStore } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, DELIVERY_LOGFILE, getSpaceAuth, MANAGER_LOGFILE, MEMBERSHIP_RW_CREDS_KIND, putSpaceAuth, spaceMaterialDir, SYSTEM_CREDS_FILES, workspaceSecretStore } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
@@ -96,7 +96,8 @@ const cotalPath = (f: string) => join(root, ".cotal", f);
 const legacyPath = cotalPath;
 const obsPath = join(spaceMaterialDir(root, SPACE), SYSTEM_CREDS_FILES[0]);
 const evPath = join(spaceMaterialDir(root, SPACE), SYSTEM_CREDS_FILES[1]);
-const deliveryLog = cotalPath("delivery.log");
+const runtimeLog = (template: string) => canonicalLocalProcessPath(template, { root, space: SPACE });
+const deliveryLog = runtimeLog(DELIVERY_LOGFILE);
 mkdirSync(join(root, ".cotal", "auth"), { recursive: true });
 
 const PORT = await pickFreePort();
@@ -277,7 +278,7 @@ try {
   const down2 = await settleThenDown({ awaitManagerLease: true });
   check("`cotal down` exits 0 before the rotation", down2.code === 0, down2.out.slice(-400));
   survivors("down 2");
-  const mgrMark = (() => { try { return readFileSync(cotalPath("manager.log"), "utf8").length; } catch { return 0; } })();
+  const mgrMark = (() => { try { return readFileSync(runtimeLog(MANAGER_LOGFILE), "utf8").length; } catch { return 0; } })();
   mark = logSize();
   const boot3 = cotal(["up", "--rotate-sys", "--detach", "--space", SPACE, "--server", SERVERS]);
   check("`cotal up --rotate-sys --detach` exits 0", boot3.code === 0, boot3.out.slice(-800));
@@ -328,8 +329,8 @@ try {
     console.log("\n---- FULL DELIVERY LOG ----\n" + readFileSync(deliveryLog, "utf8"));
     console.log("\n---- DOWN OUTPUTS ----\n1:", down1.out, "\n2:", down2.out, "\n3:", down3.out);
     console.log("\n---- BOOT3 OUT ----\n", boot3.out);
-    try { console.log("\n---- MANAGER LOG (boot 3 only) ----\n" + readFileSync(cotalPath("manager.log"), "utf8").slice(mgrMark)); } catch (e) { console.log("mgr tail unreadable:", (e as Error).message); }
-    try { console.log("\n---- MANAGER LOG (full tail) ----\n" + readFileSync(cotalPath("manager.log"), "utf8").slice(-3000)); } catch (e) { console.log("manager.log unreadable:", (e as Error).message); }
+    try { console.log("\n---- MANAGER LOG (boot 3 only) ----\n" + readFileSync(runtimeLog(MANAGER_LOGFILE), "utf8").slice(mgrMark)); } catch (e) { console.log("mgr tail unreadable:", (e as Error).message); }
+    try { console.log("\n---- MANAGER LOG (full tail) ----\n" + readFileSync(runtimeLog(MANAGER_LOGFILE), "utf8").slice(-3000)); } catch (e) { console.log("manager.log unreadable:", (e as Error).message); }
     try { console.log("\n---- RENEWAL RECORD ----\n" + readFileSync(cotalPath("renewal.json"), "utf8")); } catch (e) { console.log("renewal record unreadable:", (e as Error).message); }
   }
 

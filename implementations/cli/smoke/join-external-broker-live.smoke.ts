@@ -17,7 +17,7 @@
  * Run: pnpm smoke:join-external:live
  */
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -167,9 +167,12 @@ try {
   check("  and it is the message that was sent", heard[0]?.includes("runs no broker"), heard[0]);
 
   // ── (iii) the joining machine elected nothing and runs nothing ───────────────────────────────
-  for (const pidfile of ["nats.pid", "delivery.pid", "manager.pid"]) {
-    check(`the joining root has no ${pidfile}`, !existsSync(join(joinRoot, ".cotal", pidfile)));
-  }
+  // Runtime records are named per-space now, so this asserts on the SHAPE: the joining root holds
+  // no broker, delivery or manager record under ANY space (and none under a pre-segmentation name).
+  const joinRecords = existsSync(join(joinRoot, ".cotal"))
+    ? readdirSync(join(joinRoot, ".cotal")).filter((n) => /^(nats|delivery|manager)\.([^.]+\.)?pid$/.test(n))
+    : [];
+  check("the joining root records no broker, delivery or manager process", joinRecords.length === 0, joinRecords);
   // What the lease primitive enforces is exclusivity PER MANAGER INSTANCE: the key is
   // `lease.<instanceId>` and acquisition is a `create`, so a held instance lease cannot be taken by
   // anyone else. It is deliberately NOT a per-space singleton - `readManagerLease` documents that

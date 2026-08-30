@@ -22,6 +22,7 @@ import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSmokeSandboxDown, assertSmokeSandboxTargetDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_PIDFILE } from "@cotal-ai/workspace";
 
 // Ephemeral OS-assigned ports: no fixed-port collision across back-to-back / concurrent runs.
 const freePort = (): Promise<number> =>
@@ -98,8 +99,9 @@ try {
     const server = `nats://127.0.0.1:${AUTH_PORT}`;
     const up = cotal(["up", "--detach", "--space", SPACE, "--server", server]);
     ok("up --detach (auth) exits 0", up.status === 0, (up.stdout + up.stderr).slice(-400));
-    for (const f of ["nats.pid", "delivery.pid", "manager.pid"] as const) {
-      const pid = Number(readFileSync(join(root, ".cotal", f), "utf8").trim());
+    const record = (t: string) => canonicalLocalProcessPath(t, { root, space: SPACE });
+    for (const f of [join(root, ".cotal", "nats.pid"), record(DELIVERY_PIDFILE), record(MANAGER_PIDFILE)]) {
+      const pid = Number(readFileSync(f, "utf8").trim());
       ownPids.push(pid);
     }
 

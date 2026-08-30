@@ -117,6 +117,7 @@ export const codexConnector: Connector = {
   name: "codex",
   requires: ["codex"],
   supportsModelVariant: true, // variant = Codex reasoning effort (minimal|low|medium|high|xhigh)
+  supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
   // There is no first-run gate to press through here: the host joins the mesh FIRST (app-server,
   // credentials, tools) and only then hands the terminal to Codex, so the honest thing to tell
   // someone staring at a blank terminal is that the pause is the mesh, and the UI is coming.
@@ -162,6 +163,10 @@ export const codexConnector: Connector = {
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
+    // The machine-wide COTAL_CODEX_BIN is an operator pin and already rides launchEnv. The boot
+    // inventory is a fallback for the common no-override case, carried separately so a managed spawn
+    // never silently replaces the binary the operator chose.
+    if (opts.resolvedBinaries?.codex) env.COTAL_CODEX_RESOLVED_BIN = opts.resolvedBinaries.codex;
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
