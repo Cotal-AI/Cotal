@@ -4,7 +4,6 @@
   "command": "pnpm smoke:seed-migration-provenance",
   "completionMarker": "seed-migration-provenance smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/fixtures/seed-migration-provenance.mutations.json",
-  "grades": "tool",
   "why": [
     "THREE MUTATIONS, one for each externally visible part of the contract.",
     "",
