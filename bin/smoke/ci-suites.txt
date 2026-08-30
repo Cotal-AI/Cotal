@@ -690,3 +690,10 @@ smoke:agent-secret-segmentation
 # spellings, one of them the release workflow. The property is only observable on main after a
 # merge, so it needs a static guard. Appended so every existing shard assignment remains unchanged.
 smoke:workflow-concurrency
+
+# A denied JetStream metadata read must reject the endpoint call, never return a well-formed partial
+# result that callers mistake for genuine emptiness. A real narrowed JWT cred drives listChannels
+# through a denied CHAT STREAM.INFO, paired with an actually absent CHAT-stream control.
+# Mutation-proofed - bin/smoke/mutations/endpoint-permission-results.json. Appended so every existing
+# shard assignment remains unchanged.
+smoke:endpoint-permission-results:auth
