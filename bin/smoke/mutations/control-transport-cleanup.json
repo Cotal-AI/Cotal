@@ -1,0 +1,23 @@
+{
+  "suite": "bin/smoke/fixtures/control-transport-cleanup.mts",
+  "guard": "direct suite SIGTERM removes temporary project and COTAL_HOME roots containing minted credential material",
+  "command": "pnpm smoke:control-transport-cleanup",
+  "completionMarker": "CONTROL CLEANUP PROBE",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/control-transport-cleanup.json",
+  "why": [
+    "The positive controls wait until two auth JSON files exist and recursively confirm seed or",
+    "signingSeed field names without printing values. The mutation removes ownership of both",
+    "credential-bearing roots while preserving broker/store ownership, restoring the reviewed HIGH",
+    "finding: broker cleanup succeeds but root and COTAL_HOME remain after direct SIGTERM."
+  ],
+  "mutations": [
+    {
+      "name": "credential-bearing temporary roots are not owned by signal teardown",
+      "file": "bin/smoke/control-transport-dial.smoke.ts",
+      "find": "  releaseRoot = teardownOnSignal(broker, root);\n  releaseHome = teardownOnSignal(broker, home);",
+      "replace": "  releaseRoot = () => {};\n  releaseHome = () => {};",
+      "expectRed": "total credential-bearing temporary roots remaining after direct suite SIGTERM = 0",
+      "cell": "total credential-bearing temporary roots remaining after direct suite SIGTERM = 0"
+    }
+  ]
+}

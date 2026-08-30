@@ -9,7 +9,7 @@
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -108,11 +108,20 @@ const reachedRails = (result: { status: number | null; out: string }): boolean =
   !/wsconnect|websocket connections must use/i.test(result.out);
 
 let releaseBroker: (() => void) | undefined;
+let releaseRoot: (() => void) | undefined;
+let releaseHome: (() => void) | undefined;
 try {
   const broker = spawnProc("nats-server", ["-c", conf], { stdio: "ignore" });
   // Covers what the finally cannot: a run killed by a signal, and a `process.exit` that skips
   // pending finally blocks. smoke-kit reaps from a process `exit` hook as well as the signals.
   releaseBroker = teardownOnSignal(broker, brokerStore);
+  // The project root and COTAL_HOME hold freshly minted operator/account seeds. They are not broker
+  // stores, but the same exit/signal ownership is required: a suite killed after saveSpaceAuth and
+  // before its finally must not leave credential material in /tmp. The broker handle is the exact
+  // child this fixture owns; registering the two trees against it gives the smoke-kit exit hook an
+  // independently sufficient cleanup path without discovering or broad-matching any process.
+  releaseRoot = teardownOnSignal(broker, root);
+  releaseHome = teardownOnSignal(broker, home);
   kids.push(broker);
   let serving = false;
   for (let i = 0; i < 80; i++) {
@@ -155,5 +164,9 @@ try {
   rmSync(brokerStore, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });
+  const remainingArtifacts = [brokerStore, root, home].filter((path) => existsSync(path)).length;
+  ok("E: broker store, project root, and COTAL_HOME artifacts remaining after teardown = 0", remainingArtifacts === 0, remainingArtifacts);
+  releaseHome?.();
+  releaseRoot?.();
   releaseBroker?.(); // last: ownership is held until this teardown has actually finished
 }
