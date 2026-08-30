@@ -399,7 +399,7 @@ export async function runJcodeHost(): Promise<void> {
     }
     driving = true;
     turnActive = true;
-    surfacedIds = ids;
+    surfacedIds = [...ids];
     void agent.setStatus("working").catch(() => {});
     let turnClient: JcodeClient | undefined;
     try {
