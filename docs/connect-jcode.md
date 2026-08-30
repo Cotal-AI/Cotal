@@ -14,9 +14,13 @@ supported.
 
 ## Install
 
-The connector is seeded with the Cotal CLI. It currently supports **macOS and Linux only**:
-Jcode's released Harness API bridge is a Unix-socket surface. Install Jcode 0.78.1 or later from
-its GitHub release and make the binary available as `jcode` on `PATH`:
+The connector is seeded with the Cotal CLI. Jcode's released Harness API bridge is a Unix-socket
+surface, so Windows is not supported. That socket bound is Linux and macOS. Credential mirroring
+pins each parent through `/dev/fd/<fd>/<name>`, which needs Linux procfs traversal. macOS mounts
+`/dev/fd` but has no subpath namespace under a descriptor, so managed credential copy, mkdir, and
+unlink are Linux-only. A managed Jcode seat launches on Linux only because launch always mirrors
+credentials.
+Install Jcode 0.78.1 or later from its GitHub release and make the binary available as `jcode` on `PATH`:
 
 ```bash
 jcode version --json
@@ -83,9 +87,15 @@ codes rather than arbitrary Harness API messages.
 Credential mirroring is mandatory for managed Jcode seats: each launch atomically refreshes the
 allowlisted Jcode, provider-config, and external-login destinations, and removes a destination when
 its source login was removed. Cleanup addresses only that explicit inventory; transcripts, MCP
-configuration, logs, and other private-home state are untouched. There is no credential-free opt-out
-today because the private instance must reproduce the operator's current provider-login state rather
-than silently start with stale or partial authorization.
+configuration, logs, and other private-home state are untouched. Copy, mkdir, and removal open each
+parent with `O_NOFOLLOW` through the previous directory fd after proving `/dev/fd/<fd>/.` traverses,
+then publish, create, or unlink the leaf through that pinned parent. Replacing a walked directory
+with a symlink cannot write, create, or delete a namesake outside the private home. If `/dev/fd`
+cannot traverse, the connector throws a named error. After that probe succeeds, `ENOENT` on a child
+means the mirror path is absent. The Unix-socket short home stays on its Linux and macOS bound.
+
+There is no credential-free opt-out today because the private instance must reproduce the operator's
+current provider-login state rather than silently start with stale or partial authorization.
 
 If a provider failure closes the private Harness API connection during a mesh-driven turn, the
 connector leaves that turn's inbox batch unacknowledged and opens one bounded recovery window for a
