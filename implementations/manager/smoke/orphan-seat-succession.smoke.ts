@@ -32,17 +32,18 @@ const alive = (pid: number): boolean => {
 };
 const stopGroup = (pid?: number) => { if (!pid) return; try { process.kill(-pid, "SIGKILL"); } catch { try { process.kill(pid, "SIGKILL"); } catch {} } };
 const here = dirname(fileURLToPath(import.meta.url)); const repo = resolve(here, "../../.."); const host = join(here, "_orphan-seat-host.ts"); const tsx = join(repo, "node_modules", ".bin", "tsx");
-if (process.env.COTAL_ORPHAN_SEAT_THROW_CONTROL === "1") throw new Error("CONTROL_THROW_MUST_FAIL");
-const throwControl = spawnSync(tsx, [fileURLToPath(import.meta.url)], {
-  cwd: repo,
-  env: { ...process.env, COTAL_ORPHAN_SEAT_THROW_CONTROL: "1" },
-  encoding: "utf8",
-});
-check(
-  "instrument: an unconditional thrown error makes the public suite fail closed",
-  throwControl.status !== 0 && throwControl.stderr.includes("CONTROL_THROW_MUST_FAIL"),
-  { status: throwControl.status, stderr: throwControl.stderr },
-);
+if (process.env.COTAL_ORPHAN_SEAT_THROW_CONTROL !== "1") {
+  const throwControl = spawnSync(tsx, [fileURLToPath(import.meta.url)], {
+    cwd: repo,
+    env: { ...process.env, COTAL_ORPHAN_SEAT_THROW_CONTROL: "1" },
+    encoding: "utf8",
+  });
+  check(
+    "instrument: an unconditional thrown error makes the public suite fail closed",
+    throwControl.status !== 0 && throwControl.stderr.includes("CONTROL_THROW_MUST_FAIL"),
+    { status: throwControl.status, stderr: throwControl.stderr },
+  );
+}
 const port = await freePort(); const servers = `nats://127.0.0.1:${port}`; const space = `orphan817-${randomUUID().slice(0, 8)}`; const auth = await createSpaceAuth(space); const observerCreds = await mintMembershipObserverCreds(auth, newIdentity()); const evictorCreds = await mintConnectionEvictorCreds(auth, newIdentity());
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN)); const root = join(dir, "ws"); mkdirSync(join(root, ".cotal", "agents"), { recursive: true }); saveSpaceAuth(authDir(root), auth); writeFileSync(join(root, ".cotal", "agents", "worker.md"), "---\nname: worker\nrole: worker\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\n"); writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
 const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" }); const releaseBroker = teardownOnSignal(broker, dir); let daemon: CotalEndpoint | undefined; const managers: ChildProcess[] = []; const seats: number[] = [];
@@ -52,6 +53,7 @@ async function startManager(tag: string, returnAtManager = false): Promise<{ chi
   throw new Error(`${tag} manager readiness timeout: ${err}`);
 }
 try {
+  if (process.env.COTAL_ORPHAN_SEAT_THROW_CONTROL === "1") throw new Error("CONTROL_THROW_MUST_FAIL");
   for (let i = 0; i < 100 && !(await isReachable(servers)); i++) await wait(50); await setupSpaceStreams({ servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   const did = newIdentity(); daemon = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, did, "delivery"), card: { id: did.id, name: "delivery", role: "delivery", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false }); daemon.on("error", () => {}); await daemon.start(); await daemon.startPlane3(async () => undefined, { evictPrincipal: async (principal) => evictDeniedPrincipalWithCreds({ servers, observerCreds, evictorCreds, accountId: auth.account.pub, principal, options: { maxVerifyRounds: 12 } }) });
   const first = await startManager("first");
