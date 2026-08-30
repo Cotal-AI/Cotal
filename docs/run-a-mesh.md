@@ -324,8 +324,9 @@ starting a manager).
 
 ## When something looks absent
 
-Permission denials are **loud, never silent**: an over-tight ACL shows up as a logged
-denial on the endpoint, not as a peer that mysteriously looks absent. Check
+Permission denials are **loud, never silent**: an over-tight ACL rejects the endpoint call and
+also shows up as a logged denial, instead of returning an empty or incomplete result that looks
+successful. Check
 `.cotal/manager.log`, `.cotal/delivery.log`, and `.cotal/nats.log`; `cotal status` shows
 what is actually running. The access rules are collected in
 [Channels & permissions](channels-and-permissions.md).
