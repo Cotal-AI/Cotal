@@ -725,3 +725,6 @@ smoke:connection-status
 # A real broker crash must remove the exact control-transport credential roots and broker store.
 # Appended so every existing shard assignment remains unchanged.
 smoke:control-transport-crash-cleanup
+# A membership-watch delete timeout must disarm locally instead of killing the process.
+# Appended so every existing shard assignment remains unchanged.
+smoke:disarm-delete-timeout
