@@ -1,0 +1,36 @@
+{
+  "grades": "tool",
+  "guard": "every shipped presence-status render candidate is exhaustively and narrowly classified",
+  "command": "pnpm smoke:presence-render-census",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/workspace/smoke/mutations/presence-render-census.json",
+  "completionMarker": "PRESENCE-RENDER-CENSUS",
+  "why": [
+    "M1 disables the hardcoded working-branch pattern that was required to discover cotal ps.",
+    "M2 weakens honest-text proof checking so an honest textual candidate can lose its proof.",
+    "M3 removes the independently reviewed total sentinel; a classification set could drift silently."
+  ],
+  "mutations": [
+    {
+      "name": "M1 hardcoded working branches escape the scanner",
+      "file": "packages/workspace/smoke/presence-render-census.smoke.ts",
+      "find": "  /\\b(?:r\\.mesh|status|(?:p|c|m|sel|agent)\\.status)\\s*===\\s*[\"']working[\"']/,",
+      "replace": "  /\\b(?:status|(?:p|c|m|sel|agent)\\.status)\\s*===\\s*[\"']working[\"']/,",
+      "expectRed": "manifest entry is stale or no longer a scanner candidate: implementations/cli/src/commands/agents.ts"
+    },
+    {
+      "name": "M2 orientation honest-text entries lose their output proof",
+      "file": "packages/workspace/smoke/fixtures/presence-render-sinks.json",
+      "find": "      \"proof\": {\n        \"path\": \"extensions/connector-core/smoke/orientation.smoke.ts\",\n        \"anchor\": \"assert.match(o.peers.summary, /bob\\\\/worker \\\\(working \\u00b7 progress unknown\\\\)/,\"\n      }",
+      "replace": "      \"proofRemovedByMutation\": true",
+      "allowMultiple": true,
+      "expectRed": "honest-text entry lacks output/shared-renderer proof: extensions/connector-core/src/orientation.ts"
+    },
+    {
+      "name": "M3 expected candidate total drifts by one",
+      "file": "packages/workspace/smoke/fixtures/presence-render-sinks.json",
+      "find": "    \"total\": 47,",
+      "replace": "    \"total\": 46,",
+      "expectRed": "presence render census count drifted"
+    }
+  ]
+}

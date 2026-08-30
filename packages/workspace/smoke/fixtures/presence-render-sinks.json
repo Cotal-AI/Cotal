@@ -1,0 +1,361 @@
+{
+  "expected": {
+    "total": 47,
+    "honest-text": 17,
+    "presence-only-glyph/count": 12,
+    "command-ack": 7,
+    "non-render/control": 11
+  },
+  "entries": [
+    {
+      "path": "packages/core/src/resolve.ts",
+      "anchor": "        candidates.map((c) => `${c.name} (${c.id}, ${c.status})`).join(\"; \") +",
+      "class": "command-ack",
+      "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
+    },
+    {
+      "path": "extensions/connector-core/src/orientation.ts",
+      "anchor": "  status === \"working\" ? \"working \u00b7 progress unknown\" : status;",
+      "class": "honest-text",
+      "rationale": "Textual presence status. Working must name unknown progress through the shown renderer or output assertion.",
+      "proof": {
+        "path": "extensions/connector-core/smoke/orientation.smoke.ts",
+        "anchor": "assert.match(o.peers.summary, /bob\\/worker \\(working \u00b7 progress unknown\\)/,"
+      }
+    },
+    {
+      "path": "extensions/connector-core/src/orientation.ts",
+      "anchor": "    .map((p) => `${p.card.role ? `${p.card.name}/${p.card.role}` : p.card.name} (${honestStatus(p.status)})`);",
+      "class": "honest-text",
+      "rationale": "Textual presence status. Working must name unknown progress through the shown renderer or output assertion.",
+      "proof": {
+        "path": "extensions/connector-core/smoke/orientation.smoke.ts",
+        "anchor": "assert.match(o.peers.summary, /bob\\/worker \\(working \u00b7 progress unknown\\)/,"
+      }
+    },
+    {
+      "path": "extensions/connector-core/src/orientation.ts",
+      "anchor": "    `  \u2022 status: ${honestStatus(o.status)} \u00b7 attention: ${o.attention}`,",
+      "class": "honest-text",
+      "rationale": "Textual presence status. Working must name unknown progress through the shown renderer or output assertion.",
+      "proof": {
+        "path": "extensions/connector-core/src/orientation.ts",
+        "anchor": "status === \"working\" ? \"working \u00b7 progress unknown\" : status;"
+      }
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "anchor": "          const progress = p.status === \"working\" ? \"working \u00b7 progress unknown\" : p.status;",
+      "class": "honest-text",
+      "rationale": "Textual presence status. Working must name unknown progress through the shown renderer or output assertion.",
+      "proof": {
+        "path": "extensions/connector-core/src/tool-specs.ts",
+        "anchor": "const progress = p.status === \"working\" ? \"working \u00b7 progress unknown\" : p.status;"
+      }
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "anchor": "          return `${statusGlyph(p.status)} ${who} \u2014 ${progress}${p.activity ? `: ${p.activity}` : \"\"}${attn}${me}${mutedHint}${id}`;",
+      "class": "honest-text",
+      "rationale": "Textual presence status. Working must name unknown progress through the shown renderer or output assertion.",
+      "proof": {
+        "path": "extensions/connector-core/src/tool-specs.ts",
+        "anchor": "const progress = p.status === \"working\" ? \"working \u00b7 progress unknown\" : p.status;"
+      }
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "anchor": "              .map((c) => `  \u2022 ${c.name}${c.role ? `/${c.role}` : \"\"} (${c.status}) \u2014 id: ${c.id}`)",
+      "class": "command-ack",
+      "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "anchor": "            lines.push(`You are now ${agent.status}${activity ? `: ${activity}` : \"\"}.`);",
+      "class": "command-ack",
+      "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "anchor": "            lines.push(`Status: ${agent.status}. Attention: ${ATTENTION_DESC[agent.attention]}.`);",
+      "class": "command-ack",
+      "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "anchor": "        : r.mesh === \"working\"",
+      "class": "honest-text",
+      "rationale": "Textual presence status. Working must name unknown progress through the shown renderer or output assertion.",
+      "proof": {
+        "path": "implementations/manager/smoke/cli-seat-locality.smoke.ts",
+        "anchor": "check(\"ps textual working mesh row names unknown progress\", /working \u00b7 progress unknown/.test(ps.out), ps.out.slice(-1200));"
+      }
+    },
+    {
+      "path": "implementations/cli/src/commands/endpoints.ts",
+      "anchor": "    console.log(`${c.bold(row.label.padEnd(labelWidth))}  ${c.dim(row.kind.padEnd(kindWidth))}  ${statusBadge(row.presence.status)}${activity}`);",
+      "class": "honest-text",
+      "rationale": "Textual presence status. Working must name unknown progress through the shown renderer or output assertion.",
+      "proof": {
+        "path": "implementations/cli/src/ui.ts",
+        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+      }
+    },
+    {
+      "path": "implementations/cli/src/commands/join.ts",
+      "anchor": "      print(c.green(`\u2192 ${who(ev.presence.card)} joined `) + statusBadge(ev.presence.status));",
+      "class": "command-ack",
+      "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/join.ts",
+      "anchor": "        `${c.dim(\"\u2022\")} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${ev.presence.activity ? c.dim(\" - \" + ev.presence.activity) : \"\"}`,",
+      "class": "honest-text",
+      "rationale": "Textual presence status. Working must name unknown progress through the shown renderer or output assertion.",
+      "proof": {
+        "path": "implementations/cli/src/ui.ts",
+        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+      }
+    },
+    {
+      "path": "implementations/cli/src/commands/join.ts",
+      "anchor": "          others.map((p) => who(p.card) + \" \" + statusBadge(p.status)).join(c.dim(\", \")),",
+      "class": "honest-text",
+      "rationale": "Textual presence status. Working must name unknown progress through the shown renderer or output assertion.",
+      "proof": {
+        "path": "implementations/cli/src/ui.ts",
+        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+      }
+    },
+    {
+      "path": "implementations/cli/src/commands/join.ts",
+      "anchor": "              statusBadge(p.status) +",
+      "class": "honest-text",
+      "rationale": "Textual presence status. Working must name unknown progress through the shown renderer or output assertion.",
+      "proof": {
+        "path": "implementations/cli/src/ui.ts",
+        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+      }
+    },
+    {
+      "path": "implementations/cli/src/commands/join.ts",
+      "anchor": "            for (const cand of e.candidates) print(c.dim(`  ${cand.name} (${cand.status})  ${cand.id}`));",
+      "class": "command-ack",
+      "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/send.ts",
+      "anchor": "        console.error(c.dim(`  ${cand.name} (${cand.status})  ${cand.id}`));",
+      "class": "command-ack",
+      "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/status.ts",
+      "anchor": "      console.log(`    ${statusBadge(p.status)}  ${label}${p.activity ? c.dim(` - ${p.activity}`) : \"\"}`);",
+      "class": "honest-text",
+      "rationale": "Textual presence status. Working must name unknown progress through the shown renderer or output assertion.",
+      "proof": {
+        "path": "implementations/cli/src/ui.ts",
+        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+      }
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "anchor": "        status={mesh.status}",
+      "class": "non-render/control",
+      "rationale": "Status routing, lookup, styling, or data shaping. This candidate does not itself render a status claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/Detail.tsx",
+      "anchor": "  const s = STATUS[status];",
+      "class": "non-render/control",
+      "rationale": "Status routing, lookup, styling, or data shaping. This candidate does not itself render a status claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/Detail.tsx",
+      "anchor": "        <Text color={s.color}>{s.dot + \" \" + s.word + (status === \"working\" ? \" \u00b7 progress unknown\" : \"\")}</Text>",
+      "class": "honest-text",
+      "rationale": "Textual presence status. Working must name unknown progress through the shown renderer or output assertion.",
+      "proof": {
+        "path": "implementations/cli/src/console/ui/Detail.tsx",
+        "anchor": "<Text color={s.color}>{s.dot + \" \" + s.word + (status === \"working\" ? \" \u00b7 progress unknown\" : \"\")}</Text>"
+      }
+    },
+    {
+      "path": "implementations/cli/src/console/ui/Dm.tsx",
+      "anchor": "                  {caret + \" \" + STATUS[p.status].dot + \" \" + p.name + role}",
+      "class": "presence-only-glyph/count",
+      "rationale": "Compact presence glyph, color, or aggregate count. It makes no textual progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/Dm.tsx",
+      "anchor": "                <Text color={STATUS[p.status].color}>{STATUS[p.status].dot + \" \"}</Text>",
+      "class": "non-render/control",
+      "rationale": "Status routing, lookup, styling, or data shaping. This candidate does not itself render a status claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/Dm.tsx",
+      "anchor": "                {\"  \u21b3 \" + STATUS[c.status].dot + \" \" + c.with + role}",
+      "class": "presence-only-glyph/count",
+      "rationale": "Compact presence glyph, color, or aggregate count. It makes no textual progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/Dm.tsx",
+      "anchor": "              <Text color={STATUS[c.status].color}>{STATUS[c.status].dot + \" \"}</Text>",
+      "class": "non-render/control",
+      "rationale": "Status routing, lookup, styling, or data shaping. This candidate does not itself render a status claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/Roster.tsx",
+      "anchor": "  const s = STATUS[p.status];",
+      "class": "honest-text",
+      "rationale": "Textual presence status. Working must name unknown progress through the shown renderer or output assertion.",
+      "proof": {
+        "path": "implementations/cli/src/console/ui/Roster.tsx",
+        "anchor": "return progressSignal(undefined, Date.now()).kind === \"unknown\" ? \"progress unknown\" : \"progress observed\";"
+      }
+    },
+    {
+      "path": "implementations/cli/src/console/ui/Tiles.tsx",
+      "anchor": "          <Text key={k} color={STATUS[k].color}>",
+      "class": "non-render/control",
+      "rationale": "Status routing, lookup, styling, or data shaping. This candidate does not itself render a status claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/Tiles.tsx",
+      "anchor": "            {(i > 0 ? \"   \" : \"\") + STATUS[k].dot + \" \" + counts[k] + \" \" + STATUS[k].word}",
+      "class": "presence-only-glyph/count",
+      "rationale": "Compact presence glyph, color, or aggregate count. It makes no textual progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/Map.tsx",
+      "anchor": "    return STATUS[n.status ?? \"offline\"].dot + \" \" + trunc(n.name + role, 22);",
+      "class": "presence-only-glyph/count",
+      "rationale": "Compact presence glyph, color, or aggregate count. It makes no textual progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/Map.tsx",
+      "anchor": "      stamp(grid[p.y], x, label.slice(0, 1), { color: STATUS[n.status ?? \"offline\"].color });",
+      "class": "non-render/control",
+      "rationale": "Status routing, lookup, styling, or data shaping. This candidate does not itself render a status claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/Matrix.tsx",
+      "anchor": "        const glyph = STATUS[row.status ?? \"offline\"];",
+      "class": "presence-only-glyph/count",
+      "rationale": "Compact presence glyph, color, or aggregate count. It makes no textual progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/Sequence.tsx",
+      "anchor": "    const glyph = STATUS[n.status ?? \"offline\"];",
+      "class": "presence-only-glyph/count",
+      "rationale": "Compact presence glyph, color, or aggregate count. It makes no textual progress claim."
+    },
+    {
+      "path": "implementations/cli/src/render.ts",
+      "anchor": "  return `${ts(Date.now())} ${label} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${activity}`;",
+      "class": "honest-text",
+      "rationale": "Textual presence status. Working must name unknown progress through the shown renderer or output assertion.",
+      "proof": {
+        "path": "implementations/cli/src/ui.ts",
+        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+      }
+    },
+    {
+      "path": "implementations/cli/src/ui.ts",
+      "anchor": "export function statusBadge(status: PresenceStatus): string {",
+      "class": "non-render/control",
+      "rationale": "Status routing, lookup, styling, or data shaping. This candidate does not itself render a status claim."
+    },
+    {
+      "path": "implementations/cli/src/view/mesh-view.ts",
+      "anchor": "    for (const p of agents) if (p.status in counts) counts[p.status as keyof StatusCounts]++;",
+      "class": "non-render/control",
+      "rationale": "Status routing, lookup, styling, or data shaping. This candidate does not itself render a status claim."
+    },
+    {
+      "path": "implementations/web/src/web/app.js",
+      "anchor": "  return `<div class=\"peer ${p.status}${nav}\"${attrs}>",
+      "class": "non-render/control",
+      "rationale": "Status routing, lookup, styling, or data shaping. This candidate does not itself render a status claim."
+    },
+    {
+      "path": "implementations/web/src/web/app.js",
+      "anchor": "  return `<div class=\"peer ${p.status}${nav}\"${attrs}>\n    <span class=\"dot ${p.status}\">${GLYPH[p.status] ?? \"\u25cb\"}</span>\n    <div class=\"c\">",
+      "class": "presence-only-glyph/count",
+      "rationale": "Compact presence glyph, color, or aggregate count. It makes no textual progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/app.js",
+      "anchor": "      <span class=\"dot ${p.status}\">${GLYPH[p.status] ?? \"\u25cb\"}</span>",
+      "class": "presence-only-glyph/count",
+      "rationale": "Compact presence glyph, color, or aggregate count. It makes no textual progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/app.js",
+      "anchor": "      <span class=\"dot ${c.status}\">${GLYPH[c.status] ?? \"\u25cb\"}</span>",
+      "class": "presence-only-glyph/count",
+      "rationale": "Compact presence glyph, color, or aggregate count. It makes no textual progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/app.js",
+      "anchor": "  return `<div class=\"cmsg\">\n    <span class=\"ts\">${esc(m.ts)}</span>\n    <span class=\"dot ${m.status}\">${GLYPH[m.status] ?? \"\u25cf\"}</span>\n    <div class=\"c\">\n      <div class=\"l1\"><span class=\"who\">${esc(m.who)}</span>${m.role ? `<span class=\"role\">${esc(m.role)}</span>` : \"\"}</div>",
+      "class": "presence-only-glyph/count",
+      "rationale": "Compact presence glyph, color, or aggregate count. It makes no textual progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/app.js",
+      "anchor": "  return `<div class=\"cmsg\">\n    <span class=\"ts\">${esc(m.ts)}</span>\n    <span class=\"dot ${m.status}\">${GLYPH[m.status] ?? \"\u25cf\"}</span>\n    <div class=\"c\">\n      <div class=\"l1\"><span class=\"who\">${esc(m.whoName ?? m.who)}</span><span class=\"dir\">\u2192 ${esc(to)}</span></div>",
+      "class": "presence-only-glyph/count",
+      "rationale": "Compact presence glyph, color, or aggregate count. It makes no textual progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/app.js",
+      "anchor": "  const progress = p.status === \"working\" && p.progress?.kind === \"unknown\" ? \"working \u00b7 progress unknown\" : p.status;",
+      "class": "honest-text",
+      "rationale": "Textual presence status. Working must name unknown progress through the shown renderer or output assertion.",
+      "proof": {
+        "path": "implementations/web/src/web/app.js",
+        "anchor": "const progress = p.status === \"working\" && p.progress?.kind === \"unknown\" ? \"working \u00b7 progress unknown\" : p.status;"
+      }
+    },
+    {
+      "path": "implementations/web/src/web/app.js",
+      "anchor": "        <span class=\"dot ${p.status}\">${GLYPH[p.status] ?? \"\u25cf\"}</span>",
+      "class": "presence-only-glyph/count",
+      "rationale": "Compact presence glyph, color, or aggregate count. It makes no textual progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/app.js",
+      "anchor": "        <span class=\"d-status\">${esc(waiting ? \"WAITING\" : p.status)}</span>",
+      "class": "honest-text",
+      "rationale": "Textual presence status. Working must name unknown progress through the shown renderer or output assertion.",
+      "proof": {
+        "path": "implementations/web/src/web/app.js",
+        "anchor": "const progress = p.status === \"working\" && p.progress?.kind === \"unknown\" ? \"working \u00b7 progress unknown\" : p.status;"
+      }
+    },
+    {
+      "path": "implementations/web/src/web/app.js",
+      "anchor": "  for (const p of roster) counts[p.status] = (counts[p.status] ?? 0) + 1;",
+      "class": "non-render/control",
+      "rationale": "Status routing, lookup, styling, or data shaping. This candidate does not itself render a status claim."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "anchor": "        <div class=\"d-status ${sel.status}\"><span class=\"dot\"></span>${esc(sel.status === \"working\" && sel.progress?.kind === \"unknown\" ? \"working \u00b7 progress unknown\" : sel.status)}</div>",
+      "class": "honest-text",
+      "rationale": "Textual presence status. Working must name unknown progress through the shown renderer or output assertion.",
+      "proof": {
+        "path": "implementations/web/src/web/graph.js",
+        "anchor": "<div class=\"d-status ${sel.status}\"><span class=\"dot\"></span>${esc(sel.status === \"working\" && sel.progress?.kind === \"unknown\" ? \"working \u00b7 progress unknown\" : sel.status)}</div>"
+      }
+    },
+    {
+      "path": "implementations/web/src/web.ts",
+      "anchor": "    progress: presence.status === \"working\" ? progressSignal(undefined, Date.now()) : undefined,",
+      "class": "non-render/control",
+      "rationale": "Status routing, lookup, styling, or data shaping. This candidate does not itself render a status claim."
+    }
+  ]
+}
