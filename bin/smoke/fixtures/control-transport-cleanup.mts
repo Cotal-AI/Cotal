@@ -2,9 +2,13 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { reapSmokeBrokers } from "../reap-smoke-brokers.mjs";
 
 const prefixes = ["cotal-control-dial-root-", "cotal-control-dial-home-"] as const;
 const before = new Set(readdirSync(tmpdir()).filter((name) => prefixes.some((prefix) => name.startsWith(prefix))));
+const beforeStores = new Set(readdirSync(tmpdir()).filter((name) =>
+  name.startsWith("cotal-smoke-broker-") && name.includes("-control-dial-js-")
+));
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const created = () => readdirSync(tmpdir()).filter((name) =>
   prefixes.some((prefix) => name.startsWith(prefix)) && !before.has(name)
@@ -28,14 +32,23 @@ const check = (name: string, condition: boolean, extra?: unknown) => {
 const child = spawn(process.execPath, [
   join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs"),
   join(process.cwd(), "bin", "smoke", "control-transport-dial.smoke.ts"),
-], { cwd: process.cwd(), stdio: "ignore" });
+], { cwd: process.cwd(), stdio: ["ignore", "pipe", "ignore"] });
+
+let brokerReady = false;
+child.stdout?.on("data", (chunk: Buffer) => {
+  if (chunk.toString().includes("the authenticated broker is serving its TCP listener")) brokerReady = true;
+});
 
 let roots: string[] = [];
+let brokerStores: string[] = [];
 let authJson = 0;
 let withSeedFields = 0;
 try {
   for (let i = 0; i < 300; i++) {
     roots = created();
+    brokerStores = readdirSync(tmpdir()).filter((name) =>
+      name.startsWith("cotal-smoke-broker-") && name.includes("-control-dial-js-") && !beforeStores.has(name)
+    );
     authJson = 0;
     withSeedFields = 0;
     for (const name of roots.filter((entry) => entry.startsWith("cotal-control-dial-root-"))) {
@@ -49,28 +62,37 @@ try {
         } catch { /* malformed is not positive credential-material evidence */ }
       }
     }
-    if (roots.length === 2 && authJson >= 2 && withSeedFields >= 2) break;
+    if (brokerReady && roots.length === 2 && brokerStores.length === 1 && authJson >= 2 && withSeedFields >= 2) break;
     await wait(50);
   }
+  check("positive control: the public broker-readiness cell completed before SIGTERM", brokerReady);
   check("positive control: the suite created exactly two temporary roots", roots.length === 2, roots.length);
+  check("positive control: the suite created exactly one tokened broker store", brokerStores.length === 1, brokerStores.length);
   check("positive control: auth JSON artifact count before SIGTERM >= 2", authJson >= 2, authJson);
   check("positive control: auth JSON files with seed field names before SIGTERM >= 2", withSeedFields >= 2, withSeedFields);
 
   child.kill("SIGTERM");
   await Promise.race([new Promise<void>((resolve) => child.once("exit", () => resolve())), wait(10_000)]);
   let remaining = roots.filter((name) => existsSync(join(tmpdir(), name)));
-  for (let i = 0; i < 100 && remaining.length > 0; i++) {
+  let remainingStores = brokerStores.filter((name) => existsSync(join(tmpdir(), name)));
+  for (let i = 0; i < 400 && (remaining.length > 0 || remainingStores.length > 0); i++) {
     await wait(50);
     remaining = roots.filter((name) => existsSync(join(tmpdir(), name)));
+    remainingStores = brokerStores.filter((name) => existsSync(join(tmpdir(), name)));
   }
+  const ownerPids = new Set(brokerStores.map((name) => Number(/^cotal-smoke-broker-(\d+)-/.exec(name)?.[1])).filter(Number.isInteger));
+  const orphanedBrokers = reapSmokeBrokers({ dryRun: true }).reaped.filter((entry) => ownerPids.has(entry.owner)).length;
   const projectRoots = remaining.filter((name) => name.startsWith("cotal-control-dial-root-")).length;
   const homes = remaining.filter((name) => name.startsWith("cotal-control-dial-home-")).length;
   check("temporary project roots remaining after direct suite SIGTERM = 0", projectRoots === 0, projectRoots);
   check("temporary COTAL_HOME roots remaining after direct suite SIGTERM = 0", homes === 0, homes);
   check("total credential-bearing temporary roots remaining after direct suite SIGTERM = 0", remaining.length === 0, remaining.length);
+  check("tokened broker store directories remaining after direct suite SIGTERM = 0", remainingStores.length === 0, remainingStores.length);
+  check("identified broker orphans owned by the exited suite after direct SIGTERM = 0", orphanedBrokers === 0, orphanedBrokers);
 } finally {
   if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   for (const name of roots) rmSync(join(tmpdir(), name), { recursive: true, force: true });
+  for (const name of brokerStores) rmSync(join(tmpdir(), name), { recursive: true, force: true });
 }
 
 console.log(`CONTROL CLEANUP PROBE ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);

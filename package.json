@@ -172,7 +172,7 @@
     "smoke:mesh-attach": "tsx implementations/manager/smoke/mesh-attach.smoke.ts",
     "smoke:mesh-attach-plane": "tsx implementations/manager/smoke/mesh-attach-plane.smoke.ts",
     "smoke:attach-auth-root": "tsx bin/smoke/attach-auth-root.smoke.ts",
-    "smoke:control-transport-dial": "tsx bin/smoke/control-transport-dial.smoke.ts",
+    "smoke:control-transport-dial": "tsx bin/smoke/control-transport-dial.smoke.ts && pnpm smoke:control-transport-cleanup",
     "smoke:control-transport-cleanup": "tsx bin/smoke/fixtures/control-transport-cleanup.mts",
     "smoke:session-ledger-family": "tsx implementations/manager/smoke/session-ledger-family.smoke.ts",
     "smoke:session-cap": "tsx implementations/manager/smoke/session-cap.smoke.ts",
