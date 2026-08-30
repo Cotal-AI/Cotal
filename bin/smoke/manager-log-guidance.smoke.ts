@@ -25,10 +25,19 @@ const root = join(REPO, ".operator-path-probe");
 const space = "Ops West";
 const written = managerLogPath(space, root);
 const displayed = managerLogDisplayPath(space, root);
+const managerProc = readFileSync(join(REPO, "implementations/cli/src/lib/manager-proc.ts"), "utf8");
 check(
   "the operator path is the writer-owned manager logfile relative to the mesh root",
   join(root, displayed) === written,
   { written, displayed },
+);
+check(
+  "managerLogPath derives from the workspace-owned MANAGER_LOGFILE template",
+  /canonicalLocalProcessPath\(MANAGER_LOGFILE, \{ root, space \}\)/.test(managerProc),
+);
+check(
+  "the detached manager writer opens managerLogPath instead of deriving its own filename",
+  /const logPath = managerLogPath\(space\);/.test(managerProc),
 );
 
 const spawn = readFileSync(join(REPO, "implementations/cli/src/commands/spawn-manifest.ts"), "utf8");

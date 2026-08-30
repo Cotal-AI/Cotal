@@ -29,10 +29,26 @@
       "cell": "the up success line derives its logfile guidance"
     },
     {
-      "name": "the operator display helper stops resolving through the writer-owned path",
+      "name": "managerLogPath drifts from the workspace-owned logfile template",
       "file": "implementations/cli/src/lib/manager-proc.ts",
-      "find": "  relative(root, managerLogPath(space, root));",
-      "replace": "  `.cotal/manager.log`;",
+      "find": "  canonicalLocalProcessPath(MANAGER_LOGFILE, { root, space });",
+      "replace": "  canonicalLocalProcessPath(\"manager.log\", { root, space });",
+      "expectRed": "managerLogPath derives from the workspace-owned MANAGER_LOGFILE template",
+      "cell": "managerLogPath derives from the workspace-owned MANAGER_LOGFILE template"
+    },
+    {
+      "name": "the detached writer bypasses managerLogPath and derives its own filename",
+      "file": "implementations/cli/src/lib/manager-proc.ts",
+      "find": "  const logPath = managerLogPath(space);",
+      "replace": "  const logPath = canonicalLocalProcessPath(\"manager.log\", ctx(space));",
+      "expectRed": "the detached manager writer opens managerLogPath instead of deriving its own filename",
+      "cell": "the detached manager writer opens managerLogPath instead of deriving its own filename"
+    },
+    {
+      "name": "reachability control makes managerLogPath stop returning its canonical path",
+      "file": "implementations/cli/src/lib/manager-proc.ts",
+      "find": "  canonicalLocalProcessPath(MANAGER_LOGFILE, { root, space });",
+      "replace": "  \"\";",
       "expectRed": "the operator path is the writer-owned manager logfile relative to the mesh root",
       "cell": "the operator path is the writer-owned manager logfile relative to the mesh root"
     }
