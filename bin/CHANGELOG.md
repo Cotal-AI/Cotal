@@ -1,5 +1,103 @@
 # cotal-ai
 
+## 0.37.0
+
+### Minor Changes
+
+- 00ac9d9: manager: refuse a manager-role spawn of a persona without the spawn capability. A persona defined over the wire (`cotal_persona`) carries no `capabilities:` line (the write path is content-only by design), and `cotal_spawn` takes a free-form `role`, so a wire-defined persona could be spawned with `role: "manager"` and join presenting as a manager whose credential cannot reach the control plane, silently, until the seat first tried to seat a worker (issue #966). The manager now refuses that spawn at accept, before any provisioning, naming the remediation for both authors: an operator adds `capabilities: [spawn]` to the persona file; a peer-defined persona cannot declare capabilities and must ask an operator. The guard keys on the effective role (a spawn-time role override wins over the file's, mirroring existing precedence) and leaves every non-manager spawn untouched. `cotal_spawn`'s `role` argument documents the requirement. Capabilities remain non-declarable over the wire: the closed `define-persona` input schema is unchanged and still guarded by `smoke:persona-input-closed`.
+- 9021896: Make the runtime pid/log namespace per-space. The manager and delivery daemon now record themselves
+  as `.cotal/manager.<spaceKey>.pid`, `.cotal/manager.<spaceKey>.log`,
+  `.cotal/manager.<spaceKey>.delivery-aware`, `.cotal/delivery.<spaceKey>.pid` and
+  `.cotal/delivery.<spaceKey>.log`, through the same `{space}` expansion `auth-service.<spaceKey>.pid`
+  already used. The five names were root-scoped constants, so one workspace root hosted one manager and
+  one delivery daemon by filename: a second space booting in the same root overwrote the first space's
+  record, and every reader of that file then answered about the wrong process. `status`, `down`, `up`,
+  `clean` and `spawn -f` take the space they are answering about.
+
+  Existing single-space meshes keep working across the upgrade. Reads admit a pre-segmentation
+  root-scoped record while it is the only spelling present, byte-exact, so a `cotal down` still finds
+  and stops a daemon started by the previous build instead of orphaning it. Writes are always the
+  canonical space-keyed name, and each start reclaims a provably dead pre-upgrade record first, so an
+  ordinary upgrade does not leave both spellings behind. A live pre-upgrade daemon is refused rather
+  than overwritten, and both spellings present is reported as ambiguous rather than guessed.
+
+  A folder-wide command reads its space off the runtime records the folder holds. `resolveRuntimeSpace`
+  decodes the space out of the record filenames and prefers a space whose record is running over dead
+  residue; two spaces running under one root throws and names both. The previous read came from the
+  `.cotal/auth` account records, which an open mesh (`broker: { auth: false }`) never writes, so a bare
+  `cotal down` in such a folder answered with the default space and walked past its own manager once the
+  records became space-keyed.
+
+  `MANAGER_PIDFILE` and `MANAGER_DELIVERY_AWARE_MARKER` move from `pid.ts` to `local-process.ts` and
+  are now `{space}` templates; both are still exported from the package index. `RESERVED_COTAL_CHILDREN`
+  no longer lists the five root-scoped runtime names.
+
+### Patch Changes
+
+- 283de1c: Identify the running CLI artifact in `cotal status` and show the compared versions for stale Claude skills.
+- 31443f1: Make package-filtered test commands run counted assertions instead of succeeding without tests.
+- 959b596: Validate workstation and injected scan credentials against the delivery daemon's account before endpoint construction or singleton lease admission.
+- 715df20: Add a read-only pull request guard that fails closed unless every named workflow expected for the exact head exists and succeeds.
+- e5624fc: Split future CI smoke registrations into merge-safe per-suite fragments with stable shard assignment.
+- 3cc980d: Resume an interrupted frozen endpoint-gate repair without repeating holder evictions that were
+  already verified. Progress is durably bound to the registration operation, frozen-gate revision,
+  and sorted holder set, while every retry still rechecks freeze-holder liveness. A mismatch restarts
+  from zero, each completion is persisted before the next verification, and the gate reopens only
+  after every current holder verifies. The endpoint executor can write only its exact repair key, and
+  post-reopen cleanup failure cannot authorize a later freeze.
+- 602d9b1: Parse pull request workflow declarations with the repository YAML parser so valid comments and flow forms cannot silently remove required exact-head checks.
+- Updated dependencies [e5e68ed]
+- Updated dependencies [283de1c]
+- Updated dependencies [31443f1]
+- Updated dependencies [1cd9e6b]
+- Updated dependencies [a304a89]
+- Updated dependencies [4e80261]
+- Updated dependencies [c31de91]
+- Updated dependencies [d4779db]
+- Updated dependencies [959b596]
+- Updated dependencies [1cb7042]
+- Updated dependencies [6926b34]
+- Updated dependencies [11be292]
+- Updated dependencies [05d534b]
+- Updated dependencies [d2c0fd3]
+- Updated dependencies [9b6073f]
+- Updated dependencies [7e45495]
+- Updated dependencies [135ddaf]
+- Updated dependencies [0660504]
+- Updated dependencies [e703873]
+- Updated dependencies [6b9525e]
+- Updated dependencies [6c1cefe]
+- Updated dependencies [c4094cb]
+- Updated dependencies [00ac9d9]
+- Updated dependencies [4feb60d]
+- Updated dependencies [c09d750]
+- Updated dependencies [b20644b]
+- Updated dependencies [74c9a1b]
+- Updated dependencies [bfd650c]
+- Updated dependencies [e6c6947]
+- Updated dependencies [b36bf50]
+- Updated dependencies [3cc980d]
+- Updated dependencies [9ff2363]
+- Updated dependencies [9021896]
+- Updated dependencies [42af545]
+- Updated dependencies [0d45f44]
+- Updated dependencies [d94b617]
+- Updated dependencies [eb3b429]
+- Updated dependencies [17046ac]
+- Updated dependencies [d8b6e63]
+- Updated dependencies [b7b932e]
+- Updated dependencies [b323861]
+- Updated dependencies [8eff985]
+- Updated dependencies [b88edd9]
+- Updated dependencies [063151b]
+  - @cotal-ai/core@0.37.0
+  - @cotal-ai/manager@0.37.0
+  - @cotal-ai/connector-core@0.37.0
+  - @cotal-ai/cli@0.37.0
+  - @cotal-ai/delivery@0.37.0
+  - @cotal-ai/workspace@0.37.0
+  - @cotal-ai/auth@0.37.0
+
 ## 0.36.0
 
 ### Patch Changes
