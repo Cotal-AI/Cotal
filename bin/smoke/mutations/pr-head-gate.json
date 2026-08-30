@@ -44,6 +44,14 @@
       "replace": "if (run.conclusion === \"success\") failing.push(name);",
       "expectRed": "a completed non-success workflow is reported as failing, not missing or pending",
       "cell": "completed non-success workflow is reported as failing"
+    },
+    {
+      "name": "unsupported workflow path glob is silently literalized",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "if (/[\\\\[\\]{}()+|]/.test(pattern)) throw new Error(`unsupported workflow path pattern: ${pattern}`);",
+      "replace": "if (false) throw new Error(`unsupported workflow path pattern: ${pattern}`);",
+      "expectRed": "unsupported GitHub glob syntax fails closed instead of being treated as a literal",
+      "cell": "unsupported GitHub glob syntax fails closed"
     }
   ]
 }
