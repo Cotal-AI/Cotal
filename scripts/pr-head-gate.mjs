@@ -84,6 +84,7 @@ function pullRequestDeclaration(file, text) {
 }
 
 function globRegex(pattern) {
+  if (/[\\[\]{}()+|]/.test(pattern)) throw new Error(`unsupported workflow path pattern: ${pattern}`);
   let out = "^";
   for (let i = 0; i < pattern.length; i++) {
     const ch = pattern[i];

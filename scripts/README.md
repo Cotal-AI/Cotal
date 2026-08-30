@@ -20,5 +20,8 @@ non-green categories are distinct:
 - **pending**: the run exists but is queued or running
 - **failing**: the run completed without a `success` conclusion, including `neutral` or `skipped`
 
+The path-filter reader understands the declaration and glob forms used in this repository. A new
+form it does not understand is an error, not a silently ignored or literal filter.
+
 The guard is read-only. It does not drain GitHub's queue, retrigger a run, or diagnose or fix the
 external scheduler that creates workflow runs.

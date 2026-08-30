@@ -42,6 +42,15 @@ try {
   unsupportedRefused = /unsupported inline paths declaration/.test(String(error));
 }
 check("an unrecognised workflow declaration fails closed instead of shrinking the expected set", unsupportedRefused);
+let unsupportedPatternRefused = false;
+try {
+  expectedPullRequestWorkflows({
+    "unknown.yml": "name: Unknown\non:\n  pull_request:\n    paths:\n      - 'docs/{api,cli}.md'\n",
+  }, ["docs/cli.md"]);
+} catch (error) {
+  unsupportedPatternRefused = /unsupported workflow path pattern/.test(String(error));
+}
+check("unsupported GitHub glob syntax fails closed instead of being treated as a literal", unsupportedPatternRefused);
 for (const c of fixture.cases) {
   const expected = expectedPullRequestWorkflows(workflows, c.changedPaths);
   check(
@@ -101,7 +110,7 @@ for (const conclusion of ["neutral", "skipped"]) {
   check(`a ${conclusion} expected workflow is failing, never green`, JSON.stringify(verdict.failing) === '["CI"]' && !verdict.green, verdict);
 }
 
-const EXPECTED = 19;
+const EXPECTED = 20;
 check(`every cell ran (${EXPECTED} before sentinel)`, passed + failed === EXPECTED);
 console.log(`PR HEAD GATE SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 console.log("SUITE COMPLETE");
