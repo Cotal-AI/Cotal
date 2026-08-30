@@ -235,16 +235,18 @@ try {
   await waitFor("safety mesh presence", () => safetyPeerId);
   await operator.unicast(safetyPeerId!, "SIMULATE_UNPROVEN_TEARDOWN");
   await waitFor("safety replacement attach failure", () => existsSync(safetyFailAttachOnce) ? true : undefined);
-  await waitFor("terminal ownership refusal or unsafe third launch", () => {
-    const launches = existsSync(safetyLaunchCount) ? Number(readFileSync(safetyLaunchCount, "utf8")) : 0;
-    return safetyChild!.exitCode !== null || launches >= 3 ? true : undefined;
-  });
+  const safetyDeadline = Date.now() + 10_000;
+  while (
+    safetyChild.exitCode === null &&
+    (!existsSync(safetyLaunchCount) || Number(readFileSync(safetyLaunchCount, "utf8")) < 3) &&
+    Date.now() < safetyDeadline
+  ) await sleep(100);
   const safetyLaunches = Number(readFileSync(safetyLaunchCount, "utf8"));
   const safetyBridges = entriesOf(safetyLog).filter(
     (entry): entry is { ev: string; pid: number } => entry.ev === "listening" && typeof entry.pid === "number",
   );
   check(
-    "unproven failed-replacement teardown is terminal before another bridge launch",
+    "terminal ownership refusal or unsafe third launch",
     safetyChild.exitCode === 1 &&
       safetyLaunches === 2 &&
       safetyStderr.includes("does not carry its launch-bound identity — refusing unsafe teardown"),

@@ -40,7 +40,7 @@
       "file": "extensions/connector-jcode/src/host.ts",
       "find": "          await replacement?.close().catch(() => {});\n          await stopPrivateJcode();\n          if (stopping) return;",
       "replace": "          await replacement?.close().catch(() => {});\n          if (stopping) return;",
-      "expectRed": "unproven failed-replacement teardown is terminal before another bridge launch"
+      "expectRed": "terminal ownership refusal or unsafe third launch"
     },
     {
       "name": "M6 swallow terminal replacement teardown refusal",
