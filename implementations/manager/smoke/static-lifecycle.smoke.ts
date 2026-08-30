@@ -404,3 +404,4 @@ if (ran !== EXPECTED_CHECKS) {
   process.exit(1);
 }
 console.log(`STATIC-LIFECYCLE SMOKE OK ✅ (${ran}/${EXPECTED_CHECKS} assertions)`);
+console.log(`${ran} checks passed`);
