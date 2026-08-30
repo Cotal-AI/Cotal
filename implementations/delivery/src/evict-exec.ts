@@ -94,6 +94,35 @@ export function validateScanTarget(target: ScanTarget, verb = "delivery startup"
   return { accountId: target.expectedAccount };
 }
 
+/** Startup admission for the scan-backed delivery-admin rail.
+ *
+ * Root stability alone is not a tenancy proof for an injected store: the hosted composition has no
+ * `membership.json`, and the store may return another tenant's structurally valid observer. Read
+ * the pair through the exact source the executors will use, then validate the observer before the
+ * endpoint exists or lease.0 can be acquired. The observer is required because every liveness
+ * verdict needs an account-scoped complete scan. The evictor remains optional for pre-eviction
+ * spaces (their documented posture is deny-new-only), but when present it participates in the
+ * torn-rotation check so a mixed generation cannot be admitted as healthy.
+ */
+export async function validateScanTargetAdmission(target: ScanTarget): Promise<{ accountId: string }> {
+  const scan = validateScanTarget(target);
+  const sys = await loadSysPair(target.source, "both");
+  if (sys.observer === undefined)
+    throw new Error(
+      `delivery startup: the $SYS observer cred is not provisioned here (missing ${MEMBERSHIP_OBSERVER_CREDS_KIND}) - ${
+        repairAdvice(target.source, [MEMBERSHIP_OBSERVER_CREDS_KIND])
+      }. Refusing before endpoint construction and lease admission because this daemon cannot establish which account its scan rail serves`,
+    );
+  const tenancy = observerTenancyProblem(sys.observer, target.expectedAccount);
+  if (tenancy) throw new Error(`delivery startup: ${tenancy}. Refusing before endpoint construction and lease admission`);
+  if (sys.evictor !== undefined) {
+    const torn = tornRotationProblem(sys.observer, sys.evictor, () =>
+      repairAdvice(target.source, [MEMBERSHIP_OBSERVER_CREDS_KIND, CONNECTION_EVICTOR_CREDS_KIND]));
+    if (torn) throw new Error(`delivery startup: ${torn}. Refusing before endpoint construction and lease admission`);
+  }
+  return scan;
+}
+
 /** Read the $SYS material for one verb and run every pre-connect check, or THROW.
  *
  *  Fail-loud is the whole posture here (design §4.2): a missing key is a REFUSAL, full stop. In

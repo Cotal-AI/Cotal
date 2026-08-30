@@ -440,7 +440,7 @@ async function runReconcileGate(args: ParsedArgs): Promise<void> {
     });
     console.log(
       c.green(`✓ ${endpoint}/${instanceId}: gate reopened at generation ${report.reopenedAtGeneration}`) +
-        ` (processEpoch unchanged at ${report.before.processEpoch}; ${report.revoked.length} credential(s) revoked, ${report.evicted.length} holder(s) verify-evicted). Start the manager to let its normal takeover run.`,
+        ` (processEpoch unchanged at ${report.before.processEpoch}; ${report.revoked.length} credential(s) revoked this attempt, ${report.holdersVerifiedThisAttempt.length} holder(s) verify-evicted this attempt, ${report.holdersVerifiedBeforeAttempt.length} already verified, ${report.holdersRemaining.length} remaining; repair cursor ${report.repairCursorCleanup}). Start the manager to let its normal takeover run.`,
     );
   } catch (e) {
     // A refusal is the DESIGNED outcome for every state this does not repair, so it prints the

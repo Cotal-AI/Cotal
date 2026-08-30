@@ -1,0 +1,48 @@
+{
+  "suite": "implementations/cli/smoke/seed-migration-provenance.smoke.ts",
+  "guard": "a newer cotal announces a shared seed-store migration, persists its writer and timestamp, and an older cotal reports that provenance when it refuses the store",
+  "command": "pnpm smoke:seed-migration-provenance",
+  "completionMarker": "seed-migration-provenance smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/fixtures/seed-migration-provenance.mutations.json",
+  "why": [
+    "THREE MUTATIONS, one for each externally visible part of the contract.",
+    "",
+    "M1 deletes the migration announcement after the new stamp commits. The store still advances and",
+    "the provenance still persists, so only the operator-visible migration cell turns red.",
+    "",
+    "M2 writes the legacy generation-only stamp. The migration still announces, but the durable record",
+    "cannot tell a later older CLI which executable wrote it or when. The writer cell is the first red.",
+    "",
+    "M3 suppresses the provenance suffix on the downgrade refusal. The stored fields remain intact,",
+    "which distinguishes a reporting regression from a persistence regression.",
+    "",
+    "All anchors are unique code-only spans. Each mutation is compile-clean and restores a concrete",
+    "failure mode rather than restating an assertion inside the product."
+  ],
+  "mutations": [
+    {
+      "name": "the generation advances silently because the migration announcement is deleted",
+      "file": "implementations/cli/src/seed/reconcile.ts",
+      "find": "  if (migrationFrom) announceSeedMigration(migrationFrom, committedStamp);",
+      "replace": "",
+      "expectRed": "✗ FAIL: migration provenance: a newer binary announces the shared seed-store generation migration",
+      "cell": "✗ FAIL: migration provenance: a newer binary announces the shared seed-store generation migration"
+    },
+    {
+      "name": "the committed stamp drops writer and timestamp provenance",
+      "file": "implementations/cli/src/seed/authority.ts",
+      "find": "  writeJsonAtomic(stampPath(), { generation, writtenBy, writtenAt });",
+      "replace": "  writeJsonAtomic(stampPath(), { generation });",
+      "expectRed": "✗ FAIL: migration provenance: stamp records the exact CLI entry that wrote the generation",
+      "cell": "✗ FAIL: migration provenance: stamp records the exact CLI entry that wrote the generation"
+    },
+    {
+      "name": "the downgrade refusal hides the stored writer and timestamp",
+      "file": "implementations/cli/src/seed/reconcile.ts",
+      "find": "  return `, written by ${stamp.writtenBy} at ${stamp.writtenAt}`;",
+      "replace": "  return \"\";",
+      "expectRed": "✗ FAIL: downgrade: the refusal names who wrote the newer generation and when",
+      "cell": "✗ FAIL: downgrade: the refusal names who wrote the newer generation and when"
+    }
+  ]
+}

@@ -319,10 +319,10 @@ that dead op on boot, using the same guard as [`cotal reconcile-gate`](cli.md#re
 acts only when the freeze-holder is affirmatively gone under a complete CONNZ sweep (`gone` and
 `sweepComplete=true`), abort-reopens the gate (generation+1, processEpoch unchanged), and continues
 the normal takeover. A live holder, an incomplete sweep, or an unreachable delivery daemon still
-refuses. Silence is never evidence of death, and there is no TTL. Use `cotal reconcile-gate` when the
-boot
-path cannot run (daemon down, a non-manager endpoint, or you want to lift the freeze without
-starting a manager).
+refuses. Silence is never evidence of death, and there is no TTL. If holder verification is
+interrupted, the frozen operation resumes from its durable, operation-and-gate-revision-bound
+progress after liveness is checked again. Use `cotal reconcile-gate` when the boot path cannot run
+(daemon down, a non-manager endpoint, or you want to lift the freeze without starting a manager).
 
 ## When something looks absent
 
