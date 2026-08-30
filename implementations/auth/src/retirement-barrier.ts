@@ -39,7 +39,11 @@
  * FAIL-CLOSED CONTRACT: any failure after the freeze leaves the gate FROZEN and the head at its
  * current containment state (nothing mints, the alias is not replaceable); eviction failure is
  * `unavailable`; a live, unexpired, FOREIGN-target pool item is never settled or ACKed and the
- * barrier refuses to close frontiers while one remains (§13.9).
+ * barrier refuses to close frontiers while one remains (§13.9). A crash BETWEEN the gate
+ * terminal (step 8) and the head terminal (step 9) is the one window past the gate's frozen
+ * bar: it leaves `gate retired + head retiring` under the SAME op, and the boot resume's
+ * cross-object owed-ness (gate AND head) re-enters THIS barrier, whose gate-retired branch
+ * finishes step 9 alone from the durable coordinates (#878).
  *
  * SURFACE: NOTHING here is exported from the package index (the same discipline as the
  * takeover barrier); production wiring lands with the activation slices. The executor seam is

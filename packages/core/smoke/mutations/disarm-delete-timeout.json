@@ -1,0 +1,29 @@
+{
+  "suite": "packages/core/smoke/disarm-delete-timeout.smoke.ts",
+  "guard": "a CONSUMER.DELETE timeout during membership-watch disarm is best-effort cleanup, not a process kill",
+  "command": "pnpm smoke:disarm-delete-timeout",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/disarm-delete-timeout.json",
+  "completionMarker": "DISARM-DELETE-TIMEOUT SMOKE",
+  "why": [
+    "The live crash was TimeoutError from consumer.delete in disarmMembershipWatch on a live",
+    "observer. The old catch rethrew any timeout while the connection was still open.",
+    "",
+    "A1 restores that live throw. A2 swallows the timeout without emitting the error event."
+  ],
+  "mutations": [
+    {
+      "name": "A1 live delete timeout still throws, the measured crash",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "          if (timeout || closedEpoch || dyingEpochTimeout) {\n            this.emit(\"error\", err as Error);\n          } else {\n            throw err;\n          }",
+      "replace": "          if (!closedEpoch && !dyingEpochTimeout) throw err;",
+      "expectRed": "a live delete timeout does not reject disarmMembershipWatch"
+    },
+    {
+      "name": "A2 swallow timeout without surfacing an endpoint error",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "          if (timeout || closedEpoch || dyingEpochTimeout) {\n            this.emit(\"error\", err as Error);\n          } else {\n            throw err;\n          }",
+      "replace": "          if (timeout || closedEpoch || dyingEpochTimeout) {\n            /* swallowed */\n          } else {\n            throw err;\n          }",
+      "expectRed": "the timeout is surfaced as an endpoint error event"
+    }
+  ]
+}
