@@ -36,13 +36,13 @@ const base = {
   result: "cancelled", repo: "Cotal-AI/Cotal", runId: 10, attempt: 1, workflow: "ci.yml", job: "live",
   timeoutSeconds: 1500, event: "push", prNumber: 0, headRef: "",
 };
-const timeoutVerdict = await inspectLiveConclusion(base, "token", async (url) => {
+const timeoutVerdict = await inspectLiveConclusion(base, "token", async (url: string | URL | Request) => {
   check("the real classifier reads the current run attempt's jobs", String(url).includes("/runs/10/attempts/1/jobs?per_page=100"), url);
   return json({ jobs: [{ name: "live", started_at: "2026-08-29T00:00:00Z", completed_at: "2026-08-29T00:25:16Z" }] });
 });
 check("the API path classifies the measured 1516-second shape as self-timeout", timeoutVerdict.kind === "self-timeout", timeoutVerdict);
 
-const supersededVerdict = await inspectLiveConclusion({ ...base, event: "pull_request", prNumber: 967, headRef: "fix/test" }, "token", async (url) => {
+const supersededVerdict = await inspectLiveConclusion({ ...base, event: "pull_request", prNumber: 967, headRef: "fix/test" }, "token", async (url: string | URL | Request) => {
   const path = String(url);
   // A whole-run supersession can land before live starts. No timestamps is lawful in that case and
   // must not obscure the positive newer-run proof.

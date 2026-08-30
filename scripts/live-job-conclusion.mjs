@@ -2,18 +2,22 @@
 
 const API_VERSION = "2022-11-28";
 
+/** @param {unknown} value @param {string} name @returns {string} */
 function required(value, name) {
-  if (value === undefined || value === "") throw new Error(`${name} is required`);
+  if (typeof value !== "string" || value === "") throw new Error(`${name} is required`);
   return value;
 }
 
+/** @param {unknown} value @param {string} name @returns {number} */
 function positiveInt(value, name) {
   const n = Number(value);
   if (!Number.isSafeInteger(n) || n <= 0) throw new Error(`${name} must be a positive integer`);
   return n;
 }
 
+/** @param {string[]} argv @returns {Record<string, string>} */
 function argsOf(argv) {
+  /** @type {Record<string, string>} */
   const out = {};
   for (let i = 0; i < argv.length; i += 2) {
     const key = argv[i];
@@ -23,6 +27,15 @@ function argsOf(argv) {
   return out;
 }
 
+/**
+ * @typedef {{ kind: "not-cancelled" } | { kind: "superseded", supersedingRunId: number } |
+ * { kind: "self-timeout", durationSeconds: number, timeoutSeconds: number } |
+ * { kind: "unexplained-cancellation", durationSeconds: number }} LiveConclusion
+ * @typedef {{ result: string, repo: string, runId: number, attempt: number, workflow: string,
+ * job: string, timeoutSeconds: number, event: string, prNumber: number, headRef: string }} LiveConclusionOptions
+ */
+
+/** @param {{ result: string, durationSeconds: number, timeoutSeconds: number, supersedingRunId?: number }} input @returns {LiveConclusion} */
 export function classifyLiveConclusion({ result, durationSeconds, timeoutSeconds, supersedingRunId }) {
   if (result !== "cancelled") return { kind: "not-cancelled" };
   if (supersedingRunId !== undefined) return { kind: "superseded", supersedingRunId };
@@ -31,6 +44,7 @@ export function classifyLiveConclusion({ result, durationSeconds, timeoutSeconds
   return { kind: "unexplained-cancellation", durationSeconds };
 }
 
+/** @param {{ started_at?: unknown, completed_at?: unknown }} job @returns {number} */
 function elapsedSeconds(job) {
   const started = Date.parse(required(job.started_at, "live.started_at"));
   const completed = Date.parse(required(job.completed_at, "live.completed_at"));
@@ -39,6 +53,7 @@ function elapsedSeconds(job) {
   return Math.round((completed - started) / 1000);
 }
 
+/** @param {string} path @param {string} token @param {typeof fetch} fetchImpl @returns {Promise<any>} */
 async function githubJson(path, token, fetchImpl) {
   const response = await fetchImpl(`https://api.github.com${path}`, {
     headers: {
@@ -51,6 +66,7 @@ async function githubJson(path, token, fetchImpl) {
   return response.json();
 }
 
+/** @param {LiveConclusionOptions} opts @param {string} token @param {typeof fetch} fetchImpl @returns {Promise<number | undefined>} */
 async function supersedingPullRequestRun(opts, token, fetchImpl) {
   if (opts.event !== "pull_request" || opts.prNumber === 0) return undefined;
   const current = await githubJson(`/repos/${opts.repo}/actions/runs/${opts.runId}`, token, fetchImpl);
@@ -62,12 +78,13 @@ async function supersedingPullRequestRun(opts, token, fetchImpl) {
   );
   const currentCreated = Date.parse(required(current.created_at, "current run created_at"));
   const newer = runs.workflow_runs
-    .filter((run) => run.id !== opts.runId && Date.parse(run.created_at) > currentCreated)
-    .filter((run) => run.pull_requests?.some((pr) => pr.number === opts.prNumber))
-    .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))[0];
+    .filter((/** @type {any} */ run) => run.id !== opts.runId && Date.parse(run.created_at) > currentCreated)
+    .filter((/** @type {any} */ run) => run.pull_requests?.some((/** @type {any} */ pr) => pr.number === opts.prNumber))
+    .sort((/** @type {any} */ a, /** @type {any} */ b) => Date.parse(a.created_at) - Date.parse(b.created_at))[0];
   return newer?.id;
 }
 
+/** @param {LiveConclusionOptions} opts @param {string} token @param {typeof fetch} [fetchImpl] @returns {Promise<LiveConclusion>} */
 export async function inspectLiveConclusion(opts, token, fetchImpl = fetch) {
   if (opts.result !== "cancelled") return { kind: "not-cancelled" };
   const jobs = await githubJson(
@@ -75,7 +92,7 @@ export async function inspectLiveConclusion(opts, token, fetchImpl = fetch) {
     token,
     fetchImpl,
   );
-  const matches = jobs.jobs.filter((job) => job.name === opts.job);
+  const matches = jobs.jobs.filter((/** @type {any} */ job) => job.name === opts.job);
   if (matches.length !== 1) throw new Error(`expected exactly one ${JSON.stringify(opts.job)} job in this run attempt, found ${matches.length}`);
   const supersedingRunId = await supersedingPullRequestRun(opts, token, fetchImpl);
   // A PR revision may be superseded while live is still queued, in which case GitHub records no
@@ -91,6 +108,7 @@ export async function inspectLiveConclusion(opts, token, fetchImpl = fetch) {
   });
 }
 
+/** @param {string} message @returns {string} */
 function annotation(message) {
   return message.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
 }
