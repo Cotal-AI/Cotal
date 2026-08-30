@@ -1,0 +1,5 @@
+# A manager with a missing connector harness used to boot as healthy and discover the PATH problem
+# only on first spawn. This boots the real Manager against its own broker, attempts NO spawn before
+# the discriminating assertion, and proves the missing binary is named at boot while unrelated
+# connectors remain available.
+smoke:manager-harness-boot

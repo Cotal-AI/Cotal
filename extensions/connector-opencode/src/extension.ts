@@ -160,6 +160,9 @@ export const opencodeConnector: Connector = {
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
+    // Preserve an operator's machine-wide COTAL_OPENCODE_BIN pin from launchEnv. The manager's
+    // boot-resolved executable is a fallback, not permission to overwrite that explicit choice.
+    if (opts.resolvedBinaries?.opencode) env.COTAL_OPENCODE_RESOLVED_BIN = opts.resolvedBinaries.opencode;
     // The AG-UI event plane. `COTAL_EVENTS` ARMS the emitter, and arming is not authorization: a
     // publish grant on a channel is not a request to publish to it, so an agent file that can write
     // `allowPublish` cannot turn on a stream of another seat's tool inputs and outputs by doing so.

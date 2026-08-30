@@ -246,7 +246,7 @@ export async function runJcodeHost(): Promise<void> {
   config.connector = "jcode";
   const control = controlFromEnv();
   if (!control) throw new Error("jcode connector: managed session has no control endpoint");
-  const binary = "jcode";
+  const binary = process.env.COTAL_JCODE_BIN?.trim() || "jcode";
   const tuiOverride = process.env.COTAL_JCODE_TUI?.trim();
   const bootPrompt = process.env.COTAL_JCODE_PROMPT?.trim();
   const def = process.env.COTAL_AGENT_FILE?.trim() ? loadAgentFile(process.env.COTAL_AGENT_FILE.trim()) : undefined;

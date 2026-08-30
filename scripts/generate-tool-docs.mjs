@@ -59,7 +59,7 @@ const ANNOTATIONS = {
     effect: "publishes to a channel",
     availability: "always (the broker enforces your post ACL)",
     notes:
-      "Fails loud when the channel is outside your `allowPublish`. An unknown name in `mentions` aborts the whole broadcast.",
+      "Fails loud when the channel is outside your `allowPublish`. An unknown name in `mentions` aborts the whole broadcast. A send to a name with no registry entry and no prior traffic still succeeds (ad hoc create is allowed) but the receipt says so, and names close matches when it can, so a typo is not identical to a send into a known room.",
   },
   cotal_dm: { effect: "sends a private message to one peer", availability: "always" },
   cotal_anycast: {
@@ -72,7 +72,12 @@ const ANNOTATIONS = {
     availability: "always",
     notes: "With no arguments it just reports the current values.",
   },
-  cotal_channel_info: { effect: "read-only", availability: "always" },
+  cotal_channel_info: {
+    effect: "read-only",
+    availability: "always",
+    notes:
+      "An unregistered name is reported as not in the channel registry. It is still a real channel if it has traffic.",
+  },
   cotal_channels: { effect: "read-only", availability: "always" },
   cotal_channel_mode: {
     effect: "sets your own per-channel receive preference (quiet / muted / normal)",

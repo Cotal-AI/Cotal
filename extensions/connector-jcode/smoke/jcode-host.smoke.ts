@@ -96,8 +96,15 @@ const check = (name: string, condition: boolean, actual?: unknown): void => {
   pass++;
   console.log(`  ✓ ${name}`);
 };
+function readJsonLines<T>(path: string): T[] {
+  if (!existsSync(path)) return [];
+  const raw = readFileSync(path, "utf8");
+  const lines = raw.split("\n");
+  if (!raw.endsWith("\n")) lines.pop();
+  return lines.filter(Boolean).map((line) => JSON.parse(line) as T);
+}
 const entries = (): Array<{ ev: string; [key: string]: unknown }> =>
-  existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
+  readJsonLines(log);
 
 function managedHome(space: string, name: string): string {
   const slug = `${space}-${name}`.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
@@ -427,7 +434,7 @@ try {
   let raceErr = "";
   race.stderr?.on("data", (chunk: Buffer) => (raceErr += chunk.toString()));
   await Promise.race([once(race, "exit"), sleep(20_000)]);
-  const raceEntries = readFileSync(raceLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>;
+  const raceEntries = readJsonLines<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>(raceLog);
   const raceTurns = raceEntries.filter((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply && String(entry.frame?.content).includes("cotal_orientation"));
   check("a first-turn MCP snapshot race recovers on one bounded retry", announced.has("racepeer") && raceTurns.length === 2, { code: race.exitCode, turns: raceTurns, stderr: raceErr });
   await stopHostTree(race, "SIGTERM");
@@ -463,7 +470,7 @@ try {
   await Promise.race([once(absent, "exit"), sleep(20_000)]);
   const absentCode = absent.exitCode;
   await stopHostTree(absent, "SIGKILL");
-  const absentEntries = readFileSync(absentLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>;
+  const absentEntries = readJsonLines<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>(absentLog);
   const absentTurns = absentEntries.filter((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply && String(entry.frame?.content).includes("cotal_orientation"));
   check("a permanently absent cotal tool gets exactly two readiness turns", absentTurns.length === 2, absentTurns);
   check("a permanently absent cotal tool ends the launch", absentCode !== null && absentCode !== 0, { code: absentCode, stderr: absentErr });
@@ -520,7 +527,7 @@ try {
     refusedErr,
   );
   check("a seat whose effort was refused never reaches the roster", !announced.has("refusedpeer"), [...announced]);
-  const refusedEntries = existsSync(refusedLog) ? readFileSync(refusedLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev: string; frame?: { req?: string; no_reply?: boolean } }> : [];
+  const refusedEntries = readJsonLines<{ ev: string; frame?: { req?: string; no_reply?: boolean } }>(refusedLog);
   check(
     "a seat whose effort was refused never takes a turn",
     !refusedEntries.some((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply),
@@ -620,7 +627,7 @@ try {
   let outageErr = "";
   outage.stderr?.on("data", (chunk: Buffer) => (outageErr += chunk.toString()));
   const outageEntries = (): Array<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }> =>
-    existsSync(outageLog) ? readFileSync(outageLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
+    readJsonLines(outageLog);
   await waitFor("outage readiness proof", () => outageEntries().find((entry) => entry.ev === "orientation_done") ? true : undefined);
   await waitFor("outage broker refusal", () => /mesh unreachable/.test(outageErr) ? true : undefined);
   const findOutageNotice = () =>
@@ -676,7 +683,7 @@ try {
   let foregroundErr = "";
   foreground.stderr?.on("data", (chunk: Buffer) => (foregroundErr += chunk.toString()));
   await waitFor("foreground readiness proof", () => existsSync(tuiLog) && readFileSync(tuiLog, "utf8").includes('"ev":"orientation_done"') ? true : undefined);
-  const tuiEntries = readFileSync(tuiLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>;
+  const tuiEntries = readJsonLines<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>(tuiLog);
   const tuiAt = tuiEntries.findIndex((entry) => entry.ev === "tui");
   const readinessDoneAt = tuiEntries.findIndex((entry) => entry.ev === "orientation_done");
   check("foreground TUI starts before its readiness turn finishes", tuiAt >= 0 && tuiAt < readinessDoneAt, { tuiAt, readinessDoneAt, entries: tuiEntries });
@@ -740,7 +747,7 @@ try {
   refusal.stderr?.on("data", (chunk: Buffer) => (refusalErr += chunk.toString()));
   await waitFor("provider refusal readiness request", () => {
     if (!existsSync(refusalLog)) return undefined;
-    return readFileSync(refusalLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).find(
+    return readJsonLines<{ ev?: string; frame?: { req?: string; content?: string } }>(refusalLog).find(
       (entry: { ev?: string; frame?: { req?: string; content?: string } }) =>
         entry.ev === "request" && entry.frame?.req === "send_message" && entry.frame.content?.includes("cotal_orientation"),
     );
@@ -753,7 +760,7 @@ try {
       exitCode: refusal.exitCode,
       signalCode: refusal.signalCode,
       stderr: refusalErr,
-      fakeEvents: existsSync(refusalLog) ? readFileSync(refusalLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [],
+      fakeEvents: readJsonLines(refusalLog),
     },
   );
   check(

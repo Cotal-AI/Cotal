@@ -173,11 +173,14 @@ export function isStoppedKvWatcher(stream: string, consumer: ConsumerInfo): bool
     activeKeys.has(key) || value === undefined || value === false || value === 0 || value === "" ||
     (Array.isArray(value) && value.length === 0),
   );
+  // The public KV watcher (`keys`/ordinary watch) uses LastPerSubject; the core-owned whole-bucket
+  // scanner uses All so concurrent tombstones can collapse correctly. Both are stopped ephemeral
+  // readers when every other field below matches the pinned client's ordered-consumer shape.
   return consumer.push_bound !== true &&
     config.name === consumer.name &&
     !config.durable_name &&
     consumer.name.startsWith("oc_") &&
-    config.deliver_policy === "last_per_subject" &&
+    (config.deliver_policy === "last_per_subject" || config.deliver_policy === "all") &&
     config.ack_policy === "none" &&
     (config.max_deliver === undefined || config.max_deliver === -1 || config.max_deliver === 1) &&
     config.filter_subject === `$KV.${stream.slice(3)}.>` &&

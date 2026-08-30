@@ -1,0 +1,17 @@
+{
+  "suite": "packages/workspace/smoke/bin-path.smoke.ts",
+  "guard": "a valid relative PATH entry resolves to the exact absolute executable that remains usable from another cwd",
+  "command": "pnpm smoke:bin-path",
+  "progressPattern": "✓",
+  "minTicks": 1,
+  "mutations": [
+    {
+      "name": "relative PATH hits remain relative",
+      "file": "packages/workspace/src/bin-path.ts",
+      "find": "        return resolve(cand);",
+      "replace": "        return cand;",
+      "expectRed": "relative PATH entries resolve to the exact absolute executable",
+      "cell": "relative PATH entries resolve to the exact absolute executable"
+    }
+  ]
+}

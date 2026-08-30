@@ -1,0 +1,2 @@
+# Recoverable endpoint retries must emit warning, not EventEmitter error.
+smoke:recoverable-error-channel

@@ -53,11 +53,16 @@ exit 0
   writeFileSync(join(home, "bin", "cotal"), "#!/bin/sh\nexit 0\n");
   chmodSync(join(home, "bin", "claude"), 0o755);
   chmodSync(join(home, "bin", "cotal"), 0o755);
+  // The child runs the shipped status/remedy path, which reads connection material. Every COTAL_
+  // name it genuinely needs (COTAL_HOME, COTAL_SKIP_CONNECTOR_SEED) is set on top of the copy below,
+  // so strip the prefix rather than trusting the runner's environment to be clean.
+  const ambientEnv: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(ambientEnv)) if (key.startsWith("COTAL_")) delete ambientEnv[key];
   return {
     home,
     cwd,
     env: {
-      ...process.env,
+      ...ambientEnv,
       HOME: home,
       USERPROFILE: home,
       COTAL_HOME: join(home, ".cotal"),

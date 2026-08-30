@@ -27,9 +27,14 @@ function runShippedShard(scripts: Record<string, string>) {
     writeFileSync(join(dir, "package.json"), JSON.stringify({ private: true, scripts }));
     const listPath = join(dir, "ci-suites.txt");
     writeFileSync(listPath, `${names.join("\n")}\n`);
+    // The shipped shard runner reads exactly one COTAL_ name, COTAL_CI_SUITES, which is set on top
+    // of the copy below. Everything else the ambient environment carries under that prefix is
+    // connection material this fixture has no use for.
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
     const r = spawnSync(process.execPath, [SHARD, "0", "1"], {
       cwd: dir,
-      env: { ...process.env, COTAL_CI_SUITES: listPath },
+      env: { ...env, COTAL_CI_SUITES: listPath },
       encoding: "utf8",
       timeout: 60_000,
       maxBuffer: 2 * 1024 * 1024,

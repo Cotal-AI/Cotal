@@ -1,7 +1,8 @@
 /**
- * The #226 boot lost-wake race, end-to-end over a real broker (no test runner, no `claude`).
+ * The connector activation lost-wake races, end-to-end over a real broker (no test runner, no
+ * `claude`).
  *
- * The reported defect: a session spawned with a peer message ALREADY pending in its durable
+ * The #226 defect: a session spawned with a peer message ALREADY pending in its durable
  * consumer went permanently deaf. The message arrived (and emitted its one `incoming`) within ms of
  * the durable bind — before the MCP handshake flipped `channelActive`, and in `mcp.ts` even before
  * `createWakePolicy` registers the `incoming` listener at all — so the wake was dropped on the
@@ -13,22 +14,18 @@
  *   agent.start()  →  peer DM lands and buffers  →  createWakePolicy()  →  setChannelActive(true)
  *
  * and then does NOTHING: no hook, no turn, no further traffic. Whatever wakes the session has to
- * come from the connector's own machinery.
+ * come from the connector's own activation machinery.
  *
- * IT PINS BOTH HALVES, because a single "did it wake" check conflates them and would stay green
- * for the wrong reason:
- *   A. the race window is REAL — activation itself reconciles nothing. The connector has no
- *      post-handshake `pendingWake()` check and no idle reconciler, and its nudge retry is
- *      unreachable here (armed only from a rejected push, which cannot happen while `nudge` returns
- *      early on an inactive channel). Asserted, so that a future reconcile added on this side is a
- *      deliberate change rather than a silent one.
- *   B. so the recovery comes from ingest re-announcing the still-pending item when JetStream
- *      redelivers it — the one line this cell exists to hold down. Delete it and the session is
- *      deaf with the message buffered and un-acked, which is the original report verbatim.
+ * Activation reconciles one buffered wake immediately. The message remains buffered and unacked,
+ * because a nudge is only a wake signal and the later hook drain is still the delivery authority.
  *
- * The ingest half of that guard is `smoke:cross-path-dedup`, which drives the dedup branch with
- * hand-built deliveries. This is the end-to-end half: a real broker, a real durable consumer, and
- * the connector's real boot ordering.
+ * The #917 defect is the same activation window with a focus @mention. That body is ack-dropped at
+ * ingest, so it has no durable redelivery path: the inactive nudge must stay silent, then the
+ * false-to-true activation must re-fire the remembered mention exactly once. The active-channel
+ * rejection retry remains covered by `smoke:claude-wake`.
+ *
+ * The durable redelivery guard remains in `smoke:cross-path-dedup` and `smoke:claude-wake`. This is
+ * the activation half: a real broker, a real durable consumer, and the connector's real boot order.
  *
  * Run: pnpm smoke:claude-boot-wake
  * Graded: node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/boot-wake-race.json
@@ -58,14 +55,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const PORT = await freePort();
 const servers = `nats://127.0.0.1:${PORT}`;
 const space = "ccboot";
-/** Short so a redelivery-driven recovery is observable in seconds rather than a minute. */
+/** Long enough that activation checks cannot be satisfied by JetStream redelivery. */
 const ACK_WAIT_MS = 6_000;
-/**
- * How long we sit still after activation before calling the session deaf. Generous relative to
- * ACK_WAIT_MS so a recovery that exists cannot be missed by an unlucky consumer tick — a false
- * "deaf" here would be a false bug report.
- */
-const DEAF_VERDICT_MS = ACK_WAIT_MS * 3;
 /** A settle window after `setChannelActive(true)`: long enough that a synchronous or
  *  next-tick reconcile at activation would have shown up, far too short for any redelivery. */
 const ACTIVATION_SETTLE_MS = 500;
@@ -131,41 +122,46 @@ try {
   try {
     check("registering the wake policy after the fact recovers nothing on its own", nudges.length === 0, nudges);
 
-    // ---- A. the race window is real: activation performs no reconcile ---------------------------
+    // ---- #226: activation reconciles one buffered wake without waiting for redelivery ------------
     wake.setChannelActive(true);
     await sleep(ACTIVATION_SETTLE_MS);
     check(
-      "the claude/channel handshake does NOT itself reconcile a wake that was already pending",
-      nudges.length === 0,
+      "the claude/channel handshake reconciles a buffered wake that was already pending",
+      nudges.length === 1 && nudges[0].includes("Cotal message"),
       nudges,
     );
-    check("and the message is still sitting there, wake-pending", agent.pendingWake() === 1);
-
-    // ---- B. deaf forever, or self-healing? ------------------------------------------------------
-    // From here on: no hook, no turn, no new traffic. Anything that arrives is the connector
-    // recovering on its own.
-    const waitedFrom = Date.now();
-    let recovered = true;
-    try {
-      await waitFor("the connector to re-fire the lost boot wake unprompted", () => nudges.length > 0, DEAF_VERDICT_MS);
-    } catch {
-      recovered = false;
-    }
-    // Printed either way: the latency is the diagnostic that says WHICH mechanism recovered it. One
-    // ack_wait means the redelivery did; anything much shorter would mean something else woke the
-    // session and this cell is no longer measuring what it claims to.
-    console.log(
-      recovered
-        ? `\n  → recovered unprompted after ${Date.now() - waitedFrom}ms (ack_wait ${ACK_WAIT_MS}ms), ${nudges.length} nudge(s): ${JSON.stringify(nudges)}`
-        : `\n  → DEAF: no wake in ${DEAF_VERDICT_MS}ms — the session never recovered, with the DM still pending`,
-    );
-    check(
-      "a wake lost in the boot window is re-fired without a human turn (JetStream redelivery re-announces the still-pending item)",
-      recovered,
-      { nudges, pendingWake: agent.pendingWake() },
-    );
-    check("the recovering nudge names the DM that was waiting", nudges.some((n) => n.includes("New dm")), nudges);
+    check("the buffered activation reconcile emits exactly one notice", nudges.length === 1, nudges);
     check("and it was a WAKE, not a delivery: the DM is still un-acked for the turn to drain", stillPending("boot-dm"));
+
+    check("the first scenario's boot DM can be committed before the mention scenario", agent.drainInbox().some((item) => item.text.includes("boot-dm")));
+    check("the second scenario starts with no buffered wake", agent.pendingWake() === 0);
+
+    // ---- #917: a focus mention lands after policy install but before channel activation ---------
+    // The mention is remembered, but its nudge no-ops while inactive. Focus ingest then acks and
+    // drops the body, so pendingWake and the local inbox are both zero: activation is the only
+    // remaining recovery point.
+    wake.setChannelActive(false);
+    await agent.setAttention("focus");
+    const mentionNudgesBefore = nudges.length;
+    await pub.multicast("@Wanda pre-activation focus mention", { channel: "team", mentions: ["Wanda"] });
+    await sleep(ACTIVATION_SETTLE_MS);
+    check("the pre-activation focus mention is ack-dropped with no buffered wake", agent.pendingWake() === 0, {
+      pendingWake: agent.pendingWake(),
+      inbox: agent.peekInbox("all").map((item) => item.text),
+    });
+    check("the pre-activation focus mention is absent from the local inbox", !stillPending("pre-activation focus mention"));
+    check("the inactive mention nudge emits no claude/channel notice", nudges.length === mentionNudgesBefore, nudges);
+
+    wake.setChannelActive(true);
+    await sleep(ACTIVATION_SETTLE_MS);
+    check(
+      "activating claude/channel re-fires the ack-dropped focus mention",
+      nudges.length === mentionNudgesBefore + 1 && nudges.at(-1)?.includes("pull it with cotal_inbox"),
+      nudges,
+    );
+    wake.setChannelActive(true);
+    await sleep(ACTIVATION_SETTLE_MS);
+    check("repeated active state does not duplicate the mention notice", nudges.length === mentionNudgesBefore + 1, nudges);
   } finally {
     wake.stop();
   }
