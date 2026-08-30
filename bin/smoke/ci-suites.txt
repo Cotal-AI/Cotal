@@ -12,8 +12,8 @@
 # that passes.
 #
 # ORDER IS EXECUTION ORDER and it is not alphabetical: `smoke:dist-freshness` runs first because a
-# stale build makes every later result a statement about code that is not in the tree. Append at
-# the end unless you have a reason, and say the reason here.
+# stale build makes every later result a statement about code that is not in the tree. This legacy
+# list is now FROZEN; add new suites one-file-per-suite under `ci-suites.d/`.
 smoke:dist-freshness
 smoke:gate-inventory
 smoke:dep-pins
@@ -690,6 +690,13 @@ smoke:agent-secret-segmentation
 # spellings, one of them the release workflow. The property is only observable on main after a
 # merge, so it needs a static guard. Appended so every existing shard assignment remains unchanged.
 smoke:workflow-concurrency
+# #878: a crash between the retirement barrier's gate terminal and its head terminal wedges the
+# alias (the boot resume's gate-only owed-ness skipped the intent forever). The suite stages that
+# window deterministically and proves BOTH repair triggers the issue's refined criteria demand:
+# the next auth boot and the same-op rail re-request. Mutation-proofed -
+# implementations/auth/smoke/mutations/retirement-wedge-resume.json. Appended; shard
+# assignments unchanged.
+smoke:retirement-wedge:auth
 
 # Most smoke trees are still outside their package TypeScript projects. A type-only import from a
 # workspace package can therefore name something the package never exported and vanish when tsx runs
@@ -727,6 +734,12 @@ smoke:connection-status
 # soft-interrupt queue and commit only at the clean containing-turn boundary. Real loopback broker
 # plus shipped host; mutation-proofed. Appended so every existing shard assignment remains unchanged.
 smoke:jcode-mid-turn-delivery
+
+# Mixed source, installed, and plugin generations must be self-identifying in the status Machine
+# block. The installed cell enters through a package-manager-style symlink and the skills cell uses
+# the real Claude plugin-list JSON seam. Mutation-proofed - bin/smoke/mutations/status-provenance.json.
+# Appended so every existing shard assignment remains unchanged.
+smoke:status-provenance
 
 # A directed DM must still reach the recipient session when the Harness is busy without a Cotal-owned
 # drive() (TUI-owned working) or when session_status pulses idle during a still-open Cotal-owned run.
