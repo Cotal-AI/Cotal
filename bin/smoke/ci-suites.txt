@@ -697,3 +697,9 @@ smoke:workflow-concurrency
 # implementations/auth/smoke/mutations/retirement-wedge-resume.json. Appended; shard
 # assignments unchanged.
 smoke:retirement-wedge:auth
+
+# Most smoke trees are still outside their package TypeScript projects. A type-only import from a
+# workspace package can therefore name something the package never exported and vanish when tsx runs
+# the suite. This compiler-API intersection checks every named workspace import against the package's
+# public exports. Appended so every existing shard assignment remains unchanged.
+smoke:workspace-import-exports
