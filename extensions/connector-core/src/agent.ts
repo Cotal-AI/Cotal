@@ -1127,6 +1127,27 @@ export class MeshAgent extends EventEmitter {
     return this.ep.multicast(text, { channel, mentions: clean, contextId: this._contextId });
   }
 
+  /**
+   * What a caller can TELL about a send target BEFORE the publish: whether the name
+   * already existed (joined, registry, or prior traffic) and close matches when it
+   * did not. Does not refuse create. Graded before multicast so the new message cannot
+   * make the name look pre-existing.
+   */
+  async describeSendChannel(channel: string): Promise<string> {
+    if (this.ep.getChannelConfig(channel)) return "existing channel";
+    const known = new Set<string>(this.ep.joinedChannels().filter(isConcreteChannel));
+    try {
+      for (const row of await this.ep.listChannels()) known.add(row.channel);
+    } catch {
+      /* no stream: joined + registry cache still distinguish a typo of a channel we are on */
+    }
+    if (known.has(channel)) return "existing channel";
+    const hints = closeChannelNames(channel, [...known]);
+    if (hints.length)
+      return `new channel - no registry entry and no prior traffic; did you mean ${hints.map((h) => "#" + h).join(", ")}?`;
+    return "new channel - no registry entry and no prior traffic";
+  }
+
   /** Throw if any name isn't a peer we've observed. Validates against the FULL roster
    *  (incl. self — your own name is a valid participant; resolvePeer's self-filter would
    *  wrongly reject it), case-insensitively. Send is all-or-nothing: one unknown @name aborts
@@ -1413,12 +1434,13 @@ export class MeshAgent extends EventEmitter {
 
   /** A channel's registry config + effective replay policy, from the endpoint's live cache.
    *  Config only — never membership (that view is kept off agents on purpose). */
-  channelInfo(channel: string): { description?: string; instructions?: string; replay: boolean } {
+  channelInfo(channel: string): { description?: string; instructions?: string; replay: boolean; registered: boolean } {
     const cfg = this.ep.getChannelConfig(channel);
     return {
       description: cfg?.description,
       instructions: cfg?.instructions,
       replay: this.ep.channelReplay(channel),
+      registered: cfg !== undefined,
     };
   }
 
@@ -1602,4 +1624,39 @@ export class MeshAgent extends EventEmitter {
   private log(msg: string): void {
     process.stderr.write(`[cotal-connector] ${msg}\n`);
   }
+}
+
+/** Names already known that differ from `channel` by one insertion, deletion, or substitution. */
+export function closeChannelNames(channel: string, known: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const name of known) {
+    if (name !== channel && editDistanceAtMostOne(channel, name)) out.push(name);
+  }
+  out.sort((a, b) => a.localeCompare(b));
+  return out.slice(0, 3);
+}
+
+function editDistanceAtMostOne(a: string, b: string): boolean {
+  if (a === b) return true;
+  const da = a.length - b.length;
+  if (da > 1 || da < -1) return false;
+  let i = 0;
+  let j = 0;
+  let skipped = false;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) {
+      i++;
+      j++;
+      continue;
+    }
+    if (skipped) return false;
+    skipped = true;
+    if (a.length > b.length) i++;
+    else if (b.length > a.length) j++;
+    else {
+      i++;
+      j++;
+    }
+  }
+  return true;
 }

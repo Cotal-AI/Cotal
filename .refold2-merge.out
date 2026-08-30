@@ -1,0 +1,8 @@
+Auto-merging docs/mcp-tools.md
+Auto-merging extensions/connector-core/src/agent.ts
+Auto-merging extensions/connector-core/src/docs-bundle.generated.ts
+CONFLICT (content): Merge conflict in extensions/connector-core/src/docs-bundle.generated.ts
+Auto-merging extensions/connector-core/src/tool-specs.ts
+Auto-merging package.json
+Auto-merging scripts/generate-tool-docs.mjs
+Automatic merge failed; fix conflicts and then commit the result.
