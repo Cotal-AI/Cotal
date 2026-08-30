@@ -154,7 +154,7 @@ try {
   await operator.unicast(peerId!, sixtyFourK);
 
   const observed = await waitFor(
-    "the live recipient session to accept all three mid-turn DMs",
+    "short, 4 KiB, and 64 KiB DMs reach the recipient session before the active turn ends (#910)",
     () => {
       const text = steerText();
       return text.includes(short) && text.includes("MID_4K_910:") && text.includes("MID_64K_910:") ? text : undefined;
@@ -168,18 +168,21 @@ try {
   );
 
   // The soft-interrupt acceptance is not the commit boundary. Once the containing Harness turn
-  // completes cleanly, those exact Cotal deliveries are acked; a later DM must not carry them again.
+  // completes cleanly, those exact Cotal deliveries are acked. If the accepted ids were omitted from
+  // that boundary ledger, the host starts a second recipient turn carrying the same batch immediately.
   await sleep(turnDelayMs + 500);
+  const repeated = turnRequests().filter((entry) => String(entry.frame?.content).includes(short));
+  check(
+    "the clean containing turn commits the steered DMs exactly once",
+    repeated.length === 0,
+    { repeatedTurns: repeated.length },
+  );
   await operator.unicast(peerId!, "POST_BOUNDARY_910");
   const post = await waitFor("the post-boundary recipient turn", () =>
     turnRequests().find((entry) => String(entry.frame?.content).includes("POST_BOUNDARY_910")),
   );
   const postText = String(post.frame?.content ?? "");
-  check(
-    "the clean containing turn commits the steered DMs exactly once",
-    !postText.includes(short) && !postText.includes("MID_4K_910:") && !postText.includes("MID_64K_910:"),
-    { postBytes: Buffer.byteLength(postText) },
-  );
+  check("the clean boundary leaves later turns free of the prior batch", !postText.includes(short), { postBytes: Buffer.byteLength(postText) });
 
   // A host restart reuses the same wire principal and lifecycle durable, and resumes the stored
   // Jcode session. The sender still has the old presence record in memory when the replacement comes
