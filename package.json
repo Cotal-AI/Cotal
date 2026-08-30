@@ -9,6 +9,7 @@
     "node": ">=22"
   },
   "scripts": {
+    "prepare": "node scripts/install-git-merge-drivers.mjs",
     "typecheck": "pnpm build && pnpm -r typecheck",
     "build": "pnpm -r build",
     "gen:schema": "node scripts/generate-cotal-schema.mjs",
@@ -469,6 +470,7 @@
     "smoke:workspace-import-exports": "tsx bin/smoke/workspace-import-exports.smoke.ts",
     "smoke:required-arg-seam": "tsx bin/smoke/required-arg-seam.smoke.ts",
     "smoke:ci-suites": "tsx bin/smoke/ci-suites.smoke.ts",
+    "smoke:ci-suites-merge-driver": "tsx bin/smoke/ci-suites-merge-driver.smoke.ts",
     "smoke:workflow-concurrency": "tsx bin/smoke/workflow-concurrency.smoke.ts",
     "smoke:mutation-fixtures": "tsx bin/smoke/mutation-fixtures.smoke.ts",
     "smoke:dep-pins": "tsx bin/smoke/dep-pins.smoke.ts",

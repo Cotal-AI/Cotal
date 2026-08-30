@@ -1,0 +1,26 @@
+{
+  "suite": "bin/smoke/ci-suites-merge-driver.smoke.ts",
+  "guard": "the ci-suites merge driver preserves base ordering, appends each side deterministically at the true tail, and carries comment blocks with their suites in both merge orders",
+  "command": "pnpm smoke:ci-suites-merge-driver",
+  "progressPattern": "✓",
+  "minTicks": 12,
+  "grades": "tool",
+  "mutations": [
+    {
+      "name": "ci-suites driver reverses ours and theirs tail ordering",
+      "file": "scripts/merge-ci-suites.mjs",
+      "find": "  const mergedEntries = oursAdded.concat(theirsAdded);",
+      "replace": "  const mergedEntries = theirsAdded.concat(oursAdded);",
+      "expectRed": "ours-first merge appends ours additions before theirs at the true tail",
+      "cell": "ours-first merge appends ours additions before theirs at the true tail"
+    },
+    {
+      "name": "ci-suites driver drops attached comment blocks",
+      "file": "scripts/merge-ci-suites.mjs",
+      "find": "    appended.push(entry.raw);",
+      "replace": "    appended.push(`${entry.name}\\n`);",
+      "expectRed": "ours-first merge keeps each comment block attached to its suite",
+      "cell": "ours-first merge keeps each comment block attached to its suite"
+    }
+  ]
+}

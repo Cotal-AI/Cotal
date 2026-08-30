@@ -1,5 +1,5 @@
-# The CI gate registry is positional: shard assignment is `index % count`. Simultaneous tail
-# appends therefore need a visible conflict. Git's union driver keeps both blocks but silently
-# places one before the other's newer suites, moving those pre-existing suites onto other shards.
-# Reset any lower-precedence merge attribute so the normal text driver stops for human ordering.
-bin/smoke/ci-suites.txt !merge
+# The CI gate registry is positional: shard assignment is `index % count`. The custom driver keeps
+# the base byte-order wholesale and moves only each side's additions to the tail, with each suite's
+# preceding comment block attached. This preserves the safety property `!merge` protected without
+# making every concurrent append a manual conflict. `pnpm install` registers the local driver.
+bin/smoke/ci-suites.txt merge=cotal-ci-suites

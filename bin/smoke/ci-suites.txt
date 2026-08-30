@@ -696,6 +696,10 @@ smoke:workflow-concurrency
 # the suite. This compiler-API intersection checks every named workspace import against the package's
 # public exports. Appended so every existing shard assignment remains unchanged.
 smoke:workspace-import-exports
+# The path-bound merge driver is the enforcement behind concurrent tail appends: two real branch
+# merges in both orders keep every base suite on its original shard and keep comment blocks attached.
+# Appended so every existing shard assignment remains unchanged.
+smoke:ci-suites-merge-driver
 
 # A denied JetStream metadata read must reject the endpoint call, never return a well-formed partial
 # result that callers mistake for genuine emptiness. A real narrowed JWT cred drives listChannels
