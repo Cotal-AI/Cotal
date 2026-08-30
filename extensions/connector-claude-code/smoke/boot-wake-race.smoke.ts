@@ -1,7 +1,8 @@
 /**
- * The #226 boot lost-wake race, end-to-end over a real broker (no test runner, no `claude`).
+ * The connector activation lost-wake races, end-to-end over a real broker (no test runner, no
+ * `claude`).
  *
- * The reported defect: a session spawned with a peer message ALREADY pending in its durable
+ * The #226 defect: a session spawned with a peer message ALREADY pending in its durable
  * consumer went permanently deaf. The message arrived (and emitted its one `incoming`) within ms of
  * the durable bind — before the MCP handshake flipped `channelActive`, and in `mcp.ts` even before
  * `createWakePolicy` registers the `incoming` listener at all — so the wake was dropped on the
@@ -26,7 +27,12 @@
  *      redelivers it — the one line this cell exists to hold down. Delete it and the session is
  *      deaf with the message buffered and un-acked, which is the original report verbatim.
  *
- * The ingest half of that guard is `smoke:cross-path-dedup`, which drives the dedup branch with
+ * The #917 defect is the same activation window with a focus @mention. That body is ack-dropped at
+ * ingest, so it has no durable redelivery path: the inactive nudge must stay silent, then the
+ * false-to-true activation must re-fire the remembered mention exactly once. The active-channel
+ * rejection retry remains covered by `smoke:claude-wake`.
+ *
+ * The ingest half of the durable guard is `smoke:cross-path-dedup`, which drives the dedup branch with
  * hand-built deliveries. This is the end-to-end half: a real broker, a real durable consumer, and
  * the connector's real boot ordering.
  *
@@ -168,6 +174,41 @@ try {
     check("and it was a WAKE, not a delivery: the DM is still un-acked for the turn to drain", stillPending("boot-dm"));
   } finally {
     wake.stop();
+  }
+  check("the first scenario's boot DM can be committed before the mention scenario", agent.drainInbox().some((item) => item.text.includes("boot-dm")));
+  check("the second scenario starts with no buffered wake", agent.pendingWake() === 0);
+
+  // ---- #917: a focus mention lands after policy install but before channel activation -----------
+  // Unlike the boot DM above, this wake policy is already listening. The mention is remembered, but
+  // its nudge no-ops while inactive. Focus ingest then acks and drops the body, so pendingWake and the
+  // local inbox are both zero: activation is the only remaining recovery point.
+  await agent.setAttention("focus");
+  const mentionNudges: string[] = [];
+  const mentionWake = createWakePolicy(agent, async (params) => {
+    mentionNudges.push(params.content);
+  }, () => {});
+  try {
+    await pub.multicast("@Wanda pre-activation focus mention", { channel: "team", mentions: ["Wanda"] });
+    await sleep(ACTIVATION_SETTLE_MS);
+    check("the pre-activation focus mention is ack-dropped with no buffered wake", agent.pendingWake() === 0, {
+      pendingWake: agent.pendingWake(),
+      inbox: agent.peekInbox("all").map((item) => item.text),
+    });
+    check("the pre-activation focus mention is absent from the local inbox", !stillPending("pre-activation focus mention"));
+    check("the inactive mention nudge emits no claude/channel notice", mentionNudges.length === 0, mentionNudges);
+
+    mentionWake.setChannelActive(true);
+    await sleep(ACTIVATION_SETTLE_MS);
+    check(
+      "activating claude/channel re-fires the ack-dropped focus mention",
+      mentionNudges.length === 1 && mentionNudges[0].includes("pull it with cotal_inbox"),
+      mentionNudges,
+    );
+    mentionWake.setChannelActive(true);
+    await sleep(ACTIVATION_SETTLE_MS);
+    check("repeated active state does not duplicate the mention notice", mentionNudges.length === 1, mentionNudges);
+  } finally {
+    mentionWake.stop();
   }
 
   console.log(`\nCLAUDE BOOT-WAKE RACE TEST PASSED ✅  (${pass} checks)`);
