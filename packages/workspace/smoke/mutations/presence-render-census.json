@@ -3,7 +3,6 @@
   "guard": "every shipped presence-status render candidate is exhaustively and narrowly classified",
   "command": "pnpm smoke:presence-render-census",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/workspace/smoke/mutations/presence-render-census.json",
-  "completionMarker": "PRESENCE-RENDER-CENSUS",
   "why": [
     "M1 disables the hardcoded working-branch pattern that was required to discover cotal ps.",
     "M2 weakens honest-text proof checking so an honest textual candidate can lose its proof.",
