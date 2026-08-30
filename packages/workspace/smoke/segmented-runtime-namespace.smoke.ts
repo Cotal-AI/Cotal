@@ -199,10 +199,14 @@ try {
       const root = makeRoot("strays");
       // Nothing that is not a name a canonical write produced may be read as a tenant: a
       // pre-segmentation root-scoped record (which names NO space and is found through the candidate
-      // list instead), a non-hex body, an odd-length body, and a LOG, which holds text and not a pid.
+      // list instead), a non-hex body, an odd-length body, a body that is not UTF-8, and a LOG, which
+      // holds text and not a pid.
       writeFileSync(join(root, ".cotal", "manager.pid"), LIVE);
       writeFileSync(join(root, ".cotal", "manager.notahexkey.pid"), LIVE);
       writeFileSync(join(root, ".cotal", "manager.abc.pid"), LIVE);
+      // Well-formed hex that is not UTF-8: it decodes to a replacement character, so it round-trips
+      // to a DIFFERENT key. Reading it as a tenant would name a space no writer here can produce.
+      writeFileSync(join(root, ".cotal", "manager.ff.pid"), LIVE);
       writeFileSync(join(root, ".cotal", `manager.${spaceKey("logspace")}.log`), LIVE);
       check(
         "strays and pre-upgrade names are not read as spaces",
