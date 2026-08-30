@@ -37,7 +37,7 @@ async function statusText(entry: string): Promise<string> {
   const lines: string[] = [];
   console.log = (...args: unknown[]) => lines.push(args.map(String).join(" "));
   try {
-    await status({ values: {}, positionals: [] });
+    await status({ values: {}, positionals: [], raw: [] });
   } finally {
     console.log = realLog;
   }

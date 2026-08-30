@@ -107,7 +107,7 @@ function run(args: string[]): ChildProcess {
 }
 
 /** One independent attempt at the root lock, from a LIVE owner (this probe process). */
-function tryLock(): { held: true } | { held: false; reason: string } {
+function tryLock(): { held: true; reason: string } | { held: false; reason: string } {
   try {
     const lock = acquireMaintenanceLock(root);
     releaseMaintenanceLock(lock);

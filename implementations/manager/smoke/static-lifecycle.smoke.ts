@@ -128,7 +128,7 @@ const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot
 const fakeSession = { cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} };
 const fakeHandle = (name: string): AgentHandle => {
   let running = true;
-  return { name, kind: "fake", locator: JSON.stringify({ name }), status: () => running ? "running" : "exited", stop: () => { running = false; }, waitForExit: async () => { running = false; }, interrupt: () => {}, attach: () => fakeSession };
+  return { name, kind: "fake", status: () => running ? "running" : "exited", stop: () => { running = false; }, waitForExit: async () => { running = false; }, interrupt: () => {}, attach: () => fakeSession };
 };
 (mgr as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle; reap: (locator: string) => Promise<void> } }).runtime = { kind: "fake", spawn: (name) => fakeHandle(name), reap: async () => {} };
 (mgr as unknown as { ep: Record<string, unknown> }).ep = {

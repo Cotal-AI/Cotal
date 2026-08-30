@@ -65,7 +65,7 @@ check("claude declaring no setup provider is not privileged into a setup step", 
 const xdg = mkdtempSync(join(tmpdir(), "cotal-setup-connectors-"));
 process.env.XDG_CONFIG_HOME = xdg;
 const UNFAMILIAR = "zz-unfamiliar-harness";
-registry.register({ kind: "connector", name: UNFAMILIAR, buildLaunch: launch } satisfies Connector);
+registry.register({ kind: "connector", name: UNFAMILIAR, buildLaunch: launch } as Connector);
 let surfaced: string[];
 try {
   surfaced = (await setupConnectorSurface()).map((connector) => connector.name);
