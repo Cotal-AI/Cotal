@@ -1,0 +1,22 @@
+{
+  "suite": "bin/smoke/shard-never-ran.smoke.ts",
+  "guard": "shard.mjs's break path emits the never-ran census through the shipped runner",
+  "command": "pnpm smoke:shard-never-ran",
+  "completionMarker": "SUITE COMPLETE",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/shard-never-ran.json",
+  "why": [
+    "neverRanBlock() in isolation stays green if shard.mjs no-ops the emission line. The defect this",
+    "PR exists to close is reporting that cannot fire looking identical to reporting that passed.",
+    "Nulling the unique call-site emit must redden the shipped mid-partition NEVER RAN count cell."
+  ],
+  "mutations": [
+    {
+      "name": "the break path no-ops never-ran emission",
+      "file": "bin/smoke/shard.mjs",
+      "find": "    if (never) console.error(never);",
+      "replace": "    void never;",
+      "expectRed": "a mid-partition break through shard.mjs reports NEVER RAN — 2 of 4",
+      "cell": "a mid-partition break through shard.mjs reports NEVER RAN — 2 of 4"
+    }
+  ]
+}
