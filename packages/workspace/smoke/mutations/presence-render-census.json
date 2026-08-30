@@ -1,34 +1,76 @@
 {
   "grades": "tool",
-  "guard": "every shipped presence-status render candidate is exhaustively and narrowly classified",
+  "guard": "broad finite-syntax AST enumeration and a checked element-level manifest cover the declared presence-render classes",
   "command": "pnpm smoke:presence-render-census",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/workspace/smoke/mutations/presence-render-census.json",
   "why": [
-    "M1 disables the hardcoded working-branch pattern that was required to discover cotal ps.",
-    "M2 weakens honest-text proof checking so an honest textual candidate can lose its proof.",
-    "M3 removes the independently reviewed total sentinel; a classification set could drift silently."
+    "P1-P6 each create a real temporary shipped source site and require its intended AST class to detect it.",
+    "The probe then runs the full manifest gate and requires a red that names the new path before cleanup.",
+    "M7 and M8 keep honest-text proof links and the independently reviewed candidate/class totals load-bearing.",
+    "The scanner claims these enumerated finite syntax classes, not arbitrary semantic dataflow."
   ],
   "mutations": [
     {
-      "name": "M1 hardcoded working branches escape the scanner",
+      "name": "P1 direct status interpolation escapes AST enumeration",
       "file": "packages/workspace/smoke/presence-render-census.smoke.ts",
-      "find": "  /\\b(?:r\\.mesh|status|(?:p|c|m|sel|agent)\\.status)\\s*===\\s*[\"']working[\"']/,",
-      "replace": "  /\\b(?:status|(?:p|c|m|sel|agent)\\.status)\\s*===\\s*[\"']working[\"']/,",
-      "expectRed": "manifest entry is stale or no longer a scanner candidate: implementations/cli/src/commands/agents.ts"
+      "find": "    if (ts.isTemplateExpression(node) && node.templateSpans.some((span) => usesTaint(span.expression) && !containsIndexedStatusMap(span.expression))) add(\"derived-output\", node);",
+      "replace": "    if (false && ts.isTemplateExpression(node) && node.templateSpans.some((span) => usesTaint(span.expression) && !containsIndexedStatusMap(span.expression))) add(\"derived-output\", node);",
+      "command": "COTAL_PRESENCE_RENDER_PROBE_CASE=direct-interpolation pnpm smoke:presence-render-census",
+      "expectRed": "AST probe scanner missed derived-output in shipped presence renderer: implementations/cli/src/commands/presence-render-probe-direct-interpolation.ts"
     },
     {
-      "name": "M2 orientation honest-text entries lose their output proof",
+      "name": "P2 STATUS table word lookup escapes AST enumeration",
+      "file": "packages/workspace/smoke/presence-render-census.smoke.ts",
+      "find": "      if (statusTable) add(\"indexed-map\", node);",
+      "replace": "      if (false && statusTable) add(\"indexed-map\", node);",
+      "command": "COTAL_PRESENCE_RENDER_PROBE_CASE=status-word pnpm smoke:presence-render-census",
+      "expectRed": "AST probe scanner missed indexed-map in shipped presence renderer: implementations/cli/src/commands/presence-render-probe-status-word.ts"
+    },
+    {
+      "name": "P3 registered status helper call escapes AST enumeration",
+      "file": "packages/workspace/smoke/presence-render-census.smoke.ts",
+      "find": "      if (registeredRendererCall(node)) add(\"renderer-call\", node);",
+      "replace": "      if (false && registeredRendererCall(node)) add(\"renderer-call\", node);",
+      "command": "COTAL_PRESENCE_RENDER_PROBE_CASE=helper-call pnpm smoke:presence-render-census",
+      "expectRed": "AST probe scanner missed renderer-call in shipped presence renderer: implementations/cli/src/commands/presence-render-probe-helper-call.ts"
+    },
+    {
+      "name": "P4 literal working branch escapes exact-token enumeration",
+      "file": "packages/workspace/smoke/presence-render-census.smoke.ts",
+      "find": "    if ((ts.isStringLiteralLike(node) || ts.isNoSubstitutionTemplateLiteral(node)) && statusTokens.has(node.text)) add(\"status-token\", node);",
+      "replace": "    if ((ts.isStringLiteralLike(node) || ts.isNoSubstitutionTemplateLiteral(node)) && false && statusTokens.has(node.text)) add(\"status-token\", node);",
+      "command": "COTAL_PRESENCE_RENDER_PROBE_CASE=literal-branch pnpm smoke:presence-render-census",
+      "expectRed": "AST probe scanner missed status-token in shipped presence renderer: implementations/cli/src/commands/presence-render-probe-literal-branch.ts"
+    },
+    {
+      "name": "P5 table-driven status label lookup escapes AST enumeration",
+      "file": "packages/workspace/smoke/presence-render-census.smoke.ts",
+      "find": "      if (!statusTable) add(\"indexed-map\", node);",
+      "replace": "      if (false && !statusTable) add(\"indexed-map\", node);",
+      "command": "COTAL_PRESENCE_RENDER_PROBE_CASE=table-map pnpm smoke:presence-render-census",
+      "expectRed": "AST probe scanner missed indexed-map in shipped presence renderer: implementations/cli/src/commands/presence-render-probe-table-map.ts"
+    },
+    {
+      "name": "P6 simple status alias to JSX escapes intraprocedural taint",
+      "file": "packages/workspace/smoke/presence-render-census.smoke.ts",
+      "find": "      if (ts.isVariableDeclaration(node) && node.initializer && expressionUsesTaint(node.initializer, tainted)) {",
+      "replace": "      if (false && ts.isVariableDeclaration(node) && node.initializer && expressionUsesTaint(node.initializer, tainted)) {",
+      "command": "COTAL_PRESENCE_RENDER_PROBE_CASE=alias-jsx pnpm smoke:presence-render-census",
+      "expectRed": "AST probe scanner missed derived-output in shipped presence renderer: implementations/cli/src/commands/presence-render-probe-alias-jsx.tsx"
+    },
+    {
+      "name": "M7 honest-text entries lose their output proof",
       "file": "packages/workspace/smoke/fixtures/presence-render-sinks.json",
       "find": "      \"proof\": {\n        \"path\": \"extensions/connector-core/smoke/orientation.smoke.ts\",\n        \"anchor\": \"assert.match(o.peers.summary, /bob\\\\/worker \\\\(working \\u00b7 progress unknown\\\\)/,\"\n      }",
       "replace": "      \"proofRemovedByMutation\": true",
       "allowMultiple": true,
-      "expectRed": "honest-text entry lacks output/shared-renderer proof: extensions/connector-core/src/orientation.ts"
+      "expectRed": "honest-text entry lacks output/shared-renderer proof"
     },
     {
-      "name": "M3 expected candidate total drifts by one",
+      "name": "M8 expected AST candidate total drifts by one",
       "file": "packages/workspace/smoke/fixtures/presence-render-sinks.json",
-      "find": "    \"total\": 47,",
-      "replace": "    \"total\": 46,",
+      "find": "    \"total\": 302,",
+      "replace": "    \"total\": 301,",
       "expectRed": "presence render census count drifted"
     }
   ]
