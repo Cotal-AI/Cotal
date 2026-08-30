@@ -4,18 +4,16 @@
  *
  * Run: pnpm smoke:ci-fragments
  */
-import { strict as assert } from "node:assert";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fragmentShard, readCiSuiteFragments, suitesForShard } from "./ci-suites.mjs";
 
-let passed = 0;
+let passed = 0, failed = 0;
 const check = (name: string, condition: unknown) => {
-  assert.ok(condition, name);
-  passed++;
-  console.log(`  ✓ ${name}`);
+  if (condition) { passed++; console.log(`  ✓ ${name}`); }
+  else { failed++; console.log(`  ✗ FAIL: ${name}`); }
 };
 
 const fixture = mkdtempSync(join(tmpdir(), "cotal-ci-fragments-"));
@@ -27,12 +25,14 @@ try {
     JSON.stringify(readCiSuiteFragments(fixture)) === JSON.stringify(["smoke:a-first", "smoke:z-last"]),
   );
   writeFileSync(join(fixture, "empty.txt"), "# no suite\n");
-  assert.throws(() => readCiSuiteFragments(fixture), /exactly one smoke script, got 0/);
-  passed++; console.log("  ✓ an empty fragment is refused");
+  let emptyRefused = false;
+  try { readCiSuiteFragments(fixture); } catch (error) { emptyRefused = /exactly one smoke script, got 0/.test(String(error)); }
+  check("an empty fragment is refused", emptyRefused);
   rmSync(join(fixture, "empty.txt"));
   writeFileSync(join(fixture, "two.txt"), "smoke:one\nsmoke:two\n");
-  assert.throws(() => readCiSuiteFragments(fixture), /exactly one smoke script, got 2/);
-  passed++; console.log("  ✓ a multi-suite fragment is refused");
+  let multiRefused = false;
+  try { readCiSuiteFragments(fixture); } catch (error) { multiRefused = /exactly one smoke script, got 2/.test(String(error)); }
+  check("a multi-suite fragment is refused", multiRefused);
   rmSync(join(fixture, "two.txt"));
 
   const suite = "smoke:stable-fragment";
@@ -65,10 +65,10 @@ try {
   git(["checkout", "-q", "incoming"]);
   writeFileSync(join(mergeRoot, "bin/smoke/ci-suites.d/branch.txt"), "smoke:branch\n");
   git(["add", "."]); git(["commit", "-qm", "branch addition"]);
-  git(["merge", "main-side", "--no-edit"]);
+  const merged = spawnSync("git", ["merge", "main-side", "--no-edit"], { cwd: mergeRoot, encoding: "utf8" });
   check(
     "simultaneous additions on distinct fragment paths merge cleanly with the standard driver",
-    git(["status", "--short"]) === "" &&
+    merged.status === 0 && git(["status", "--short"]) === "" &&
       git(["ls-files", "bin/smoke/ci-suites.d/*.txt"]).split("\n").length === 3,
   );
 } finally {
@@ -76,5 +76,6 @@ try {
 }
 
 const EXPECTED = 6;
-check(`every cell ran (${EXPECTED} before the sentinel)`, passed === EXPECTED);
-console.log(`CI FRAGMENTS SMOKE OK (${passed} passed)`);
+check(`every cell ran (${EXPECTED} before the sentinel)`, passed + failed === EXPECTED);
+console.log(`CI FRAGMENTS SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
+if (failed) process.exitCode = 1;
