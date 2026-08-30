@@ -68,6 +68,7 @@ export const hermesConnector: Connector = {
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
+    if (opts.resolvedBinaries?.hermes) env.COTAL_HERMES_BIN = opts.resolvedBinaries.hermes;
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
