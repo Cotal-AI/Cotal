@@ -96,7 +96,9 @@ the whole id, because `--on` takes nothing else.
 The reserved `describe` bootstrap is the one request the resolver may repeat while waiting: it is
 read-only, it is re-published under the same request binding, and every attempt stays inside the
 original deadline. This covers the startup window where Core NATS discards the first request before
-the manager has subscribed. The resolved command is never repeated by this readiness behavior.
+the manager has subscribed. If the connection closes while the resolver waits, the describe fails
+cleanly instead of throwing from the retry timer. The resolved command is never repeated by this
+readiness behavior.
 
 The resolve and the invoke are separate trips through the same anycast queue, so in a
 multi-manager space an unpinned call can land on an instance the caller did not resolve. Every
