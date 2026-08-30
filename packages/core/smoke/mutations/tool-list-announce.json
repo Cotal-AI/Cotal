@@ -11,9 +11,8 @@
     "N1 restores silent-downgrade: undeclared returns instead of throwing. It must redden the",
     "default-deny cell.",
     "",
-    "N2 restores name-special-casing: the helper throws only for a hardcoded silent name. The",
-    "unknown in-test announcer would then be refused and the unknown silent connector would pass,",
-    "so the undeclared-refusal cell goes red.",
+    "N2 restores name-special-casing: the helper throws for a hardcoded announcer name even when",
+    "that connector declared the flag. The declared-true cell goes red.",
     "",
     "NO BUILD STEP: the suite imports ../src, so the mutated source is the source it runs."
   ],
@@ -23,18 +22,18 @@
       "file": "packages/core/src/connector.ts",
       "find": "  if (connector.supportsToolListAnnounce === true) return;\n  throw new Error(\n    `${connector.name} connector cannot announce a tool-list change, so a connection change is refused rather than leaving a stale advertised surface`,\n  );",
       "replace": "  if (connector.supportsToolListAnnounce === true) return;\n  return;",
-      "expectRed": "an unknown connector that omits the flag is refused",
-      "cell": "an unknown connector that omits the flag is refused",
+      "expectRed": "undeclared is refused (default-deny, not a no-op)",
+      "cell": "undeclared is refused (default-deny, not a no-op)",
       "note": "The standing default-deny ruling: an undeclared capability must fail loud, never quietly become a no-op."
     },
     {
       "name": "N2 the helper special-cases a name instead of the declaration",
       "file": "packages/core/src/connector.ts",
       "find": "  if (connector.supportsToolListAnnounce === true) return;",
-      "replace": "  if (connector.name === \"smoke-announce-can\") { throw new Error(`${connector.name} connector cannot announce a tool-list change, so a connection change is refused rather than leaving a stale advertised surface`); }\n  if (connector.supportsToolListAnnounce === true) return;",
-      "expectRed": "an unknown connector that declares supportsToolListAnnounce is allowed",
-      "cell": "an unknown connector that declares supportsToolListAnnounce is allowed",
-      "note": "Name-special-casing is the ruling's forbidden shape. The helper must read the flag. Forcing a throw on the unknown announcer's name proves a consumer that branched on a string would break a connector the CLI has never heard of."
+      "replace": "  if (connector.name === \"smoke-announce-unknown\") { throw new Error(`${connector.name} connector cannot announce a tool-list change, so a connection change is refused rather than leaving a stale advertised surface`); }\n  if (connector.supportsToolListAnnounce === true) return;",
+      "expectRed": "declared-true is allowed",
+      "cell": "declared-true is allowed",
+      "note": "Name-special-casing is the ruling's forbidden shape. Forcing a throw on the unknown announcer's name proves a consumer that branched on a string would break a connector the CLI has never heard of."
     }
   ]
 }

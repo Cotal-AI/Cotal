@@ -55,8 +55,13 @@ check(
   announcer.name === "smoke-announce-unknown" && announcer.name !== "claude",
 );
 check("declared-true is allowed", (() => {
-  refuseUnannouncedToolListChange(announcer);
-  return true;
+  try {
+    refuseUnannouncedToolListChange(announcer);
+    return true;
+  } catch (e) {
+    console.log(`  (threw: ${(e as Error).message})`);
+    return false;
+  }
 })());
 
 const silentErr = (() => {
