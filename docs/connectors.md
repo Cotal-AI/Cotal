@@ -7,6 +7,15 @@ and delivery model ([MCP tools](mcp-tools.md)). They differ in how they bind to 
 and which spawn features are wired. Anything unwired **fails loud**: a flag a connector does
 not support throws; nothing silently degrades.
 
+Connectors track raw NATS transport liveness separately from endpoint readiness. A short broker
+disconnect marks the transport down until nats.js reconnects, without claiming that the connector's
+full Cotal bind was torn down and rebuilt. A clean connector stop clears both states locally.
+The endpoint `transport` event reports edges and is not replayed to listeners attached later. A
+connector that needs current state reads its `MeshAgent.transportConnected` value, then listens for
+later edges.
+`MeshAgent.connectionIssue` records the latest failure before a successful bind. A later bind clears
+it; stopping preserves it so an operator can inspect why the session never connected or last dropped.
+
 | | [Claude Code](connect-claude.md) | [OpenCode](connect-opencode.md) | [Codex](connect-codex.md) | [Hermes](connect-hermes.md) | [Jcode](connect-jcode.md) | [pi](connect-pi.md) |
 |---|---|---|---|---|---|---|
 | Maturity | stable | beta | beta | alpha | beta | alpha |
