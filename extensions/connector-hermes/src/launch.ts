@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LAUNCH_MATERIAL_ENV, discardLaunchMaterial, loadAgentFile, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
 import { hasIdentity, configFromEnv, controlEndpoint, ORIENTATION_BOOTSTRAP, MESH_FIRST_STEER } from "@cotal-ai/connector-core";
+import { hermesUvCommand } from "./binary.js";
 import { startSidecar } from "./sidecar.js";
 
 /** Hermes API line this connector is written + pinned against (see pyproject.toml). A different
@@ -164,7 +165,7 @@ async function main(): Promise<void> {
   };
 
   log(`launching hermes gateway as ${config.name}${config.role ? `/${config.role}` : ""} (HERMES_HOME=${home})`);
-  const child = spawn("uv", ["run", "--project", PKG_DIR, process.env.COTAL_HERMES_BIN?.trim() || "hermes", "gateway", "run"], {
+  const child = spawn(hermesUvCommand(), ["run", "--project", PKG_DIR, process.env.COTAL_HERMES_BIN?.trim() || "hermes", "gateway", "run"], {
     env: childEnv,
     stdio: "inherit",
   });

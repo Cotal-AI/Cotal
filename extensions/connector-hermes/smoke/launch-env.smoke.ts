@@ -8,6 +8,7 @@
  * Run: pnpm --filter @cotal-ai/connector-hermes test
  */
 import { strict as assert } from "node:assert";
+import { hermesUvCommand } from "../src/binary.js";
 import { hermesConnector } from "../src/extension.js";
 
 if (process.platform === "win32") {
@@ -40,6 +41,7 @@ const HOST_MARKERS = [
 const PER_SESSION = [
   "COTAL_LAUNCH_MATERIAL", "COTAL_CREDS", "COTAL_SERVERS", "COTAL_CONTROL_TOKEN",
   "COTAL_CONTROL_SOCKET", "COTAL_OWNER", "COTAL_ACTOR", "COTAL_SENTINEL_CREDS", "COTAL_BEARER_CMD",
+  "COTAL_HERMES_UV_BIN",
   "COTAL_LIFECYCLE_UID", "COTAL_ID", "COTAL_ROLE", "COTAL_MODEL", "COTAL_VARIANT",
   "COTAL_AGENT_FILE", "COTAL_LINK", "COTAL_SUBSCRIBE", "COTAL_ALLOW_SUBSCRIBE",
   "COTAL_ALLOW_PUBLISH", "COTAL_CAPABILITIES", "COTAL_EVENTS", "COTAL_WORKSPACE_ROOT",
@@ -104,6 +106,15 @@ assert.throws(
   "a prompt the connector cannot submit must refuse the launch",
 );
 
+const bootResolved = hermesConnector.buildLaunch({
+  space: "smoke",
+  name: "hermes-boot-resolved",
+  resolvedBinaries: { uv: "/manager/boot/uv" },
+}).env ?? {};
+assert.equal(bootResolved.COTAL_HERMES_UV_BIN, "/manager/boot/uv", "the exact manager-boot uv path reaches the launcher");
+assert.equal(hermesUvCommand(bootResolved), "/manager/boot/uv", "the launcher executes the exact manager-boot uv path");
+
+console.log("2 checks passed");
 console.log(
   `launch-env smoke: ${PROVIDER_KEYS.length} declared provider keys forwarded, ` +
     `${FORMERLY_EXCLUDED.length + HOST_MARKERS.length + 1} undeclared names withheld, ` +

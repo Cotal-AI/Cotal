@@ -1,0 +1,25 @@
+{
+  "suite": "extensions/connector-hermes/smoke/launch-env.smoke.ts",
+  "guard": "the manager's boot-resolved uv executable reaches the Hermes launcher and is the command it executes",
+  "command": "pnpm smoke:hermes-launch-env",
+  "progressPattern": "launch-env smoke:",
+  "minTicks": 1,
+  "mutations": [
+    {
+      "name": "Hermes launch drops the manager-boot uv path",
+      "file": "extensions/connector-hermes/src/extension.ts",
+      "find": "    if (opts.resolvedBinaries?.uv) env.COTAL_HERMES_UV_BIN = opts.resolvedBinaries.uv;",
+      "replace": "    void opts.resolvedBinaries?.uv;",
+      "expectRed": "the exact manager-boot uv path reaches the launcher",
+      "cell": "the exact manager-boot uv path reaches the launcher"
+    },
+    {
+      "name": "Hermes launcher ignores the manager-boot uv path",
+      "file": "extensions/connector-hermes/src/binary.ts",
+      "find": "  return env.COTAL_HERMES_UV_BIN?.trim() || \"uv\";",
+      "replace": "  return \"uv\";",
+      "expectRed": "the launcher executes the exact manager-boot uv path",
+      "cell": "the launcher executes the exact manager-boot uv path"
+    }
+  ]
+}
