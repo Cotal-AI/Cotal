@@ -587,9 +587,8 @@ export async function runJcodeHost(): Promise<void> {
     connected.on("close", () => void recoverBridge(connected));
     connected.on("session_status", (event: ApiEvent) => {
       if (!("session_id" in event) || event.session_id !== sessionId || event.ev !== "session_status") return;
-      // A real Harness reports idle between tool rounds while `run()` is still awaiting turn_done.
-      // Clearing turnActive here used to refuse soft_interrupt for the rest of that Cotal-owned turn.
-      if (driving && event.status === "idle") return;
+      // Advisory idle between tool rounds does not mean the Cotal-owned run() has ended.
+      // steerPending keys off sessionBusy() (driving || turnActive) so that pulse cannot drop a DM.
       turnActive = event.status !== "idle";
       if (!turnActive) void finishHostIdleTurn();
       else publishInboundHealth();
