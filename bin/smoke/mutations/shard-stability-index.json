@@ -1,0 +1,32 @@
+{
+  "suite": "bin/smoke/shard-stability.smoke.ts",
+  "guard": "frozen legacy suites retain exact parsed indices, including moves by a complete shard cycle and removals",
+  "command": "pnpm smoke:shard-stability",
+  "completionMarker": "SHARD INDEX SMOKE",
+  "grades": "tool",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/shard-stability-index.json",
+  "why": [
+    "Derived shard equality is weaker than the frozen legacy invariant. Moving a suite by four",
+    "positions in the four-shard topology preserves its runner but changes the exact index. The",
+    "mutation restores that modulo-only comparison; the named whole-cycle cell must redden. A",
+    "second mutation proves the property examines every surviving legacy suite."
+  ],
+  "mutations": [
+    {
+      "name": "compare only modulo four so a full-cycle index move disappears",
+      "file": "bin/smoke/shard-stability.mjs",
+      "find": "    if (headIndex !== baseIndex) changed.push(suite);",
+      "replace": "    if (headIndex % 4 !== baseIndex % 4) changed.push(suite);",
+      "expectRed": "a mid-file whole-shard insert reports every frozen suite whose index changed",
+      "cell": "a mid-file whole-shard insert reports every frozen suite whose index changed"
+    },
+    {
+      "name": "stop counting examined legacy suites",
+      "file": "bin/smoke/shard-stability.mjs",
+      "find": "    examined++;",
+      "replace": "    examined += 0;",
+      "expectRed": "the whole-shard property examined every frozen suite",
+      "cell": "the whole-shard property examined every frozen suite"
+    }
+  ]
+}

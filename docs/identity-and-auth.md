@@ -176,6 +176,15 @@ same-name `cotal spawn` re-drives the whole teardown** and finishes it. Retrying
 effect because the agent is already stopped. The operator copy tells you to recover the stack
 (`cotal supervise`) rather than reusing the name over an unretired predecessor.
 
+**A crash mid-retirement resumes at the next boot.** The retirement's last two steps (recording the
+issuance gate terminal, then the lifecycle head terminal) are separate durable writes, and a crash
+between them leaves the gate retired while the head is still `retiring` — an alias that can neither
+mint nor be replaced. The auth service's boot crash-resume decides what it owes across *both*
+objects (the gate *and* the alias head), so the next boot finishes exactly that tail from the durable
+operation intent: nothing is re-revoked or re-drained, and a completed retirement (its head terminal
+landed, or a successor already took the alias) is left skipped. A retry of the despawn converges on
+the same recovery.
+
 **Delegation only narrows (the envelope rule).** A user's grant is their envelope:
 everything under their owner (their CLI, every agent they spawn, every agent those
 spawn) stays within its channel lists and its capability scope. Handing a role to a
