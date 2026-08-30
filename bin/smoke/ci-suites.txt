@@ -135,6 +135,7 @@ smoke:signing-key-rotation
 smoke:system-account-rotation
 smoke:cutover-restart-eviction
 smoke:deprovision
+smoke:provision-stream-info
 smoke:channels:auth
 smoke:e2e:acl
 smoke:cross-owner:auth

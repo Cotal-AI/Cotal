@@ -1167,10 +1167,13 @@ export function permissionsFor(
     // JetStream control plane — scoped to this agent's own streams/durables.
     "$JS.API.INFO",
     // STREAM.INFO: CHAT (join watermark, recall drop-marker, channel-list counts — a documented
-    // metadata surface, see SPEC §9) + the world-readable presence/registry KVs. NOT DM/TASK: agents
-    // bind their dm_<id>/svc_<role> by name and never inspect those streams, so granting INFO there
-    // would only leak DM-inbox / task subject metadata across peers for no functional gain.
+    // metadata surface, see SPEC §9) + the world-readable presence/registry KVs, PLUS DM/TASK/DLV
+    // (the three streams the create-deny below refuses body-read consumers on) and the EPC
+    // contract store. Stream-level metadata (message counts, first/last seq) carries no per-peer
+    // body, so granting it does not undo the deny triple's "no consumer-create" intent.
     `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,
+    `$JS.API.STREAM.INFO.${DM}`, `$JS.API.STREAM.INFO.${TASK}`, `$JS.API.STREAM.INFO.${DLV}`,
+    `$JS.API.STREAM.INFO.${epcStreamName(space)}`,
     // Live channel delivery is the agent's own native core subscription (sub.allow over chat.*.<ch>,
     // below) — there is NO per-instance chat live-tail durable to bind. The durable backstop is
     // Plane-3 (the bind-only dlv_<id> durable below). So no CHAT consumer bind/ack grants here.
