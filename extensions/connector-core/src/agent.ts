@@ -125,6 +125,8 @@ interface Pending {
   ack: () => void;
   /** Receive-time delivery class. Quiet ambient stays pull-only even if the mode later changes. */
   pullOnly: boolean;
+  /** Local receive time. Distinct from `item.ts`, which is the sender's stamp. */
+  receivedAt: number;
 }
 
 /** Where a session's focus-mode recall has been read to: a timestamp plus the id that breaks its ties. */
@@ -583,7 +585,7 @@ export class MeshAgent extends EventEmitter {
   }
 
   private buffer(item: InboxItem, ack: () => void, pullOnly: boolean): void {
-    this.inbox.push({ item, ack, pullOnly });
+    this.inbox.push({ item, ack, pullOnly, receivedAt: Date.now() });
     if (this.inbox.length > MAX_INBOX) {
       // Prefer sacrificing pull-only backlog so it cannot crowd out DMs/mentions. Overflow remains
       // bounded local loss: evicted items are acked without being marked handled.
@@ -858,6 +860,16 @@ export class MeshAgent extends EventEmitter {
 
   inboxCount(scope: InboxScope = "all"): number {
     return scope === "all" ? this.inbox.length : this.inbox.filter((p) => this.inScope(p, scope)).length;
+  }
+
+  /** Local receive time of the oldest still-buffered automatic delivery, if any. */
+  oldestAutomaticReceivedAt(): number | undefined {
+    let oldest: number | undefined;
+    for (const pending of this.inbox) {
+      if (pending.pullOnly) continue;
+      if (oldest === undefined || pending.receivedAt < oldest) oldest = pending.receivedAt;
+    }
+    return oldest;
   }
 
   /**
@@ -1339,6 +1351,19 @@ export class MeshAgent extends EventEmitter {
       };
     }
     return reply;
+  }
+
+  /** Mesh-side persona catalog list: name, role, model, description, scoped by the same
+   *  ownership rule as `definePersona`. */
+  async listPersonas(): Promise<ControlReply> {
+    await this.requireConnected();
+    return this.managerInvoke("list-personas", undefined);
+  }
+
+  /** Mesh-side persona catalog show of one card. Unauthorized / missing names are not-found. */
+  async showPersona(name: string): Promise<ControlReply> {
+    await this.requireConnected();
+    return this.managerInvoke("show-persona", { name });
   }
 
   // ---- presence ------------------------------------------------------------

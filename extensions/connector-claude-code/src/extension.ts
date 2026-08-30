@@ -113,6 +113,7 @@ function assertServableModel(model: string): void {
 export const claudeConnector: Connector = {
   kind: "connector",
   name: "claude",
+  setup: { kind: "connector-setup", name: "claude" },
   // The event channel is core's own derivation, exposed through the contract so the grant the
   // manager mints and the subject this session publishes to come from ONE function. Re-deriving it
   // here would be a second place the subject is decided, and the two would drift the first time

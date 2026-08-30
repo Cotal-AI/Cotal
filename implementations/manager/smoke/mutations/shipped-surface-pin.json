@@ -1,0 +1,23 @@
+{
+  "suite": "implementations/manager/smoke/manager-service-invoke.smoke.ts",
+  "guard": "resolved manager command count is derived from the shipped cluster document, not restated",
+  "command": "pnpm smoke:manager-service-invoke",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/shipped-surface-pin.json",
+  "why": [
+    "Reached suites used to pin 18 while the shipped document served 20. Restating the count is the",
+    "defect class: correct the day it is written, wrong after the next served command.",
+    "",
+    "M1 puts the restated 18 back into managerShippedSurface. The invoke cell compares live resolve",
+    "size to that count, so it goes red on the named mismatch. Unique code-only return, not a comment."
+  ],
+  "mutations": [
+    {
+      "name": "M1 restate commandCount as 18",
+      "file": "implementations/manager/src/manager-service-contract.ts",
+      "find": "  return { revision: document.revision, commandCount: names.length, names };",
+      "replace": "  return { revision: document.revision, commandCount: 18, names };",
+      "expectRed": "the resolved surface matches the shipped cluster document",
+      "cell": "the resolved surface matches the shipped cluster document"
+    }
+  ]
+}

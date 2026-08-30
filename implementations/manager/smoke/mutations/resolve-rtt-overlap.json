@@ -1,0 +1,25 @@
+{
+  "suite": "implementations/manager/smoke/resolve-rtt-probe.smoke.ts",
+  "guard": "injected-wait occupancy, not wall-clock vs count×RTT, is the concurrency invariant",
+  "command": "pnpm smoke:resolve-rtt",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/resolve-rtt-overlap.json",
+  "why": [
+    "elapsed < count × inject flakes on this host: 15ms × N is smaller than per-request overhead, so a",
+    "concurrent resolve can still observe wall ABOVE serial inject. Occupancy of the synthetic waits",
+    "excludes that host work. A 15ms inject is also shorter than start stagger, so occupancy is proven",
+    "on the 160ms WAN-profile inject, where overlapped waits collapse and serialized waits sum.",
+    "",
+    "M1 accounts each wait as serial delayMs instead of the union of open wait intervals. The WAN-profile",
+    "occupancy cell goes red; max-in-flight and dedupe cells stay green."
+  ],
+  "mutations": [
+    {
+      "name": "M1 account injected waits as a serial sum instead of union occupancy",
+      "file": "implementations/manager/smoke/resolve-rtt-probe.smoke.ts",
+      "find": "            delaying--;\n            if (delaying === 0 && delayOpenAt !== null) {\n              meter.delayOccupancyMs += performance.now() - delayOpenAt;\n              delayOpenAt = null;\n            }",
+      "replace": "            delaying--;\n            meter.delayOccupancyMs += delayMs;\n            delayOpenAt = null;",
+      "expectRed": "WAN-profile injected waits overlap — occupancy well under serial inject (was ~11s serialized)",
+      "cell": "WAN-profile injected waits overlap — occupancy well under serial inject (was ~11s serialized)"
+    }
+  ]
+}
