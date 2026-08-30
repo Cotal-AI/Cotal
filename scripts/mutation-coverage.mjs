@@ -19,6 +19,8 @@
  */
 import { readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
+import { dirname, extname, normalize, resolve } from "node:path";
+import ts from "typescript";
 
 /**
  * The config list is DISCOVERED from the tree, never a remembered list of directories: a config
@@ -74,6 +76,29 @@ const REQUIRED_MAY_BE_EMPTY = ["replace"];
 /** `packages/core/src/x.ts` -> `packages/core`; `implementations/runtime/smoke/y.ts` -> `implementations/runtime`. */
 const packageRoot = (p) => p.split("/").slice(0, 2).join("/");
 
+const staticRelativeImports = (suite) => {
+  const source = ts.createSourceFile(suite, readFileSync(suite, "utf8"), ts.ScriptTarget.Latest, true);
+  const imports = [];
+  const add = (node) => {
+    if (node?.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      const specifier = node.moduleSpecifier.text;
+      if (specifier.startsWith(".")) imports.push(normalize(resolve(dirname(suite), specifier)));
+    }
+  };
+  for (const statement of source.statements) {
+    if (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) add(statement);
+  }
+  return imports;
+};
+
+const sameModule = (a, b) => {
+  if (a === b) return true;
+  const aExt = extname(a), bExt = extname(b);
+  if (!aExt || !bExt) return false;
+  return a.slice(0, -aExt.length) === b.slice(0, -bExt.length) &&
+    new Set([aExt, bExt]).size <= 2 && [aExt, bExt].every((ext) => [".js", ".mjs", ".cjs", ".ts", ".mts", ".cts"].includes(ext));
+};
+
 /**
  * A mutation is only gradable if the suite runs the file it mutates. A suite that imports its
  * target's package BY NAME gets `dist`, so mutating the source cannot reach the running code and
@@ -83,11 +108,17 @@ const packageRoot = (p) => p.split("/").slice(0, 2).join("/");
  * remembering it is the rule that just failed.
  */
 const assertGradable = (configPath, suite, m) => {
-  if (packageRoot(m.file) === packageRoot(suite) && readFileSync(suite, "utf8").includes("../src/")) return;
+  const imports = staticRelativeImports(suite);
+  const target = normalize(resolve(m.file));
+  if (imports.some((imported) => sameModule(imported, target))) return;
+  const root = packageRoot(m.file);
+  const sourceRoot = normalize(resolve(root, "src"));
+  if (packageRoot(m.file) === packageRoot(suite) && imports.some((imported) => imported === sourceRoot || imported.startsWith(`${sourceRoot}/`))) return;
   throw new Error(
     `${configPath}: mutation "${m.name}" targets ${m.file}, which ${suite} does not import by source path — ` +
     `it would resolve that package to dist and the mutation could not reach the running code. ` +
-    `Grade it from a suite in ${packageRoot(m.file)}, or record it in this config's "unkillable" array with the reason.`,
+    `Import the target by a static relative source specifier, grade it beside its package source, ` +
+    `or record it in this config's "unkillable" array with the reason.`,
   );
 };
 

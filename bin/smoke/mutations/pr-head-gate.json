@@ -6,6 +6,22 @@
   "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/pr-head-gate.json",
   "mutations": [
     {
+      "name": "a trailing-comment event sequence silently omits pull_request",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "if (!on.includes(\"pull_request\")) return undefined;",
+      "replace": "if (true) return undefined;",
+      "expectRed": "a successful parsed workflow cannot hide a missing trailing-comment workflow",
+      "cell": "a successful parsed workflow cannot hide a missing trailing-comment workflow"
+    },
+    {
+      "name": "parsed YAML is replaced with an empty declaration",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "const parsed = doc.toJS({ maxAliasCount: 100 });",
+      "replace": "const parsed = { ...doc.toJS({ maxAliasCount: 100 }), on: [] };",
+      "expectRed": "a successful parsed workflow cannot hide a missing trailing-comment workflow",
+      "cell": "a successful parsed workflow cannot hide a missing trailing-comment workflow"
+    },
+    {
       "name": "missing expected workflow stops failing closed",
       "file": "scripts/pr-head-gate.mjs",
       "find": "if (candidates.length === 0) { missing.push(name); continue; }",

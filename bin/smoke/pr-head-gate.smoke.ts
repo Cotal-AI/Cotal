@@ -74,6 +74,7 @@ for (const [label, source, message] of [
   ["a non-mapping pull_request configuration", "name: Wrong\non:\n  pull_request: []\n", /pull_request declaration must be null or a mapping/],
   ["a non-sequence paths filter", "name: Wrong\non:\n  pull_request:\n    paths: ${{ future.paths }}\n", /paths declaration must be a sequence of strings/],
   ["a non-string paths entry", "name: Wrong\non:\n  pull_request:\n    paths: [src/**, 42]\n", /paths entries must be non-empty strings/],
+  ["an unevaluated branch filter", "name: Wrong\non:\n  pull_request:\n    branches: [main]\n", /unsupported pull_request configuration: branches/],
 ] as const) {
   let refused = false;
   try { expectedPullRequestWorkflows({ "wrong.yml": source }, ["src/index.ts"]); }
@@ -86,7 +87,7 @@ try {
     "unknown.yml": "name: Unknown\non:\n  pull_request:\n    paths: ${{ future.paths }}\n",
   }, ["package.json"]);
 } catch (error) {
-  unsupportedRefused = /unsupported inline paths declaration/.test(String(error));
+  unsupportedRefused = /paths declaration must be a sequence of strings/.test(String(error));
 }
 check("an unrecognised workflow declaration fails closed instead of shrinking the expected set", unsupportedRefused);
 let unsupportedPatternRefused = false;
@@ -157,7 +158,7 @@ for (const conclusion of ["neutral", "skipped"]) {
   check(`a ${conclusion} expected workflow is failing, never green`, JSON.stringify(verdict.failing) === '["CI"]' && !verdict.green, verdict);
 }
 
-const EXPECTED = 27;
+const EXPECTED = 28;
 check(`every cell ran (${EXPECTED} before sentinel)`, passed + failed === EXPECTED);
 console.log(`PR HEAD GATE SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 console.log("SUITE COMPLETE");

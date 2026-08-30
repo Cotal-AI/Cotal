@@ -2,83 +2,63 @@
 import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseDocument } from "yaml";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const API = "https://api.github.com";
 
-function unquote(value) {
-  const trimmed = value.trim();
-  if (trimmed.length >= 2 && ((trimmed[0] === "'" && trimmed.at(-1) === "'") || (trimmed[0] === '"' && trimmed.at(-1) === '"'))) {
-    return trimmed.slice(1, -1).replace(trimmed[0] === "'" ? /''/g : /\\"/g, trimmed[0]);
-  }
-  return trimmed;
-}
-
-function bracketList(value, file, line) {
-  const inner = value.trim().slice(1, -1).trim();
-  if (!inner) return [];
-  return inner.split(",").map((entry) => {
-    const item = unquote(entry);
-    if (!item) throw new Error(`${file}:${line}: empty path filter entry`);
-    return item;
-  });
-}
-
 function pullRequestDeclaration(file, text) {
-  const lines = text.split("\n");
-  const onIndex = lines.findIndex((line) => /^on:\s*(?:$|\S)/.test(line));
-  if (onIndex < 0) throw new Error(`${file}: missing top-level on declaration`);
-  const onHead = lines[onIndex].replace(/^on:\s*/, "").trim();
-  let handlesPullRequest = false;
-  if (onHead) {
-    if (/^\[.*\]$/.test(onHead)) {
-      const events = bracketList(onHead, file, onIndex + 1);
-      handlesPullRequest = events.includes("pull_request");
-    } else {
-      handlesPullRequest = onHead === "pull_request";
+  const doc = parseDocument(text, { strict: true, stringKeys: true, uniqueKeys: true });
+  const diagnostics = [...doc.errors, ...doc.warnings];
+  if (diagnostics.length) throw new Error(`${file}: invalid workflow YAML: ${diagnostics[0].message.split("\n")[0]}`);
+  const parsed = doc.toJS({ maxAliasCount: 100 });
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${file}: workflow document must be a mapping`);
+  }
+  if (!("on" in parsed)) throw new Error(`${file}: missing top-level on declaration`);
+
+  const on = parsed.on;
+  let pullRequest;
+  if (typeof on === "string") {
+    if (on !== "pull_request") return undefined;
+    pullRequest = null;
+  } else if (Array.isArray(on)) {
+    if (!on.every((event) => typeof event === "string")) {
+      throw new Error(`${file}: event sequence entries must be strings`);
     }
-    if (!handlesPullRequest) return undefined;
-    const nameLine = lines.find((line) => /^name:\s*\S/.test(line));
-    if (!nameLine) throw new Error(`${file}: a pull-request workflow must declare a top-level name`);
-    return { file, name: unquote(nameLine.replace(/^name:\s*/, "")), paths: undefined };
+    if (!on.includes("pull_request")) return undefined;
+    pullRequest = null;
+  } else if (on && typeof on === "object") {
+    if (!("pull_request" in on)) return undefined;
+    pullRequest = on.pull_request;
+  } else {
+    throw new Error(`${file}: on declaration must be a string, sequence, or mapping`);
   }
 
-  let prIndex = -1;
-  for (let i = onIndex + 1; i < lines.length; i++) {
-    if (/^\S/.test(lines[i]) && lines[i].trim()) break;
-    if (/^\s{2}pull_request:\s*/.test(lines[i])) { prIndex = i; break; }
+  if (typeof parsed.name !== "string" || !parsed.name.trim()) {
+    throw new Error(`${file}: a pull-request workflow must declare a non-empty top-level name`);
   }
-  if (prIndex < 0) return undefined;
-  const nameLine = lines.find((line) => /^name:\s*\S/.test(line));
-  if (!nameLine) throw new Error(`${file}: a pull-request workflow must declare a top-level name`);
-  const name = unquote(nameLine.replace(/^name:\s*/, ""));
-  const prHead = lines[prIndex].replace(/^\s{2}pull_request:\s*/, "").trim();
-  if (prHead) {
-    if (prHead === "{}") return { file, name, paths: undefined };
-    throw new Error(`${file}:${prIndex + 1}: unsupported inline pull_request declaration`);
+  const name = parsed.name;
+  if (pullRequest !== null && (!pullRequest || typeof pullRequest !== "object" || Array.isArray(pullRequest))) {
+    throw new Error(`${file}: pull_request declaration must be null or a mapping`);
   }
-
-  let paths;
-  let pathsIgnore;
-  for (let i = prIndex + 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (/^\s{2}\S/.test(line) || /^\S/.test(line)) break;
-    const key = line.match(/^\s{4}(paths|paths-ignore):\s*(.*)$/);
-    if (!key) continue;
-    const values = [];
-    if (key[2].trim()) {
-      if (!/^\[.*\]$/.test(key[2].trim())) throw new Error(`${file}:${i + 1}: unsupported inline ${key[1]} declaration`);
-      values.push(...bracketList(key[2].trim(), file, i + 1));
-    } else {
-      for (i += 1; i < lines.length; i++) {
-        const item = lines[i].match(/^\s{6}-\s*(\S.*)$/);
-        if (!item) { i -= 1; break; }
-        values.push(unquote(item[1]));
-      }
+  if (pullRequest !== null) {
+    const unsupported = Object.keys(pullRequest).filter((key) => key !== "paths" && key !== "paths-ignore");
+    if (unsupported.length) {
+      throw new Error(`${file}: unsupported pull_request configuration: ${unsupported.join(", ")}`);
     }
-    if (key[1] === "paths") paths = values;
-    else pathsIgnore = values;
   }
+  const pathFilter = (key) => {
+    if (pullRequest === null || !(key in pullRequest)) return undefined;
+    const value = pullRequest[key];
+    if (!Array.isArray(value)) throw new Error(`${file}: ${key} declaration must be a sequence of strings`);
+    if (value.length === 0 || !value.every((entry) => typeof entry === "string" && entry.trim().length > 0)) {
+      throw new Error(`${file}: ${key} entries must be non-empty strings`);
+    }
+    return value;
+  };
+  const paths = pathFilter("paths");
+  const pathsIgnore = pathFilter("paths-ignore");
   if (paths && pathsIgnore) throw new Error(`${file}: pull_request cannot declare both paths and paths-ignore`);
   return { file, name, paths, pathsIgnore };
 }
