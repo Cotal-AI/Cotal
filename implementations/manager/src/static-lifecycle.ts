@@ -17,6 +17,7 @@
  */
 import {
   EpEnvelopeError,
+  principalKey,
   type LifecycleStateTransport,
   type LifecycleKvEntry,
   type StaticManagedSlotRow,
@@ -208,7 +209,7 @@ export async function activateStaticLifecycle(
 export async function runStaticTerminal(
   t: LifecycleStateTransport,
   args: { owner: string; alias: string; actor: string; lifecycleUid: string; opId: string },
-  hooks: { cleanup: () => Promise<void>; log: (line: string) => void },
+  hooks: { cleanup: () => Promise<void>; evict: (holderPrincipal: string) => Promise<boolean>; log: (line: string) => void },
 ): Promise<"retired"> {
   const slot = await readStaticSlot(t, args.owner, args.alias);
   if (slot === undefined)
@@ -229,6 +230,9 @@ export async function runStaticTerminal(
     if (head !== undefined && head.mapping.lifecycleUid === args.lifecycleUid)
       throw new EpEnvelopeError("internal", `the head for "${args.owner}/${args.actor}" names uid ${args.lifecycleUid} but its gate does not exist; an active head without a gate is corruption (SPEC 13.1)`);
     await revokeStaticCredentialRows(t, args.lifecycleUid, slot.row.credentialIds, hooks.log);
+    const principal = principalKey(args.owner, args.actor).key;
+    if (!(await hooks.evict(principal)))
+      throw new EpEnvelopeError("unavailable", `static retirement could not verify-evict ${principal}; the lifecycle remains terminalizing and the alias stays held (SPEC 13.1)`);
     await hooks.cleanup();
     await casStaticSlot(t, { ...slot.row, phase: "retired" }, slotRevision);
     return "retired";
@@ -246,6 +250,9 @@ export async function runStaticTerminal(
       // static retirement), then settle the slot — there is no head to retire.
       await gateRetire(t, { lifecycleUid: args.lifecycleUid, revision: gate.revision, opId: gate.row.op.opId });
       await revokeStaticCredentialRows(t, args.lifecycleUid, slot.row.credentialIds, hooks.log);
+      const principal = principalKey(args.owner, args.actor).key;
+      if (!(await hooks.evict(principal)))
+        throw new EpEnvelopeError("unavailable", `static retirement could not verify-evict ${principal}; the lifecycle remains terminalizing and the alias stays held (SPEC 13.1)`);
       await hooks.cleanup();
       const cur = await readStaticSlot(t, args.owner, args.alias);
       if (cur !== undefined && cur.row.lifecycleUid === args.lifecycleUid && cur.row.phase !== "retired")
@@ -275,6 +282,15 @@ export async function runStaticTerminal(
   if (headNow.mapping.state !== "retired")
     await headBeginRetirement(t, { owner: args.owner, actor: args.actor, lifecycleUid: args.lifecycleUid, opId: args.opId });
   await revokeStaticCredentialRows(t, args.lifecycleUid, slot.row.credentialIds, hooks.log);
+  // A crash may leave the prior seat process alive after its manager disappeared. Deny-new is
+  // durable above; prove kill-live before cleanup touches its live broker bindings, then before
+  // retiring the gate/head and freeing the alias. Failure leaves the lifecycle terminalizing, so
+  // the successor can never coexist with the orphan.
+  const principal = principalKey(args.owner, args.actor).key;
+  hooks.log(`verify-evicting orphan seat principal ${principal} before lifecycle cleanup`);
+  if (!(await hooks.evict(principal)))
+    throw new EpEnvelopeError("unavailable", `static retirement could not verify-evict ${principal}; the lifecycle remains terminalizing and the alias stays held (SPEC 13.1)`);
+  hooks.log(`verified orphan seat principal gone: ${principal}`);
   await hooks.cleanup();
   // The terminal tail, in the (b2) order: gate frozen->retired FIRST (retains the opId, the
   // recovery coordinate), head retiring->retired LAST (drops the op; the alias frees only now).

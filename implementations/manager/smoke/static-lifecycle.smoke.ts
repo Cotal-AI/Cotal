@@ -88,7 +88,7 @@ let ran = 0;
  * when a `check` is deliberately added or removed, because completeness is something only this
  * suite knows, so it has to be the thing that says it.
  */
-const EXPECTED_CHECKS = 37;
+const EXPECTED_CHECKS = 38;
 function check(label: string, cond: boolean, extra?: unknown): void {
   console.log(`${cond ? "✓" : "✗"} ${label}${cond ? "" : ` — ${JSON.stringify(extra) ?? ""}`}`);
   ran++;
@@ -158,6 +158,16 @@ const M = mgr as unknown as {
   lifecycleMembershipRefusal: (caller: string) => string | undefined;
   renewManagedStaticCred: (a: unknown) => Promise<void>;
   reconcileStaticLifecycles: () => Promise<void>;
+};
+
+// The real delivery-admin executor is covered by the restart/eviction suites. This lifecycle suite
+// grades the terminal's use of the seam and its ordering. Default verified-gone keeps existing cells
+// on their intended state-machine subject; the orphan cell below flips it false first.
+let evictionVerified = true;
+let evictionCalls: string[] = [];
+(mgr as unknown as { staticLifecycleEvict?: (principal: string) => Promise<boolean> }).staticLifecycleEvict = async (principal) => {
+  evictionCalls.push(principal);
+  return evictionVerified;
 };
 
 /** Durable-state reader: slot rows ride a provisioner cred (keyed direct-get on `mgrslot.>`);
@@ -307,6 +317,13 @@ try {
       await nc.drain().catch(() => nc.close());
     }
   }
+  evictionVerified = false;
+  evictionCalls = [];
+  await M.reconcileStaticLifecycles();
+  check("an unverified orphan eviction keeps the slot terminalizing (never frees the alias into two owners)",
+    (await readSlotOnly("orphan"))?.phase === "terminalizing" && evictionCalls.includes(principalKey(DEV_OWNER, orphanId.id).key),
+    { slot: await readSlotOnly("orphan"), evictionCalls });
+  evictionVerified = true;
   await M.reconcileStaticLifecycles();
   const oSettled = await until(async () => (await readSlotOnly("orphan"))?.phase === "retired", 30_000, "the orphan's reconcile terminal");
   check("reconcile terminalized the dead-but-active slot (no active orphan across restarts)", oSettled);

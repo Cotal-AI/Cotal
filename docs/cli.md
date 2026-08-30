@@ -868,6 +868,14 @@ directly to recover a dead manager or drive a custom runtime. Default runtime is
 optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, `@cotal-ai/cmux`, or `@cotal-ai/herdr`) and
 select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.md).
 
+On a normal `SIGINT`/`SIGTERM`, the manager stops every seat and requires the selected runtime to
+prove the seat is gone before it releases the manager lease or service registration. A stop that
+cannot prove exit fails loud and keeps manager authority instead of reporting a clean shutdown while
+an orphan still holds broker rails. After an abrupt manager death, the same logical successor
+terminalizes only its own durable static slots and verify-evicts the predecessor principal before it
+retires the lifecycle and frees the alias. An unverified eviction stays terminalizing, so a successor
+can never start beside a live orphan.
+
 A `meshes add --mode user` entry is a **participant** registration, not hosting authority. A
 participant may run `supervise` only when the host advertises the remote manager authority service
 and the signed-in actor has the dedicated `supervise` ledger scope. The CLI obtains the closed,

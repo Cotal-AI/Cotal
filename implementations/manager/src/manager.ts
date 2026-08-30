@@ -698,6 +698,8 @@ export class Manager {
   /** See {@link ManagerOptions.installedExtensions}. */
   private readonly installedExtensions: boolean;
   private readonly runtime: Runtime;
+  /** Internal test seam. Production leaves this undefined and uses the scoped delivery-admin evictor. */
+  private staticLifecycleEvict?: (principal: string) => Promise<boolean>;
   private readonly preserveStopTimeoutMs: number;
   private readonly agents = new Map<string, ManagedAgent>();
   /** Names whose spawn is in flight (reserved synchronously before the provision await) — counted
@@ -1662,18 +1664,32 @@ export class Manager {
    *  touches NEITHER the lease NOR the endpoints — the caller owns those. */
   private async teardownManagedAgents(): Promise<void> {
     const managed = [...this.agents.values()];
+    const failures: string[] = [];
     for (const a of managed) {
       // Free the slot + hard-stop each; `stopHandle` is best-effort (never throws — see it), so one bad
       // stop can't strand the rest, and every snapshot entry is deprovisioned below regardless.
       this.agents.delete(a.name);
       this.stopHandle(a, false);
     }
+    // A runtime stop request is not exit proof. Do not release the manager lease or registration
+    // while any seat may still hold this instance's broker rails: that creates the exact orphan
+    // window where a successor sees a dead manager but live predecessor authority. Every shipped
+    // runtime now supplies waitForExit; absence or timeout is a failed shutdown, never a clean one.
+    await Promise.all(managed.map(async (a) => {
+      try {
+        await this.awaitHandleExit(a.handle);
+      } catch (e) {
+        failures.push(`${a.name}: ${(e as Error).message}`);
+      }
+    }));
     // Deprovision EVERY snapshot entry regardless of whether its stop failed (allSettled + a loud log).
     await Promise.allSettled(
       managed.filter((a) => !a.suppressCleanup).map((a) =>
         this.deprovision(a).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${(e as Error).message}`)),
       ),
     );
+    if (failures.length)
+      throw new Error(`manager shutdown could not prove every seat exited: ${failures.join("; ")}`);
   }
 
   private async stopRetainedAgentsOnExit(): Promise<void> {
@@ -5690,6 +5706,12 @@ export class Manager {
     const acceptedRenewal = a.staticCredentialRenewal;
     if (acceptedRenewal) await acceptedRenewal.catch(() => {});
     const opId = retireOpId(a.lifecycleUid);
+    const evict = this.staticLifecycleEvict ?? makeManagerEndpointEvictor({
+      space: this.space,
+      servers: this.servers ?? DEFAULT_SERVER,
+      auth: this.auth!,
+      log: (line) => console.error(`static retirement ${a.name}: ${line}`),
+    });
     const cleanup = async (): Promise<void> => {
       const secrets = this.secrets;
       const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid);
@@ -5711,7 +5733,7 @@ export class Manager {
         await runStaticTerminal(
           t,
           { owner: DEV_OWNER, alias: a.name, actor: a.id, lifecycleUid: a.lifecycleUid, opId },
-          { cleanup, log: (line) => console.error(`static retirement ${a.name}: ${line}`) },
+          { cleanup, evict, log: (line) => console.error(`static retirement ${a.name}: ${line}`) },
         );
       });
       this.retiredPrincipals.add(principalKey(DEV_OWNER, a.id).key);
