@@ -4192,14 +4192,18 @@ export class CotalEndpoint extends EventEmitter {
   /**
    * Replay-gated pull of a channel's retained ambient from `sinceSeq` (exclusive) forward — the
    * focus-recall read behind `cotal_inbox`. Returns the messages (NOT emitted — this is a pull,
-   * not a push into context) plus `dropped: true` when the channel's earliest *retained* message
-   * is already newer than the watermark, i.e. some ambient aged out of the per-subject window and
-   * the caller must say so rather than silently short the window.
+   * not a push into context) plus `dropped: true` when the window is not complete: either the
+   * channel's earliest *retained* message is already newer than the watermark (some ambient aged
+   * out of the per-subject window), or replay is off for the channel below. Either way the caller
+   * must say so rather than silently reporting an empty, complete window.
    *
    * Honors the **same** per-channel replay gate as join-backfill ({@link joinPolicyFresh}): a
-   * `replay=off` channel returns nothing, so `focus` can't become a history bypass for a channel
-   * that denies replay to everyone else (the read ACL bounds *which* channels recall can touch; this
-   * app gate bounds *whether* a permitted channel replays).
+   * `replay=off` channel returns no messages, so `focus` can't become a history bypass for a
+   * channel that denies replay to everyone else (the read ACL bounds *which* channels recall can
+   * touch; this app gate bounds *whether* a permitted channel replays). Ingest still ack-drops
+   * focus-mode ambient/mentions on this channel on the promise that they stay recallable (#977) —
+   * the gate means that promise cannot be kept, so it reports `dropped: true` rather than pretend
+   * the window was empty and complete.
    */
   async recallChannel(
     channel: string,
@@ -4208,7 +4212,7 @@ export class CotalEndpoint extends EventEmitter {
     if (!this.jsm) throw new Error(this.notLiveMsg());
     if (!isConcreteChannel(channel)) return { messages: [], dropped: false };
     const policy = await this.joinPolicyFresh(channel);
-    if (!policy.replay) return { messages: [], dropped: false };
+    if (!policy.replay) return { messages: [], dropped: true };
     const subject = chatSubject(this.space, "*", "*", channel);
     let raw: JsMsg[];
     try {

@@ -468,8 +468,10 @@ export class MeshAgent extends EventEmitter {
     //  - `quiet` → buffer ambient as pull-only; an @mention remains automatic. Overrides global
     //    `focus` so "retain this channel, but only surface ambient on explicit pull" stays expressible.
     // Focus (global, only when NOT overridden): channel ambient AND @mentions are acked-and-dropped —
-    // they stay recallable via cotal_inbox (recallAmbient); an @mention still *wakes* (mention-wake),
-    // body pulled (F4=B), never auto-injected (the mention tag is payload-forgeable).
+    // they stay recallable via cotal_inbox (recallAmbient), or if recall itself cannot vouch for the
+    // channel (replay=off, or a wildcard join — #977), that is reported rather than left silent; an
+    // @mention still *wakes* (mention-wake), body pulled (F4=B), never auto-injected (the mention
+    // tag is payload-forgeable).
     if (item.kind === "channel") {
       const cm = this.channelModes.get(item.channel ?? "");
       // chatFrontier() is asynchronous. Channel traffic retained while entering focus must not also
@@ -1001,18 +1003,24 @@ export class MeshAgent extends EventEmitter {
 
   /** Focus recall: the channel ambient + @mentions ack-dropped since this agent entered focus,
    *  read back from the chat stream on demand and **replay-gated per channel** (a `replay=off`
-   *  channel yields nothing — recall must not become a history bypass). Items are marked
-   *  `historical` (catch-up framing). `droppedChannels` names channels whose earliest retained
-   *  message postdates the focus-watermark — older ambient may have aged out of the per-channel
-   *  window (never-silent). Empty unless in focus. Wildcard subscriptions (`team.>`) are skipped
-   *  (can't Direct-Get a wildcard). */
+   *  channel yields nothing, and is named in `droppedChannels` — recall must not become a history
+   *  bypass, and it must not claim a suppressed channel's window was empty and complete either).
+   *  Items are marked `historical` (catch-up framing). `droppedChannels` also names channels whose
+   *  earliest retained message postdates the focus-watermark — older ambient may have aged out of
+   *  the per-channel window — and wildcard subscriptions (`team.>`), which recall cannot read back
+   *  per concrete sub-channel (#977: a wildcard join is not itself a channel ingest can consult a
+   *  replay policy for) and so cannot vouch for either (never-silent throughout). Empty unless in
+   *  focus. */
   async recallAmbient(): Promise<{ items: InboxItem[]; droppedChannels: string[] }> {
     if (this._attention !== "focus" || this.focusSince === undefined)
       return { items: [], droppedChannels: [] };
     const items: InboxItem[] = [];
     const droppedChannels: string[] = [];
     for (const channel of this.ep.joinedChannels()) {
-      if (!isConcreteChannel(channel)) continue;
+      if (!isConcreteChannel(channel)) {
+        droppedChannels.push(channel);
+        continue;
+      }
       if (this.focusRecallUnsafeChannels.has(channel)) {
         droppedChannels.push(channel);
         continue;

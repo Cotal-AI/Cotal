@@ -696,3 +696,10 @@ smoke:workflow-concurrency
 # the suite. This compiler-API intersection checks every named workspace import against the package's
 # public exports. Appended so every existing shard assignment remains unchanged.
 smoke:workspace-import-exports
+
+# #977: a focus-mode @mention/ambient ack-dropped on a channel reached only via a wildcard join
+# (`team.>`) was silently unrecallable — `recallAmbient` skipped it before it ever reached
+# `droppedChannels`. attention.smoke.ts/attention-auth.smoke.ts cover the sibling replay=off gap.
+# Mutation-proofed - bin/smoke/mutations/focus-recall-honesty.json. Appended so every existing shard
+# assignment remains unchanged.
+smoke:focus-recall-wildcard
