@@ -62,13 +62,31 @@ function slowLink(opts: { listen: number; target: number; oneWayMs: number; byte
   const sockets = new Set<net.Socket>();
   const pipe = (from: net.Socket, to: net.Socket) => {
     let clear = 0;
-    from.on("data", (chunk) => {
+    let timer: NodeJS.Timeout | undefined;
+    let writing = false;
+    const queued: Array<{ at: number; chunk: Buffer }> = [];
+    const pump = () => {
+      if (writing || timer || queued.length === 0 || to.destroyed) return;
+      const next = queued[0];
+      const delay = Math.max(0, next.at - Date.now());
+      timer = setTimeout(() => {
+        timer = undefined;
+        if (to.destroyed) return;
+        queued.shift();
+        writing = true;
+        to.write(next.chunk, () => { writing = false; pump(); });
+      }, delay);
+      timer.unref();
+    };
+    from.on("data", (chunk: Buffer) => {
       const now = Date.now();
       const at = Math.max(now + opts.oneWayMs, clear) + (chunk.length / opts.bytesPerSec) * 1000;
       clear = at;
-      setTimeout(() => { if (!to.destroyed) to.write(chunk); }, Math.max(0, at - now)).unref();
+      queued.push({ at, chunk: Buffer.from(chunk) });
+      pump();
     });
     from.on("error", () => to.destroy());
+    from.on("close", () => { if (timer) clearTimeout(timer); });
   };
   const srv = net.createServer((client) => {
     const up = net.connect(opts.target, "127.0.0.1");
