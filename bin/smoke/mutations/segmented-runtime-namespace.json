@@ -58,10 +58,10 @@
       "expectRed": "...and beta's daemon survives with its record intact"
     },
     {
-      "name": "S8 the supervise-side writer records root-scoped again",
+      "name": "S8 the supervise-side writer ignores the space it is recording for",
       "file": "implementations/manager/src/commands.ts",
       "find": "  const pidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, ctx);",
-      "replace": "  const pidPath = join(dir, \"manager.pid\");",
+      "replace": "  const pidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, { ...ctx, space: \"shared\" });",
       "command": "pnpm smoke:record-manager-pid-per-space",
       "expectRed": "both records exist after both managers recorded themselves"
     },
