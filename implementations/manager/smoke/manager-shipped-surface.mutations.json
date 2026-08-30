@@ -1,0 +1,22 @@
+{
+  "suite": "implementations/manager/smoke/persona-show-auth.smoke.ts",
+  "guard": "maintained smokes derive the manager command count from the shipped cluster document",
+  "command": "pnpm smoke:manager-persona-show-auth",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/manager-shipped-surface.mutations.json",
+  "why": [
+    "The 18-versus-20 class is a restated pin: a smoke copies today's command count, then a later",
+    "served command lands and the pin is silently wrong until a reviewer reads it. managerShippedCommandCount",
+    "reads the cluster document. Mutating that helper to return 18 makes the named disagreement cell",
+    "red and leaves the show-authorization cells green."
+  ],
+  "mutations": [
+    {
+      "name": "shipped command count is restated as 18 instead of the cluster document",
+      "file": "implementations/manager/src/manager-service-contract.ts",
+      "find": "export function managerShippedCommandCount(): number {\n  return managerClusterDocument().commands.length;\n}",
+      "replace": "export function managerShippedCommandCount(): number {\n  return 18;\n}",
+      "expectRed": "shipped command count matches the compiled contract table",
+      "cell": "shipped command count matches the compiled contract table"
+    }
+  ]
+}
