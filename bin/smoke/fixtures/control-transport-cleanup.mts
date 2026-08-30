@@ -27,13 +27,21 @@ const check = (name: string, condition: boolean, extra?: unknown) => {
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
 };
 
+// The child is the control-dial suite, which authenticates and persists real credential material.
+// Whatever runs this fixture may itself be a managed agent session, so an ambient copy would hand
+// that child a live credential and a live broker URL. Strip the prefix; the only COTAL_ names the
+// child reads are the two fixture knobs set on top of the copy below, and it sets its own
+// COTAL_HOME.
+const childEnv: NodeJS.ProcessEnv = { ...process.env };
+for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
+
 const child = spawn(process.execPath, [
   join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs"),
   join(process.cwd(), "bin", "smoke", "control-transport-dial.smoke.ts"),
 ], {
   cwd: process.cwd(),
   env: {
-    ...process.env,
+    ...childEnv,
     COTAL_SMOKE_CONTROL_DIAL_ID: fixtureId,
     COTAL_SMOKE_CONTROL_DIAL_PID_FILE: pidFile,
   },

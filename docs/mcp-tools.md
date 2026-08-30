@@ -106,7 +106,7 @@ Broadcast a message to everyone on a channel in your space.
 
 - **Side-effect:** publishes to a channel.
 - **Available:** always (the broker enforces your post ACL).
-- Fails loud when the channel is outside your `allowPublish`. An unknown name in `mentions` aborts the whole broadcast.
+- Fails loud when the channel is outside your `allowPublish`. An unknown name in `mentions` aborts the whole broadcast. A send to a name with no registry entry and no prior traffic still succeeds (ad hoc create is allowed) but the receipt says so, and names close matches when it can, so a typo is not identical to a send into a known room.
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
@@ -167,6 +167,7 @@ Look up a channel's purpose, usage notes, and replay policy from the channel reg
 
 - **Side-effect:** read-only.
 - **Available:** always.
+- An unregistered name is reported as not in the channel registry. It is still a real channel if it has traffic.
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|

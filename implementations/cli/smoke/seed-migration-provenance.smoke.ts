@@ -26,9 +26,15 @@ function check(name: string, condition: boolean, extra?: unknown): void {
 }
 
 function cotal(cfg: string, args: string[]): { status: number; stdout: string; stderr: string } {
+  // The child is the compiled CLI, which DOES read connection material. Clearing one name by hand
+  // left the rest of the prefix reachable - the credential path, the broker URL, the control token -
+  // so scrub the whole prefix from the copy instead. That subsumes the old
+  // `COTAL_SKIP_CONNECTOR_SEED: undefined`, and XDG_CONFIG_HOME below still pins the seed store.
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
   const run = spawnSync("node", [BIN, ...args], {
     encoding: "utf8",
-    env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: undefined, XDG_CONFIG_HOME: cfg },
+    env: { ...env, XDG_CONFIG_HOME: cfg },
   });
   return { status: run.status ?? -1, stdout: run.stdout ?? "", stderr: run.stderr ?? "" };
 }

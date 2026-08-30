@@ -335,6 +335,11 @@ not restarted implicitly. Artifact destinations must not overlap the preserved s
 attempt tree. Restore artifacts and targets likewise cannot nest inside or contain each other, the
 preserved source, or the maintenance attempt tree.
 
+Stopped client-managed KV ordered consumers are ephemeral read residue, not backup state. Backup
+ignores only the pinned client's exact stopped shapes: ordinary last-value watchers and the
+whole-bucket scanner that uses all-history delivery to collapse concurrent tombstones. A bound
+consumer or any lookalike with a different filter, inbox, lifetime, or other config is still refused.
+
 `full` is the default and indivisible: channel registry, CHAT/DM/TASK/INBOX/DLV, ACL, MEMBERS, and
 validated durable checkpoints. `registry` is the sole partial artifact. Presence, derived membership
 feed, leases, native ephemeral/history consumers, credentials, keys, tokens, owner secrets, and actor

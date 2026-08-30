@@ -1,0 +1,64 @@
+{
+  "suite": "packages/core/smoke/history-cancellation.smoke.ts and implementations/web/smoke/bounded-aggregation.smoke.ts",
+  "guard": "public history abort stops the active JetStream pull and dashboard deadlines pass that abort to every unfinished source",
+  "command": "pnpm smoke:history-cancellation",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/history-cancellation.json",
+  "why": [
+    "FOUR MUTATIONS across the public API, broker pull buffering, newest-N paging, and dashboard threading.",
+    "",
+    "M1 removes the public AbortSignal. The real constrained-link call stays pending and retains its",
+    "ephemeral consumer.",
+    "",
+    "M2 restores one whole-pending pull. The shipped HTTP follow-up is starved after the cancelled DM",
+    "read and cell 6.9 turns red.",
+    "",
+    "M3 disables the rolling tail eviction. A widened history window then returns its oldest limit",
+    "messages instead of the newest N.",
+    "",
+    "M4 removes the dashboard signal from channel reads. The focused web seam names the missed source.",
+    "",
+    "All anchors are unique code-only spans. Core mutants rebuild before their public entry-point suites."
+  ],
+  "mutations": [
+    {
+      "name": "channelHistory drops the caller signal before either JetStream pull stage",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      chatSubject(this.space, \"*\", \"*\", channel),\n      opts?.limit ?? 100,\n      undefined,\n      opts?.signal,\n    );",
+      "replace": "      chatSubject(this.space, \"*\", \"*\", channel),\n      opts?.limit ?? 100,\n    );",
+      "expectRed": "✗ FAIL: PUBLIC REPRO: abort settles channelHistory as AbortError instead of leaving it pending",
+      "cell": "✗ FAIL: PUBLIC REPRO: abort settles channelHistory as AbortError instead of leaving it pending",
+      "completionMarker": "HISTORY CANCELLATION:"
+    },
+    {
+      "name": "an aborted history window asks the broker for its entire pending backlog in one pull",
+      "file": "packages/core/src/endpoint.ts",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:web-bounded-aggregation",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "completionMarker": "web bounded-aggregation smoke:",
+      "find": "      const iter = await consumer.consume({ max_messages: Math.min(pending, 32) });",
+      "replace": "      const iter = await consumer.fetch({ max_messages: pending });",
+      "expectRed": "6.9 the request following a cancelled read answers instead of being starved by abandoned work",
+      "cell": "6.9 the request following a cancelled read answers instead of being starved by abandoned work"
+    },
+    {
+      "name": "the rolling window stops after the first limit messages instead of reaching the window ceiling",
+      "file": "packages/core/src/endpoint.ts",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:history-recent",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "find": "          if (delivered >= pending) { complete = true; break; }",
+      "replace": "          if (delivered >= Math.min(pending, limit)) { complete = true; break; }",
+      "expectRed": "limit=10 returns the NEWEST ten",
+      "cell": "limit=10 returns the NEWEST ten"
+    },
+    {
+      "name": "the dashboard starts channel reads without its response-deadline signal",
+      "file": "implementations/web/src/web.ts",
+      "command": "pnpm smoke:history-cancellation && pnpm smoke:web-history-cancellation",
+      "completionMarker": "WEB HISTORY CANCELLATION:",
+      "find": "          (await ep.channelHistory(ch.channel, { limit, signal })).map((msg) => ({ mode: \"chat\" as const, channel: ch.channel, msg })),",
+      "replace": "          (await ep.channelHistory(ch.channel, { limit })).map((msg) => ({ mode: \"chat\" as const, channel: ch.channel, msg })),",
+      "expectRed": "every started history source receives the shared cancellation signal",
+      "cell": "every started history source receives the shared cancellation signal"
+    }
+  ]
+}
