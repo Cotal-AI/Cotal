@@ -1,0 +1,25 @@
+{
+  "suite": "packages/core/smoke/standing-renewal-auth.smoke.ts",
+  "guard": "a creds-source endpoint never presents its cached credential after that credential has expired",
+  "command": "pnpm smoke:standing-renewal",
+  "completionMarker": "STANDING RENEWAL SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/standing-renewal-expiry.json",
+  "why": [
+    "The endpoint's pre-connect refresh is deliberately best-effort after the first connection. If",
+    "the source is down when the cached cred expires, removing this guard restores the reported",
+    "behavior exactly: connectAndBind presents credential material it has already decoded as expired.",
+    "The live smoke captures the disposable broker's authentication-expired denial, so the named",
+    "cell proves the real dial path reached the broker rather than only exercising a local parser."
+  ],
+  "mutations": [
+    {
+      "name": "the creds pre-dial expiry guard is removed",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    const credsExp = this.currentCreds && credsClaims(this.currentCreds).exp;\n    if (typeof credsExp === \"number\" && credsExp * 1000 <= Date.now())\n      throw new Error(\n        this.credsSource\n          ? \"this endpoint's creds have expired and renewal is failing - not presenting the expired credential to the broker; retrying with backoff\"\n          : \"this endpoint's creds have expired and it holds no creds source to renew them - replace the credential and rebuild the endpoint (pass a creds FUNCTION for standing renewal)\",\n      );\n",
+      "replace": "",
+      "expectRed": "a rebuild presents cached expired creds to the broker ZERO times after renewal fails",
+      "cell": "a rebuild presents cached expired creds to the broker ZERO times after renewal fails",
+      "note": "Deleting the block is the issue's pre-fix behavior and leaves the tree compiling. The source fails twice, so the first reconnect dials the cached expired cred and the broker logs the denial before the source recovers."
+    }
+  ]
+}
