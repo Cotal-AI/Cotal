@@ -32,7 +32,7 @@
     {
       "name": "Jcode credential mirror unlink follows the destination path",
       "file": "extensions/connector-jcode/src/private-state.ts",
-      "find": "      unlinkSync(containedPath(dirFd, base));",
+      "find": "      unlinkSync(containedPath(holder.fd, base));",
       "replace": "      rmSync(destination, { force: true });",
       "expectRed": "parent-swap after the parent is pinned does not delete outside",
       "cell": "parent-swap after the parent is pinned does not delete outside"
@@ -40,7 +40,7 @@
     {
       "name": "Jcode credential mirror copy follows the destination path",
       "file": "extensions/connector-jcode/src/private-state.ts",
-      "find": "      renameSync(temp, containedPath(dirFd, base));",
+      "find": "      renameSync(temp, containedPath(holder.fd, base));",
       "replace": "      renameSync(temp, join(dirname(destination), base));",
       "expectRed": "parent-swap after the write parent is pinned does not copy outside",
       "cell": "parent-swap after the write parent is pinned does not copy outside"
