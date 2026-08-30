@@ -1,7 +1,7 @@
 {
   "suite": "packages/core/smoke/tool-list-announce.smoke.ts",
   "guard": "a connection-changing op branches on supportsToolListAnnounce, never on a connector name; undeclared is refuse, not a no-op",
-  "command": "pnpm smoke:tool-list-announce",
+  "command": "tsx packages/core/smoke/tool-list-announce.smoke.ts",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/tool-list-announce.json",
   "why": [
     "Issue #1004. The advertised tool list depends on the connection. MCP connectors can announce",
