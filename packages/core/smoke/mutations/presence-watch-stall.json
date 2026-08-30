@@ -1,0 +1,12 @@
+{
+  "command": "pnpm smoke:presence-watch-stall",
+  "mutations": [
+    {
+      "name": "S1 the freshness gate is dropped, so a silent watch still ages every peer out: the observer reports 3 offline verdicts and the online list empties",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (this.lastPresenceWatchAt !== 0 && now - this.lastPresenceWatchAt > this.ttlMs) {\n      this.setPresenceViewFresh(false);\n      return;\n    }\n",
+      "replace": "",
+      "expectRed": "1.4 sweep did NOT emit a wholesale offline verdict"
+    }
+  ]
+}

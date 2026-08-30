@@ -696,3 +696,9 @@ smoke:workflow-concurrency
 # the suite. This compiler-API intersection checks every named workspace import against the package's
 # public exports. Appended so every existing shard assignment remains unchanged.
 smoke:workspace-import-exports
+# A stalled presence KV-watch must mark the observer view stale rather than sweep every
+# peer offline. The endpoint cell holds the watch through a TCP proxy; the web cell drives
+# the shipped presence-view → stale-pill path. Appended so every existing shard assignment
+# remains unchanged.
+smoke:presence-watch-stall
+smoke:web-presence-view
