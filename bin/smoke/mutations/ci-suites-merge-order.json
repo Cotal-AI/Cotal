@@ -1,0 +1,23 @@
+{
+  "suite": "bin/smoke/ci-suites.smoke.ts",
+  "guard": "simultaneous ci-suites tail appends conflict instead of silently taking union order and moving pre-existing suites between shards",
+  "command": "pnpm smoke:ci-suites",
+  "completionMarker": "SUITE COMPLETE",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/ci-suites-merge-order.json",
+  "why": [
+    "The union merge driver preserves both simultaneous tail appends but cannot preserve both sides' claim to be last. On PR #981 it repeatedly placed the branch block before main's newer suites, moving those pre-existing suites onto different positional shards without a conflict.",
+    "",
+    "The regression drives Git in a scratch repository. Restoring merge=union must make the merge clean and redden the named conflict assertion. The mutation anchor is the attribute line itself, with no comment text in the match."
+  ],
+  "mutations": [
+    {
+      "name": "restore the union merge driver that silently orders simultaneous tail appends",
+      "file": ".gitattributes",
+      "find": "bin/smoke/ci-suites.txt !merge",
+      "replace": "bin/smoke/ci-suites.txt merge=union",
+      "expectRed": "✗ FAIL: simultaneous tail appends conflict instead of silently choosing shard-changing order",
+      "cell": "simultaneous tail appends conflict instead of silently choosing shard-changing order"
+    }
+  ],
+  "grades": "tool"
+}
