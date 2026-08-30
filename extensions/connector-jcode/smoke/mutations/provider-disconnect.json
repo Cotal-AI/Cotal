@@ -12,14 +12,14 @@
       "file": "extensions/connector-jcode/src/host.ts",
       "find": "    connected.on(\"close\", () => void recoverBridge(connected));",
       "replace": "    connected.on(\"close\", () => void shutdown(1));",
-      "expectRed": "provider disconnect survives a transient replacement loss inside the bounded recovery window (#971)"
+      "expectRed": "synthetic transient recovery attach failure"
     },
     {
       "name": "M2 replace a disconnected client but forget the owned session",
       "file": "extensions/connector-jcode/src/host.ts",
       "find": "              replacement.attachSession(sessionId),",
       "replace": "              new Promise(() => {}),",
-      "expectRed": "provider disconnect survives a transient replacement loss inside the bounded recovery window (#971)"
+      "expectRed": "recovery retry or seat exit after the transient attach loss"
     },
     {
       "name": "M3 attach the replacement but leave the broken client active",
