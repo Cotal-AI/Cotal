@@ -361,6 +361,9 @@ smoke:opencode-run-error
 # one drain past the swap bound on purpose, so it is the slower of the pair.
 smoke:opencode-events-release
 smoke:goal-follow
+# Spawn refusals carry the lifecycle facts the manager already has (blocked op, head
+# state, opId, remedy) instead of collapsing to a connector timeout (#873).
+smoke:spawn-lifecycle-state
 smoke:required-arg-seam
 smoke:attach-stdin
 

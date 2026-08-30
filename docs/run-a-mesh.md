@@ -320,7 +320,9 @@ the normal takeover. A live holder, an incomplete sweep, or an unreachable deliv
 refuses. Silence is never evidence of death, and there is no TTL. Use `cotal reconcile-gate` when the
 boot
 path cannot run (daemon down, a non-manager endpoint, or you want to lift the freeze without
-starting a manager).
+starting a manager). A spawn that hits the same frozen gate names that verb in the refusal
+(`blockedOp=registration`, the holding `opId`, `remedy=cotal reconcile-gate`) instead of a
+wait-timeout: the facts were always in the manager log; they now reach the spawn caller too.
 
 ## When something looks absent
 

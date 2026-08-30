@@ -84,7 +84,7 @@ const ANNOTATIONS = {
     availability:
       "capability-gated: injected only for personas declaring `capabilities: [spawn]` (auth mode); open mode is permissive",
     notes:
-      "Failure modes are distinct: a permission denial names the missing capability; an unreachable manager is reported as such.",
+      "Failure modes are distinct: a permission denial names the missing capability; an unreachable manager is reported as such; a lifecycle barrier that already holds the actor (frozen issuance gate, retiring alias) names the blocked op, head state, opId, and the remedy when one exists, rather than a wait-timeout.",
   },
   cotal_feedback: {
     effect: "sends data to an external HTTPS intake (network egress)",

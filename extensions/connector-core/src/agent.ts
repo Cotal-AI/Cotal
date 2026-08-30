@@ -13,6 +13,7 @@ import {
   EpEnvelopeError,
   isPublishPermissionDenied,
   unansweredRequest,
+  renderLifecycleBlocked,
   type EpAttributedReply,
   type EpVerbTarget,
   type ControlReply,
@@ -1126,11 +1127,19 @@ export class MeshAgent extends EventEmitter {
           ok: false,
           error: unansweredRequest(e)
             ? `${e.message} (no responder answered - a manager may be down, or this credential holds no "${command}" capability and the broker denied the request)`
-            : `${e.code}: ${e.message}`,
+            : renderLifecycleBlocked(`${e.code}: ${e.message}`, e),
+          ...(e.details ? { details: e.details } : {}),
         };
       return { ok: false, error: (e as Error).message };
     }
-    if (r.reply.ok !== true) return { ok: false, error: r.reply.error?.message ?? r.reply.error?.code ?? "error" };
+    if (r.reply.ok !== true) {
+      const raw = r.reply.error?.message ?? r.reply.error?.code ?? "error";
+      return {
+        ok: false,
+        error: renderLifecycleBlocked(raw, r.reply.error),
+        ...(r.reply.error?.details ? { details: r.reply.error.details } : {}),
+      };
+    }
     return { ok: true, ...(r.reply.data !== undefined ? { data: r.reply.data } : {}) };
   }
 
