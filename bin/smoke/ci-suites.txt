@@ -389,7 +389,6 @@ smoke:web-channel-alias
 # inline enforced here at one boundary instead.
 smoke:lang-engine
 
-
 # The source transform: the emitted module's surface, closed over the seam,
 # reaching no unruled member, pure in its source, one rule per admitted node type. The differential
 # suite against the walker is the primary gate and lands with the engine host's `__ctx`.
@@ -699,9 +698,6 @@ smoke:workflow-concurrency
 # assignments unchanged.
 smoke:retirement-wedge:auth
 
-# CI must distinguish a live job that reaches its own timeout from an intentionally superseded PR
-# revision. Broker-free: pure verdict cases plus static binding to the real workflow aggregate.
-smoke:live-job-conclusion
 # Most smoke trees are still outside their package TypeScript projects. A type-only import from a
 # workspace package can therefore name something the package never exported and vanish when tsx runs
 # the suite. This compiler-API intersection checks every named workspace import against the package's
