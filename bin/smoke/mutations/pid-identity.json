@@ -41,9 +41,9 @@
       "file": "implementations/cli/src/lib/delivery-proc.ts",
       "find": "  const identity = verifyIdentityPin(p);\n  if (identity.kind === \"mismatch\") throw identityRefusal(\"the delivery daemon\", p, identity.record, identity.liveToken);\n  if (identity.kind !== \"match\" && identity.kind !== \"gone\") throw identityUncertaintyRefusal(\"the delivery daemon\", p, identity);",
       "replace": "  void verifyIdentityPin; void identityRefusal; void identityUncertaintyRefusal;",
-      "expectRed": "E1 a LEGACY (unpinned) live record is refused loud, never signalled",
+      "expectRed": "A1 a REUSED pid (pin mismatch) is REFUSED by stopDelivery, never signalled",
       "cell": "E1 a LEGACY (unpinned) live record is refused loud, never signalled",
-      "note": "Removes the gate entirely at one real call site: the pre-fix shape verbatim. E1 goes red because the legacy record is signalled instead of refused; A1 reddens too, but E1 is the named distinct acceptance for legacy PID-only records.",
+      "note": "Removes the gate entirely at one real call site: the pre-fix shape verbatim. The suite is fail-fast, so the FIRST cell on that path reddens: A1 (the mismatch record is signalled, sent goes 1). E1's legacy refusal sits behind A1 on the same path and would redden in a non-fail-fast run; A1 is the named kill, and M2's distinct value over M1 is proving the CALL SITE routes through the seam, not the shared verdict alone.",
       "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
       "afterRestore": "pnpm build > /dev/null"
     }
