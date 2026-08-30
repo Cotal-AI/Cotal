@@ -467,13 +467,23 @@ export async function submitAndFollowGoal(
   try {
     const attributed = await submit();
     if (attributed.reply.ok !== true) return attributed; // refuse at accept — surface as-is
-    const goalId = (attributed.reply.data as { goalId?: unknown } | undefined)?.goalId;
+    const acceptance = attributed.reply.data as { goalId?: unknown; readinessDeadlineMs?: unknown } | undefined;
+    const goalId = acceptance?.goalId;
     if (typeof goalId !== "string") return attributed; // not an action reply — pass through
+    // A bounded action's owner chooses its readiness budget at acceptance. The follow must outlive
+    // THAT accepted budget, not only the caller's generic request window: otherwise a connector can
+    // lawfully still be booting when its caller reports a timeout and invites a duplicate retry.
+    // Keep the explicit caller deadline as a floor for commands whose acceptance carries no bound.
+    const readinessDeadlineMs = acceptance?.readinessDeadlineMs;
+    const followDeadlineMs = typeof readinessDeadlineMs === "number"
+      && Number.isSafeInteger(readinessDeadlineMs) && readinessDeadlineMs >= 0
+      ? Math.max(deadlineMs, readinessDeadlineMs + 10_000)
+      : deadlineMs;
     // A denial that has ALREADY arrived must not be waited out: it is knowable now, and holding the
     // caller to its deadline is what turns a grant problem into a retry (the cell that caught this
     // measured 20004ms of a 20000ms budget with the right message attached to it).
     const terminal = terminals.get(goalId) ?? (subError !== undefined ? undefined : await new Promise<{ state: string; data?: unknown } | undefined>((resolve) => {
-      const t = setTimeout(() => resolve(terminals.get(goalId)), deadlineMs);
+      const t = setTimeout(() => resolve(terminals.get(goalId)), followDeadlineMs);
       waiters.set(goalId, () => { clearTimeout(t); resolve(terminals.get(goalId)); });
     }));
     if (terminal === undefined && subError !== undefined) {
@@ -500,7 +510,7 @@ export async function submitAndFollowGoal(
       // reported this had already come up and were messaging peers. So say the deadline is about
       // the WAIT, not the work, and warn about the one action that turns a false negative into real
       // damage: a retry, which submits a SECOND goal and duplicates whatever the first one did.
-      return { ...attributed, reply: { ...attributed.reply, ok: false, data: undefined, error: { code: "deadline-exceeded", message: `the goal "${goalId}" was accepted but produced no terminal within ${deadlineMs}ms; this is a timeout on the WAIT, not evidence the goal failed - it may already have succeeded, and may still succeed. Read its outcome with 'ps'/'inspect' before acting; do NOT retry on this alone, a retry submits a second goal and duplicates the effect (SPEC 13.6)` } } };
+      return { ...attributed, reply: { ...attributed.reply, ok: false, data: undefined, error: { code: "deadline-exceeded", message: `the goal "${goalId}" was accepted but produced no terminal within ${followDeadlineMs}ms; this is a timeout on the WAIT, not evidence the goal failed - it may already have succeeded, and may still succeed. Read its outcome with 'ps'/'inspect' before acting; do NOT retry on this alone, a retry submits a second goal and duplicates the effect (SPEC 13.6)` } } };
     if (terminal.state === "succeeded")
       return { ...attributed, reply: { ...attributed.reply, ok: true, ...(terminal.data !== undefined ? { data: terminal.data } : { data: undefined }), error: undefined } };
     const d = (terminal.data ?? {}) as { error?: unknown; reason?: unknown };

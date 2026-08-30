@@ -75,7 +75,8 @@ const envFor = (o: LaunchOpts): Record<string, string> => ({
   COTAL_ID: String(o.id), COTAL_NAME: o.name, PATH: process.env.PATH ?? "",
   ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
 });
-registry.register({ kind: "connector", name: "e2e-stub", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: "node", args: [STUB], env: envFor(o) }) } as Connector);
+const CONNECTOR_READINESS_MS = 45_000;
+registry.register({ kind: "connector", name: "e2e-stub", requires: ["node"], readinessTimeoutMs: CONNECTOR_READINESS_MS, buildLaunch: (o): LaunchSpec => ({ command: "node", args: [STUB], env: envFor(o) }) } as Connector);
 
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 // The §13.2 one-rail currency reader for a static mesh: the manager's processEpoch is 0 (no
@@ -127,8 +128,9 @@ try {
   check("a bad spawn field is bad-request at the FETCHED-then-recompiled input contract (not a hand-written schema)", badCode === "bad-request", badCode);
   // P2 item 2: spawn is an ACTION - invoke returns the acceptance floor (before the agent is live).
   const rSpawn = await invokeCommand(nc, space, service, "spawn", { name: "w1", agent: "e2e-stub", cwd: repoRoot }, { currentEpoch, deadlineMs: 30_000 });
-  const acc = (rSpawn.reply.data ?? {}) as { name?: string; goalId?: string };
-  check("invoke spawn accepts the goal (acceptance floor: name + goalId)", rSpawn.reply.ok === true && acc.name === "w1" && typeof acc.goalId === "string", rSpawn.reply);
+  const acc = (rSpawn.reply.data ?? {}) as { name?: string; goalId?: string; readinessDeadlineMs?: number };
+  check("invoke spawn accepts the goal with the exact connector readiness budget a follower must outlive",
+    rSpawn.reply.ok === true && acc.name === "w1" && typeof acc.goalId === "string" && acc.readinessDeadlineMs === CONNECTOR_READINESS_MS, rSpawn.reply);
   // Poll the managed set until the agent joins - its id + lifecycleUid are the targeting coordinates.
   const M = mgr as unknown as { agents: Map<string, { id: string; lifecycleUid: string }> };
   let live: { id: string; lifecycleUid: string } | undefined;

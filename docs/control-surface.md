@@ -63,6 +63,7 @@ up, the manager accepts the goal and returns the allocated identity at once:
   "name": "reviewer-2",
   "owner": "u_...", "actor": "reviewer", "uid": "...",
   "goalId": "...", "fingerprint": "...",
+  "readinessDeadlineMs": 30000,
   "executor": { "lifecycleUid": "...", "epoch": 3 }
 }
 ```
@@ -81,6 +82,11 @@ names the agent and says to inspect it rather than re-issue, since re-issuing af
 that in fact succeeded mints a duplicate. A committer that supplies no diagnosis falls back to
 "the success signal did not arrive within the readiness deadline". The agent's own eventual
 state is then observable on its presence record.
+
+The acceptance carries that exact `readinessDeadlineMs`. A synchronous follower treats its own
+request deadline as a floor and waits through the accepted readiness budget plus delivery margin,
+so a connector-specific slow boot cannot be reported as a caller timeout while the manager is
+still legitimately waiting for its terminal.
 
 ## Instance routing
 

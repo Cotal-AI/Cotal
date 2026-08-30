@@ -152,13 +152,13 @@ const SPAWN_INPUT_SCHEMA = {
 
 /** `spawn` success output (P2 item 2): the ACTION ACCEPTANCE floor — the ALLOCATED agent identity
  *  (name + the owner/actor/uid addressing triple item 1 addresses by) plus the goal coordinates
- *  (goalId = the request id) and the executor coordinate (the manager incarnation its terminal
- *  fences on). No secret material (pin 7). The spawned identity + outcome ride the goal's progress +
- *  terminal, not this reply — the reply no longer blocks on the ~30s readiness wait. */
+ *  (goalId = the request id), the accepted readiness budget a synchronous follower must outlive,
+ *  and the executor coordinate (the manager incarnation its terminal fences on). No secret material
+ *  (pin 7). The spawned identity + outcome ride the goal's progress + terminal, not this reply. */
 const SPAWN_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["name", "owner", "actor", "uid", "goalId", "fingerprint", "executor"],
+  required: ["name", "owner", "actor", "uid", "goalId", "fingerprint", "readinessDeadlineMs", "executor"],
   properties: {
     name: { type: "string" },
     owner: { type: "string" },
@@ -166,6 +166,7 @@ const SPAWN_OUTPUT_SCHEMA = {
     uid: { type: "string" },
     goalId: { type: "string" },
     fingerprint: { type: "string" },
+    readinessDeadlineMs: { type: "integer", minimum: 1 },
     executor: {
       type: "object",
       additionalProperties: false,
