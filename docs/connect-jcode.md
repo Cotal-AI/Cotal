@@ -120,11 +120,13 @@ connected notice.
 For a foreground launch, the TUI opens as soon as the session is ready, before the readiness turn,
 so it streams boot activity instead of leaving the terminal blank. Presence still begins only after
 the readiness proof passes. An inbound peer message then wakes a Harness API turn. A directed message
-that arrives while this Cotal-owned turn is active enters Jcode's session-owned soft-interrupt queue,
-which incorporates it at a safe provider or tool boundary. Ambient channel traffic stays buffered for
-the next turn. The host marks presence working while the turn runs and acknowledges every initial or
-soft-interrupted inbox id only after that containing turn succeeds. A failed turn or private Harness
-replacement leaves the ids unacknowledged for mesh redelivery. `cotal_inbox` pulls only buffered quiet
+that arrives while the Harness session is busy (a Cotal-owned `run()`, a TUI-owned turn, or an
+advisory idle pulse between tool rounds of a still-open Cotal-owned run) enters Jcode's session-owned
+soft-interrupt queue. Ambient channel traffic stays buffered for the next turn. The host marks
+presence working while the session is busy, publishes `activity` naming automatic queue depth and age
+while anything remains uncommitted, and acknowledges every initial or soft-interrupted inbox id only
+after that containing turn succeeds. A failed Cotal-owned turn or private Harness replacement leaves
+those ids unacknowledged for mesh redelivery. `cotal_inbox` pulls only buffered quiet
 ambient from that host-owned queue; its shared optional `peek` argument is supported, so `peek: true`
 shows those messages without clearing them.
 
