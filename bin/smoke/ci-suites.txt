@@ -690,14 +690,14 @@ smoke:agent-secret-segmentation
 # spellings, one of them the release workflow. The property is only observable on main after a
 # merge, so it needs a static guard. Appended so every existing shard assignment remains unchanged.
 smoke:workflow-concurrency
-# The shard-stability gate must compare exact parsed indices, not only `index % shardCount`: moving
-# a suite by one complete shard count preserves its runner while violating the append-only registry
-# invariant. The property smoke inserts four names mid-file, grades every common suite, and asserts
-# the exact examined count. Appended so every existing shard assignment remains unchanged.
-smoke:shard-stability
-
 # Most smoke trees are still outside their package TypeScript projects. A type-only import from a
 # workspace package can therefore name something the package never exported and vanish when tsx runs
 # the suite. This compiler-API intersection checks every named workspace import against the package's
 # public exports. Appended so every existing shard assignment remains unchanged.
 smoke:workspace-import-exports
+
+# The shard-stability gate must compare exact parsed indices, not only `index % shardCount`: moving
+# a suite by one complete shard count preserves its runner while violating the append-only registry
+# invariant. The property smoke inserts four names mid-file, grades every common suite, and asserts
+# the exact examined count. Appended so every existing shard assignment remains unchanged.
+smoke:shard-stability
