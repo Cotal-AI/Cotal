@@ -145,7 +145,7 @@ replaces the data and clears the mark.
 **When the observer itself goes deaf.** Presence liveness is derived from heartbeat timestamps, so
 a watch that hears nothing for longer than the TTL used to flip every peer `offline` at once. The
 sidebar is an online-only list, so the page emptied while the browser's connection pill stayed
-live - that pill is the local SSE link, not the observer's upstream. Whole-bucket silence past
+live: that pill is the local SSE link, not the observer's upstream. Whole-bucket silence past
 TTL is now a fact about the *view*: the header says `stale: roster` (`observer presence watch
 silent since T`) and the last-known online list stays on screen until the watch delivers again.
 A single peer whose own heartbeat lapses while the watch is live still drops out. A stall
@@ -156,9 +156,7 @@ The all-activity read is bounded, so on a slow link it can
 come back SHORT rather than late: the header then says `partial: activity`, and the page reports how
 many sources answered out of how many were asked and names the ones that did not. A short page and a
 complete one are never the same bytes. On a link too slow to finish anything the honest answer is
-zero sources answered, and you keep looking at the last good data with the marker up. When the
-deadline wins, Cotal also cancels the unfinished history pulls and removes their ephemeral consumers;
-an abandoned poll does not keep occupying the link and starve the next one.
+zero sources answered, and you keep looking at the last good data with the marker up.
 
 The open channel's own history read is bounded by the same deadline. It is a single read, so there
 is no short page to serve: it either produced the messages or it refuses, naming the channel and the
