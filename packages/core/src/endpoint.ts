@@ -4363,7 +4363,7 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   private handleKvEntry(e: KvEntry): void {
-    this.notePresenceWatchDelivery();
+    this.lastPresenceWatchAt = Date.now();
     if (e.operation === "DEL" || e.operation === "PURGE") {
       this.markOffline(e.key);
       return;
@@ -4386,6 +4386,18 @@ export class CotalEndpoint extends EventEmitter {
     if (raw.card?.id !== id) return;
     const prev = this.roster.get(id);
     const stale = Date.now() - raw.ts > this.ttlMs;
+    // A watch recovering from a stall replays the bucket. Those PUTs still carry the publisher's
+    // pre-stall timestamps, so they look TTL-expired even though the peers kept heartbeating on
+    // the broker. Materializing them as offline is the empty-to-full flicker #1045 named: the
+    // observer's catch-up, not N deaths. Keep last-known rows, stay view-stale, and wait for a
+    // live timestamp (or an explicit offline/delete) before changing a known peer.
+    if (stale && raw.status !== "offline") {
+      if (prev) return;
+      this.roster.set(id, this.toOffline(raw));
+      this.emit("roster", this.getRoster());
+      return;
+    }
+    this.setPresenceViewFresh(true);
     // Any offline materialization (a stale snapshot OR a graceful-leave record) drops the advisory
     // attention fields — an offline peer must not carry a stale `[focus]`/`locally muted` hint.
     const p: Presence =
@@ -4446,13 +4458,6 @@ export class CotalEndpoint extends EventEmitter {
     this.roster.set(id, offline);
     this.emit("presence", { type: "offline", presence: offline });
     this.emit("roster", this.getRoster());
-  }
-
-  /** Record that the presence watch delivered *something*. Marks the view fresh again if it
-   *  had gone stale (a replay burst after a stall is one recovery, not N peer-deaths). */
-  private notePresenceWatchDelivery(): void {
-    this.lastPresenceWatchAt = Date.now();
-    this.setPresenceViewFresh(true);
   }
 
   private setPresenceViewFresh(fresh: boolean): void {

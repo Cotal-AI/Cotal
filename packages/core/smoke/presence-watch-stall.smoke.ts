@@ -180,8 +180,11 @@ try {
   })();
   ok("1.8 on recovery the view goes fresh again (the watch delivered, not a reconnect)",
     recovered === true, observer.presenceView());
-  ok("1.9 and the roster is still the same live peers, not an empty-to-full flicker of offlines",
-    live(observer).length === PEERS && offlined === 0, statusOf(observer));
+  const recoveryOfflines = presenceTypes.filter((t) => t === "offline").length - offlineBefore;
+  const recoveryJoins = presenceTypes.filter((t) => t === "join").length;
+  ok("1.9 recovery does NOT emit per-peer offline verdicts (a pre-resume count cannot see the flicker)",
+    recoveryOfflines === 0 && live(observer).length === PEERS,
+    { recoveryOfflines, recoveryJoins, presenceTypes, status: statusOf(observer) });
 
   // POSITIVE CONTROL: the gate is whole-bucket silence, not "never sweep". A peer that
   // publishes once and then never heartbeats ages out while others keep the watch live.
