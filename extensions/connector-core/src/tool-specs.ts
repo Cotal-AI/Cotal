@@ -560,12 +560,15 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         "and the time of the latest successful non-empty inbox drain when one has occurred. A " +
         "retained failure is reported as `connectionIssue` while it is the CURRENT reason, and as " +
         "`lastConnectionIssue` on a stopped session, where it is a post-mortem rather than a live " +
-        "problem. Read-only and local: it reads this session's MeshAgent directly and does not call " +
+        "problem. Also reports how many automatic (connector-managed) deliveries are still queued " +
+        "and the local receive time of the oldest of those, so a seat that cannot be steered can " +
+        "say so. Read-only and local: it reads this session's MeshAgent directly and does not call " +
         "the manager or the broker.",
       run(agent) {
         const state = agent.connectionState;
         const issue = agent.connectionIssue;
         const lastDrainedAt = agent.lastInboxDrainedAt;
+        const oldestAutomaticAt = agent.oldestAutomaticReceivedAt();
         // The issue survives stop() by design, so reporting it under the same key in both cases
         // would tell a reader that a cleanly stopped session is currently broken. The key names
         // which one it is; `state` says which to expect.
@@ -584,8 +587,10 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
               // caller has to take our word for the one distinction the redesign exists to make.
               stopping: agent.stopping,
               bufferedCount: agent.inboxCount(),
+              automaticCount: agent.inboxCount("automatic"),
               ...issueField,
               ...(lastDrainedAt !== undefined ? { lastDrainedAt: new Date(lastDrainedAt).toISOString() } : {}),
+              ...(oldestAutomaticAt !== undefined ? { oldestAutomaticAt: new Date(oldestAutomaticAt).toISOString() } : {}),
             },
             null,
             2,
