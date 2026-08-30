@@ -76,10 +76,17 @@ so provider logins work without copying its transcript/config tree into the seat
 Jcode process does not inherit `COTAL_*` values or the Cotal launch-material pointer.
 
 If a provider failure closes the private Harness API connection during a mesh-driven turn, the
-connector leaves that turn's inbox batch unacknowledged and makes one private replacement
-connection to the same session. The seat reports `waiting` while it reconnects, then redrives that
-unacknowledged batch only after the session attaches. A failed replacement, or a second disconnect,
-ends the seat rather than silently retrying bridges without bound.
+connector leaves that turn's inbox batch unacknowledged and opens one bounded recovery window for a
+private replacement connection to the same session. A transient launch or attach failure retries
+inside that window, so a loaded host gets the same result as a fast one without creating an
+unbounded connector relaunch loop. The seat reports `waiting` while it reconnects, then redrives
+that unacknowledged batch only after the session attaches. Each failed replacement must be proven
+stopped before another launch. A permanent Harness refusal, including an invalid request, missing
+session, protocol mismatch, missing binary, or socket permission denial, ends the seat immediately;
+another launch cannot change it. An unprovable teardown, the recovery window expiring, or a second
+disconnect after a successful replacement also ends the seat. An unrecognized Harness SDK error
+code remains transient by default and retries inside the same bounded window; new permanent codes
+must be added to the explicit classifier and its exact-count regression.
 
 Jcode currently supports **stdio** MCP servers. The connector writes only its own `cotal` entry to
 the private `JCODE_HOME/mcp.json`; it starts a stdio MCP bridge for that entry and relays its calls

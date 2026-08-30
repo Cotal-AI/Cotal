@@ -4,7 +4,7 @@ import { existsSync, lstatSync, mkdirSync, openSync, closeSync, rmSync, writeFil
 import { createServer, type Server } from "node:net";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { JcodeClient, launchInstance, type ApiEvent, type LaunchedInstance } from "@1jehuang/jcode-sdk";
+import { HarnessError, JcodeClient, launchInstance, type ApiEvent, type LaunchedInstance } from "@1jehuang/jcode-sdk";
 import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
 import { mirrorJcodeCredentials, shortSocketHome } from "./private-state.js";
 import { captureProcessIdentity, launchIdentityEnv, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
@@ -31,6 +31,25 @@ import {
 
 const MAX_RELAY_BYTES = 4 * 1024 * 1024;
 const RELAY_TIMEOUT_MS = 30_000;
+export const PERMANENT_BRIDGE_RECOVERY_CODES = new Set([
+  "handshake_failed",
+  "invalid_instance_home",
+  "invalid_request",
+  "jcode_not_found",
+  "unknown_request",
+  "unknown_session",
+  "unsupported_version",
+]);
+export const PERMANENT_BRIDGE_CONNECT_CAUSE_CODES = new Set(["EACCES"]);
+
+/** Recovery retries availability races, not a refusal that another attempt cannot change. */
+export function permanentBridgeRecoveryFailure(error: unknown): error is HarnessError {
+  if (!(error instanceof HarnessError)) return false;
+  if (PERMANENT_BRIDGE_RECOVERY_CODES.has(error.code)) return true;
+  if (error.code === "connect_failed")
+    return PERMANENT_BRIDGE_CONNECT_CAUSE_CODES.has((error.cause as NodeJS.ErrnoException | undefined)?.code ?? "");
+  return false;
+}
 
 interface RelayEndpoint {
   path: string;
@@ -283,7 +302,8 @@ export async function runJcodeHost(): Promise<void> {
   // handle itself: the bridge PID for teardown, and a shutdown it can follow with verification.
   // Bridge recovery relaunches through here too, so the identity slots always name the live tree
   // that stopPrivateJcode must target.
-  const launchPrivateJcode = async (): Promise<JcodeClient> => {
+  const launchPrivateJcode = async (deadline?: number): Promise<JcodeClient> => {
+    const remaining = (): number | undefined => deadline === undefined ? undefined : Math.max(1, deadline - Date.now());
     const exitListenersBefore = new Set(process.listeners("exit"));
     const launchBound = launchIdentityEnv();
     launchIdentityValue = launchBound.value;
@@ -307,13 +327,14 @@ export async function runJcodeHost(): Promise<void> {
         JCODE_NO_AUTO_UPDATE: "1",
         [launchBound.key]: launchBound.value,
       },
+      ...(remaining() !== undefined ? { startupTimeoutMs: remaining() } : {}),
     });
     const sdkExitListeners = process.listeners("exit").filter((listener) => !exitListenersBefore.has(listener));
     for (const listener of sdkExitListeners) process.removeListener("exit", listener);
     if (sdkExitListeners.length !== 1)
       throw new Error(`jcode connector: expected one SDK instance exit hook, found ${sdkExitListeners.length} — refusing unsafe lifecycle ownership`);
     launchIdentity = captureProcessIdentity(instance.process.pid!);
-    return JcodeClient.connect({ socketPath: instance.socketPath });
+    return JcodeClient.connect({ socketPath: instance.socketPath, ...(remaining() !== undefined ? { requestTimeoutMs: remaining() } : {}) });
   };
 
   const launchTui = (): void => {
@@ -357,6 +378,12 @@ export async function runJcodeHost(): Promise<void> {
   let errorRetryMs = ERROR_RETRY_INITIAL_MS;
   let errorRetryTimer: ReturnType<typeof setTimeout> | undefined;
   let consecutiveFailures = 0;
+  /** One bridge recovery remains bounded, but it is bounded by time rather than one launch/attach
+   *  outcome. A loaded host can lose a transient replacement race without turning that into a
+   *  second provider close or an unbounded relaunch loop. */
+  const BRIDGE_RECOVERY_WINDOW_MS = 60_000;
+  const BRIDGE_RECOVERY_RETRY_MS = 1_000;
+  const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
   /** Re-drive after a growing delay, at most one timer in flight, never while shutting down. */
   const scheduleErrorRetry = (): void => {
@@ -560,6 +587,8 @@ export async function runJcodeHost(): Promise<void> {
     driving = false;
     surfacedIds = []; // deliberately unacked; the replacement redrives the durable inbox batch
     void agent.setStatus("waiting").catch(() => {});
+    let lastError: unknown;
+    const deadline = Date.now() + BRIDGE_RECOVERY_WINDOW_MS;
     try {
       // The connector owns the private instance. Stop the whole broken tree before replacing it:
       // a surviving daemon still holds the private home's registry and socket, so a replacement
@@ -567,15 +596,46 @@ export async function runJcodeHost(): Promise<void> {
       // because reconnecting is already true, and the relaunch goes through the same
       // identity-capturing path as startup so teardown targets the replacement tree, not the corpse.
       await stopPrivateJcode();
-      const replacement = await launchPrivateJcode();
       if (!sessionId) throw new Error("jcode connector: Harness connection closed before a session was established");
-      await replacement.attachSession(sessionId);
-      client = replacement;
-      watchClient(replacement);
-      process.stderr.write(`[cotal-jcode] recovered private Harness connection for session ${sessionId}\n`);
-      void agent.setStatus("idle").catch(() => {});
-    } catch {
-      process.stderr.write("[cotal-jcode] private Harness connection closed and its one recovery attempt failed\n");
+      for (;;) {
+        let replacement: JcodeClient | undefined;
+        try {
+          replacement = await launchPrivateJcode(deadline);
+          const attachRemaining = Math.max(1, deadline - Date.now());
+          let attachDeadline: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([
+              replacement.attachSession(sessionId),
+              new Promise<never>((_, reject) => {
+                attachDeadline = setTimeout(() => reject(new Error("jcode connector: recovery attach exceeded its bounded window")), attachRemaining);
+              }),
+            ]);
+          } finally {
+            if (attachDeadline !== undefined) clearTimeout(attachDeadline);
+          }
+          client = replacement;
+          watchClient(replacement);
+          process.stderr.write(`[cotal-jcode] recovered private Harness connection for session ${sessionId}\n`);
+          void agent.setStatus("idle").catch(() => {});
+          break;
+        } catch (error) {
+          lastError = error;
+          await replacement?.close().catch(() => {});
+          await stopPrivateJcode();
+          if (stopping) return;
+          if (permanentBridgeRecoveryFailure(error)) throw error;
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) throw error;
+          process.stderr.write(
+            `[cotal-jcode] private Harness replacement not ready yet; retrying inside its one recovery window: ${(error as Error).message}\n`,
+          );
+          await sleep(Math.min(BRIDGE_RECOVERY_RETRY_MS, remaining));
+        }
+      }
+    } catch (error) {
+      process.stderr.write(
+        `[cotal-jcode] private Harness connection closed and recovery failed: ${((lastError ?? error) as Error).message}\n`,
+      );
       await shutdown(1);
     } finally {
       reconnecting = false;
