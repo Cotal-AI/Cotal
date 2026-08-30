@@ -39,8 +39,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          # The shard-stability check reads ci-suites.txt at the base commit, which a
-          # depth-1 clone does not contain.
+          # The shard-stability check reads the legacy list and suite fragments at the base commit,
+          # which a depth-1 clone does not contain.
           fetch-depth: 0
       - uses: pnpm/action-setup@v6.0.8
       - uses: actions/setup-node@v6
@@ -48,8 +48,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # ci-suites.txt is round-robin `index % count`. Inserting a line mid-file moves every
-      # suite below it while membership, count, and duplicate checks stay green.
+      # The frozen legacy list is round-robin `index % count`; fragments are stable-hashed. This
+      # refuses any edit or topology change that moves a pre-existing suite between runners.
       - name: Smoke chain shard stability
         env:
           BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}

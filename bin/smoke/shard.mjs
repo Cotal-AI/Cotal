@@ -4,9 +4,9 @@
  *
  *   node bin/smoke/shard.mjs <shardIndex> <shardCount>
  *
- * The list is read from `bin/smoke/ci-suites.txt` — the ONE source of truth, so a smoke added there
- * is automatically distributed (no shard membership to hand-maintain). Round-robin
- * (index % count) interleaves the list, which balances runtime better than contiguous slices.
+ * The frozen legacy list is read from `bin/smoke/ci-suites.txt`; new suites are one-file fragments
+ * under `bin/smoke/ci-suites.d/`. Legacy entries keep round-robin `index % count`. Fragment entries
+ * use a stable hash of their suite name, so an independently-merged fragment cannot move another.
  * Each smoke runs in its own `pnpm` subprocess (separate broker/ports) exactly as the serial chain
  * does; the shards run on SEPARATE runners, so there is no cross-smoke port contention within a shard.
  */
