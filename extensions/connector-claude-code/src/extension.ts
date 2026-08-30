@@ -122,6 +122,7 @@ export const claudeConnector: Connector = {
   pluginRoot: PLUGIN_ROOT,
   requires: ["claude"],
   supportsResume: true, // renders `--resume <id> --fork-session` (fork-from, never hijack) — see buildLaunch
+  supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
   launchHint: "press Enter at the dev-channels prompt", // Claude Code opens on that one-time gate
 
   buildLaunch(opts: LaunchOpts): LaunchSpec {

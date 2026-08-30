@@ -113,6 +113,7 @@ export const jcodeConnector: Connector = {
   // per provider AND per model, and the Harness API publishes no ladder to check against — so the
   // tier is carried verbatim and validated at launch by Jcode itself, which owns that catalog.
   supportsModelVariant: true,
+  supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
   listModels: listJcodeModels,
   launchHint: "starting Jcode and joining the mesh (first boot can take several minutes)",
 
