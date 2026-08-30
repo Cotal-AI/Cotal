@@ -372,6 +372,10 @@ async function userLiveSnapshot(target: ReturnType<typeof resolveMeshTarget>, st
 
 async function renderSnapshot(ep: CotalEndpoint, watchBrokerState: boolean): Promise<void> {
   ep.on("error", () => {});
+  // This endpoint is a one-shot read. Awaited reads and their per-row unavailable results own the
+  // verdict, so a recoverable side channel is deliberately quiet rather than duplicated.
+  const ignoreSnapshotWarning = () => {};
+  ep.on("warning", ignoreSnapshotWarning);
   await ep.start();
   try {
     const roster = watchBrokerState ? ep.getRoster() : [];
@@ -502,6 +506,9 @@ async function componentEp(target: MeshTarget): Promise<{ ep: CotalEndpoint; clo
     card: { id: id.id, name: "status-components", kind: "endpoint" },
   });
   ep.on("error", () => {});
+  // Same one-shot policy as renderSnapshot: the command grades the awaited service reply itself.
+  const ignoreComponentWarning = () => {};
+  ep.on("warning", ignoreComponentWarning);
   await ep.start();
   return { ep, close: () => ep.stop().catch(() => {}) };
 }

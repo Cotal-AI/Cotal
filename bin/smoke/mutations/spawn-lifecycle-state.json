@@ -1,0 +1,53 @@
+{
+  "suite": "bin/smoke/spawn-lifecycle-state.smoke.ts",
+  "guard": "a spawn failure returns the lifecycle facts the manager already had (blockedOp, headState, opId, remedy) instead of a connector timeout or opaque string",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/connector-core build && pnpm smoke:spawn-lifecycle-state",
+  "completionMarker": "A. a failed goal terminal carries the lifecycle-blocked facts the manager already had",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/spawn-lifecycle-state.json",
+  "why": [
+    "THE LIVE OCCUPANT. A manager-side lifecycle refusal (frozen issuance gate, retiring",
+    "alias) was knowable at the throw site and died at the ControlReply string boundary.",
+    "The spawn caller then waited out SPEC 13.6 and printed a timeout, or the connector",
+    "scrubbed the rest to 'unknown'. The operator spent the next attempts on the wrong",
+    "layer. This fixture grades the PROPAGATION, not the underlying lifecycle defect.",
+    "",
+    "THREE DROP SITES, THREE MUTATIONS. Follow collapsing a failed terminal to a bare",
+    "message is the wait-timeout twin. MeshAgent.managerInvoke stripping the suffix is",
+    "the peer-facing twin. cotal_spawn ignoring ControlReply.details is the tool twin.",
+    "Any one of them returning is this issue half-alive."
+  ],
+  "mutations": [
+    {
+      "name": "follow drops the lifecycle details off a failed terminal, so the spawn caller sees a bare message",
+      "file": "packages/core/src/endpoint-invoke.ts",
+      "find": "    const merged = details ?? (fromAccept ? [fromAccept] : undefined);\n    return { ...attributed, reply: { ...attributed.reply, ok: false, data: undefined, error: { code: terminal.state, message, ...(merged ? { details: merged } : {}) } } };",
+      "replace": "    return { ...attributed, reply: { ...attributed.reply, ok: false, data: undefined, error: { code: terminal.state, message: raw } } };",
+      "expectRed": "the lifecycle-blocked marker is on the reply the spawn caller sees",
+      "cell": "the lifecycle-blocked marker is on the reply the spawn caller sees",
+      "note": "The follow path used to take only `data.error`/`data.reason` as a string. Restoring that drop means the marker never reaches the spawn caller even when the manager committed it on the terminal. BUILD FIRST: the smoke imports `@cotal-ai/core` through dist/.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "managerInvoke stops rendering the lifecycle suffix, so a thrown envelope becomes a bare code:message",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "            : renderLifecycleBlocked(`${e.code}: ${e.message}`, e),",
+      "replace": "            : `${e.code}: ${e.message}`,",
+      "expectRed": "and the rendered string names blockedOp, headState, opId, and remedy",
+      "cell": "...and the rendered string names blockedOp, headState, opId, and remedy",
+      "note": "Cell C drives a thrown envelope through the real managerInvoke. Without the suffix the structured details may still sit on the ControlReply, but the string an agent reads is the old opaque line. BUILD FIRST: MeshAgent is imported from dist/.",
+      "command": "pnpm --filter @cotal-ai/connector-core build && pnpm smoke:spawn-lifecycle-state",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
+    },
+    {
+      "name": "cotal_spawn ignores ControlReply.details and prints only the raw error string",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "          if (!reply.ok) return err(`Couldn't spawn ${name}: ${renderLifecycleBlocked(reply.error ?? \"manager refused\", reply)}`);",
+      "replace": "          if (!reply.ok) return err(`Couldn't spawn ${name}: ${reply.error ?? \"manager refused\"}`);",
+      "expectRed": "cotal_spawn reports the lifecycle facts, not an opaque manager refusal",
+      "cell": "cotal_spawn reports the lifecycle facts, not an opaque manager refusal",
+      "note": "Cell D stubs spawn with a BARE message plus details, which is exactly the ControlReply shape before this fix. If the tool does not render the details, the operator sees the frozen-gate sentence with no opId and no remedy. BUILD FIRST: cotalToolSpecs is imported from dist/.",
+      "command": "pnpm --filter @cotal-ai/connector-core build && pnpm smoke:spawn-lifecycle-state",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
+    }
+  ]
+}

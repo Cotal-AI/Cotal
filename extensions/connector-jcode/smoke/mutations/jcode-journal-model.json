@@ -12,8 +12,8 @@
     {
       "name": "A1 skip setModel so the journal keeps the harness default",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "    if (config.model) await client.setModel(sessionId, config.model);",
-      "replace": "    if (false) await client.setModel(sessionId, config.model);",
+      "find": "    if (config.model) {\n      try {\n        await client.setModel(sessionId, config.model);",
+      "replace": "    if (false) {\n      try {\n        await client.setModel(sessionId, config.model);",
       "expectRed": "session journal records the requested model pin, not the harness default"
     }
   ],

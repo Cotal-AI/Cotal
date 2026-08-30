@@ -80,6 +80,13 @@ Connector diagnostics are written both to the spawning terminal and to an owner-
 the manager's launch error scrolls away. Public startup failures stay scrubbed to allow-listed
 codes rather than arbitrary Harness API messages.
 
+Credential mirroring is mandatory for managed Jcode seats: each launch atomically refreshes the
+allowlisted Jcode, provider-config, and external-login destinations, and removes a destination when
+its source login was removed. Cleanup addresses only that explicit inventory; transcripts, MCP
+configuration, logs, and other private-home state are untouched. There is no credential-free opt-out
+today because the private instance must reproduce the operator's current provider-login state rather
+than silently start with stale or partial authorization.
+
 If a provider failure closes the private Harness API connection during a mesh-driven turn, the
 connector leaves that turn's inbox batch unacknowledged and opens one bounded recovery window for a
 private replacement connection to the same session. A transient launch or attach failure retries
