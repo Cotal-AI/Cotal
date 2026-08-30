@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
-import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import {
   CotalEndpoint,
@@ -44,7 +44,7 @@ import {
   controlServiceSubject,
   eventChannelPrincipal,
 } from "@cotal-ai/core";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, findCotalRoot, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, findCotalRoot, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SecretStore, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -53,7 +53,7 @@ import {
   type RuntimeMode,
 } from "./runtime/index.js";
 import { AttachEndpoint, type SessionEstablishment } from "./attach-endpoint.js";
-import { makeManagerEndpointEvictor } from "./endpoint-evict.js";
+import { makeManagerEndpointEvictionEvidence, makeManagerEndpointEvictor } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec } from "./launch.js";
@@ -561,6 +561,13 @@ interface ManagedAgent {
   staticCredentialRenewal?: Promise<void>;
 }
 
+interface DurableRuntimeRecord {
+  v: 1;
+  lifecycleUid: string;
+  kind: string;
+  locator: string;
+}
+
 
 /** Runtime hooks the spawn-as-action serve path (P2 item 2) injects into {@link Manager.startAgent}.
  *  Roster boot and the blocking callers pass none (unchanged behavior). */
@@ -699,7 +706,7 @@ export class Manager {
   private readonly installedExtensions: boolean;
   private readonly runtime: Runtime;
   /** Internal test seam. Production leaves this undefined and uses the scoped delivery-admin evictor. */
-  private staticLifecycleEvict?: (principal: string) => Promise<boolean>;
+  private staticLifecycleEvict?: (principal: string) => Promise<import("@cotal-ai/core").EvictionResult>;
   private readonly preserveStopTimeoutMs: number;
   private readonly agents = new Map<string, ManagedAgent>();
   /** Names whose spawn is in flight (reserved synchronously before the provision await) — counted
@@ -1323,7 +1330,7 @@ export class Manager {
 
   /** A cleanup spawned by accepted active-mode work is part of that work for maintenance draining,
    * even where the ordinary control reply remains fire-and-forget. */
-  private trackDeprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"] }, context = ""): void {
+  private trackDeprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"]; handle?: AgentHandle; allowMissingRuntime?: boolean }, context = ""): void {
     this.lifecycleInFlight++;
     void this.deprovision(a)
       .catch((e) => console.error(`deprovision${context ? ` ${context}` : ""} ${a.name} (${a.id}): ${(e as Error).message}`))
@@ -1591,6 +1598,39 @@ export class Manager {
 
   private fileDigestOrEmpty(path: string): string {
     try { return this.fileDigest(path); } catch { return ""; }
+  }
+
+  private runtimeRecordPath(lifecycleUid: string): string {
+    return join(this.workspaceRoot, ".cotal", "runtime", spaceKey(this.space), `${lifecycleUid}.json`);
+  }
+
+  private writeRuntimeRecord(lifecycleUid: string, handle: AgentHandle): void {
+    if (typeof handle.locator !== "string" || handle.locator.length === 0)
+      throw new Error(`runtime "${handle.kind}" did not provide a durable locator; the static slot cannot become active`);
+    const path = this.runtimeRecordPath(lifecycleUid);
+    mkSecretDir(dirname(path));
+    const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    writeFileSync(tmp, JSON.stringify({ v: 1, lifecycleUid, kind: handle.kind, locator: handle.locator } satisfies DurableRuntimeRecord), { mode: 0o600, flag: "wx" });
+    renameSync(tmp, path);
+  }
+
+  private readRuntimeRecord(lifecycleUid: string): DurableRuntimeRecord {
+    const path = this.runtimeRecordPath(lifecycleUid);
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`runtime provenance for lifecycle ${lifecycleUid} is not a regular non-symlink file`);
+    let value: unknown;
+    try { value = JSON.parse(readFileSync(path, "utf8")); }
+    catch (e) { throw new Error(`runtime provenance for lifecycle ${lifecycleUid} is unavailable or malformed: ${(e as Error).message}`); }
+    if (typeof value !== "object" || value === null || Array.isArray(value))
+      throw new Error(`runtime provenance for lifecycle ${lifecycleUid} is not an object`);
+    const row = value as Record<string, unknown>;
+    if (Object.keys(row).length !== 4 || row.v !== 1 || row.lifecycleUid !== lifecycleUid || typeof row.kind !== "string" || row.kind.length === 0 || typeof row.locator !== "string" || row.locator.length === 0)
+      throw new Error(`runtime provenance for lifecycle ${lifecycleUid} does not validate`);
+    return row as unknown as DurableRuntimeRecord;
+  }
+
+  private removeRuntimeRecord(lifecycleUid: string): void {
+    rmSync(this.runtimeRecordPath(lifecycleUid), { force: true });
   }
 
   private resumeEntry(a: ManagedAgent): ManagerResumeAgent {
@@ -2618,7 +2658,7 @@ export class Manager {
    *  keeps its inline publish/live-sub/control grants until key rotation or JWT expiry — cred revocation
    *  is the separate per-user-auth work, not this. Tearing down the durables + ACL row still shrinks the
    *  delivery surface a stale copy could use. */
-  private async deprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"] }): Promise<void> {
+  private async deprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"]; handle?: AgentHandle; allowMissingRuntime?: boolean }): Promise<void> {
     if (!this.auth) return; // open mesh mints no creds/durables — nothing to tear down
     // SINGLE-FLIGHT per (name, lifecycleUid) (INT-2/C): join an in-flight teardown for this exact
     // lifecycle rather than launching a second concurrent one whose delayed name-keyed revoke could
@@ -2634,7 +2674,7 @@ export class Manager {
   }
 
   /** The actual footprint teardown (wrapped by {@link deprovision}'s single-flight). */
-  private async driveDeprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"] }): Promise<void> {
+  private async driveDeprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"]; handle?: AgentHandle; allowMissingRuntime?: boolean }): Promise<void> {
     if (!this.auth) return; // guaranteed by deprovision; re-checked for the deprovisionBroker narrowing
     if (!this.userMode && !a.userOwner) {
       // Unit B: a STATIC lifecycle retires through the F1 terminal barrier — freeze → head
@@ -3007,6 +3047,7 @@ export class Manager {
         };
         const spec = connector.buildLaunch(opts);
         const handle = this.runtime.spawn(a.name, spec, a.launch.cwd);
+        if (this.auth && !this.userMode) this.writeRuntimeRecord(a.lifecycleUid, handle);
         replacement = handle;
         restart.sessionStatePath = spec.sessionStatePath ?? restart.sessionStatePath;
         await this.awaitRecoveredSession(a, sessionId, handle, spec.control);
@@ -3584,7 +3625,7 @@ export class Manager {
     // AFTER provisioning (buildLaunch / runtime.spawn) — the orphan-rollback tears it down. Carries
     // `userOwner` for a user-mode spawn so that rollback runs the revoke+shred branch, not just the
     // static durable teardown (the freelance found this window leaking the managed grant + files).
-    let provisioned: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"] } | undefined;
+    let provisioned: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"]; handle?: AgentHandle } | undefined;
     try {
       // A stable nkey identity assigned at spawn: the public key is the agent's card.id (threaded via
       // COTAL_ID); the seed is retained to mint matching creds later.
@@ -3785,6 +3826,7 @@ export class Manager {
       };
       const spec = connector.buildLaunch(launchOpts);
       const handle = this.runtime.spawn(name, spec, cwd);
+      if (provisioned) provisioned.handle = handle;
       hooks?.onLaunched?.(); // P2 item 2: the "launched" progress edge (process spawned, pre-presence)
       const managed: ManagedAgent = {
         name,
@@ -3839,6 +3881,7 @@ export class Manager {
       // terminalizes (never an untracked orphan). Static auth only; a failed CAS fails the spawn
       // (the finally's rollback then drives the exact-op terminal).
       if (this.auth && !this.userMode) {
+        this.writeRuntimeRecord(lifecycleUid, handle);
         await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: managed.id, lifecycleUid, alias: name }, async (t) => {
           const slot = await readStaticSlot(t, DEV_OWNER, name);
           if (slot === undefined || slot.row.lifecycleUid !== lifecycleUid || slot.row.phase !== "provisioning")
@@ -3902,7 +3945,10 @@ export class Manager {
       // orphan down (detached, fail-loud) so a failed spawn leaves no creds/durables behind (#159 B).
       if (provisioned) {
         const orphan = provisioned;
-        this.trackDeprovision(orphan, "(orphaned spawn)");
+        if (orphan.handle) {
+          try { orphan.handle.stop({ graceful: false }); } catch (e) { console.error(`stop orphaned spawn ${orphan.name}: ${(e as Error).message}`); }
+        }
+        this.trackDeprovision({ ...orphan, allowMissingRuntime: orphan.handle === undefined }, "(orphaned spawn)");
       }
     }
   }
@@ -4312,6 +4358,7 @@ export class Manager {
       if (!Number.isSafeInteger(readinessTimeoutMs) || readinessTimeoutMs <= 0)
         return { ok: false, error: `connector ${connector.name} declares invalid readinessTimeoutMs ${JSON.stringify(connector.readinessTimeoutMs)}; expected a positive safe integer` };
       const handle = this.runtime.spawn(entry.name, prepared.spec, entry.launch.cwd);
+      if (this.auth && entry.identity.mode === "static") this.writeRuntimeRecord(entry.identity.lifecycleUid, handle);
       const managed: ManagedAgent = {
         name: entry.name,
         role: entry.role,
@@ -5699,14 +5746,26 @@ export class Manager {
    *  clears (ABA-guarded by uid). A PRE-UNIT-B lifecycle (no slot row — spawned before the
    *  durable registry existed) has nothing to terminalize: its footprint teardown runs directly
    *  and the hold clears, the honest upgrade path. */
-  private async driveStaticRetirement(a: { id: string; name: string; lifecycleUid: string; secretPaths?: ManagedAgent["secretPaths"]; staticCredentialRenewal?: Promise<void> }): Promise<void> {
+  private async driveStaticRetirement(a: { id: string; name: string; lifecycleUid: string; secretPaths?: ManagedAgent["secretPaths"]; staticCredentialRenewal?: Promise<void>; handle?: AgentHandle; allowMissingRuntime?: boolean }): Promise<void> {
     // A renewal that published its flight before the synchronous terminal latch is accepted work.
     // Drain it before the durable terminal enumerates credential ids and before cleanup deletes its
     // material; a failed renewal must not block retirement because it may still have staged an id.
     const acceptedRenewal = a.staticCredentialRenewal;
     if (acceptedRenewal) await acceptedRenewal.catch(() => {});
+    if (a.handle) {
+      await this.awaitHandleExit(a.handle);
+    } else {
+      try {
+        const record = this.readRuntimeRecord(a.lifecycleUid);
+        const runtime = this.runtime.kind === record.kind ? this.runtime : createRuntime(record.kind, `cotal-${this.space}`);
+        if (!runtime.reap) throw new Error(`runtime "${record.kind}" cannot authoritatively reap durable locators`);
+        await runtime.reap(record.locator);
+      } catch (e) {
+        if (!a.allowMissingRuntime || existsSync(this.runtimeRecordPath(a.lifecycleUid))) throw e;
+      }
+    }
     const opId = retireOpId(a.lifecycleUid);
-    const evict = this.staticLifecycleEvict ?? makeManagerEndpointEvictor({
+    const evict = this.staticLifecycleEvict ?? makeManagerEndpointEvictionEvidence({
       space: this.space,
       servers: this.servers ?? DEFAULT_SERVER,
       auth: this.auth!,
@@ -5732,10 +5791,19 @@ export class Manager {
         }
         await runStaticTerminal(
           t,
-          { owner: DEV_OWNER, alias: a.name, actor: a.id, lifecycleUid: a.lifecycleUid, opId },
+          {
+            owner: DEV_OWNER,
+            alias: a.name,
+            actor: a.id,
+            lifecycleUid: a.lifecycleUid,
+            opId,
+            managerInstance: this.managerInstanceId,
+            managerProcessUid: this.managerLifecycleUid,
+          },
           { cleanup, evict, log: (line) => console.error(`static retirement ${a.name}: ${line}`) },
         );
       });
+      this.removeRuntimeRecord(a.lifecycleUid);
       this.retiredPrincipals.add(principalKey(DEV_OWNER, a.id).key);
       const cur = this.retiring.get(a.name);
       if (cur && cur.lifecycleUid === a.lifecycleUid) this.retiring.delete(a.name); // ABA-guarded hold clear
