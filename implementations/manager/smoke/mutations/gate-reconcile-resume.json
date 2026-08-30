@@ -2,7 +2,6 @@
   "suite": "implementations/manager/smoke/gate-reconcile-resume.smoke.ts",
   "guard": "a retry skips a holder only when durable progress matches the exact registration op, frozen-gate revision, and current sorted holder set",
   "command": "pnpm smoke:gate-reconcile-resume",
-  "afterRestore": "pnpm --filter @cotal-ai/core build",
   "completionMarker": "GATE-RECONCILE RESUME SMOKE OK",
   "proveWith": "pnpm mutation-proof -- --config implementations/manager/smoke/mutations/gate-reconcile-resume.json",
   "why": [
@@ -20,6 +19,7 @@
       "file": "implementations/manager/src/reconcile-gate.ts",
       "find": "  const skipped = new Set(cursor.verified);",
       "replace": "  const skipped = new Set<string>();",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "retry skips only durable holder1 and verifies every remaining holder",
       "cell": "retry skips only durable holder1 and verifies every remaining holder",
       "note": "The cursor is still written and the gate still reopens. Only the resume behavior is removed."
