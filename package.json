@@ -460,6 +460,8 @@
     "smoke:materialize-concurrency": "pnpm --filter @cotal-ai/workspace... build && tsx packages/workspace/smoke/materialize-concurrency.smoke.ts",
     "smoke:setup-failloud": "pnpm --filter @cotal-ai/workspace... build && tsx implementations/cli/smoke/setup-failloud.smoke.ts",
     "smoke:agent-skills": "pnpm --filter @cotal-ai/workspace... build && tsx implementations/cli/smoke/agent-skills.smoke.ts",
+    "smoke:status-skills-remedy": "pnpm --filter @cotal-ai/workspace... build && pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/delivery --filter @cotal-ai/auth --filter @cotal-ai/connector-core build && tsx implementations/cli/smoke/status-skills-remedy.smoke.ts",
+    "smoke:setup-provider-pack": "pnpm --filter @cotal-ai/workspace... build && pnpm --filter @cotal-ai/connector-core build && pnpm --filter @cotal-ai/connector-claude-code build && pnpm --filter @cotal-ai/cli build && tsx implementations/cli/smoke/setup-provider-pack.smoke.ts && tsx implementations/cli/smoke/setup-provider-absent.smoke.ts",
     "smoke:ext-seed-help": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/ext-seed-help.smoke.ts",
     "smoke:seed": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/seed.smoke.ts",
     "smoke:seed-tarball:live": "pnpm --filter cotal-ai... build && tsx bin/smoke/seed-tarball-live.smoke.ts",

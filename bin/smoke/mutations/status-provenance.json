@@ -29,8 +29,8 @@
     {
       "name": "the stale skills row hides the compared versions",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "      return c.yellow(`${skills.version ? `v${skills.version} ≠ v${cliVersion()} · ` : \"\"}stale · ${displayCmd()} setup`);",
-      "replace": "      return c.yellow(`stale · ${displayCmd()} setup`);",
+      "find": "      return c.yellow(`${skills.version ? `v${skills.version} \u2260 v${cliVersion()} \u00b7 ` : \"\"}stale \u00b7 ${displayCmd()} setup --skills`);",
+      "replace": "      return c.yellow(`stale \u00b7 ${displayCmd()} setup --skills`);",
       "expectRed": "source status names the source checkout root",
       "cell": "source status names the source checkout root"
     }
