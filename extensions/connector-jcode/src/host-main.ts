@@ -1,5 +1,5 @@
 import { runJcodeHost } from "./host.js";
-import { JcodeEffortRefusal, JcodeReadinessProviderRefusal } from "./startup-diagnostics.js";
+import { JcodeEffortRefusal, JcodeReadinessProviderRefusal, writeJcodeDiagnostic } from "./startup-diagnostics.js";
 
 const STARTUP_FAILURE_CODES = new Set([
   "project_mcp_config",
@@ -10,6 +10,9 @@ const STARTUP_FAILURE_CODES = new Set([
   "connect_failed",
   "handshake_failed",
   "unsupported_version",
+  "model_prefix_rejected",
+  "model_refused",
+  "model_mismatch",
 ]);
 
 function startupFailureCode(error: unknown): string {
@@ -29,7 +32,7 @@ function renderEffortRefusal(error: unknown): string | undefined {
 runJcodeHost().catch((error) => {
   const effortRefusal = renderEffortRefusal(error);
   if (effortRefusal) {
-    process.stderr.write(`[cotal-jcode] fatal: ${effortRefusal}\n`);
+    writeJcodeDiagnostic(`[cotal-jcode] fatal: ${effortRefusal}\n`);
     process.exit(1);
   }
   // The SDK appends captured child stderr to startup errors. A Jcode auth failure can therefore
@@ -38,11 +41,11 @@ runJcodeHost().catch((error) => {
   // readiness-turn provider refusal: it contains only the provider code plus the rejected
   // model/effort value the connector parsed from that response (#828).
   if (error instanceof JcodeReadinessProviderRefusal) {
-    process.stderr.write(
+    writeJcodeDiagnostic(
       `[cotal-jcode] fatal: Jcode readiness turn refused ${error.parameter} ${JSON.stringify(error.value)} (${error.providerCode}); inspect the private Jcode logs for other details.\n`,
     );
   } else {
-    process.stderr.write(`[cotal-jcode] fatal: Jcode host startup failed (${startupFailureCode(error)}); inspect the private Jcode logs.\n`);
+    writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode host startup failed (${startupFailureCode(error)}); inspect the private Jcode logs.\n`);
   }
   process.exit(1);
 });

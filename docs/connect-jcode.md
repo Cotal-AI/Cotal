@@ -75,6 +75,11 @@ space/name and is owner-only. Jcode's own credential inheritance is used for the
 so provider logins work without copying its transcript/config tree into the seat. The spawned
 Jcode process does not inherit `COTAL_*` values or the Cotal launch-material pointer.
 
+Connector diagnostics are written both to the spawning terminal and to an owner-only
+`<private-home>/logs/connector-<timestamp>-<pid>.log`, so a failed launch remains inspectable after
+the manager's launch error scrolls away. Public startup failures stay scrubbed to allow-listed
+codes rather than arbitrary Harness API messages.
+
 If a provider failure closes the private Harness API connection during a mesh-driven turn, the
 connector leaves that turn's inbox batch unacknowledged and opens one bounded recovery window for a
 private replacement connection to the same session. A transient launch or attach failure retries
@@ -129,6 +134,11 @@ shows those messages without clearing them.
 against the active provider, then the connector reads runtime identity back and refuses startup if
 it is not the requested model; a seat is never allowed to join under a model label it did not
 receive.
+
+Model startup refusals are named without exposing provider output: `model_prefix_rejected` means a
+`provider/model` value was supplied where the Harness API requires a bare id, `model_refused` means
+Jcode rejected that bare id, and `model_mismatch` means Jcode accepted the request but reported a
+different effective model.
 
 `cotal models --agent jcode` reads the declared catalog from the operator Jcode home's
 `config.toml`: each provider with `model_catalog = true`, its `[[providers.<name>.models]]` ids,
