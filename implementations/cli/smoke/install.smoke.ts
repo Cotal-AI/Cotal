@@ -27,6 +27,10 @@ process.env.npm_config_fetch_retries = "0";
 process.env.npm_config_fetch_timeout = "2000";
 // Make the PATH scan deterministic: a temp dir with no `cotal`, so cotalOnPath() is false.
 process.env.PATH = prefix;
+// The version probes spawn candidate executables. Never hand those children credentials inherited
+// from a managed agent session.
+const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
+for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_")) delete cleanEnv[key];
 
 const realArgv1 = process.argv[1];
 const setArgv = (p: string) => (process.argv[1] = p);
@@ -71,12 +75,32 @@ function seedCotal(dir: string): string {
 }
 const npxBin = seedCotal(join(prefix, "_npx", "deadbeef", "node_modules", ".bin"));
 const realBin = seedCotal(join(prefix, "realbin"));
+const versionedBody = process.platform === "win32"
+  ? "@echo off\r\necho cotal-ai 9.8.7\r\n"
+  : "#!/bin/sh\nprintf '%s\\n' 'cotal-ai 9.8.7'\n";
+const npxCotal = join(npxBin, cotalExe());
+const realCotal = join(realBin, cotalExe());
+writeFileSync(npxCotal, versionedBody);
+writeFileSync(realCotal, versionedBody);
+chmodSync(npxCotal, 0o755);
+chmodSync(realCotal, 0o755);
 
 process.env.PATH = npxBin; // only the ephemeral npx shim is reachable
 check("npx `_npx/.../.bin/cotal` shim on PATH ⇒ cotalOnPath() ignores it (false)", cotalOnPath() === false);
 
 process.env.PATH = [npxBin, realBin].join(delimiter); // ephemeral shim + a durable install
 check("a durable `cotal` alongside the npx shim ⇒ cotalOnPath() true", cotalOnPath() === true);
+
+const recoveryHome = mkdtempSync(join(tmpdir(), "cotal-install-recovery-home-"));
+const ephemeralRecovery = verifiedCotalExecutables({ ...cleanEnv, HOME: recoveryHome, PATH: npxBin });
+const durableRecovery = verifiedCotalExecutables({ ...cleanEnv, HOME: recoveryHome, PATH: realBin });
+check(
+  "recovery probe: ignores an ephemeral npx executable but verifies the same executable at a durable path",
+  ephemeralRecovery.length === 0
+    && durableRecovery.length === 1
+    && durableRecovery[0]?.path === realCotal
+    && durableRecovery[0]?.version === "9.8.7",
+);
 
 process.env.PATH = prefix; // restore the deterministic no-cotal PATH
 
@@ -89,14 +113,14 @@ if (process.platform !== "win32") {
   const userCotal = join(userBin, cotalExe());
   writeFileSync(userCotal, "#!/bin/sh\nprintf '%s\\n' 'cotal-ai 9.8.7'\n");
   chmodSync(userCotal, 0o755);
-  const found = verifiedCotalExecutables({ ...process.env, HOME: home, PATH: prefix });
+  const found = verifiedCotalExecutables({ ...cleanEnv, HOME: home, PATH: prefix });
   check("recovery probe: reduced PATH still finds ~/.local/bin/cotal", found.some((c) => c.path === userCotal && c.version === "9.8.7"));
 
   writeFileSync(userCotal, "#!/bin/sh\nprintf '%s\\n' 'wrapper noise' 'cotal-ai 9.8.7'\n");
   chmodSync(userCotal, 0o755);
-  check("recovery probe: version proof must be the first output line", verifiedCotalExecutables({ ...process.env, HOME: home, PATH: prefix }).length === 0);
+  check("recovery probe: version proof must be the first output line", verifiedCotalExecutables({ ...cleanEnv, HOME: home, PATH: prefix }).length === 0);
 }
 
 process.argv[1] = realArgv1;
-console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
+console.log(failures ? `\ninstall smoke: ${failures} check(s) failed` : "\ninstall smoke: all checks passed");
 process.exit(failures ? 1 : 0);

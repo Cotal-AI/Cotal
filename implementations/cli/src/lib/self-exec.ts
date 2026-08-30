@@ -51,14 +51,16 @@ export interface CotalExecutable {
  * with a short timeout, only when a recovery path needs an executable rather than another bare
  * `cotal` command that may resolve straight back to the failing binary.
  *
- * PATH entries are checked in order, then the POSIX installer's default `~/.local/bin/cotal` is
- * checked even when a service supplied a reduced PATH. Candidates are deduped by real path. A file
- * counts only when it exits cleanly and its first line is exactly `cotal-ai <numeric semver>`.
+ * PATH entries are checked in order after transient npx bins are skipped, then the POSIX installer's
+ * default `~/.local/bin/cotal` is checked even when a service supplied a reduced PATH. Candidates
+ * are deduped by real path. A file counts only when it exits cleanly and its first line is exactly
+ * `cotal-ai <numeric semver>`.
  */
 export function verifiedCotalExecutables(env: NodeJS.ProcessEnv = process.env): CotalExecutable[] {
   const candidates: string[] = [];
   const pathDirs = (env.PATH ?? "").split(delimiter).filter(Boolean);
   for (const dir of pathDirs) {
+    if (isEphemeralNpxBin(dir)) continue;
     const hit = resolveOnPath(join(dir, "cotal"), env);
     if (hit) candidates.push(hit);
   }

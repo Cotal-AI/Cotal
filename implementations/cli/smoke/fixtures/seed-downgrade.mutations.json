@@ -5,11 +5,14 @@
   "completionMarker": "seed smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/fixtures/seed-downgrade.mutations.json",
   "why": [
-    "THREE MUTATIONS, ONE FOR EACH INDEPENDENT PROMISE. Extending the downgrade predicate with the",
+    "FOUR MUTATIONS, ONE FOR EACH INDEPENDENT PROMISE. Extending the downgrade predicate with the",
     "deterministic runtime-false `process.pid < 0` keeps TypeScript's store-generation narrowing while",
     "disabling the refusal at runtime. Replacing the verified recovery selection with",
     "the generic sentence removes sufficient-path hinting while leaving the refusal intact. Making the",
     "sufficiency predicate accept every verified executable admits a candidate below the store generation.",
+    "Removing the ephemeral-npx PATH guard admits a transient cache shim while the same executable",
+    "at a durable path remains verified. That mutation runs smoke:install, whose single discriminating",
+    "cell covers both halves and prints its completion line on green and red runs.",
     "Each mutation is compile-clean and names the exact assertion for the promise it breaks.",
     "",
     "Every anchor is code-only and unique. The refusal mutation keeps both semver predicates intact,",
@@ -47,6 +50,16 @@
       "replace": "      (candidate) => compareSemver(candidate.version, storeGeneration) >= 0 || compareSemver(candidate.version, storeGeneration) < 0,",
       "expectRed": "✗ FAIL: downgrade hint: never names a candidate below the store generation",
       "cell": "✗ FAIL: downgrade hint: never names a candidate below the store generation"
+    },
+    {
+      "name": "the recovery probe admits an ephemeral npx cache shim as a durable executable",
+      "file": "implementations/cli/src/lib/self-exec.ts",
+      "find": "    if (isEphemeralNpxBin(dir)) continue;\n    const hit = resolveOnPath(join(dir, \"cotal\"), env);",
+      "replace": "    const hit = resolveOnPath(join(dir, \"cotal\"), env);",
+      "command": "pnpm smoke:install",
+      "completionMarker": "install smoke:",
+      "expectRed": "✗ recovery probe: ignores an ephemeral npx executable but verifies the same executable at a durable path",
+      "cell": "✗ recovery probe: ignores an ephemeral npx executable but verifies the same executable at a durable path"
     }
   ]
 }
