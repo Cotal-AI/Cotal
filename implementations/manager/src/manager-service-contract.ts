@@ -474,9 +474,15 @@ export function managerClusterDocument(): {
   };
 }
 
-/** Served command count, always the cluster document's list. Smokes must read this instead of restating 18 or 20. */
-export function managerShippedCommandCount(): number {
-  return managerClusterDocument().commands.length;
+/** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */
+export function managerShippedSurface(): { revision: number; commandCount: number; names: string[] } {
+  const document = managerClusterDocument();
+  const names = document.commands.map((c) => c.name);
+  const compiledCount = Object.keys(MANAGER_CONTRACTS).length;
+  if (names.length !== compiledCount) {
+    throw new Error(`manager cluster document declares ${names.length} commands but MANAGER_CONTRACTS compiles ${compiledCount}`);
+  }
+  return { revision: document.revision, commandCount: names.length, names };
 }
 
 /** The two-digest §13.7 content addressing for the manager document: the registered CLOSURE digest

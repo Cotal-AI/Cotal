@@ -122,7 +122,8 @@ const {
 // in-process `e2e` connector + the auth provider are visible to it); inline the tiny launch-env mapping
 // @cotal-ai/connector-core's userAuthEnv would otherwise supply.
 const { Manager } = await import("../../manager/dist/index.js");
-const { managerShippedCommandCount } = await import("../../manager/src/manager-service-contract.js");
+const { managerShippedSurface } = await import("../../manager/src/manager-service-contract.js");
+const shipped = managerShippedSurface();
 /** The four COTAL_* vars configFromEnv parses for a user-mode launch (connector-core's userAuthEnv). */
 function userAuthEnv(o: LaunchOpts): Record<string, string> {
   if (!o.userAuth) return {};
@@ -707,7 +708,7 @@ try {
     try {
       const svc = await resolveService(epNc, SPACE, "manager", epCaller, { deadlineMs: 10_000 });
       check("user bearer resolves the manager generically (describe + store fetch + digest-verified recompile, all over the bearer)",
-        svc.commands.size === managerShippedCommandCount() && svc.responder.instanceId.length > 0, { size: svc.commands.size, responder: svc.responder });
+        svc.commands.size === shipped.commandCount && svc.responder.instanceId.length > 0, { size: svc.commands.size, responder: svc.responder });
       const ri = await invokeCommand(epNc, SPACE, svc, "inspect", { name: "alpha" }, {});
       check("user bearer invokes `inspect` over ep (a spawn-set row; describe-bound currency, no epoch stub)",
         ri.reply.ok === true && (ri.reply.data as { name: string }).name === "alpha", ri.reply);

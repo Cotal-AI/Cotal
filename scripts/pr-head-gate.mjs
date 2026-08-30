@@ -2,85 +2,65 @@
 import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseDocument } from "yaml";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const API = "https://api.github.com";
 
-function unquote(value) {
-  const trimmed = value.trim();
-  if (trimmed.length >= 2 && ((trimmed[0] === "'" && trimmed.at(-1) === "'") || (trimmed[0] === '"' && trimmed.at(-1) === '"'))) {
-    return trimmed.slice(1, -1).replace(trimmed[0] === "'" ? /''/g : /\\"/g, trimmed[0]);
-  }
-  return trimmed;
+function plainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function bracketList(value, file, line) {
-  const inner = value.trim().slice(1, -1).trim();
-  if (!inner) return [];
-  return inner.split(",").map((entry) => {
-    const item = unquote(entry);
-    if (!item) throw new Error(`${file}:${line}: empty path filter entry`);
-    return item;
-  });
+function stringList(value, file, key) {
+  if (!Array.isArray(value) || value.length === 0 || value.some((entry) => typeof entry !== "string" || entry.length === 0)) {
+    throw new Error(`${file}: pull_request ${key} must be a non-empty string array`);
+  }
+  return value;
+}
+
+function pullRequestConfig(file, on) {
+  if (typeof on === "string") {
+    if (on.length === 0) throw new Error(`${file}: top-level on event must not be empty`);
+    return on === "pull_request" ? null : undefined;
+  }
+  if (Array.isArray(on)) {
+    if (on.length === 0) throw new Error(`${file}: top-level on sequence must not be empty`);
+    if (on.some((event) => typeof event !== "string" || event.length === 0)) throw new Error(`${file}: top-level on sequence must contain only non-empty event names`);
+    return on.includes("pull_request") ? null : undefined;
+  }
+  if (!plainObject(on)) throw new Error(`${file}: top-level on declaration must name one or more events`);
+  const events = Object.keys(on);
+  if (events.length === 0) throw new Error(`${file}: top-level on mapping must not be empty`);
+  return Object.hasOwn(on, "pull_request") ? on.pull_request : undefined;
 }
 
 function pullRequestDeclaration(file, text) {
-  const lines = text.split("\n");
-  const onIndex = lines.findIndex((line) => /^on:\s*(?:$|\S)/.test(line));
-  if (onIndex < 0) throw new Error(`${file}: missing top-level on declaration`);
-  const onHead = lines[onIndex].replace(/^on:\s*/, "").trim();
-  let handlesPullRequest = false;
-  if (onHead) {
-    if (/^\[.*\]$/.test(onHead)) {
-      const events = bracketList(onHead, file, onIndex + 1);
-      handlesPullRequest = events.includes("pull_request");
-    } else {
-      handlesPullRequest = onHead === "pull_request";
-    }
-    if (!handlesPullRequest) return undefined;
-    const nameLine = lines.find((line) => /^name:\s*\S/.test(line));
-    if (!nameLine) throw new Error(`${file}: a pull-request workflow must declare a top-level name`);
-    return { file, name: unquote(nameLine.replace(/^name:\s*/, "")), paths: undefined };
+  const document = parseDocument(text, {
+    logLevel: "error",
+    strict: true,
+    stringKeys: true,
+    uniqueKeys: true,
+  });
+  const problem = document.errors[0] ?? document.warnings[0];
+  if (problem) throw new Error(`${file}: invalid YAML: ${problem.message}`);
+  const workflow = document.toJS({ maxAliasCount: 100 });
+  if (!plainObject(workflow)) throw new Error(`${file}: workflow document must be a mapping`);
+  if (!Object.hasOwn(workflow, "on")) throw new Error(`${file}: missing top-level on declaration`);
+  const pullRequest = pullRequestConfig(file, workflow.on);
+  if (pullRequest === undefined) return undefined;
+  if (typeof workflow.name !== "string" || workflow.name.trim() === "") {
+    throw new Error(`${file}: a pull-request workflow must declare a non-empty top-level name`);
   }
-
-  let prIndex = -1;
-  for (let i = onIndex + 1; i < lines.length; i++) {
-    if (/^\S/.test(lines[i]) && lines[i].trim()) break;
-    if (/^\s{2}pull_request:\s*/.test(lines[i])) { prIndex = i; break; }
-  }
-  if (prIndex < 0) return undefined;
-  const nameLine = lines.find((line) => /^name:\s*\S/.test(line));
-  if (!nameLine) throw new Error(`${file}: a pull-request workflow must declare a top-level name`);
-  const name = unquote(nameLine.replace(/^name:\s*/, ""));
-  const prHead = lines[prIndex].replace(/^\s{2}pull_request:\s*/, "").trim();
-  if (prHead) {
-    if (prHead === "{}") return { file, name, paths: undefined };
-    throw new Error(`${file}:${prIndex + 1}: unsupported inline pull_request declaration`);
-  }
-
-  let paths;
-  let pathsIgnore;
-  for (let i = prIndex + 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (/^\s{2}\S/.test(line) || /^\S/.test(line)) break;
-    const key = line.match(/^\s{4}(paths|paths-ignore):\s*(.*)$/);
-    if (!key) continue;
-    const values = [];
-    if (key[2].trim()) {
-      if (!/^\[.*\]$/.test(key[2].trim())) throw new Error(`${file}:${i + 1}: unsupported inline ${key[1]} declaration`);
-      values.push(...bracketList(key[2].trim(), file, i + 1));
-    } else {
-      for (i += 1; i < lines.length; i++) {
-        const item = lines[i].match(/^\s{6}-\s*(\S.*)$/);
-        if (!item) { i -= 1; break; }
-        values.push(unquote(item[1]));
-      }
-    }
-    if (key[1] === "paths") paths = values;
-    else pathsIgnore = values;
-  }
+  if (pullRequest === null) return { file, name: workflow.name, paths: undefined, pathsIgnore: undefined };
+  if (!plainObject(pullRequest)) throw new Error(`${file}: pull_request declaration must be a mapping or null`);
+  const unsupported = Object.keys(pullRequest).filter((key) => key !== "paths" && key !== "paths-ignore");
+  if (unsupported.length) throw new Error(`${file}: unsupported pull_request filter: ${unsupported.join(", ")}`);
+  const paths = pullRequest.paths === undefined ? undefined : stringList(pullRequest.paths, file, "paths");
+  const pathsIgnore = pullRequest["paths-ignore"] === undefined
+    ? undefined
+    : stringList(pullRequest["paths-ignore"], file, "paths-ignore");
   if (paths && pathsIgnore) throw new Error(`${file}: pull_request cannot declare both paths and paths-ignore`);
-  return { file, name, paths, pathsIgnore };
+  return { file, name: workflow.name, paths, pathsIgnore };
 }
 
 function globRegex(pattern) {
