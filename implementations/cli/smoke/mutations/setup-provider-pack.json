@@ -1,7 +1,7 @@
 {
   "suite": "implementations/cli/smoke/setup-provider-pack.smoke.ts",
   "guard": "generic CLI tarballs contain no harness-native setup assets or invocations and the Claude connector declares and ships its provider",
-  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/connector-claude-code build && pnpm --filter @cotal-ai/cli build && tsx implementations/cli/smoke/setup-provider-pack.smoke.ts",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/connector-claude-code build && pnpm --filter @cotal-ai/cli build && pnpm exec tsx implementations/cli/smoke/setup-provider-pack.smoke.ts",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/setup-provider-pack.json",
   "mutations": [
     {
