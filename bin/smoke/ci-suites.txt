@@ -703,3 +703,8 @@ smoke:workspace-import-exports
 # Mutation-proofed - bin/smoke/mutations/endpoint-permission-results.json. Appended so every existing
 # shard assignment remains unchanged.
 smoke:endpoint-permission-results:auth
+
+# Status's skills rows must recommend cotal setup --skills, not unscoped setup.
+# Mutation-proofed - implementations/cli/smoke/mutations/status-skills-remedy.json.
+# Appended so every existing shard assignment remains unchanged.
+smoke:status-skills-remedy

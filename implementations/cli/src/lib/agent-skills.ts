@@ -14,7 +14,7 @@ import { homeCotalDir } from "@cotal-ai/workspace";
  *      scope (real remote update via a release-derived plugin version; see setup.ts).
  *   2. Every other harness (Codex, Cursor, OpenCode, Gemini CLI, Windsurf/Devin) reads the cross-vendor
  *      `~/.agents/skills/` directory convention. No remote index reaches them today, so `cotal setup`
- *      reconciles the files here and `cotal status` reports skew. This module owns that reconcile.
+ *      (and `cotal setup --skills`) reconciles the files here and `cotal status` reports skew. This module owns that reconcile.
  *   3. The website Agent Skills discovery index, generated from the same canonical files at build.
  *
  * File-level ownership (the safety model): Cotal owns exactly ONE file per skill it ships,
@@ -224,7 +224,7 @@ export type SkillSkew = { name: string; state: SkillSkewState };
 
 /** Compare the managed `~/.agents/skills` tree against canonical so `cotal status` can surface drift:
  *  `current` (identical), `stale` (present but differs), `missing` (not dropped), or `retired` (a skill
- *  Cotal still owns on disk but no longer ships, awaiting removal on the next `cotal setup`). Throws on
+ *  Cotal still owns on disk but no longer ships, awaiting removal on the next `cotal setup --skills`). Throws on
  *  a corrupt bundle or manifest; the caller renders that as an integrity error. */
 export function agentSkillsSkew(): SkillSkew[] {
   const src = canonicalSkillsDir();

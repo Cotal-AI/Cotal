@@ -1,0 +1,49 @@
+{
+  "suite": "implementations/cli/smoke/status-skills-remedy.smoke.ts",
+  "guard": "status skills rows recommend setup --skills, and setup --skills is the only write that path performs",
+  "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:status-skills-remedy",
+  "completionMarker": "status-skills-remedy.smoke: all assertions passed",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/status-skills-remedy.json",
+  "why": [
+    "A status surface that names unscoped cotal setup as the skills remedy routes a read-path user into persona, plugin, and onboard writes.",
+    "Each mutation is compile-clean and unique in the named file. Restoring the unscoped remedy, skipping the skills-only dispatch, or combining --skills with --full must redden the named cell."
+  ],
+  "mutations": [
+    {
+      "name": "S1 restore unscoped Claude skills remedy",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "return c.yellow(`stale · ${displayCmd()} setup --skills`);",
+      "replace": "return c.yellow(`stale · ${displayCmd()} setup`);",
+      "expectRed": "stale · cotal setup --skills",
+      "cell": "stale · cotal setup --skills",
+      "note": "Restores the issue's Claude skills row. Typecheck stays green. The status subprocess still prints the header."
+    },
+    {
+      "name": "S2 restore unscoped .agents skills remedy",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "return c.yellow(`${label} · ${displayCmd()} setup --skills`);",
+      "replace": "return c.yellow(`${label} · ${displayCmd()} setup`);",
+      "expectRed": "1/1 out of date · cotal setup --skills",
+      "cell": "1/1 out of date · cotal setup --skills",
+      "note": "Restores the issue's Skills (.agents) row while leaving the Claude row scoped."
+    },
+    {
+      "name": "S3 drop the skills-only dispatch",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "    await runSkillsOnly();\n    return;",
+      "replace": "    await runEnsure(false);\n    return;",
+      "expectRed": "setup --skills does not seed a default persona",
+      "cell": "setup --skills does not seed a default persona",
+      "note": "Keeps the flag but falls through to the onboarded ensure path, which seeds default.md."
+    },
+    {
+      "name": "S4 allow --skills with --full",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "    if (values.full || values.demo) throw new Error(\"--skills cannot be combined with --full or --demo\");",
+      "replace": "    if (false && (values.full || values.demo)) throw new Error(\"--skills cannot be combined with --full or --demo\");",
+      "expectRed": "setup --skills --full is refused",
+      "cell": "setup --skills --full is refused",
+      "note": "Compile-clean no-op of the combination fence. First-run --full then writes personas."
+    }
+  ]
+}

@@ -33,15 +33,17 @@ coordinating agent teams (today `team-topology`), from one canonical source, on 
   marketplace, at **user scope** (machine-wide), and **independent of the mesh connector**: it carries no
   code and no core dependency, installs whenever Claude is on `PATH` (even with the connector removed),
   and uninstalls on its own with `claude plugin uninstall cotal-skills --scope user`. Its plugin version
-  is stamped from the running CLI release, so an upgrade + `cotal setup` runs `claude plugin update` and
+  is stamped from the running CLI release, so an upgrade + `cotal setup --skills` runs `claude plugin update` and
   the deployed install actually gets the new skill. `cotal setup` installs it on first run and on repeat
-  runs, so upgraders are not left behind.
+  runs, so upgraders are not left behind. `cotal status` points a stale or missing skills plugin at
+  `cotal setup --skills`.
 - **Every other harness** (Codex, Cursor, OpenCode, Gemini CLI, Windsurf/Devin) reads the cross-vendor
-  `~/.agents/skills/` directory convention, which has no remote index, so `cotal setup` **reconciles** it:
+  `~/.agents/skills/` directory convention, which has no remote index, so `cotal setup` **reconciles** it
+  (and `cotal setup --skills` does only that):
   it installs/updates each Cotal skill, backs up a copy you have edited to `SKILL.md.bak` before
   replacing it, and removes a Cotal skill that is no longer shipped. Only skills Cotal owns are touched;
   your own or third-party skills there are left alone. `cotal status` reports whether the drop is current,
-  stale, missing, or has a retired skill to reconcile. This is the working cross-vendor path.
+  stale, missing, or has a retired skill to reconcile, and names `cotal setup --skills` as the remedy. This is the working cross-vendor path.
 
 Cotal also generates an [Agent Skills discovery index](https://cotal.ai/.well-known/agent-skills/index.json)
 on cotal.ai, but that RFC is still a draft with no harness consuming it yet, so it is a forward bet,

@@ -31,6 +31,7 @@ export const setupFlags = [
   { name: "full", type: "boolean", description: "redo the full guided flow (implies --demo)" },
   { name: "demo", type: "boolean", description: "also seed the guided expert team (david, sven, me)" },
   { name: "yes", type: "boolean", short: "y", description: "non-interactive accept-all (agents/CI)" },
+  { name: "skills", type: "boolean", description: "reconcile Cotal skills only (Claude plugin + ~/.agents/skills); no personas, connectors, or onboard writes" },
 ] as const satisfies readonly FlagSpec[];
 
 /**
@@ -45,9 +46,22 @@ export const setupFlags = [
  */
 export async function setup(args: ParsedArgs): Promise<void> {
   const values = args.values as FlagValues<typeof setupFlags>;
+  if (values.skills) {
+    if (values.full || values.demo) throw new Error("--skills cannot be combined with --full or --demo");
+    await runSkillsOnly();
+    return;
+  }
   const demo = Boolean(values.demo) || Boolean(values.full); // --full is the whole guided flow ⇒ team
   if (!isOnboarded() || values.full || values.yes) await runFirstRun(Boolean(values.yes), demo);
   else await runEnsure(demo);
+}
+
+/** Skills-only write for the status card: refresh the Claude skills plugin (when Claude is on PATH)
+ *  and reconcile `~/.agents/skills`. Does not seed personas, install the mesh connector, offer a
+ *  global install, or write the onboarded stamp. */
+async function runSkillsOnly(): Promise<void> {
+  ensureSkillsPlugin();
+  seedAgentSkills();
 }
 
 /** The full, narrated first-run experience. `yes` = non-interactive accept-all; `demo` also seeds

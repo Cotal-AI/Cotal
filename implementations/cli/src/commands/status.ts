@@ -71,8 +71,8 @@ function printExtensions(): void {
 
 /** Cotal's authored skills reach non-Claude harnesses through the cross-vendor `~/.agents/skills`
  *  directory (Codex, Cursor, OpenCode, Gemini CLI, Windsurf). Those harnesses have no remote update, so
- *  surface a stale/missing/retired drop here and point at the fix (`cotal setup` reconciles it). A corrupt
- *  skills bundle throws (fail-loud); we render that as a red integrity error rather than "none shipped". */
+ *  surface a stale/missing/retired drop here and point at the skills-only write (`cotal setup --skills`).
+ *  A corrupt skills bundle throws (fail-loud); we render that as a red integrity error rather than "none shipped". */
 function skillsSkewRow(): string {
   let skew;
   try {
@@ -82,25 +82,25 @@ function skillsSkewRow(): string {
   }
   const behind = skew.filter((s) => s.state !== "current");
   if (!behind.length) return c.green(`current (${skew.length})`);
-  if (behind.every((s) => s.state === "missing")) return c.dim(`not installed · ${displayCmd()} setup`);
+  if (behind.every((s) => s.state === "missing")) return c.dim(`not installed · ${displayCmd()} setup --skills`);
   const retired = behind.filter((s) => s.state === "retired").length;
   const label = retired ? `${behind.length} to reconcile (${retired} retired)` : `${behind.length}/${skew.length} out of date`;
-  return c.yellow(`${label} · ${displayCmd()} setup`);
+  return c.yellow(`${label} · ${displayCmd()} setup --skills`);
 }
 
 /** The `cotal-skills` Claude Code plugin (user scope) vs this CLI release: stale means an update didn't
  *  take, missing means it isn't installed, broken means it is installed but failed to load; all point at
- *  `cotal setup` to fix. */
+ *  `cotal setup --skills` so a read-path status user is not routed into unscoped setup writes. */
 function claudeSkillsLabel(state: MachineStatus["claudeSkills"]): string {
   switch (state) {
     case "current":
       return c.green("current");
     case "stale":
-      return c.yellow(`stale · ${displayCmd()} setup`);
+      return c.yellow(`stale · ${displayCmd()} setup --skills`);
     case "broken":
-      return c.red(`load error · ${displayCmd()} setup`);
+      return c.red(`load error · ${displayCmd()} setup --skills`);
     case "missing":
-      return c.dim(`not installed · ${displayCmd()} setup`);
+      return c.dim(`not installed · ${displayCmd()} setup --skills`);
     default:
       return c.dim("unknown");
   }
