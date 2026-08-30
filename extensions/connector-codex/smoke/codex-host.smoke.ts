@@ -83,12 +83,15 @@ interface LogEntry {
   mcpTokenPresent?: boolean;
   cotalLeak?: string[];
 }
+function readJsonLines<T>(path: string): T[] {
+  if (!existsSync(path)) return [];
+  const raw = readFileSync(path, "utf8");
+  const lines = raw.split("\n");
+  if (!raw.endsWith("\n")) lines.pop();
+  return lines.filter(Boolean).map((line) => JSON.parse(line) as T);
+}
 function logEntries(): LogEntry[] {
-  if (!existsSync(LOG)) return [];
-  return readFileSync(LOG, "utf8")
-    .split("\n")
-    .filter(Boolean)
-    .map((l) => JSON.parse(l) as LogEntry);
+  return readJsonLines<LogEntry>(LOG);
 }
 function turnStarts(): string[] {
   return logEntries()
@@ -603,8 +606,7 @@ try {
   // destroying exactly the same-lifecycle redrive the restart rail exists to preserve. The old
   // UI must be retired as EXPECTED synchronously, before the replacement is awaited.
   const tcLog = join(dir, "tuicrash.log.jsonl");
-  const tcEntries = (): LogEntry[] =>
-    existsSync(tcLog) ? readFileSync(tcLog, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as LogEntry) : [];
+  const tcEntries = (): LogEntry[] => readJsonLines<LogEntry>(tcLog);
   const tuiCrash = spawn(TSX, [HOST_ENTRY], {
     env: {
       ...cleanEnv,
@@ -745,10 +747,7 @@ try {
   let genErr = "";
   genPeer.stderr!.setEncoding("utf8");
   genPeer.stderr!.on("data", (d: string) => (genErr += d));
-  const genEntries = (): LogEntry[] =>
-    existsSync(genLog)
-      ? readFileSync(genLog, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as LogEntry)
-      : [];
+  const genEntries = (): LogEntry[] => readJsonLines<LogEntry>(genLog);
   let genOnline = false;
   const genWatch = (e: { type: string; presence: { card: { id: string; name: string } } }) => {
     if (e.presence.card.name === "genpeer" && e.type !== "offline") genOnline = true;
@@ -879,9 +878,7 @@ try {
     new Promise<number | null>((r) => meshFail.on("exit", (code) => r(code))),
     sleep(30_000).then(() => "timeout" as const),
   ]);
-  const meshFailEntries = !existsSync(meshFailLog)
-    ? []
-    : readFileSync(meshFailLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as LogEntry);
+  const meshFailEntries = readJsonLines<LogEntry>(meshFailLog);
   check("the startup failure names mesh readiness and the unreachable broker", /mesh did not become ready/.test(meshFailErr) && meshFailErr.includes(deadServers), meshFailErr.slice(-500));
   check("a Codex host with no mesh fails within the bounded readiness window", typeof meshFailExit === "number" && meshFailExit !== 0, {
     meshFailExit,
@@ -1177,10 +1174,7 @@ try {
     },
     stdio: ["ignore", "ignore", "inherit"],
   });
-  const shutEntries = (): LogEntry[] =>
-    existsSync(shutLog)
-      ? readFileSync(shutLog, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as LogEntry)
-      : [];
+  const shutEntries = (): LogEntry[] => readJsonLines<LogEntry>(shutLog);
   // JOIN BARRIER, not optional: if the operator never saw this peer online, core treats its
   // departure as a first-seen-offline stale snapshot and records it QUIETLY, emitting no offline
   // presence event — so the assertion below would fail on a healthy leave. Wait for the join.

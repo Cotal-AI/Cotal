@@ -8,8 +8,9 @@
  * Three-way split (the Unit B design note, panel-locked): the key/value GRAMMAR lives in core
  * `lifecycle-state.ts`; the CAS SEQUENCING is the shared core saga this module DELEGATES to
  * (never a hand-ordered local copy); the barrier ORCHESTRATION here is the static executor's
- * own (revoke from the slot's recorded credentialIds, best-effort eviction = the child process
- * kill the manager already did, footprint cleanup via the manager's deprovision hooks).
+ * own (revoke from the slot's recorded credentialIds, fail-closed broker connection eviction that
+ * holds the lifecycle terminalizing until a complete scan verifies the principal gone, then
+ * footprint cleanup via the manager's deprovision hooks).
  *
  * F5-bind (the F4 restatement): the wire AUTHORITY coordinate is the incarnation-unique nkey
  * (`actor`); the ALIAS is routing only, protected by the name-keyed slot row + uid reservation +
@@ -17,6 +18,7 @@
  */
 import {
   EpEnvelopeError,
+  principalKey,
   type LifecycleStateTransport,
   type LifecycleKvEntry,
   type StaticManagedSlotRow,
@@ -27,6 +29,8 @@ import {
   credRowKey,
   parseLedgerRow,
   SOURCE_ROOT,
+  RECORD_KINDS,
+  recordSpecKey,
   createRecordEntry,
   updateRecordEntry,
   runActivationSagaAtUid,
@@ -37,10 +41,55 @@ import {
   headCandidate,
   headBeginRetirement,
   headCompleteRetirement,
+  type EvictionResult,
 } from "@cotal-ai/core";
 import type { KV } from "@nats-io/kv";
 
 const enc = new TextEncoder();
+
+export interface StaticLifecycleAuditSpec {
+  v: 1; principal: string; alias: string; lifecycleUid: string;
+  managerInstance: string; managerProcessUid: string; retirementOpId: string;
+  broker: Pick<EvictionResult, "kicked" | "remaining" | "scanComplete" | "verifiedGone">;
+  timestamp: string;
+}
+
+function sameAudit(a: StaticLifecycleAuditSpec, b: StaticLifecycleAuditSpec): boolean {
+  return a.v === b.v && a.principal === b.principal && a.alias === b.alias && a.lifecycleUid === b.lifecycleUid &&
+    a.managerInstance === b.managerInstance && a.managerProcessUid === b.managerProcessUid && a.retirementOpId === b.retirementOpId &&
+    a.broker.kicked === b.broker.kicked && a.broker.remaining === b.broker.remaining &&
+    a.broker.scanComplete === b.broker.scanComplete && a.broker.verifiedGone === b.broker.verifiedGone;
+}
+
+async function evictAndAudit(
+  t: LifecycleStateTransport,
+  args: { owner: string; alias: string; actor: string; lifecycleUid: string; opId: string; managerInstance: string; managerProcessUid: string },
+  evict: (principal: string) => Promise<EvictionResult>,
+): Promise<string> {
+  const principal = principalKey(args.owner, args.actor).key;
+  const result = await evict(principal);
+  if (!result.verifiedGone || !result.scanComplete || result.remaining !== 0)
+    throw new EpEnvelopeError("unavailable", `static retirement could not verify-evict ${principal}; the lifecycle remains terminalizing and the alias stays held (SPEC 13.1)`);
+  const key = recordSpecKey(RECORD_KINDS.lifecycle, [args.owner, args.actor, args.lifecycleUid]);
+  const spec: StaticLifecycleAuditSpec = {
+    v: 1, principal, alias: args.alias, lifecycleUid: args.lifecycleUid, managerInstance: args.managerInstance,
+    managerProcessUid: args.managerProcessUid, retirementOpId: args.opId,
+    broker: { kicked: result.kicked, remaining: result.remaining, scanComplete: result.scanComplete, verifiedGone: result.verifiedGone },
+    timestamp: new Date().toISOString(),
+  };
+  try { await t.createRecord(key, spec); }
+  catch (e) {
+    if (!(e instanceof EpEnvelopeError) || e.code !== "conflict") throw e;
+    const existing = await t.getRecord(key);
+    if (!existing || existing.operation !== "PUT") throw new EpEnvelopeError("failed-precondition", `lifecycle audit ${key} conflict is unreadable`);
+    let value: unknown;
+    try { value = JSON.parse(new TextDecoder().decode(existing.value)); }
+    catch { throw new EpEnvelopeError("failed-precondition", `lifecycle audit ${key} conflict is malformed`); }
+    if (!sameAudit(value as StaticLifecycleAuditSpec, spec)) throw new EpEnvelopeError("already-exists", `lifecycle audit ${key} records different evidence`);
+    // Timestamp may differ only after the stable manager identities and retirement op prove the same retry.
+  }
+  return principal;
+}
 
 /** The direct-KV transport over the two authority stores, bound per lifecycle OPERATION on an
  *  ephemeral, key-pinned `lifecycle-executor` connection (the manager mints it; see
@@ -195,8 +244,8 @@ export async function activateStaticLifecycle(
 }
 
 /** The static TERMINAL (F1, the (b2) order): freeze-under-the-retirement-op -> head
- *  `active -> retiring` -> B1 ledger revoke -> cleanup (the injected footprint teardown; the
- *  process kill — static "eviction" — already happened on the manager's stop path) -> gate
+ *  `active -> retiring` -> B1 ledger revoke -> broker connection eviction -> cleanup (the injected
+ *  footprint teardown; on a normal stop the manager separately proves runtime exit) -> gate
  *  `frozen -> retired` -> head `retiring -> retired` LAST -> slot `retired` (the alias frees).
  *  Every gate/head step DELEGATES to the shared core saga; recovery recognizes a SAME-OP
  *  terminal gate and finishes the head (the lost-ack alias wedge the panel closed).
@@ -207,8 +256,8 @@ export async function activateStaticLifecycle(
  *  retirement F3 requires. */
 export async function runStaticTerminal(
   t: LifecycleStateTransport,
-  args: { owner: string; alias: string; actor: string; lifecycleUid: string; opId: string },
-  hooks: { cleanup: () => Promise<void>; log: (line: string) => void },
+  args: { owner: string; alias: string; actor: string; lifecycleUid: string; opId: string; managerInstance: string; managerProcessUid: string },
+  hooks: { cleanup: () => Promise<void>; evict: (holderPrincipal: string) => Promise<EvictionResult>; log: (line: string) => void },
 ): Promise<"retired"> {
   const slot = await readStaticSlot(t, args.owner, args.alias);
   if (slot === undefined)
@@ -229,6 +278,7 @@ export async function runStaticTerminal(
     if (head !== undefined && head.mapping.lifecycleUid === args.lifecycleUid)
       throw new EpEnvelopeError("internal", `the head for "${args.owner}/${args.actor}" names uid ${args.lifecycleUid} but its gate does not exist; an active head without a gate is corruption (SPEC 13.1)`);
     await revokeStaticCredentialRows(t, args.lifecycleUid, slot.row.credentialIds, hooks.log);
+    await evictAndAudit(t, args, hooks.evict);
     await hooks.cleanup();
     await casStaticSlot(t, { ...slot.row, phase: "retired" }, slotRevision);
     return "retired";
@@ -246,6 +296,7 @@ export async function runStaticTerminal(
       // static retirement), then settle the slot — there is no head to retire.
       await gateRetire(t, { lifecycleUid: args.lifecycleUid, revision: gate.revision, opId: gate.row.op.opId });
       await revokeStaticCredentialRows(t, args.lifecycleUid, slot.row.credentialIds, hooks.log);
+      await evictAndAudit(t, args, hooks.evict);
       await hooks.cleanup();
       const cur = await readStaticSlot(t, args.owner, args.alias);
       if (cur !== undefined && cur.row.lifecycleUid === args.lifecycleUid && cur.row.phase !== "retired")
@@ -275,6 +326,14 @@ export async function runStaticTerminal(
   if (headNow.mapping.state !== "retired")
     await headBeginRetirement(t, { owner: args.owner, actor: args.actor, lifecycleUid: args.lifecycleUid, opId: args.opId });
   await revokeStaticCredentialRows(t, args.lifecycleUid, slot.row.credentialIds, hooks.log);
+  // A crash may leave the prior seat process alive after its manager disappeared. Deny-new is
+  // durable above; verify the predecessor principal has no live broker connections before cleanup,
+  // then before retiring the gate/head and freeing the alias. This does not reap the OS process.
+  // Failure leaves the lifecycle terminalizing, so a successor never gains simultaneous broker rails.
+  const principal = principalKey(args.owner, args.actor).key;
+  hooks.log(`verify-evicting orphan seat principal ${principal} before lifecycle cleanup`);
+  await evictAndAudit(t, args, hooks.evict);
+  hooks.log(`verified orphan seat principal gone: ${principal}`);
   await hooks.cleanup();
   // The terminal tail, in the (b2) order: gate frozen->retired FIRST (retains the opId, the
   // recovery coordinate), head retiring->retired LAST (drops the op; the alias frees only now).
@@ -303,14 +362,14 @@ export function planStaticSlotResume(row: StaticManagedSlotRow, adopted: boolean
       return "none";
     case "provisioning":
     case "terminalizing":
-      // A crashed spawn (its process never joined) or a crashed terminal: both re-drive the
+      // A crashed spawn (it never reached managed ownership) or a crashed terminal: both re-drive the
       // exact-op terminal (runStaticTerminal is total over the partial durable states).
       return "drive-terminal";
     case "active":
       // `adopted` is genuine live membership (the manager holds this incarnation as a managed
-      // agent). Adopted -> the live process owns it, leave it. NOT adopted -> the process is gone
-      // (a non-preserving restart, or an orphan the resume did not claim): the incarnation is
-      // dead, terminalize. The CALLER supplies `adopted` correctly per sweep: a boot sweep with a
+      // agent). Adopted -> this manager owns the live incarnation, leave it. NOT adopted -> no live
+      // managed owner claimed the incarnation (a non-preserving restart, or an orphan the resume did
+      // not claim): contain its broker authority and terminalize. The CALLER supplies `adopted` correctly per sweep: a boot sweep with a
       // resume pending DEFERS active slots (adoption has not run yet) rather than passing a false
       // adopted; the post-adoption sweep passes true membership.
       return adopted ? "none" : "drive-terminal";

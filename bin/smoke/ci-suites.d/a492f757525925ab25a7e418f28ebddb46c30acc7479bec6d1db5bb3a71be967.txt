@@ -1,0 +1,2 @@
+# #1064: interrupted gate repair resumes from an exact freeze-bound holder journal.
+smoke:gate-reconcile-resume

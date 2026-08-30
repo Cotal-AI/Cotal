@@ -45,6 +45,8 @@ import {
   DEV_OWNER,
   mintLifecycleUid,
   recordsBucket,
+  RECORD_KINDS,
+  recordSpecKey,
   epAuthBucket,
   credRowKey,
   parseLedgerRow,
@@ -61,6 +63,7 @@ import {
   type LifecycleMapping,
   type EpGateRow,
   type StaticManagedSlotRow,
+  type EvictionResult,
 } from "@cotal-ai/core";
 import { workspaceSecretStore } from "@cotal-ai/workspace";
 import {
@@ -88,7 +91,7 @@ let ran = 0;
  * when a `check` is deliberately added or removed, because completeness is something only this
  * suite knows, so it has to be the thing that says it.
  */
-const EXPECTED_CHECKS = 37;
+const EXPECTED_CHECKS = 39;
 function check(label: string, cond: boolean, extra?: unknown): void {
   console.log(`${cond ? "✓" : "✗"} ${label}${cond ? "" : ` — ${JSON.stringify(extra) ?? ""}`}`);
   ran++;
@@ -123,8 +126,11 @@ for (const alias of ["worker", "crashy", "epcap"])
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 (mgr as unknown as { auth: unknown }).auth = auth;
 const fakeSession = { cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} };
-const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status: () => "running", stop: () => {}, interrupt: () => {}, attach: () => fakeSession });
-(mgr as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle } }).runtime = { kind: "fake", spawn: (name) => fakeHandle(name) };
+const fakeHandle = (name: string): AgentHandle => {
+  let running = true;
+  return { name, kind: "fake", locator: JSON.stringify({ name }), status: () => running ? "running" : "exited", stop: () => { running = false; }, waitForExit: async () => { running = false; }, interrupt: () => {}, attach: () => fakeSession };
+};
+(mgr as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle; reap: (locator: string) => Promise<void> } }).runtime = { kind: "fake", spawn: (name) => fakeHandle(name), reap: async () => {} };
 (mgr as unknown as { ep: Record<string, unknown> }).ep = {
   ref: () => ({ id: "smoke-mgr" }),
   on: () => {},
@@ -158,6 +164,17 @@ const M = mgr as unknown as {
   lifecycleMembershipRefusal: (caller: string) => string | undefined;
   renewManagedStaticCred: (a: unknown) => Promise<void>;
   reconcileStaticLifecycles: () => Promise<void>;
+};
+M.managerInstanceId = "smoke-manager-instance";
+
+// The real delivery-admin executor is covered by the restart/eviction suites. This lifecycle suite
+// grades the terminal's use of the seam and its ordering. Default verified-gone keeps existing cells
+// on their intended state-machine subject; the orphan cell below flips it false first.
+let evictionVerified = true;
+let evictionCalls: string[] = [];
+(mgr as unknown as { staticLifecycleEvict?: (principal: string) => Promise<EvictionResult> }).staticLifecycleEvict = async (principal) => {
+  evictionCalls.push(principal);
+  return { principal, kicked: evictionVerified ? 2 : 0, remaining: evictionVerified ? 0 : 1, scanComplete: true, verifiedGone: evictionVerified };
 };
 
 /** Durable-state reader: slot rows ride a provisioner cred (keyed direct-get on `mgrslot.>`);
@@ -200,6 +217,15 @@ async function readSlotOnly(alias: string): Promise<StaticManagedSlotRow | undef
   } finally {
     await nc.drain().catch(() => nc.close());
   }
+}
+
+async function readLifecycleAudit(actor: string, uid: string): Promise<Record<string, unknown> | undefined> {
+  const creds = await mintCreds(auth, newIdentity(), "lifecycle-executor", { lifecycleExecutor: { owner: DEV_OWNER, actor, lifecycleUid: uid, alias: "worker" } });
+  const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+  try {
+    const e = await (await new Kvm(nc).open(recordsBucket(space))).get(recordSpecKey(RECORD_KINDS.lifecycle, [DEV_OWNER, actor, uid]));
+    return e ? JSON.parse(new TextDecoder().decode(e.value)) as Record<string, unknown> : undefined;
+  } finally { await nc.drain().catch(() => nc.close()); }
 }
 
 try {
@@ -264,6 +290,12 @@ try {
   check("slot is RETIRED", s4.slot?.phase === "retired", s4.slot);
   check("A's creds file is gone (cleanup ran inside the barrier)", credsPathA !== undefined && !existsSync(credsPathA));
   check("the RETIRED principal is now refused at the control surface (F5(a))", typeof M.lifecycleMembershipRefusal(principalA) === "string");
+  const auditA = await readLifecycleAudit(idA, uidA);
+  const brokerA = auditA?.broker as Record<string, unknown> | undefined;
+  check("terminal persisted queryable v1 broker eviction evidence before freeing the alias",
+    auditA?.v === 1 && auditA.principal === principalA && auditA.alias === "worker" && auditA.lifecycleUid === uidA &&
+      typeof auditA.managerInstance === "string" && typeof auditA.managerProcessUid === "string" && typeof auditA.timestamp === "string" &&
+      brokerA?.kicked === 2 && brokerA.remaining === 0 && brokerA.scanComplete === true && brokerA.verifiedGone === true, auditA);
 
   // ── 5. Same-name respawn over the retired slot ─────────────────────────────
   const spawnB = await mgr.startAgent({ name: "worker", agent: "smoke-sl" });
@@ -307,6 +339,13 @@ try {
       await nc.drain().catch(() => nc.close());
     }
   }
+  evictionVerified = false;
+  evictionCalls = [];
+  await M.reconcileStaticLifecycles();
+  check("an unverified orphan eviction keeps the slot terminalizing (never frees the alias into two owners)",
+    (await readSlotOnly("orphan"))?.phase === "terminalizing" && evictionCalls.includes(principalKey(DEV_OWNER, orphanId.id).key),
+    { slot: await readSlotOnly("orphan"), evictionCalls });
+  evictionVerified = true;
   await M.reconcileStaticLifecycles();
   const oSettled = await until(async () => (await readSlotOnly("orphan"))?.phase === "retired", 30_000, "the orphan's reconcile terminal");
   check("reconcile terminalized the dead-but-active slot (no active orphan across restarts)", oSettled);
@@ -365,3 +404,4 @@ if (ran !== EXPECTED_CHECKS) {
   process.exit(1);
 }
 console.log(`STATIC-LIFECYCLE SMOKE OK ✅ (${ran}/${EXPECTED_CHECKS} assertions)`);
+console.log(`${ran} checks passed`);
