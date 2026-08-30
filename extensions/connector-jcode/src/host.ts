@@ -267,6 +267,7 @@ export async function runJcodeHost(): Promise<void> {
   /** The last in-flight steer request. `drive()` waits for it before deciding which ids the clean
    *  boundary owns, so a soft_interrupt reply racing turn_done can never be recorded after the ack. */
   let steerSettled: Promise<unknown> = Promise.resolve();
+  const receivedAt = new Map<string, number>();
 
   // The SDK trusts mutable servers.json PIDs and can signal a stale foreign process. Remove its
   // exit hook once the launch handle exists and own teardown here instead: every record is checked
@@ -379,8 +380,58 @@ export async function runJcodeHost(): Promise<void> {
     errorRetryTimer.unref?.();
   };
 
+  const sessionBusy = (): boolean => driving || turnActive;
+
+  const publishInboundHealth = (): void => {
+    const pending = agent.peekInbox("automatic");
+    const live = new Set(pending.map((item) => item.recvKey));
+    for (const key of receivedAt.keys()) if (!live.has(key)) receivedAt.delete(key);
+    const queued = pending.length;
+    if (queued === 0) {
+      void agent.setStatus(sessionBusy() ? "working" : "idle", "").catch(() => {});
+      return;
+    }
+    let oldest: number | undefined;
+    for (const item of pending) {
+      const at = receivedAt.get(item.recvKey);
+      if (at === undefined) continue;
+      if (oldest === undefined || at < oldest) oldest = at;
+    }
+    const ageS = oldest === undefined ? 0 : Math.max(0, Math.round((Date.now() - oldest) / 1000));
+    const activity = `inbound: ${queued} automatic queued, oldest ${ageS}s`;
+    void agent.setStatus(sessionBusy() ? "working" : "waiting", activity).catch(() => {});
+  };
+
+  /** Commit ids the live session already accepted when the host does not own `run()`. A Cotal-owned
+   *  `drive()` still commits only in its own try path, so a TUI-owned turn cannot ack that batch. */
+  const commitSteeredIfHostIdle = async (): Promise<void> => {
+    if (driving) return;
+    await steerSettled;
+    if (driving || !surfacedIds.length) return;
+    const committed = surfacedIds;
+    surfacedIds = [];
+    agent.drainInboxDeliveries(committed);
+    publishInboundHealth();
+  };
+
+  const finishHostIdleTurn = async (): Promise<void> => {
+    await commitSteeredIfHostIdle();
+    if (!sessionBusy() && !reconnecting && (agent.pendingWake() > 0 || wakeQueued)) void drive();
+  };
+
   const drive = async (override?: string): Promise<void> => {
     if (stopping || reconnecting || !initialized || driving || turnActive || !client || !sessionId) return;
+    driving = true;
+    await steerSettled;
+    if (stopping || reconnecting || turnActive || !client || !sessionId) {
+      driving = false;
+      return;
+    }
+    if (surfacedIds.length) {
+      const committed = surfacedIds;
+      surfacedIds = [];
+      agent.drainInboxDeliveries(committed);
+    }
     wakeQueued = false;
     const parts: string[] = [];
     let ids: string[] = [];
@@ -388,7 +439,10 @@ export async function runJcodeHost(): Promise<void> {
     else {
       const inbox = agent.peekInbox("automatic");
       const injection = formatInjection(inbox);
-      if (!injection) return;
+      if (!injection) {
+        driving = false;
+        return;
+      }
       ids = inbox.map((item) => item.recvKey);
       parts.push(injection);
     }
@@ -397,7 +451,6 @@ export async function runJcodeHost(): Promise<void> {
       const briefing = agent.channelBriefing();
       if (briefing) parts.unshift(briefing);
     }
-    driving = true;
     turnActive = true;
     surfacedIds = [...ids];
     void agent.setStatus("working").catch(() => {});
@@ -416,6 +469,7 @@ export async function runJcodeHost(): Promise<void> {
       const committed = surfacedIds;
       surfacedIds = [];
       if (committed.length) agent.drainInboxDeliveries(committed);
+      publishInboundHealth();
       // A turn that SUCCEEDS clears the backoff: the next failure starts from the short delay again
       // rather than inheriting a penalty the seat has already recovered from.
       errorRetryMs = ERROR_RETRY_INITIAL_MS;
@@ -459,7 +513,7 @@ export async function runJcodeHost(): Promise<void> {
    *  stays buffered for the next turn. Exact-id accounting makes the accepted set independent of
    *  physical inbox order, and the containing turn's clean completion remains the only commit. */
   const steerPending = async (): Promise<void> => {
-    if (steering || !driving || !turnActive || !client || !sessionId) return;
+    if (steering || !sessionBusy() || !client || !sessionId) return;
     steering = true;
     try {
       for (;;) {
@@ -467,7 +521,7 @@ export async function runJcodeHost(): Promise<void> {
         const items = agent
           .peekInbox("automatic")
           .filter((item) => !surfaced.has(item.recvKey) && (item.kind !== "channel" || item.mentionsMe));
-        if (!items.length || !turnActive) return;
+        if (!items.length || !sessionBusy()) return;
         const injection = formatInjection(items);
         if (!injection) return;
         const current: JcodeClient = client;
@@ -476,7 +530,7 @@ export async function runJcodeHost(): Promise<void> {
         await request;
         // If the turn closed or the client was replaced while acceptance was in flight, retain the
         // inbox copy. Jcode may also have queued it, so this deliberately chooses at-least-once.
-        if (!turnActive || client !== current) return;
+        if (!sessionBusy() || client !== current) return;
         surfacedIds.push(...items.map((item) => item.recvKey));
       }
     } catch (error) {
@@ -533,14 +587,17 @@ export async function runJcodeHost(): Promise<void> {
     connected.on("close", () => void recoverBridge(connected));
     connected.on("session_status", (event: ApiEvent) => {
       if (!("session_id" in event) || event.session_id !== sessionId || event.ev !== "session_status") return;
+      // A real Harness reports idle between tool rounds while `run()` is still awaiting turn_done.
+      // Clearing turnActive here used to refuse soft_interrupt for the rest of that Cotal-owned turn.
+      if (driving && event.status === "idle") return;
       turnActive = event.status !== "idle";
-      void agent.setStatus(turnActive ? "working" : "idle").catch(() => {});
-      if (!turnActive && !reconnecting && (agent.pendingWake() > 0 || wakeQueued)) void drive();
+      if (!turnActive) void finishHostIdleTurn();
+      else publishInboundHealth();
     });
     connected.on("turn_done", (event: ApiEvent) => {
       if ("session_id" in event && event.session_id === sessionId) {
         turnActive = false;
-        if (!reconnecting && (agent.pendingWake() > 0 || wakeQueued)) void drive();
+        void finishHostIdleTurn();
       }
     });
   };
@@ -549,9 +606,11 @@ export async function runJcodeHost(): Promise<void> {
     const automatic = agent.inboxScope(item.recvKey) === "automatic";
     if (!automatic) return;
     wakeQueued = true;
+    if (!receivedAt.has(item.recvKey)) receivedAt.set(item.recvKey, Date.now());
     const directed = item.kind !== "channel" || item.mentionsMe;
-    if (driving) {
+    if (sessionBusy()) {
       if (directed) void steerPending();
+      publishInboundHealth();
       return;
     }
     if (directed || agent.attention === "open") void drive();

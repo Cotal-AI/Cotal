@@ -727,3 +727,9 @@ smoke:connection-status
 # soft-interrupt queue and commit only at the clean containing-turn boundary. Real loopback broker
 # plus shipped host; mutation-proofed. Appended so every existing shard assignment remains unchanged.
 smoke:jcode-mid-turn-delivery
+
+# A directed DM must still reach the recipient session when the Harness is busy without a Cotal-owned
+# drive() (TUI-owned working) or when session_status pulses idle during a still-open Cotal-owned run.
+# Presence activity must name a growing automatic inbound queue. Appended so every existing shard
+# assignment remains unchanged.
+smoke:jcode-inbound-wedge

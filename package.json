@@ -96,6 +96,7 @@
     "smoke:jcode-private-lifecycle": "tsx extensions/connector-jcode/smoke/private-lifecycle.smoke.ts",
     "smoke:jcode-provider-disconnect": "tsx extensions/connector-jcode/smoke/jcode-provider-disconnect.smoke.ts",
     "smoke:jcode-mid-turn-delivery": "tsx extensions/connector-jcode/smoke/jcode-mid-turn-delivery.smoke.ts",
+    "smoke:jcode-inbound-wedge": "tsx extensions/connector-jcode/smoke/jcode-inbound-wedge.smoke.ts",
     "smoke:jcode-live": "tsx extensions/connector-jcode/smoke/jcode-live.smoke.ts",
     "smoke:view": "tsx implementations/cli/smoke/view.smoke.ts",
     "smoke:members": "tsx packages/core/smoke/members.smoke.ts",
