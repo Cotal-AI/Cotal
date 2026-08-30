@@ -234,6 +234,13 @@ function collectCandidates(file: string): Candidate[] {
   return out;
 }
 
+// Child spawns get a COTAL_-stripped copy of the ambient env: whatever runs this suite may be a
+// managed agent session, and spreading its environment would hand the probe child a live credential
+// and a live broker URL (bin/smoke/suite-ambient-env.smoke.ts). The children read only their own
+// COTAL_PRESENCE_RENDER_* controls, set explicitly per spawn.
+const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
+for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_")) delete cleanEnv[key];
+
 const selectedProbe = process.env.COTAL_PRESENCE_RENDER_PROBE_CASE;
 if (selectedProbe) {
   const probe = PROBES.find(([id]) => id === selectedProbe);
@@ -245,7 +252,7 @@ if (selectedProbe) {
     writeFileSync(path, source);
     const scan = spawnSync("pnpm", ["exec", "tsx", self], {
       cwd: root,
-      env: { ...process.env, COTAL_PRESENCE_RENDER_PROBE_CASE: "", COTAL_PRESENCE_RENDER_SINGLE_PROBE: rel, COTAL_PRESENCE_RENDER_EXPECT_KIND: expectedKind },
+      env: { ...cleanEnv, COTAL_PRESENCE_RENDER_PROBE_CASE: "", COTAL_PRESENCE_RENDER_SINGLE_PROBE: rel, COTAL_PRESENCE_RENDER_EXPECT_KIND: expectedKind },
       encoding: "utf8",
       timeout: 120_000,
     });
@@ -334,12 +341,12 @@ if (process.env.COTAL_PRESENCE_RENDER_PROBE_CHILD !== "1") {
       const rel = relative(root, path).split("\\").join("/");
       const scan = spawnSync("pnpm", ["exec", "tsx", self], {
         cwd: root,
-        env: { ...process.env, COTAL_PRESENCE_RENDER_SINGLE_PROBE: rel, COTAL_PRESENCE_RENDER_EXPECT_KIND: expectedKind },
+        env: { ...cleanEnv, COTAL_PRESENCE_RENDER_SINGLE_PROBE: rel, COTAL_PRESENCE_RENDER_EXPECT_KIND: expectedKind },
         encoding: "utf8",
         timeout: 120_000,
       });
       assert.equal(scan.status, 0, `${scan.stdout ?? ""}${scan.stderr ?? ""}`);
-      const run = spawnSync("pnpm", ["exec", "tsx", self], { cwd: root, env: { ...process.env, COTAL_PRESENCE_RENDER_PROBE_CHILD: "1" }, encoding: "utf8", timeout: 120_000 });
+      const run = spawnSync("pnpm", ["exec", "tsx", self], { cwd: root, env: { ...cleanEnv, COTAL_PRESENCE_RENDER_PROBE_CHILD: "1" }, encoding: "utf8", timeout: 120_000 });
       const output = `${run.stdout ?? ""}${run.stderr ?? ""}`;
       assert.notEqual(run.status, 0, `adversarial presence-render probe unexpectedly escaped the AST census: ${rel}`);
       assert.match(output, new RegExp(rel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `probe failure did not name its new shipped path: ${rel}`);
