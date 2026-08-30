@@ -10,7 +10,8 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isReachable, registry, type Connector } from "@cotal-ai/core";
+import { isReachable } from "@cotal-ai/core";
+import { extensionsDir, saveExtensionsManifest } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -38,19 +39,27 @@ mkdirSync(binDir);
 const present = join(binDir, process.platform === "win32" ? "present-harness.cmd" : "present-harness");
 writeFileSync(present, process.platform === "win32" ? "@exit /b 0\r\n" : "#!/bin/sh\nexit 0\n", { mode: 0o700 });
 
-const missingConnector: Connector = {
-  kind: "connector",
-  name: "boot-missing",
-  requires: ["harness-that-does-not-exist-965"],
-  buildLaunch: () => ({ command: "never", args: [] }),
-};
-const presentConnector: Connector = {
-  kind: "connector",
-  name: "boot-present",
-  requires: ["present-harness"],
-  buildLaunch: () => ({ command: "never", args: [] }),
-};
-registry.register(missingConnector, presentConnector);
+const configHome = join(root, "config");
+process.env.XDG_CONFIG_HOME = configHome;
+mkdirSync(extensionsDir(), { recursive: true });
+saveExtensionsManifest({
+  extensions: [
+    {
+      pkg: "@fixture/boot-connectors",
+      version: "1.0.0",
+      spec: ".",
+      provides: [
+        { kind: "connector", name: "boot-missing" },
+        { kind: "connector", name: "boot-present" },
+      ],
+      commands: [],
+      connectors: [
+        { name: "boot-missing", requires: ["harness-that-does-not-exist-965"] },
+        { name: "boot-present", requires: ["present-harness"] },
+      ],
+    },
+  ],
+});
 
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
@@ -58,7 +67,7 @@ const broker = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root
 const releaseBroker = teardownOnSignal(broker, root);
 const oldPath = process.env.PATH;
 process.env.PATH = binDir;
-const manager = new Manager({ space: "harness-boot", servers, runtime: "pty", workspaceRoot });
+const manager = new Manager({ space: "harness-boot", servers, runtime: "pty", workspaceRoot, installedExtensions: true });
 const M = manager as unknown as {
   connectorStatuses: Array<{ agent: string; state: string; binaries: Record<string, string>; reason?: string }>;
   managerStatusData(): { connectors: Array<{ agent: string; state: string; binaries: Record<string, string>; reason?: string }> };
