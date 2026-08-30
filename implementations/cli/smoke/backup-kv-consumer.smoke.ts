@@ -5,7 +5,6 @@
  *
  * Run: pnpm smoke:backup-kv-consumer
  */
-import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -81,7 +80,7 @@ async function preservedFixture(label: string, residue: Residue): Promise<{
     const nc = await connect({ servers: server, inboxPrefix: `_INBOX_${label}`, maxReconnectAttempts: 0 });
     const kv = await openChannelRegistry(nc, space);
     await kv.put("general", new TextEncoder().encode('{"description":"fixture"}'));
-    assert.ok(kv instanceof Bucket, "channel registry uses the pinned Bucket implementation");
+    if (!(kv instanceof Bucket)) throw new Error("channel registry is not the pinned Bucket implementation");
     const bucket = kv as Bucket;
     const realGet = bucket.js.consumers.getPushConsumer.bind(bucket.js.consumers);
     const victim = Object.create(bucket) as Bucket;
@@ -155,14 +154,23 @@ async function preservedFixture(label: string, residue: Residue): Promise<{
 }
 
 const originalCwd = process.cwd();
-let passed = 0;
+let passed = 0, failed = 0;
+const check = (name: string, condition: boolean, extra?: unknown) => {
+  if (condition) { passed++; console.log(`  ✓ ${name}`); }
+  else { failed++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
+};
 try {
   const healthy = await preservedFixture("healthy", "kv-scan");
   try {
     process.chdir(healthy.root);
-    await backup({ positionals: ["create", healthy.artifact], values: {}, raw: [] });
-    passed++;
-    console.log("  ✓ backup accepts a healthy stamp with stopped kv-scan residue");
+    let healthyError: unknown;
+    await backup({ positionals: ["create", healthy.artifact], values: {}, raw: [] })
+      .catch((error) => { healthyError = error; });
+    check(
+      "backup accepts a healthy stamp with stopped kv-scan residue",
+      healthyError === undefined,
+      healthyError instanceof Error ? healthyError.message : healthyError,
+    );
   } finally {
     process.chdir(originalCwd);
     await healthy.cleanup();
@@ -171,18 +179,21 @@ try {
   const unhealthy = await preservedFixture("unhealthy", "wrong-filter");
   try {
     process.chdir(unhealthy.root);
-    await assert.rejects(
-      () => backup({ positionals: ["create", unhealthy.artifact], values: {}, raw: [] }),
-      /unsupported stopped KV watcher config/,
+    let unhealthyError: unknown;
+    await backup({ positionals: ["create", unhealthy.artifact], values: {}, raw: [] })
+      .catch((error) => { unhealthyError = error; });
+    check(
+      "backup still refuses an unhealthy ordered-consumer lookalike",
+      unhealthyError instanceof Error && /unsupported stopped KV watcher config/.test(unhealthyError.message),
+      unhealthyError instanceof Error ? unhealthyError.message : unhealthyError,
     );
-    passed++;
-    console.log("  ✓ backup still refuses an unhealthy ordered-consumer lookalike");
   } finally {
     process.chdir(originalCwd);
     await unhealthy.cleanup();
   }
 
-  console.log(`\nBACKUP KV CONSUMER SMOKE OK (${passed} passed)`);
+  console.log(`\nBACKUP KV CONSUMER SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
+  if (failed) process.exitCode = 1;
 } finally {
   process.chdir(originalCwd);
 }
