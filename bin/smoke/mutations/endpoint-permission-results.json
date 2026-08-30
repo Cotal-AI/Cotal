@@ -1,0 +1,25 @@
+{
+  "suite": "packages/core/smoke/endpoint-permission-results.smoke.ts",
+  "guard": "a denied JetStream metadata read rejects the public endpoint call while a structured missing stream remains a legitimate empty result",
+  "command": "pnpm smoke:endpoint-permission-results:auth",
+  "completionMarker": "ENDPOINT PERMISSION RESULTS",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/endpoint-permission-results.json",
+  "mutations": [
+    {
+      "name": "listChannels swallows every STREAM.INFO failure as registry-only data",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;",
+      "replace": "      if (isPermissionDenied(e)) return [...this.channelConfigs].map(([channel, config]) => ({ channel, messages: 0, config }));",
+      "expectRed": "listChannels propagates denied CHAT STREAM.INFO instead of returning an incomplete success",
+      "cell": "a denied CHAT STREAM.INFO rejects listChannels rather than resolving to a valid-looking subset"
+    },
+    {
+      "name": "listChannels throws on a genuinely absent CHAT stream",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;",
+      "replace": "      throw e;",
+      "expectRed": "a genuinely absent CHAT stream remains a legitimate empty channel result",
+      "cell": "structured stream absence remains the one legitimate empty-count result"
+    }
+  ]
+}
