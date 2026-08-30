@@ -552,6 +552,52 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       },
     },
     {
+      name: "cotal_connection_status",
+      title: "Cotal: connection status",
+      description:
+        "Report this session's mesh connection as one of five states, plus the raw facts it is " +
+        "derived from. `ready` is bound with a live transport. `degraded` is bound while the " +
+        "transport underneath is DOWN, so sends queue or fail until the client reconnects; this is " +
+        "the state that needs attention. `connecting` is a live transport whose Cotal bind has not " +
+        "finished. `disconnected` is neither. `stopped` means this session was shut down " +
+        "deliberately and is terminal, which is not a fault. Also reports the buffered inbox count " +
+        "and the time of the latest successful non-empty inbox drain when one has occurred. A " +
+        "retained failure is reported as `connectionIssue` while it is the CURRENT reason, and as " +
+        "`lastConnectionIssue` on a stopped session, where it is a post-mortem rather than a live " +
+        "problem. Read-only and local: it reads this session's MeshAgent directly and does not call " +
+        "the manager or the broker.",
+      run(agent) {
+        const state = agent.connectionState;
+        const issue = agent.connectionIssue;
+        const lastDrainedAt = agent.lastInboxDrainedAt;
+        // The issue survives stop() by design, so reporting it under the same key in both cases
+        // would tell a reader that a cleanly stopped session is currently broken. The key names
+        // which one it is; `state` says which to expect.
+        const issueField =
+          issue === undefined ? {} : state === "stopped" ? { lastConnectionIssue: issue } : { connectionIssue: issue };
+        return ok(
+          JSON.stringify(
+            {
+              state,
+              // The facts the state is derived from, so a caller that reads the combination
+              // differently is not stuck with our reading of it.
+              connected: agent.connected,
+              transportConnected: agent.transportConnected,
+              // The third fact, and it is not redundant. `stopped` and `disconnected` BOTH read
+              // false/false, so without this the reported facts cannot reproduce the state and the
+              // caller has to take our word for the one distinction the redesign exists to make.
+              stopping: agent.stopping,
+              bufferedCount: agent.inboxCount(),
+              ...issueField,
+              ...(lastDrainedAt !== undefined ? { lastDrainedAt: new Date(lastDrainedAt).toISOString() } : {}),
+            },
+            null,
+            2,
+          ),
+        );
+      },
+    },
+    {
       name: "cotal_docs",
       title: "Cotal: read the docs (version-exact)",
       description:

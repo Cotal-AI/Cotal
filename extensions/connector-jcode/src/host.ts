@@ -258,6 +258,15 @@ export async function runJcodeHost(): Promise<void> {
   let briefed = false;
   let initialized = false;
   let wakeQueued = false;
+  /** Exact Cotal deliveries the active Harness turn has accepted, either in its initial prompt or
+   *  through Jcode's session-owned soft-interrupt queue. They commit only when that containing turn
+   *  finishes cleanly. A soft_interrupt `ok` proves the live recipient session queued the text; it
+   *  does not prove the model consumed it yet, so the turn boundary remains the sole ack site. */
+  let surfacedIds: string[] = [];
+  let steering = false;
+  /** The last in-flight steer request. `drive()` waits for it before deciding which ids the clean
+   *  boundary owns, so a soft_interrupt reply racing turn_done can never be recorded after the ack. */
+  let steerSettled: Promise<unknown> = Promise.resolve();
 
   // The SDK trusts mutable servers.json PIDs and can signal a stale foreign process. Remove its
   // exit hook once the launch handle exists and own teardown here instead: every record is checked
@@ -390,6 +399,7 @@ export async function runJcodeHost(): Promise<void> {
     }
     driving = true;
     turnActive = true;
+    surfacedIds = [...ids];
     void agent.setStatus("working").catch(() => {});
     let turnClient: JcodeClient | undefined;
     try {
@@ -400,12 +410,18 @@ export async function runJcodeHost(): Promise<void> {
       // only safe outcome. The reconnect path redrives it after it reattaches the owned session.
       if (reconnecting || client !== turnClient)
         throw new Error("Jcode Harness connection closed during the turn; leaving the inbox batch unacknowledged");
-      if (ids.length) agent.drainInboxDeliveries(ids);
+      // A directed DM can be accepted into Jcode's persistent soft-interrupt queue while this run is
+      // active. Wait for that request to settle before reading the exact containing-turn ledger.
+      await steerSettled;
+      const committed = surfacedIds;
+      surfacedIds = [];
+      if (committed.length) agent.drainInboxDeliveries(committed);
       // A turn that SUCCEEDS clears the backoff: the next failure starts from the short delay again
       // rather than inheriting a penalty the seat has already recovered from.
       errorRetryMs = ERROR_RETRY_INITIAL_MS;
       consecutiveFailures = 0;
     } catch (error) {
+      surfacedIds = [];
       consecutiveFailures++;
       process.stderr.write(
         `[cotal-jcode] turn failed (${consecutiveFailures} in a row): ${(error as Error).message}\n`,
@@ -437,6 +453,39 @@ export async function runJcodeHost(): Promise<void> {
     }
   };
 
+  /** Queue directed automatic traffic in Jcode's live session while a turn owns the provider. Jcode
+   *  incorporates soft interrupts at its documented safe points (after provider streaming / tools),
+   *  including a persisted fallback across a private bridge replacement. Ambient channel chatter
+   *  stays buffered for the next turn. Exact-id accounting makes the accepted set independent of
+   *  physical inbox order, and the containing turn's clean completion remains the only commit. */
+  const steerPending = async (): Promise<void> => {
+    if (steering || !driving || !turnActive || !client || !sessionId) return;
+    steering = true;
+    try {
+      for (;;) {
+        const surfaced = new Set(surfacedIds);
+        const items = agent
+          .peekInbox("automatic")
+          .filter((item) => !surfaced.has(item.recvKey) && (item.kind !== "channel" || item.mentionsMe));
+        if (!items.length || !turnActive) return;
+        const injection = formatInjection(items);
+        if (!injection) return;
+        const current: JcodeClient = client;
+        const request = current.softInterrupt(sessionId, injection, false);
+        steerSettled = request.catch(() => {});
+        await request;
+        // If the turn closed or the client was replaced while acceptance was in flight, retain the
+        // inbox copy. Jcode may also have queued it, so this deliberately chooses at-least-once.
+        if (!turnActive || client !== current) return;
+        surfacedIds.push(...items.map((item) => item.recvKey));
+      }
+    } catch (error) {
+      process.stderr.write(`[cotal-jcode] soft interrupt failed: ${(error as Error).message}\n`);
+    } finally {
+      steering = false;
+    }
+  };
+
   /**
    * A provider stall can take down Jcode's bridge while leaving the private session and its inbox
    * batch intact. Give that owned instance one clean replacement: the failed turn remains unacked,
@@ -455,6 +504,7 @@ export async function runJcodeHost(): Promise<void> {
     reconnecting = true;
     turnActive = false;
     driving = false;
+    surfacedIds = []; // deliberately unacked; the replacement redrives the durable inbox batch
     void agent.setStatus("waiting").catch(() => {});
     try {
       // The connector owns the private instance. Stop the whole broken tree before replacing it:
@@ -496,9 +546,15 @@ export async function runJcodeHost(): Promise<void> {
   };
 
   agent.on("incoming", (item: InboxItem) => {
-    void item;
+    const automatic = agent.inboxScope(item.recvKey) === "automatic";
+    if (!automatic) return;
     wakeQueued = true;
-    void drive();
+    const directed = item.kind !== "channel" || item.mentionsMe;
+    if (driving) {
+      if (directed) void steerPending();
+      return;
+    }
+    if (directed || agent.attention === "open") void drive();
   });
 
   let startControl: ReturnType<typeof startControlServer> | undefined;

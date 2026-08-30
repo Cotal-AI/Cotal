@@ -1,0 +1,79 @@
+{
+  "suite": "extensions/connector-core/smoke/connection-status.smoke.ts",
+  "guard": "cotal_connection_status reports MeshAgent's live state, and its five states stay distinct",
+  "command": "pnpm smoke:connection-status",
+  "progressPattern": "  ✓ ",
+  "completionMarker": "SUITE COMPLETE: 15 cells",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/fixtures/connection-status.mutations.json",
+  "why": [
+    "The state a caller acts on is derived from three facts, so each collapse of that derivation gets its own mutation rather than one mutation standing in for the whole getter. A single mutation on connectionState would be killed by whichever cell ran first and would leave the other states ungraded.",
+    "M1 and M6 mutate the two liveness getters, which proves the tool reports live MeshAgent state rather than deriving or assuming it. M2 to M4 collapse one state into another, which proves each state is separately observable. M5 mutates the issue scoping, which is the only thing keeping a stopped session's post-mortem from being read as a current fault.",
+    "The full predicted kill set, including every exclusion, is recorded in the suite header before this config is run.",
+    "The suite imports connector-core source relatively, so mutation-proof executes the changed source directly and needs no build or afterRestore command."
+  ],
+  "mutations": [
+    {
+      "name": "MeshAgent connected state is replaced by a constant false",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "  get connected(): boolean {\n    return this._connected;\n  }",
+      "replace": "  get connected(): boolean {\n    return false;\n  }",
+      "expectRed": "the real MCP route reports the MeshAgent's live connected=true state",
+      "cell": "the real MCP route reports the MeshAgent's live connected=true state",
+      "note": "This proves the tool reports the live MeshAgent getter. It deliberately does not mutate the tool's renderer, which could only prove formatting while leaving the state source ungraded."
+    },
+    {
+      "name": "the derived state stops distinguishing a deliberate stop from a lost connection",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (this._stopping) return \"stopped\";",
+      "replace": "",
+      "expectRed": "a deliberately stopped session reports stopped rather than disconnected",
+      "cell": "a deliberately stopped session reports stopped rather than disconnected",
+      "note": "stop() clears both liveness flags, so without this line a stopped session falls through to disconnected. This is the defect the tool was redesigned to remove, so it is pinned rather than left to a comment. The post-mortem cell also reds under this mutant, because the issue key is chosen from the state."
+    },
+    {
+      "name": "degraded collapses into ready, so a dead socket under a live bind reads as healthy",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (this._connected) return this._transportConnected ? \"ready\" : \"degraded\";",
+      "replace": "    if (this._connected) return \"ready\";",
+      "expectRed": "bound with the transport down reports degraded, not connected and not disconnected",
+      "cell": "bound with the transport down reports degraded, not connected and not disconnected",
+      "note": "This is the row the previous single boolean got wrong: it reported not-degraded on the one state that needs attention."
+    },
+    {
+      "name": "connecting collapses into disconnected, erasing the pre-bind window",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    return this._transportConnected ? \"connecting\" : \"disconnected\";",
+      "replace": "    return \"disconnected\";",
+      "expectRed": "a live transport whose bind has not finished reports connecting",
+      "cell": "a live transport whose bind has not finished reports connecting",
+      "note": "The endpoint emits transport=true when connect() returns while the bind is still in progress, so this window is reachable and a caller polling during a slow bind lands in it."
+    },
+    {
+      "name": "a stopped session's retained failure is reported as a current issue",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "          issue === undefined ? {} : state === \"stopped\" ? { lastConnectionIssue: issue } : { connectionIssue: issue };",
+      "replace": "          issue === undefined ? {} : { connectionIssue: issue };",
+      "expectRed": "a stopped session reports its retained failure as a post-mortem, not as a current issue",
+      "cell": "a stopped session reports its retained failure as a post-mortem, not as a current issue",
+      "note": "The issue deliberately survives stop(). Without the scoping, a cleanly stopped session reports an old failure under the key a reader takes to mean what is wrong right now."
+    },
+    {
+      "name": "the reported transport fact is a constant rather than the live getter",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "  get transportConnected(): boolean {\n    return this._transportConnected;\n  }",
+      "replace": "  get transportConnected(): boolean {\n    return true;\n  }",
+      "expectRed": "bound with the transport down reports degraded, not connected and not disconnected",
+      "cell": "bound with the transport down reports degraded, not connected and not disconnected",
+      "note": "connectionState reads the private field, so this mutant leaves the derived state correct and corrupts only the reported fact. That is the point: it proves the raw facts are reported from live getters rather than back-derived from the state, which would make them useless for a caller that wants to check our derivation."
+    },
+    {
+      "name": "the reported stopping fact is a constant, so stopped and disconnected become identical",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "              stopping: agent.stopping,",
+      "replace": "              stopping: false,",
+      "expectRed": "the reported facts distinguish stopped from disconnected, which agree on both other facts",
+      "cell": "the reported facts distinguish stopped from disconnected, which agree on both other facts",
+      "note": "connectionState reads the private field, so this leaves `state` correct and breaks only the reported facts. Without it the three reported facts cannot reproduce the state, because stopped and disconnected agree on the other two, and the caller has to take the derivation on trust."
+    }
+  ]
+}

@@ -36,6 +36,12 @@ const ANNOTATIONS = {
     availability: "always",
     notes: "Call it first; safe to re-check anytime.",
   },
+  cotal_connection_status: {
+    effect: "read-only",
+    availability: "always",
+    notes:
+      "Reads this session's MeshAgent directly. `lastDrainedAt` is omitted until a non-empty inbox drain has successfully committed.",
+  },
   cotal_roster: { effect: "read-only", availability: "always" },
   cotal_docs: {
     effect: "read-only",
