@@ -1,0 +1,3 @@
+# Mesh-side persona catalog read (#402): listPersonaCatalog + personaCatalogReadable, no broker.
+# Mutation-proofed - packages/core/smoke/persona-catalog-read.mutations.json.
+smoke:persona-catalog-read
