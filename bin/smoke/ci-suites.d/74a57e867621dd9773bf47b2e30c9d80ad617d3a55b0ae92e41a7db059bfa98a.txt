@@ -1,0 +1,3 @@
+# #912: the never-ran census shard.mjs prints at its break point.
+# Mutation-proofed - bin/smoke/mutations/shard-never-ran.json.
+smoke:shard-never-ran
