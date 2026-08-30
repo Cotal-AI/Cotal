@@ -20,6 +20,14 @@
       "replace": "  return spawnImpl(\"uv\", [\"run\", \"--project\", opts.pkgDir, \"hermes\", \"gateway\", \"run\"], spawnOptions);",
       "expectRed": "the gateway spawn executes the exact manager-boot uv path",
       "cell": "the gateway spawn executes the exact manager-boot uv path"
+    },
+    {
+      "name": "Hermes version inspection ignores the manager-boot uv path",
+      "file": "extensions/connector-hermes/src/launch.ts",
+      "find": "      hermesUvCommand(opts.env),",
+      "replace": "      \"uv\",",
+      "expectRed": "version inspection executes the exact manager-boot uv path",
+      "cell": "version inspection executes the exact manager-boot uv path"
     }
   ]
 }

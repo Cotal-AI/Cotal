@@ -11,6 +11,7 @@ import { strict as assert } from "node:assert";
 import type { ChildProcess } from "node:child_process";
 import { hermesUvCommand, spawnHermesGateway } from "../src/binary.js";
 import { hermesConnector } from "../src/extension.js";
+import { assertHermesVersion } from "../src/launch.js";
 
 if (process.platform === "win32") {
   console.log("✓ launch-env smoke skipped on Windows (the Hermes connector is Unix-only; buildLaunch throws)");
@@ -134,7 +135,26 @@ assert.deepEqual(
   "the gateway spawn executes the exact manager-boot uv path",
 );
 
-console.log("3 checks passed");
+let inspected: { command: string; args: readonly string[] } | undefined;
+assertHermesVersion({
+  env: bootResolved,
+  pkgDir: "/connector/hermes",
+  execFileImpl: (command, args) => {
+    inspected = { command, args };
+    return "0.16.7\n";
+  },
+  logImpl: () => {},
+});
+assert.deepEqual(
+  inspected,
+  {
+    command: "/manager/boot/uv",
+    args: ["run", "--project", "/connector/hermes", "--quiet", "python", "-c", "from importlib.metadata import version; print(version('hermes-agent'))"],
+  },
+  "version inspection executes the exact manager-boot uv path",
+);
+
+console.log("4 checks passed");
 console.log(
   `launch-env smoke: ${PROVIDER_KEYS.length} declared provider keys forwarded, ` +
     `${FORMERLY_EXCLUDED.length + HOST_MARKERS.length + 1} undeclared names withheld, ` +
