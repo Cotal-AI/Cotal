@@ -469,6 +469,7 @@ smoke:jcode-route-identity
 # must preserve the mesh seat and unacknowledged batch, make exactly one private replacement, attach
 # the same session, and accept subsequent mesh work; a failed recovery exits rather than looping.
 smoke:jcode-provider-disconnect
+smoke:jcode-mid-turn-delivery
 
 smoke:orientation
 
