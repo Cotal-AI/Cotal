@@ -28,6 +28,14 @@
       "replace": "    return false;",
       "expectRed": "removed credentials are absent from every persistent mirror on the next launch",
       "cell": "removed credentials are absent from every persistent mirror on the next launch"
+    },
+    {
+      "name": "Jcode inventory grows a fifth family the fixture does not drive",
+      "file": "extensions/connector-jcode/src/private-state.ts",
+      "find": "      inventory.push({ family: \"external-agent\", source: join(sources.externalHome, relativePath), destinationRelative: join(\"external\", relativePath) });\n    }\n  }\n  return inventory;",
+      "replace": "      inventory.push({ family: \"external-agent\", source: join(sources.externalHome, relativePath), destinationRelative: join(\"external\", relativePath) });\n    }\n  }\n  inventory.push({ family: \"fifth-family\" as CredentialMirrorEntry[\"family\"], source: join(sources.jcodeHome, \"fifth-family-probe.json\"), destinationRelative: \"fifth-family-probe.json\" });\n  return inventory;",
+      "expectRed": "driven families equal unique inventory families",
+      "cell": "driven families equal unique inventory families"
     }
   ]
 }

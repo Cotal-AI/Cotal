@@ -65,7 +65,8 @@ try {
 
   // #850: drive every persistent credential mirror family with throwaway bytes. Dynamic app-config
   // and OpenClaw-agent families go through their real discovery paths. Count before checking absence so
-  // a discovery regression cannot turn a zero-iteration loop green.
+  // a discovery regression cannot turn a zero-iteration loop green. Unique inventory families must
+  // equal driven families so a new construction site cannot keep the fixture-constant count green.
   const removalCases = [
     { family: "jcode-home", source: join(sources.jcodeHome, "openai-auth.json"), destinationRelative: "openai-auth.json" },
     { family: "app-config", source: join(sources.appConfigDir, "removed-provider.env"), destinationRelative: join("config", "jcode", "removed-provider.env") },
@@ -83,7 +84,14 @@ try {
   const driven = removalCases.filter((mirror) =>
     firstInventory.some((entry) => entry.family === mirror.family && entry.source === mirror.source && entry.destinationRelative === mirror.destinationRelative),
   );
+  const inventoryFamilies = [...new Set(firstInventory.map((entry) => entry.family))].sort();
+  const drivenFamilies = [...driven.map((mirror) => mirror.family)].sort();
   check("credential removal checked 4 persistent mirror families", driven.length === 4, { mirrorsChecked: driven.length, families: driven.map((mirror) => mirror.family) });
+  check(
+    "driven families equal unique inventory families",
+    inventoryFamilies.length === drivenFamilies.length && inventoryFamilies.every((family, index) => family === drivenFamilies[index]),
+    { inventoryFamilies, drivenFamilies },
+  );
   check("all driven credential mirrors exist before source removal", driven.filter((mirror) => existsSync(join(home, mirror.destinationRelative))).length === 4);
   for (const mirror of driven) rmSync(mirror.source, { force: true });
   mirrorJcodeCredentials(home, sources);
