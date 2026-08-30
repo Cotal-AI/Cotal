@@ -18,7 +18,10 @@ Presence is a per-space directory keyed by instance id: each peer's identity car
   its heartbeat stays fresh. Surfaces that have no outside observation of last
   assistant-message age render `progress unknown` rather than treating heartbeat
   age as work age. A stale observation overlays `stalled Xm` on the still-fresh
-  presence. See issue #876.
+  presence. The observation classifier is workstation/operator data, not part of
+  the wire protocol; human wording stays in each CLI, connector, or web renderer.
+  Compact maps and DM pickers use the presence glyph only and make no progress
+  claim. See issue #876.
 - `offline`: gone (gracefully, or its heartbeat lapsed)
 
 A peer refreshes its own entry on a heartbeat; observers also derive `offline` from stale

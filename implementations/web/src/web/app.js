@@ -743,8 +743,9 @@ function renderAgentDetail() {
   const meta = card.meta || {};
   const waiting = p.status === "waiting";
   const who = card.role ? `${esc(card.name)}<span class="crole">${esc(card.role)}</span>` : esc(card.name);
-  // p.ts is last heartbeat (Presence.ts), not status-entered-at — never say "waiting 4m".
-  const since = `${esc(p.status)} · seen ${esc(ago(p.ts))}`;
+  // p.ts is last heartbeat (Presence.ts), not work progress or status-entered-at.
+  const progress = p.status === "working" && p.progress?.kind === "unknown" ? "working · progress unknown" : p.status;
+  const since = `${esc(progress)} · heartbeat ${esc(ago(p.ts))} ago`;
 
   // Model when known; harness agent with no model → "not reported"; no harness and no model → nothing.
   const modelBadge = meta.model

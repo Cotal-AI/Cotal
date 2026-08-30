@@ -248,7 +248,7 @@
     for (const p of list) {
       if (p.card?.kind === "endpoint") continue;
       const a = ensureAgent({ id: p.card.id, name: p.card.name, role: p.card.role });
-      a.status = p.status; a.activity = p.activity || ""; a.role = p.card.role;
+      a.status = p.status; a.progress = p.progress; a.activity = p.activity || ""; a.role = p.card.role;
       a.harness = p.card.meta?.connector; a.model = p.card.meta?.model; a.variant = p.card.meta?.variant;
       a.attention = p.attention; // open/absent both mean receives-all; only dnd/focus render
       // Card legibility fields the detail panel renders (same source as the Monitor's Agent Detail).
@@ -657,7 +657,7 @@
       el.innerHTML = `<span class="x" id="dx">✕</span>
         <div class="d-kind">agent</div>
         <div class="d-who">${esc(sel.name)}${sel.role ? `<span class="role">${esc(sel.role)}</span>` : ""}</div>
-        <div class="d-status ${sel.status}"><span class="dot"></span>${esc(sel.status)}</div>
+        <div class="d-status ${sel.status}"><span class="dot"></span>${esc(sel.status === "working" && sel.progress?.kind === "unknown" ? "working · progress unknown" : sel.status)}</div>
         ${descBlock}
         <div class="d-section"><div class="d-label">activity</div><div class="d-block ${sel.activity ? "" : "muted"}">${esc(sel.activity || "no current activity")}</div></div>
         ${(harnessRow || modelRow || attRow) ? `<div class="d-rows">${harnessRow}${modelRow}${attRow}</div>` : ""}

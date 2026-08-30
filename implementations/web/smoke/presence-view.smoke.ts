@@ -86,7 +86,7 @@ ok("2.2 the server broadcasts presence-view from the endpoint event (not a resta
 ok("2.3 a new /feed client is seeded with the current view, not only the roster",
   /send\(res, "presence-view", ep\.presenceView\(\)\)/.test(webTs));
 ok("2.4 roster pushes are trailing-edge debounced so a replay burst is one render",
-  /const pushRoster = debounce\(\(\) => broadcast\("roster", ep\.getRoster\(\)\), 150\)/.test(webTs)
+  /const pushRoster = debounce\(\(\) => broadcast\("roster", rosterSnapshot\(\)\), 150\)/.test(webTs)
     && /ep\.on\("presence", \(\) => pushRoster\(\)\)/.test(webTs));
 ok("2.5 a poll cannot erase the observer-view mark: both pages keep a roster entry across setStale",
   /const rosterView = staleNow\.find\(\(s\) => s\.name === "roster"\)/.test(appJs)

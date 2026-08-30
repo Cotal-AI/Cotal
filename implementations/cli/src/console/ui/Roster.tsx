@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { Box, Text, useFocus, useInput } from "ink";
 import type { Presence } from "@cotal-ai/core";
-import { progressOverlay } from "@cotal-ai/core";
+import { progressSignal } from "@cotal-ai/workspace";
 import { agentColor, STATUS, ago } from "./theme.js";
 
 function progressText(p: Presence): string {
   if (p.card.kind !== "agent" || p.status !== "working") return ago(p.ts);
-  return progressOverlay(undefined, Date.now()).label;
+  return progressSignal(undefined, Date.now()).kind === "unknown" ? "progress unknown" : "progress observed";
 }
 
 function RosterRow({ p, selected, wide }: { p: Presence; selected: boolean; wide: boolean }) {
