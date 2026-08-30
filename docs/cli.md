@@ -872,9 +872,12 @@ On a normal `SIGINT`/`SIGTERM`, the manager stops every seat and requires the se
 prove the seat is gone before it releases the manager lease or service registration. A stop that
 cannot prove exit fails loud and keeps manager authority instead of reporting a clean shutdown while
 an orphan still holds broker rails. After an abrupt manager death, the same logical successor
-terminalizes only its own durable static slots and verify-evicts the predecessor principal before it
-retires the lifecycle and frees the alias. An unverified eviction stays terminalizing, so a successor
-can never start beside a live orphan.
+terminalizes only its own durable static slots. It first uses the runtime's lifecycle-keyed durable
+locator to hard-stop and verify the exact orphan process, window, workspace, or terminal is gone. It
+then verify-evicts the predecessor's broker principal, records that result in the lifecycle's
+caller-readable audit detail, and only then retires the lifecycle and frees the alias. Missing,
+malformed, or unverified runtime or broker evidence keeps the slot terminalizing, so a successor can
+never start beside a live orphan.
 
 A `meshes add --mode user` entry is a **participant** registration, not hosting authority. A
 participant may run `supervise` only when the host advertises the remote manager authority service
