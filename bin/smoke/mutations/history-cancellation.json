@@ -2,7 +2,6 @@
   "suite": "packages/core/smoke/history-cancellation.smoke.ts and implementations/web/smoke/bounded-aggregation.smoke.ts",
   "guard": "public history abort stops the active JetStream pull and dashboard deadlines pass that abort to every unfinished source",
   "command": "pnpm smoke:history-cancellation",
-  "completionMarker": "HISTORY CANCELLATION:",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/history-cancellation.json",
   "why": [
     "FOUR MUTATIONS across the public API, broker pull buffering, newest-N paging, and dashboard threading.",
