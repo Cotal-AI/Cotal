@@ -75,6 +75,13 @@ space/name and is owner-only. Jcode's own credential inheritance is used for the
 so provider logins work without copying its transcript/config tree into the seat. The spawned
 Jcode process does not inherit `COTAL_*` values or the Cotal launch-material pointer.
 
+Credential mirroring is mandatory for managed Jcode seats: each launch refreshes the allowlisted
+Jcode, provider-config, and external-login destinations, and removes a destination when its source
+login was removed. Cleanup addresses only that inventory. Transcripts, MCP configuration, logs, and
+other private-home state are untouched. There is no credential-free opt-out today because the private
+instance must reproduce the operator's current provider-login state rather than start with stale or
+partial authorization.
+
 If a provider failure closes the private Harness API connection during a mesh-driven turn, the
 connector leaves that turn's inbox batch unacknowledged and opens one bounded recovery window for a
 private replacement connection to the same session. A transient launch or attach failure retries

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mirrorJcodeCredentials, shortSocketHome } from "../src/private-state.js";
+import { jcodeCredentialMirrorInventory, mirrorJcodeCredentials, shortSocketHome } from "../src/private-state.js";
 
 let pass = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
@@ -62,6 +62,51 @@ try {
   writeFileSync(direct, "rotated-token", { mode: 0o600 });
   mirrorJcodeCredentials(home, sources);
   check("credential copies refresh on every launch", readFileSync(copiedDirect, "utf8") === "rotated-token");
+
+  // #850: drive every persistent credential mirror family with throwaway bytes. Dynamic app-config
+  // and OpenClaw-agent families go through their real discovery paths. Count before checking absence so
+  // a discovery regression cannot turn a zero-iteration loop green.
+  const removalCases = [
+    { family: "jcode-home", source: join(sources.jcodeHome, "openai-auth.json"), destinationRelative: "openai-auth.json" },
+    { family: "app-config", source: join(sources.appConfigDir, "removed-provider.env"), destinationRelative: join("config", "jcode", "removed-provider.env") },
+    { family: "external-static", source: join(sources.externalHome, ".codex", "auth.json"), destinationRelative: join("external", ".codex", "auth.json") },
+    { family: "external-agent", source: join(sources.externalHome, ".openclaw", "agents", "removed-agent", "agent", "auth-profiles.json"), destinationRelative: join("external", ".openclaw", "agents", "removed-agent", "agent", "auth-profiles.json") },
+  ] as const;
+  for (const mirror of removalCases) {
+    mkdirSync(join(mirror.source, ".."), { recursive: true, mode: 0o700 });
+    writeFileSync(mirror.source, `throwaway-${mirror.family}`, { mode: 0o600 });
+  }
+  const unrelated = join(home, "session-owned-unrelated.json");
+  writeFileSync(unrelated, "keep", { mode: 0o600 });
+  mirrorJcodeCredentials(home, sources);
+  const firstInventory = jcodeCredentialMirrorInventory(home, sources);
+  const driven = removalCases.filter((mirror) =>
+    firstInventory.some((entry) => entry.family === mirror.family && entry.source === mirror.source && entry.destinationRelative === mirror.destinationRelative),
+  );
+  check("credential removal checked 4 persistent mirror families", driven.length === 4, { mirrorsChecked: driven.length, families: driven.map((mirror) => mirror.family) });
+  check("all driven credential mirrors exist before source removal", driven.filter((mirror) => existsSync(join(home, mirror.destinationRelative))).length === 4);
+  for (const mirror of driven) rmSync(mirror.source, { force: true });
+  mirrorJcodeCredentials(home, sources);
+  const surviving = driven.filter((mirror) => existsSync(join(home, mirror.destinationRelative)));
+  check("removed credentials are absent from every persistent mirror on the next launch", surviving.length === 0, surviving.map((mirror) => ({ family: mirror.family, destination: join(home, mirror.destinationRelative) })));
+  check("credential reconciliation preserves unrelated private-home state", existsSync(unrelated) && readFileSync(unrelated, "utf8") === "keep");
+
+  if (process.platform === "win32") {
+    check("absent-source symlink escape guard is unreachable on unsupported Windows", true);
+  } else {
+    const outside = join(root, "outside-removal");
+    mkdirSync(outside, { mode: 0o700 });
+    const symlinkParent = join(home, "external", ".codex");
+    rmSync(symlinkParent, { recursive: true, force: true });
+    symlinkSync(outside, symlinkParent, "dir");
+    let refused = false;
+    try {
+      mirrorJcodeCredentials(home, sources);
+    } catch (error) {
+      refused = /refusing symlinked Jcode credential mirror parent/.test((error as Error).message);
+    }
+    check("absent-source cleanup refuses a symlinked mirror parent and deletes nothing outside", refused && !existsSync(join(outside, "auth.json")));
+  }
 
   console.log(`\nJCODE PRIVATE STATE SMOKE PASSED (${pass} checks)`);
 } finally {

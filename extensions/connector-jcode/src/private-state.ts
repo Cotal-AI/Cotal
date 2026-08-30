@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { copyFileSync, lstatSync, mkdirSync, readdirSync, rmSync, rmdirSync, statSync, symlinkSync, type Dirent } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { constants, copyFileSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, symlinkSync, type Dirent } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { userAppConfigDir, userJcodeHome } from "@1jehuang/jcode-sdk";
@@ -89,31 +89,75 @@ function mirrorParent(home: string, destination: string): void {
   }
 }
 
-function copyCredentialFile(home: string, source: string, destinationRelative: string): boolean {
+function credentialDestination(home: string, destinationRelative: string): string {
   assertRelative(destinationRelative);
-  let sourceStats: ReturnType<typeof statSync>;
+  const destination = join(home, destinationRelative);
+  if (!resolve(destination).startsWith(resolve(home) + sep)) throw new Error(`Jcode credential mirror escapes its private home: ${destination}`);
+  return destination;
+}
+
+/** Remove only one connector-owned mirror destination. Parent components are checked without
+ * following symlinks, so reconciling an absent source cannot delete outside `home`. */
+function removeCredentialMirror(home: string, destinationRelative: string): boolean {
+  const destination = credentialDestination(home, destinationRelative);
+  let current = home;
+  const parentRelative = relative(home, dirname(destination));
+  assertRelative(parentRelative);
+  for (const part of parentRelative.split(sep).filter(Boolean)) {
+    current = join(current, part);
+    try {
+      const stats = lstatSync(current);
+      if (stats.isSymbolicLink()) throw new Error(`refusing symlinked Jcode credential mirror parent: ${current}`);
+      if (!stats.isDirectory()) throw new Error(`Jcode credential mirror parent is not a directory: ${current}`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+  }
   try {
-    sourceStats = statSync(source);
+    if (lstatSync(destination).isDirectory()) throw new Error(`Jcode credential mirror destination is a directory: ${destination}`);
+    rmSync(destination, { force: true });
+    return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
   }
-  if (!sourceStats.isFile()) return false;
+}
 
-  const destination = join(home, destinationRelative);
-  if (!resolve(destination).startsWith(resolve(home) + sep)) throw new Error(`Jcode credential mirror escapes its private home: ${destination}`);
+function copyCredentialFile(home: string, source: string, destinationRelative: string): boolean {
+  assertRelative(destinationRelative);
+  let sourceStats: ReturnType<typeof statSync> | undefined;
+  try {
+    sourceStats = statSync(source);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (!sourceStats?.isFile()) {
+    removeCredentialMirror(home, destinationRelative);
+    return false;
+  }
+
+  const destination = credentialDestination(home, destinationRelative);
   mirrorParent(home, destination);
   // The parent is owner-only and verified above. Remove a prior SDK link before copying: jcode
   // 0.78 rejects external auth symlinks as a TOCTOU defense, and copies are deliberately refreshed
   // at every launch rather than pretending rotating credentials stay coherent indefinitely.
   try {
     if (lstatSync(destination).isDirectory()) throw new Error(`Jcode credential mirror destination is a directory: ${destination}`);
-    rmSync(destination, { force: true });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  copyFileSync(source, destination);
-  hardenPrivate(destination, "file");
+  // Copy + harden off to the side, then rename over the old regular file or symlink. Jcode is
+  // POSIX-only; rename is the publication boundary, so a login rotation never exposes a missing or
+  // half-written credential between generations.
+  const temp = `${destination}.${randomBytes(6).toString("hex")}.tmp`;
+  try {
+    copyFileSync(source, temp, constants.COPYFILE_EXCL);
+    hardenPrivate(temp, "file");
+    renameSync(temp, destination);
+  } finally {
+    rmSync(temp, { force: true });
+  }
   if (lstatSync(destination).isSymbolicLink()) throw new Error(`Jcode credential mirror remained symlinked: ${destination}`);
   return true;
 }
@@ -133,8 +177,47 @@ export interface CredentialSources {
   externalHome: string;
 }
 
+export interface CredentialMirrorEntry {
+  family: "jcode-home" | "app-config" | "external-static" | "external-agent";
+  source: string;
+  destinationRelative: string;
+}
+
 function credentialSources(): CredentialSources {
   return { jcodeHome: userJcodeHome(), appConfigDir: userAppConfigDir(), externalHome: homedir() };
+}
+
+/** The complete allowlisted credential mirror inventory for one reconciliation pass. Dynamic
+ * families include both current source names and prior managed destinations, so removed names
+ * remain addressable for cleanup. */
+export function jcodeCredentialMirrorInventory(home: string, sources: CredentialSources): CredentialMirrorEntry[] {
+  const inventory: CredentialMirrorEntry[] = JCODE_CREDENTIAL_FILES.map((name) => ({
+    family: "jcode-home",
+    source: join(sources.jcodeHome, name),
+    destinationRelative: name,
+  }));
+
+  const appConfigNames = new Set([
+    ...optionalEntries(sources.appConfigDir).filter((entry) => (entry.isFile() || entry.isSymbolicLink()) && entry.name.endsWith(".env")).map((entry) => entry.name),
+    ...optionalEntries(join(home, "config", "jcode")).filter((entry) => !entry.isDirectory() && entry.name.endsWith(".env")).map((entry) => entry.name),
+  ]);
+  for (const name of [...appConfigNames].sort())
+    inventory.push({ family: "app-config", source: join(sources.appConfigDir, name), destinationRelative: join("config", "jcode", name) });
+
+  for (const relativePath of EXTERNAL_CREDENTIAL_FILES)
+    inventory.push({ family: "external-static", source: join(sources.externalHome, relativePath), destinationRelative: join("external", relativePath) });
+
+  const agentNames = new Set([
+    ...optionalEntries(join(sources.externalHome, ".openclaw", "agents")).filter((entry) => entry.isDirectory()).map((entry) => entry.name),
+    ...optionalEntries(join(home, "external", ".openclaw", "agents")).filter((entry) => entry.isDirectory()).map((entry) => entry.name),
+  ]);
+  for (const agent of [...agentNames].sort()) {
+    for (const name of ["auth-profiles.json", "auth.json"]) {
+      const relativePath = join(".openclaw", "agents", agent, "agent", name);
+      inventory.push({ family: "external-agent", source: join(sources.externalHome, relativePath), destinationRelative: join("external", relativePath) });
+    }
+  }
+  return inventory;
 }
 
 /** Copy the SDK-recognized provider material for this launch. The SDK's default inheritance links
@@ -142,24 +225,8 @@ function credentialSources(): CredentialSources {
  * owns a fresh, owner-only copy instead. */
 export function mirrorJcodeCredentials(home: string, sources = credentialSources()): void {
   privateDirectory(home);
-  for (const name of JCODE_CREDENTIAL_FILES) copyCredentialFile(home, join(sources.jcodeHome, name), name);
-
-  for (const entry of optionalEntries(sources.appConfigDir)) {
-    if ((!entry.isFile() && !entry.isSymbolicLink()) || !entry.name.endsWith(".env")) continue;
-    copyCredentialFile(home, join(sources.appConfigDir, entry.name), join("config", "jcode", entry.name));
-  }
-
-  for (const relativePath of EXTERNAL_CREDENTIAL_FILES)
-    copyCredentialFile(home, join(sources.externalHome, relativePath), join("external", relativePath));
-
-  const agents = join(sources.externalHome, ".openclaw", "agents");
-  for (const agent of optionalEntries(agents)) {
-    if (!agent.isDirectory()) continue;
-    for (const name of ["auth-profiles.json", "auth.json"]) {
-      const relativePath = join(".openclaw", "agents", agent.name, "agent", name);
-      copyCredentialFile(home, join(sources.externalHome, relativePath), join("external", relativePath));
-    }
-  }
+  for (const entry of jcodeCredentialMirrorInventory(home, sources))
+    copyCredentialFile(home, entry.source, entry.destinationRelative);
 }
 
 export interface ShortSocketHome {

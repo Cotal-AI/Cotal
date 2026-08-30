@@ -1,4 +1,6 @@
 {
+  "suite": "extensions/connector-jcode/smoke/private-state.smoke.ts",
+  "guard": "Jcode credential mirrors reconcile all four source families, remove absent credentials, preserve unrelated state, and keep path safety intact",
   "command": "pnpm smoke:jcode-private-state",
   "progressPattern": "✓",
   "minTicks": 8,
@@ -8,14 +10,24 @@
       "file": "extensions/connector-jcode/src/private-state.ts",
       "find": "    symlinkSync(home, alias, \"dir\");",
       "replace": "    symlinkSync(\"/\", alias, \"dir\");",
-      "expectRed": "short API socket home aliases the managed home"
+      "expectRed": "short API socket home aliases the managed home",
+      "cell": "short API socket home aliases the managed home"
     },
     {
       "name": "Jcode external auth is copied",
       "file": "extensions/connector-jcode/src/private-state.ts",
-      "find": "  copyFileSync(source, destination);",
-      "replace": "  copyFileSync(source, `${destination}.wrong`);",
-      "expectRed": "external auth mirror is copied rather than symlinked"
+      "find": "    copyFileSync(source, temp, constants.COPYFILE_EXCL);",
+      "replace": "    copyFileSync(source, `${temp}.wrong`, constants.COPYFILE_EXCL);",
+      "expectRed": "external auth mirror is copied rather than symlinked",
+      "cell": "external auth mirror is copied rather than symlinked"
+    },
+    {
+      "name": "Jcode absent credential sources leave persistent mirror copies",
+      "file": "extensions/connector-jcode/src/private-state.ts",
+      "find": "    removeCredentialMirror(home, destinationRelative);\n    return false;",
+      "replace": "    return false;",
+      "expectRed": "removed credentials are absent from every persistent mirror on the next launch",
+      "cell": "removed credentials are absent from every persistent mirror on the next launch"
     }
   ]
 }
