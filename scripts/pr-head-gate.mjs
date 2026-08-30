@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const API = "https://api.github.com";
-const SUCCESS = new Set(["success", "neutral", "skipped"]);
 
 function unquote(value) {
   const trimmed = value.trim();
@@ -148,7 +147,7 @@ export function classifyPullRequestHead({ pr, headSha, expected, runs }) {
     if (candidates.length === 0) { missing.push(name); continue; }
     const run = newestRun(candidates);
     if (run.status !== "completed") { pending.push(name); continue; }
-    if (!SUCCESS.has(run.conclusion)) failing.push(name);
+    if (run.conclusion !== "success") failing.push(name);
   }
   return { expected, missing, pending, failing, green: missing.length === 0 && pending.length === 0 && failing.length === 0 };
 }

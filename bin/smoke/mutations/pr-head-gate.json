@@ -40,8 +40,8 @@
     {
       "name": "failed expected workflows count as green",
       "file": "scripts/pr-head-gate.mjs",
-      "find": "if (!SUCCESS.has(run.conclusion)) failing.push(name);",
-      "replace": "if (SUCCESS.has(run.conclusion)) failing.push(name);",
+      "find": "if (run.conclusion !== \"success\") failing.push(name);",
+      "replace": "if (run.conclusion === \"success\") failing.push(name);",
       "expectRed": "a completed non-success workflow is reported as failing, not missing or pending",
       "cell": "completed non-success workflow is reported as failing"
     }

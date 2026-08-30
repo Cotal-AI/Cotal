@@ -88,7 +88,20 @@ const red = classifyPullRequestHead({
 });
 check("a completed non-success workflow is reported as failing, not missing or pending", JSON.stringify(red.failing) === '["CI"]' && red.missing.length === 0 && red.pending.length === 0, red);
 
-const EXPECTED = 17;
+for (const conclusion of ["neutral", "skipped"]) {
+  const nonSuccess = succeeded.map((run: Record<string, unknown>) =>
+    run.name === "CI" ? { ...run, conclusion } : run,
+  );
+  const verdict = classifyPullRequestHead({
+    pr: positive.pr,
+    headSha: positive.headSha,
+    expected: expectedNames,
+    runs: nonSuccess,
+  });
+  check(`a ${conclusion} expected workflow is failing, never green`, JSON.stringify(verdict.failing) === '["CI"]' && !verdict.green, verdict);
+}
+
+const EXPECTED = 19;
 check(`every cell ran (${EXPECTED} before sentinel)`, passed + failed === EXPECTED);
 console.log(`PR HEAD GATE SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 console.log("SUITE COMPLETE");

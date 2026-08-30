@@ -18,7 +18,7 @@ non-green categories are distinct:
 
 - **missing**: an expected workflow run was never created for this PR and head
 - **pending**: the run exists but is queued or running
-- **failing**: the run completed without an accepted conclusion
+- **failing**: the run completed without a `success` conclusion, including `neutral` or `skipped`
 
 The guard is read-only. It does not drain GitHub's queue, retrigger a run, or diagnose or fix the
 external scheduler that creates workflow runs.
