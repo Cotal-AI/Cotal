@@ -1,0 +1,25 @@
+$ tsx implementations/manager/smoke/manager-service-invoke.smoke.ts
+manager service endpoint registered: manager/mhvyaeh7qd2ps7l3w0rsuq3qa3giqvz (epoch 0, registrationRevision 2)
+manager goal-writer standing (endpoint manager, scoped cred, §13.1 family-staged)
+manager session plane standing (endpoint manager, epoch 0, scoped session-ledger cred, §13.1 family-staged)
+1. resolveService: describe + fetch + recompile the full surface (no hand-imported schemas)
+  ✓ the resolved surface matches the shipped cluster document
+  ✓ status resolved: untargeted, read capability, recompiled contracts carry closure digests
+  ✓ despawn resolved: targeted, owner mode (from the verified cluster document, not asserted)
+2. invoke status (generic, by name)
+  ✓ invoke status returns the typed ManagerStatus
+3. invoke spawn (the recompiled input contract gates args)
+  ✓ a bad spawn field is bad-request at the FETCHED-then-recompiled input contract (not a hand-written schema)
+  ✓ invoke spawn accepts the goal (acceptance floor: name + goalId)
+  ✓ invoke spawn boots a REAL agent that joins + is managed
+4. invoke targeted despawn + the generic target guards
+  ✓ a targeted command invoked with NO target refuses at the generic layer (bad-request)
+  ✓ an untargeted command invoked WITH a target refuses at the generic layer (bad-request)
+seat reaped: w1 (UBVP2N7PETTVEI2SWU3ZJMZNBHH4GK7RJQTYWJDXSMAVDBFSXSCQX7AC, uid t3u2cpmibdvsorsmsoekqpv5pusbamy, pid 93177) - this manager stopped it (despawn or shutdown); exit detail unavailable from runtime "pty"
+  ✓ invoke targeted owner-mode despawn tears the agent down
+5. a command outside the caller's describe VIEW is not resolvable
+  ✓ invoking a command not in the resolved surface is not-found
+✓ deregistered manager instance mhvyaeh7qd2ps7l3w0rsuq3qa3giqvz from the manager service registry (spec revision 2)
+static retirement w1: verify-evicting orphan seat principal local.UBVP2N7PETTVEI2SWU3ZJMZNBHH4GK7RJQTYWJDXSMAVDBFSXSCQX7AC before lifecycle cleanup
+
+MANAGER SERVICE INVOKE SMOKE OK ✅  (11 passed, 0 failed)

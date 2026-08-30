@@ -1,0 +1,104 @@
+$ tsx implementations/manager/smoke/manager-service-ops.smoke.ts
+manager service endpoint registered: manager/259ga9m17nx9xbucqwucbgcpwq9147x (epoch 0, registrationRevision 2)
+manager goal-writer standing (endpoint manager, scoped cred, §13.1 family-staged)
+manager session plane standing (endpoint manager, epoch 0, scoped session-ledger cred, §13.1 family-staged)
+1. describe: the rev-2 document serves the full fan-out
+  ✓ describe lists every shipped command
+  ✓ the document revision and targeting modes match the shipped cluster document; despawn AND input declare owner+any modes (the 1c operator reach), stop declares self mode (child/ledger ABSENT everywhere)
+2. spawn fidelity: the ep door coerces the full StartAgentOpts + shared deep validation
+  ✓ the ep door accepted the 15-field request
+  ✓ the coerced StartAgentOpts carry every declared field (the fidelity oracle)
+  ✓ the ep door attributes the caller's own spawner principal
+  ✓ an unknown spawn field is bad-request at the CALLER's own closed contract (pre-publish; the responder enforces the same digest-bound schema)
+  ✓ an empty resume refuses through the shared deep validation
+  ✓ an empty detached caller default refuses through the shared deep validation
+3. real lifecycle over ep.one: spawn -> ps/inspect -> targeted despawn
+  ✓ ep spawn accepts (acceptance floor) + the agent joins the mesh
+  ✓ ps lists w1 with id + lifecycleUid (the targeting coordinates)
+  ✓ ps rows carry the #651 enrichment facts (cwd/pid/spawner/instance/host)
+  ✓ ...and an unpinned model serializes ABSENT, not fabricated
+  ✓ inspect returns the same row
+  ✓ inspect of an unknown name is not-found
+  ✓ a persona-file model surfaces in the ps row (no --model flag)
+  ✓ an empty/whitespace persona model serializes ABSENT, not present-empty
+  ✓ a NON-spawner's targeted despawn is permission-denied (ctl privileged own-child policy, same source both doors)
+seat reaped: w1 (UBT574FOEDIVKKAQWTMTJFAJDEYLQK2S5VRHJKRULL47AXYKP4XAGD37, uid ot7qng5o9eqln78uq2vmwfe59a4n77c, pid 92948) - this manager stopped it (despawn or shutdown); exit detail unavailable from runtime "pty"
+  ✓ the SPAWNER's targeted owner-mode despawn succeeds
+  ✓ w1 is no longer managed after the ep despawn
+  ✓ a STALE target (departed incarnation) is expired at the fresh resolver
+4. baseline self-stop: the agent's OWN cred halts itself over ep.one
+static retirement w1: verify-evicting orphan seat principal local.UBT574FOEDIVKKAQWTMTJFAJDEYLQK2S5VRHJKRULL47AXYKP4XAGD37 before lifecycle cleanup
+static retirement w1 (UBT574FOEDIVKKAQWTMTJFAJDEYLQK2S5VRHJKRULL47AXYKP4XAGD37): the delivery daemon is not reachable on the ctl.delivery-admin rail (no responders: 'cotal.mgrops-a6ad23c0.ctl.delivery-admin.local.UBFEAEQI7SUBVIDU6LUT6EVVDXWIIZBAOVSGUAREEAPLKKS2IWOGU7BS'); a restart on an auth mesh cannot verify-evict the superseded serve family principal "local.UBT574FOEDIVKKAQWTMTJFAJDEYLQK2S5VRHJKRULL47AXYKP4XAGD37" without the liveness oracle. Start the delivery daemon (`cotal up` runs it) and retry — eviction is never skipped (SPEC 13.1)
+  ✓ w2 spawned + joined
+  ✓ w2's lifecycle-keyed creds file exists
+seat reaped: w2 (UDD5HNWQEKEMZZTSZMWOV6XDBJQR6JMNXYNJKXYDS7DTAPI24XCU2FAK, uid 5xv1h3gtjtoh8cc3q40di0xzcjp4wgs, pid 92972) - this manager stopped it (despawn or shutdown); exit detail unavailable from runtime "pty"
+  ✓ the agent's OWN baseline cred invokes self-mode `stop` and halts itself
+5. definePersona / models / purge / attach / launch + resume negatives
+  ✓ definePersona creates the persona (content-only write)
+  ✓ a wire-defined persona reads no channels
+  ✓ and records that the caller could not choose
+  ✓ a FOREIGN redefine refuses (ownership preserved through the ep door)
+  ✓ a redefine drops the marker once the persona has a real read set
+  ✓ list-personas includes the just-defined name with model and description for its owner
+  ✓ show-persona returns the owned card body
+  ✓ show-persona of an unknown name is not-found
+static retirement w2: verify-evicting orphan seat principal local.UDD5HNWQEKEMZZTSZMWOV6XDBJQR6JMNXYNJKXYDS7DTAPI24XCU2FAK before lifecycle cleanup
+  ✓ a foreign list sees the taken name without description or model
+  ✓ a foreign show-persona is not-found (no existence leak of the body)
+  ✓ and leaves the operator's read set alone
+  ✓ models answers the NORMALIZED catalog list (stub connector: supported=false)
+static retirement w2 (UDD5HNWQEKEMZZTSZMWOV6XDBJQR6JMNXYNJKXYDS7DTAPI24XCU2FAK): the delivery daemon is not reachable on the ctl.delivery-admin rail (no responders: 'cotal.mgrops-a6ad23c0.ctl.delivery-admin.local.UCYTUXLXQOEFU2AWUFHB53Y7CBM5X7EAVU5BKIQ3A6SKQBIFXTK4JDD3'); a restart on an auth mesh cannot verify-evict the superseded serve family principal "local.UDD5HNWQEKEMZZTSZMWOV6XDBJQR6JMNXYNJKXYDS7DTAPI24XCU2FAK" without the liveness oracle. Start the delivery daemon (`cotal up` runs it) and retry — eviction is never skipped (SPEC 13.1)
+  ✓ purge clears the space history (typed {chat} result)
+  ✓ w3 spawned for attach
+  ✓ targeted attach returns the holder-bound session grant (no ws url)
+  ✓ launch with an unknown runId refuses through the shared core
+  ✓ M6 setup: a live incarnation holds the name
+  ✓ M6 manifest-declared: a launch onto a LIVE name REFUSES, never a silent auto-number (breaking vs shipped main, and the arm nothing covered)
+  ✓ M6 control: the derived numbered name differs from the base (m6pin_2)
+  ✓ M6 persona-derived: the SAME base name against the SAME live occupant still NUMBERS
+  ✓ resumePreserved refuses with the EXACT ctl core message (no --resume-attempt manager)
+  ✓ commitResume refuses (no such attempt) through the shared core
+  ✓ finalizeResume refuses (no such attempt) through the shared core
+6. preservation fence: prepare fences the ep door, abort restores
+  ✓ preparePreservation returns the plan (inventory built, no child stopped)
+  ✓ while preserving, ordinary ep ops refuse (unavailable — the SHARED maintenance fence)
+  ✓ abortPreservation restores active
+  ✓ ordinary ep ops work again after the abort
+7. sanitization: traversal tokens refuse at the SHARED name/id grammar on the ep door
+  ✓ a traversal spawn ref refuses (bare ref = safe token, no path escape)
+  ✓ a traversal identity override refuses at the FINAL allocation-site grammar
+  ✓ a traversal define-persona name refuses before any file write
+  ✓ no stray file escaped the agents dir
+  ✓ a traversal launch runId refuses at the token-safe spec loader
+  ✓ a newline-bearing model field cannot inject frontmatter policy (YAML-escaped; no capabilities key lands)
+8. the §13.7 contract store: fetch-verify-compile the registered digests (the item-5 caller path)
+  ✓ the cluster document is fetchable at its REGISTERED closure digest (verify-on-read walk, baseline caller grant)
+  ✓ the REGISTERED launch contract admits a remote manifest deploy's inline spec (the revision-6 door, recompiled from the store)
+  ✓ ...and it is still CLOSED - an undeclared field is refused, so revision 6 widened one field, not the door
+  ✓ a fetched schema RECOMPILES to the registered closure digest (the generic-invoke round-trip)
+  ✓ the recompiled validator enforces the same closed contract
+9. escalation negative: a spawn-cap-only agent cred is broker-refused on admin-class ep commands
+  ✓ purge from a spawn-cap-only cred NEVER reaches the handler (no publish grant: dropped by the broker, no reply)
+10. the operator instrument (1c.2b): any-mode cross-agent reach over the GENERIC invoke path
+  ✓ fixture: A spawns w3 (the operator instrument is NOT its spawner)
+  ✓ the instrument resolves the full surface generically (describe + store fetch + recompile)
+  ✓ instrument `ps` rides the manager.read row + the describe-bound default currency (no epoch stub)
+seat reaped: w3_2 (UAIJRPT4AXA6EPFXBCGNOZCTSLJLR7YJ37WVQZS35O43DHCKFNI6GUJN, uid cr2ij8faivfjggmag9kkkexw1tdjyyl, pid 93052) - this manager stopped it (despawn or shutdown); exit detail unavailable from runtime "pty"
+  ✓ ANY-mode NO-ARGS despawn (the real CLI shape): the operator tears down an agent it did NOT spawn (rev-3 admin reach, instrument row only)
+12. any-mode is operator-policy-mintable ONLY: an agent cred's any-mode request never reaches the handler
+static retirement w3_2: verify-evicting orphan seat principal local.UAIJRPT4AXA6EPFXBCGNOZCTSLJLR7YJ37WVQZS35O43DHCKFNI6GUJN before lifecycle cleanup
+static retirement w3_2 (UAIJRPT4AXA6EPFXBCGNOZCTSLJLR7YJ37WVQZS35O43DHCKFNI6GUJN): the delivery daemon is not reachable on the ctl.delivery-admin rail (no responders: 'cotal.mgrops-a6ad23c0.ctl.delivery-admin.local.UA42YSDJ2GCNZMGPEJ4AE465P3JMLFWVKKUWQ42O3ZB4WYDO4VHEBJFJ'); a restart on an auth mesh cannot verify-evict the superseded serve family principal "local.UAIJRPT4AXA6EPFXBCGNOZCTSLJLR7YJ37WVQZS35O43DHCKFNI6GUJN" without the liveness oracle. Start the delivery daemon (`cotal up` runs it) and retry — eviction is never skipped (SPEC 13.1)
+  ✓ a spawn-capable agent publishing the any-mode despawn subject is broker-dropped (no reply, never served)
+static retirement pmodel: verify-evicting orphan seat principal local.UCA46ASQUQHDCQJTISQEXK2DIPDFGUEZXEHR3IU4Y2OEEYO5NPJQBPVK before lifecycle cleanup
+static retirement m6pin_2: verify-evicting orphan seat principal local.UCEIUCV5GXWQ7NUZRBB66ZAIZGVYRQXTKWIM5UW67IEUY4ZAUBFK4YWL before lifecycle cleanup
+static retirement w3: verify-evicting orphan seat principal local.UA4SWNG5QV5YVSF4BH7LHP2NMIMGKQSTGLY66UCHPMHNU4526W6M3HSM before lifecycle cleanup
+static retirement m6pin: verify-evicting orphan seat principal local.UDUNGYCVCLE5WASCASE5E5KP2TYY5S6UA4PJWSSAYHWFCJSFAR2I4WAZ before lifecycle cleanup
+static retirement emodel: verify-evicting orphan seat principal local.UC4TY5ELD3SKM6VAK33AMVCK4ACEKT3ZOPURB4A3D5KCPXFTRHPOZU7D before lifecycle cleanup
+static retirement m6pin_2 (UCEIUCV5GXWQ7NUZRBB66ZAIZGVYRQXTKWIM5UW67IEUY4ZAUBFK4YWL): the delivery daemon is not reachable on the ctl.delivery-admin rail (no responders: 'cotal.mgrops-a6ad23c0.ctl.delivery-admin.local.UDZBDDJ2KYVRXDEY3DRR7QZE5CLH456JCHJHAEMRRHU4YKS4RQBMGJRR'); a restart on an auth mesh cannot verify-evict the superseded serve family principal "local.UCEIUCV5GXWQ7NUZRBB66ZAIZGVYRQXTKWIM5UW67IEUY4ZAUBFK4YWL" without the liveness oracle. Start the delivery daemon (`cotal up` runs it) and retry — eviction is never skipped (SPEC 13.1)
+static retirement m6pin (UDUNGYCVCLE5WASCASE5E5KP2TYY5S6UA4PJWSSAYHWFCJSFAR2I4WAZ): the delivery daemon is not reachable on the ctl.delivery-admin rail (no responders: 'cotal.mgrops-a6ad23c0.ctl.delivery-admin.local.UCGV6ZK4JKRWWM6QMRMLUOPHIFRLF35ABTBIZ3B53LUCIVJTESZX765U'); a restart on an auth mesh cannot verify-evict the superseded serve family principal "local.UDUNGYCVCLE5WASCASE5E5KP2TYY5S6UA4PJWSSAYHWFCJSFAR2I4WAZ" without the liveness oracle. Start the delivery daemon (`cotal up` runs it) and retry — eviction is never skipped (SPEC 13.1)
+static retirement w3 (UA4SWNG5QV5YVSF4BH7LHP2NMIMGKQSTGLY66UCHPMHNU4526W6M3HSM): the delivery daemon is not reachable on the ctl.delivery-admin rail (no responders: 'cotal.mgrops-a6ad23c0.ctl.delivery-admin.local.UBJH3ZAWHYTU4J7NP26XGUJSMUGMAVNCWO3LSCYQID2FWALZ645GSNYH'); a restart on an auth mesh cannot verify-evict the superseded serve family principal "local.UA4SWNG5QV5YVSF4BH7LHP2NMIMGKQSTGLY66UCHPMHNU4526W6M3HSM" without the liveness oracle. Start the delivery daemon (`cotal up` runs it) and retry — eviction is never skipped (SPEC 13.1)
+static retirement emodel (UC4TY5ELD3SKM6VAK33AMVCK4ACEKT3ZOPURB4A3D5KCPXFTRHPOZU7D): the delivery daemon is not reachable on the ctl.delivery-admin rail (no responders: 'cotal.mgrops-a6ad23c0.ctl.delivery-admin.local.UCIBGQEDZMRJG2W5L6TPOYLF4HB6TPHZEOYAY37DEVHKML4LRHMU4FT5'); a restart on an auth mesh cannot verify-evict the superseded serve family principal "local.UC4TY5ELD3SKM6VAK33AMVCK4ACEKT3ZOPURB4A3D5KCPXFTRHPOZU7D" without the liveness oracle. Start the delivery daemon (`cotal up` runs it) and retry — eviction is never skipped (SPEC 13.1)
+static retirement pmodel (UCA46ASQUQHDCQJTISQEXK2DIPDFGUEZXEHR3IU4Y2OEEYO5NPJQBPVK): the delivery daemon is not reachable on the ctl.delivery-admin rail (no responders: 'cotal.mgrops-a6ad23c0.ctl.delivery-admin.local.UBKZLLVLIDS2FDTXPXXZTT6GW7VSD6YADRTL2WLWGXKLP5VUBRP7WZ2R'); a restart on an auth mesh cannot verify-evict the superseded serve family principal "local.UCA46ASQUQHDCQJTISQEXK2DIPDFGUEZXEHR3IU4Y2OEEYO5NPJQBPVK" without the liveness oracle. Start the delivery daemon (`cotal up` runs it) and retry — eviction is never skipped (SPEC 13.1)
+✓ deregistered manager instance 259ga9m17nx9xbucqwucbgcpwq9147x from the manager service registry (spec revision 2)
+
+MANAGER SERVICE OPS SMOKE OK ✅  (67 passed, 0 failed)

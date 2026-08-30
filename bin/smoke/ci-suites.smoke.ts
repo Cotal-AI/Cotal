@@ -23,7 +23,6 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-// @ts-expect-error - plain .mjs helper, the one parser shared by shard.mjs and gate-inventory.
 import { parseCiSuites, readCiSuites, CI_SUITES_PATH } from "./ci-suites.mjs";
 
 let pass = 0;

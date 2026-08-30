@@ -37,7 +37,7 @@ export interface AgentConfig {
    *  Connector-owned keys such as `connector` and `model` are overlaid later and cannot be spoofed here. */
   meta?: Record<string, string>;
   /** Control-plane capabilities this session declares (from the agent file's `capabilities:`); today
-   *  only `spawn`. Used to gate the manager-op tools (cotal_spawn / cotal_persona) so the advertised
+   *  only `spawn`. Used to gate the manager-op tools (cotal_spawn / cotal_persona / cotal_personas) so the advertised
    *  surface matches what the agent can actually invoke. The auth layer is the real boundary on any
    *  AUTHED mesh ({@link isAuthed} — static creds or user-mode); open mode carries no identity plane,
    *  so the gate is permissive there. Same file the manager minted creds from, so the tool gate

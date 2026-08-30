@@ -13,7 +13,7 @@ import {
 import { c } from "../ui.js";
 import { selfArgv } from "../lib/self-exec.js";
 import { claimExtensionMutation } from "../lib/ext-mutation.js";
-import { SEED_BUILTINS, seedGeneration, stampPath } from "./paths.js";
+import { entryScript, SEED_BUILTINS, seedGeneration, stampPath } from "./paths.js";
 import {
   acquireReconcileLock,
   clearChildMarker,
@@ -39,6 +39,7 @@ import {
   recoverAuthorityFromBackup,
   writeAuthority,
   writeStamp,
+  type Stamp,
 } from "./authority.js";
 import { gcSeedStore, stageSeedPayload } from "./store.js";
 
@@ -120,7 +121,7 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
           throw new Error(`a connector seed may be mid-flight (marker ${child.path}) - if no cotal process is running, remove it, then run \`cotal ext seed --repair\``);
         throw new Error("a previous connector seed or repair was interrupted - run `cotal ext seed --repair`");
       }
-    } else if (readWitness() && authorityIntact() && builtinsAccounted() && readStamp()?.generation === generation && !reconcileLockActive()) {
+    } else if (readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && readStamp()?.generation === generation && !reconcileLockActive()) {
       // Steady state AND no reconcile in flight. The lock check is LAST (immediately before NOOP) so
       // it is the linearization point: a `--force` that link-publishes the lock during the slower
       // health/stamp reads is still caught here, and we fall through to acquire/wait rather than
@@ -171,6 +172,18 @@ function builtinsAccounted(): boolean {
   }
 }
 
+/** A package can add a registry provider without changing the seed generation in a source checkout.
+ * The fast path must not preserve an older manifest that advertises only a subset of what the packed
+ * built-in now registers, or lazy materialization of the new provider can never find its owner. */
+function builtinsMetadataCurrent(): boolean {
+  for (const name of SEED_BUILTINS) {
+    const entry = installedEntry(name);
+    if (!entry || entry.source !== "seeded") continue;
+    if (name === "claude" && !entry.provides?.some((ref) => ref.kind === "connector-setup" && ref.name === "claude")) return false;
+  }
+  return true;
+}
+
 async function runUnderLocks(mode: Mode, generation: string, nonce: string): Promise<ReconcileResult> {
   // Refuse to touch the prefix while an orphaned seed child (a crashed parent's still-running
   // installer) is mutating it — reclaiming the lock does not stop that process. An ambiguous marker
@@ -208,8 +221,9 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
     isValidSemver(storeGeneration) &&
     isStrictlyNewer(storeGeneration, generation)
   ) {
+    const stampProvenance = describeStampProvenance(readStamp());
     throw new Error(
-      `this cotal ${generation} is older than the seed store's generation ${storeGeneration} - ` +
+      `this cotal ${generation} is older than the seed store's generation ${storeGeneration}${stampProvenance} - ` +
         "run the newer cotal, or `cotal ext seed --reset` to rebuild the store for this version",
     );
   }
@@ -250,12 +264,20 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
     !cursor &&
     !recoveryPending() &&
     readWitness() &&
+    builtinsMetadataCurrent() &&
     readStamp()?.generation === generation &&
     SEED_BUILTINS.every((name) => everSeeded.has(name))
   )
     return NOOP;
 
   const stampGen = readStamp()?.generation;
+  const migrationFrom =
+    mode !== "reset" &&
+    stampGen !== undefined &&
+    isValidSemver(stampGen) &&
+    isStrictlyNewer(generation, stampGen)
+      ? stampGen
+      : undefined;
   const repairTarget = mode === "repair" ? cursor?.package : undefined;
   const seeded: string[] = [];
   const refreshed: string[] = [];
@@ -285,7 +307,8 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
       // is never auto-refreshed on upgrade — only --force may replace it.
       const isSeeded = entry.source === "seeded";
       const torn = mode === "repair" && isSeeded && (repairAllSeeded || !isIntact(name));
-      const refresh = mode === "force" || torn || (isSeeded && isStrictlyNewer(generation, stampGen));
+      const metadataStale = isSeeded && name === "claude" && !entry.provides?.some((ref) => ref.kind === "connector-setup" && ref.name === "claude");
+      const refresh = mode === "force" || torn || metadataStale || (isSeeded && isStrictlyNewer(generation, stampGen));
       if (refresh) {
         seedOne(name, generation, nonce, true);
         verifyInstalled(name, generation);
@@ -309,7 +332,8 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
   // recoverable partial run on the next boot.
   writeAuthority(everSeeded);
   ensureWitness(generation);
-  writeStamp(generation);
+  const committedStamp = writeStamp(generation, entryScript());
+  if (migrationFrom) announceSeedMigration(migrationFrom, committedStamp);
   clearCursor();
   clearRecovery();
   gcSeedStore(
@@ -317,6 +341,17 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
     loadExtensionsManifest().extensions.map((e) => e.spec),
   );
   return { noop: false, seeded, refreshed, removedKept };
+}
+
+function describeStampProvenance(stamp: Stamp | undefined): string {
+  if (!stamp?.writtenBy || !stamp.writtenAt) return "";
+  return `, written by ${stamp.writtenBy} at ${stamp.writtenAt}`;
+}
+
+function announceSeedMigration(from: string, stamp: Stamp): void {
+  process.stderr.write(
+    `→ migrated operator-global seed store generation ${from} -> ${stamp.generation}, written by ${stamp.writtenBy} at ${stamp.writtenAt}: ${stampPath()}\n`,
+  );
 }
 
 /** Quarantine any corrupt manifest / seed-state so a maintenance run rebuilds clean instead of wedging

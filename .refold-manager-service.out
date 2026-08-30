@@ -1,0 +1,38 @@
+$ tsx implementations/manager/smoke/manager-service.smoke.ts
+manager service endpoint registered: manager/2wiopc3mm7hevypujsi7aghmk2sbk0p (epoch 0, registrationRevision 2)
+manager goal-writer standing (endpoint manager, scoped cred, §13.1 family-staged)
+manager session plane standing (endpoint manager, epoch 0, scoped session-ledger cred, §13.1 family-staged)
+1. registration through the §13.1 gate (checklist 1/2/4)
+  ✓ start() registered the service (serve state present)
+  ✓ the svc spec record exists for (manager, managerInstanceId)
+  ✓ the gate is OPEN at generation 1 (the registration barrier traversed it: freeze -> reopen)
+  ✓ the gate's registrationRevision is the spec's store revision (the §13.7 coordinate)
+  ✓ the gate binds the SERVE principal (minted before the gate, §13.1 serving-principal binding)
+  ✓ processEpoch is the GATE's (0 on a FIRST registration), instanceId the persisted logical id — never conflated (checklist 4)
+  ✓ EXACTLY one ACTIVE serve ledger row exists (the released credential's §13.1 row)
+  ✓ the §13.1 family ALSO carries the goal-writer sibling (must-5 (b): a distinct active holder the takeover barrier revokes+evicts together)
+  ✓ the row IS the minted JWT (per-JWT digest id), held by the serve principal, with a BOUNDED exp (through the gate CAS, not a seed-signed shortcut; no unbounded serve JWT)
+  ✓ the STANDING supervisor cred is broker-DENIED an epgate write (no seed shortcut is even reachable)
+2. typed invoke over ep.one + describe (checklist 6/9)
+  ✓ epCall(one, status) answers ok with the digest-bound typed reply
+  ✓ the status is the manager's real health (instanceId = uid, runtime pty, 0 agents)
+  ✓ the reply subject attributes the registered incarnation (instanceId + epoch 0)
+  ✓ describe answers the PUBLIC descriptor with the registered `status` command
+3. ONE shared F5(a)/maintenance chokepoint on the ep door (checklist 3/8)
+  ✓ a RETIRED managed principal is refused on ep.one (permission-denied, F5(a))
+  ✓ a resume-pending manager refuses ep ops (unavailable, the maintenance fence)
+  ✓ the fences RESTORE (the caller invokes again after both clear)
+4. standing renewal through the mint fence (checklist 7)
+  ✓ the renewal released a NEW credential for the SAME stable serve nkey
+  ✓ the renewal staged a SECOND ACTIVE serve ledger row behind the gate CAS (distinct per-JWT id, no overwrite)
+  ✓ the ep rail still answers after renewal (the standing serve connection is undisturbed)
+5. stop() tears the serve loop down
+✓ deregistered manager instance 2wiopc3mm7hevypujsi7aghmk2sbk0p from the manager service registry (spec revision 2)
+  ✓ after stop() the ep rail no longer answers (no responder / deadline, never a stale reply)
+6. RESTART on a mesh with NO delivery oracle: the takeover REFUSES loudly (P2 item 3, pin 3)
+  ✓ the no-oracle restart-takeover REFUSES (no silent success)
+  ✓ the refusal names the CURE (verify-evict the superseded family + start the delivery daemon) — pin 3
+  ✓ the refused takeover registered NO serve surface (fail-closed, gate frozen for reconciliation)
+  ✓ the restart preserved the SAME persisted logical instanceId (not a fresh mint)
+
+MANAGER SERVICE SMOKE OK ✅  (25 passed, 0 failed)

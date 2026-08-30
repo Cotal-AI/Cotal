@@ -1,0 +1,16 @@
+Auto-merging bin/smoke/ci-suites.txt
+CONFLICT (content): Merge conflict in bin/smoke/ci-suites.txt
+Auto-merging docs/run-a-mesh.md
+Auto-merging extensions/connector-claude-code/src/extension.ts
+Auto-merging extensions/connector-core/src/docs-bundle.generated.ts
+CONFLICT (content): Merge conflict in extensions/connector-core/src/docs-bundle.generated.ts
+Auto-merging extensions/connector-jcode/src/host.ts
+Auto-merging implementations/manager/smoke/manager-service-invoke.smoke.ts
+Auto-merging implementations/manager/smoke/manager-service-ops.smoke.ts
+CONFLICT (content): Merge conflict in implementations/manager/smoke/manager-service-ops.smoke.ts
+Auto-merging implementations/manager/src/manager-service-contract.ts
+CONFLICT (content): Merge conflict in implementations/manager/src/manager-service-contract.ts
+Auto-merging implementations/manager/src/manager.ts
+Auto-merging package.json
+Auto-merging packages/core/src/connector.ts
+Automatic merge failed; fix conflicts and then commit the result.

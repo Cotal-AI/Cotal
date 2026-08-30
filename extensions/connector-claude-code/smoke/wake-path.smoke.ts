@@ -238,6 +238,8 @@ try {
   await waitFor("the pre-handshake DM to buffer", () => stillPending("pre-handshake dm"));
   check("no claude/channel push before the handshake confirms the capability", nudges.length === 0, nudges);
   wake.setChannelActive(true);
+  await waitFor("activation to reconcile the buffered pre-handshake DM", () => nudges.length === 1);
+  check("activation emits one batch wake for the buffered pre-handshake DM", nudges[0].includes("Cotal message"), nudges);
 
   // Boot: SessionStart surfaces whatever was waiting.
   const boot = await fireHook({ hook_event_name: "SessionStart", model: "claude-opus-5" });
@@ -245,9 +247,10 @@ try {
   check("a delivered SessionStart batch is committed", !stillPending("pre-handshake dm"));
 
   // ---- 1. a DM wakes an idle session -----------------------------------------------------------
+  const nudgesBeforeFirstDm = nudges.length;
   await dmOtto("dm-one: wake me");
-  await waitFor("a nudge for the first DM", () => nudges.length > 0);
-  check("a DM pushes a claude/channel nudge at an idle session", nudges.some((n) => n.includes("New dm")), nudges);
+  await waitFor("a nudge for the first DM", () => nudges.length > nudgesBeforeFirstDm);
+  check("a DM pushes a claude/channel nudge at an idle session", nudges.slice(nudgesBeforeFirstDm).some((n) => n.includes("New dm")), nudges);
 
   const turnOne = await fireHook({ hook_event_name: "UserPromptSubmit" });
   check("the woken turn is injected with the DM body", injected(turnOne).includes("dm-one: wake me"), injected(turnOne));

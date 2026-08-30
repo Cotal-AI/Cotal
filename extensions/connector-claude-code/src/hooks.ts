@@ -383,10 +383,10 @@ const NUDGE_RETRY_MAX_MS = 30_000;
  * A nudge only ever *wakes* a turn — the body is surfaced by the hook handler above (or by an
  * explicit `cotal_inbox` pull). It stays gated on a *mutable* `channelActive` flag (flipped true
  * only after the MCP handshake confirms the client speaks claude/channel). If it fires before
- * then it simply no-ops; a *buffered* message waits in the inbox and is surfaced at the next
- * UserPromptSubmit, so nothing is lost. One exception: a focus @mention's body was already
- * ack-dropped at ingest (not buffered), so a missed mention-wake is recoverable only by an
- * explicit cotal_inbox pull (recall) — there is no buffered copy to surface.
+ * then it simply no-ops; the false-to-true activation reconciles the remembered mention first,
+ * otherwise one buffered wake. A focus @mention needs that reconcile because its body was already
+ * ack-dropped at ingest (not buffered), so there is no local copy or durable redelivery to wake the
+ * session later.
  *
  * **A rejected push is retried.** The notification can fail (a closed or wedged stdio pipe), and it
  * is the ONLY thing that wakes an idle session: no later hook fires on its own, so a dropped nudge
@@ -478,8 +478,13 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
 
   return {
     setChannelActive(active: boolean): void {
+      const activated = active && !channelActive;
       channelActive = active;
       if (!active) clearRetry(true);
+      else if (activated) {
+        if (pendingMentionWake) nudge(pendingMentionWake.item, pendingMentionWake.hint, true);
+        else if (agent.pendingWake() > 0) nudge();
+      }
     },
     stop(): void {
       clearRetry(true);

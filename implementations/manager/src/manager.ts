@@ -20,6 +20,9 @@ import {
   idFromCreds,
   inspectCredHealth,
   loadAgentFile,
+  listPersonaCatalog,
+  personaCatalogDescription,
+  personaCatalogReadable,
   loadCotalConfig,
   mintCreds,
   mintLifecycleUid,
@@ -53,7 +56,7 @@ import {
   type RuntimeMode,
 } from "./runtime/index.js";
 import { AttachEndpoint, type SessionEstablishment } from "./attach-endpoint.js";
-import { makeManagerEndpointEvictor } from "./endpoint-evict.js";
+import { makeManagerEndpointEvictionEvidence, makeManagerEndpointEvictor } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec } from "./launch.js";
@@ -698,6 +701,8 @@ export class Manager {
   /** See {@link ManagerOptions.installedExtensions}. */
   private readonly installedExtensions: boolean;
   private readonly runtime: Runtime;
+  /** Internal test seam. Production leaves this undefined and uses the scoped delivery-admin evictor. */
+  private staticLifecycleEvict?: (principal: string) => Promise<import("@cotal-ai/core").EvictionResult>;
   private readonly preserveStopTimeoutMs: number;
   private readonly agents = new Map<string, ManagedAgent>();
   /** Names whose spawn is in flight (reserved synchronously before the provision await) — counted
@@ -1666,18 +1671,32 @@ export class Manager {
    *  touches NEITHER the lease NOR the endpoints — the caller owns those. */
   private async teardownManagedAgents(): Promise<void> {
     const managed = [...this.agents.values()];
+    const failures: string[] = [];
     for (const a of managed) {
       // Free the slot + hard-stop each; `stopHandle` is best-effort (never throws — see it), so one bad
       // stop can't strand the rest, and every snapshot entry is deprovisioned below regardless.
       this.agents.delete(a.name);
       this.stopHandle(a, false);
     }
+    // A runtime stop request is not exit proof. Do not release the manager lease or registration
+    // while any seat may still hold this instance's broker rails: that creates the exact orphan
+    // window where a successor sees a dead manager but live predecessor authority. Every shipped
+    // runtime now supplies waitForExit; absence or timeout is a failed shutdown, never a clean one.
+    await Promise.all(managed.map(async (a) => {
+      try {
+        await this.awaitHandleExit(a.handle);
+      } catch (e) {
+        failures.push(`${a.name}: ${(e as Error).message}`);
+      }
+    }));
     // Deprovision EVERY snapshot entry regardless of whether its stop failed (allSettled + a loud log).
     await Promise.allSettled(
       managed.filter((a) => !a.suppressCleanup).map((a) =>
         this.deprovision(a).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${(e as Error).message}`)),
       ),
     );
+    if (failures.length)
+      throw new Error(`manager shutdown could not prove every seat exited: ${failures.join("; ")}`);
   }
 
   private async stopRetainedAgentsOnExit(): Promise<void> {
@@ -2177,6 +2196,16 @@ export class Manager {
       }),
       stopSelf: (ctx) => this.serveGated(ctx, () => unwrap(this.opStopSelf(callerOf(ctx), args(ctx)))),
       definePersona: (ctx) => this.serveGated(ctx, () => unwrap(this.opDefinePersona(args(ctx), callerOf(ctx), false))),
+      listPersonas: (ctx) => this.serveGated(ctx, () => unwrap(this.opListPersonas(callerOf(ctx), false))),
+      showPersona: (ctx) => this.serveGated(ctx, () => {
+        const r = this.opShowPersona(args(ctx), callerOf(ctx), false);
+        if (!r.ok) {
+          const msg = r.error ?? "not found";
+          if (msg.startsWith("no persona")) throw new EpEnvelopeError("not-found", msg);
+          throw new EpEnvelopeError("failed-precondition", msg);
+        }
+        return r.data;
+      }),
       purge: (ctx) => this.serveGated(ctx, () => adminGated(ctx, async () => unwrap(await this.opPurge(args(ctx), callerOf(ctx))))),
       // launch is OWNER-EQUALITY on the ep door for every caller (freelance HIGH #2): the deploy
       // path is the only launch consumer and its spec stamps the CALLER's own owner, so
@@ -5745,6 +5774,12 @@ export class Manager {
     const acceptedRenewal = a.staticCredentialRenewal;
     if (acceptedRenewal) await acceptedRenewal.catch(() => {});
     const opId = retireOpId(a.lifecycleUid);
+    const evict = this.staticLifecycleEvict ?? makeManagerEndpointEvictionEvidence({
+      space: this.space,
+      servers: this.servers ?? DEFAULT_SERVER,
+      auth: this.auth!,
+      log: (line) => console.error(`static retirement ${a.name}: ${line}`),
+    });
     const cleanup = async (): Promise<void> => {
       const secrets = this.secrets;
       const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid);
@@ -5765,8 +5800,11 @@ export class Manager {
         }
         await runStaticTerminal(
           t,
-          { owner: DEV_OWNER, alias: a.name, actor: a.id, lifecycleUid: a.lifecycleUid, opId },
-          { cleanup, log: (line) => console.error(`static retirement ${a.name}: ${line}`) },
+          {
+            owner: DEV_OWNER, alias: a.name, actor: a.id, lifecycleUid: a.lifecycleUid, opId,
+            managerInstance: this.managerInstanceId, managerProcessUid: this.managerLifecycleUid,
+          },
+          { cleanup, evict, log: (line) => console.error(`static retirement ${a.name}: ${line}`) },
         );
       });
       this.retiredPrincipals.add(principalKey(DEV_OWNER, a.id).key);
@@ -5828,8 +5866,8 @@ export class Manager {
   /** The Unit B reconciliation (F3 "no active orphan"): ensure the authority stores, then sweep
    *  every durable slot row and act by the TOTAL resume table — `provisioning`/`terminalizing`
    *  re-drive the exact-op terminal; an `active` row survives ONLY when a LIVE managed agent this
-   *  process owns backs it at the same uid (`adopted`), else its process is gone and it
-   *  terminalizes; `retired` rows seed the F5 refusal index. Two call sites: the BOOT sweep
+   *  manager process owns backs it at the same uid (`adopted`), else no managed owner claimed it and
+   *  its broker authority is contained and terminalized; `retired` rows seed the F5 refusal index. Two call sites: the BOOT sweep
    *  (`postAdoption=false`, under the lease before control serving) DEFERS active-non-adopted
    *  slots while a resume is still pending (adoption runs after it); the POST-ADOPTION sweep
    *  (`postAdoption=true`, inside finalizeResume while `resumeRequired` still fences ordinary
@@ -6039,6 +6077,75 @@ export class Manager {
       return { ok: false, error: (e as Error).message };
     }
     return { ok: true, data: { name, path } };
+  }
+
+  /** Whether this caller may READ a catalog card's details (role/model/description/body). Same
+   *  ownership rule as redefine: owner == caller, or admin. Ownerless / operator-written files are
+   *  admin-only. Names of parseable files still appear on the list so a definer can see a taken
+   *  spawn name; details stay off the wire unless this is true. */
+  private canReadPersona(owner: string | undefined, caller: string, admin: boolean): boolean {
+    return personaCatalogReadable(owner, caller, admin);
+  }
+
+  /** Mesh-side catalog list (#402). Every parseable name is returned so a definer can see a taken
+   *  spawn name. Role / model / description / owner ride only when the caller could redefine the
+   *  file (same ownership as `definePersona`); other cards are name-only, so a peer cannot read a
+   *  prompt it does not own. Unparseable files are omitted for non-admin (no existence leak of a
+   *  broken card). */
+  private opListPersonas(caller: string, admin: boolean): ControlReply {
+    const personas = [];
+    for (const e of listPersonaCatalog(this.workspaceRoot)) {
+      if (e.error) {
+        if (!admin) continue;
+        personas.push({ name: e.name, error: "unparseable" });
+        continue;
+      }
+      const def = e.def!;
+      if (!this.canReadPersona(def.owner, caller, admin)) {
+        personas.push({ name: e.name });
+        continue;
+      }
+      const description = personaCatalogDescription(def);
+      personas.push({
+        name: e.name,
+        ...(def.role ? { role: def.role } : {}),
+        ...(def.model ? { model: def.model } : {}),
+        ...(description ? { description } : {}),
+        ...(def.owner ? { owner: def.owner } : {}),
+      });
+    }
+    return { ok: true, data: { personas } };
+  }
+
+  /** Mesh-side catalog show (#402). Same ownership as list. Unknown, unauthorized, or unparseable
+   *  names are not-found (no existence or parser-diagnostic leak). The body is included so a peer can
+   *  inspect a prompt it owns before spawn; policy fields stay off the wire. */
+  private opShowPersona(args: Record<string, unknown>, caller: string, admin: boolean): ControlReply {
+    const name = String(args.name ?? "").trim();
+    if (!name) return { ok: false, error: "name required" };
+    const nameErr = this.nameError(name);
+    if (nameErr) return { ok: false, error: nameErr };
+    const path = agentFilePath(this.workspaceRoot, name);
+    if (!existsSync(path)) return { ok: false, error: `no persona "${name}"` };
+    let def;
+    try {
+      def = loadAgentFile(path);
+    } catch {
+      return { ok: false, error: `no persona "${name}"` };
+    }
+    if (!this.canReadPersona(def.owner, caller, admin)) return { ok: false, error: `no persona "${name}"` };
+    const description = personaCatalogDescription(def);
+    return {
+      ok: true,
+      data: {
+        name,
+        ...(def.role ? { role: def.role } : {}),
+        ...(def.model ? { model: def.model } : {}),
+        ...(description ? { description } : {}),
+        ...(def.owner ? { owner: def.owner } : {}),
+        ...(def.persona ? { persona: def.persona } : {}),
+      },
+    };
   }
 
   /** The post-authorization `input` effect (C3): type `text` into the seat's terminal as if a human

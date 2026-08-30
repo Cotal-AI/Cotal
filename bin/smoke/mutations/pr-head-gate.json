@@ -1,0 +1,111 @@
+{
+  "suite": "bin/smoke/pr-head-gate.smoke.ts",
+  "guard": "an exact pull request head is green only when every workflow derived from the repository declarations exists for that PR and SHA and completed successfully",
+  "command": "pnpm smoke:pr-head-gate",
+  "completionMarker": "SUITE COMPLETE",
+  "grades": "tool",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/pr-head-gate.json",
+  "why": [
+    "The guard and its smoke are repository tools rather than a published package boundary, so this",
+    "config grades them as a tool. The smoke imports scripts/pr-head-gate.mjs directly, and two cells",
+    "also execute the shipped pnpm pr-head-gate command against deterministic GitHub API responses."
+  ],
+  "mutations": [
+    {
+      "name": "flow event list comments hide pull_request again",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "    return on.includes(\"pull_request\") ? null : undefined;",
+      "replace": "    return undefined;",
+      "expectRed": "ordinary YAML comments after a flow event list preserve pull_request",
+      "cell": "ordinary YAML comments after a flow event list preserve pull_request"
+    },
+    {
+      "name": "invalid workflow YAML silently contributes no expected workflow",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "  if (problem) throw new Error(`${file}: invalid YAML: ${problem.message}`);",
+      "replace": "  if (problem) return undefined;",
+      "expectRed": "invalid workflow YAML fails closed instead of shrinking the expected set",
+      "cell": "invalid workflow YAML fails closed instead of shrinking the expected set"
+    },
+    {
+      "name": "empty on sequence silently contributes no expected workflow",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "    if (on.length === 0) throw new Error(`${file}: top-level on sequence must not be empty`);",
+      "replace": "    if (false) throw new Error(`${file}: top-level on sequence must not be empty`);",
+      "expectRed": "an empty on sequence fails closed",
+      "cell": "an empty on sequence fails closed"
+    },
+    {
+      "name": "empty on mapping silently contributes no expected workflow",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "  if (events.length === 0) throw new Error(`${file}: top-level on mapping must not be empty`);",
+      "replace": "  if (false) throw new Error(`${file}: top-level on mapping must not be empty`);",
+      "expectRed": "an empty on mapping fails closed",
+      "cell": "an empty on mapping fails closed"
+    },
+    {
+      "name": "unsupported pull_request filter is silently ignored",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "  if (unsupported.length) throw new Error(`${file}: unsupported pull_request filter: ${unsupported.join(\", \")}`);",
+      "replace": "  if (false) throw new Error(`${file}: unsupported pull_request filter: ${unsupported.join(\", \")}`);",
+      "expectRed": "a pull_request filter the guard cannot evaluate fails closed",
+      "cell": "a pull_request filter the guard cannot evaluate fails closed"
+    },
+    {
+      "name": "missing expected workflow stops failing closed",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "if (candidates.length === 0) { missing.push(name); continue; }",
+      "replace": "if (candidates.length === 0) { continue; }",
+      "expectRed": "a missing expected workflow keeps the exact head red",
+      "cell": "a missing expected workflow keeps the exact head red"
+    },
+    {
+      "name": "runs from another pull request satisfy the named workflow",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "run.pull_requests.some((pull) => pull.number === pr),",
+      "replace": "run.pull_requests.some((pull) => pull.number !== pr),",
+      "expectRed": "a successful run attached to another pull request does not satisfy this pull request",
+      "cell": "a successful run attached to another pull request does not satisfy this pull request"
+    },
+    {
+      "name": "a run for another commit satisfies the exact head",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "run.head_sha === headSha &&",
+      "replace": "run.head_sha !== headSha &&",
+      "expectRed": "a successful run for another commit does not satisfy the exact head",
+      "cell": "a successful run for another commit does not satisfy the exact head"
+    },
+    {
+      "name": "queued and running expected workflows count as green",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "if (run.status !== \"completed\") { pending.push(name); continue; }",
+      "replace": "if (run.status !== \"completed\") { continue; }",
+      "expectRed": "PR #1087 head 87e61678 positive mint control: minted but unfinished workflows are pending",
+      "cell": "minted but unfinished workflows are pending"
+    },
+    {
+      "name": "failed expected workflows count as green",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "if (run.conclusion !== \"success\") failing.push(name);",
+      "replace": "if (run.conclusion === \"success\") failing.push(name);",
+      "expectRed": "a completed non-success workflow is reported as failing, not missing or pending",
+      "cell": "completed non-success workflow is reported as failing"
+    },
+    {
+      "name": "unsupported workflow path glob is silently literalized",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "if (/[\\\\[\\]{}()+|]/.test(pattern)) throw new Error(`unsupported workflow path pattern: ${pattern}`);",
+      "replace": "if (false) throw new Error(`unsupported workflow path pattern: ${pattern}`);",
+      "expectRed": "unsupported GitHub glob syntax fails closed instead of being treated as a literal",
+      "cell": "unsupported GitHub glob syntax fails closed"
+    },
+    {
+      "name": "shipped command omits a missing YAML-derived workflow",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "  const expected = expectedPullRequestWorkflows(workflows, changedPaths);",
+      "replace": "  const expected = [];",
+      "expectRed": "the shipped pr-head-gate command reports the YAML-derived Hidden workflow green",
+      "cell": "the shipped pr-head-gate command reports the YAML-derived Hidden workflow green"
+    }
+  ]
+}
