@@ -12,8 +12,8 @@
 # that passes.
 #
 # ORDER IS EXECUTION ORDER and it is not alphabetical: `smoke:dist-freshness` runs first because a
-# stale build makes every later result a statement about code that is not in the tree. Append at
-# the end unless you have a reason, and say the reason here.
+# stale build makes every later result a statement about code that is not in the tree. This legacy
+# list is now FROZEN; add new suites one-file-per-suite under `ci-suites.d/`.
 smoke:dist-freshness
 smoke:gate-inventory
 smoke:dep-pins
@@ -690,6 +690,13 @@ smoke:agent-secret-segmentation
 # spellings, one of them the release workflow. The property is only observable on main after a
 # merge, so it needs a static guard. Appended so every existing shard assignment remains unchanged.
 smoke:workflow-concurrency
+# #878: a crash between the retirement barrier's gate terminal and its head terminal wedges the
+# alias (the boot resume's gate-only owed-ness skipped the intent forever). The suite stages that
+# window deterministically and proves BOTH repair triggers the issue's refined criteria demand:
+# the next auth boot and the same-op rail re-request. Mutation-proofed -
+# implementations/auth/smoke/mutations/retirement-wedge-resume.json. Appended; shard
+# assignments unchanged.
+smoke:retirement-wedge:auth
 
 # Most smoke trees are still outside their package TypeScript projects. A type-only import from a
 # workspace package can therefore name something the package never exported and vanish when tsx runs
@@ -728,15 +735,8 @@ smoke:connection-status
 # plus shipped host; mutation-proofed. Appended so every existing shard assignment remains unchanged.
 smoke:jcode-mid-turn-delivery
 
-# A membership-watch CONSUMER.DELETE timeout is best-effort cleanup, never a process kill.
-# Mutation-proofed - packages/core/smoke/mutations/disarm-delete-timeout.json. Appended so every
-# existing shard assignment remains unchanged.
-smoke:disarm-delete-timeout
-# Credential-bearing control-transport paths must be owned before auth persistence and broker spawn.
-# Mutation-proofed - bin/smoke/mutations/control-transport-crash-cleanup.json. Appended so every
-# existing shard assignment remains unchanged.
-smoke:control-transport-crash-cleanup
-
-# #912: the pure function shard.mjs calls at its break point to name the suites its own partition
-# never reached. Appended so every existing shard assignment remains unchanged.
-smoke:shard-never-ran
+# Mixed source, installed, and plugin generations must be self-identifying in the status Machine
+# block. The installed cell enters through a package-manager-style symlink and the skills cell uses
+# the real Claude plugin-list JSON seam. Mutation-proofed - bin/smoke/mutations/status-provenance.json.
+# Appended so every existing shard assignment remains unchanged.
+smoke:status-provenance

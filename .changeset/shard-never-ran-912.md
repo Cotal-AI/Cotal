@@ -1,5 +1,4 @@
 ---
-"@cotal-ai/connector-core": patch
 ---
 
-Refresh the bundled Watch a mesh guide after its source punctuation fix. The smoke registry also gates two suites already present on main and adds test-only reporting for planned suites skipped after a shard failure.
+CI-only: a shard that stops at its first red now names the planned suites that never started, and the gate drives the shipped runner so disabling that emit cannot stay green.

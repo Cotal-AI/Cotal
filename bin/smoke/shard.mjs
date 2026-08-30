@@ -4,14 +4,15 @@
  *
  *   node bin/smoke/shard.mjs <shardIndex> <shardCount>
  *
- * The list is read from `bin/smoke/ci-suites.txt` — the ONE source of truth, so a smoke added there
- * is automatically distributed (no shard membership to hand-maintain). Round-robin
- * (index % count) interleaves the list, which balances runtime better than contiguous slices.
+ * The frozen legacy list is read from `bin/smoke/ci-suites.txt`; new suites are one-file fragments
+ * under `bin/smoke/ci-suites.d/`. Legacy entries keep round-robin `index % count`. Fragment entries
+ * use a stable hash of their suite name, so an independently-merged fragment cannot move another.
  * Each smoke runs in its own `pnpm` subprocess (separate broker/ports) exactly as the serial chain
  * does; the shards run on SEPARATE runners, so there is no cross-smoke port contention within a shard.
  */
 import { spawnSync } from "node:child_process";
-import { readCiSuites } from "./ci-suites.mjs";
+import { parseCiSuites, readCiSuiteFragments, suitesForShard, CI_SUITES_PATH } from "./ci-suites.mjs";
+import { readFileSync } from "node:fs";
 import { reapSmokeBrokers, reportReaped } from "./reap-smoke-brokers.mjs";
 import { neverRanBlock } from "./shard-never-ran.mjs";
 
@@ -24,9 +25,12 @@ if (!Number.isInteger(shard) || !Number.isInteger(count) || count < 1 || shard <
 
 // An EMPTY chain is an error, not a fast green: a runner that finds no suites and exits 0 reports
 // the same thing as a runner that passed all of them.
-const all = readCiSuites().map((s) => `pnpm ${s}`);
-if (all.length === 0) { console.error(`no suites in bin/smoke/ci-suites.txt`); process.exit(2); }
-const mine = all.filter((_, i) => i % count === shard);
+const listPath = process.env.COTAL_CI_SUITES || CI_SUITES_PATH;
+const legacy = parseCiSuites(readFileSync(listPath, "utf8"), listPath);
+const fragments = listPath === CI_SUITES_PATH ? readCiSuiteFragments() : [];
+const all = [...legacy, ...fragments].map((s) => `pnpm ${s}`);
+if (all.length === 0) { console.error(`no suites in ${listPath}`); process.exit(2); }
+const mine = suitesForShard(legacy, fragments, shard, count).map((s) => `pnpm ${s}`);
 
 console.log(`smoke:ci shard ${shard}/${count} — ${mine.length} of ${all.length} smokes:\n  ${mine.join("\n  ")}\n`);
 
