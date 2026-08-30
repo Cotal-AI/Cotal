@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setInstalledExtensionsEnabled } from "../src/ext-loader.js";
-import { claudePluginStep } from "../src/commands/setup.js";
+import { connectorPluginStep } from "../src/commands/setup.js";
 
 const tmp = mkdtempSync(join(import.meta.dirname, ".setup-failloud-"));
 process.env.XDG_CONFIG_HOME = tmp;
@@ -21,7 +21,7 @@ const writeManifest = (extensions: unknown[]) => writeFileSync(manifestPath, JSO
 try {
   // Removed: claude absent from the manifest -> skip the plugin, never crash the guided flow.
   writeManifest([]);
-  const skipped = await claudePluginStep().run();
+  const skipped = await connectorPluginStep("claude").run();
   assert.match(String(skipped), /not installed - skipping/, "a removed connector must skip");
 
   // Broken-present: claude IS in the manifest but has no package on disk -> materialize throws, and the
@@ -29,7 +29,7 @@ try {
   writeManifest([
     { pkg: "@cotal-ai/connector-claude-code", version: "9.9.9", spec: ".", provides: [{ kind: "connector", name: "claude" }], commands: [] },
   ]);
-  await assert.rejects(claudePluginStep().run(), /is in the manifest but not installed/, "a broken-present connector must fail loud");
+  await assert.rejects(connectorPluginStep("claude").run(), /is in the manifest but not installed/, "a broken-present connector must fail loud");
 
   console.log("setup-failloud.smoke: all assertions passed");
 } finally {

@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import * as p from "@clack/prompts";
-import { type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { registry, type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { homeCotalDir, installedExtensionVersion, loadExtensionsManifest, manifestExtensionNames, provenance } from "@cotal-ai/workspace";
 import { materializeExtension } from "../ext-loader.js";
 import { agentSkillsHome, canonicalSkillNames, installAgentSkills, type AgentSkillsResult } from "../lib/agent-skills.js";
@@ -89,24 +89,26 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
   ];
   if (!(await runSteps(core, log, { yes }))) return abort();
 
-  // Connectors: which agents should be able to join. Only Claude needs an install
-  // (its wake channel binds to an installed plugin); OpenCode auto-wires at spawn.
-  const found = { claude: onPath("claude"), opencode: onPath("opencode") };
-  const selected = await pickConnectors(found, yes);
-  if (selected.has("claude")) {
-    if (!found.claude)
-      p.log.warn(`claude isn't on PATH. Install it (https://claude.com/claude-code), then re-run ${displayCmd()} setup.`);
-    else if (!(await runSteps([claudePluginStep()], log, { yes }))) return abort();
+  // Connectors: every installed provider declares its own requirements and plugin assets. The
+  // registry is the surface; known names may improve prose elsewhere, but never decide membership.
+  const claudeOnPath = onPath("claude");
+  const connectors = await setupConnectorSurface();
+  const candidates = setupConnectorCandidates(connectors);
+  const selected = await pickConnectors(candidates, yes);
+  for (const candidate of candidates) {
+    if (!selected.has(candidate.value)) continue;
+    if (candidate.missing.length) {
+      p.log.warn(`${candidate.value} needs ${candidate.missing.join(", ")} on PATH; install it, then re-run ${displayCmd()} setup.`);
+    } else if (candidate.connector.pluginRoot) {
+      if (!(await runSteps([connectorPluginStep(candidate.value)], log, { yes }))) return abort();
+    } else {
+      p.log.success(`${candidate.value} ready (auto-wired when you spawn it)`);
+      log.line(`connector ${candidate.value}: ready (no install)`);
+    }
   }
   // The Cotal skills plugin is independent of the mesh connector: install it for ANY Claude Code user
   // (its own user-scope plugin), since Claude Code does not read the cross-vendor `.agents/skills` dir.
-  if (found.claude && !(await runSteps([skillsPluginStep()], log, { yes }))) return abort();
-  for (const name of ["opencode"] as const) {
-    if (selected.has(name) && found[name]) {
-      p.log.success(`${name} ready (auto-wired when you spawn it)`);
-      log.line(`connector ${name}: ready (no install)`);
-    }
-  }
+  if (claudeOnPath && !(await runSteps([skillsPluginStep()], log, { yes }))) return abort();
 
   // Your agent: the generic `default` persona a bare `cotal spawn` launches — one agent, yours to
   // shape. This is the whole first-run default; the guided expert team is opt-in right below.
@@ -216,18 +218,54 @@ function runningVersion(): string | null {
 
 /** Pick which agent connectors to set up. Detected ones are pre-checked (= the "all"
  *  default). Non-interactive / --yes selects all detected without prompting. */
-async function pickConnectors(
-  found: Record<"claude" | "opencode", boolean>,
-  yes: boolean,
-): Promise<Set<string>> {
-  const all = (["claude", "opencode"] as const).filter((n) => found[n]);
+export interface SetupConnectorCandidate {
+  connector: Connector;
+  value: string;
+  label: string;
+  hint: string;
+  missing: string[];
+}
+
+/** Every registered connector becomes a setup choice. Shape and declared capabilities drive the
+ *  hints; connector names never gate membership. Exported for the genericity smoke. */
+export function setupConnectorCandidates(
+  connectors: readonly Connector[],
+  pathProbe: (bin: string) => boolean = onPath,
+): SetupConnectorCandidate[] {
+  return [...connectors]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((connector) => {
+      const missing = (connector.requires ?? []).filter((bin) => !pathProbe(bin));
+      return {
+        connector,
+        value: connector.name,
+        label: connector.name,
+        missing,
+        hint: missing.length
+          ? `${missing.join(", ")} not on PATH`
+          : connector.pluginRoot
+            ? "installs a plugin"
+            : "ready at spawn",
+      };
+    });
+}
+
+async function setupConnectorSurface(): Promise<Connector[]> {
+  const names = new Set(registry.all<Connector>("connector").map((connector) => connector.name));
+  for (const name of manifestExtensionNames("connector")) names.add(name);
+  return Promise.all([...names].sort().map((name) =>
+    materializeExtension<Connector>({ kind: "connector", name })
+  ));
+}
+
+async function pickConnectors(candidates: readonly SetupConnectorCandidate[], yes: boolean): Promise<Set<string>> {
+  const all = candidates.filter((candidate) => candidate.missing.length === 0).map((candidate) => candidate.value);
   if (yes || !process.stdin.isTTY) return new Set(all);
-  const labels: Record<string, string> = { claude: "Claude Code", opencode: "OpenCode" };
 
   // Common case: show what was detected and offer a visible Continue button (clack's multiselect
   // has no native one). Only "Customize" (or nothing detected) drops into the toggle list.
   if (all.length) {
-    note(all.map((n) => labels[n]).join(", "), "Agents found");
+    note(all.join(", "), "Agents found");
     const go = abortIfCancel(
       await p.confirm({ message: "Set these up?", active: "Continue", inactive: "Customize", initialValue: true }),
     );
@@ -237,11 +275,7 @@ async function pickConnectors(
   const picked = abortIfCancel(
     await p.multiselect({
       message: "Pick the agents to set up (space toggles, enter continues)",
-      options: (["claude", "opencode"] as const).map((n) => ({
-        value: n,
-        label: labels[n],
-        hint: !found[n] ? "not on PATH" : n === "claude" ? "installs a plugin" : "ready at spawn",
-      })),
+      options: [...candidates],
       initialValues: all,
       required: false,
     }),
@@ -249,23 +283,22 @@ async function pickConnectors(
   return new Set(picked as string[]);
 }
 
-/** The Claude Code plugin install, as a step (spinner + failure handling + handoff). Exported for the
- *  setup-failloud smoke (removed-connector skip vs broken-connector throw). */
-export function claudePluginStep(): Step {
+/** An installed connector's plugin assets, as a setup step. Exported for the fail-loud smoke. */
+export function connectorPluginStep(name: string): Step {
   return {
-    name: "claude-plugin",
-    title: "Install the Claude Code plugin",
-    explain: "Lets a Claude Code session join the web and wake on peer messages.",
+    name: `${name}-plugin`,
+    title: `Install the ${name} connector plugin`,
+    explain: `Installs the plugin assets declared by the ${name} connector.`,
     context: [join(homeCotalDir(), "claude-plugin"), CC_DOCS_URL],
     async run() {
-      // The claude connector is a seeded/`ext add`ed plugin now, not a static import. Only a GENUINE
+      // The connector is a seeded/`ext add`ed plugin now, not a static import. Only a GENUINE
       // removal (absent from the manifest) skips the plugin; a present-but-broken connector (version
       // skew, incompatible core, missing entry, import throw) must fail loud through runSteps with the
       // real repair diagnostic, never be misreported as a deliberate removal.
-      if (!manifestExtensionNames("connector").includes("claude"))
-        return "claude connector not installed - skipping the plugin (re-add it: cotal ext add @cotal-ai/connector-claude-code)";
-      const claude = await materializeExtension<Connector>({ kind: "connector", name: "claude" });
-      installConnectorPlugin(claude);
+      if (!manifestExtensionNames("connector").includes(name))
+        return `${name} connector not installed - skipping the plugin (re-add its connector package with: cotal ext add <package>)`;
+      const connector = await materializeExtension<Connector>({ kind: "connector", name });
+      installConnectorPlugin(connector);
       return "cotal@cotal-mesh (local scope)";
     },
   };
@@ -512,10 +545,10 @@ function verifyPluginLoaded(name: string, scope: string, expectedVersion?: strin
 }
 
 /** Install the connector plugin (`cotal`, `--scope local`; its lifecycle hooks bind to a locally-installed
- *  plugin). Called from claudePluginStep when the claude connector is present in the manifest. */
-function installConnectorPlugin(claudeConnector: Connector): void {
-  const { pluginRoot } = claudeConnector;
-  if (!pluginRoot) throw new Error('the "claude" connector ships no plugin assets');
+ *  plugin). Called from connectorPluginStep when a selected connector declares plugin assets. */
+function installConnectorPlugin(connector: Connector): void {
+  const { pluginRoot } = connector;
+  if (!pluginRoot) throw new Error(`the ${JSON.stringify(connector.name)} connector ships no plugin assets`);
   for (const f of ["dist/mcp.cjs", "dist/hook.cjs", ".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json"]) {
     if (!existsSync(join(pluginRoot, f)))
       throw new Error(`plugin asset missing: ${join(pluginRoot, f)} (in a dev clone, build it with: pnpm --filter @cotal-ai/connector-claude-code bundle)`);

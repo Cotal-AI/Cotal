@@ -1,0 +1,31 @@
+{
+  "suite": "implementations/cli/smoke/setup-connectors.smoke.ts",
+  "guard": "guided setup enumerates every registered connector and derives readiness and plugin hints from connector declarations rather than connector names",
+  "command": "pnpm smoke:setup-connectors",
+  "completionMarker": "setup-connectors.smoke: all assertions passed",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/setup-connectors.json",
+  "why": [
+    "The old picker admitted only the literal names claude and opencode. A test covering only those names would certify the bug, so this fixture registers a connector name the CLI has never heard of and pins the candidate count to a literal four.",
+    "",
+    "The mutations independently restore name-based membership and name-based plugin hints. Each must redden its own genericity assertion."
+  ],
+  "mutations": [
+    {
+      "name": "restore the claude and opencode membership gate",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "  return [...connectors]\n    .sort((a, b) => a.name.localeCompare(b.name))\n    .map((connector) => {",
+      "replace": "  return [...connectors]\n    .filter((connector) => connector.name === \"claude\" || connector.name === \"opencode\")\n    .sort((a, b) => a.name.localeCompare(b.name))\n    .map((connector) => {",
+      "expectRed": "every registered connector appears in setup candidates",
+      "cell": "every registered connector appears in setup candidates"
+    },
+    {
+      "name": "restore the claude name check for plugin hints",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "          : connector.pluginRoot\n            ? \"installs a plugin\"",
+      "replace": "          : connector.name === \"claude\"\n            ? \"installs a plugin\"",
+      "expectRed": "a non-claude connector with pluginRoot gets the plugin hint",
+      "cell": "a non-claude connector with pluginRoot gets the plugin hint"
+    }
+  ],
+  "grades": "tool"
+}

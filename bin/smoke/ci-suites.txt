@@ -696,3 +696,7 @@ smoke:workflow-concurrency
 # the suite. This compiler-API intersection checks every named workspace import against the package's
 # public exports. Appended so every existing shard assignment remains unchanged.
 smoke:workspace-import-exports
+# Guided setup must enumerate connectors from the registry and derive hints from declared
+# capabilities. The smoke registers a connector the CLI has never heard of, moves pluginRoot across
+# names, and pins the number examined. Appended so every existing shard assignment remains unchanged.
+smoke:setup-connectors
