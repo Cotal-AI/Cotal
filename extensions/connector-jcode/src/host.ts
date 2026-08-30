@@ -31,21 +31,20 @@ import {
 
 const MAX_RELAY_BYTES = 4 * 1024 * 1024;
 const RELAY_TIMEOUT_MS = 30_000;
+const PERMANENT_BRIDGE_RECOVERY_CODES = new Set([
+  "handshake_failed",
+  "invalid_instance_home",
+  "invalid_request",
+  "jcode_not_found",
+  "unknown_request",
+  "unknown_session",
+  "unsupported_version",
+]);
 
 /** Recovery retries availability races, not a refusal that another attempt cannot change. */
 function permanentBridgeRecoveryFailure(error: unknown): error is HarnessError {
   if (!(error instanceof HarnessError)) return false;
-  if (
-    new Set([
-      "handshake_failed",
-      "invalid_instance_home",
-      "invalid_request",
-      "jcode_not_found",
-      "unknown_request",
-      "unknown_session",
-      "unsupported_version",
-    ]).has(error.code)
-  ) return true;
+  if (PERMANENT_BRIDGE_RECOVERY_CODES.has(error.code)) return true;
   return error.code === "connect_failed" && (error.cause as NodeJS.ErrnoException | undefined)?.code === "EACCES";
 }
 
