@@ -80,8 +80,9 @@ connector leaves that turn's inbox batch unacknowledged and opens one bounded re
 private replacement connection to the same session. A transient launch or attach failure retries
 inside that window, so a loaded host gets the same result as a fast one without creating an
 unbounded connector relaunch loop. The seat reports `waiting` while it reconnects, then redrives
-that unacknowledged batch only after the session attaches. The recovery window expiring, or a second
-disconnect after a successful replacement, ends the seat.
+that unacknowledged batch only after the session attaches. Each failed replacement must be proven
+stopped before another launch; an unprovable teardown, the recovery window expiring, or a second
+disconnect after a successful replacement ends the seat.
 
 Jcode currently supports **stdio** MCP servers. The connector writes only its own `cotal` entry to
 the private `JCODE_HOME/mcp.json`; it starts a stdio MCP bridge for that entry and relays its calls

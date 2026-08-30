@@ -235,6 +235,6 @@ const server = createServer((socket) => {
     }
   });
 });
-server.listen(socketPath, () => log({ ev: "listening", socketPath }));
+server.listen(socketPath, () => log({ ev: "listening", socketPath, pid: process.pid }));
 process.on("SIGTERM", () => server.close(() => process.exit(0)));
 }

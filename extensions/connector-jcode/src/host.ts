@@ -498,7 +498,7 @@ export async function runJcodeHost(): Promise<void> {
         } catch (error) {
           lastError = error;
           await replacement?.close().catch(() => {});
-          await stopPrivateJcode().catch(() => {});
+          await stopPrivateJcode();
           if (stopping) return;
           const remaining = deadline - Date.now();
           if (remaining <= 0) throw error;
