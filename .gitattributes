@@ -1,5 +1,4 @@
-# The CI gate registry is positional: shard assignment is `index % count`. Simultaneous tail
-# appends therefore need a visible conflict. Git's union driver keeps both blocks but silently
-# places one before the other's newer suites, moving those pre-existing suites onto other shards.
-# Reset any lower-precedence merge attribute so the normal text driver stops for human ordering.
+# The frozen legacy CI gate registry is positional (`index % count`) and must not gain entries.
+# Future suites live one-per-file under ci-suites.d, so independent PRs add independent paths and
+# GitHub's server-side merge needs no custom driver or manual tail ordering.
 bin/smoke/ci-suites.txt !merge
