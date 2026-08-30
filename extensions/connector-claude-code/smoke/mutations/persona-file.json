@@ -15,8 +15,8 @@
       "file": "extensions/connector-claude-code/src/extension.ts",
       "find": "        args.push(\"--append-system-prompt-file\", personaFile);",
       "replace": "        args.push(\"--append-system-prompt\", def.persona);",
-      "expectRed": "the persona body is absent from Claude argv",
-      "cell": "the persona body is absent from Claude argv"
+      "expectRed": "the persona body is absent from every Claude argv token",
+      "cell": "the persona body is absent from every Claude argv token"
     },
     {
       "name": "Claude reopens the private persona file to group and other readers",

@@ -256,6 +256,8 @@ export const claudeConnector: Connector = {
         // `--append-system-prompt` publishes it in the process argv to every same-host observer.
         // Claude Code has a native file-shaped input, so write the text owner-only and expose only
         // its path. No text-argv fallback: failing to create a private carrier refuses the launch.
+        // The file must outlive buildLaunch for startup and resume. LaunchSpec has no artifact-cleanup
+        // hook, so it follows this connector's private MCP config ownership: OS temporary-file reap.
         const dir = mkdtempSync(join(tmpdir(), "cotal-claude-persona-"));
         hardenPrivate(dir, "dir");
         const personaFile = join(dir, "persona.md");

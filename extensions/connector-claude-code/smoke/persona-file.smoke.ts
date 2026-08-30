@@ -35,7 +35,7 @@ try {
   personaFile = flag >= 0 ? spec.args[flag + 1] ?? "" : "";
 
   check("Claude uses the private persona-file flag", flag >= 0 && personaFile.length > 0, spec.args);
-  check("the persona body is absent from Claude argv", !spec.args.includes(marker), spec.args);
+  check("the persona body is absent from every Claude argv token", !spec.args.some((arg) => arg.includes(marker)), spec.args);
   check("Claude has no text-prompt argv fallback", !spec.args.includes("--append-system-prompt"), spec.args);
   const fileExists = personaFile.length > 0 && existsSync(personaFile);
   check("the private persona file preserves the full persona", fileExists && readFileSync(personaFile, "utf8") === marker);
