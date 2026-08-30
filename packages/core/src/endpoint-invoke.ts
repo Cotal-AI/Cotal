@@ -40,6 +40,17 @@ const nonce = (): string => randomBytes(24).toString("base64url");
  *  is invisible until the caller pays the whole deadline. Commands are never retried here. */
 const DESCRIBE_RETRY_MS = 250;
 
+/** Format a caught value on a path that cannot afford to throw (timer/callback). A
+ *  poisoned `Error.message` getter or `toString` must not escape the catch; the
+ *  fallback is the detail, never a reason to skip the rejection. */
+function caughtText(e: unknown, fallback: string): string {
+  try {
+    return e instanceof Error ? e.message : String(e);
+  } catch {
+    return fallback;
+  }
+}
+
 /** A resolved command contract: the compiled input/output validators (recompiled from the store,
  *  digest-verified against the registered declaration) plus the command's §13.2 admission facts. */
 export interface ResolvedCommand {
@@ -145,7 +156,14 @@ export async function describeEndpoint(
       // The first publish may precede the responder's subscription during startup. Re-publish the
       // SAME read-only describe under the SAME request binding until one answer wins or the original
       // deadline expires; this neither extends the budget nor retries the command being resolved.
-      retryTimer = setInterval(() => nc.publish(subject, request), DESCRIBE_RETRY_MS);
+      // `publish` throws synchronously after close/drain. A timer throw escapes the caller's promise
+      // and crashes the process, so make transport loss settle this describe instead.
+      retryTimer = setInterval(() => {
+        try { nc.publish(subject, request); }
+        catch (e) {
+          reject(new EpEnvelopeError("unavailable", `the describe retry for ${endpoint} could not publish: ${caughtText(e, "unknown publish failure")}`));
+        }
+      }, DESCRIBE_RETRY_MS);
     });
     const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no describe reply from ${endpoint} within ${deadlineMs}ms`, [{ kind: EP_UNANSWERED, endpoint, command: "describe" }])), deadlineMs); });
     // A REFUSED PUBLISH MUST NOT MASQUERADE AS AN ABSENT RESPONDER. `nc.publish` is fire-and-forget:
