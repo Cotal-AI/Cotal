@@ -2596,7 +2596,7 @@ export class CotalEndpoint extends EventEmitter {
       for (;;) {
         signal?.throwIfAborted();
         const start = Math.max(floor, ceiling - span + 1);
-        const page = await this.drainWindow(js, stream, subject, start, ceiling, signal);
+        const page = await this.drainWindow(js, stream, subject, start, ceiling, limit, signal);
         if (page.length >= limit) return page.slice(-limit);
         if (!floorKnown) {
           floor = Math.max(1, await this.firstMatchingSeq(js, stream, subject, signal));
@@ -2724,6 +2724,7 @@ export class CotalEndpoint extends EventEmitter {
     subject: string,
     start: number,
     ceiling: number,
+    limit: number,
     signal?: AbortSignal,
   ): Promise<CotalMessage[]> {
     signal?.throwIfAborted();
@@ -2735,7 +2736,13 @@ export class CotalEndpoint extends EventEmitter {
       const pending = (await consumer.info(true)).num_pending;
       if (pending === 0) return out;
       signal?.throwIfAborted();
-      const iter = await consumer.fetch({ max_messages: pending });
+      // Keep only a small rolling buffer in flight. Stopping a client iterator cannot unsend bytes the
+      // broker already committed to that pull request, so fetching the whole page let an aborted history
+      // read keep filling a constrained shared connection and starve the next dashboard poll. `consume`
+      // replenishes this bounded buffer as it is read, so large pages still complete without committing
+      // all of their bytes to the connection up front.
+      const target = Math.min(pending, limit);
+      const iter = await consumer.consume({ max_messages: Math.min(target, 32) });
       const stop = () => iter.stop(abortReason(signal));
       signal?.addEventListener("abort", stop, { once: true });
       // PROVE THE WINDOW COMPLETED. The pull iterator ends cleanly on a dropped connection, so a
@@ -2755,19 +2762,15 @@ export class CotalEndpoint extends EventEmitter {
             complete = true;
             break;
           }
-          try {
-            out.push(m.json<CotalMessage>());
-          } catch {
-            /* skip undecodable */
-          }
-          if (delivered >= pending) { complete = true; break; }
+          try { out.push(m.json<CotalMessage>()); } catch { /* skip undecodable */ }
+          if (delivered >= target) { complete = true; break; }
         }
       } finally {
         signal?.removeEventListener("abort", stop);
         iter.stop();
       }
       if (!complete)
-        throw new Error(`history: read ${delivered} of ${pending} messages on ${subject} before the stream ended early - the window was cut short, not empty`);
+        throw new Error(`history: read ${delivered} of ${target} requested messages on ${subject} before the stream ended early - the window was cut short, not empty`);
       return out;
     } finally {
       // DELETE THE EPHEMERAL CONSUMER. The pinned client gives an ordered consumer a 5-minute
