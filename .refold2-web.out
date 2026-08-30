@@ -1,0 +1,115 @@
+$ tsx implementations/web/smoke/channel-authority.smoke.ts
+  ✓ chat subject round-trips its channel — general
+  ✓ chat subject is kind "chat" — general
+  ✓ chat subject round-trips its channel — team.backend
+  ✓ chat subject is kind "chat" — team.backend
+  ✓ chat subject round-trips its channel — events.local.UDCY2NFVJP3
+  ✓ chat subject is kind "chat" — events.local.UDCY2NFVJP3
+  ✓ a dotted channel survives whole (a single-token parse would truncate it)
+  ✓ a DM subject parses
+  ✓ a DM is NOT kind chat
+  ✓ a DM's rest is the RECIPIENT, not a channel — forwarding it ungated would mislabel it
+  ✓ an anycast subject is NOT kind chat
+  ✓ an anycast rest is the ROUTE, not a channel
+  ✓ core SOURCE loaded directly (an unloadable source would skip this entire block)
+  ✓ the chat differential table is populated (an empty loop grades nothing)
+  ✓ artifact and source BUILD the same subject — general
+  ✓ artifact and source PARSE the same channel — general
+  ✓ artifact and source agree on kind — general
+  ✓ artifact and source BUILD the same subject — team.backend
+  ✓ artifact and source PARSE the same channel — team.backend
+  ✓ artifact and source agree on kind — team.backend
+  ✓ artifact and source BUILD the same subject — team.backend.eu
+  ✓ artifact and source PARSE the same channel — team.backend.eu
+  ✓ artifact and source agree on kind — team.backend.eu
+  ✓ artifact and source BUILD the same subject — events.local.UDCY2NFVJP3
+  ✓ artifact and source PARSE the same channel — events.local.UDCY2NFVJP3
+  ✓ artifact and source agree on kind — events.local.UDCY2NFVJP3
+  ✓ the non-chat differential table is populated
+  ✓ artifact and source agree on kind for inst (the gate's own premise)
+  ✓ artifact and source agree on rest for inst
+  ✓ artifact and source agree on kind for svc (the gate's own premise)
+  ✓ artifact and source agree on rest for svc
+  ✓ artifact and source agree on kind for unparseable (the gate's own premise)
+  ✓ artifact and source agree on rest for unparseable
+  ✓ web.ts declares the channel derivation in one extractable statement
+  ✓ the shipped derivation yields the SUBJECT's channel on the chat plane
+  ✓ the shipped derivation yields undefined for a DM (a recipient must never become a channel)
+  ✓ the shipped derivation yields undefined for anycast (a route must never become a channel)
+  ✓ the shipped derivation survives an unparseable subject without inventing a channel
+  ✓ web.ts declares the forward in one extractable statement
+  ✓ the forward carries the SERVER-derived channel as its own field, beside the untrusted payload
+  ✓ the forward is the `message` event the browser listens for
+  ✓ and it still carries the verified sender token
+  ✓ web.ts declares the backfill mapper in one extractable expression
+  ✓ a backfilled entry is tagged with the channel the SERVER requested, not the payload's
+  ✓ and the untouched payload travels alongside it for the client to overwrite at ingress
+  ✓ the ingress table covers all four entry paths (an empty loop would pass vacuously)
+  ✓ app.js — live SSE feed — the ingress statement is present and extractable
+  ✓ app.js — live SSE feed — the VERIFIED channel overwrites the publisher's claim
+  ✓ app.js — /api/activity backfill — the ingress statement is present and extractable
+  ✓ app.js — /api/activity backfill — the VERIFIED channel overwrites the publisher's claim
+  ✓ graph.js — live SSE feed — the ingress statement is present and extractable
+  ✓ graph.js — live SSE feed — the VERIFIED channel overwrites the publisher's claim
+  ✓ graph.js — /api/activity backfill — the ingress statement is present and extractable
+  ✓ graph.js — /api/activity backfill — the VERIFIED channel overwrites the publisher's claim
+  ✓ graph.js activity source: exactly one apply this harness can run
+  ✓ CONTROL: the same pattern naming a function the page does not have finds nothing
+  ✓ graph.js /api/activity backfill: the source's apply hands the SERVER'S entries to the backfill the rows above drive
+  ✓ the anycast hostile table covers both live ingresses
+  ✓ app.js — live SSE feed (ANYCAST) — the ingress statement is extractable
+  ✓ app.js — live SSE feed (ANYCAST) — a FORGED channel on an ANYCAST message is CLEARED
+  ✓ graph.js — live SSE feed (ANYCAST) — the ingress statement is extractable
+  ✓ graph.js — live SSE feed (ANYCAST) — a FORGED channel on an ANYCAST message is CLEARED
+  ✓ app.js — the ANYCAST destination run receives a payload that STILL carries the forgery
+  ✓ app.js — a forged ANYCAST message does NOT create the victim channel
+  ✓ app.js — a forged ANYCAST message does NOT reach the victim channel's transcript
+  ✓ graph.js — a forged ANYCAST message appears in the recent list with NO channel
+  ✓ the hostile table covers all four entry paths too
+  ✓ app.js — live SSE feed — the hostile statement is extractable
+  ✓ app.js — live SSE feed — a FORGED channel is CLEARED when nothing authoritative exists
+  ✓ app.js — /api/activity backfill — the hostile statement is extractable
+  ✓ app.js — /api/activity backfill — a FORGED channel is CLEARED when nothing authoritative exists
+  ✓ graph.js — live SSE feed — the hostile statement is extractable
+  ✓ graph.js — live SSE feed — a FORGED channel is CLEARED when nothing authoritative exists
+  ✓ graph.js — /api/activity backfill — the hostile statement is extractable
+  ✓ graph.js — /api/activity backfill — a FORGED channel is CLEARED when nothing authoritative exists
+  ✓ app.js — the destination run receives a payload that STILL carries the forgery (a shared fixture would arrive pre-sanitized)
+  ✓ app.js — the victim channel is the SELECTED one, so the transcript cell can actually fail
+  ✓ app.js — a forged DM does NOT create the victim channel in the channel list
+  ✓ app.js — a forged DM does NOT reach the victim channel's transcript
+  ✓ app.js — the OFF-SCREEN unread run receives a payload that STILL carries the forgery
+  ✓ app.js — the unread run has the victim OFF screen, so the badge branch is the one reached
+  ✓ app.js — a forged DM does NOT raise any unread badge
+  ✓ app.js — the forged DM is STILL delivered as a DM (clearing a channel must not drop it)
+  ✓ graph.js — the destination run receives a payload that STILL carries the forgery
+  ✓ graph.js — hub creation stays gated on mode==='chat' (this pins the GATE, NOT the clear)
+  ✓ graph.js — the forged DM still appears in the recent list, with no channel
+  ✓ app.js — a POLICED chat message DOES reach its channel, keyed on the verified name
+  ✓ a BRACED rewrite of the backfill loop is still identified (the pattern it replaced matched nothing)
+  ✓ a for-of over `activity` that assigns no channel is NOT identified (the predicate discriminates)
+  ✓ a channel assignment OUTSIDE any `activity` loop is NOT identified
+  ✓ the extracted app.js onMessage is a whole function declaration
+  ✓ the extracted app.js onMessage has balanced braces (a fragment would not)
+  ✓ the extracted graph.js onMessage is a whole function declaration
+  ✓ the extracted graph.js onMessage has balanced braces (a fragment would not)
+  ✓ extractFunction returns undefined when the declaration is absent (negative control)
+  ✓ extractFunction returns undefined when TWO executable declarations exist (never guesses)
+  ✓ the regressed handler used by the controls below is genuinely DIFFERENT (non-equivalence)
+  ✓ a COMMENTED copy of the safe handler is invisible to the parser (it grades the real one)
+  ✓ a `*/` inside a STRING cannot smuggle a commented handler past the parser
+  ✓ a whitespace-varied declaration is still found (the anchor is the DECLARATION, not a spelling)
+  ✓ a block comment cannot hide a safe backfill copy from the finder (it identifies the REAL loop)
+  ✓ a line comment cannot hide a safe backfill copy from the finder (it identifies the REAL loop)
+  ✓ a leading #! hashbang cannot hide a safe backfill copy from the finder (it identifies the REAL loop)
+  ✓ a classic-script <!-- comment makes the finder REFUSE (parser and browser disagree on what is code)
+  ✓ a <!--hidden copy with the REAL overwrite deleted also refuses (it would otherwise grade a page that does not exist)
+  ✓ the same source without the <!-- opener IS found (the refusal is not swallowing everything)
+  ✓ app.js — the shipped file contains NO HTML-comment syntax (or every executed cell would refuse)
+  ✓ graph.js — the shipped file contains NO HTML-comment syntax (or every executed cell would refuse)
+  ✓ extractBackfill returns undefined when TWO real backfill loops exist (never guesses)
+  ✓ extractBackfill returns undefined when the loop is absent (negative control)
+  ✓ app.js — exactly ONE backfill loop is identified in the shipped file (positive control)
+  ✓ graph.js — exactly ONE backfill loop is identified in the shipped file (positive control)
+
+web channel-authority smoke: 112 checks passed
