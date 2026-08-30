@@ -8,8 +8,9 @@
  * Three-way split (the Unit B design note, panel-locked): the key/value GRAMMAR lives in core
  * `lifecycle-state.ts`; the CAS SEQUENCING is the shared core saga this module DELEGATES to
  * (never a hand-ordered local copy); the barrier ORCHESTRATION here is the static executor's
- * own (revoke from the slot's recorded credentialIds, best-effort eviction = the child process
- * kill the manager already did, footprint cleanup via the manager's deprovision hooks).
+ * own (revoke from the slot's recorded credentialIds, fail-closed broker connection eviction that
+ * holds the lifecycle terminalizing until a complete scan verifies the principal gone, then
+ * footprint cleanup via the manager's deprovision hooks).
  *
  * F5-bind (the F4 restatement): the wire AUTHORITY coordinate is the incarnation-unique nkey
  * (`actor`); the ALIAS is routing only, protected by the name-keyed slot row + uid reservation +
