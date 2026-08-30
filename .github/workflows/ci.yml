@@ -219,13 +219,46 @@ jobs:
       - name: OpenCode cooperative-stop smoke test
         run: pnpm smoke:opencode-coop
 
-  ci-ok:
-    # Single required status: green only if unit + every smoke shard + live all passed.
+  live-conclusion:
+    name: live conclusion (timeout legibility)
+    # A job that reaches its own timeout is badged `cancelled`, the same badge as an intentionally
+    # superseded PR revision. Run after `live` either way, then use this run-attempt's timings plus a
+    # newer run for the same PR as the evidence that separates those causes. Unknown cancellations
+    # fail loud; they never inherit the benign supersession story by default.
     if: always()
-    needs: [unit, smoke, live]
+    needs: [live]
+    timeout-minutes: 2
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Classify a cancelled live job
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          node scripts/live-job-conclusion.mjs
+          --result "${{ needs.live.result }}"
+          --repo "$GITHUB_REPOSITORY"
+          --run-id "$GITHUB_RUN_ID"
+          --attempt "$GITHUB_RUN_ATTEMPT"
+          --workflow ci.yml
+          --job live
+          --timeout-seconds 1500
+          --margin-seconds 60
+          --event "$GITHUB_EVENT_NAME"
+          --pr-number "${{ github.event.pull_request.number || 0 }}"
+          --head-ref "${{ github.head_ref }}"
+
+  ci-ok:
+    # Single required status: green only if unit + every smoke shard + live and its explicit
+    # cancellation diagnosis all passed.
+    if: always()
+    needs: [unit, smoke, live, live-conclusion]
     runs-on: ubuntu-latest
     steps:
       - name: Gate
         run: |
-          echo "unit=${{ needs.unit.result }} smoke=${{ needs.smoke.result }} live=${{ needs.live.result }}"
-          [ "${{ needs.unit.result }}" = "success" ] && [ "${{ needs.smoke.result }}" = "success" ] && [ "${{ needs.live.result }}" = "success" ]
+          echo "unit=${{ needs.unit.result }} smoke=${{ needs.smoke.result }} live=${{ needs.live.result }} live-conclusion=${{ needs['live-conclusion'].result }}"
+          [ "${{ needs.unit.result }}" = "success" ] && [ "${{ needs.smoke.result }}" = "success" ] && [ "${{ needs.live.result }}" = "success" ] && [ "${{ needs['live-conclusion'].result }}" = "success" ]

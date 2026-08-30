@@ -389,6 +389,7 @@ smoke:web-channel-alias
 # inline enforced here at one boundary instead.
 smoke:lang-engine
 
+
 # The source transform: the emitted module's surface, closed over the seam,
 # reaching no unruled member, pure in its source, one rule per admitted node type. The differential
 # suite against the walker is the primary gate and lands with the engine host's `__ctx`.
@@ -690,3 +691,7 @@ smoke:agent-secret-segmentation
 # spellings, one of them the release workflow. The property is only observable on main after a
 # merge, so it needs a static guard. Appended so every existing shard assignment remains unchanged.
 smoke:workflow-concurrency
+
+# CI must distinguish a live job that reaches its own timeout from an intentionally superseded PR
+# revision. Broker-free: pure verdict cases plus static binding to the real workflow aggregate.
+smoke:live-job-conclusion
