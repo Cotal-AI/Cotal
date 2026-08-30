@@ -242,6 +242,12 @@ A project's state lives in `.cotal/` at the mesh root (found by walking up from 
 | `membership.json` · `membership-*.creds` | Membership feed state + its scoped creds |
 | `setup.log` | Last `cotal setup` run |
 
+A command that acts on the whole folder without being told a space reads one off these runtime
+records: `<key>` decodes back to the space name, and a space whose record is running wins over
+residue from a stopped one. Two spaces running under one root is reported rather than arbitrated.
+This is what lets `cotal status` and `cotal down` work in a folder whose mesh runs with
+`broker: { auth: false }`, where there is no `auth/account.<key>.json` to name the space.
+
 ### Machine files
 
 Cross-project machine state, so a `cotal spawn` from any directory can find a running mesh. Location:

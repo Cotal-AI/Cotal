@@ -23,6 +23,13 @@ canonical space-keyed name, and each start reclaims a provably dead pre-upgrade 
 ordinary upgrade does not leave both spellings behind. A live pre-upgrade daemon is refused rather
 than overwritten, and both spellings present is reported as ambiguous rather than guessed.
 
+A folder-wide command reads its space off the runtime records the folder holds. `resolveRuntimeSpace`
+decodes the space out of the record filenames and prefers a space whose record is running over dead
+residue; two spaces running under one root throws and names both. The previous read came from the
+`.cotal/auth` account records, which an open mesh (`broker: { auth: false }`) never writes, so a bare
+`cotal down` in such a folder answered with the default space and walked past its own manager once the
+records became space-keyed.
+
 `MANAGER_PIDFILE` and `MANAGER_DELIVERY_AWARE_MARKER` move from `pid.ts` to `local-process.ts` and
 are now `{space}` templates; both are still exported from the package index. `RESERVED_COTAL_CHILDREN`
 no longer lists the five root-scoped runtime names.
