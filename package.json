@@ -228,6 +228,7 @@
     "smoke:server-resolution:live": "tsx implementations/cli/smoke/server-resolution-live.smoke.ts",
     "smoke:cooperative-stop:live": "tsx implementations/manager/smoke/cooperative-stop-live.smoke.ts",
     "smoke:lifecycle-e2e": "tsx implementations/manager/smoke/lifecycle-e2e.smoke.ts",
+    "smoke:orphan-seat-succession": "tsx implementations/manager/smoke/orphan-seat-succession.smoke.ts",
     "smoke:spawn-args": "tsx extensions/connector-core/smoke/spawn-args.smoke.ts",
     "smoke:launch-options": "tsx bin/smoke/launch-options.smoke.ts",
     "smoke:install": "tsx implementations/cli/smoke/install.smoke.ts",
