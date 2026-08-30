@@ -12,7 +12,7 @@
     {
       "name": "restore lease admission before scan-tenancy validation",
       "file": "implementations/delivery/src/delivery.ts",
-      "find": "  validateScanTarget(scanTarget);",
+      "find": "  await validateScanTargetAdmission(scanTarget);",
       "replace": "  void scanTarget;",
       "expectRed": "POISONED LEASE: account A with account B root exits before holding lease.0",
       "cell": "POISONED LEASE: account A with account B root exits before holding lease.0"
