@@ -1,0 +1,15 @@
+{
+  "suite": "bin/smoke/workspace-import-exports.smoke.ts",
+  "guard": "every named import from a workspace package resolves to a public export, including type-only imports in smoke trees outside package TypeScript projects",
+  "command": "pnpm smoke:workspace-import-exports",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/workspace-import-exports.json",
+  "mutations": [
+    {
+      "name": "W1 MeshAgent moves back to core",
+      "file": "implementations/manager/smoke/pi-session-recovery.smoke.ts",
+      "find": "import { controlEndpoint, startControlServer, type MeshAgent } from \"@cotal-ai/connector-core\";",
+      "replace": "import { controlEndpoint, startControlServer } from \"@cotal-ai/connector-core\";\nimport type { MeshAgent } from \"@cotal-ai/core\";",
+      "expectRed": "@cotal-ai/core does not export MeshAgent"
+    }
+  ]
+}

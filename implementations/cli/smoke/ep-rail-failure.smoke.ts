@@ -127,6 +127,20 @@ try {
     },
   });
   {
+    // Issue #1003: a detached manager can register after the control command has already published
+    // its describe. Core NATS discards that first request, so the resolver must re-publish the SAME
+    // read-only bootstrap inside the original deadline. Model the startup gap without `cotal up`:
+    // begin askManager with no responder, then register one before the 10s describe budget expires.
+    const pending = askManager(SPACE, SERVER, "ps", undefined, {}, "any", 2000);
+    await wait(300);
+    const sub = serveDescribe((id) => ({ v: 1, id, ok: false, error: { code: "unavailable", message: "registered after the first describe" } }));
+    await nc.flush();
+    const r = await pending;
+    await sub.drain();
+    c("live: a manager registering after the first describe is reached by a retry inside the original deadline",
+      r.ok === false && r.unanswered === false && r.error === "unavailable: describe(manager) failed: registered after the first describe", r);
+  }
+  {
     // The review repro: a manager ANSWERS the describe with ok:false unavailable (core's own describe
     // handler produces exactly this when its trusted auth view failed).
     const sub = serveDescribe((id) => ({ v: 1, id, ok: false, error: { code: "unavailable", message: "trusted auth view failed" } }));

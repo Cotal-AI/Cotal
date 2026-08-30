@@ -179,7 +179,8 @@ export interface EndpointOptions {
    *  requires explicit `card.id` (the pinned identity); every fetched cred MUST carry that same nkey
    *  or the endpoint fails loud — renewal may never silently swap identity. A fetch failure is
    *  emitted as an "error" event and retried; the connection stays up until its current JWT expires,
-   *  so a dead reminter is loud without instantly dropping the mesh. */
+   *  so a dead reminter is loud without instantly dropping the mesh. Once the cached cred expires,
+   *  the endpoint refuses to present it to the broker and keeps retrying the source with backoff. */
   creds?: string | (() => Promise<string>);
   /** USER-MODE auth: a validated Cotal user bearer (the JWT from `cotal login` → the IdP bridge), or a
    *  SOURCE that mints a fresh one. When set, the endpoint connects through the auth callout — presenting
@@ -359,6 +360,12 @@ export class CotalEndpoint extends EventEmitter {
   private jsm?: JetStreamManager;
   private kv?: KV;
   private channelKv?: KV;
+  /** The presence/channel-registry watches' own handles. Each is an ORDERED push consumer: its idle
+   *  heartbeat monitor lives on a JS timer independent of the connection, so a drain that doesn't
+   *  `.stop()` it first leaves the monitor to fire into a closing connection every 30s, throwing
+   *  `DrainingConnectionError` out of `reset()` on a timer nothing awaits. */
+  private presenceWatchIter?: Awaited<ReturnType<KV["watch"]>>;
+  private channelWatchIter?: Awaited<ReturnType<KV["watch"]>>;
   /** Plane-3 durable-membership registry KV — lazily opened by the privileged delivery daemon (or a
    *  short-lived provisioner). */
   private membersKv?: KV;
@@ -920,6 +927,13 @@ export class CotalEndpoint extends EventEmitter {
           ? "this endpoint's user bearer has expired and renewal through the auth exchange is failing - not presenting the expired token to the broker; retrying with backoff"
           : "this endpoint's user bearer has expired and it holds no bearer source to renew it - re-authenticate and rebuild the endpoint (construct it with a bearer FUNCTION for standing renewal)",
       );
+    const credsExp = this.currentCreds && credsClaims(this.currentCreds).exp;
+    if (typeof credsExp === "number" && credsExp * 1000 <= Date.now())
+      throw new Error(
+        this.credsSource
+          ? "this endpoint's creds have expired and renewal is failing - not presenting the expired credential to the broker; retrying with backoff"
+          : "this endpoint's creds have expired and it holds no creds source to renew them - replace the credential and rebuild the endpoint (pass a creds FUNCTION for standing renewal)",
+      );
     this.nc = await dialerFor(this.servers)({
       servers: this.servers,
       // In USER MODE the connection `name` carries the client-chosen inbox nonce (= connId) the callout
@@ -1066,6 +1080,18 @@ export class CotalEndpoint extends EventEmitter {
       }
     }
     this.streamMsgs.length = 0;
+    try {
+      this.presenceWatchIter?.stop();
+    } catch {
+      /* already closed with the connection */
+    }
+    this.presenceWatchIter = undefined;
+    try {
+      this.channelWatchIter?.stop();
+    } catch {
+      /* already closed with the connection */
+    }
+    this.channelWatchIter = undefined;
     for (const sub of this.chatSubs.values()) {
       try {
         sub.unsubscribe();
@@ -1292,6 +1318,18 @@ export class CotalEndpoint extends EventEmitter {
         /* already closed */
       }
     }
+    try {
+      this.presenceWatchIter?.stop();
+    } catch {
+      /* already closed */
+    }
+    this.presenceWatchIter = undefined;
+    try {
+      this.channelWatchIter?.stop();
+    } catch {
+      /* already closed */
+    }
+    this.channelWatchIter = undefined;
     try {
       if (this.doRegister) {
         this.status = "offline";
@@ -4353,6 +4391,7 @@ export class CotalEndpoint extends EventEmitter {
     let hydrated!: () => void;
     this.presenceSnapshot = new Promise<void>((resolve) => { hydrated = resolve; });
     const iter = await this.kv.watch();
+    this.presenceWatchIter = iter;
     void (async () => {
       let ready = false;
       for await (const e of iter) {
@@ -4373,6 +4412,7 @@ export class CotalEndpoint extends EventEmitter {
   private async startChannelWatch(): Promise<void> {
     if (!this.channelKv) return;
     const iter = await this.channelKv.watch();
+    this.channelWatchIter = iter;
     void (async () => {
       for await (const e of iter) this.handleChannelEntry(e);
     })().catch((e) => this.emit("error", e as Error));
