@@ -1205,7 +1205,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_personas",
       title: "Cotal: list or show personas",
       description:
-        "Read the workspace persona catalog the manager owns (.cotal/agents). Omit `name` to list spawnable persona names (role, model, and a one-line description when you own the file). Pass `name` to show one card you own, including the persona body. Same ownership as cotal_persona: a file you do not own lists as a name only and show is not-found. Use this to see whether a name is taken before cotal_persona, or what a teammate's persona says, without shelling out.",
+        "Read the workspace persona catalog the manager owns (.cotal/agents). Omit `name` to list spawnable persona names (role, model, and a one-line description when you own the file). Pass `name` to show one card you own, including the persona body. Same ownership as cotal_persona: a file you do not own lists as a name only, while unauthorized, unknown, and unparseable shows are all not-found. Use this to see whether a name is taken before cotal_persona, or what a teammate's persona says, without shelling out.",
       schema: {
         name: z
           .string()

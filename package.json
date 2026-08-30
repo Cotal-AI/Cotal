@@ -321,6 +321,7 @@
     "smoke:ep-serve-gate": "tsx packages/core/smoke/endpoint-serve-gate.smoke.ts",
     "smoke:manager-service": "tsx implementations/manager/smoke/manager-service.smoke.ts",
     "smoke:manager-service-ops": "tsx implementations/manager/smoke/manager-service-ops.smoke.ts",
+    "smoke:manager-persona-show-auth": "tsx implementations/manager/smoke/persona-show-auth.smoke.ts",
     "smoke:manager-service-invoke": "tsx implementations/manager/smoke/manager-service-invoke.smoke.ts",
     "smoke:journal-model-b": "tsx implementations/manager/smoke/journal-model-b.smoke.ts",
     "smoke:journal-declaration": "tsx implementations/manager/smoke/journal-declaration.smoke.ts",

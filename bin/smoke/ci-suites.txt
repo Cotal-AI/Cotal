@@ -714,3 +714,8 @@ smoke:web-presence-view
 # Mutation-proofed - packages/core/smoke/persona-catalog-read.mutations.json. Appended so every
 # existing shard assignment remains unchanged.
 smoke:persona-catalog-read
+
+# A guessed broken persona must be not-found before its parser diagnostic can cross the real manager
+# show-persona handler. Mutation-proofed - implementations/manager/smoke/persona-show-auth.mutations.json.
+# Appended so every existing shard assignment remains unchanged.
+smoke:manager-persona-show-auth

@@ -6037,9 +6037,9 @@ export class Manager {
     return { ok: true, data: { personas } };
   }
 
-  /** Mesh-side catalog show (#402). Same ownership as list. Unknown or unauthorized names are
-   *  not-found (no existence leak). The body is included so a peer can inspect a prompt it owns
-   *  before spawn; policy fields stay off the wire. */
+  /** Mesh-side catalog show (#402). Same ownership as list. Unknown, unauthorized, or unparseable
+   *  names are not-found (no existence or parser-diagnostic leak). The body is included so a peer can
+   *  inspect a prompt it owns before spawn; policy fields stay off the wire. */
   private opShowPersona(args: Record<string, unknown>, caller: string, admin: boolean): ControlReply {
     const name = String(args.name ?? "").trim();
     if (!name) return { ok: false, error: "name required" };
@@ -6050,8 +6050,8 @@ export class Manager {
     let def;
     try {
       def = loadAgentFile(path);
-    } catch (e) {
-      return { ok: true, data: { name, error: (e as Error).message } };
+    } catch {
+      return { ok: false, error: `no persona "${name}"` };
     }
     if (!this.canReadPersona(def.owner, caller, admin)) return { ok: false, error: `no persona "${name}"` };
     const description = personaCatalogDescription(def);
