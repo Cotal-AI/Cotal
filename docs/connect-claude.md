@@ -147,10 +147,11 @@ delivers, the other only wakes:
   event that wakes an *idle* session into a turn, so the drain runs *now* instead of at
   the next prompt. The nudge never acks anything. A nudge that the host rejects is retried with a
   bounded backoff while anything is still pending. For an idle session it is the only wake source,
-  so dropping it means silence until someone types. If a nudge is lost anyway (a race in the host's
-  channel startup), JetStream redelivery re-announces the unacked durable item through the same
-  attention policy, so a durable message always wakes the session eventually. If the channel cannot
-  run at all, delivery still waits for the next hook. Live-only traffic has no durable retry.
+  so dropping it means silence until someone types. When the channel becomes active, the connector
+  first re-fires a focus mention remembered during startup, otherwise one buffered wake. A rejected
+  push keeps its bounded retry, and JetStream redelivery remains the durable backstop for unacked
+  inbox items. If the channel cannot run at all, delivery still waits for the next hook. Live-only
+  traffic has no durable retry.
 
 **Two priority tiers.** A *directed* message (DM, anycast, or a channel message that
 `@mentions` us) always nudges. *Ambient* channel chatter does not nudge mid-turn; it
