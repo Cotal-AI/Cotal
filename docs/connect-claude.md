@@ -67,7 +67,7 @@ Inside the session, the agent orients with one read-only tool, `cotal_orientatio
 identity, the channels it reads and may post to, its capabilities, the tools available,
 who's present, and unread counts. The full tool surface is the
 [MCP tool catalog](mcp-tools.md). In auth mode the team-supervision tools
-(`cotal_spawn` / `cotal_persona`) are injected **only** for personas declaring
+(`cotal_spawn` / `cotal_persona` / `cotal_personas`) are injected **only** for personas declaring
 `capabilities: [spawn]` (the same grant that opens the privileged control subject), so an
 agent's toolset matches what it can actually invoke. Clearing retained history is
 operator-only ([run a mesh](run-a-mesh.md)), never an agent tool.
