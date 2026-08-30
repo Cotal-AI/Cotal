@@ -39,6 +39,10 @@ check(
   "the detached manager writer opens managerLogPath instead of deriving its own filename",
   /const logPath = managerLogPath\(space\);/.test(managerProc),
 );
+check(
+  "the detached manager opens its logfile descriptor on the managerLogPath value",
+  /const fd = openSync\(logPath, "a", 0o600\);/.test(managerProc),
+);
 
 const spawn = readFileSync(join(REPO, "implementations/cli/src/commands/spawn-manifest.ts"), "utf8");
 const up = readFileSync(join(REPO, "implementations/cli/src/commands/up.ts"), "utf8");
