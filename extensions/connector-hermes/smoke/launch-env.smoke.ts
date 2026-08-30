@@ -8,7 +8,8 @@
  * Run: pnpm --filter @cotal-ai/connector-hermes test
  */
 import { strict as assert } from "node:assert";
-import { hermesUvCommand } from "../src/binary.js";
+import type { ChildProcess } from "node:child_process";
+import { hermesUvCommand, spawnHermesGateway } from "../src/binary.js";
 import { hermesConnector } from "../src/extension.js";
 
 if (process.platform === "win32") {
@@ -114,7 +115,26 @@ const bootResolved = hermesConnector.buildLaunch({
 assert.equal(bootResolved.COTAL_HERMES_UV_BIN, "/manager/boot/uv", "the exact manager-boot uv path reaches the launcher");
 assert.equal(hermesUvCommand(bootResolved), "/manager/boot/uv", "the launcher executes the exact manager-boot uv path");
 
-console.log("2 checks passed");
+let spawned: { command: string; args: readonly string[]; env?: NodeJS.ProcessEnv } | undefined;
+spawnHermesGateway({
+  pkgDir: "/connector/hermes",
+  env: bootResolved,
+  spawnImpl: ((command: string, args: readonly string[], options: { env?: NodeJS.ProcessEnv }) => {
+    spawned = { command, args, env: options.env };
+    return {} as ChildProcess;
+  }) as typeof import("node:child_process").spawn,
+});
+assert.deepEqual(
+  spawned,
+  {
+    command: "/manager/boot/uv",
+    args: ["run", "--project", "/connector/hermes", "hermes", "gateway", "run"],
+    env: bootResolved,
+  },
+  "the gateway spawn executes the exact manager-boot uv path",
+);
+
+console.log("3 checks passed");
 console.log(
   `launch-env smoke: ${PROVIDER_KEYS.length} declared provider keys forwarded, ` +
     `${FORMERLY_EXCLUDED.length + HOST_MARKERS.length + 1} undeclared names withheld, ` +

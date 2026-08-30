@@ -2,7 +2,8 @@
  * Hermes boot requirement smoke (issue #1144).
  *
  * Drives the real installed-extension manager boot path twice. The cached connector metadata comes
- * from the real source connector, so mutations of `requires` reach the manifest the manager reads.
+ * from the built package artifact customers install. The mutation command rebuilds that artifact
+ * after changing source, so a source mutation reaches the exact metadata the manager reads.
  */
 import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -12,7 +13,9 @@ import { join } from "node:path";
 import { isReachable } from "@cotal-ai/core";
 import { cacheConnector, extensionsDir, saveExtensionsManifest } from "../../../packages/workspace/src/index.js";
 import { Manager } from "../../../implementations/manager/src/manager.js";
-import { hermesConnector } from "../src/extension.js";
+
+type HermesConnector = (typeof import("../src/extension.js"))["hermesConnector"];
+const { hermesConnector } = await import("../dist/index.js") as { hermesConnector: HermesConnector };
 
 const freePort = (): Promise<number> => new Promise((resolve, reject) => {
   const server = createServer();

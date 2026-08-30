@@ -14,12 +14,12 @@
       "cell": "the exact manager-boot uv path reaches the launcher"
     },
     {
-      "name": "Hermes launcher ignores the manager-boot uv path",
+      "name": "Hermes gateway spawn ignores the manager-boot uv path",
       "file": "extensions/connector-hermes/src/binary.ts",
-      "find": "  return env.COTAL_HERMES_UV_BIN?.trim() || \"uv\";",
-      "replace": "  return \"uv\";",
-      "expectRed": "the launcher executes the exact manager-boot uv path",
-      "cell": "the launcher executes the exact manager-boot uv path"
+      "find": "  return spawnImpl(hermesUvCommand(opts.env), [\"run\", \"--project\", opts.pkgDir, \"hermes\", \"gateway\", \"run\"], spawnOptions);",
+      "replace": "  return spawnImpl(\"uv\", [\"run\", \"--project\", opts.pkgDir, \"hermes\", \"gateway\", \"run\"], spawnOptions);",
+      "expectRed": "the gateway spawn executes the exact manager-boot uv path",
+      "cell": "the gateway spawn executes the exact manager-boot uv path"
     }
   ]
 }

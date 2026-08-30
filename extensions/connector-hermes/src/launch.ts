@@ -13,14 +13,14 @@
  *
  * The manager runs this in a PTY; stdio is inherited so the gateway's output is what you attach to.
  */
-import { spawn, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync, cpSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LAUNCH_MATERIAL_ENV, discardLaunchMaterial, loadAgentFile, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
 import { hasIdentity, configFromEnv, controlEndpoint, ORIENTATION_BOOTSTRAP, MESH_FIRST_STEER } from "@cotal-ai/connector-core";
-import { hermesUvCommand } from "./binary.js";
+import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
 import { startSidecar } from "./sidecar.js";
 
 /** Hermes API line this connector is written + pinned against (see pyproject.toml). A different
@@ -83,7 +83,7 @@ function assertHermesVersion(): void {
   let raw: string;
   try {
     raw = execFileSync(
-      "uv",
+      hermesUvCommand(),
       ["run", "--project", PKG_DIR, "--quiet", "python", "-c", "from importlib.metadata import version; print(version('hermes-agent'))"],
       { encoding: "utf8" },
     ).trim();
@@ -165,10 +165,7 @@ async function main(): Promise<void> {
   };
 
   log(`launching hermes gateway as ${config.name}${config.role ? `/${config.role}` : ""} (HERMES_HOME=${home})`);
-  const child = spawn(hermesUvCommand(), ["run", "--project", PKG_DIR, process.env.COTAL_HERMES_BIN?.trim() || "hermes", "gateway", "run"], {
-    env: childEnv,
-    stdio: "inherit",
-  });
+  const child = spawnHermesGateway({ pkgDir: PKG_DIR, env: childEnv });
 
   let shuttingDown = false;
   const shutdown = async (code: number): Promise<void> => {
