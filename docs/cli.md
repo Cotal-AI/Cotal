@@ -910,6 +910,13 @@ holder really is gone, prints what it found, and then finishes the dead operatio
 interrupted restart would have: revoke the old credentials, evict their holders with verification,
 and reopen the gate.
 
+If verification is interrupted, the command leaves the gate frozen and durably records each holder
+whose eviction was already verified. A retry still repeats the freeze-holder liveness check, then
+skips only progress bound to the same registration operation, frozen-gate revision, and holder set.
+The output reports holders completed before this attempt, completed now, and still remaining. A new
+freeze or changed holder set starts from zero. Cursor cleanup happens only after reopen; a retained
+cursor is harmless because its old gate revision cannot authorize a later freeze.
+
 **It refuses far more often than it acts, on purpose**, and always says which check stopped it:
 
 | Refusal | What it means | What to do |

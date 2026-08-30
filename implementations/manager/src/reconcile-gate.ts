@@ -27,7 +27,8 @@
  */
 import {
   endpointRegistrationBarrier, parseEndpointGate, epgateKey,
-  type EndpointGateRow,
+  loadEndpointRepairCursor, saveEndpointRepairCursor, deleteEndpointRepairCursor, repairCursorMatches,
+  type EndpointGateRow, type EndpointRepairCursor,
 } from "@cotal-ai/core";
 import type { KV } from "@nats-io/kv";
 
@@ -86,6 +87,16 @@ export interface GateReconcileReport {
   familyRows: number;
   revoked: string[];
   evicted: string[];
+  /** Distinct holders this freeze must verify-evict (sorted). */
+  holders: string[];
+  /** Durable verified set at the start of this attempt (skipped). */
+  holdersVerifiedBeforeAttempt: string[];
+  /** Holders verify-evicted during this attempt. */
+  holdersVerifiedThisAttempt: string[];
+  /** Holders still required after this attempt (empty on success). */
+  holdersRemaining: string[];
+  /** Cleanup is best-effort after reopen. A retained cursor cannot match a later gate revision. */
+  repairCursorCleanup: "deleted" | "retained";
   reopenedAtGeneration: number;
 }
 
@@ -163,16 +174,54 @@ export async function reconcileEndpointGate(opts: {
   // the probe proved it gone, and the barrier's verify is what makes that durable rather than a
   // snapshot. An unverified eviction aborts and LEAVES THE GATE FROZEN (unchanged §13.1 posture).
   const holders = [...new Set([row.principal, ...rows.map((r) => r.holderPrincipal)])];
+  const boundHolders = [...holders].sort();
+  const binding = { opId, freezeToken, holders: boundHolders };
+  const stored = await loadEndpointRepairCursor(kv, endpoint, instanceId);
+  let cursor: EndpointRepairCursor;
+  let cursorRevision: number | null;
+  if (stored && repairCursorMatches(stored.cursor, binding)) {
+    cursor = stored.cursor;
+    cursorRevision = stored.revision;
+    log(`repair cursor: resume op=${opId} freezeToken=${freezeToken} verified=${cursor.verified.length}/${boundHolders.length}`);
+  } else {
+    cursor = { v: 1, opId, freezeToken, holders: boundHolders, verified: [] };
+    cursorRevision = stored ? stored.revision : null;
+    cursorRevision = await saveEndpointRepairCursor(kv, endpoint, instanceId, cursor, cursorRevision);
+    log(`repair cursor: restart op=${opId} freezeToken=${freezeToken} holders=${boundHolders.length} (prior cursor discarded)`);
+  }
+  const skipped = new Set(cursor.verified);
+  const holdersVerifiedBeforeAttempt = [...cursor.verified];
   const evicted: string[] = [];
-  for (const h of holders) {
-    if (!(await barrier.evict(h)))
+  for (const h of boundHolders) {
+    if (skipped.has(h)) {
+      log(`  already verified (durable): ${h}`);
+      continue;
+    }
+    let verified: boolean;
+    try {
+      verified = await barrier.evict(h);
+    } catch (e) {
       throw new GateReconcileRefused(
         "eviction-unverified",
-        `eviction of "${h}" was NOT verified gone — the gate stays frozen (fail-closed, SPEC 13.1). Nothing was reopened; the revocations above are deny-new and safe to leave.`,
+        `eviction verification for "${h}" was interrupted — the gate stays frozen (fail-closed, SPEC 13.1). Durable progress: ${cursor.verified.length} completed, ${boundHolders.length - cursor.verified.length} remaining. Cause: ${(e as Error)?.message ?? String(e)}`,
+      );
+    }
+    if (!verified)
+      throw new GateReconcileRefused(
+        "eviction-unverified",
+        `eviction of "${h}" was NOT verified gone — the gate stays frozen (fail-closed, SPEC 13.1). Nothing was reopened; the revocations above are deny-new and safe to leave. Durable progress: ${cursor.verified.length} completed, ${boundHolders.length - cursor.verified.length} remaining.`,
       );
     evicted.push(h);
-    log(`  verified evicted: ${h}`);
+    cursor = { ...cursor, verified: [...new Set([...cursor.verified, h])].sort() };
+    cursorRevision = await saveEndpointRepairCursor(kv, endpoint, instanceId, cursor, cursorRevision);
+    log(`  verified evicted: ${h} (${cursor.verified.length}/${boundHolders.length})`);
   }
+  const holdersRemaining = boundHolders.filter((h) => !cursor.verified.includes(h));
+  if (holdersRemaining.length !== 0)
+    throw new GateReconcileRefused(
+      "eviction-unverified",
+      `repair of ${key} still has ${holdersRemaining.length} unverified holder(s) — the gate stays frozen.`,
+    );
 
   // ---- 4. Token-pinned abort-reopen at the UNCHANGED coordinate. The dead op wrote nothing
   // forward, so only `generation` advances; the successor's normal takeover then runs end-to-end.
@@ -189,13 +238,32 @@ export async function reconcileEndpointGate(opts: {
       `the token-pinned reopen of ${key} lost its CAS — a newer barrier moved the gate while this repair ran. Nothing was reopened; re-observe before retrying.`,
     );
 
-  log(`✓ gate ${key} reopened at generation=${reopenedAtGeneration}, processEpoch unchanged (${row.processEpoch}); family revoked (${revoked.length}) and verify-evicted (${evicted.length} holder(s))`);
+  // The gate is already open, so cleanup cannot be a correctness precondition. Delete with the
+  // cursor's own revision; if it fails, retain the row and rely on its exact freeze-token binding.
+  // A later freeze necessarily has a different gate revision and overwrites it with empty progress
+  // before any holder can be skipped.
+  let repairCursorCleanup: "deleted" | "retained" = "deleted";
+  try {
+    await deleteEndpointRepairCursor(kv, endpoint, instanceId, cursorRevision!);
+    log(`repair cursor: deleted after reopen`);
+  } catch (e) {
+    repairCursorCleanup = "retained";
+    log(`repair cursor: cleanup retained a safely freeze-bound cursor: ${(e as Error)?.message ?? String(e)}`);
+  }
+
+  log(`✓ gate ${key} reopened at generation=${reopenedAtGeneration}, processEpoch unchanged (${row.processEpoch}); family revoked this attempt (${revoked.length}), verify-evicted this attempt (${evicted.length}), durable verified ${cursor.verified.length}/${boundHolders.length}, cursor cleanup ${repairCursorCleanup}`);
   return {
     endpoint, instanceId, holderPrincipal: row.principal, opId, freezeToken,
     before: {
       generation: row.generation, processEpoch: row.processEpoch,
       registrationRevision: row.registrationRevision, nameAuthorityRevision: row.nameAuthorityRevision,
     },
-    liveness, familyRows: rows.length, revoked, evicted, reopenedAtGeneration,
+    liveness, familyRows: rows.length, revoked, evicted,
+    holders: boundHolders,
+    holdersVerifiedBeforeAttempt,
+    holdersVerifiedThisAttempt: evicted,
+    holdersRemaining,
+    repairCursorCleanup,
+    reopenedAtGeneration,
   };
 }
