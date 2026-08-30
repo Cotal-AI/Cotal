@@ -384,6 +384,7 @@
     "smoke:auth-admin:auth": "tsx implementations/auth/smoke/auth-admin.smoke.ts",
     "smoke:auth-pidfile": "tsx implementations/cli/smoke/auth-pidfile.smoke.ts",
     "smoke:retirement-cleaner:auth": "tsx implementations/auth/smoke/retirement-cleaner-confinement.smoke.ts",
+    "smoke:retirement-wedge:auth": "tsx implementations/auth/smoke/retirement-wedge.smoke.ts",
     "smoke:d32-matrix:auth": "tsx implementations/auth/smoke/d32-matrix.smoke.ts",
     "smoke:storage-authority:auth": "tsx implementations/auth/smoke/storage-authority-confinement.smoke.ts",
     "smoke:descendant-deny:auth": "tsx implementations/auth/smoke/descendant-deny.smoke.ts",
