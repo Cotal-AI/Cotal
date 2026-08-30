@@ -50,7 +50,7 @@ try {
   const second = await startManager("successor", true);
   check("successor uses the same persisted logical manager instance", (second.manager ?? second.ready ?? second.spawn)?.managerInstanceId === first.ready.managerInstanceId, { first: first.ready, second: second.manager ?? second.ready ?? second.spawn });
   const predecessorGone = await until(() => !alive(first.ready!.seatPid), 45_000);
-  check("successor verify-evicts the orphan before replacement can be admitted", predecessorGone, { stderr: second.stderr(), predecessorAlive: alive(first.ready.seatPid) });
+  check("successor reaps the exact orphan process before replacement admission", predecessorGone, { stderr: second.stderr(), predecessorAlive: alive(first.ready.seatPid) });
   console.log(`\nORPHAN-SEAT SUCCESSION SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"} (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
-} finally { for (const child of managers) if (child.exitCode === null) child.kill("SIGKILL"); for (const pid of seats) stopGroup(pid); await daemon?.stop().catch(() => {}); broker.kill("SIGKILL"); await wait(300); rmSync(dir, { recursive: true, force: true }); releaseBroker(); }
+} finally { for (const child of managers) if (child.exitCode === null) child.kill("SIGKILL"); for (const pid of seats) stopGroup(pid); await daemon?.stop().catch(() => {}); broker.kill("SIGKILL"); await wait(300); rmSync(dir, { recursive: true, force: true }); releaseBroker(); process.exit(process.exitCode ?? 0); }

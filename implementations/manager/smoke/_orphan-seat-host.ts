@@ -35,8 +35,17 @@ const manager = new Manager({ space, servers, runtime: "orphan-repro", workspace
 await manager.start();
 const managerInstanceId = (manager as unknown as { managerInstanceId: string }).managerInstanceId;
 process.stdout.write(`REPRO_MANAGER ${JSON.stringify({ managerPid: process.pid, managerInstanceId })}\n`);
+let attempt = 1;
+process.stdout.write(`REPRO_TRY ${attempt}\n`);
 let reply = await manager.startAgent({ name: "worker", agent: "orphan-repro", cwd: repo });
-for (let i = 0; !reply.ok && /reconcil|terminal|standing slot|held/i.test(reply.error ?? "") && i < 320; i++) { await wait(250); reply = await manager.startAgent({ name: "worker", agent: "orphan-repro", cwd: repo }); }
+process.stdout.write(`REPRO_REPLY ${JSON.stringify({ attempt, reply })}\n`);
+for (let i = 0; !reply.ok && /reconcil|terminal|standing slot|held/i.test(reply.error ?? "") && i < 320; i++) {
+  await wait(250);
+  attempt++;
+  process.stdout.write(`REPRO_TRY ${attempt}\n`);
+  reply = await manager.startAgent({ name: "worker", agent: "orphan-repro", cwd: repo });
+  process.stdout.write(`REPRO_REPLY ${JSON.stringify({ attempt, reply })}\n`);
+}
 if (!reply.ok) {
   process.stdout.write(`REPRO_SPAWN ${JSON.stringify({ managerPid: process.pid, managerInstanceId, reply, managedNames: [...(manager as unknown as { agents: Map<string, unknown> }).agents.keys()] })}\n`);
   await new Promise<void>(() => {});
