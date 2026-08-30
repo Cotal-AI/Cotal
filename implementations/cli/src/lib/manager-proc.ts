@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, openSync, closeSync, chmodSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { relative } from "node:path";
 import { DEFAULT_SERVER } from "@cotal-ai/core";
 import { selfArgv } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
@@ -19,6 +20,15 @@ import {
  *  space-less read reports "absent" over a live manager. */
 const folderSpace = (): string => resolveRuntimeSpace(process.cwd());
 const ctx = (space: string): LocalProcessContext => ({ root: cotalRoot(), space });
+
+/** The exact logfile the detached-manager writer opens. Exported so operator guidance names the
+ *  writer-owned path instead of copying its filename template into command output. */
+export const managerLogPath = (space: string, root: string = cotalRoot()): string =>
+  canonicalLocalProcessPath(MANAGER_LOGFILE, { root, space });
+
+/** The manager logfile as an operator-facing path relative to the selected mesh root. */
+export const managerLogDisplayPath = (space: string, root: string = cotalRoot()): string =>
+  relative(root, managerLogPath(space, root));
 
 /** Exported so the delivery cutover preflight can NAME the pid it refused on: an error that says
  *  "cannot be attributed" without saying which pid is not actionable. READ-resolving, so it also
@@ -145,7 +155,7 @@ export function startManagerDetached(
   // on a live or unattributable one rather than orphaning the daemon behind it.
   reclaimDeadPreUpgradeRecord(MANAGER_PIDFILE, ctx(space));
   reclaimDeadPreUpgradeRecord(MANAGER_DELIVERY_AWARE_MARKER, ctx(space));
-  const logPath = canonicalLocalProcessPath(MANAGER_LOGFILE, ctx(space));
+  const logPath = managerLogPath(space);
   // 0600: the manager prints its console URL here, and that URL carries the console token — a
   // standing credential for every agent's terminal on this mesh, at rest for the life of the file.
   // `.cotal` is already 0700, so this is defence in depth rather than the boundary, but a log the
