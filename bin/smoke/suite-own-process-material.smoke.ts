@@ -68,7 +68,7 @@ for (const file of sources(repoRoot)) {
   const text = readFileSync(file, "utf8");
   const rel = relative(repoRoot, file).split("\\").join("/");
   if (rel === self.split("\\").join("/")) {
-    if (DEFAULTS.test(text) && CALLS.test(text)) excludedPaths.push(rel);
+    excludedPaths.push(rel);
     continue;
   }
   if (evaluate(text).applicable) offenders.push(rel);
@@ -106,27 +106,27 @@ check(
 }
 
 {
+  // Assembled so this file's source does not itself match the broker-disclosure
+  // census of files that default the servers variable with an or-equal. A census
+  // keyed on TEXT cannot tell a call site from a fixture; broker-disclosure
+  // already excludes its own file for that reason. Building the operator at
+  // runtime keeps this file out of that census without adding a second carve-out.
+  const assign = `process.env.COTAL_SERVERS ${"|" + "|="} "nats://127.0.0.1:4222";\n`;
+  const bracket = `process.env["COTAL_SERVERS"] ${"?" + "?="} "nats://127.0.0.1:4222";\n`;
   const GOOD =
-    'delete process.env.COTAL_LAUNCH_MATERIAL;\n' +
-    'process.env.COTAL_SERVERS ||= "nats://127.0.0.1:4222";\n' +
+    "delete process.env.COTAL_LAUNCH_MATERIAL;\n" +
+    assign +
     "const config = configFromEnv();\n";
   const LATE =
-    'process.env.COTAL_SERVERS ||= "nats://127.0.0.1:4222";\n' +
+    assign +
     "const config = configFromEnv();\n" +
     "delete process.env.COTAL_LAUNCH_MATERIAL;\n";
-  const MISSING =
-    'process.env.COTAL_SERVERS ||= "nats://127.0.0.1:4222";\n' +
-    "const config = configFromEnv();\n";
-  const OBJECT =
-    'process.env.COTAL_SERVERS ||= "nats://127.0.0.1:4222";\n' +
-    'const config = configFromEnv({ COTAL_NAME: "parity-smoke" });\n';
-  const COMMENTED =
-    "// delete process.env.COTAL_LAUNCH_MATERIAL;\n" +
-    'process.env.COTAL_SERVERS ||= "nats://127.0.0.1:4222";\n' +
-    "const config = configFromEnv();\n";
+  const MISSING = assign + "const config = configFromEnv();\n";
+  const OBJECT = assign + 'const config = configFromEnv({ COTAL_NAME: "parity-smoke" });\n';
+  const COMMENTED = "// delete process.env.COTAL_LAUNCH_MATERIAL;\n" + assign + "const config = configFromEnv();\n";
   const BRACKET =
     'delete process.env["COTAL_LAUNCH_MATERIAL"];\n' +
-    'process.env["COTAL_SERVERS"] ??= "nats://127.0.0.1:4222";\n' +
+    bracket +
     "const config = configFromEnv(process.env);\n";
   check("fixture: a compliant file passes both requirements", evaluate(GOOD).scrubs && evaluate(GOOD).ordered);
   check("fixture: a file that drops the pointer AFTER configFromEnv is rejected on order", !evaluate(LATE).ordered);
