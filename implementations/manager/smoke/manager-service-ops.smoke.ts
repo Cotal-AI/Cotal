@@ -2,7 +2,7 @@
  * MANAGER SERVICE OPS smoke (control-surface P2 item 1, slice 1b) — the FULL typed-command
  * fan-out over a REAL Manager + JWT broker + REAL agent processes (e2e-stub.mjs), proving:
  *
- *  1. The cluster document serves ALL 18 commands (describe lists them; targeted commands
+ *  1. The cluster document serves every shipped command (describe lists them; targeted commands
  *     declare their modes).
  *  2. SPAWN FIDELITY (the 1b oracle): the ep `spawn` door coerces the full 15-field request into
  *     StartAgentOpts (field-for-field, captured at the single `startAgent` chokepoint), with the
@@ -48,7 +48,7 @@ import {
 } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager, type SpawnHooks } from "../src/manager.js";
-import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
+import { MANAGER_ENDPOINT, MANAGER_CONTRACTS, managerClusterDocument, managerShippedCommandCount } from "../src/manager-service-contract.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -153,7 +153,7 @@ try {
   const A = await instrument([
     { command: "status" }, { command: "ps" }, { command: "inspect" }, { command: "models" },
     { command: "spawn" }, { command: "despawn", owner: true }, { command: "attach", owner: true },
-    { command: "define-persona" }, { command: "purge" }, { command: "launch" },
+    { command: "define-persona" }, { command: "list-personas" }, { command: "show-persona" }, { command: "purge" }, { command: "launch" },
     { command: "resume-preserved" }, { command: "commit-resume" }, { command: "finalize-resume" },
     { command: "prepare-preservation" }, { command: "commit-preservation" }, { command: "abort-preservation" },
   ]);
@@ -172,7 +172,9 @@ try {
     for (let i = 0; i < 60 && replies.length === 0; i++) await wait(100);
     const d = replies[0] as { ok?: boolean; data?: { descriptor?: { clusters?: Array<{ commands?: string[]; document?: { revision?: number; commands?: Array<{ name: string; targeted: boolean; modes?: string[] }> } }> } } } | undefined;
     const cmds = d?.data?.descriptor?.clusters?.[0]?.commands ?? [];
-    check("describe lists all 18 commands", cmds.length === 18 && ["status", "ps", "inspect", "models", "spawn", "despawn", "attach", "input", "stop", "define-persona", "purge", "launch", "resume-preserved", "commit-resume", "finalize-resume", "prepare-preservation", "commit-preservation", "abort-preservation"].every((c) => cmds.includes(c)), cmds);
+    const shipped = managerClusterDocument();
+    const shippedNames = shipped.commands.map((c) => c.name);
+    check("describe lists every shipped command", cmds.length === shipped.commands.length && shippedNames.every((c) => cmds.includes(c)), cmds);
     clusterDigest = (d?.data?.descriptor?.clusters?.[0] as { digest?: string } | undefined)?.digest;
     const doc = d?.data?.descriptor?.clusters?.[0]?.document;
     spawnInputDigest = (doc?.commands?.find((c) => c.name === "spawn") as { inputDigest?: string } | undefined)?.inputDigest;
@@ -180,8 +182,8 @@ try {
     const despawnDecl = doc?.commands?.find((c) => c.name === "despawn");
     const stopDecl = doc?.commands?.find((c) => c.name === "stop");
     const inputDecl = doc?.commands?.find((c) => c.name === "input");
-    check("the document is revision 7 (the C3 `input` command); despawn AND input declare owner+any modes (the 1c operator reach), stop declares self mode (child/ledger ABSENT everywhere)",
-      doc?.revision === 7 && despawnDecl?.targeted === true && JSON.stringify(despawnDecl?.modes) === '["owner","any"]'
+    check("the document matches the shipped revision; despawn AND input declare owner+any modes (the 1c operator reach), stop declares self mode (child/ledger ABSENT everywhere)",
+      doc?.revision === shipped.revision && despawnDecl?.targeted === true && JSON.stringify(despawnDecl?.modes) === '["owner","any"]'
       && inputDecl?.targeted === true && JSON.stringify(inputDecl?.modes) === '["owner","any"]'
       && stopDecl?.targeted === true && JSON.stringify(stopDecl?.modes) === '["self"]'
       && doc?.commands?.every((c) => !(c.modes ?? []).includes("child") && !(c.modes ?? []).includes("ledger")) === true, doc?.commands);
@@ -327,6 +329,26 @@ try {
     const widened = loadAgentFile(eppPath);
     check("a redefine drops the marker once the persona has a real read set",
       rDefC.reply.ok === true && widened.meta?.scope_source === undefined, { meta: widened.meta, reply: rDefC.reply });
+
+    const rList = await A.call("list-personas");
+    const listed = ((rList.reply.data as { personas?: Array<{ name: string; model?: string; description?: string; owner?: string }> })?.personas) ?? [];
+    const eppRow = listed.find((p) => p.name === "eppersona");
+    check("list-personas includes the just-defined name with model and description for its owner",
+      rList.reply.ok === true && eppRow?.model === "m9" && typeof eppRow?.description === "string" && (eppRow.description?.length ?? 0) > 0, { listed: listed.map((p) => p.name), eppRow, reply: rList.reply });
+    const rShow = await A.call("show-persona", { name: "eppersona" });
+    check("show-persona returns the owned card body",
+      rShow.reply.ok === true && (rShow.reply.data as { persona?: string }).persona?.includes("widened by the operator") === true, rShow.reply);
+    const rShowMiss = await A.call("show-persona", { name: "ghost-persona" });
+    check("show-persona of an unknown name is not-found",
+      rShowMiss.reply.ok === false && rShowMiss.reply.error?.code === "not-found", rShowMiss.reply);
+    const rListB = await B.call("list-personas");
+    const listedB = ((rListB.reply.data as { personas?: Array<{ name: string; description?: string; model?: string }> })?.personas) ?? [];
+    const eppFromB = listedB.find((p) => p.name === "eppersona");
+    check("a foreign list sees the taken name without description or model",
+      rListB.reply.ok === true && eppFromB !== undefined && !("description" in (eppFromB ?? {})) && !("model" in (eppFromB ?? {})), { eppFromB, reply: rListB.reply });
+    const rShowB = await B.call("show-persona", { name: "eppersona" });
+    check("a foreign show-persona is not-found (no existence leak of the body)",
+      rShowB.reply.ok === false && rShowB.reply.error?.code === "not-found", rShowB.reply);
     check("and leaves the operator's read set alone", JSON.stringify(widened.subscribe) === '["general"]', widened.subscribe);
 
     const rModels = await A.call("models", {});
@@ -448,7 +470,7 @@ try {
     const { manifest: docManifest, artifacts: docArts } = await fetchContractClosure(storeCtx, clusterDigest!, () => []);
     const fetchedDoc = JSON.parse(dec.decode(docArts.get(contractRefToHex(docManifest.root))!)) as { revision?: number; urn?: string };
     check("the cluster document is fetchable at its REGISTERED closure digest (verify-on-read walk, baseline caller grant)",
-      fetchedDoc.revision === 7 && fetchedDoc.urn === "ai.cotal.manager", fetchedDoc);
+      fetchedDoc.revision === managerClusterDocument().revision && fetchedDoc.urn === "ai.cotal.manager", fetchedDoc);
     // THE DOOR-LEVEL PROOF REVISION 6 EXISTS FOR. The handler branch for a remote manifest deploy's
     // inline `spec` merged in ahead of the schema, so the compiled input validator refused every
     // request carrying the field and the feature was unreachable THROUGH THIS DOOR while the
@@ -508,7 +530,7 @@ try {
     check("fixture: A spawns w3 (the operator instrument is NOT its spawner)", typeof accW3.name === "string" && (accW3.name as string).startsWith("w3"), accW3);
     const svc = await resolveService(opNc, space, MANAGER_ENDPOINT, opCaller, { deadlineMs: 10_000 });
     check("the instrument resolves the full surface generically (describe + store fetch + recompile)",
-      svc.commands.size === 18 && svc.responder.epoch === 0 && svc.responder.instanceId.length > 0, { size: svc.commands.size, responder: svc.responder });
+      svc.commands.size === managerShippedCommandCount() && svc.responder.epoch === 0 && svc.responder.instanceId.length > 0, { size: svc.commands.size, responder: svc.responder });
     const rPs = await invokeCommand(opNc, space, svc, "ps", undefined, {});
     check("instrument `ps` rides the manager.read row + the describe-bound default currency (no epoch stub)",
       rPs.reply.ok === true && (rPs.reply.data as { name: string }[]).some((r) => r.name === accW3.name), rPs.reply);

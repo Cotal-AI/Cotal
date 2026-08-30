@@ -506,7 +506,7 @@ export function channelMeta(i: InboxItem): Record<string, string> {
 /** The full Cotal tool set for a given config. Renderers iterate this; `source` names the
  *  hosting connector and is stamped onto outgoing feedback. */
 export function cotalToolSpecs(config: AgentConfig, source = "connector"): CotalToolSpec[] {
-  // Manager-op tools (cotal_spawn / cotal_persona) ride the `spawn` capability — publish to the
+  // Manager-op tools (cotal_spawn / cotal_persona / cotal_personas) ride the `spawn` capability — publish to the
   // privileged control subject. The AUTH layer is the real boundary: on an authed mesh an agent
   // without the capability is denied at the wire (nats-server); open mode mints no identity, so
   // anyone may spawn. Mirror that here so the advertised surface is truthful — an agent only sees
@@ -544,6 +544,52 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           agent.connected
             ? card
             : `(not connected to the mesh yet — the live context below is empty${issue ? `; last error: ${issue.slice(0, 300)}` : "; connection is still starting"})\n\n${card}`,
+        );
+      },
+    },
+    {
+      name: "cotal_connection_status",
+      title: "Cotal: connection status",
+      description:
+        "Report this session's mesh connection as one of five states, plus the raw facts it is " +
+        "derived from. `ready` is bound with a live transport. `degraded` is bound while the " +
+        "transport underneath is DOWN, so sends queue or fail until the client reconnects; this is " +
+        "the state that needs attention. `connecting` is a live transport whose Cotal bind has not " +
+        "finished. `disconnected` is neither. `stopped` means this session was shut down " +
+        "deliberately and is terminal, which is not a fault. Also reports the buffered inbox count " +
+        "and the time of the latest successful non-empty inbox drain when one has occurred. A " +
+        "retained failure is reported as `connectionIssue` while it is the CURRENT reason, and as " +
+        "`lastConnectionIssue` on a stopped session, where it is a post-mortem rather than a live " +
+        "problem. Read-only and local: it reads this session's MeshAgent directly and does not call " +
+        "the manager or the broker.",
+      run(agent) {
+        const state = agent.connectionState;
+        const issue = agent.connectionIssue;
+        const lastDrainedAt = agent.lastInboxDrainedAt;
+        // The issue survives stop() by design, so reporting it under the same key in both cases
+        // would tell a reader that a cleanly stopped session is currently broken. The key names
+        // which one it is; `state` says which to expect.
+        const issueField =
+          issue === undefined ? {} : state === "stopped" ? { lastConnectionIssue: issue } : { connectionIssue: issue };
+        return ok(
+          JSON.stringify(
+            {
+              state,
+              // The facts the state is derived from, so a caller that reads the combination
+              // differently is not stuck with our reading of it.
+              connected: agent.connected,
+              transportConnected: agent.transportConnected,
+              // The third fact, and it is not redundant. `stopped` and `disconnected` BOTH read
+              // false/false, so without this the reported facts cannot reproduce the state and the
+              // caller has to take our word for the one distinction the redesign exists to make.
+              stopping: agent.stopping,
+              bufferedCount: agent.inboxCount(),
+              ...issueField,
+              ...(lastDrainedAt !== undefined ? { lastDrainedAt: new Date(lastDrainedAt).toISOString() } : {}),
+            },
+            null,
+            2,
+          ),
         );
       },
     },
@@ -1202,6 +1248,68 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       },
     },
     {
+      name: "cotal_personas",
+      title: "Cotal: list or show personas",
+      description:
+        "Read the workspace persona catalog the manager owns (.cotal/agents). Omit `name` to list spawnable persona names (role, model, and a one-line description when you own the file). Pass `name` to show one card you own, including the persona body. Same ownership as cotal_persona: a file you do not own lists as a name only, while unauthorized, unknown, and unparseable shows are all not-found. Use this to see whether a name is taken before cotal_persona, or what a teammate's persona says, without shelling out.",
+      schema: {
+        name: z
+          .string()
+          .regex(/^[A-Za-z0-9_-]+$/, "letters, digits, _ or - only")
+          .optional()
+          .describe("Persona to show. Omit to list the catalog."),
+      },
+      async run(agent, _config, { name }: { name?: string }) {
+        try {
+          if (name) {
+            const reply = await agent.showPersona(name);
+            if (!reply.ok) return err(`Couldn't show ${name}: ${reply.error ?? "manager refused"}`);
+            const row = (reply.data ?? {}) as {
+              name?: string;
+              role?: string;
+              model?: string;
+              description?: string;
+              owner?: string;
+              persona?: string;
+              error?: string;
+            };
+            if (row.error) return err(`Persona \`${name}\` is unparseable: ${row.error}`);
+            const meta = [
+              row.role && `role=${row.role}`,
+              row.model && `model=${row.model}`,
+              row.owner && `owner=${row.owner}`,
+            ]
+              .filter(Boolean)
+              .join("  ");
+            const lines = [`Persona \`${row.name ?? name}\`${meta ? `  ${meta}` : ""}`];
+            if (row.description) lines.push(row.description);
+            if (row.persona) lines.push("", row.persona);
+            return ok(lines.join("\n"));
+          }
+          const reply = await agent.listPersonas();
+          if (!reply.ok) return err(`Couldn't list personas: ${reply.error ?? "manager refused"}`);
+          const personas = ((reply.data as { personas?: Array<{
+            name: string;
+            role?: string;
+            model?: string;
+            description?: string;
+            owner?: string;
+            error?: string;
+          }> })?.personas) ?? [];
+          if (!personas.length) return ok("No personas in the manager catalog.");
+          const lines = personas.map((p) => {
+            if (p.error) return `${p.name}  ⨯ unparseable`;
+            const meta = [p.role, p.model && `model=${p.model}`, p.owner && `owner=${p.owner}`].filter(Boolean).join("  ");
+            const head = meta ? `${p.name}  ${meta}` : p.name;
+            return p.description ? `${head}\n  ${p.description}` : head;
+          });
+          return ok(`Personas in the manager catalog (${personas.length}):\n${lines.join("\n")}`);
+        } catch (e) {
+          return controlFailure(name ? `Couldn't show ${name}` : "Couldn't list personas", e);
+        }
+      },
+    },
+    {
       name: "cotal_reconnect",
       title: "Cotal: reconnect to the mesh",
       description:
@@ -1222,6 +1330,6 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
   // it had closed the seam. A no-argument tool gets a closed EMPTY object, so the refusal is the
   // same refusal everywhere and "takes nothing" never degrades into "takes anything".
   return specs
-    .filter((spec) => canSpawn || (spec.name !== "cotal_spawn" && spec.name !== "cotal_persona"))
+    .filter((spec) => canSpawn || (spec.name !== "cotal_spawn" && spec.name !== "cotal_persona" && spec.name !== "cotal_personas"))
     .map((spec) => ({ ...spec, schema: z.strictObject(spec.schema ?? {}) }));
 }

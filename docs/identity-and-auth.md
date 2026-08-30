@@ -79,7 +79,7 @@ agent cannot create a consumer filtered to someone else's inbox
 Control-plane power is a **declared capability**, not a default. An agent file carrying
 `capabilities: [spawn]` gets the privileged control subject minted into its cred: spawn,
 plus stop/despawn of its *own* children, plus persona definition. Without it, an agent can
-only self-despawn. The tool surface mirrors the grant: `cotal_spawn` / `cotal_persona` are
+only self-despawn. The tool surface mirrors the grant: `cotal_spawn` / `cotal_persona` / `cotal_personas` are
 injected only where they can actually succeed ([agent files](agent-files.md)). Destructive
 operator ops (history purge, cross-agent stop) live on a third tier no agent credential
 reaches. Persona redefinition separates content from policy; the write path takes only
@@ -175,6 +175,15 @@ standing-authority revoke fails, the despawn still stops the agent and *holds* t
 same-name `cotal spawn` re-drives the whole teardown** and finishes it. Retrying the despawn has no
 effect because the agent is already stopped. The operator copy tells you to recover the stack
 (`cotal supervise`) rather than reusing the name over an unretired predecessor.
+
+**A crash mid-retirement resumes at the next boot.** The retirement's last two steps (recording the
+issuance gate terminal, then the lifecycle head terminal) are separate durable writes, and a crash
+between them leaves the gate retired while the head is still `retiring`: an alias that can neither
+mint nor be replaced. The auth service's boot crash-resume decides what it owes across *both*
+objects (the gate *and* the alias head), so the next boot finishes that tail from the durable
+operation intent: nothing is re-revoked or re-drained, and a completed retirement (its head terminal
+landed, or a successor already took the alias) is left skipped. A retry of the despawn converges on
+the same recovery.
 
 **Delegation only narrows (the envelope rule).** A user's grant is their envelope:
 everything under their owner (their CLI, every agent they spawn, every agent those

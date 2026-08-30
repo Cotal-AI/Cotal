@@ -216,6 +216,43 @@ console.log("describe REQUEST-BINDING (freelance HIGH #1):");
     { publishes, uncaught, error });
 }
 
+// 7b/7c) Constructed-only: a poisoned Error.message getter or a poisoned non-Error toString must not
+//     escape the retry timer. Real NATS close/drain failures were ordinary Error values; these cells
+//     prove the catch formats an arbitrary thrown value without throwing, not that production produces
+//     either poison. The describe must still settle as unavailable (not hang to the deadline).
+{
+  const poison = (makeThrow: () => unknown, name: string) => {
+    let publishes = 0;
+    let uncaught: unknown;
+    const onUncaught = (e: unknown) => { uncaught = e; };
+    process.once("uncaughtException", onUncaught);
+    const started = Date.now();
+    const nc = fakeNc(() => [], () => {
+      publishes++;
+      if (publishes === 2) throw makeThrow();
+    });
+    return (async () => {
+      let error: unknown;
+      try { await describeEndpoint(nc, SPACE, ENDPOINT, CALLER, { deadlineMs: 400 }); }
+      catch (e) { error = e; }
+      process.removeListener("uncaughtException", onUncaught);
+      const elapsed = Date.now() - started;
+      c(name,
+        publishes === 2 && uncaught === undefined && elapsed < 380
+          && (error as { code?: string })?.code === "unavailable"
+          && (error as Error)?.message.includes("unknown publish failure"),
+        { publishes, uncaught, elapsed, error });
+    })();
+  };
+  await poison(() => {
+    const err = new Error("closed connection");
+    Object.defineProperty(err, "message", { get() { throw new Error("message getter poisoned"); } });
+    return err;
+  }, "a poisoned Error.message getter on retry publish still rejects as unavailable and never escapes the timer");
+  await poison(() => ({ toString() { throw new Error("toString poisoned"); } }),
+    "a poisoned non-Error toString on retry publish still rejects as unavailable and never escapes the timer");
+}
+
 // 8) The retry above is confined to reserved, read-only describe. A resolved command rides epCall
 //    and is published exactly once, including after the describe retry interval has elapsed.
 {

@@ -40,6 +40,17 @@ const nonce = (): string => randomBytes(24).toString("base64url");
  *  is invisible until the caller pays the whole deadline. Commands are never retried here. */
 const DESCRIBE_RETRY_MS = 250;
 
+/** Format a caught value on a path that cannot afford to throw (timer/callback). A
+ *  poisoned `Error.message` getter or `toString` must not escape the catch; the
+ *  fallback is the detail, never a reason to skip the rejection. */
+function caughtText(e: unknown, fallback: string): string {
+  try {
+    return e instanceof Error ? e.message : String(e);
+  } catch {
+    return fallback;
+  }
+}
+
 /** A resolved command contract: the compiled input/output validators (recompiled from the store,
  *  digest-verified against the registered declaration) plus the command's §13.2 admission facts. */
 export interface ResolvedCommand {
@@ -150,7 +161,7 @@ export async function describeEndpoint(
       retryTimer = setInterval(() => {
         try { nc.publish(subject, request); }
         catch (e) {
-          reject(new EpEnvelopeError("unavailable", `the describe retry for ${endpoint} could not publish: ${e instanceof Error ? e.message : String(e)}`));
+          reject(new EpEnvelopeError("unavailable", `the describe retry for ${endpoint} could not publish: ${caughtText(e, "unknown publish failure")}`));
         }
       }, DESCRIBE_RETRY_MS);
     });

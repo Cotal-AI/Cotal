@@ -242,12 +242,22 @@ export interface ChannelMember {
   live: boolean;
 }
 
+/** Raw NATS transport liveness for the endpoint's CURRENT connection epoch. This is deliberately
+ *  separate from the `connection` event, which means the full Cotal bind is ready. */
+export interface TransportState {
+  connected: boolean;
+  /** The server nats.js named for this edge. Omitted when the runtime supplied none. */
+  server?: string;
+}
+
 /**
  * Events: "message" (CotalMessage), "presence" (PresenceEvent), "roster" (Presence[]), "error" (Error),
  * "connection" ({ connected: boolean }) — true on every successful (re)bind (initial start, manual
  * reconnect, AND background self-heal), false the moment the connection drops (rebuild null window /
  * terminal close). Lets an in-process agent track connectedness off the endpoint's own (re)binds
- * instead of an imperative flag the self-heal path can't reach.
+ * instead of an imperative flag the self-heal path can't reach; "transport" ({ connected, server? })
+ * is the lower-level NATS socket edge, true before the full bind finishes and false during an internal
+ * nats.js reconnect without changing `connection` readiness.
  *
  * Callers MUST attach an "error" listener before `start()`: async faults (incl. NATS
  * permission denials, surfaced via `watchStatus`) are emitted as "error", and Node throws
@@ -658,10 +668,14 @@ export class CotalEndpoint extends EventEmitter {
 
   async start(): Promise<void> {
     await this.connectAndBind();
-    // nats.js auto-reconnects transient drops; when it exhausts its attempts and the
-    // connection closes for good, rebuild from scratch so an in-process agent (e.g. the
-    // OpenCode plugin) recovers without a host respawn. Armed only after a successful first
-    // connect — a first-connect failure throws to the caller's connect-retry loop instead.
+    // stop() can finish while the INITIAL connectAndBind is still awaiting its broker work. The
+    // rebuild path already closes that race; initial start needs the same fence or the late bind
+    // leaves a fresh nc, heartbeat, consumers, and presence live on an endpoint already stopped.
+    // superviseConnection below: nats.js auto-reconnects transient drops, and when it exhausts its
+    // attempts and the connection closes for good we rebuild from scratch, so an in-process agent
+    // (e.g. the OpenCode plugin) recovers without a host respawn. Armed only after a successful
+    // first connect; a first-connect failure throws to the caller's connect-retry loop instead.
+    if (await this.tearDownIfStopped()) return;
     this.superviseConnection();
   }
 
@@ -1041,6 +1055,19 @@ export class CotalEndpoint extends EventEmitter {
 
     // Bound and live — covers initial start, manual reconnect, AND background self-heal (every
     // path lands here). The single signal an in-process agent's connected flag tracks.
+    //
+    // The stopped guard: stop() can land in any await above. Both callers tear the fresh
+    // connection back down (tearDownIfStopped), but an event has no undo, so a late
+    // `connection: true` would be the last edge a listener ever sees on a stopped endpoint and
+    // nothing follows it to correct the record. It belongs here rather than in a consumer because
+    // every listener reads the same edge; MeshAgent carries its own `stopping` guard and so was
+    // never the one exposed, which is the point.
+    //
+    // Measured for the start() caller by the broker suite's mid-bind cell. doRebuild is
+    // also measured, by a separate cell that holds the rebuild's connectAndBind at
+    // armPlane3 after a successful first bind and lands stop() in that window (#1028).
+    // Shared-line reasoning is no longer the rebuild proof.
+    if (this.stopped) return;
     this.emit("connection", { connected: true });
   }
 
@@ -1093,7 +1120,7 @@ export class CotalEndpoint extends EventEmitter {
     this.channelConfigs.clear();
     this.channelDefaults = {};
     for (const watch of this.membershipFeedWatches)
-      watch.arm = watch.arm.catch(() => {}).then(() => this.disarmMembershipWatch(watch));
+      watch.arm = watch.arm.catch(() => {}).then(() => this.disarmMembershipWatch(watch)).catch((err) => { this.emit("error", err as Error); });
   }
 
   /** If stop() ran during a rebuild's `await connectAndBind`, the just-bound connection +
@@ -1126,7 +1153,10 @@ export class CotalEndpoint extends EventEmitter {
     void nc.closed().then((err) => {
       if (this.stopped) return;
       if (this.nc !== nc) return; // epoch-stale — a rebuild already swapped this connection
-      this.emit("connection", { connected: false }); // dropped — report it before the rebuild kicks in
+      // ORDER IS PART OF THE DIAGNOSTIC CONTRACT. MeshAgent retains endpoint errors only while it is
+      // not bound, so readiness must turn false before the matching terminal-close error is emitted.
+      // Reversing these two lines silently loses the only post-drop reason an agent can report.
+      this.emit("connection", { connected: false });
       this.emit(
         "error",
         new Error(`mesh connection closed${err ? `: ${(err as Error).message}` : ""} - re-establishing`),
@@ -1176,7 +1206,11 @@ export class CotalEndpoint extends EventEmitter {
       // The manager's liveness-lease handle too: left bound to the old connection, every renew and
       // re-read after a reconnect times out, and the manager reports its lease unknown for good.
       this.managerLeaseKv = undefined;
-      this.emit("connection", { connected: false }); // null window opened — not live until the rebind below
+      // This is an application-requested epoch teardown, not a transient nats.js blip. The old
+      // status iterator is now stale by construction and its close is epoch-dropped, so this line is
+      // the authoritative raw-liveness edge for the no-nc window until the new watcher seeds true.
+      this.emit("transport", { connected: false } satisfies TransportState);
+      this.emit("connection", { connected: false });
       try {
         await oldNc?.drain();
       } catch {
@@ -1186,8 +1220,9 @@ export class CotalEndpoint extends EventEmitter {
       // stop() may have run during the await — don't leave a live connection + heartbeat +
       // supervisor on a stopped endpoint. (Reads this.nc in its own scope — a bare `this.nc`
       // here in doRebuild narrows to `never` via TS inlining connectAndBind's assignment.)
+      // Re-arm on the fresh nc only after this stopped fence accepts it.
       if (await this.tearDownIfStopped()) return;
-      this.superviseConnection(); // re-arm on the fresh nc
+      this.superviseConnection();
     } finally {
       this.reconnecting = false;
     }
@@ -2367,10 +2402,17 @@ export class CotalEndpoint extends EventEmitter {
           watch.consumerStream = undefined;
           watch.consumerName = undefined;
         } else {
-          // A timeout is deferred only for an epoch that is actually closing/rebuilding; live timeouts stay loud.
           const closedEpoch = (err as Error).name === "ClosedConnectionError" || /^closed connection$/i.test((err as Error).message);
-          const dyingEpochTimeout = /timeout/i.test((err as Error).message) && (this.reconnecting || !this.nc || this.nc.isClosed());
-          if (!closedEpoch && !dyingEpochTimeout) throw err;
+          const timeout = (err as Error).name === "TimeoutError" || /timeout/i.test((err as Error).message);
+          const dyingEpochTimeout = timeout && (this.reconnecting || !this.nc || this.nc.isClosed());
+          // Cleanup of an ordered consumer: a delete timeout means the broker did not answer in time,
+          // not that the endpoint is unusable. The broker reaps an idle/ephemeral consumer anyway.
+          // Throwing here killed a live observer over a slow VPN (#1047). Catch, surface, continue.
+          if (timeout || closedEpoch || dyingEpochTimeout) {
+            this.emit("error", err as Error);
+          } else {
+            throw err;
+          }
         }
         // A terminal close leaves stream/name intact. The endpoint-owned stopped intent is retried
         // through the fresh JetStream manager before its public stop promise may resolve.
@@ -2475,8 +2517,10 @@ export class CotalEndpoint extends EventEmitter {
    * A filtered subject's sequences are non-contiguous (other channels interleave in the same
    * stream), so the window cannot be computed arithmetically. A FAILED attempt holds fewer than a
    * page by definition, so wasted transfer stays page-sized and geometric growth keeps the number of
-   * attempts logarithmic. The one unbounded case is named in the body: a channel whose matches are
-   * all old and sparse walks back to the start of the stream and reads its whole retained set.
+   * attempts logarithmic. A channel with fewer than `limit` matches used to keep widening until
+   * sequence 1 and drain the stream's whole retained set (#840). The walk now stops at the
+   * subject's FIRST matching sequence (the mirror of the last-matching ceiling), probed on the
+   * same CREATE surface, and only after a short drain so a dense page never pays for the floor.
    *
    * `before` pages toward the past: pass the `seq` of the oldest message you already have.
    */
@@ -2530,17 +2574,26 @@ export class CotalEndpoint extends EventEmitter {
       // Geometric growth keeps the number of attempts logarithmic, so total wasted transfer is a
       // small multiple of a page.
       //
-      // NAMED POLICY for the remaining case: when a channel's matches are all old and sparse, the
-      // search walks back to sequence 1 and the final drain transfers that subject's whole retained
-      // set. That is chosen deliberately — a FULL page of genuinely recent messages, at the cost of
-      // an unbounded read on a channel that has not been used in a long time — over returning a
-      // short page while older messages exist. The exact ceiling above means this is now reached
-      // only by real sparsity WITHIN a channel, never by the channel simply being quiet lately.
+      // A SHORT PAGE is either "the channel is exhausted" or "the window is still above the
+      // first match". Sequence 1 is the wrong floor for the first of those: three matches at
+      // the high end of a busy stream are exhausted as soon as the window's lower edge passes
+      // the subject's first matching sequence, and walking on to 1 re-reads everyone else's
+      // retained set (#840). Probe that floor only after a short drain so a dense page (one
+      // drain, full) never pays for it. The remaining unbounded-looking case is a subject
+      // whose FIRST match really is near sequence 1; that span is the channel's own, not the
+      // stream's.
       let span = Math.max(limit * 4, 64);
+      let floor = 1;
+      let floorKnown = false;
       for (;;) {
-        const start = Math.max(1, ceiling - span + 1);
+        const start = Math.max(floor, ceiling - span + 1);
         const page = await this.drainWindow(js, stream, subject, start, ceiling);
-        if (page.length >= limit || start === 1) return page.slice(-limit);
+        if (page.length >= limit) return page.slice(-limit);
+        if (!floorKnown) {
+          floor = Math.max(1, await this.firstMatchingSeq(js, stream, subject));
+          floorKnown = true;
+        }
+        if (start <= floor) return page.slice(-limit);
         span *= 4;
       }
     } catch (e) {
@@ -2562,6 +2615,34 @@ export class CotalEndpoint extends EventEmitter {
       if (/stream not found/i.test(msg) || (e as { code?: number } | null)?.code === 404) return [];
       if (isPermissionDenied(e) && stream === dmStream(this.space)) return [];
       throw e;
+    }
+  }
+
+  /** The newest stream sequence matching `subject`, or 0 when the subject has no messages.
+   *
+   *  One ordered consumer at `DeliverPolicy.Last` with this subject's filter: its `num_pending`
+   *  (available from the create, before anything is delivered) is 0 for an empty subject, and
+   *  otherwise one message carries the sequence. Same CREATE/INFO/NEXT/DELETE surface `drainWindow`
+   *  already uses, so no broker authority is added. */
+  /** The oldest stream sequence matching `subject`, or 0 when the subject has no messages.
+   *  Mirror of {@link lastMatchingSeq}: same CREATE/INFO/NEXT/DELETE surface, `DeliverPolicy.All`
+   *  instead of `Last`, first delivered seq instead of last. Read credentials already hold this. */
+  private async firstMatchingSeq(
+    js: ReturnType<typeof jetstream>,
+    stream: string,
+    subject: string,
+  ): Promise<number> {
+    const consumer = await js.consumers.get(stream, {
+      filter_subjects: [subject],
+      deliver_policy: DeliverPolicy.All,
+    });
+    try {
+      if ((await consumer.info(true)).num_pending === 0) return 0;
+      const iter = await consumer.fetch({ max_messages: 1 });
+      for await (const m of iter) return m.seq;
+      throw new Error(`history: the broker reported messages on ${subject} but delivered none - the read was cut short, not empty`);
+    } finally {
+      await consumer.delete().catch(() => { /* already gone, or denied */ });
     }
   }
 
@@ -2666,9 +2747,25 @@ export class CotalEndpoint extends EventEmitter {
    * denial is never mistaken for absence (which already has a benign cause: MCP reconnect).
    */
   private watchStatus(): void {
-    if (!this.nc) return;
+    const nc = this.nc;
+    if (!nc) return;
     void (async () => {
-      for await (const s of this.nc!.status()) {
+      for await (const s of nc.status()) {
+        // A rebuild can replace `this.nc` before the old iterator finishes. Late disconnect/close
+        // from that old epoch says nothing about the replacement and must not flip its liveness.
+        if (this.nc !== nc) continue;
+        if (s.type === "disconnect") {
+          this.emit("transport", { connected: false, server: s.server } satisfies TransportState);
+          continue;
+        }
+        if (s.type === "reconnect") {
+          this.emit("transport", { connected: true, server: s.server } satisfies TransportState);
+          continue;
+        }
+        if (s.type === "close") {
+          this.emit("transport", { connected: false } satisfies TransportState);
+          continue;
+        }
         if (s.type !== "error") continue;
         // Suppress the EXPECTED permission violation from a manager-free join we're confirming: an
         // out-of-ACL `nc.subscribe` is refused async on its chat subject, which joinChannel catches
@@ -2678,8 +2775,22 @@ export class CotalEndpoint extends EventEmitter {
         this.emit("error", describeStatusError(s.error));
       }
     })().catch((e) => {
-      if (!this.stopped) this.emit("error", e as Error);
+      // Defensive symmetry with the reachable in-loop epoch guard above. Measured against five real
+      // broker loss/reconnect/terminal-close cycles on pinned nats.js 3.4.0: status iterators ended
+      // normally and this catch never fired. Keep an old epoch from surfacing an error if a runtime or
+      // future client version can reject here, but do not treat this as a currently reachable edge.
+      if (!this.stopped && this.nc === nc) this.emit("error", e as Error);
     });
+    // The transport is already live when connect() returns, while the Cotal bind below is still in
+    // progress. Seed this contract explicitly rather than requiring consumers to combine it with the
+    // later, differently-scoped `connection:true` event.
+    //
+    // The same stopped race as the readiness emit at the end of connectAndBind, and it reaches here
+    // FIRST: connectAndBind calls watchStatus right after the dial, so a stop() landing while the
+    // dial is still pending has this seed fire on an endpoint that is already stopped. Measured
+    // through a real pending dial, a stopped endpoint announced a live transport it never had.
+    if (this.stopped) return;
+    this.emit("transport", { connected: true, server: nc.getServer() } satisfies TransportState);
   }
 
   /** The error message for a guard that finds the endpoint unbound: "reconnecting" during a
