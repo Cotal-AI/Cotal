@@ -26,10 +26,10 @@
       "expectRed": "short, 4 KiB, and 64 KiB DMs reach the recipient session before the active turn ends (#910)"
     },
     {
-      "name": "M2 accept the soft interrupt but omit its ids from the clean turn commit",
+      "name": "M2 accept the soft interrupt but commit only the turn's initial ids",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "        if (!turnActive || client !== current) return;\n        surfacedIds.push(...items.map((item) => item.recvKey));",
-      "replace": "        if (!turnActive || client !== current) return;\n        return;",
+      "find": "      await steerSettled;\n      const committed = surfacedIds;",
+      "replace": "      await steerSettled;\n      const committed = ids;",
       "expectRed": "the clean containing turn commits the steered DMs exactly once"
     }
   ]
