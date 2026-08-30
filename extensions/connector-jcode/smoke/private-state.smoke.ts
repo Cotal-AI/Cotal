@@ -189,13 +189,20 @@ try {
     mkdirSync(writePinOutside, { mode: 0o700 });
     const writePinParent = join(writePinHome, "external", ".hermes");
     const writePinSaved = `${writePinParent}.real`;
-    const copied = copyCredentialFile(writePinHome, writeSrc, join("external", ".hermes", "auth.json"), () => {
-      renameSync(writePinParent, writePinSaved);
-      symlinkSync(writePinOutside, writePinParent, "dir");
-    });
+    let copied = false;
+    let writePinError: unknown;
+    try {
+      copied = copyCredentialFile(writePinHome, writeSrc, join("external", ".hermes", "auth.json"), () => {
+        renameSync(writePinParent, writePinSaved);
+        symlinkSync(writePinOutside, writePinParent, "dir");
+      });
+    } catch (error) {
+      writePinError = error;
+    }
     check(
       "parent-swap after the write parent is pinned does not copy outside",
-      copied === true &&
+      writePinError === undefined &&
+        copied === true &&
         existsSync(join(writePinSaved, "auth.json")) &&
         readFileSync(join(writePinSaved, "auth.json"), "utf8") === "SECRET-OAUTH-TOKEN" &&
         !existsSync(join(writePinOutside, "auth.json")) &&
