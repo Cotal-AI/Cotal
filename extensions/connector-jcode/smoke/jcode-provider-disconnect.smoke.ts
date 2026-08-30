@@ -182,6 +182,11 @@ try {
     ),
   );
   check("recovered seat accepts a later mesh turn (#781)", JSON.stringify(recoveredTurn).includes("RECOVERED_MESH_WORK"), recoveredTurn);
+  await waitFor("post-recovery turn boundary", () =>
+    entries().find(
+      (entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("RECOVERED_MESH_WORK"),
+    ),
+  );
 
   const secondCloseStarted = Date.now();
   await operator.unicast(peerId!, "SIMULATE_SECOND_PROVIDER_STALL");

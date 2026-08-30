@@ -228,6 +228,7 @@ const server = createServer((socket) => {
                 }
               }
               event({ ev: "text_delta", session_id: frame.session_id, text: "fake reply" });
+              log({ ev: "turn_done_emitted", content: frame.content });
               event({ ev: "turn_done", session_id: frame.session_id });
             }, Number(process.env.FAKE_JCODE_TURN_DELAY_MS ?? "10"));
           }
