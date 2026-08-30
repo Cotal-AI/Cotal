@@ -16,7 +16,9 @@
       "find": "  return [...connectors]\n    .sort((a, b) => a.name.localeCompare(b.name))\n    .map((connector) => {",
       "replace": "  return [...connectors]\n    .filter((connector) => connector.name === \"claude\" || connector.name === \"opencode\")\n    .sort((a, b) => a.name.localeCompare(b.name))\n    .map((connector) => {",
       "expectRed": "every registered connector appears in setup candidates",
-      "cell": "every registered connector appears in setup candidates"
+      "cell": "every registered connector appears in setup candidates",
+      "command": "pnpm --filter @cotal-ai/cli... build && tsx implementations/cli/smoke/setup-connectors.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build"
     },
     {
       "name": "restore the claude name check for plugin hints",
@@ -24,7 +26,9 @@
       "find": "          : connector.pluginRoot\n            ? \"installs a plugin\"\n            : \"ready at spawn\",",
       "replace": "          : connector.name === \"claude\"\n            ? \"installs a plugin\"\n            : \"ready at spawn\",",
       "expectRed": "a non-claude connector with pluginRoot gets the plugin hint",
-      "cell": "a non-claude connector with pluginRoot gets the plugin hint"
+      "cell": "a non-claude connector with pluginRoot gets the plugin hint",
+      "command": "pnpm --filter @cotal-ai/cli... build && tsx implementations/cli/smoke/setup-connectors.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build"
     }
   ],
   "grades": "tool"
