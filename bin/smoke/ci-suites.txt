@@ -690,3 +690,9 @@ smoke:agent-secret-segmentation
 # spellings, one of them the release workflow. The property is only observable on main after a
 # merge, so it needs a static guard. Appended so every existing shard assignment remains unchanged.
 smoke:workflow-concurrency
+
+# Backup inventory accepts the two exact stopped ordered-consumer shapes the pinned KV readers
+# leave behind: LastPerSubject for an ordinary watcher and All for the core whole-bucket scanner.
+# Drives backup create against disposable preserved stores, and keeps the negative boundary with a
+# real wrong-filter lookalike. Appended so every existing shard assignment remains unchanged.
+smoke:backup-kv-consumer
