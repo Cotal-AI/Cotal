@@ -32,8 +32,8 @@
       "file": "packages/core/src/endpoint.ts",
       "command": "pnpm smoke:web-bounded-aggregation",
       "completionMarker": "web bounded-aggregation smoke:",
-      "find": "        const iter = await consumer.fetch({ max_messages: Math.min(target - delivered, 32) });",
-      "replace": "        const iter = await consumer.fetch({ max_messages: pending });",
+      "find": "      const iter = await consumer.consume({ max_messages: Math.min(target, 32) });",
+      "replace": "      const iter = await consumer.fetch({ max_messages: pending });",
       "expectRed": "6.9 the request following a cancelled read answers instead of being starved by abandoned work",
       "cell": "6.9 the request following a cancelled read answers instead of being starved by abandoned work"
     },
