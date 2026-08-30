@@ -35,6 +35,12 @@ check(
   JSON.stringify(expectedPullRequestWorkflows(workflows, ["package.json"])) === JSON.stringify(["CI", "Windows"]) &&
     JSON.stringify(expectedPullRequestWorkflows(workflows, ["install.sh"])) === JSON.stringify(["CI", "Installer", "Windows"]),
 );
+let repositoryWorkflowsParsed = false;
+try {
+  expectedPullRequestWorkflows(workflows, ["package.json"]);
+  repositoryWorkflowsParsed = true;
+} catch {}
+check("every repository workflow declaration parses without throwing", repositoryWorkflowsParsed);
 check(
   "paths-ignore skips a workflow only when every changed path is ignored",
   JSON.stringify(expectedPullRequestWorkflows({
@@ -59,6 +65,23 @@ try {
   invalidYamlRefused = /invalid YAML/.test(String(error));
 }
 check("invalid workflow YAML fails closed instead of shrinking the expected set", invalidYamlRefused);
+for (const [label, source, pattern] of [
+  ["an empty on sequence fails closed", "name: Empty\non: []\n", /top-level on sequence must not be empty/],
+  ["an empty on mapping fails closed", "name: Empty\non: {}\n", /top-level on mapping must not be empty/],
+] as const) {
+  let refused = false;
+  try { expectedPullRequestWorkflows({ "unknown.yml": source }, ["package.json"]); }
+  catch (error) { refused = pattern.test(String(error)); }
+  check(label, refused);
+}
+check(
+  "a scalar event without pull_request is explicitly omitted",
+  JSON.stringify(expectedPullRequestWorkflows({ "future.yml": "name: Future\non: future_event\n" }, ["package.json"])) === "[]",
+);
+check(
+  "an event mapping without pull_request is explicitly omitted",
+  JSON.stringify(expectedPullRequestWorkflows({ "future.yml": "name: Future\non:\n  future_event:\n" }, ["package.json"])) === "[]",
+);
 let unsupportedRefused = false;
 try {
   expectedPullRequestWorkflows({
@@ -199,7 +222,7 @@ check(
   `${shippedMissing.stdout}${shippedMissing.stderr}`,
 );
 
-const EXPECTED = 29;
+const EXPECTED = 34;
 check(`every cell ran (${EXPECTED} before sentinel)`, passed + failed === EXPECTED);
 console.log(`PR HEAD GATE SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 console.log("SUITE COMPLETE");

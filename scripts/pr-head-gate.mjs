@@ -19,14 +19,18 @@ function stringList(value, file, key) {
 }
 
 function pullRequestConfig(file, on) {
-  if (typeof on === "string") return on === "pull_request" ? null : undefined;
+  if (typeof on === "string") {
+    if (on.length === 0) throw new Error(`${file}: top-level on event must not be empty`);
+    return on === "pull_request" ? null : undefined;
+  }
   if (Array.isArray(on)) {
-    if (on.some((event) => typeof event !== "string" || event.length === 0)) {
-      throw new Error(`${file}: top-level on sequence must contain only non-empty event names`);
-    }
+    if (on.length === 0) throw new Error(`${file}: top-level on sequence must not be empty`);
+    if (on.some((event) => typeof event !== "string" || event.length === 0)) throw new Error(`${file}: top-level on sequence must contain only non-empty event names`);
     return on.includes("pull_request") ? null : undefined;
   }
   if (!plainObject(on)) throw new Error(`${file}: top-level on declaration must name one or more events`);
+  const events = Object.keys(on);
+  if (events.length === 0) throw new Error(`${file}: top-level on mapping must not be empty`);
   return Object.hasOwn(on, "pull_request") ? on.pull_request : undefined;
 }
 

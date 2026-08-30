@@ -28,6 +28,22 @@
       "cell": "invalid workflow YAML fails closed instead of shrinking the expected set"
     },
     {
+      "name": "empty on sequence silently contributes no expected workflow",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "    if (on.length === 0) throw new Error(`${file}: top-level on sequence must not be empty`);",
+      "replace": "    if (false) throw new Error(`${file}: top-level on sequence must not be empty`);",
+      "expectRed": "an empty on sequence fails closed",
+      "cell": "an empty on sequence fails closed"
+    },
+    {
+      "name": "empty on mapping silently contributes no expected workflow",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "  if (events.length === 0) throw new Error(`${file}: top-level on mapping must not be empty`);",
+      "replace": "  if (false) throw new Error(`${file}: top-level on mapping must not be empty`);",
+      "expectRed": "an empty on mapping fails closed",
+      "cell": "an empty on mapping fails closed"
+    },
+    {
       "name": "unsupported pull_request filter is silently ignored",
       "file": "scripts/pr-head-gate.mjs",
       "find": "  if (unsupported.length) throw new Error(`${file}: unsupported pull_request filter: ${unsupported.join(\", \")}`);",
