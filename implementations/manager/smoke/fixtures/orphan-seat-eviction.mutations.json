@@ -12,8 +12,8 @@
     {
       "name": "accept an unverified orphan eviction and free the alias",
       "file": "implementations/manager/src/static-lifecycle.ts",
-      "find": "  if (!(await hooks.evict(principal)))\n    throw new EpEnvelopeError(\"unavailable\", `static retirement could not verify-evict ${principal}; the lifecycle remains terminalizing and the alias stays held (SPEC 13.1)`);",
-      "replace": "  await hooks.evict(principal);",
+      "find": "  if (!result.verifiedGone || !result.scanComplete || result.remaining !== 0)\n    throw new EpEnvelopeError(\"unavailable\", `static retirement could not verify-evict ${principal}; the lifecycle remains terminalizing and the alias stays held (SPEC 13.1)`);",
+      "replace": "  void result;",
       "expectRed": "an unverified orphan eviction keeps the slot terminalizing (never frees the alias into two owners)",
       "cell": "an unverified orphan eviction keeps the slot terminalizing (never frees the alias into two owners)"
     }
