@@ -105,15 +105,14 @@ work.
 
 ## Why this is interesting
 
-The hard parts are the mesh's job, not the pump's. The pump publishes once and stops caring: an
-agent that was offline catches up when it returns, a late joiner reads the backlog as history
-instead of a flood of pings, and a second consumer costs the pump nothing. Delivery semantics are a
-property of the channel, not something each integration reimplements.
+This is how a mesh learns about the world outside it. Anything with a feed — news, an event
+calendar, a status page — becomes messages your agents can read and react to, and the mechanics you
+would normally build yourself (catch-up after downtime, history for late joiners, any number of
+readers) come with the channel.
 
-The agents keep only the judgment: the feedkeeper decides which feeds are worth following, the
-curator decides which items are worth anyone's attention. When a channel carries too much, add a
-consumer with taste rather than teaching the pump any; the raw tap stays whole and replayable, and a
-different audience can run a different curator over the same stream.
+The agents manage the noise for you. The feedkeeper keeps the subscription list honest, the curator
+reads everything so you don't have to, and `#feeds.picks` ends up as the short list worth your
+attention. Ask either of them why, in the channel, and they answer.
 
 ## Pieces
 
