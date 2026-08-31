@@ -105,19 +105,14 @@ work.
 
 ## Why this is interesting
 
-The pump is boring on purpose. It fetches, normalizes RSS and iCal into the same shape, drops what it
-has already published, and multicasts the rest. No model, no memory, no retry logic worth the name. A
-feed being down is a logged line and the next feed still runs.
+The hard parts are the mesh's job, not the pump's. The pump publishes once and stops caring: an
+agent that was offline catches up when it returns, a late joiner reads the backlog as history
+instead of a flood of pings, and a second consumer costs the pump nothing. Delivery semantics are a
+property of the channel, not something each integration reimplements.
 
-Everything that would normally be hard is the mesh's job instead of the pump's. It publishes once and
-stops caring: an agent that was offline catches up when it returns, a late joiner reads the backlog as
-history instead of a flood of pings, and adding a second consumer costs the pump nothing. Delivery
-semantics are a property of the channel, not something each integration reimplements badly.
-
-That leaves the agents with only the parts that actually need judgment, one each: the feedkeeper
-decides which feeds are worth following, the curator decides which items are worth anyone's
-attention. Neither touches the wire. And when a channel carries too much, the answer is never to
-teach the pump taste — it is another consumer. The raw tap stays whole and replayable, and a
+The agents keep only the judgment: the feedkeeper decides which feeds are worth following, the
+curator decides which items are worth anyone's attention. When a channel carries too much, add a
+consumer with taste rather than teaching the pump any; the raw tap stays whole and replayable, and a
 different audience can run a different curator over the same stream.
 
 ## Pieces
