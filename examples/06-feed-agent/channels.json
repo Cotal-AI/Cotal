@@ -1,0 +1,11 @@
+{
+  "defaults": { "replay": true },
+  "channels": {
+    "feeds.events": {
+      "replay": true,
+      "replayWindow": "7d",
+      "description": "Upcoming events and feed items, posted by the pump. One message per item.",
+      "instructions": "Read-mostly. Discuss an item by replying to it; keep the feed itself unedited."
+    }
+  }
+}
