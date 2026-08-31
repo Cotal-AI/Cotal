@@ -42,6 +42,7 @@
     "smoke:lang-grammar": "tsx packages/lang/smoke/grammar.smoke.ts",
     "smoke:lang-keys": "tsx packages/lang/smoke/keys.smoke.ts",
     "smoke:lang-journal": "tsx packages/lang/smoke/journal.smoke.ts",
+    "smoke:lang-fuzz-journal": "tsx packages/lang/smoke/fuzz-journal.smoke.ts",
     "smoke:runtime-journal-store": "tsx implementations/runtime/smoke/journal-store.smoke.ts",
     "smoke:runtime-run-driver": "tsx implementations/runtime/smoke/run-driver.smoke.ts",
     "smoke:runtime-mesh-wait": "tsx implementations/runtime/smoke/mesh-wait.smoke.ts",

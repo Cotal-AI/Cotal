@@ -79,7 +79,10 @@ export {
   Cancelled,
   RunReleased,
   EffectError,
+  askSchemaShape,
+  conformsToAskSchema,
   type AgentHandleValue,
+  type AskFieldKind,
   type AskRequest,
   type CancelSignal,
   type ChannelHandleValue,
@@ -129,6 +132,7 @@ export {
 export { notifyFactViolation } from "./notify-fact.js";
 
 export {
+  EffectResultTooLarge,
   Journal,
   JournalAppendRejected,
   JournalReadOnlyError,

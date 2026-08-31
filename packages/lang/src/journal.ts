@@ -12,6 +12,7 @@
  * miss that quietly re-runs the effect and lets two versions of the truth coexist.
  */
 
+import { canonicalize } from "json-canonicalize";
 import { NotCrossable, assertCrossable, assertScopeValueCrossable, deepFreeze } from "./values.js";
 import { RuntimeFault } from "./errors.js";
 import { type JournalKind, type StepKey, stepKeyString } from "./keys.js";
@@ -167,6 +168,13 @@ export interface JournalInit {
   readonly readOnly?: boolean;
   /** Where appends go to survive this process. Omitted, the journal is in-memory only. */
   readonly store?: JournalStore;
+  /**
+   * The most bytes a settled `ok` result may canonicalize to, checked AHEAD of the append
+   * (L5006, {@link EffectResultTooLarge}). Whoever constructs the journal knows the store's
+   * limit and passes it here; omitted, no bound is enforced, which is a statement and not a
+   * default.
+   */
+  readonly resultBytes?: number;
 }
 
 /**
@@ -184,7 +192,7 @@ export interface JournalInit {
  * much as it did before the call.
  */
 export class JournalAppendRejected extends Error {
-  readonly code = "L5010";
+  readonly code: string = "L5010";
 
   /** True when the store could not tell whether the entry landed. See {@link IndeterminateAppend}. */
   readonly indeterminate: boolean;
@@ -204,6 +212,30 @@ export class JournalAppendRejected extends Error {
     );
     this.indeterminate = indeterminate;
     this.name = "JournalAppendRejected";
+  }
+}
+
+/**
+ * An effect result the journal will not record, refused AHEAD of the settling append (L5006).
+ *
+ * The check runs before the append and before anything in memory moves: the world has the
+ * effect, the journal still holds the pending entry that names it, and nothing was written. That
+ * is the recovery shape of a store refusal, which is why this extends
+ * {@link JournalAppendRejected} and travels its uncatchable path everywhere one is matched. The
+ * bound is the journal's own, handed in at construction by whoever knows the store's limit; a
+ * journal constructed without one enforces none, and says so here rather than defaulting.
+ */
+export class EffectResultTooLarge extends JournalAppendRejected {
+  override readonly code: string = "L5006";
+
+  constructor(
+    stepKey: string,
+    readonly bytes: number,
+    readonly bound: number,
+  ) {
+    super(stepKey, "settled", new Error("the canonical result exceeds the journal's bound"));
+    this.name = "EffectResultTooLarge";
+    this.message = `L5006 Effect result too large\n\n  step  ${stepKey}   ${bytes} bytes, bound ${bound}\n\nThe effect ran and its outcome stands in the world; the journal will not take a result this large, so the run can no longer record it. Refused ahead of the append: nothing was written and the entry is still pending.\n\nFix: return a smaller value (an id, a summary, an artifact reference) and keep bulk data outside the journal.`;
   }
 }
 
@@ -303,16 +335,33 @@ export class Journal {
   /** Every key the current replay has looked up. What is left over is an orphan. */
   private readonly consumed = new Set<string>();
 
+  /** See {@link JournalInit.resultBytes}. Absent, no bound is enforced. */
+  private readonly resultBytes?: number;
+
   constructor(init: JournalInit) {
     this.run = init.run;
     this.readOnly = init.readOnly === true;
     if (init.store !== undefined) this.store = init.store;
+    if (init.resultBytes !== undefined) this.resultBytes = init.resultBytes;
     for (const e of init.entries ?? []) {
       // A journal is ONE run's. Seeding it with another run's entry would make this run resume
       // against a history it never had — the keys are structural, so a foreign entry with the same
       // scope and name matches, and its recorded result is returned as if this run had produced it.
       if (e.run !== this.run)
         throw new Error(`journal for run ${this.run} was seeded with an entry from run ${e.run}; a run resumes only from its own journal`);
+      // WHAT THE VOCABULARY CANNOT READ, IT REFUSES. A settled entry whose state or status is
+      // outside the vocabulary would fall through every lookup verdict into "replay" and hand the
+      // program its `result` field as recorded truth: measured, a corrupted status completed a
+      // resume silently, nothing raised. Refusing at the seed names the entry while the
+      // corruption is still a loadable fact rather than a wrong answer.
+      if (e.state !== "pending" && e.state !== "settled")
+        throw new Error(
+          `journal for run ${this.run} was seeded with an entry whose state ${JSON.stringify((e as { state?: unknown }).state)} is not in the vocabulary (${journalEntryKeyString(e)}); a journal this package cannot read is refused, never replayed as data`,
+        );
+      if (e.state === "settled" && e.status !== "ok" && e.status !== "failed" && e.status !== "cancelled")
+        throw new Error(
+          `journal for run ${this.run} was seeded with a settled entry whose status ${JSON.stringify((e as { status?: unknown }).status)} is not in the vocabulary (${journalEntryKeyString(e)}); a journal this package cannot read is refused, never replayed as data`,
+        );
       // The stored `scope` string is authoritative: it is what makes a journal readable back
       // without re-running the program that produced it.
       // THE BINDING IS THE FIELD WITH NO WRITE-SIDE HISTORY. `result` crossed `assertCrossable` when
@@ -531,6 +580,12 @@ export class Journal {
       // Only where `result` is not carrying them, so the two can never disagree.
       ...(outcome.status !== "ok" && facts.branches !== undefined ? { branches: facts.branches } : {}),
     };
+    // AHEAD of the append, on the ok path only: a failure or a cancellation carries no result to
+    // measure, and refusing to record that a step failed would lose more than it protects.
+    if (this.resultBytes !== undefined && outcome.status === "ok") {
+      const bytes = Buffer.byteLength(canonicalize(outcome.result ?? null), "utf8");
+      if (bytes > this.resultBytes) throw new EffectResultTooLarge(k, bytes, this.resultBytes);
+    }
     await this.persist(k, settled);
     this.byKey.set(k, settled);
     return settled;

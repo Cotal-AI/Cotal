@@ -411,7 +411,10 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
   {
     const onWalker = async (src: string): Promise<string> => {
       try {
-        await walkerRun(src, { runId: `so-${src.length}`, handler: new SimHandler({ asks: { q: { okay: true } } }) });
+        await walkerRun(src, {
+          runId: `so-${src.length}`,
+          handler: new SimHandler({ asks: { q: { okay: true } }, checkpoints: { q: { status: "resolved", by: "sim" } } }),
+        });
         return "completed";
       } catch (e) {
         return `refused ${codeOf(e)}`;
@@ -444,7 +447,7 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
     // does not have answers L2031, not L4014. So the gate cannot move ahead of that either.
     ok(
       "the walker answers a frozen array's bad member with L2031",
-      (await onWalker(`const a = await spawn("w", { name: "a" });\nconst sch = { xs: keys({ a: 1 }) };\nawait ask(a, { name: "q", schema: sch });\nsch.xs.foo = 1;\n`)) === "refused L2031",
+      (await onWalker(`const sch = { xs: keys({ a: 1 }) };\nawait checkpoint("q", "ok?", { schema: sch });\nsch.xs.foo = 1;\n`)) === "refused L2031",
     );
     const frozenArr = Object.freeze(await h.inFrame(() => h.ctx.born([1])));
     ok("and so does the engine, freeze ahead of the member rule", codeOf(await caught(() => h.inFrame(() => h.ctx.set(frozenArr, "foo", 1)))) === "L2031");
@@ -1986,7 +1989,7 @@ log("winner", r.index)
   const spoiled = [
     {
       v: 1, seq: 0, run: "l5024-w", scope: "", kind: "spawn", name: "b", occurrence: 0,
-      inputHash: "sha256:0", state: "settled", status: "done", external: { when: new Date(0) },
+      inputHash: "sha256:0", state: "settled", status: "ok", external: { when: new Date(0) },
     },
   ] as unknown as Parameters<typeof runInWorker>[0]["entries"];
   const answer = await runInWorker({

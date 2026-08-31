@@ -73,11 +73,11 @@ bounded decision record, not prose.
   recorded, and it cannot change afterwards; build a new value.
 - **The journal is the debugger.** Every entry carries its key, its inputs' hash, its outcome and
   its timing, and every error is in the program's own coordinates. A run can be **simulated** with a
-  scripted handler and **dry-run** to a plan before it touches an agent. One thing to know about the
-  simulator: it advances a single virtual clock in the order effects are asked, so under it a `race`
-  is decided by that order and declaration order, not by the durations you wrote (a `sleep("1h")` arm
-  declared first beats a `sleep("1m")` arm declared second). That is the simulator, not the rule; on
-  a live handler each arm's clock is the wall time its effects ended.
+  scripted handler and **dry-run** to a plan before it touches an agent. The simulator is
+  discrete-event: timed effects park at their wake times and are delivered in wake order on one
+  virtual clock, so concurrent branches accumulate the durations they wrote and a simulated `race`
+  is decided by the same rule a live handler produces (least recorded clock, ties by declaration
+  order). A `sleep("1m")` arm beats a `sleep("1h")` arm whatever their declaration order.
 
 Full rules, with every code: [`spec/cotal-lang.md`](../spec/cotal-lang.md).
 

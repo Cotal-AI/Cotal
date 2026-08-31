@@ -1168,6 +1168,54 @@ await fanOut([1, 2], async (n) => { await sleep("1m"); return n; }, { name: "eac
     after.map((e) => `${e.kind}:${e.name}/${e.state}`));
 }
 
+// A release inside a RACE is not a candidate and cancels nothing: work already in flight can
+// still win. Arm `a` parks its sleep before the driver stops, arm `b`'s boundary releases, and
+// every later boundary would release too. The sleep already issued is the handler's to finish,
+// it lands, `a` wins, the scope settles, and nothing is left to perform, so the run completes
+// with no entry anywhere recording a cancellation nobody chose. A released rejection that
+// counted as a candidate would instead "win by failing" with the earliest clock, cancel the
+// arm that could still win, and durably poison its in-flight entry.
+{
+  const runId = "r-stop-race";
+  const journal = new Journal({ run: runId });
+  const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+  let stops = 0;
+  let outcome: unknown;
+  const P = `
+const r = await race({
+  a: async () => { await sleep("1m"); return "won"; },
+  b: async () => { await sleep("2m"); return "lost"; },
+}, { name: "either" });
+log(r.index, r.value);
+`;
+  const logged: unknown[][] = [];
+  try {
+    await run(P, {
+      runId,
+      handler: new SimHandler({}),
+      journal,
+      pins,
+      shouldStop: () => (stops++ >= 1 ? "host stop" : undefined),
+      onLog: (l) => logged.push([...l.values]),
+    });
+  } catch (e) {
+    outcome = e;
+  }
+  ok("a race whose sibling was released still lets in-flight work win, and the run completes",
+    outcome === undefined, `${(outcome as Error)?.name}: ${(outcome as Error)?.message?.slice(0, 60)}`);
+  ok("with the surviving arm as the winner", logged[0]?.[0] === "a" && logged[0]?.[1] === "won", logged);
+  ok("and no entry anywhere records a cancellation nobody chose",
+    journal.entries().every((e) => e.status !== "cancelled")
+      && journal.entries().find((e) => e.kind === "race")?.status === "ok",
+    journal.entries().map((e) => `${e.kind}:${e.name}/${e.status}`));
+
+  const replayLog: unknown[][] = [];
+  await resume(P, new Journal({ run: runId, entries: journal.entries() }), {
+    runId, pins, handler: new SimHandler({}), onLog: (l) => replayLog.push([...l.values]),
+  });
+  ok("and a resume replays the same winner from the record", replayLog[0]?.[0] === "a", replayLog);
+}
+
 // ── a program cannot catch its host leaving ──────────────────────────────────────────────────
 //
 // `try` is the workflow's own handling of the world going wrong, and a driver's shutdown is not the
@@ -1223,18 +1271,19 @@ fact.outcome = "flipped";`;
 
   // The notify arm freezes its fact on its own, so the cell above cannot see the BLANKET freeze at
   // the boundary. The options bag can: no per-primitive arm touches it, so a schema that stays
-  // writable after an `ask` means the share-time freeze is gone (the measured pre-fix defect).
-  const asked = `const a = await spawn("w", { name: "a" });
-const sch = { deep: { x: 1 } };
-await ask(a, { name: "q", schema: sch });
+  // writable after a `checkpoint` means the share-time freeze is gone (the measured pre-fix
+  // defect). The deep record rides a checkpoint here because the reference handler now enforces
+  // the ask schema shorthand (L4022), which admits no nested values.
+  const asked = `const sch = { deep: { x: 1 } };
+await checkpoint("q", "ok?", { schema: sch });
 sch.deep.x = 2;`;
   let bagCaught: unknown;
   try {
-    await run(asked, { runId: "r-frz3", handler: new SimHandler({ asks: { q: { okay: true } } }) });
+    await run(asked, { runId: "r-frz3", handler: new SimHandler({ checkpoints: { q: { status: "resolved", by: "sim" } } }) });
   } catch (e) {
     bagCaught = e;
   }
-  ok("the options bag crosses like any input: an ask's schema is frozen at the share (L2031)",
+  ok("the options bag crosses like any input: a checkpoint's schema is frozen at the share (L2031)",
     String((bagCaught as Error)?.message).startsWith("L2031"), String(bagCaught).slice(0, 60));
 
   const SRC = `const a = await spawn("w", { name: "a" });

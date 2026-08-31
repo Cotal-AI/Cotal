@@ -1178,7 +1178,7 @@ await sleep("3h", { name: "after-the-catch" });
   const recorded = [
     {
       v: 1, seq: 0, run: "r-bind-l", scope: "", kind: "spawn", name: "b", occurrence: 0,
-      inputHash: H({ persona: "b" }), state: "settled", status: "done", external: { when: new Date(0) },
+      inputHash: H({ persona: "b" }), state: "settled", status: "ok", external: { when: new Date(0) },
     },
   ] as unknown as readonly JournalEntry[];
   let caught: unknown;
@@ -1201,7 +1201,7 @@ await sleep("3h", { name: "after-the-catch" });
   const fine = [
     {
       v: 1, seq: 0, run: "r-bind-m", scope: "", kind: "spawn", name: "b", occurrence: 0,
-      inputHash: H({ persona: "b" }), state: "settled", status: "done", external: { simAgent: "sim.b", n: -0 },
+      inputHash: H({ persona: "b" }), state: "settled", status: "ok", external: { simAgent: "sim.b", n: -0 },
     },
   ] as unknown as readonly JournalEntry[];
   const loaded = new Journal({ run: "r-bind-m", entries: fine });
@@ -1226,7 +1226,7 @@ await sleep("3h", { name: "after-the-catch" });
   // that silently stopped carrying the hazard, and a cell that goes green for the wrong reason. So
   // the first assertion below is about the FIXTURE, not the rule.
   const text = `{"v":1,"seq":0,"run":"r-bind-p","scope":"","kind":"spawn","name":"b","occurrence":0,`
-    + `"inputHash":"${H({ persona: "b" })}","state":"settled","status":"done","external":{"__proto__":1}}`;
+    + `"inputHash":"${H({ persona: "b" })}","state":"settled","status":"ok","external":{"__proto__":1}}`;
   const parsed = JSON.parse(text) as { external: unknown };
   ok(
     "the fixture really does carry an own `__proto__`, which is what makes it the hazard and not a prototype write",
@@ -1305,7 +1305,7 @@ await sleep("3h", { name: "after-the-catch" });
   const withFunction = [
     {
       v: 1, seq: 3, run: "r-res", scope: "", kind: "parallel", name: "p", occurrence: 0,
-      inputHash: H({ persona: "b" }), state: "settled", status: "done",
+      inputHash: H({ persona: "b" }), state: "settled", status: "ok",
       result: { branches: ["a"], value: { a: () => 1 } },
     },
   ] as unknown as readonly JournalEntry[];
@@ -1333,7 +1333,7 @@ await sleep("3h", { name: "after-the-catch" });
   const absentBranch = [
     {
       v: 1, seq: 0, run: "r-res-m", scope: "", kind: "parallel", name: "p", occurrence: 0,
-      inputHash: H({ persona: "b" }), state: "settled", status: "done",
+      inputHash: H({ persona: "b" }), state: "settled", status: "ok",
       result: { branches: ["a", "b"], value: { a: undefined, b: 2 } },
     },
   ] as unknown as readonly JournalEntry[];

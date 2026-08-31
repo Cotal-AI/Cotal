@@ -1027,6 +1027,7 @@ const UNCATCHABLE_NAMES: ReadonlySet<string> = new Set([
   "EngineFault",
   "Cancelled",
   "JournalAppendRejected",
+  "EffectResultTooLarge",
   "RunReleased",
   "RunDivergence",
   "ScopeBranchMissing",
