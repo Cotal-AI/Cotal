@@ -251,7 +251,19 @@ export const claudeConnector: Connector = {
       const path = resolve(opts.configPath);
       env.COTAL_AGENT_FILE = path;
       const def = loadAgentFile(path);
-      if (def.persona) args.push("--append-system-prompt", def.persona);
+      if (def.persona) {
+        // A persona can carry private project vocabulary or instructions. Passing its body through
+        // `--append-system-prompt` publishes it in the process argv to every same-host observer.
+        // Claude Code has a native file-shaped input, so write the text owner-only and expose only
+        // its path. No text-argv fallback: failing to create a private carrier refuses the launch.
+        // The file must outlive buildLaunch for startup and resume. LaunchSpec has no artifact-cleanup
+        // hook, so it follows this connector's private MCP config ownership: OS temporary-file reap.
+        const dir = mkdtempSync(join(tmpdir(), "cotal-claude-persona-"));
+        hardenPrivate(dir, "dir");
+        const personaFile = join(dir, "persona.md");
+        writeSecretFile(personaFile, def.persona);
+        args.push("--append-system-prompt-file", personaFile);
+      }
       model ??= def.model;
     }
     // The `--model` flag wins over the agent file, and applies even with no agent file.
@@ -264,7 +276,7 @@ export const claudeConnector: Connector = {
     // Fork an existing session INTO the mesh (opts.resume, an opaque host-local id). `--fork-session`
     // is pushed in the SAME branch — resume here is fork-only, never a hijack: claude mints a NEW
     // session id from that transcript and leaves the original untouched. The id is a single argv
-    // token (no shell), so a hostile-looking id can't inject. The persona `--append-system-prompt`
+    // token (no shell), so a hostile-looking id can't inject. The persona prompt-file flag
     // above still applies, so the forked context runs under the current mesh persona.
     if (opts.resume) args.push("--resume", opts.resume, "--fork-session");
 

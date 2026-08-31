@@ -98,6 +98,10 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   `ANTHROPIC_AUTH_TOKEN`, and the cloud-provider flags plus their credential vars. Host-session
   markers (`CLAUDE_CODE_CHILD_SESSION`, `CLAUDECODE`) stay out so a nested seat still saves a
   transcript. See [Deploy](deploy.md).
+- **Persona privacy.** The persona body is written to a private file and Claude receives only
+  `--append-system-prompt-file <path>`. The body never appears in the spawned process argv. The
+  carrier is a 0600 file inside a 0700 directory on POSIX, with equivalent owner-only ACL hardening
+  on Windows.
 - **MCP isolation.** A spawned agent runs with **only** the cotal MCP server:
   `--strict-mcp-config` ignores every other MCP source, crucially the operator's personal
   `~/.claude.json` servers (several spawns each booting a heavy helper would starve
