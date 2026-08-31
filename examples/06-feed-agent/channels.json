@@ -6,6 +6,12 @@
       "replayWindow": "7d",
       "description": "Upcoming events and feed items, posted by the pump. One message per item.",
       "instructions": "Read-mostly. Discuss an item by replying to it; keep the feed itself unedited."
+    },
+    "feeds.picks": {
+      "replay": true,
+      "replayWindow": "7d",
+      "description": "The curator's picks from #feeds.events. A few per day, each with a reason.",
+      "instructions": "Low-volume by design. Only the curator posts picks; discuss a pick by replying to it."
     }
   }
 }

@@ -2,9 +2,10 @@
 
 Point an RSS feed or an iCal calendar at a mesh channel. A deterministic **pump** polls the feeds in
 `subscriptions.yaml` and publishes each new item as one message; a **feedkeeper** agent sits in the
-channel and edits that file when someone asks it to.
+channel and edits that file when someone asks it to; a **curator** agent reads the raw stream and
+reposts only the few items worth anyone's attention.
 
-Two moving parts, deliberately split: the pump has no judgment, and the agent does no plumbing.
+Three moving parts, deliberately split: the pump has no judgment, and the agents do no plumbing.
 
 ## Prerequisites
 
@@ -20,8 +21,8 @@ pnpm cotal up --open --space demo --channels examples/06-feed-agent/channels.jso
 ```
 
 An unauthenticated dev mesh on the `demo` space — the space the pump and the commands below default
-to. It seeds `#feeds.events` with replay on, so an agent joining tomorrow still sees what was posted
-today.
+to. It seeds `#feeds.events` and `#feeds.picks` with replay on, so an agent joining tomorrow still
+sees what was posted today.
 
 **2. See what the pump would post** — no mesh needed, nothing published, nothing marked as seen:
 
@@ -61,10 +62,27 @@ Then, on `#feeds.events`, ask it in plain language:
 It resolves the calendar's iCal URL, adds the entry with a `filter`, proves it with a dry run before
 claiming anything, and confirms in the channel. It edits `subscriptions.yaml` and nothing else.
 
-**5. What you should see.** Each item arrives as one line on `#feeds.events`:
+**5. Add taste — a curator** (optional, another terminal):
+
+```
+pnpm cotal spawn --agent claude --name curator --config examples/06-feed-agent/agents/curator.md
+```
+
+The pump keeps posting everything to `#feeds.events`; the curator reads it and reposts only the
+items worth someone's attention to `#feeds.picks`, each with one sentence on why. Subscribe to the
+channel that matches your appetite — the raw tap or the picks.
+
+**6. What you should see.** Each item arrives as one line on `#feeds.events`:
 
 ```
 [Frontier Tower SF] BURNING TOKEN, the AI Global hackathon — https://luma.com/burningtoken (2026-09-05 17:00 UTC)
+```
+
+And on `#feeds.picks`, only occasionally:
+
+```
+[Frontier Tower SF] BURNING TOKEN, the AI Global hackathon — https://luma.com/burningtoken (2026-09-05 17:00 UTC)
+a global hackathon in this building — worth a team's weekend
 ```
 
 Join late (`pnpm cotal join --space demo --name reader`) and the backlog is there, as history rather
@@ -96,17 +114,21 @@ stops caring: an agent that was offline catches up when it returns, a late joine
 history instead of a flood of pings, and adding a second consumer costs the pump nothing. Delivery
 semantics are a property of the channel, not something each integration reimplements badly.
 
-That leaves the agent with only the part that actually needs judgment — which feeds are worth
-following, and which items are worth anyone's attention. The feedkeeper never touches the wire.
+That leaves the agents with only the parts that actually need judgment, one each: the feedkeeper
+decides which feeds are worth following, the curator decides which items are worth anyone's
+attention. Neither touches the wire. And when a channel carries too much, the answer is never to
+teach the pump taste — it is another consumer. The raw tap stays whole and replayable, and a
+different audience can run a different curator over the same stream.
 
 ## Pieces
 
 | File | Role |
 |---|---|
-| `subscriptions.yaml` | The list: url, channel, and optional kind / filter / label. The one file the agent edits. |
+| `subscriptions.yaml` | The list: url, channel, and optional kind / filter / label. The one file the feedkeeper edits. |
 | `src/pump.ts` | Poll, normalize, dedup, publish. Supports `--dry-run`, `--once` (default), `--loop [minutes]`, `--config`, `--space`, `--server`. |
-| `channels.json` | Seeds `#feeds.events` with replay on. |
+| `channels.json` | Seeds `#feeds.events` and `#feeds.picks` with replay on. |
 | `agents/feedkeeper.md` | The persona that owns `subscriptions.yaml`. |
+| `agents/curator.md` | The persona that reposts the few items worth attention to `#feeds.picks`. |
 | `state/seen.json` | What has already been published. Machine-local, gitignored. |
 
 Environment: `COTAL_SPACE` (default `demo`) and `COTAL_SERVERS` (default `nats://127.0.0.1:4222`),
