@@ -740,3 +740,9 @@ smoke:jcode-mid-turn-delivery
 # the real Claude plugin-list JSON seam. Mutation-proofed - bin/smoke/mutations/status-provenance.json.
 # Appended so every existing shard assignment remains unchanged.
 smoke:status-provenance
+
+# The #773 two-root renewal refusal, driven by the shipped owner: a real Manager on its own
+# workspace root and a real delivery daemon on a divergent root, with the defective behavior
+# encoded as explicitly-labeled "#773 unfixed" expectations plus a unified-root positive control.
+# Appended so every existing shard assignment remains unchanged.
+smoke:manager-two-root-renewal
