@@ -1,11 +1,11 @@
-# 06 · Feed agent — any feed, one channel
+# 06 · Feed agent: any feed, one channel
 
 Point an RSS feed or an iCal calendar at a mesh channel. A deterministic **pump** polls the feeds in
 `subscriptions.yaml` and publishes each new item as one message; a **feedkeeper** agent sits in the
 channel and edits that file when someone asks it to; a **curator** agent reads the raw stream and
 reposts only the few items worth anyone's attention.
 
-Three moving parts, deliberately split: the pump has no judgment, and the agents do no plumbing.
+The pump is deliberately dumb; all the judgment lives in the agents.
 
 ## Prerequisites
 
@@ -14,17 +14,17 @@ Three moving parts, deliberately split: the pump has no judgment, and the agents
 
 ## Run it
 
-**1. Start the mesh** (one terminal — stays running):
+**1. Start the mesh** (one terminal, stays running):
 
 ```
 pnpm cotal up --open --space demo --channels examples/06-feed-agent/channels.json
 ```
 
-An unauthenticated dev mesh on the `demo` space — the space the pump and the commands below default
-to. It seeds `#feeds.events` and `#feeds.picks` with replay on, so an agent joining tomorrow still
-sees what was posted today.
+An unauthenticated dev mesh on the `demo` space, which the pump and the commands below default to.
+It seeds `#feeds.events` and `#feeds.picks` with replay on, so an agent joining tomorrow still sees
+what was posted today.
 
-**2. See what the pump would post** — no mesh needed, nothing published, nothing marked as seen:
+**2. See what the pump would post** (no mesh needed, nothing published, nothing marked as seen):
 
 ```
 cd examples/06-feed-agent && pnpm pump --dry-run
@@ -56,21 +56,21 @@ pnpm cotal spawn --agent claude --name feedkeeper --config examples/06-feed-agen
 
 Then, on `#feeds.events`, ask it in plain language:
 
-> feedkeeper: subscribe to the Frontier Tower calendar, https://lu.ma/frontiertower — only the AI and
+> feedkeeper: subscribe to the Frontier Tower calendar, https://lu.ma/frontiertower, only the AI and
 > robotics events please
 
 It resolves the calendar's iCal URL, adds the entry with a `filter`, proves it with a dry run before
 claiming anything, and confirms in the channel. It edits `subscriptions.yaml` and nothing else.
 
-**5. Add taste — a curator** (optional, another terminal):
+**5. Add a curator** (optional, another terminal):
 
 ```
 pnpm cotal spawn --agent claude --name curator --config examples/06-feed-agent/agents/curator.md
 ```
 
 The pump keeps posting everything to `#feeds.events`; the curator reads it and reposts only the
-items worth someone's attention to `#feeds.picks`, each with one sentence on why. Subscribe to the
-channel that matches your appetite — the raw tap or the picks.
+items worth someone's attention to `#feeds.picks`, each with one sentence on why. Follow
+`#feeds.picks` for the short list, `#feeds.events` for everything.
 
 **6. What you should see.** Each item arrives as one line on `#feeds.events`:
 
@@ -82,7 +82,7 @@ And on `#feeds.picks`, only occasionally:
 
 ```
 [Frontier Tower SF] BURNING TOKEN, the AI Global hackathon — https://luma.com/burningtoken (2026-09-05 17:00 UTC)
-a global hackathon in this building — worth a team's weekend
+a global hackathon in this building, worth a team's weekend
 ```
 
 Join late (`pnpm cotal join --space demo --name reader`) and the backlog is there, as history rather
@@ -100,13 +100,13 @@ https://api.lu.ma/ics/get?entity=calendar&id=cal-Sl7q1nHTRXQzjP2
 
 Drop that into `subscriptions.yaml` with `kind: ical`. The feed carries every published event on the
 calendar, past ones included, so the pump keeps only events that have not finished yet and posts them
-soonest-first. `subscriptions.yaml` ships with this calendar commented out — uncomment it to watch it
+soonest-first. `subscriptions.yaml` ships with this calendar commented out; uncomment it to watch it
 work.
 
 ## Why this is interesting
 
-This is how a mesh learns about the world outside it. Anything with a feed — news, an event
-calendar, a status page — becomes messages your agents can read and react to, and the mechanics you
+This is how a mesh learns about the world outside it. Anything with a feed (news, an event
+calendar, a status page) becomes messages your agents can read and react to, and the mechanics you
 would normally build yourself (catch-up after downtime, history for late joiners, any number of
 readers) come with the channel.
 
