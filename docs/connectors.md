@@ -24,7 +24,7 @@ it; stopping preserves it so an operator can inspect why the session never conne
 | Watch the real TUI | ✓ | ✓ | ✓ (attached to the mesh-driven thread) | ✗ (headless gateway) | ✓ (attached to the managed Jcode session) | ✓ |
 | Inbound delivery | hook drain at turn start + idle-wake nudge | injected as a turn | wakes a turn; directed messages steer the live turn | fresh agent per message | injected as a Harness API turn; directed messages steer the live session | steered into the live turn |
 | Mid-turn steering | ✗ | ✗ | ✓ (directed messages) | none | ✓ (directed messages) | ✓ |
-| Session resume (`--resume`) | ✓ (forks) | ✗ ([#154](https://github.com/Cotal-AI/Cotal/issues/154)) | ✗ (a resumed thread has no MCP tools upstream) | ✗ | ✗ (private Harness API instance) | ✗ |
+| Session resume (`--resume`) | ✓ (forks) | ✗ ([#154](https://github.com/Cotal-AI/Cotal/issues/154)) | ✗ (a resumed thread has no MCP tools upstream) | ✗ | ✗ (private Harness API instance) | ✓ (forks) |
 | Tool-sharing (`--share-tools`) | ✓ (scoped opt-in) | ✗ (inherits your servers wholesale) | ✗ (isolated per-agent `CODEX_HOME`) | ✗ | ✗ (private MCP configuration) | ✗ |
 | Models | `--model` | `--model` + catalog (`cotal models`) + `--variant` | `--model` + catalog (`cotal models`) + `--variant` (reasoning effort) | any provider, via env | `--model` + `--variant` (reasoning effort) | `--model` |
 | Event plane (`--events`) | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ |

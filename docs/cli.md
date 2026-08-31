@@ -531,7 +531,7 @@ cotal spawn -f <cotal.yaml> [--dry-run]
 | `--variant <v>` | persona's `variant:` | Model variant override (connector-defined; e.g. OpenCode reasoning tiers) |
 | `--cwd <dir>` | this cwd | Working directory to root the agent at |
 | `--prompt <text>` | none | Initial prompt auto-submitted at start |
-| `--resume <id>` | none | Fork an existing session id into the mesh (claude only) |
+| `--resume <id>` | none | Fork an existing session id into the mesh; only connectors that declare resume support accept it (see [the matrix](connectors.md)) |
 | `--events` / `--no-events` | off | Publish the session's structured event plane to its own event channel |
 | `--share-tools <sel>` | none | Share named operator MCP servers with the agent |
 | `--subscribe <a,b>` | persona's | Channel read-set override |
