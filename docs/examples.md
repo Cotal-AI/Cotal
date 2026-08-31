@@ -16,6 +16,7 @@ README.
 | [02: Self-improving Console](../examples/02-self-improving-console/README.md) | A swarm of Claude Code agents (with an OpenCode/GPT agent reviewing their work) ships a live activity-pulse sparkline into Cotal's own console, settling the data↔UI contract peer-to-peer over the mesh. Agents improving the system that coordinates them. |
 | [03: Personas](../examples/03-personas/README.md) | Ten character personas join one space and talk in real time: the same primitives (presence, channels, DMs) as the worker examples, but the peers are personalities, not roles. Research drops and derived personas are gitignored; only the READMEs and the template are committed. |
 | [04: Frontier Faces](../examples/04-frontier-faces/README.md) | Panelist personas as animated 32×32 pixel-art OpenCode agents: each thinks, lip-syncs its streamed reply, and steers its own expression. Two front-ends onto the *same* live mesh (a browser studio and a tmux wall), both spawning real agents that coordinate as lateral peers. |
+| [06: Feed Agent](../examples/06-feed-agent/README.md) | A deterministic pump polls any RSS/Atom or iCal feed (a Luma calendar via its `.ics` URL, for example) and publishes new items into a replayed channel; a feedkeeper agent edits the subscription list when asked in-channel. The boring-producer pattern: the pump has no judgment, the agent does no plumbing. |
 
 Example 02 running, a Claude Code swarm with the live console beside it:
 

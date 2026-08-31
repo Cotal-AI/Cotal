@@ -16,10 +16,11 @@ Two moving parts, deliberately split: the pump has no judgment, and the agent do
 **1. Start the mesh** (one terminal — stays running):
 
 ```
-pnpm cotal up --channels examples/06-feed-agent/channels.json
+pnpm cotal up --open --space demo --channels examples/06-feed-agent/channels.json
 ```
 
-That seeds `#feeds.events` with replay on, so an agent joining tomorrow still sees what was posted
+An unauthenticated dev mesh on the `demo` space — the space the pump and the commands below default
+to. It seeds `#feeds.events` with replay on, so an agent joining tomorrow still sees what was posted
 today.
 
 **2. See what the pump would post** — no mesh needed, nothing published, nothing marked as seen:
@@ -49,7 +50,7 @@ The file is machine-local and gitignored; delete it to replay a feed from scratc
 **4. Let an agent manage the subscriptions** (another terminal):
 
 ```
-cotal spawn --agent claude --name feedkeeper --config examples/06-feed-agent/agents/feedkeeper.md
+pnpm cotal spawn --agent claude --name feedkeeper --config examples/06-feed-agent/agents/feedkeeper.md
 ```
 
 Then, on `#feeds.events`, ask it in plain language:

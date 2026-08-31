@@ -210,7 +210,7 @@ async function main(): Promise<void> {
 
   if (values["dry-run"]) {
     // No mesh at all: print the lines a real run would publish and leave state/seen.json alone.
-    const printed = await runPass(subs, new Set(loadSeen(SEEN_FILE)), async (channel, text) => {
+    const printed = await runPass(subs, loadSeen(SEEN_FILE), async (channel, text) => {
       console.log(`  → #${channel}  ${text}`);
     });
     console.log(`dry run: ${printed} message(s) would be published (state untouched)`);
