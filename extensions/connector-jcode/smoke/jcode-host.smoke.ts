@@ -361,8 +361,12 @@ try {
   // into the host's MeshAgent. A schema-valid explicit `peek:false` must not be rejected by either
   // hop: the bug was an adapter-only no-argument branch that advertised this input then refused it.
   const privateMcp = JSON.parse(readFileSync(join(peerHome, "mcp.json"), "utf8")) as {
-    servers: { cotal: { env: Record<string, string> } };
+    servers: { cotal: { env: Record<string, string>; shared?: boolean } };
   };
+  // Jcode spawns a `shared: false` server once per session, so under a seat that runs subagents
+  // every member session leaves its own bridge process alive until seat teardown. The bridge must
+  // ride the daemon's pool; the daemon is seat-private, so pooling cannot cross seats.
+  check("bridge entry rides the per-seat daemon pool instead of spawning per session", privateMcp.servers.cotal.shared === true, privateMcp.servers.cotal);
   const relaySocket = privateMcp.servers.cotal.env.COTAL_JCODE_MCP_SOCKET!;
   const relayToken = privateMcp.servers.cotal.env.COTAL_JCODE_MCP_TOKEN!;
   await operator.multicast("quiet buffered", { channel: "team" });
