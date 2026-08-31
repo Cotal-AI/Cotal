@@ -79,6 +79,14 @@ space/name and is owner-only. Jcode's own credential inheritance is used for the
 so provider logins work without copying its transcript/config tree into the seat. The spawned
 Jcode process does not inherit `COTAL_*` values or the Cotal launch-material pointer.
 
+Because the home is keyed by space and name, a seat respawned under the same space, name, and
+manager workspace lands in the same home, and the connector automatically continues the newest
+non-archived Jcode session there that was recorded for the seat's working directory and holds a
+non-empty transcript. A seat spawned under a fresh name keys a different home and starts with an
+empty transcript, so keep the same name when you want a replacement seat to continue where the
+previous one stopped. This automatic continuation is a relaunch of the seat's own private session;
+it is separate from `--resume`, which names an outside session and stays unsupported.
+
 Connector diagnostics are written both to the spawning terminal and to an owner-only
 `<private-home>/logs/connector-<timestamp>-<pid>.log`, so a failed launch remains inspectable after
 the manager's launch error scrolls away. Public startup failures stay scrubbed to allow-listed

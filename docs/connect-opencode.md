@@ -127,9 +127,10 @@ Reasoning is off by default.
 
 ## Limits
 
-- **No session resume.** `cotal spawn --resume <id>` is Claude-only; OpenCode throws, because
+- **No session resume.** `cotal spawn --resume <id>` throws on OpenCode, because
   forking into an existing session needs session-creation plumbing, not an argv flag
-  ([issue #154](https://github.com/Cotal-AI/Cotal/issues/154)).
+  ([issue #154](https://github.com/Cotal-AI/Cotal/issues/154)). Connectors that support
+  resume are listed in [the matrix](connectors.md).
 - **No tool-sharing.** `connectors.opencode.mcpServers` is not implemented and throws if set.
   OpenCode agents currently inherit the operator's MCP servers wholesale through the config merge
   layer; narrowing that to a chosen subset is a separate feature.
