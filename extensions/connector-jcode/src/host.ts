@@ -134,7 +134,11 @@ function writeMcpConfig(home: string, relay: RelayEndpoint, config: AgentConfig)
           COTAL_JCODE_MCP_TOKEN: relay.token,
           COTAL_JCODE_MCP_CONFIG: JSON.stringify(publicConfig(config)),
         },
-        shared: false,
+        // Pooled (Jcode's default): one bridge per daemon, reused across every session in the
+        // seat, so repeated subagent sessions cannot each leave a bridge process behind until
+        // teardown. Pooling never crosses seats — the pool lives in the daemon and this daemon is
+        // private to the seat (its own JCODE_HOME, socket, and relay token above).
+        shared: true,
       },
     },
   };

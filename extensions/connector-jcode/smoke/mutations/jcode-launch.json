@@ -39,6 +39,14 @@
       "replace": "if (false) {",
       "command": "pnpm smoke:jcode-host",
       "expectRed": "Jcode cotal_inbox refuses JSON-own __proto__ without consuming the buffered message"
+    },
+    {
+      "name": "Jcode bridge rides the daemon pool instead of spawning per session",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "        shared: true,",
+      "replace": "        shared: false,",
+      "command": "pnpm smoke:jcode-host",
+      "expectRed": "bridge entry rides the per-seat daemon pool instead of spawning per session"
     }
   ]
 }
