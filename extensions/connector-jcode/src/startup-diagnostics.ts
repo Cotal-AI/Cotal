@@ -130,6 +130,17 @@ export function jcodeEffortRefusal(error: unknown, requestedTier: string, effect
 }
 
 /**
+ * The model an effort-refusal diagnostic may name.
+ *
+ * Prefer the operator pin. RuntimeInfo can still report the session default after `setModel`
+ * (measured: a CLI spawn that died on a variant-tier refusal recorded deepseek-v4-pro despite
+ * `--model grok-4.6`). Fall back to RuntimeInfo only when no pin was requested.
+ */
+export function effortRefusalModel(requested: string | undefined, runtime: string | undefined): string {
+  return requested ?? runtime ?? "(the provider default)";
+}
+
+/**
  * Classify only the Jcode SDK's invalid-request response and only when both fields are safely
  * extractable. Everything else retains the existing scrubbed startup diagnostic.
  */

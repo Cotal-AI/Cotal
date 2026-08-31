@@ -1,5 +1,40 @@
 # @cotal-ai/runtime
 
+## 0.37.0
+
+### Minor Changes
+
+- 00ac9d9: manager: refuse a manager-role spawn of a persona without the spawn capability. A persona defined over the wire (`cotal_persona`) carries no `capabilities:` line (the write path is content-only by design), and `cotal_spawn` takes a free-form `role`, so a wire-defined persona could be spawned with `role: "manager"` and join presenting as a manager whose credential cannot reach the control plane, silently, until the seat first tried to seat a worker (issue #966). The manager now refuses that spawn at accept, before any provisioning, naming the remediation for both authors: an operator adds `capabilities: [spawn]` to the persona file; a peer-defined persona cannot declare capabilities and must ask an operator. The guard keys on the effective role (a spawn-time role override wins over the file's, mirroring existing precedence) and leaves every non-manager spawn untouched. `cotal_spawn`'s `role` argument documents the requirement. Capabilities remain non-declarable over the wire: the closed `define-persona` input schema is unchanged and still guarded by `smoke:persona-input-closed`.
+
+### Patch Changes
+
+- Updated dependencies [e5e68ed]
+- Updated dependencies [c31de91]
+- Updated dependencies [d4779db]
+- Updated dependencies [6926b34]
+- Updated dependencies [d2c0fd3]
+- Updated dependencies [7e45495]
+- Updated dependencies [135ddaf]
+- Updated dependencies [e703873]
+- Updated dependencies [6c1cefe]
+- Updated dependencies [00ac9d9]
+- Updated dependencies [b20644b]
+- Updated dependencies [74c9a1b]
+- Updated dependencies [bfd650c]
+- Updated dependencies [e6c6947]
+- Updated dependencies [b36bf50]
+- Updated dependencies [3cc980d]
+- Updated dependencies [0098000]
+- Updated dependencies [d94b617]
+- Updated dependencies [eb3b429]
+- Updated dependencies [17046ac]
+- Updated dependencies [b7b932e]
+- Updated dependencies [8eff985]
+- Updated dependencies [b88edd9]
+- Updated dependencies [063151b]
+  - @cotal-ai/core@0.37.0
+  - @cotal-ai/lang@0.37.0
+
 ## 0.36.0
 
 ### Patch Changes

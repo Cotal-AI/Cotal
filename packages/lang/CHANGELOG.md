@@ -1,5 +1,15 @@
 # @cotal-ai/lang
 
+## 0.37.0
+
+### Minor Changes
+
+- 00ac9d9: manager: refuse a manager-role spawn of a persona without the spawn capability. A persona defined over the wire (`cotal_persona`) carries no `capabilities:` line (the write path is content-only by design), and `cotal_spawn` takes a free-form `role`, so a wire-defined persona could be spawned with `role: "manager"` and join presenting as a manager whose credential cannot reach the control plane, silently, until the seat first tried to seat a worker (issue #966). The manager now refuses that spawn at accept, before any provisioning, naming the remediation for both authors: an operator adds `capabilities: [spawn]` to the persona file; a peer-defined persona cannot declare capabilities and must ask an operator. The guard keys on the effective role (a spawn-time role override wins over the file's, mirroring existing precedence) and leaves every non-manager spawn untouched. `cotal_spawn`'s `role` argument documents the requirement. Capabilities remain non-declarable over the wire: the closed `define-persona` input schema is unchanged and still guarded by `smoke:persona-input-closed`.
+
+### Patch Changes
+
+- 0098000: A host stop inside a concurrency scope no longer poisons the run. `shouldStop` returning a reason while the walker was inside `parallel` or `fanOut` settled the scope entry as a failure carrying the release's own text as an `L4000` scope-fault, and a resume with a healthy host then replayed that entry and threw. The one interruption the release mechanism exists to make safe permanently ended any run that happened to be inside a scope, while the identical stop at a sequential seam resumed cleanly. `RunReleased` now joins the classes a scope refuses to record as its outcome, so the scope stays pending and a resume re-enters and finishes it.
+
 ## 0.36.0
 
 ## 0.35.0

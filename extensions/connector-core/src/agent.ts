@@ -13,6 +13,7 @@ import {
   EpEnvelopeError,
   isPublishPermissionDenied,
   unansweredRequest,
+  renderLifecycleBlocked,
   type EpAttributedReply,
   type EpVerbTarget,
   type ControlReply,
@@ -252,7 +253,7 @@ export class MeshAgent extends EventEmitter {
   /** Latest connection failure, retained until the endpoint binds so a bounded readiness gate can
    * explain why an otherwise healthy host never joined the mesh. */
   private lastConnectionError?: string;
-  private endpointErrorLog = new Map<string, { lastLoggedAt: number; suppressed: number }>();
+  private endpointNoticeLog = new Map<string, { lastLoggedAt: number; suppressed: number }>();
   private _status: PresenceStatus = "idle";
   private _attention: AttentionMode = "open"; // F3: fail-open default; reset to open on SessionStart
   private _recallCursor: RecallMark = { ts: 0, id: "" };
@@ -323,6 +324,9 @@ export class MeshAgent extends EventEmitter {
     });
     this.ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => this.ingest(m, d, meta));
     this.ep.on("error", (e: Error) => this.handleEndpointError(e));
+    // A warning is a condition the endpoint is already surviving. Log it through the same bounded
+    // operator sink, but never turn it into connectionIssue: readiness is still true.
+    this.ep.on("warning", (e: Error) => this.handleEndpointWarning(e));
     // Two guards, and the comments sit out here so neither anchors a mutation on prose. An
     // in-flight initial bind or rebuild can finish after stop() cleared local state, and shutdown is
     // terminal for this MeshAgent, so a late endpoint edge must not resurrect transport. Separately,
@@ -344,7 +348,7 @@ export class MeshAgent extends EventEmitter {
       this._connected = e.connected;
       if (e.connected) {
         this.lastConnectionError = undefined;
-        this.endpointErrorLog.clear();
+        this.endpointNoticeLog.clear();
       }
       this.emit("connection", e);
     });
@@ -1198,10 +1202,62 @@ export class MeshAgent extends EventEmitter {
    *  operator-local intent, kept off the peer-facing spawn door — see #159.) */
   async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string }): Promise<ControlReply> {
     await this.requireConnected();
-    const args = { name, role, agent: opts?.agent, model: opts?.model, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt };
+    const raw = opts?.model;
+    if (raw !== undefined && !raw.trim())
+      return { ok: false, error: "model: must not be empty" };
+    const requested = raw?.trim();
+    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt };
     // P2 item 2 (2b): spawn is an ACTION — follow the acceptance to the terminal so cotal_spawn
     // stays synchronous (the MCP reply carries the live outcome, not the pre-launch acceptance).
-    return this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true });
+    const reply = await this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true });
+    if (!requested) return reply;
+    // A requested pin that the manager did not record is the silent-drop failure (#972): the spawn
+    // looks successful, the seat comes up on the harness default, and nothing in the spawn result
+    // names the mismatch. Inspect is the manager's recorded pin (persona file or this override).
+    // A wait-timeout is still a timeout, not evidence the pin landed — annotate it, never upgrade it.
+    const actual = reply.data as { name?: string } | undefined;
+    const seat = actual?.name ?? name;
+    const recorded = await this.inspectModel(seat);
+    const recordedLabel = !recorded.ok
+      ? `could not inspect the recorded pin: ${recorded.error}`
+      : recorded.model === undefined
+        ? "the manager recorded no model pin"
+        : `the manager recorded ${JSON.stringify(recorded.model)}`;
+    if (recorded.ok && recorded.model !== requested) {
+      return {
+        ok: false,
+        error:
+          `requested model ${JSON.stringify(requested)} but ${recordedLabel} for "${seat}" — refusing a spawn whose pin did not land. The seat may already be live; inspect it before retrying, because a retry duplicates the spawn`,
+      };
+    }
+    if (!reply.ok) {
+      return {
+        ok: false,
+        error: `${reply.error ?? "manager refused"} (requested model ${JSON.stringify(requested)}; ${recordedLabel} for "${seat}")`,
+      };
+    }
+    if (!recorded.ok) {
+      return {
+        ok: false,
+        error:
+          `requested model ${JSON.stringify(requested)} for "${seat}" but ${recordedLabel} — refusing to report a pin that cannot be audited`,
+      };
+    }
+    return {
+      ok: true,
+      data: { ...(reply.data as Record<string, unknown> | undefined), model: recorded.model },
+    };
+  }
+
+  /** The manager's recorded model pin for a managed seat (`inspect.model`). Absence is a real
+   *  state: a launch may pin none. Distinct from a failed inspect, which cannot attest. */
+  async inspectModel(name: string): Promise<{ ok: true; model?: string } | { ok: false; error: string }> {
+    const info = await this.managerInvoke("inspect", { name });
+    if (!info.ok) return { ok: false, error: info.error ?? "inspect refused" };
+    const model = (info.data as { model?: unknown } | undefined)?.model;
+    if (model === undefined) return { ok: true };
+    if (typeof model !== "string") return { ok: false, error: `inspect returned a non-string model for "${name}"` };
+    return { ok: true, model };
   }
 
   /** One v0.4 manager-endpoint invoke (P2 item 1, 1c.2b): the generic {@link CotalEndpoint.invokeService}
@@ -1236,11 +1292,19 @@ export class MeshAgent extends EventEmitter {
           ok: false,
           error: unansweredRequest(e)
             ? `${e.message} (no responder answered - a manager may be down, or this credential holds no "${command}" capability and the broker denied the request)`
-            : `${e.code}: ${e.message}`,
+            : renderLifecycleBlocked(`${e.code}: ${e.message}`, e),
+          ...(e.details ? { details: e.details } : {}),
         };
       return { ok: false, error: (e as Error).message };
     }
-    if (r.reply.ok !== true) return { ok: false, error: r.reply.error?.message ?? r.reply.error?.code ?? "error" };
+    if (r.reply.ok !== true) {
+      const raw = r.reply.error?.message ?? r.reply.error?.code ?? "error";
+      return {
+        ok: false,
+        error: renderLifecycleBlocked(raw, r.reply.error),
+        ...(r.reply.error?.details ? { details: r.reply.error.details } : {}),
+      };
+    }
     return { ok: true, ...(r.reply.data !== undefined ? { data: r.reply.data } : {}) };
   }
 
@@ -1601,22 +1665,30 @@ export class MeshAgent extends EventEmitter {
    * attached Codex TUI. Consumer names are generated per reset, so normalize them before
    * deduplicating; otherwise every `_71`, `_72`, ... would look like a new fault. */
   private handleEndpointError(error: Error): void {
-    const now = Date.now();
     // connectionIssue is the bounded readiness diagnostic documented above: retain failures only
     // while the endpoint has not bound. Post-bind consumer/permission faults are still logged, but
     // presenting one as the current connection failure after readiness succeeded is stale and false.
     if (!this._connected && !this._stopping) this.lastConnectionError = error.message;
+    this.logEndpointNotice("error", error);
+  }
+
+  private handleEndpointWarning(error: Error): void {
+    this.logEndpointNotice("warning", error);
+  }
+
+  private logEndpointNotice(kind: "error" | "warning", error: Error): void {
+    const now = Date.now();
     const fingerprint = error.message.replace(/oc_[A-Za-z0-9]+_\d+/g, "oc_*");
-    const prior = this.endpointErrorLog.get(fingerprint);
+    const prior = this.endpointNoticeLog.get(fingerprint);
     if (prior && now - prior.lastLoggedAt < ENDPOINT_ERROR_LOG_WINDOW_MS) {
       prior.suppressed++;
       return;
     }
     const suffix = prior?.suppressed ? ` (${prior.suppressed} repeats suppressed)` : "";
-    this.endpointErrorLog.set(fingerprint, { lastLoggedAt: now, suppressed: 0 });
+    this.endpointNoticeLog.set(fingerprint, { lastLoggedAt: now, suppressed: 0 });
     // Bound the map even for a server producing novel error text on every request.
-    if (this.endpointErrorLog.size > 16) this.endpointErrorLog.delete(this.endpointErrorLog.keys().next().value!);
-    this.log(`endpoint error: ${error.message}${suffix}`);
+    if (this.endpointNoticeLog.size > 16) this.endpointNoticeLog.delete(this.endpointNoticeLog.keys().next().value!);
+    this.log(`endpoint ${kind}: ${error.message}${suffix}`);
   }
 
   private log(msg: string): void {

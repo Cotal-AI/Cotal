@@ -884,6 +884,16 @@ export async function performScope(
       await host.journal.settle(scopeKey, { status: "cancelled" }, endedAt, facts);
       throw reason;
     }
+    // A RELEASE IS NOT AN OUTCOME, INSIDE A SCOPE EITHER. `shouldStop` documents the law it keeps:
+    // a driver's reason to stop "must not be recorded as its outcome", and the run stays exactly
+    // where its journal says it is. The sequential seam kept that; this path did not, because the
+    // class fell past this ladder into the generic settle below and wrote the release's own text as
+    // an `L4000` scope-fault. A resume with a healthy host then replayed that entry and threw, so a
+    // plain host stop PERMANENTLY ended any run that happened to be inside a scope while the same
+    // stop one statement earlier resumed cleanly. Settling nothing is what leaves the run where it
+    // stands: a pending scope re-enters on resume (see the `miss`/`pending` note above) and settling
+    // is idempotent, which is the same shape `CloseOwed` above relies on.
+    if (reason instanceof RunReleased) throw reason;
     // Same rule as the effect path's. The RETHROW below is deliberately left alone: this scope
     // rethrows the raw reason, so a program catching a scope fault sees no language code where the
     // effect path hands it one. That asymmetry predates this rule (measured with a plain throw on

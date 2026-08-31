@@ -88,7 +88,7 @@ export interface MeshSnapshot {
   channels: { channel: string; messages: number }[];
   feed: FeedEntry[]; // classified + coalesced + windowed
   rates: { msgsPerSec: number };
-  status: { connected: boolean; space: string; dmVisible: boolean; error?: string };
+  status: { connected: boolean; space: string; dmVisible: boolean; error?: string; warning?: string };
   signals: MeshSignals;
   nameOf: (id: string) => string; // unicast target id → display name
 }
@@ -144,6 +144,7 @@ interface RawDm {
  * Events:
  * - `"entry"`  `(e: FeedEntry)` — one live feed row, as it lands (for the stream renderer).
  * - `"presence"` `(ev: PresenceEvent)` — forwarded presence change (join/update/offline).
+ * - `"warning"` `(e: Error)` — a recoverable endpoint notice for the stream renderer.
  * - `"change"` `(s: MeshSnapshot)` — a batched snapshot every ~75ms (for dashboards).
  */
 export class MeshView extends EventEmitter {
@@ -158,6 +159,7 @@ export class MeshView extends EventEmitter {
   private msgsPerSec = 0;
   private connected = false;
   private error?: string;
+  private warning?: string;
   private dirty = true;
 
   private readonly window: number;
@@ -170,6 +172,11 @@ export class MeshView extends EventEmitter {
   private readonly onError = (e: Error) => {
     this.error = e.message;
     this.dirty = true;
+  };
+  private readonly onWarning = (e: Error) => {
+    this.warning = e.message;
+    this.dirty = true;
+    this.emit("warning", e);
   };
 
   constructor(
@@ -186,6 +193,7 @@ export class MeshView extends EventEmitter {
   async start(): Promise<void> {
     // The error listener MUST be attached before start() — async faults surface as events.
     this.ep.on("error", this.onError);
+    this.ep.on("warning", this.onWarning);
     this.ep.on("roster", this.onRoster);
     this.ep.on("presence", this.onPresence);
     await this.ep.start();
@@ -210,6 +218,7 @@ export class MeshView extends EventEmitter {
     for (const b of this.pending.values()) clearTimeout(b.timer); // bursts hold live timers
     this.pending.clear();
     this.ep.off("error", this.onError);
+    this.ep.off("warning", this.onWarning);
     this.ep.off("roster", this.onRoster);
     this.ep.off("presence", this.onPresence);
     await this.ep.stop();
@@ -230,6 +239,7 @@ export class MeshView extends EventEmitter {
         space: this.ep.space,
         dmVisible: !this.chatOnly,
         error: this.error,
+        warning: this.warning,
       },
       signals: this.signals(),
       nameOf: this.nameOf,

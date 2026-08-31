@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 303,
+    "total": 305,
     "honest-text": 32,
     "presence-only-glyph/count": 41,
     "command-ack": 8,
-    "non-render/control": 222
+    "non-render/control": 224
   },
   "renderers": [
     {
@@ -495,7 +495,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "status-token",
-      "anchor": "dgedStatus = status === \"working\" ? \"working · progress u",
+      "anchor": "dgedStatus = status === \"working\" ? \"working \u00b7 progress u",
       "class": "command-ack",
       "rationale": "The working-only acknowledgement label explicitly distinguishes presence from unavailable progress observation."
     },
@@ -1198,7 +1198,7 @@
     {
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
       "kind": "derived-output",
-      "anchor": "{status.error ? (\n          <Text color=\"red\">{\"  ! \" + status.error}</Text>\n        ) : (\n          <Text dimColor>{\"   \" + keys}</Text>\n        )}",
+      "anchor": "{status.error ? (\n          <Text color=\"red\">{\"  ! \" + status.error}</Text>\n        ) : status.warning ? (\n          <Text color=\"yellow\">{\"  ! \" + status.warning}</Text>\n        ) : (\n          <Text dimColor>{\"   \" + keys}</Text>\n        )}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1213,6 +1213,20 @@
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
       "kind": "derived-output",
       "anchor": "\"  ! \" + status.error",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/StatusBar.tsx",
+      "kind": "derived-output",
+      "anchor": "{\"  ! \" + status.warning}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/StatusBar.tsx",
+      "kind": "derived-output",
+      "anchor": "\"  ! \" + status.warning",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },

@@ -112,6 +112,7 @@ export async function runFeedbackIntake(args: ParsedArgs): Promise<void> {
     },
   });
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
+  ep.on("warning", (e: Error) => console.error(c.red("! " + e.message)));
   await ep.start();
 
   mkdirSync(dirname(store), { recursive: true });

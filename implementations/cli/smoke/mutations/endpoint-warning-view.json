@@ -1,0 +1,25 @@
+{
+  "suite": "implementations/cli/smoke/view.smoke.ts",
+  "guard": "MeshView's shipped warning registration reaches both the shared snapshot and stream event",
+  "command": "pnpm smoke:view",
+  "progressPattern": "✓",
+  "minTicks": 13,
+  "mutations": [
+    {
+      "name": "MeshView stops storing the latest endpoint warning",
+      "file": "implementations/cli/src/view/mesh-view.ts",
+      "find": "    this.warning = e.message;",
+      "replace": "    void e.message;",
+      "expectRed": "MeshView's own warning listener reaches the model and stream event",
+      "cell": "MeshView's own warning listener reaches the model and stream event"
+    },
+    {
+      "name": "MeshView stops emitting endpoint warnings to stream renderers",
+      "file": "implementations/cli/src/view/mesh-view.ts",
+      "find": "    this.emit(\"warning\", e);",
+      "replace": "    void e;",
+      "expectRed": "MeshView's own warning listener reaches the model and stream event",
+      "cell": "MeshView's own warning listener reaches the model and stream event"
+    }
+  ]
+}

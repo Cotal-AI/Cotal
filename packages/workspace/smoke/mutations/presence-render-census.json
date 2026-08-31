@@ -69,7 +69,7 @@
     {
       "name": "M9 join working acknowledgement drops unknown progress",
       "file": "implementations/cli/src/commands/join.ts",
-      "find": "    const acknowledgedStatus = status === \"working\" ? \"working · progress unknown\" : status;",
+      "find": "    const acknowledgedStatus = status === \"working\" ? \"working \u00b7 progress unknown\" : status;",
       "replace": "    const acknowledgedStatus = status;",
       "command": "pnpm build && pnpm smoke:cli-seat-locality",
       "expectRed": "join /working acknowledgement names unknown progress"
@@ -77,7 +77,7 @@
     {
       "name": "M8 expected AST candidate total drifts by one",
       "file": "packages/workspace/smoke/fixtures/presence-render-sinks.json",
-      "find": "    \"total\": 303,",
+      "find": "    \"total\": 305,",
       "replace": "    \"total\": 302,",
       "expectRed": "presence render census count drifted"
     }

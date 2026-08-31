@@ -173,7 +173,6 @@ try {
   });
   check("recovered Harness client reattaches the existing private session after the transient loss (#971)", reattachments.length >= 2, reattachments);
 
-  await operator.unicast(peerId!, "RECOVERED_MESH_WORK");
   const retriedTurn = await waitFor("unacknowledged stalled turn redelivery", () => {
     const attempts = entries().filter(
       (entry) =>
@@ -186,6 +185,15 @@ try {
   });
   check("recovered seat redrives the unacknowledged stalled turn (#781)", retriedTurn.length >= 2, retriedTurn);
 
+  // The redriven turn owns the session until its boundary, so the post-recovery work is only sent
+  // once that turn is done. A directed DM arriving while it is still live is delivered through
+  // Jcode's soft-interrupt queue instead, which is the documented mid-turn path and commits at the
+  // containing turn's boundary — a correct delivery that never opens the new turn this cell reads.
+  await waitFor("redriven stalled turn boundary", () =>
+    entries().find(
+      (entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("SIMULATE_PROVIDER_STALL"),
+    ),
+  );
   await operator.unicast(peerId!, "RECOVERED_MESH_WORK");
   const recoveredTurn = await waitFor("post-recovery turn", () =>
     entries().find(

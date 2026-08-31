@@ -106,7 +106,16 @@ let attachedExisting;
 let createdFresh = false;
 let sessionWorkingDir;
 let orientationTurns = 0;
+let sessionModel = process.env.FAKE_JCODE_DEFAULT_MODEL ?? "deepseek-v4-pro";
 const sessionStatePath = process.env.FAKE_JCODE_SESSION_STATE;
+const journalPath = process.env.FAKE_JCODE_JOURNAL;
+const writeJournal = (sessionId) => {
+  if (!journalPath) return;
+  writeFileSync(
+    journalPath,
+    `${JSON.stringify({ meta: { model: sessionModel, session_id: sessionId ?? "fake-session" } })}\n`,
+  );
+};
 const storedSession = () => {
   if (sessionStatePath && existsSync(sessionStatePath)) return JSON.parse(readFileSync(sessionStatePath, "utf8"));
   if (!createdFresh && !attachedExisting) return undefined;
@@ -169,12 +178,14 @@ const server = createServer((socket) => {
           attachedExisting = frame.session_id;
           sessionWorkingDir = frame.working_dir ?? storedSession()?.working_dir;
           saveSession({ session_id: frame.session_id, working_dir: sessionWorkingDir, transcript_bytes: 1 });
+          writeJournal(frame.session_id);
           reply({ ev: "attached", session: { session_id: frame.session_id, working_dir: sessionWorkingDir, status: "idle" } });
           break;
         case "create_session":
           createdFresh = true;
           sessionWorkingDir = frame.working_dir;
           saveSession({ session_id: "fake-session", working_dir: sessionWorkingDir, transcript_bytes: 1 });
+          writeJournal("fake-session");
           reply({ ev: "attached", session: { session_id: "fake-session", working_dir: sessionWorkingDir, status: "idle" } });
           break;
         case "set_model":
@@ -185,6 +196,8 @@ const server = createServer((socket) => {
               message: process.env.FAKE_JCODE_MODEL_ERROR ?? `model ${frame.model} was refused`,
             });
           } else {
+            if (typeof frame.model === "string" && frame.model.trim()) sessionModel = frame.model.trim();
+            writeJournal(attachedExisting ?? "fake-session");
             reply({ ev: "ok" });
           }
           break;

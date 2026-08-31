@@ -31,6 +31,12 @@ async function waitFor<T>(name: string, read: () => T | undefined, timeoutMs = 2
 }
 
 const root = mkdtempSync(join(tmpdir(), "cotal-jcode-host-"));
+// Control sockets are AF_UNIX. os.tmpdir() on macOS and a long TMPDIR on Linux
+// put `mismatchedmodel-control.sock` over sun_path (104/107) while the shorter
+// prefix/refuse sockets still bind — the cell then exits 1 with a connector
+// control-listen error instead of the model_mismatch diagnostic.
+const sockRoot = mkdtempSync(join("/tmp", "cjh-"));
+const controlSock = (name: string): string => join(sockRoot, name);
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
 const fake = fileURLToPath(new URL("./fake-jcode.mjs", import.meta.url));
@@ -293,12 +299,14 @@ try {
   const inheritedJcodeHome = join(root, "source-jcode");
   mkdirSync(inheritedJcodeHome, { recursive: true, mode: 0o700 });
   writeFileSync(join(inheritedJcodeHome, "auth.json"), "host-smoke-token", { mode: 0o600 });
+  const journal = join(root, "session.journal.jsonl");
   child = spawnHost({
     cwd: root,
     env: {
       ...env,
       PATH: `${shimDir}:${env.PATH ?? ""}`,
       FAKE_JCODE_LOG: log,
+      FAKE_JCODE_JOURNAL: journal,
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodehost",
       COTAL_NAME: "jcodepeer",
@@ -312,7 +320,7 @@ try {
       COTAL_JCODE_TUI: "0",
       COTAL_MODEL: "fake-model",
       COTAL_VARIANT: "high",
-      COTAL_CONTROL_SOCKET: join(root, "control.sock"),
+      COTAL_CONTROL_SOCKET: controlSock("control.sock"),
       COTAL_CONTROL_TOKEN: "jcode-host-smoke-control-token",
     },
     stdio: ["ignore", "ignore", "pipe"],
@@ -323,6 +331,19 @@ try {
   await waitFor("fake bridge", () => entries().find((entry) => entry.ev === "listening"));
   await waitFor("mesh presence", () => peerId);
   check("Jcode host joins the mesh", Boolean(peerId));
+  const journalModel = existsSync(journal)
+    ? (JSON.parse(readFileSync(journal, "utf8").split("\n").filter(Boolean).at(-1) ?? "{}") as { meta?: { model?: string } }).meta?.model
+    : undefined;
+  check(
+    "session journal records the requested model pin, not the harness default",
+    journalModel === "fake-model",
+    journalModel,
+  );
+  check(
+    "session journal does not keep the harness default after setModel",
+    journalModel !== "deepseek-v4-pro",
+    journalModel,
+  );
   const argv = entries().find((entry) => entry.ev === "argv") as { argv?: string[]; env?: Record<string, string> };
   check("host uses api-bridge with its private socket", argv.argv?.[0] === "api-bridge" && argv.argv?.[1] === "--api-socket", argv);
   check("host scrubs Cotal material before launching Jcode", Object.keys(argv.env ?? {}).every((key) => !key.startsWith("COTAL_")), argv.env);
@@ -426,7 +447,7 @@ try {
       COTAL_ALLOW_PUBLISH: "team",
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
-      COTAL_CONTROL_SOCKET: join(root, "race-control.sock"),
+      COTAL_CONTROL_SOCKET: controlSock("race-control.sock"),
       COTAL_CONTROL_TOKEN: "race-control-token",
     },
     stdio: ["ignore", "ignore", "pipe"],
@@ -460,7 +481,7 @@ try {
       COTAL_ALLOW_PUBLISH: "team",
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
-      COTAL_CONTROL_SOCKET: join(root, "absent-control.sock"),
+      COTAL_CONTROL_SOCKET: controlSock("absent-control.sock"),
       COTAL_CONTROL_TOKEN: "absent-control-token",
     },
     stdio: ["ignore", "ignore", "pipe"],
@@ -500,7 +521,7 @@ try {
       COTAL_JCODE_TUI: "0",
       COTAL_MODEL: "fake-model",
       COTAL_VARIANT: "xhigh",
-      COTAL_CONTROL_SOCKET: join(root, "refused-control.sock"),
+      COTAL_CONTROL_SOCKET: controlSock("refused-control.sock"),
       COTAL_CONTROL_TOKEN: "refused-control-token",
     },
     stdio: ["ignore", "ignore", "pipe"],
@@ -578,7 +599,7 @@ try {
         COTAL_JCODE_HOME: root,
         COTAL_JCODE_TUI: "0",
         COTAL_MODEL: modelCase.model,
-        COTAL_CONTROL_SOCKET: join(root, `${modelCase.name}-control.sock`),
+        COTAL_CONTROL_SOCKET: controlSock(`${modelCase.name}-control.sock`),
         COTAL_CONTROL_TOKEN: `${modelCase.name}-control-token`,
       },
       stdio: ["ignore", "ignore", "pipe"],
@@ -619,7 +640,7 @@ try {
       COTAL_ALLOW_PUBLISH: "team",
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
-      COTAL_CONTROL_SOCKET: join(root, "outage-control.sock"),
+      COTAL_CONTROL_SOCKET: controlSock("outage-control.sock"),
       COTAL_CONTROL_TOKEN: "outage-control-token",
     },
     stdio: ["ignore", "ignore", "pipe"],
@@ -675,7 +696,7 @@ try {
       COTAL_ALLOW_PUBLISH: "team",
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "1",
-      COTAL_CONTROL_SOCKET: join(root, "tui-control.sock"),
+      COTAL_CONTROL_SOCKET: controlSock("tui-control.sock"),
       COTAL_CONTROL_TOKEN: "tui-control-token",
     },
     stdio: ["ignore", "ignore", "pipe"],
@@ -707,7 +728,7 @@ try {
       COTAL_ALLOW_PUBLISH: "team",
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
-      COTAL_CONTROL_SOCKET: join(root, "blocked-control.sock"),
+      COTAL_CONTROL_SOCKET: controlSock("blocked-control.sock"),
       COTAL_CONTROL_TOKEN: "blocked-control-token",
     },
     stdio: ["ignore", "ignore", "pipe"],
@@ -738,7 +759,7 @@ try {
       COTAL_ALLOW_PUBLISH: "team",
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
-      COTAL_CONTROL_SOCKET: join(root, "refused-control.sock"),
+      COTAL_CONTROL_SOCKET: controlSock("refused-control.sock"),
       COTAL_CONTROL_TOKEN: "refused-control-token",
     },
     stdio: ["ignore", "ignore", "pipe"],
