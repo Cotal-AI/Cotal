@@ -746,3 +746,10 @@ smoke:status-provenance
 # encoded as explicitly-labeled "#773 unfixed" expectations plus a unified-root positive control.
 # Appended so every existing shard assignment remains unchanged.
 smoke:manager-two-root-renewal
+
+# The #964 stack-stop reap, driven by the shipped owner: a real Manager over an authed broker
+# hard-stops and deprovisions a live managed seat on a plain stop() with no sparing mode, with
+# the defective behavior encoded as explicitly-labeled "#964 unfixed" expectations plus a
+# deliberate-despawn control showing identical terminal observables.
+# Appended so every existing shard assignment remains unchanged.
+smoke:manager-stop-reap
