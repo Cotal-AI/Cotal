@@ -4,6 +4,8 @@
 "@cotal-ai/connector-claude-code": minor
 "@cotal-ai/connector-opencode": minor
 "@cotal-ai/connector-hermes": minor
+"@cotal-ai/connector-codex": minor
+"@cotal-ai/connector-jcode": minor
 "@cotal-ai/pi": minor
 "cotal-ai": minor
 ---
