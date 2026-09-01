@@ -26,6 +26,7 @@ import { CotalEndpoint, DEFAULT_SERVER, isReachable } from "@cotal-ai/core";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
 const DEFAULT_CONFIG = join(ROOT, "subscriptions.yaml");
+const FEED_CONTROL_CHANNEL = "feeds.control";
 const SEEN_FILE = join(ROOT, "state", "seen.json");
 
 const SEEN_CAP = 2000;      // newest N keys kept; older items can never come back on a live feed
@@ -75,7 +76,7 @@ const icalText = (v: ParameterValue | undefined): string => (typeof v === "strin
 
 const isEvent = (c: CalendarComponent | undefined): c is VEvent => (c as VEvent | undefined)?.type === "VEVENT";
 
-function loadSubscriptions(file: string): Subscription[] {
+export function loadSubscriptions(file: string): Subscription[] {
   const doc = parseYaml(readFileSync(file, "utf8")) as { subscriptions?: unknown } | null;
   const list = doc?.subscriptions;
   if (!Array.isArray(list) || list.length === 0)
@@ -83,6 +84,8 @@ function loadSubscriptions(file: string): Subscription[] {
   return list.map((entry, i) => {
     const sub = entry as Partial<Subscription>;
     if (!sub?.url || !sub.channel) throw new Error(`subscription #${i + 1} in ${file} needs both "url" and "channel"`);
+    if (sub.channel === FEED_CONTROL_CHANNEL)
+      throw new Error(`subscription #${i + 1} in ${file}: ${FEED_CONTROL_CHANNEL} is reserved for trusted peer requests`);
     // A typo like `kind: ics` would otherwise be treated as RSS and fail later as a parse error.
     if (sub.kind && !["auto", "rss", "ical"].includes(sub.kind))
       throw new Error(`subscription #${i + 1} in ${file}: kind "${sub.kind}" is not auto, rss, or ical`);

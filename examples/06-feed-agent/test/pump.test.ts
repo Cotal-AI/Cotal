@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
-  fetchFeed, fromIcal, fromRss, isPublicAddress, loadSeen, readResponseBody, render, runPass,
+  fetchFeed, fromIcal, fromRss, isPublicAddress, loadSeen, loadSubscriptions, readResponseBody, render, runPass,
   type Item, type Subscription,
 } from "../src/pump.ts";
 
@@ -107,6 +107,17 @@ test("seen state accepts string arrays and rejects every other JSON shape", () =
       writeFileSync(file, value);
       assert.throws(() => loadSeen(file), /expected an array of strings/);
     }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("subscriptions cannot publish remote feed data onto the trusted control channel", () => {
+  const dir = mkdtempSync(join(tmpdir(), "feed-config-"));
+  const file = join(dir, "subscriptions.yaml");
+  try {
+    writeFileSync(file, "subscriptions:\n  - url: https://feeds.example.test/rss\n    channel: feeds.control\n");
+    assert.throws(() => loadSubscriptions(file), /feeds\.control is reserved for trusted peer requests/);
+    writeFileSync(file, "subscriptions:\n  - url: https://feeds.example.test/rss\n    channel: feeds.events\n");
+    assert.equal(loadSubscriptions(file)[0]?.channel, "feeds.events");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

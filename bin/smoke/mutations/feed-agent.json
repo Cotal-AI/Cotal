@@ -2,7 +2,7 @@
   "suite": "examples/06-feed-agent/test/pump.test.ts",
   "guard": "the feed pump rejects private destinations, bounds remote bodies, isolates bad items, labels remote text as untrusted, and keeps agent control on a separate channel",
   "command": "pnpm --filter @cotal-ai/example-06-feed-agent test",
-  "completionMarker": "tests 11",
+  "completionMarker": "tests 12",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/feed-agent.json",
   "why": [
     "M1 restores the malformed-date crash by carrying the raw RSS date into render. The date cell",
@@ -22,7 +22,10 @@
     "checking that header alone cannot satisfy it.",
     "",
     "M6 puts feedkeeper back on the raw feed channel. The cell reads the persona and channel registry",
-    "that users actually spawn, and rejects the old authority path."
+    "that users actually spawn, and rejects the old authority path.",
+    "",
+    "M7 removes the production config guard on feeds.control. The cell drives the shipped YAML reader",
+    "with both a hostile control target and a normal feed target, so checking persona text cannot pass it."
   ],
   "mutations": [
     {
@@ -66,6 +69,13 @@
       "find": "subscribe: [feeds.control]\nallowSubscribe: [feeds.control]\nallowPublish: [feeds.control]",
       "replace": "subscribe: [feeds.events]\nallowSubscribe: [feeds.events]\nallowPublish: [feeds.events]",
       "expectRed": "channel and persona files keep control requests separate from feed data"
+    },
+    {
+      "name": "a remote feed may publish directly onto the trusted control channel",
+      "file": "examples/06-feed-agent/src/pump.ts",
+      "find": "    if (sub.channel === FEED_CONTROL_CHANNEL)\n      throw new Error(`subscription #${i + 1} in ${file}: ${FEED_CONTROL_CHANNEL} is reserved for trusted peer requests`);\n",
+      "replace": "",
+      "expectRed": "subscriptions cannot publish remote feed data onto the trusted control channel"
     }
   ]
 }
