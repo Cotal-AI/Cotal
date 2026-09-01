@@ -68,11 +68,10 @@ const runCommand: Command = {
   group: "Manager",
   summary: "operate workflow runs — start, resume, list, inspect, answer",
   usage:
-    "run <start --file <program> [--run <id>] | resume <runId> --file <program> | ps | journal <runId> | answer <runId> <stepKey> --by <who> [--value <json>]> [--endpoint <ep>]",
+    "run <start --file <program> | resume <runId> --file <program> | ps | journal <runId> | answer <runId> <stepKey> --by <who> [--value <json>]> [--endpoint <ep>]",
   flags: [
     ...targetFlags,
     { name: "file", type: "string", short: "f", value: "<program>", description: "cotal-lang program source (start/resume; the record stores no source)" },
-    { name: "run", type: "string", value: "<id>", description: "run id for `start` (default: generated)" },
     { name: "endpoint", type: "string", value: "<ep>", description: "hosting endpoint for the run record (default: manager)" },
     { name: "timeout", type: "string", value: "<dur>", description: "default checkpoint timeout for this drive (default: 1h)" },
     { name: "by", type: "string", value: "<who>", description: "who is answering (answer; required)" },

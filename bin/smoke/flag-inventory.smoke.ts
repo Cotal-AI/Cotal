@@ -20,6 +20,7 @@ import "@cotal-ai/cli"; // registers the base CLI commands
 import "@cotal-ai/manager"; // registers supervise/start/stop/ps/attach
 import "@cotal-ai/delivery"; // registers deliver
 import "@cotal-ai/auth"; // registers login/logout
+import "@cotal-ai/runtime"; // registers run
 
 /** flag spec inventory as "name:type" (+ ":short" when aliased), sorted. */
 const TARGET = ["creds:string", "server:string", "space:string"];
@@ -217,6 +218,16 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   "agent-bearer": {
     flags: ["actor:string", "dir:string", "exchange-url:string", "health-file:string", "owner:string", "space:string", "token-file:string"],
     positionals: false,
+  },
+  // `run` (2026-09): the workflow-run operator surface from @cotal-ai/runtime. The run id is
+  // minted by the driver (the records table forbids a caller-supplied id), so `start` takes no id
+  // flag; resume/journal/answer name an existing run positionally.
+  run: {
+    flags: [
+      "artifact:string", "by:string", "creds:string", "endpoint:string", "file:string:f",
+      "server:string", "space:string", "timeout:string", "value:string",
+    ],
+    positionals: true,
   },
 };
 

@@ -26,21 +26,20 @@ import {
   standaloneConnectOpts,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import type { JournalEntry } from "@cotal-ai/lang";
+import { journalEntryKeyString, type JournalEntry } from "@cotal-ai/lang";
 import { connectOrExit, endpointAuth } from "@cotal-ai/workspace";
 import { startRun, driveRun, type DriveOutcome } from "./run-driver.js";
 import { MeshHandler, EpfSettleWatcher } from "./mesh-handler.js";
 import { openCheckpointToken, resolveCheckpoint } from "./resolve-checkpoint.js";
 
 const USAGE =
-  'usage: cotal run <start --file <program> [--run <id>] | resume <runId> --file <program> | ps | journal <runId> | answer <runId> <stepKey> --by <who> [--value <json>]> [--endpoint <ep>] [--space <s>] [--server <url>] [--creds <path>]';
+  'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> --file <program> | ps | journal <runId> | answer <runId> <stepKey> --by <who> [--value <json>] [--artifact <ref>]> [--endpoint <ep>] [--space <s>] [--server <url>] [--creds <path>]';
 
 interface RunValues {
   space?: string;
   server?: string;
   creds?: string;
   file?: string;
-  run?: string;
   endpoint?: string;
   timeout?: string;
   by?: string;
@@ -83,10 +82,16 @@ async function openPlanes(values: RunValues): Promise<Planes> {
   };
 }
 
-/** This process, as the run record will name it. Fresh per invocation: a CLI drive is one holder. */
+/**
+ * This process, as the run record will name it. Fresh per invocation, ID INCLUDED: two concurrent
+ * drives of one run derive the same fencing token and epoch from one record read, and the
+ * activation barrier deliberately relaxes the exact (token, holder, epoch) tuple as a process
+ * picking its own run back up — so a constant id would let a second concurrent drive co-activate
+ * through that relaxation instead of being refused.
+ */
 function cliHolder(): { id: string; lifecycleUid: string; instanceId: string } {
   const uid = randomUUID().replaceAll("-", "");
-  return { id: "cli-run", lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };
+  return { id: `cli-run-${uid.slice(0, 8)}`, lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };
 }
 
 function readProgram(values: RunValues): string {
@@ -116,7 +121,8 @@ function reportOutcome(runId: string, out: DriveOutcome): void {
 async function start(values: RunValues, planes: Planes): Promise<void> {
   const source = readProgram(values);
   const endpoint = values.endpoint ?? "manager";
-  const runId = values.run ?? `run-${Date.now().toString(36)}`;
+  // Minted here, never caller-supplied: the records table binds run-id minting to the driver.
+  const runId = `run-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
   const who = cliHolder();
   const handler = new MeshHandler(
     planes.kv,
@@ -253,11 +259,10 @@ async function journal(planes: Planes, runId: string | undefined): Promise<void>
       console.log(`#${record.n}  activation  holder=${record.holder} epoch=${record.epoch} replayedTo=${record.replayedTo}`);
       continue;
     }
-    const e = record.entry as {
-      scope?: string; kind?: string; name?: string; occurrence?: number;
-      state?: string; status?: string; error?: { code?: string };
-    };
-    const step = `${e.scope ?? ""}/${e.name ? `${e.kind}:${e.name}` : e.kind}#${e.occurrence ?? 0}`;
+    const e = record.entry as JournalEntry;
+    // The key the operator sees is the key `answer <stepKey>` takes back, so it is rendered by
+    // the same export the journal itself keys with, never a second hand-rolled copy of the rule.
+    const step = journalEntryKeyString(e);
     const outcome = e.state === "pending" ? "pending" : `${e.status}${e.error?.code ? ` (${e.error.code})` : ""}`;
     console.log(`#${record.n}  step        ${step}  ${outcome}`);
   }
@@ -277,6 +282,16 @@ async function answer(values: RunValues, planes: Planes, runId: string | undefin
   const entries = replay.records
     .filter((r) => r.record.kind === "step")
     .map((r) => (r.record as { entry: unknown }).entry as JournalEntry);
+  let parsedValue: unknown;
+  if (values.value !== undefined) {
+    try {
+      parsedValue = JSON.parse(values.value);
+    } catch {
+      console.error(`run answer: --value is not valid JSON: ${values.value}`);
+      console.error('a bare string needs its own quotes, e.g. --value \'"yes"\'');
+      process.exit(1);
+    }
+  }
   const token = openCheckpointToken(entries, runId, stepKey);
   const spec = await readCheckpointSpec(planes.kv, { endpoint, token });
   if (spec === undefined) {
@@ -289,7 +304,7 @@ async function answer(values: RunValues, planes: Planes, runId: string | undefin
       runId,
       stepKey,
       by: values.by,
-      ...(values.value !== undefined ? { value: JSON.parse(values.value) as unknown } : {}),
+      ...(values.value !== undefined ? { value: parsedValue } : {}),
       ...(values.artifact !== undefined ? { artifact: values.artifact } : {}),
       now: Date.now(),
     },

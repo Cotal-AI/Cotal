@@ -102,15 +102,16 @@ untouched.
 ## Operating a run
 
 `cotal run` is the operator surface over the driver. Every verb opens one connection to the
-resolved mesh target (the usual `--space` / `--server` / `--creds` flags) and exits when the drive
-settles.
+resolved mesh target (the usual `--space` / `--server` / `--creds` flags). `start`, `resume` and
+`answer` drive and exit when the drive settles; `ps` and `journal` inspect and exit at once.
+`start` mints the run id and prints it, and the record never takes a caller-supplied one.
 
 ```bash
-cotal run start --file build.cotal.js --run nightly     # drive a new run to quiescence
+cotal run start --file build.cotal.js                   # drive a new run; the minted id is printed
 cotal run ps                                            # list run records: state, holder, lineage
-cotal run journal nightly                               # print the durable step journal
-cotal run resume nightly --file build.cotal.js          # take the run over and continue it
-cotal run answer nightly "/checkpoint:approve#0" --by dana --value '"yes"'
+cotal run journal run-3f2a90c41b7e                      # print the durable step journal
+cotal run resume run-3f2a90c41b7e --file build.cotal.js # take the run over and continue it
+cotal run answer run-3f2a90c41b7e "/checkpoint:approve#0" --by dana --value '"yes"'
 ```
 
 `start` and `resume` need `--file`: the record stores no source, so the caller supplies the same
