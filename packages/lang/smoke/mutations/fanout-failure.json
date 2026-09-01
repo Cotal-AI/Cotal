@@ -7,8 +7,8 @@
     {
       "name": "the siblings are not cancelled on a branch's rejection (the old behaviour)",
       "file": "packages/lang/src/perform.ts",
-      "find": "    } catch (e) {\n      for (const f of frames) f.signal.cancel(\"a sibling branch failed\");\n      await Promise.allSettled(launched);",
-      "replace": "    } catch (e) {\n      await Promise.allSettled(launched);",
+      "find": "      for (const f of frames) f.signal.cancel(\"a sibling branch failed\");\n      await Promise.allSettled(launched);\n      frame.clock.join(frames.map((f) => f.clock));\n      const losers = branchKeys.filter((k) => k !== failed);",
+      "replace": "      await Promise.allSettled(launched);\n      frame.clock.join(frames.map((f) => f.clock));\n      const losers = branchKeys.filter((k) => k !== failed);",
       "expectRed": "and the siblings are cancelled: a branch whose effect completes after the failure begins no new effect",
       "completionMarker": "ok a rejecting fanOut branch fails the scope with the branch's own thrown value, which the program can catch",
       "cell": "and the siblings are cancelled: a branch whose effect completes after the failure begins no new effect",
