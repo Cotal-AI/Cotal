@@ -109,9 +109,9 @@ resolved mesh target (the usual `--space` / `--server` / `--creds` flags). `star
 ```bash
 cotal run start --file build.cotal.js                   # drive a new run; the minted id is printed
 cotal run ps                                            # list run records: state, holder, lineage
-cotal run journal run-3f2a90c41b7e                      # print the durable step journal
-cotal run resume run-3f2a90c41b7e --file build.cotal.js # take the run over and continue it
-cotal run answer run-3f2a90c41b7e "/checkpoint:approve#0" --by dana --value '"yes"'
+cotal run journal run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # print the durable step journal
+cotal run resume run-3f2a90c41b7e0d5a6c884e19b02df4a1 --file build.cotal.js # take the run over and continue it
+cotal run answer run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --by dana --value '"yes"'
 ```
 
 `start` and `resume` need `--file`: the record stores no source, so the caller supplies the same

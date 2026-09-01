@@ -12,7 +12,7 @@
  * pumps on a live mesh; `start` on a bare broker still runs and still resolves, it just cannot
  * expire a pause.
  */
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { connect } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
@@ -122,7 +122,9 @@ async function start(values: RunValues, planes: Planes): Promise<void> {
   const source = readProgram(values);
   const endpoint = values.endpoint ?? "manager";
   // Minted here, never caller-supplied: the records table binds run-id minting to the driver.
-  const runId = `run-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  // 128 bits, the width the spec's other minted identifiers carry, so a colliding start is
+  // outside any realistic horizon rather than a rare one-shot refusal.
+  const runId = `run-${randomBytes(16).toString("hex")}`;
   const who = cliHolder();
   const handler = new MeshHandler(
     planes.kv,
