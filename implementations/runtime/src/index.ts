@@ -68,7 +68,7 @@ const runCommand: Command = {
   group: "Manager",
   summary: "operate workflow runs — start, resume, list, inspect, answer",
   usage:
-    "run <start --file <program> | resume <runId> --file <program> | ps | journal <runId> | answer <runId> <stepKey> --by <who> [--value <json>]> [--endpoint <ep>]",
+    "run <start --file <program> [--timeout <dur>] | resume <runId> --file <program> | ps | journal <runId> | answer <runId> <stepKey> --by <who> [--value <json>] [--artifact <ref>]> [--endpoint <ep>]",
   flags: [
     ...targetFlags,
     { name: "file", type: "string", short: "f", value: "<program>", description: "cotal-lang program source (start/resume; the record stores no source)" },
