@@ -17,7 +17,7 @@
     {
       "name": "a release inside fanOut is treated as a branch failure and cancels siblings",
       "file": "packages/lang/src/perform.ts",
-      "find": "      // The same host-side rule as `parallel`: a release, a held run, or a refused append\n      // cancels nothing.\n      if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected) {\n        await Promise.allSettled(launched);\n        throw e;\n      }",
+      "find": "      if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected) {\n        await Promise.allSettled(launched);\n        throw e;\n      }",
       "replace": "      // mutant: a release rides the branch-failure path and cancels siblings",
       "expectRed": "so a healthy driver resumes past a fanOut it was stopped inside",
       "completionMarker": "ok so a healthy driver resumes past a parallel it was stopped inside",
