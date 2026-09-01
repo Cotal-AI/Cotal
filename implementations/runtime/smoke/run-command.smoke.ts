@@ -155,6 +155,52 @@ let H = "";
   c("and the held start completes", outcome === "completed" && captured().includes(`run ${cid}: completed`), outcome);
 }
 
+// ── 6b) a parked run survives its driver dying: a fresh holder's resume attaches and completes ─
+//
+// The strand measured through the real binary before the repair: every invocation mints its own
+// holder, so a resume of a checkpoint-parked run re-minted the pause under it, the plane refused
+// ("a token is minted once"), and the interpreter journalled the refusal as the step's own
+// failure — ONE resume stranded the run with `failed (L4000)` and a record blaming the program.
+// Here the start's driver is simply abandoned (in the real repro the process died), a second
+// invocation resumes under its own fresh holder, and the answer arrives after that.
+{
+  reset();
+  // The abandoned driver: superseded by the resume below, its settle append is refused and it
+  // reports released — the in-process crash shape, and not this section's claim.
+  const orphan = wf(["start"], { file: CHECKPOINT }).catch(() => undefined);
+  let C2: string | undefined;
+  for (let i = 0; i < 100 && C2 === undefined; i += 1) { await wait(50); C2 = startedId(); }
+  const cid = C2 ?? "";
+  let open = false;
+  for (let i = 0; i < 100 && !open; i += 1) {
+    await wait(200);
+    const back = await replayRunJournal(js, jsm, SPACE, cid, `t${(takeovers += 1)}`).catch(() => undefined);
+    for (const r of back?.records ?? []) {
+      if (r.record.kind !== "step") continue;
+      const e = r.record.entry as JournalEntry;
+      if (e.kind === "checkpoint" && e.state === "pending") open = true;
+    }
+  }
+  reset();
+  const resumed = wf(["resume", cid], { file: CHECKPOINT });
+  // Give the attach time to reach the plane, then grade what it did NOT do: no step settled
+  // failed, and the recorded pause still open under its original mint.
+  await wait(1_500);
+  const back = await replayRunJournal(js, jsm, SPACE, cid, `t${(takeovers += 1)}`);
+  const failedSteps = back.records.filter((r) => r.record.kind === "step"
+    && (r.record.entry as JournalEntry).state !== "pending"
+    && (r.record.entry as JournalEntry).status === "failed");
+  c("a fresh holder's resume of a parked run strands nothing: no step settles failed", open && failedSteps.length === 0, failedSteps.length);
+  const answered = await wf(["answer", cid, "/checkpoint:approve#0"], { by: "smoke", value: '"go"' })
+    .then(() => true, (e: Error) => e);
+  c("the answer is accepted with no holder supplied: the resolver reads the arming holder off the record", answered === true, answered);
+  const outcome = await Promise.race([resumed.then(() => "completed"), wait(15_000).then(() => "still-paused")]);
+  c("and the RESUME completes the run under its own holder", outcome === "completed" && captured().includes(`run ${cid}: completed`), outcome);
+  await orphan;
+  const rec = await readRunRecord(kv, EP, cid);
+  c("the record ends completed, never failed", rec?.status?.value.state === "completed", rec?.status?.value.state);
+}
+
 // ── 7) the takeover barrier through the command ──────────────────────────────────────────────
 // Two concurrent drives of one run derive the same fencing token and epoch from the same record
 // read, so only the holder id can tell them apart; the activation barrier relaxes the exact
@@ -182,7 +228,7 @@ let H = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 20;
+const DECLARED = 24;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

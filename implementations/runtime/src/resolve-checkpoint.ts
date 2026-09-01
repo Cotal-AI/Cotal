@@ -10,6 +10,13 @@
  * §13.10 is not weakened by a millimetre. The cost is that the driver must be reachable to answer a
  * checkpoint, which is the same condition under which the run advances at all.
  *
+ * **The presenter is the ARMING holder, read off the pause's own record,** never supplied by the
+ * caller. The holder is immutable at mint, and the principal answering is not necessarily the one
+ * that minted: the CLI mints a fresh holder per invocation, and a run adopted by another host is a
+ * different principal by definition (#533). Reading it here is what keeps "resolvable from
+ * anywhere" true across takeovers, with the run's own ACL — not the presenting identity — as the
+ * authorization.
+ *
  * **The answer is written BEFORE the token is presented,** and the two are separate facts on
  * purpose. The record is the payload; the settle is the one-use arbiter that releases the run. In
  * that order a crash in between leaves an answer nobody accepted — orphaned, read by nothing, and
@@ -26,6 +33,7 @@ import {
   newTakeoverId,
   recordCheckpointAnswer,
   checkpointAnswerId,
+  readCheckpointSpec,
   resumeCheckpoint,
   type CheckpointSettleFact,
 } from "@cotal-ai/core";
@@ -77,9 +85,9 @@ export interface ResolveCheckpointDeps {
   readonly js: JetStreamClient;
   readonly jsm: JetStreamManager;
   readonly space: string;
-  /** The endpoint hosting the driver, and the holder it presents as. */
+  /** The endpoint hosting the driver. The presenter is never supplied: it is the arming holder,
+   *  read off the checkpoint's own record. */
   readonly endpoint: string;
-  readonly holder: { readonly id: string; readonly lifecycleUid: string };
 }
 
 /**
@@ -97,6 +105,13 @@ export async function resolveCheckpoint(
 ): Promise<ResolveCheckpointResult> {
   const entries = await replayRunEntries(deps, req.runId);
   const token = openCheckpointToken(entries, req.runId, req.stepKey);
+  const spec = await readCheckpointSpec(deps.kv, { endpoint: deps.endpoint, token });
+  if (spec === undefined) {
+    throw new Error(
+      `checkpoint "${token}" has a journal entry but no record on endpoint ${deps.endpoint}; `
+      + `refusing to guess a presenter — reconcile the store before answering`,
+    );
+  }
 
   const answerId = checkpointAnswerId({
     token,
@@ -116,7 +131,7 @@ export async function resolveCheckpoint(
 
   const settle = await resumeCheckpoint(deps.kv, deps.js, deps.jsm, deps.space, {
     ref: { endpoint: deps.endpoint, token },
-    presenter: deps.holder,
+    presenter: spec.holder,
     now: req.now,
     answerId,
   });

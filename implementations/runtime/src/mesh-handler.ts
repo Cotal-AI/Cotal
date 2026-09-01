@@ -420,15 +420,24 @@ export class MeshHandler {
   /**
    * Arm this pause, or ATTACH to the one already recorded under the same token.
    *
-   * A mint is idempotent only if the whole spec is identical, so the recorded deadline is the
-   * authority and a resume may not recompute one: `now() + duration` is a different deadline a
-   * second later, and the plane reads a different deadline as a different intent. The pause holds
-   * it; a second copy anywhere else is a second thing to disagree.
+   * A mint is idempotent only if the whole spec is identical, so the recorded spec is the
+   * authority for BOTH halves of the mint's identity and a resume may not recompute either. The
+   * deadline, because `now() + duration` is a different deadline a second later, and the plane
+   * reads a different deadline as a different intent. And the HOLDER, because a resumed run does
+   * not necessarily arrive under the principal that minted its pause: the CLI mints a fresh holder
+   * per invocation, and a cross-host adoption is a different principal by definition. Only the
+   * recorded holder itself may mint again — completing its own crash between the spec and the
+   * status, where the identical spec is exactly what makes the retry idempotent. Everyone else
+   * attaches. Measured before the repair, through the CLI: one `resume` of a checkpoint-parked
+   * run re-minted under its own fresh holder, the plane refused ("a token is minted once"), and
+   * the interpreter recorded that infrastructure refusal as the step's own failure (L4000) — a
+   * stranded run whose journal blames the program.
    *
    * An already-passed deadline cannot be minted at all, correctly, because a due pause is not being
    * armed. It needs its schedule re-emitted at the status's current generation, which is the
-   * reconciler's job. A spec with no status and an elapsed deadline is unrepairable from here, so it
-   * is raised rather than waited on.
+   * reconciler's job — the same operation an attaching successor needs, so the two share the exit.
+   * A spec with no status that this holder cannot complete is unrepairable from here, so it is
+   * raised rather than waited on.
    */
   private async arm(ref: CheckpointRef, deadline: number): Promise<void> {
     // Over already: an expiry or an answer landed while this host was away. Nothing to arm, and the
@@ -436,24 +445,44 @@ export class MeshHandler {
     if ((await readCheckpointSettle(this.jsm, this.binding.space, ref)) !== undefined) return;
     const prior = await readCheckpointSpec(this.kv, ref);
     const now = this.now();
-    const at = prior?.initialDeadline ?? deadline;
-    if (at > now) {
+    if (prior === undefined) {
+      // The first arm: this driver's own mint, under its own holder, at the deadline the caller
+      // computed from the duration it was just handed.
       await mintCheckpoint(this.kv, this.js, this.binding.space, {
         ref,
         instanceId: this.binding.instanceId,
         epoch: this.binding.epoch,
         holder: this.binding.holder,
-        deadline: at,
+        deadline,
         now,
       });
       return;
     }
+    const mine = prior.holder.id === this.binding.holder.id
+      && prior.holder.lifecycleUid === this.binding.holder.lifecycleUid;
+    if (mine && prior.initialDeadline > now) {
+      // A retry of this holder's own mint: idempotent-if-identical, and the one path that can
+      // repair a crash between the spec and the status, because only an identical spec completes.
+      await mintCheckpoint(this.kv, this.js, this.binding.space, {
+        ref,
+        instanceId: this.binding.instanceId,
+        epoch: this.binding.epoch,
+        holder: this.binding.holder,
+        deadline: prior.initialDeadline,
+        now,
+      });
+      return;
+    }
+    // ATTACH: the pause exists and is not this attempt's to mint — another holder's pause, or this
+    // holder's own come back overdue (a due pause is being collected, not armed). Both need the
+    // same thing: the schedule re-emitted at THIS instance's coordinates, so the fire lands where
+    // this driver is listening. The settle the caller waits on next is coordinate-free.
     const status = await readCheckpointStatus(this.kv, ref);
     if (status === undefined) {
       throw new Error(
-        `checkpoint "${ref.token}" carries a spec with no status and its recorded deadline `
-        + `(${at}) has passed; a mint repairs the missing status only while the deadline is still `
-        + `ahead, so this pause has to be reconciled on the plane before the run can go on`,
+        `checkpoint "${ref.token}" carries a spec with no status`
+        + `${mine ? "" : ` held by ${prior.holder.id}, and only its own holder's identical re-mint can repair a half-minted pause`}; `
+        + `this pause has to be reconciled on the plane before the run can go on`,
       );
     }
     await reconcileCheckpointSchedule(this.kv, this.js, this.jsm, this.binding.space, {
@@ -529,9 +558,16 @@ export class MeshHandler {
     const st = await readCheckpointStatus(this.kv, ref);
     if (st?.value.state !== "waiting") return;
     try {
+      // The presenter is the ARMING holder read off the pause's own record, as everywhere on this
+      // plane: a timer minted by a predecessor is still this run's to end after a takeover, and a
+      // successor presenting its own identity would be refused (resume is holder-bound, SPEC
+      // 13.10). A spec that cannot be read leaves the timer to its own deadline, which the catch
+      // below already tolerates: it fires, settles expired, and nobody is reading that token.
+      const spec = await readCheckpointSpec(this.kv, ref);
+      if (spec === undefined) return;
       await resumeCheckpoint(this.kv, this.js, this.jsm, this.binding.space, {
         ref,
-        presenter: this.binding.holder,
+        presenter: spec.holder,
         now: this.now(),
       });
     } catch {

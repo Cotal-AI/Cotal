@@ -20,7 +20,6 @@ import type { KV } from "@nats-io/kv";
 import {
   newTakeoverId,
   openRecordsBucket,
-  readCheckpointSpec,
   readRunRecord,
   replayRunJournal,
   standaloneConnectOpts,
@@ -30,7 +29,7 @@ import { journalEntryKeyString, type JournalEntry } from "@cotal-ai/lang";
 import { connectOrExit, endpointAuth } from "@cotal-ai/workspace";
 import { startRun, driveRun, type DriveOutcome } from "./run-driver.js";
 import { MeshHandler, EpfSettleWatcher } from "./mesh-handler.js";
-import { openCheckpointToken, resolveCheckpoint } from "./resolve-checkpoint.js";
+import { resolveCheckpoint } from "./resolve-checkpoint.js";
 
 const USAGE =
   'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> --file <program> | ps | journal <runId> | answer <runId> <stepKey> --by <who> [--value <json>] [--artifact <ref>]> [--endpoint <ep>] [--space <s>] [--server <url>] [--creds <path>]';
@@ -277,13 +276,6 @@ async function answer(values: RunValues, planes: Planes, runId: string | undefin
     process.exit(1);
   }
   const endpoint = values.endpoint ?? "manager";
-  // Resume is holder-bound (SPEC 13.10) and the CLI is not the driver, so the presenter is the
-  // ARMING holder read back from the checkpoint's own record — the same principal the driver
-  // presented as when it minted the pause. The answerer's name rides `by`, never the presenter.
-  const replay = await replayRunJournal(planes.js, planes.jsm, planes.space, runId, newTakeoverId());
-  const entries = replay.records
-    .filter((r) => r.record.kind === "step")
-    .map((r) => (r.record as { entry: unknown }).entry as JournalEntry);
   let parsedValue: unknown;
   if (values.value !== undefined) {
     try {
@@ -294,14 +286,11 @@ async function answer(values: RunValues, planes: Planes, runId: string | undefin
       process.exit(1);
     }
   }
-  const token = openCheckpointToken(entries, runId, stepKey);
-  const spec = await readCheckpointSpec(planes.kv, { endpoint, token });
-  if (spec === undefined) {
-    console.error(`checkpoint ${token} has a journal entry but no record on endpoint ${endpoint}; refusing to guess a presenter`);
-    process.exit(1);
-  }
+  // Resume is holder-bound (SPEC 13.10) and the CLI is not the driver: the resolver presents as
+  // the ARMING holder it reads off the checkpoint's own record, so a fresh invocation answers
+  // exactly as the minter would have. The answerer's name rides `by`, never the presenter.
   const result = await resolveCheckpoint(
-    { kv: planes.kv, js: planes.js, jsm: planes.jsm, space: planes.space, endpoint, holder: spec.holder },
+    { kv: planes.kv, js: planes.js, jsm: planes.jsm, space: planes.space, endpoint },
     {
       runId,
       stepKey,

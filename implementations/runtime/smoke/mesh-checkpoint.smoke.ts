@@ -35,6 +35,7 @@ import {
   readCheckpointSettle,
   readCheckpointAnswer,
   readCheckpointStatus,
+  readCheckpointSpec,
   resumeCheckpoint,
   mintCheckpoint,
   activateRun,
@@ -129,7 +130,7 @@ const binding = {
   defaultCheckpointTimeout: "1h",
 };
 const handler = new MeshHandler(kv, js, jsm, binding, new EpfSettleWatcher(js, jsm, SPACE, 3_000), () => NOW);
-const deps = { kv, js, jsm, space: SPACE, endpoint: EP, holder: HOLDER };
+const deps = { kv, js, jsm, space: SPACE, endpoint: EP };
 
 const PROGRAM = `
 const a = await checkpoint("approve", "Ship it?", { timeout: "1h", onExpiry: "proceed" });
@@ -437,6 +438,42 @@ const a = await checkpoint("approve", "Ship it?", { timeout: "2s", onExpiry: "pr
 
   await resolveCheckpoint(deps, { runId: "cp-7", stepKey: STEP, by: "david", value: "done", now: NOW + 1_000 });
   await driven;
+}
+
+// ── 7b) a takeover ATTACHES to a predecessor's pause, and the answer still lands ──────────────
+//
+// A checkpoint's holder is immutable at mint — a token is minted once (SPEC 13.6) — and a resumed
+// run does not necessarily arrive under the holder that minted its pause: the CLI mints a fresh
+// holder per invocation, and a cross-host adoption is a different principal by definition. The
+// successor's step must ATTACH to the recorded pause, and the answer path must keep working with
+// no holder supplied, because the resolver reads the ARMING holder off the record. Measured
+// before the repair: the successor re-minted under its own holder, the plane refused ("a token is
+// minted once"), and the refusal was journalled as the step's own failure (L4000) — one resume
+// stranded the run.
+{
+  const { driven, token } = await startPaused("cp-7b");
+  await armPending(4);
+  const successor = {
+    ...binding, runId: "cp-7b", instanceId: "j".repeat(26), epoch: EPOCH + 1,
+    holder: { id: "cli-run-successor", lifecycleUid: "u_meshcp_b" },
+  };
+  const h2 = new MeshHandler(kv, js, jsm, successor, new EpfSettleWatcher(js, jsm, SPACE, 3_000), () => NOW);
+  // The rejection shim is part of the cell: an attach that REFUSES (the pre-repair behaviour)
+  // must fail the cell that names it, never kill the suite as an unhandled rejection.
+  const attached = h2.checkpoint({ prompt: "Ship it?", timeout: "1h" } as never, { requestId: token } as never)
+    .then((v) => ({ v: v as { outcome?: string; by?: string } }), (e: unknown) => ({ e: e as Error }));
+  await wait(300);
+  const spec = await readCheckpointSpec(kv, { endpoint: EP, token });
+  c("the successor leaves the recorded pause exactly as its minter wrote it: attached, never re-minted or re-bound",
+    spec?.holder.id === HOLDER.id && spec?.holder.lifecycleUid === HOLDER.lifecycleUid, JSON.stringify(spec?.holder));
+  const r = await resolveCheckpoint(deps, { runId: "cp-7b", stepKey: STEP, by: "eve", value: "go", now: NOW + 1_000 });
+  c("the answer is accepted with no holder supplied anywhere", r.settle.settle === "resumed", r.settle.settle);
+  const got = await withDeadline(attached, 20_000, "the successor's attached checkpoint");
+  const val = got as { v?: { outcome?: string; by?: string }; e?: Error } | undefined;
+  c("the SUCCESSOR's step reads the accepted answer through its attach — it was not refused",
+    val?.v?.outcome === "resolved" && val?.v?.by === "eve", val?.e?.message?.slice(0, 70) ?? JSON.stringify(val?.v));
+  const out = await withDeadline(driven, 20_000, "the original driver");
+  c("and the original driver, watching the same settle, completes as well", out?.status === "completed", out?.status);
 }
 
 // ── 8) a checkpoint with no timeout of its own gets the driver's PINNED one ───────────────────
