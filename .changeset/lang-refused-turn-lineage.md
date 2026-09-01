@@ -2,6 +2,7 @@
 "@cotal-ai/lang": minor
 "@cotal-ai/core": minor
 "@cotal-ai/runtime": minor
+"@cotal-ai/connector-core": minor
 ---
 
 A capability refusal is durable and retryable. A handler that cannot perform an effect on its host
