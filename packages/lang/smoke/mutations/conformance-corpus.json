@@ -1,0 +1,28 @@
+{
+  "suite": "packages/lang/smoke/conformance.smoke.ts",
+  "guard": "The shipped conformance corpus is a real artifact: the accessor serves exactly what is on disk, and every recorded verdict is one the validator still gives. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-conformance",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/conformance-corpus.json",
+  "mutations": [
+    {
+      "name": "the accessor drops a case and still reports the corpus",
+      "file": "packages/lang/src/conformance.ts",
+      "find": "  const cases = list.map((c, i) => checkCase(c, i + 1));",
+      "replace": "  const cases = list.slice(1).map((c, i) => checkCase(c, i + 1));",
+      "expectRed": "the accessor serves the artifact as it is on disk",
+      "completionMarker": "the shipped artifact parses to a cases array",
+      "cell": "the accessor serves the artifact as it is on disk",
+      "note": "A reader that silently drops or reshapes cases would ship a corpus that is not the artifact; the disk-agreement cell is what refuses that."
+    },
+    {
+      "name": "a verdict in the artifact drifts from what the validator answers",
+      "file": "packages/lang/conformance/corpus.json",
+      "find": "\"refused\": \"L1001\"",
+      "replace": "\"refused\": \"L1030\"",
+      "expectRed": "every recorded verdict holds against the validator today",
+      "completionMarker": "the corpus carries at least seven cases, acceptance and refusal both",
+      "cell": "every recorded verdict holds against the validator today",
+      "note": "L1030 is a real catalog code the class block cannot produce, so the accessor still serves the mutated artifact and the verdict re-check is the cell that has to notice."
+    }
+  ]
+}
