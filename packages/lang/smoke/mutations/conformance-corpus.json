@@ -23,6 +23,16 @@
       "completionMarker": "the corpus carries at least seven cases, acceptance and refusal both",
       "cell": "every recorded verdict holds against the validator today",
       "note": "L1030 is a real catalog code the class block cannot produce, so the accessor still serves the mutated artifact and the verdict re-check is the cell that has to notice."
+    },
+    {
+      "name": "the reference moves and the shipped corpus does not",
+      "file": "spec/cotal-lang.md",
+      "find": "const same = 0 == \"\"",
+      "replace": "const same2 = 0 == \"\"",
+      "expectRed": "the artifact is byte-identical to a fresh build from the reference",
+      "completionMarker": "every recorded verdict holds against the validator today",
+      "cell": "the artifact is byte-identical to a fresh build from the reference",
+      "note": "The edit renames a binding inside a refused fence without changing its verdict (L1025 still answers, so the builder stays green rather than throwing upstream), which makes the byte cell the EARLIEST red: measured before authoring, cells 1-5 print ok and the run fails on cell 6 alone. This is the spec-drift gate proven as a property rather than exercised green."
     }
   ]
 }

@@ -1,9 +1,11 @@
 /**
  * The conformance corpus: every ```js block in the language reference (spec/cotal-lang.md), with
  * the verdict the validator gives it. It ships as a JSON artifact (`conformance/corpus.json`) so
- * a second implementation can run the same claims from the file alone; `conformanceCorpus()` is
- * the in-process reader. `pnpm gen:conformance` regenerates the artifact from the reference, and
- * `pnpm smoke:lang-conformance` holds the shipped bytes identical to a fresh build.
+ * a second implementation can run the same claims from the file alone, and the artifact carries
+ * its own adjudication rule so the file needs no other document to say how a claim is checked.
+ * `conformanceCorpus()` is the in-process reader. `pnpm gen:conformance` regenerates the
+ * artifact from the reference, and `pnpm smoke:lang-conformance` holds the shipped bytes
+ * identical to a fresh build.
  */
 import { readFileSync } from "node:fs";
 import { CATALOG, type LangErrorCode } from "./errors.js";
@@ -15,13 +17,26 @@ export interface ConformanceCase {
   readonly heading: string;
   /** The program text, byte for byte as the reference carries it. */
   readonly source: string;
-  /** `"accepted"`, or the code the validator refuses the program with. */
+  /**
+   * `"accepted"` means the validator answers no codes. A refusal names ONE code the validator's
+   * answer must include; the answer may carry more (the reference's first block answers four),
+   * so the check is membership in the answered set, never equality with a single code.
+   */
   readonly verdict: "accepted" | { readonly refused: LangErrorCode };
 }
+
+/**
+ * The adjudication rule, carried inside the artifact itself so a reader holding only the JSON
+ * knows how to check a claim. The accessor refuses an artifact whose rule drifted from this text.
+ */
+export const ADJUDICATION =
+  "a refused verdict names one code the validator's answer must include, and the answer may carry more; an accepted verdict means the validator answers no codes";
 
 export interface ConformanceCorpus {
   /** The document the corpus is generated from. */
   readonly source: "spec/cotal-lang.md";
+  /** How a recorded verdict is checked against a validator's answer; always `ADJUDICATION`. */
+  readonly adjudication: string;
   readonly cases: readonly ConformanceCase[];
 }
 
@@ -57,9 +72,10 @@ export function conformanceCorpus(): ConformanceCorpus {
   if (parsed === null || typeof parsed !== "object") fail("the artifact is not a record");
   const rec = parsed as Record<string, unknown>;
   if (rec.source !== "spec/cotal-lang.md") fail(`unexpected source ${String(rec.source)}`);
+  if (rec.adjudication !== ADJUDICATION) fail("the artifact does not carry the adjudication rule");
   const list = rec.cases;
   if (!Array.isArray(list) || list.length === 0) fail("expected a non-empty cases array");
   const cases = list.map((c, i) => checkCase(c, i + 1));
-  cached = Object.freeze({ source: "spec/cotal-lang.md", cases: Object.freeze(cases) }) as ConformanceCorpus;
+  cached = Object.freeze({ source: "spec/cotal-lang.md", adjudication: ADJUDICATION, cases: Object.freeze(cases) }) as ConformanceCorpus;
   return cached;
 }

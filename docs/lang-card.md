@@ -1,5 +1,7 @@
 # The cotal-lang card
 
+> **Reference** (informative) · **For:** people writing a cotal-lang program · **Normative:** [spec/cotal-lang.md](../spec/cotal-lang.md)
+
 One page to write a correct workflow program. The normative reference is
 [spec/cotal-lang.md](../spec/cotal-lang.md); this card compresses the parts programs get wrong
 first. A program is one module of restricted JavaScript: no imports, no `class`, no `Promise`, no
@@ -26,9 +28,11 @@ Durations are a whole number and one unit: `"30s"`, `"10m"`, `"4h"`, `"2d"`.
 
 ## Results you branch on
 
-A `turn` yields the agent's status. An `ask` yields a record the handler checked against your
-`schema`; after `attempts` non-conforming replies it fails with L4006. A `checkpoint` is a
-durable pause raced against a durable timer:
+A `turn` yields the agent's status. An `ask` yields the record the agent published. `schema` is
+opaque to the language and its meaning is the handler's; no handler in the reference
+implementation interprets it in this revision, so a program MUST NOT rely on a shape being
+enforced. Where a handler does check, `attempts` bounds the non-conforming replies tolerated
+before it fails with L4006. A `checkpoint` is a durable pause raced against a durable timer:
 
 - resolved: `{ status: "resolved", value?, by?, at, artifact? }`
 - expired with `onExpiry: "proceed"`, or after an `"escalate"` hop expires too: `{ status: "expired", at }`

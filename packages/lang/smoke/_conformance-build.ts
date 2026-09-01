@@ -10,7 +10,7 @@
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import type { ConformanceCase, ConformanceCorpus } from "../src/conformance.js";
+import { ADJUDICATION, type ConformanceCase, type ConformanceCorpus } from "../src/conformance.js";
 import { LangErrors, type LangErrorCode } from "../src/errors.js";
 import { validate } from "../src/grammar.js";
 
@@ -54,7 +54,7 @@ export function buildCorpus(): ConformanceCorpus {
     }
   }
   if (cases.length === 0) throw new Error("no ```js blocks found in spec/cotal-lang.md; the corpus cannot be empty");
-  return { source: "spec/cotal-lang.md", cases };
+  return { source: "spec/cotal-lang.md", adjudication: ADJUDICATION, cases };
 }
 
 export const renderCorpus = (corpus: ConformanceCorpus): string => `${JSON.stringify(corpus, null, 2)}\n`;

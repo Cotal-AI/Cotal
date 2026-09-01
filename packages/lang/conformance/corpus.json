@@ -1,5 +1,6 @@
 {
   "source": "spec/cotal-lang.md",
+  "adjudication": "a refused verdict names one code the validator's answer must include, and the answer may carry more; an accepted verdict means the validator answers no codes",
   "cases": [
     {
       "index": 1,
