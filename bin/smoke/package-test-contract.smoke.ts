@@ -52,7 +52,6 @@ const PRIVATE_NO_TESTS = new Set([
   "@cotal-ai/example-02-self-improving-console",
   "@cotal-ai/example-04-frontier-faces",
   "@cotal-ai/example-05-scale-showcase",
-  "@cotal-ai/example-06-feed-agent",
 ]);
 
 const discoverWorkspacePackages = (): Record<string, string> => {

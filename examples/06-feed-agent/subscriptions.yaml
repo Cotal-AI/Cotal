@@ -1,4 +1,4 @@
-# What the pump polls. One entry per feed; the feedkeeper agent edits this file when asked in-channel.
+# What the pump polls. One entry per feed; the feedkeeper edits this file only for direct requests on #feeds.control.
 #
 #   url      the feed itself (RSS/Atom, or an .ics calendar)
 #   channel  where new items get published

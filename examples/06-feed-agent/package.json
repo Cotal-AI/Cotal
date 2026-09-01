@@ -7,12 +7,14 @@
   "scripts": {
     "pump": "tsx src/pump.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "test": "node --experimental-strip-types --test --test-reporter=tap test/*.test.ts"
   },
   "dependencies": {
     "@cotal-ai/core": "workspace:*",
     "node-ical": "^0.27.1",
     "rss-parser": "^3.13.0",
+    "undici": "^7.29.0",
     "yaml": "^2.9.0"
   },
   "devDependencies": {

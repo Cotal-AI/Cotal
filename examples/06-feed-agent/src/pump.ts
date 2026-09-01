@@ -1,11 +1,14 @@
 import { parseArgs } from "node:util";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { lookup } from "node:dns/promises";
+import { BlockList, isIP, type LookupFunction } from "node:net";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import Parser from "rss-parser";
-import { parseICS, type CalendarComponent, type ParameterValue, type VEvent } from "node-ical";
+import { expandRecurringEvent, parseICS, type CalendarComponent, type EventInstance, type ParameterValue, type VEvent } from "node-ical";
+import { Agent, fetch } from "undici";
 import { CotalEndpoint, DEFAULT_SERVER, isReachable } from "@cotal-ai/core";
 
 /**
@@ -27,11 +30,14 @@ const SEEN_FILE = join(ROOT, "state", "seen.json");
 const SEEN_CAP = 2000;      // newest N keys kept; older items can never come back on a live feed
 const MAX_PER_PASS = 10;    // a first pass on a busy feed would otherwise dump a whole page into the channel
 const FETCH_TIMEOUT_MS = 15_000;
+const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+const MAX_REDIRECTS = 5;
+const ICAL_HORIZON_DAYS = 365;
 const DEFAULT_LOOP_MIN = 15;
 
 type Kind = "auto" | "rss" | "ical";
 
-interface Subscription {
+export interface Subscription {
   url: string;
   channel: string;
   kind?: Kind;
@@ -40,15 +46,17 @@ interface Subscription {
 }
 
 /** One feed entry, RSS and iCal flattened to the same shape. */
-interface Item {
+export interface Item {
   id: string;
   title: string;
   url: string;
   when?: string;
+  allDay?: boolean;
+  timeZone?: string;
   source: string;
 }
 
-type Publish = (channel: string, text: string) => Promise<void>;
+export type Publish = (channel: string, text: string) => Promise<void>;
 
 const rss = new Parser({ timeout: FETCH_TIMEOUT_MS });
 
@@ -81,13 +89,101 @@ function loadSubscriptions(file: string): Subscription[] {
   });
 }
 
-async function fetchFeed(url: string): Promise<{ body: string; contentType: string }> {
-  const res = await fetch(url, {
-    headers: { "user-agent": "cotal-feed-pump" },
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-  return { body: await res.text(), contentType: res.headers.get("content-type") ?? "" };
+const BLOCKED_ADDRESSES = new BlockList();
+for (const [network, prefix] of [
+  ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8],
+  ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24],
+  ["192.168.0.0", 16], ["198.18.0.0", 15], ["198.51.100.0", 24], ["203.0.113.0", 24],
+  ["224.0.0.0", 4], ["240.0.0.0", 4],
+] as const) BLOCKED_ADDRESSES.addSubnet(network, prefix, "ipv4");
+for (const [network, prefix] of [
+  ["::", 128], ["::1", 128], ["64:ff9b::", 96], ["100::", 64],
+  ["2001:db8::", 32], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8],
+] as const) BLOCKED_ADDRESSES.addSubnet(network, prefix, "ipv6");
+
+export function isPublicAddress(address: string, family?: number): boolean {
+  if (/^::ffff:/i.test(address)) return false;
+  const kind = family === 6 || address.includes(":") ? "ipv6" : "ipv4";
+  return !BLOCKED_ADDRESSES.check(address, kind);
+}
+
+const publicLookup: LookupFunction = (hostname, options, callback) => {
+  void lookup(hostname, { all: true, verbatim: true }).then((addresses) => {
+    if (addresses.length === 0) throw new Error(`feed host ${hostname} resolved to no addresses`);
+    const blocked = addresses.find((entry) => !isPublicAddress(entry.address, entry.family));
+    if (blocked) throw new Error(`feed host ${hostname} resolves to blocked address ${blocked.address}`);
+    if (typeof options === "object" && options.all) callback(null, addresses);
+    else callback(null, addresses[0]!.address, addresses[0]!.family);
+  }).catch((error: Error) => callback(error, "", 4));
+};
+
+const PUBLIC_HTTP = new Agent({ connect: { lookup: publicLookup } });
+
+async function assertPublicUrl(url: URL): Promise<void> {
+  if (!(["http:", "https:"] as string[]).includes(url.protocol))
+    throw new Error(`feed URL must use http or https, got ${url.protocol}`);
+  if (url.username || url.password) throw new Error("feed URL must not contain credentials");
+  const hostname = url.hostname.replace(/^\[|\]$/g, "");
+  const literalFamily = isIP(hostname);
+  if (literalFamily && !isPublicAddress(hostname, literalFamily))
+    throw new Error(`feed URL resolves to blocked address ${hostname}`);
+  if (!literalFamily) {
+    const addresses = await lookup(hostname, { all: true, verbatim: true });
+    const blocked = addresses.find((entry) => !isPublicAddress(entry.address, entry.family));
+    if (blocked) throw new Error(`feed host ${hostname} resolves to blocked address ${blocked.address}`);
+  }
+}
+
+export async function readResponseBody(res: Response, maxBytes = MAX_RESPONSE_BYTES): Promise<string> {
+  const declared = Number(res.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes)
+    throw new Error(`feed response exceeds ${maxBytes} bytes`);
+  if (!res.body) return "";
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) throw new Error(`feed response exceeds ${maxBytes} bytes`);
+      chunks.push(value);
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throw error;
+  }
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+  return new TextDecoder().decode(body);
+}
+
+type FeedFetch = (url: URL, init: Parameters<typeof fetch>[1]) => Promise<Response>;
+
+export async function fetchFeed(rawUrl: string, request: FeedFetch = fetch): Promise<{ body: string; contentType: string }> {
+  let url = new URL(rawUrl);
+  for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
+    await assertPublicUrl(url);
+    const res = await request(url, {
+      dispatcher: PUBLIC_HTTP,
+      redirect: "manual",
+      headers: { "user-agent": "cotal-feed-pump" },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if ([301, 302, 303, 307, 308].includes(res.status)) {
+      const location = res.headers.get("location");
+      await res.body?.cancel();
+      if (!location) throw new Error(`HTTP ${res.status} redirect has no location`);
+      if (redirects === MAX_REDIRECTS) throw new Error(`feed exceeded ${MAX_REDIRECTS} redirects`);
+      url = new URL(location, url);
+      continue;
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+    return { body: await readResponseBody(res), contentType: res.headers.get("content-type") ?? "" };
+  }
+  throw new Error(`feed exceeded ${MAX_REDIRECTS} redirects`);
 }
 
 /** `kind: auto` asks the response what it is: content-type first, then the extension, then the body. */
@@ -98,13 +194,19 @@ function detectKind(sub: Subscription, contentType: string, body: string): "rss"
   return body.trimStart().startsWith("BEGIN:VCALENDAR") ? "ical" : "rss";
 }
 
-async function fromRss(body: string, sub: Subscription): Promise<Item[]> {
+export function validWhen(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+export async function fromRss(body: string, sub: Subscription): Promise<Item[]> {
   const feed = await rss.parseString(body);
   const source = sub.label ?? feed.title?.trim() ?? hostOf(sub.url);
   return (feed.items ?? []).flatMap((it) => {
     const title = it.title?.trim();
     const id = it.guid ?? it.link ?? title;
-    return title && id ? [{ id, title, url: it.link ?? "", when: it.isoDate ?? it.pubDate, source }] : [];
+    return title && id ? [{ id, title, url: it.link ?? "", when: validWhen(it.isoDate ?? it.pubDate), source }] : [];
   });
 }
 
@@ -118,22 +220,33 @@ function eventUrl(ev: VEvent, sub: Subscription): string {
 
 /** Only events that have not finished yet, soonest first: a calendar carries its whole past, and
  *  nobody wants last year's meetups replayed into a channel. */
-function fromIcal(body: string, sub: Subscription): Item[] {
+function icalItem(ev: VEvent, start: Date & { dateOnly?: boolean; tz?: string }, source: string, sub: Subscription, recurring: boolean): Item {
+  return {
+    id: recurring ? `${ev.uid}:${start.toISOString()}` : ev.uid,
+    title: icalText(ev.summary) || "(untitled event)",
+    url: eventUrl(ev, sub),
+    when: start.toISOString(),
+    allDay: start.dateOnly === true || ev.datetype === "date",
+    timeZone: start.tz ?? (start.dateOnly ? Intl.DateTimeFormat().resolvedOptions().timeZone : undefined),
+    source,
+  };
+}
+
+export function fromIcal(body: string, sub: Subscription, now = Date.now()): Item[] {
   const cal = parseICS(body);
   const named = cal.vcalendar?.type === "VCALENDAR" ? cal.vcalendar["WR-CALNAME"] : undefined;
   const source = sub.label ?? named ?? hostOf(sub.url);
-  const now = Date.now();
-  return Object.values(cal)
-    .filter(isEvent)
-    .filter((ev) => (ev.end ?? ev.start).getTime() >= now)
-    .sort((a, b) => a.start.getTime() - b.start.getTime())
-    .map((ev) => ({
-      id: ev.uid,
-      title: icalText(ev.summary) || "(untitled event)",
-      url: eventUrl(ev, sub),
-      when: ev.start.toISOString(),
-      source,
-    }));
+  const horizon = new Date(now + ICAL_HORIZON_DAYS * 24 * 60 * 60 * 1000);
+  const items: Item[] = [];
+  for (const ev of Object.values(cal).filter(isEvent)) {
+    if (ev.rrule) {
+      const instances = expandRecurringEvent(ev, { from: new Date(now), to: horizon, expandOngoing: true });
+      items.push(...instances.map((instance: EventInstance) => icalItem(instance.event, instance.start, source, sub, true)));
+    } else if ((ev.end ?? ev.start).getTime() >= now) {
+      items.push(icalItem(ev, ev.start, source, sub, false));
+    }
+  }
+  return items.sort((a, b) => new Date(a.when!).getTime() - new Date(b.when!).getTime());
 }
 
 async function collect(sub: Subscription): Promise<Item[]> {
@@ -149,15 +262,33 @@ const keyOf = (sub: Subscription, item: Item): string =>
 const matches = (title: string, filter?: string[]): boolean =>
   !filter?.length || filter.some((k) => new RegExp(`\\b${k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i").test(title));
 
-function render(item: Item): string {
-  const url = item.url ? ` — ${item.url}` : "";
-  const when = item.when ? ` (${new Date(item.when).toISOString().slice(0, 16).replace("T", " ")} UTC)` : "";
-  return `[${item.source}] ${item.title}${url}${when}`;
+const oneLine = (value: string): string => value.replace(/\s+/g, " ").trim();
+
+function renderedWhen(item: Item): string {
+  if (!item.when) return "";
+  const date = new Date(item.when);
+  if (Number.isNaN(date.getTime())) return "";
+  if (item.allDay) {
+    const parts = new Intl.DateTimeFormat("en", {
+      timeZone: item.timeZone ?? "UTC", year: "numeric", month: "2-digit", day: "2-digit",
+    }).formatToParts(date);
+    const part = (type: Intl.DateTimeFormatPartTypes): string => parts.find((entry) => entry.type === type)?.value ?? "";
+    return ` (${part("year")}-${part("month")}-${part("day")}, all day)`;
+  }
+  return ` (${date.toISOString().slice(0, 16).replace("T", " ")} UTC)`;
 }
 
-function loadSeen(file: string): Set<string> {
+export function render(item: Item): string {
+  const url = item.url ? ` - ${oneLine(item.url)}` : "";
+  return `[UNTRUSTED FEED ITEM] [${oneLine(item.source)}] ${oneLine(item.title)}${url}${renderedWhen(item)}`;
+}
+
+export function loadSeen(file: string): Set<string> {
   try {
-    return new Set(JSON.parse(readFileSync(file, "utf8")) as string[]);
+    const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+    if (!Array.isArray(parsed) || !parsed.every((value) => typeof value === "string"))
+      throw new Error(`invalid seen state in ${file}: expected an array of strings`);
+    return new Set(parsed);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return new Set(); // first run
     throw e;
@@ -170,23 +301,24 @@ function saveSeen(file: string, seen: Set<string>): void {
 }
 
 /** One pass over every subscription. A feed that is down is logged and skipped: the others still run. */
-async function runPass(subs: Subscription[], seen: Set<string>, publish: Publish): Promise<number> {
+export async function runPass(
+  subs: Subscription[], seen: Set<string>, publish: Publish,
+  collectFeed: (sub: Subscription) => Promise<Item[]> = collect,
+): Promise<number> {
   let published = 0;
   for (const sub of subs) {
-    let items: Item[];
     try {
-      items = await collect(sub);
+      const items = await collectFeed(sub);
+      const fresh = items.filter((i) => matches(i.title, sub.filter) && !seen.has(keyOf(sub, i))).slice(0, MAX_PER_PASS);
+      const name = sub.label ?? items[0]?.source ?? hostOf(sub.url);
+      console.log(`  ${name} → #${sub.channel}: ${fresh.length} new of ${items.length}`);
+      for (const item of fresh) {
+        await publish(sub.channel, render(item));
+        seen.add(keyOf(sub, item));
+        published++;
+      }
     } catch (e) {
       console.error(`  ✗ ${sub.label ?? sub.url}: ${reason(e)}`);
-      continue;
-    }
-    const fresh = items.filter((i) => matches(i.title, sub.filter) && !seen.has(keyOf(sub, i))).slice(0, MAX_PER_PASS);
-    const name = sub.label ?? items[0]?.source ?? hostOf(sub.url);
-    console.log(`  ${name} → #${sub.channel}: ${fresh.length} new of ${items.length}`);
-    for (const item of fresh) {
-      await publish(sub.channel, render(item));
-      seen.add(keyOf(sub, item));
-      published++;
     }
   }
   return published;
@@ -248,16 +380,26 @@ async function main(): Promise<void> {
   if (!everyMs) return void (await ep.stop());
 
   console.log(`looping every ${everyMs / 60_000} min — Ctrl-C to stop`);
-  const timer = setInterval(() => void pass(), everyMs);
+  let timer: NodeJS.Timeout;
+  let stopping = false;
+  const loop = async (): Promise<void> => {
+    try { await pass(); }
+    catch (e) { console.error(`  ✗ pass: ${reason(e)}`); }
+    if (!stopping) timer = setTimeout(() => void loop(), everyMs);
+  };
+  timer = setTimeout(() => void loop(), everyMs);
   const stop = (): void => {
-    clearInterval(timer);
+    stopping = true;
+    clearTimeout(timer);
     void ep.stop().then(() => process.exit(0));
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
 }
 
-main().catch((e: Error) => {
-  console.error(`✗ ${e.message}`);
-  process.exit(1);
-});
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((e: Error) => {
+    console.error(`✗ ${e.message}`);
+    process.exit(1);
+  });
+}
