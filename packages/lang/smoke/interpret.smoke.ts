@@ -1249,6 +1249,47 @@ log("winner", r.index, r.value);
     journal.entries().find((e) => e.kind === "ask")?.status);
 }
 
+// A HELD arm inside a race rides the same rule. The ask is refused (L5016), its entry settles
+// `refused`, and the heal law says a resume that REACHES it performs it live — but a resume
+// short-circuits a settled scope. So if the sleeping sibling's win settled the race over the held
+// arm, the heal would be buried forever inside a scope no walk re-enters. The unwind must fire
+// despite the winner, and the same journal on a capable host must then complete.
+{
+  class RefusingAsk extends SimHandler {
+    override async ask(): Promise<never> {
+      throw new EffectRefused("L5016", "ask(…) rides machinery that has not landed on this host");
+    }
+  }
+  const runId = "r-race-held";
+  const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+  const journal = new Journal({ run: runId });
+  const P = `
+const a = await spawn("w", { name: "a" });
+const r = await race({
+  big: async () => { const v = await ask(a, { name: "q", schema: {} }); return v; },
+  other: async () => { await sleep("2m"); return "other"; },
+}, { name: "either" });
+log("winner", r.index);
+`;
+  let held: unknown;
+  try {
+    await run(P, { runId, pins, journal, handler: new RefusingAsk({}) });
+  } catch (e) { held = e; }
+  const h = held as { name?: string; code?: string } | undefined;
+  ok("a held arm inside a race unwinds the run even though a sibling won",
+    h?.name === "RunHeld" && h?.code === "L5025", `${h?.name} ${h?.code}`);
+  ok("with the step settled refused, not buried under the winner",
+    journal.entries().find((e) => e.kind === "ask")?.status === "refused",
+    journal.entries().map((e) => `${e.kind}:${e.name}/${e.status ?? e.state}`));
+  let healed: unknown;
+  try {
+    await run(P, { runId, pins, journal, handler: new SimHandler({ asks: { q: { ok: true } } }) });
+  } catch (e) { healed = e; }
+  ok("and the same journal on a capable host performs the refused arm live and completes the race",
+    healed === undefined && journal.entries().find((e) => e.kind === "race")?.status === "ok",
+    `${(healed as Error)?.name}: ${(healed as Error)?.message?.slice(0, 60)}`);
+}
+
 // ── a program cannot catch its host leaving ──────────────────────────────────────────────────
 //
 // `try` is the workflow's own handling of the world going wrong, and a driver's shutdown is not the

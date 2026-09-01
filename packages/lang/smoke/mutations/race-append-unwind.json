@@ -1,18 +1,28 @@
 {
   "suite": "packages/lang/smoke/interpret.smoke.ts",
-  "guard": "A refused journal append among a race's settled arms unwinds the run ahead of the winner scan; a winning sibling may not bury it as a completed race with the refused step pending forever. (FAIL-FAST suite: the marker is upstream of the guarded cell.)",
+  "guard": "A refused journal append OR a held run among a race's settled arms unwinds the run ahead of the winner scan; a winning sibling may not bury a refused append as a completed race, and may not bury a held arm's heal inside a settled scope a resume short-circuits. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-interpret",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/race-append-unwind.json",
   "mutations": [
     {
       "name": "a winning sibling buries the refused append and the race completes (the defect)",
       "file": "packages/lang/src/perform.ts",
-      "find": "    const refusedAppend = settled.find(\n      (r): r is PromiseRejectedResult => r.status === \"rejected\" && r.reason instanceof JournalAppendRejected,\n    );\n    if (refusedAppend !== undefined) throw refusedAppend.reason as Error;",
+      "find": "    const refusedAppend = settled.find(\n      (r): r is PromiseRejectedResult =>\n        r.status === \"rejected\" && (r.reason instanceof RunHeld || r.reason instanceof JournalAppendRejected),\n    );\n    if (refusedAppend !== undefined) throw refusedAppend.reason as Error;",
       "replace": "    const refusedAppend = undefined as PromiseRejectedResult | undefined;\n    if (refusedAppend !== undefined) throw (refusedAppend as PromiseRejectedResult).reason as Error;",
       "expectRed": "a refused append inside a race unwinds the run even though a sibling won",
       "completionMarker": "ok and a resume replays the same winner from the record",
       "cell": "a refused append inside a race unwinds the run even though a sibling won",
       "note": "Measured before the rule at 3aabb2583: outcome COMPLETED, race:either settled/ok, ask:q pending forever. The mutant reproduces exactly that by never finding the refused arm."
+    },
+    {
+      "name": "a held arm is buried by the winner, so the heal a resume owes never fires",
+      "file": "packages/lang/src/perform.ts",
+      "find": "        r.status === \"rejected\" && (r.reason instanceof RunHeld || r.reason instanceof JournalAppendRejected),",
+      "replace": "        r.status === \"rejected\" && r.reason instanceof JournalAppendRejected,",
+      "expectRed": "a held arm inside a race unwinds the run even though a sibling won",
+      "completionMarker": "ok and the refused step is still pending, not recorded as anything it is not",
+      "cell": "a held arm inside a race unwinds the run even though a sibling won",
+      "note": "Dropping RunHeld from the hoist lets the sleeping sibling win and settle the race over the refused arm; the settled scope short-circuits on resume, so the L5016 step would stay refused forever with the run recorded completed."
     }
   ]
 }
