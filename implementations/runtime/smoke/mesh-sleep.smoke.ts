@@ -140,12 +140,28 @@ const handler = new MeshHandler(
 
 // A step's identity, exactly as the interpreter would hand it over: recorded on the pending entry
 // BEFORE the handler is called, which is what makes it survive a crash.
-const ctx = (requestId: string) => ({ requestId, attempt: 0 } as never);
+/** The full contract a handler is called under, signal included; `cancel` is the test's hand on
+ *  it, for the cells that grade what a losing branch's pause does. */
+const ctx = (requestId: string) => {
+  const listeners: ((reason: string) => void)[] = [];
+  const signal = {
+    cancelled: false,
+    reason: undefined as string | undefined,
+    onCancel: (fn: (reason: string) => void) => { listeners.push(fn); },
+  };
+  const cancel = (reason: string) => {
+    if (signal.cancelled) return;
+    signal.cancelled = true;
+    signal.reason = reason;
+    for (const fn of listeners) fn(reason);
+  };
+  return { ctx: { requestId, attempt: 0, signal } as never, cancel };
+};
 const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
 
 // ── 1) a sleep pauses durably before it waits ────────────────────────────────────────────────
 {
-  const sleeping = handler.sleep({ duration: "4s" }, ctx(TOKEN));
+  const sleeping = handler.sleep({ duration: "4s" }, ctx(TOKEN).ctx);
   // Give the mint time to land, then look at what exists BEFORE anything fires. A durable pause
   // that is only in memory is the defect this whole plane exists to prevent.
   await wait(300);
@@ -198,7 +214,7 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
     new EpfSettleWatcher(js, jsm, SPACE, 3_000),
     () => Date.now(),
   );
-  const first = live.sleep({ duration: "8s" }, ctx(TOKEN2));
+  const first = live.sleep({ duration: "8s" }, ctx(TOKEN2).ctx);
   await wait(300);
   await armPending(4);
   const before = await readCheckpointStatus(kv, { endpoint: EP, token: TOKEN2 });
@@ -206,7 +222,7 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
   // The "crash": the first wait is abandoned and the step is performed again under its recorded id,
   // after real time has passed, which is what makes the recomputed deadline differ.
   await wait(1_200);
-  const second = live.sleep({ duration: "8s" }, ctx(TOKEN2));
+  const second = live.sleep({ duration: "8s" }, ctx(TOKEN2).ctx);
   let refused: string | undefined;
   second.catch((e: unknown) => { refused = (e as Error).message; });
   await wait(300);
@@ -247,7 +263,7 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
     new EpfSettleWatcher(js, jsm, SPACE, 3_000),
     () => Date.now(),
   );
-  const first = live.sleep({ duration: "2s" }, ctx(TOKEN3));
+  const first = live.sleep({ duration: "2s" }, ctx(TOKEN3).ctx);
   first.catch(() => { /* the abandoned attempt */ });
   await wait(300);
   // THE REQUEST IS TAKEN AND THROWN AWAY, which is the window this block is about: a writer read it
@@ -261,7 +277,7 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
   c("nothing fired while the timer was never armed, so the pause is due and nobody is coming",
     !armedBefore && !(await brokerFired(TOKEN3)));
 
-  const resumed = live.sleep({ duration: "2s" }, ctx(TOKEN3));
+  const resumed = live.sleep({ duration: "2s" }, ctx(TOKEN3).ctx);
   let refused: string | undefined;
   resumed.catch((e: unknown) => { refused = (e as Error).message; });
   await wait(500);
@@ -271,6 +287,32 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
   await withDeadline(resumed, 20_000, "the overdue sleep");
   const settle3 = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: TOKEN3 });
   c("the pause ends as an expiry, on the deadline it recorded before the crash", settle3?.settle === "expired", settle3?.settle);
+}
+
+// ── 4 — a sleep whose branch lost stops parking NOW, and claims its pause ─────────────────────
+// The other exit a durable pause has (#532). A `sleep` in a race's losing arm used to ignore its
+// signal and park to its own deadline, holding the scope's `allSettled` hostage for the rest of
+// the duration. The cancellation must end the park within the settle pump's poll, reject with
+// `Cancelled` (the class perform.ts settles the entry `cancelled` for), and CLAIM the pause, so
+// the armed schedule cannot fire into a branch that is over.
+{
+  const TOKEN4 = "cnRlc3RfY2FuY2VsX3Rva2VuXzA0";
+  const { ctx: k, cancel } = ctx(TOKEN4);
+  const parked = handler.sleep({ duration: "8m" }, k).then(() => null, (e: Error) => e);
+  await wait(600);
+  const before = await readCheckpointStatus(kv, { endpoint: EP, token: TOKEN4 });
+  c("the pause was minted and waiting before the cancellation", before?.value.state === "waiting", before?.value.state);
+  cancel("a sibling branch won the race");
+  const out = await withDeadline(parked, 10_000, "the cancelled sleep");
+  c("a cancelled sleep rejects `Cancelled` promptly rather than waiting out its deadline",
+    out instanceof Error && out.name === "Cancelled", String(out));
+  // The claim is issued on the cancellation path but not awaited by it; give it its moment.
+  let claimed = false;
+  for (let i = 0; i < 50 && !claimed; i += 1) {
+    claimed = (await readCheckpointStatus(kv, { endpoint: EP, token: TOKEN4 }))?.value.state !== "waiting";
+    if (!claimed) await wait(100);
+  }
+  c("and the pause is claimed: the schedule of a branch that is over has nothing left to fire into", claimed);
 }
 
 console.log(`mesh-sleep.smoke: ${ok} passed, ${fail} failed`);

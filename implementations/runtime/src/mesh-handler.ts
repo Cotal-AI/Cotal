@@ -45,7 +45,9 @@ import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
 import {
   parseDuration,
+  Cancelled,
   EffectRefused,
+  type CancelSignal,
   type WaitRequest,
   type CheckpointRaw,
   type CheckpointRequest,
@@ -163,6 +165,33 @@ export class MeshHandler {
   }
 
   /**
+   * End the external state of a cancelled scope's LOSERS: the world half of the discharge the
+   * scope entry's `cancel.issued` records (§7.6, and the driver's `dischargeCancellations` is the
+   * caller). The entries handed in are the losers' subtrees; what has external state to end is the
+   * three pause kinds — a pause's timer is claimed so its armed schedule cannot fire into a run
+   * that moved on, and a wait's durable consumer is deleted because a cancelled wait replays as
+   * cancelled and nothing will ever read its position.
+   *
+   * IDEMPOTENT BY THE PLANE: `cancelTimer` declines a pause that is not waiting, the consumer
+   * delete tolerates one already gone, and both tolerate a loser that cleaned up after itself on
+   * the live path — this is the durable backstop for the process that died before its own cleanup
+   * landed, and the flip to `issued: true` happens only after it returns.
+   */
+  async discharge(entries: readonly JournalEntry[]): Promise<void> {
+    for (const e of entries) {
+      if (e.requestId === undefined) continue;
+      if (e.kind !== "sleep" && e.kind !== "checkpoint" && e.kind !== "wait") continue;
+      await this.cancelTimer({ endpoint: this.binding.endpoint, token: e.requestId });
+      if (e.kind === "wait") {
+        await this.cancelTimer({ endpoint: this.binding.endpoint, token: derivedToken(e.requestId, "wait-timeout") });
+        try {
+          await this.jsm.consumers.delete(chatStream(this.binding.space), waitConsumerName(e.requestId));
+        } catch { /* never created, or already deleted — nothing is held either way */ }
+      }
+    }
+  }
+
+  /**
    * `sleep` is a checkpoint nobody answers.
    *
    * There is no separate timer plane and there should not be one: a durable pause with a deadline,
@@ -172,6 +201,7 @@ export class MeshHandler {
    * and `null` is the whole answer.
    */
   async sleep(req: SleepRequest, ctx: EffectContext): Promise<null> {
+    if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
     const ref: CheckpointRef = { endpoint: this.binding.endpoint, token: ctx.requestId };
     const now = this.now();
     const deadline = now + parseDuration(req.duration);
@@ -184,7 +214,7 @@ export class MeshHandler {
     // generation the writer would then have to be trusted to ignore.
     await this.arm(ref, deadline);
 
-    await this.settle(ref);
+    await this.settle(ref, ctx.signal);
     return null;
   }
 
@@ -202,13 +232,14 @@ export class MeshHandler {
    * alike; deciding it here would bake one answer into the journal.
    */
   async checkpoint(req: CheckpointRequest, ctx: EffectContext): Promise<CheckpointRaw> {
+    if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
     const ref: CheckpointRef = { endpoint: this.binding.endpoint, token: ctx.requestId };
     const now = this.now();
     const deadline = now + parseDuration(req.timeout ?? this.binding.defaultCheckpointTimeout);
 
     await this.arm(ref, deadline);
 
-    const settled = await this.settle(ref);
+    const settled = await this.settle(ref, ctx.signal);
     if (settled.settle === "expired") return { outcome: "expired", at: settled.ts };
     // The settle NAMES its answer, and the record is read under that name rather than by looking
     // for "the answer to this token": two resolvers can have filed answers and only one of them
@@ -243,6 +274,7 @@ export class MeshHandler {
    * `spawn` produces, so they refuse through the same named seam as the durable actions.
    */
   async wait(req: WaitRequest, ctx: EffectContext): Promise<unknown | null> {
+    if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
     const ev = req.event;
     if (ev.event === "replied" || ev.event === "down") {
       throw new NotYetDurable(`wait(${ev.event}(…))`, ACTION_MACHINERY);
@@ -284,6 +316,18 @@ export class MeshHandler {
     let over = false;
     try {
       for (;;) {
+        // THE CANCELLATION IS OBSERVED ON THE SAME CADENCE AS THE DEADLINE: once per poll, so a
+        // race decided against this branch ends its wait within one fetch rather than never
+        // (§7.6 — a cancelled branch performs no new work, and a wait mid-poll is this branch's
+        // one in-flight effect). A cancelled wait is OVER, not abandoned: its timers are claimed
+        // here and its consumer is deleted by the cleanup below, because a `cancelled` settle
+        // replays as cancelled and nothing will ever re-attach to this position.
+        if (ctx.signal.cancelled) {
+          if (primary !== undefined) await this.cancelTimer(primary);
+          if (outer !== undefined) await this.cancelTimer(outer);
+          over = true;
+          throw new Cancelled(ctx.signal.reason ?? "cancelled");
+        }
         // The deadline is durable and authoritative — a checkpoint's settle fact — and this is only
         // the OBSERVATION of it, so the cost of polling is lateness bounded by one poll rather than
         // a wait that outlives its deadline.
@@ -315,10 +359,13 @@ export class MeshHandler {
         }
       }
     } finally {
-      // A THROW IS NOT AN ENDING. The three returns above are the wait being over and its position
-      // worthless; a throw leaves the step pending, and the consumer's position is the only record
-      // of where this run reached on the channel. `ctx.bind` is a journal append and a journal can
-      // refuse one (L5010, RunSuperseded), so a throw here is ordinary operation and not only a bug.
+      // A THROW IS NOT AN ENDING — with one exception, and it marks itself. The three returns above
+      // are the wait being over and its position worthless; a throw leaves the step pending, and
+      // the consumer's position is the only record of where this run reached on the channel.
+      // `ctx.bind` is a journal append and a journal can refuse one (L5010, RunSuperseded), so a
+      // throw here is ordinary operation and not only a bug. The exception is `Cancelled`, which
+      // sets `over` before it leaves: a cancelled wait settles `cancelled` and replays as
+      // cancelled, so its position answers nothing ever again.
       // Keeping the consumer costs one durable on an abandoned run, which is what a host crash
       // already costs; reaping on inactivity instead could delete a live wait's position while its
       // host was down.
@@ -595,7 +642,7 @@ export class MeshHandler {
    * optimization, it is the difference between resuming and waiting forever for an event that is
    * already in the past.
    */
-  private async settle(ref: CheckpointRef): Promise<CheckpointSettleFact> {
+  private async settle(ref: CheckpointRef, signal?: CancelSignal): Promise<CheckpointSettleFact> {
     const already = await readCheckpointSettle(this.jsm, this.binding.space, ref);
     if (already !== undefined) return already;
     // The watcher waits for the FACT. For a pause with an answer the fact arrives because somebody
@@ -610,10 +657,36 @@ export class MeshHandler {
         // A pump that ENDED is not an answer, only one that FAILED is: a failure means this process
         // cannot expire the pause, so it is raised rather than absorbed and the step stays pending.
         pump.then<CheckpointSettleFact>(() => new Promise<never>(() => {})),
+        // A cancelled branch stops parking NOW (§7.6): the rejection decides the race first, so a
+        // `checkpoint` cannot mistake its own claim below for an answer, and then the claim ends
+        // the pause in the world. The claim is not awaited here — a claim that loses its own race
+        // is tolerated by `cancelTimer`, and the discharge sweep at the run's completion re-claims
+        // idempotently for the case where this process died before the claim landed.
+        ...(signal === undefined ? [] : [this.settleCancelled(ref, signal)]),
       ]);
     } finally {
       wait.over = true;
     }
+  }
+
+  /** Reject with `Cancelled` the moment this branch's signal fires, then claim the pause so its
+   *  armed schedule cannot fire into a run that has moved on. The claim also writes the one-use
+   *  settle, which is what lets an abandoned `awaitSettle` poll loop see a fact and end. */
+  private settleCancelled(ref: CheckpointRef, signal: CancelSignal): Promise<never> {
+    return new Promise<never>((_, reject) => {
+      let fired = false;
+      const fire = (reason?: string): void => {
+        if (fired) return;
+        fired = true;
+        reject(new Cancelled(reason ?? "cancelled"));
+        void this.cancelTimer(ref).catch(() => undefined);
+      };
+      if (signal.cancelled) {
+        fire(signal.reason);
+        return;
+      }
+      signal.onCancel(fire);
+    });
   }
 
   /** Take this deadline's fire for as long as somebody is waiting on it. */

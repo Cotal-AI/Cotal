@@ -42,12 +42,16 @@ import {
   eptReqStreamName,
   eptStreamName,
   eptSubject,
+  replayRunJournal,
+  newTakeoverId,
   type CotalMessage,
 } from "@cotal-ai/core";
+import { Cancelled, journalEntryKeyString, type JournalEntry } from "@cotal-ai/lang";
 import {
   MeshHandler,
   EpfSettleWatcher,
   NotYetDurable,
+  startRun,
   waitConsumerName,
   waitConsumerConfig,
 } from "../src/index.js";
@@ -141,15 +145,29 @@ const handler = new MeshHandler(
   now,
 );
 
-/** A step's identity plus a real `bind`, so what the handler records is observable. */
+/** A step's identity plus a real `bind` and a real, cancellable signal — the full contract a
+ *  handler is called under, so what it records AND what it does when its branch loses are both
+ *  observable. `cancel` is the test's hand on the signal. */
 const ctx = (requestId: string, resume?: Record<string, unknown>) => {
   const bound: Record<string, unknown>[] = [];
+  const listeners: ((reason: string) => void)[] = [];
+  const signal = {
+    cancelled: false,
+    reason: undefined as string | undefined,
+    onCancel: (fn: (reason: string) => void) => { listeners.push(fn); },
+  };
+  const cancel = (reason: string) => {
+    if (signal.cancelled) return;
+    signal.cancelled = true;
+    signal.reason = reason;
+    for (const fn of listeners) fn(reason);
+  };
   const value = {
-    requestId, attempt: 0,
+    requestId, attempt: 0, signal,
     ...(resume !== undefined ? { resume } : {}),
     bind: async (e: Record<string, unknown>) => { bound.push(e); },
   };
-  return { ctx: value as never, bound };
+  return { ctx: value as never, bound, cancel };
 };
 
 const say = async (text: string, from = "ann") => {
@@ -439,6 +457,7 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
   const attempted: unknown[] = [];
   const refusing = {
     requestId: id, attempt: 0,
+    signal: { cancelled: false, onCancel() { /* never fires here */ } },
     bind: async (e: unknown) => { attempted.push(e); throw new Error("L5010 journal append rejected"); },
   } as never;
 
@@ -481,6 +500,148 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
   c("a wait that reaches its deadline ends as null", got === null, JSON.stringify(got));
   c("and its consumer is gone: an ENDED wait's position is worthless and is not left behind",
     (await jsm.consumers.info(chatStream(SPACE), waitConsumerName(id)).then(() => "still-there", () => "gone")) === "gone");
+}
+
+// ── 11) A WAIT WHOSE BRANCH LOST ends within one poll, cleaned up, as `Cancelled` ─────────────
+// The handler half of #532, at the seam. Before it, this wait ignored its signal: the poll loop
+// ran to the timeout however the race went, the consumer stayed, and the timers stayed armed.
+// The cancellation must end it on the poll cadence, reject with the class the boundary settles
+// `cancelled` for, claim its timeout pause, and delete its consumer — a cancelled wait replays as
+// cancelled, so its position answers nothing ever again.
+{
+  const id = tok("cancelled");
+  const { ctx: k, cancel } = ctx(id);
+  const awaited = handler
+    .wait({ event: { event: "message", channel: CHANNEL }, timeout: "10m" }, k)
+    .then(() => null, (e: Error) => e);
+  await wait(600);
+  await armPending();
+  cancel("a sibling branch won the race");
+  const out = await withDeadline(awaited, 10_000, "the cancelled wait");
+  c("a cancelled wait rejects `Cancelled` within one poll rather than waiting out its timeout",
+    out instanceof Error && out.name === "Cancelled", String(out));
+  c("its consumer is deleted: a cancelled wait's position answers nothing ever again",
+    (await jsm.consumers.info(chatStream(SPACE), waitConsumerName(id)).then(() => "still-there", () => "gone")) === "gone");
+  const st = await readCheckpointStatus(kv, { endpoint: EP, token: id });
+  c("and its timeout pause is claimed rather than left armed for a branch that is over",
+    st !== undefined && st.value.state !== "waiting", JSON.stringify(st?.value.state));
+}
+
+// The driver-level blocks below run real programs; the harness is mesh-checkpoint's.
+let takeovers = 0;
+const lease = () => ({ holder: "m1", epoch: 1, fencingToken: takeovers + 1, takeoverId: `t${(takeovers += 1)}` });
+const journalOf = async (runId: string): Promise<JournalEntry[]> => {
+  const replay = await replayRunJournal(js, jsm, SPACE, runId, newTakeoverId());
+  return replay.records
+    .filter((r) => r.record.kind === "step")
+    .map((r) => (r.record as unknown as { entry: JournalEntry }).entry);
+};
+/** Fold the append log by key, later record wins — the settled row, and after a discharge the
+ *  re-appended one carrying `issued: true`. */
+const folded = (entries: readonly JournalEntry[]): Map<string, JournalEntry> => {
+  const m = new Map<string, JournalEntry>();
+  for (const e of entries) m.set(journalEntryKeyString(e), e);
+  return m;
+};
+
+// ── 12) A RACE'S LOSING WAIT: the run completes promptly, and the cancellation is DISCHARGED ──
+// The shipped defect end to end (#532), reproduced through the real binary before this block
+// existed: a decided race hung its run forever on a loser that never observed its signal, the
+// loser's consumer stayed live on the broker, and the scope's `cancel.issued` stayed false on
+// every completed run in the tree. This drives the same program shape through the run driver and
+// grades the whole repair: prompt completion, the loser settled `cancelled` (the engine bridge
+// carries the class across the port), its consumer gone, its pause claimed, and the recorded
+// cancellation flipped `issued: true` by the driver's sweep.
+{
+  const source = `
+const r = await race({
+  quick: async () => await wait(message(channel("${CHANNEL}"))),
+  slow: async () => await wait(message(channel("wf-lost")), { timeout: "10m" }),
+}, { name: "decided" });
+log("winner", r.index);
+`;
+  const driven = startRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "race-1", source, lease: lease(), handler,
+  });
+  let parked: JournalEntry[] = [];
+  for (let i = 0; i < 100; i += 1) {
+    parked = (await journalOf("race-1")).filter(
+      (e) => e.kind === "wait" && e.state === "pending" && e.requestId !== undefined);
+    if (parked.length >= 2) break;
+    await wait(100);
+  }
+  c("both arms parked durably before the decision", parked.length >= 2, parked.length);
+  await armPending();
+  await say("the winner");
+  const outcome = await withDeadline(driven, 25_000, "the decided race");
+  c("a race whose loser is a parked wait completes promptly once decided — it does not wait out the loser",
+    (outcome as { status?: string } | undefined)?.status === "completed", JSON.stringify(outcome));
+  const after = folded(await journalOf("race-1"));
+  const slow = after.get("/race:decided#0/b:slow/wait#0");
+  c("the losing wait settled `cancelled` — the class crossed the engine bridge instead of flattening to a fault",
+    slow?.state === "settled" && slow.status === "cancelled",
+    JSON.stringify({ state: slow?.state, status: slow?.status, error: slow?.error }));
+  const scope = after.get("/race:decided#0");
+  c("the recorded cancellation is DISCHARGED: `issued` reads true off the journal once the world is quiet",
+    scope?.cancel?.issued === true, JSON.stringify(scope?.cancel));
+  c("the loser's consumer is gone",
+    slow?.requestId !== undefined &&
+      (await jsm.consumers.info(chatStream(SPACE), waitConsumerName(slow.requestId)).then(() => "still-there", () => "gone")) === "gone");
+  const st = slow?.requestId === undefined ? undefined : await readCheckpointStatus(kv, { endpoint: EP, token: slow.requestId });
+  c("and the loser's timeout pause is not left waiting for a fire",
+    st !== undefined && st.value.state !== "waiting", JSON.stringify(st?.value.state));
+}
+
+// ── 13) THE DISCHARGE IS A DURABLE BACKSTOP: a loser whose process died before its own cleanup ──
+// Block 12's loser cleans up inside `wait` itself, so it cannot grade the sweep's world half.
+// This one drives the same race with a loser whose handler dies DIRTY: the consumer is created for
+// real under the loser's request id, and the cancellation is raised with no cleanup — exactly what
+// a crash between the throw and the cleanup leaves behind. The completion sweep is then the only
+// thing standing between the journal's `issued: false` and a consumer nobody will ever read: it
+// must end the world state through the handler's `discharge` and flip the record.
+{
+  let dirtyId: string | undefined;
+  const dirty = {
+    now: () => handler.now(),
+    discharge: (entries: readonly JournalEntry[]) => handler.discharge(entries),
+    sleep: (r: never, kc: never) => handler.sleep(r, kc),
+    checkpoint: (r: never, kc: never) => handler.checkpoint(r, kc),
+    notify: (r: never, kc: never) => handler.notify(r, kc),
+    wait: async (
+      req: { event?: { channel?: string } },
+      kc: { requestId: string; signal: { cancelled: boolean; reason?: string; onCancel(fn: (reason: string) => void): void } },
+    ): Promise<unknown> => {
+      if (req.event?.channel !== "wf-lost2") return await handler.wait(req as never, kc as never);
+      dirtyId = kc.requestId;
+      await jsm.consumers.add(chatStream(SPACE), waitConsumerConfig(SPACE, kc.requestId, "wf-lost2") as never);
+      return await new Promise((_, reject) => {
+        const die = (reason: string): void => reject(new Cancelled(reason));
+        if (kc.signal.cancelled) die(kc.signal.reason ?? "cancelled");
+        else kc.signal.onCancel(die);
+      });
+    },
+  };
+  const source = `
+const r = await race({
+  quick: async () => await wait(message(channel("${CHANNEL}"))),
+  slow: async () => await wait(message(channel("wf-lost2"))),
+}, { name: "decided" });
+log("winner", r.index);
+`;
+  const driven = startRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "race-2", source, lease: lease(), handler: dirty as never,
+  });
+  for (let i = 0; i < 100 && dirtyId === undefined; i += 1) await wait(100);
+  c("the dirty loser parked with a real consumer under its request id", dirtyId !== undefined);
+  await say("the winner again");
+  const outcome = await withDeadline(driven, 25_000, "the race over a dirty loser");
+  c("the run completes", (outcome as { status?: string } | undefined)?.status === "completed", JSON.stringify(outcome));
+  c("the consumer the dead loser left behind is deleted by the discharge, not by anyone's live cleanup",
+    dirtyId !== undefined &&
+      (await jsm.consumers.info(chatStream(SPACE), waitConsumerName(dirtyId)).then(() => "still-there", () => "gone")) === "gone");
+  const scope = folded(await journalOf("race-2")).get("/race:decided#0");
+  c("and the record agrees: `issued` flipped true only after the world was swept",
+    scope?.cancel?.issued === true, JSON.stringify(scope?.cancel));
 }
 
 console.log(`mesh-wait.smoke: ${ok} passed, ${fail} failed`);

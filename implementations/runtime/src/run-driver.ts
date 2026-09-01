@@ -54,6 +54,7 @@ import {
   ENGINE_LANGUAGE_VERSION,
   WALKER_LANGUAGE_VERSION,
   PIN_DEFAULTS,
+  journalEntryKeyString,
   type EffectHandler,
   type JournalEntry,
   type RunPins,
@@ -302,6 +303,65 @@ const adoptionOf = (handler: unknown): AdoptingHandler | undefined =>
     : undefined;
 
 /**
+ * A handler that can end the external state a cancelled branch left behind (§7.6): timers still
+ * armed, a wait's durable consumer still holding a position. Declared here for the same reason as
+ * {@link AdoptingHandler} — the language records the cancellation, and acting on the record is the
+ * driver's concern. A handler with no external state (the simulator) declares nothing and the
+ * discharge is the flip alone.
+ */
+export interface DischargingHandler {
+  discharge(entries: readonly JournalEntry[]): Promise<unknown>;
+}
+
+const dischargeOf = (handler: unknown): DischargingHandler | undefined =>
+  typeof (handler as DischargingHandler | undefined)?.discharge === "function"
+    ? (handler as DischargingHandler)
+    : undefined;
+
+/**
+ * Discharge every recorded cancellation whose flip is still owed: the second half of the design
+ * `cancel.issued` stages (#532). A scope that cancels its losers writes the INTENT with its
+ * outcome — `cancel: { losers, issued: false }` — because a journal write cancels nothing by
+ * itself; this is the runtime acting on that record. For each such scope entry the losers'
+ * subtree entries are handed to the handler to end their external state (idempotently — the live
+ * path usually cleaned up after itself, and this is the durable backstop for a process that died
+ * first), and only then is the entry re-appended with `issued: true`, so a flip in the journal is
+ * always DOWNSTREAM of the world being quiet.
+ *
+ * Runs at the run's completion, where every branch has settled: a released run is not swept (this
+ * driver no longer holds it, and its appends would be refused), and a crash before the sweep is
+ * repaired by the next completion's sweep reading `issued: false` off the replayed prefix.
+ */
+export async function dischargeCancellations(
+  entries: readonly JournalEntry[],
+  store: { append(entry: JournalEntry): Promise<void> },
+  handler: unknown,
+): Promise<string[]> {
+  const flipped: string[] = [];
+  const discharger = dischargeOf(handler);
+  for (const e of entries) {
+    if (e.state !== "settled" || e.cancel === undefined || e.cancel.issued) continue;
+    const scopeKey = journalEntryKeyString(e);
+    if (discharger !== undefined) {
+      const prefixes = e.cancel.losers.map((b) => `${scopeKey}/b:${b}/`);
+      const losers = entries.filter((x) =>
+        x !== e && prefixes.some((p) => journalEntryKeyString(x).startsWith(p)));
+      await discharger.discharge(losers);
+    }
+    try {
+      await store.append({ ...e, cancel: { losers: e.cancel.losers, issued: true } });
+    } catch (err) {
+      // The same wrap `Journal.persist` gives every refused append: a flip the store would not
+      // take means this driver no longer holds the run, and that travels as L5010 — the caller
+      // grades it `released` — never as the completed program having failed.
+      throw new JournalAppendRejected(scopeKey, e.state, err as Error);
+    }
+    flipped.push(scopeKey);
+  }
+  return flipped;
+}
+
+/**
  * What a drive attempt did, as a two-exit answer rather than a value plus exceptions.
  *
  * `completed` is the program finishing under this driver. `released` is this driver ceasing to hold
@@ -481,6 +541,10 @@ async function drive(
   try {
     const engineReq: HostedEngineRequest = { source: req.source, journal, store, entries: resumed, options };
     const result = expect === "new" ? await engine.run(engineReq) : await engine.resume(engineReq);
+    // The discharge BEFORE the completed note: `result.journal` is the final folded record on both
+    // engines, and a crash between the two leaves `issued: false` for the next completion's sweep
+    // rather than a completed run whose discharge silently never happened.
+    await dischargeCancellations(result.journal.entries(), store, req.handler);
     await note(req, "completed", appender.journalHigh, specRevision, statusRevision);
     return { status: "completed", result };
   } catch (e) {
