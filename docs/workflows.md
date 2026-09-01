@@ -96,7 +96,8 @@ already happened, a removed `spawn` is a live agent you must adopt or release, a
 
 **Fork** starts a new run from a named step of an old one, copying the prefix under the parent's
 pins (seed included, so the copied history's pure draws are the same draws). The child is a new run
-under a new id, and this revision records no lineage on it; the parent is untouched.
+under a new id whose record names the parent and the cut step (`forkedFrom`); the parent is
+untouched.
 
 ## What is on the wire
 
@@ -126,11 +127,12 @@ per-run grants) is in `@cotal-ai/core`, and the run driver, journal store, migra
 `@cotal-ai/runtime` (`implementations/runtime`). On the mesh handler, `sleep`, `checkpoint`,
 `wait(message(...))`, `wait(idle(...))` and `notify` are durable; `spawn`, `turn`, `ask`,
 `monitor`, `wait(replied(...))`, `wait(down(...))` and `conclave` refuse with **L5016 (effect not
-durable on this host)** until the durable action machinery they ride lands. That refusal is terminal
-for the run that hits it: the step is recorded as attempted and failed, and a resume replays the
-failure rather than retrying it, so a run started today does not heal the day those effects land. No
-`cotal` command starts or resumes a run yet. Those are the next lanes, and this page will say so
-when they change.
+durable on this host)** until the durable action machinery they ride lands. That refusal holds the
+run rather than ending it: the entry is settled `refused` (never `failed`, since nothing was
+attempted), the run unwinds with the uncatchable L5025 and is recorded `released`, and a resume on
+a host that can perform the step performs it live. A run started today heals the day those effects
+land. No `cotal` command starts or resumes a run yet. Those are the next lanes, and this page will
+say so when they change.
 
 **Two engines, and which one runs your program.** The tree-walker is language version `1` and the
 compiled engine is version `2`, two languages rather than two speeds of one (`spec/cotal-lang.md`

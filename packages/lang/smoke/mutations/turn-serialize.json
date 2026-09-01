@@ -1,0 +1,28 @@
+{
+  "suite": "packages/lang/smoke/interpret.smoke.ts",
+  "guard": "Two concurrent turns on one agent handle are serialized at the dispatch seam, per agent: unserialized, an agent is asked to take two turns at once; globally serialized, unrelated agents queue behind each other.",
+  "command": "pnpm smoke:lang-interpret",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/turn-serialize.json",
+  "mutations": [
+    {
+      "name": "turn dispatches bypass the queue entirely",
+      "file": "packages/lang/src/perform.ts",
+      "find": "  const prev = queues.get(agent) ?? Promise.resolve();\n  const next = prev.then(dispatch, dispatch);",
+      "replace": "  const prev = queues.get(agent) ?? Promise.resolve();\n  void prev;\n  const next = dispatch();",
+      "expectRed": "two concurrent turns on ONE handle never overlap: the dispatch serializes them",
+      "completionMarker": "ok with the spawn settled ok over the refusal, and the finalizer's notify recorded",
+      "cell": "two concurrent turns on ONE handle never overlap: the dispatch serializes them",
+      "note": "Both branches dispatch before either simulated turn delivers, so the probe's high-water mark reads 2 and the cell reds; the different-handles control below it stays green under this mutant."
+    },
+    {
+      "name": "the queue is one global line rather than per agent",
+      "file": "packages/lang/src/perform.ts",
+      "find": "  const prev = queues.get(agent) ?? Promise.resolve();\n  const next = prev.then(dispatch, dispatch);\n  queues.set(\n    agent,",
+      "replace": "  const prev = queues.get(\"one-line\") ?? Promise.resolve();\n  const next = prev.then(dispatch, dispatch);\n  queues.set(\n    \"one-line\",",
+      "expectRed": "while turns on two DIFFERENT handles still overlap: the queue is per agent, not global",
+      "completionMarker": "ok two concurrent turns on ONE handle never overlap: the dispatch serializes them",
+      "cell": "while turns on two DIFFERENT handles still overlap: the queue is per agent, not global",
+      "note": "A global line serializes the two unrelated agents too, so the control probe's high-water mark reads 1 instead of 2; the same-handle cell above it stays green, which is what makes the pair discriminating."
+    }
+  ]
+}

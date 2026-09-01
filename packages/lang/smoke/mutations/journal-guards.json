@@ -17,7 +17,7 @@
     {
       "name": "the status vocabulary guard is disabled at the seed",
       "file": "packages/lang/src/journal.ts",
-      "find": "      if (e.state === \"settled\" && e.status !== \"ok\" && e.status !== \"failed\" && e.status !== \"cancelled\")",
+      "find": "      if (e.state === \"settled\" && e.status !== \"ok\" && e.status !== \"failed\" && e.status !== \"cancelled\" && e.status !== \"refused\")",
       "replace": "      if (false)",
       "expectRed": "a settled entry with an unknown status is refused at the seed",
       "completionMarker": "ok recorded history without pins is refused (L5021)",

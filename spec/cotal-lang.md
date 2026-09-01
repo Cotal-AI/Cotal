@@ -449,9 +449,10 @@ on `spawn` are policy over a result and are never hashed.
 - **`turn`** wakes an agent for one turn; it reads its own channels and speaks for itself. The
   result is its yield status: `done`, `blocked`, or `handoff` (with `to`), and `at`. The handler
   reports a handoff to an agent outside the run as L4005, one across worktrees as L4004, an elapsed
-  `deadline` as L4003, and a dead agent as L4002. The language does not refuse two concurrent turns
-  on one handle (two branches turning the same agent); whether they are serialized or refused is the
-  handler's, and the reference handlers do neither in this revision.
+  `deadline` as L4003, and a dead agent as L4002. Two concurrent `turn`s on one handle (two
+  branches turning the same agent) MUST be serialized at the dispatch: the second begins when the
+  first settles, in dispatch order, so an agent is never asked to take two turns at once and no
+  handler has to defend against it.
 - **`ask`** is the narrow case where the program needs a value: the agent publishes a record, the
   program awaits it, and the handler checks it against `schema`; `attempts` (default 1) bounds how
   many non-conforming replies are tolerated before the handler reports L4006. `schema` (here and
@@ -743,15 +744,18 @@ try {
 
 ### 9.2 What a program cannot catch
 
-A `catch` MUST NOT see, and an implementation MUST unwind the run through, five things that are not
+A `catch` MUST NOT see, and an implementation MUST unwind the run through, six things that are not
 the program's to handle: a **cancellation** (§7.6); a **journal append the store refused** (L5010:
 the run has lost its ability to have a result, and effects performed past it would exist only in the
-world; L5006, the result-size refusal ahead of the append, travels the same way); a **host release** (L5012: the driver stopped, the program did not); a **divergence**
+world; L5006, the result-size refusal ahead of the append, travels the same way); a **host release** (L5012: the driver stopped, the program did not); a
+**capability refusal's halt** (L5025, §10.7: this host cannot perform the step, the entry is
+settled `refused`, and the run is held for a capable host); a **divergence**
 (L5001, §11.1: the journal is saying this program is not the one that wrote it); and a **migration
 walk's refusal to enter a scope** (L5022, or an unwalkable `conclave`). These unwind past `finally`
-too: a finalizer neither runs on the way out nor replaces the fault, because none of the five
+too: a finalizer neither runs on the way out nor replaces the fault, because none of the six
 leaves the program a next step to take — a cancelled branch performs no new work, and a run that
-has diverged, lost its journal or been released cannot be allowed one more effect on the way down.
+has diverged, lost its journal, been released or been held cannot be allowed one more effect on the
+way down.
 
 ### 9.3 Error rendering
 
@@ -779,7 +783,7 @@ The journal is an append-only log of entries. An entry is JSON:
   inputHash,           // "sha256:<hex>" (§6.4)
   requestId?, attempt?,// the identity the handler submits under (§10.4)
   state,               // "pending" | "settled"
-  status?,             // "ok" | "failed" | "cancelled"
+  status?,             // "ok" | "failed" | "cancelled" | "refused"
   result?,             // status ok: the recorded value
   error?,              // status failed: { code, kind, message, detail? }
   external?,           // what the handler bound (recovery)
@@ -793,7 +797,11 @@ The journal is an append-only log of entries. An entry is JSON:
 ```
 
 An entry is written **twice**: once `pending`, before the effect is dispatched, and once `settled`,
-after; a reader folds by key and the last write wins. `result` and `error` are exclusive. `branches`
+after; a reader folds by key and the last write wins. `result` and `error` are exclusive. A
+`refused` status records a **capability refusal** under the code the handler raised (L5016 for the
+reference handler), with `error` carrying it: the step was never attempted, and a later activation
+performs it live (§10.7), beginning the step again, so a refused step's subject carries a further
+`pending` and `settled` pair that supersedes the refusal in the fold. `branches`
 is present only on a failed scope, because a successful one carries them inside `result`. Unknown
 fields MUST be ignored.
 
@@ -893,11 +901,13 @@ literal body), so a reformat is silent and an edit is not. A `conclave` records 
 
 ### 10.7 Lookup
 
-At each effect the interpreter looks its key up and acts on one of six verdicts: **miss** (perform
+At each effect the interpreter looks its key up and acts on one of seven verdicts: **miss** (perform
 it live), **replay** (return the recorded result, advance the clock, perform nothing),
 **replay-failed** (throw the recorded error), **replay-cancelled** (raise cancellation in this
 branch), **pending** (re-bind to `external` under the recorded request id and await its terminal),
-**diverged** (the recorded `inputHash` differs: stop, mutate nothing, name the step; L5001).
+**refused** (the step was never attempted: perform it live, as a fresh attempt, with the usual
+input-hash check), **diverged** (the recorded `inputHash` differs: stop, mutate nothing, name the
+step; L5001).
 
 A settled **scope** is delivered from its own entry without entering a branch: the subtree is
 accounted for (a loser still `pending` is settled `cancelled`), then the cancellation intent is the
@@ -920,7 +930,10 @@ walk entering a SETTLED scope, §11.2; a `pending` scope records no arm names to
 re-entered by a resume.) A resume performs live every
 effect the journal has not settled, so a run that stops before its next effect (L5012, the host's
 release, asked before every unrecorded effect and never inside one) is exactly where its journal
-says it is.
+says it is. A **capability refusal** is the same shape one step later: the handler attempted
+nothing, the entry settles `refused` under the handler's code, and the run unwinds with L5025
+rather than recording a failure; a resume on a host that can perform the step finds the `refused`
+verdict (§10.7) and performs it live.
 
 ### 11.2 Migrate
 
@@ -957,9 +970,9 @@ be reached by the parent program's own path (L5018), and MUST NOT lie inside a s
 was already decided (L5020, a race loser's step); a fork that asks to pin a new program hash is
 refused (L5002) until the run record carries one. Agents the prefix spawned are respawned at the
 frontier by default and adopted only where the spawn said `onFork: "adopt"`, and a host that cannot
-honour that refuses (L5019). The child is a new run under a new id; this revision records no
-lineage on it (SPEC.md §14.3), so the parent and the cut are known to the caller that forked, and
-the parent is untouched.
+honour that refuses (L5019). The child is a new run under a new id whose record names its lineage:
+the spec's `forkedFrom` carries the parent run and the cut step (SPEC.md §14.3), written with the
+spec itself. The parent is untouched.
 
 ## 12. Limits
 
@@ -1078,6 +1091,7 @@ time, L5xxx durability, L6xxx simulation.
 | L5022 | A recorded branch is not in the migrated source |
 | L5023 | No engine in this build serves this record's language version |
 | L5024 | A recorded value has no canonical form |
+| L5025 | Effect refused; run held for a capable host |
 | L6001 | Unscripted effect in simulation |
 | L6002 | Simulation script entry unused |
 
@@ -1099,6 +1113,7 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-08-18 | Language-lane folds, same revision: operators, computed member keys and the library's primitive parameters coerce primitives only, an array, record or function operand is refused (L4018, §4.5, §5.4); the dead zone is refused statically where visible and at run time otherwise (L2004, §2.3, §3); bigint literals are refused (L1030, §2.2); array index writes are contiguous and an at-length write appends (L4019, §4.3); a method is not a value (L4020, §4.2, §5.2); holes, cycles and an own `__proto__` field cannot cross, stringify or parse in (§4.4, §5.1); `sort`'s total order is defined over kinds with `NaN` placed (§5.3); the string `replace`/`replaceAll` replacement is an ECMAScript substitution string (§5.2); crossing values are frozen in both directions, replayed results included (§4.3); a scope entry's `endedAt` is the joined branch clock (§8.1, §10.1); a race re-decides a cut when an in-flight effect lands (§7.3); cancellation holds across the boundary's own begin gap (§7.6); an uncatchable fault skips `finally` (§9.2), and `finally` otherwise carries ECMAScript's completion semantics (§9.1). |
 | 2026-08-19 | A record may not carry a callable `then`, on a literal, a spread, a rest pattern or a member write alike, literal key or computed (L4021, §4.3): an object with a callable `then` is a thenable, the host's promise machinery adopts it in place of the value the program built, and its failure escaped the run as an unowned rejection that killed the host. |
 | 2026-09-01 | The `ask` schema shorthand is the handler-side reply contract (§6.5): a handler enforcing it refuses a schema it cannot read (L4022) and reports exhausted `attempts` as L4006; the reference simulator enforces it. A journal MAY carry a result bound, refusing an oversized `ok` result ahead of the settling append (L5006, §12), which leaves the reserved list. A host release or refused append inside a scope cancels no sibling and settles nothing (§7.6): the run unwinds with the journal exactly where it was, so a stopped run resumes past the scope instead of replaying a cancellation it never chose. |
+| 2026-09-01 | A capability refusal is durable and retryable: a handler's refusal settles the entry `refused` under the handler's code (§10.1), the run unwinds with the uncatchable L5025 and is held (§9.2); a resume on a capable host finds the **refused** verdict (§10.7) and performs the step live (§11.1). Two concurrent `turn`s on one handle are serialized at the dispatch (§6.5). A fork's child records its lineage: the run record's `forkedFrom` names the parent and the cut step (§11.3, SPEC.md §14.3). |
 | 2026-08-19 | `len` counts an array or a string and refuses every other kind in the language with L4016 before the host is reached (§5.4): the only `length` a function has on the host is its parameter count, a property of the implementation's wrapper and not a program value, and the other kinds have none. |
 | 2026-08-19 | A record written before the scope value rule still loads and still replays, with the value the store already flattened (§10.1, §10.6): `{}` is canonical, so no door can tell a branch whose function the encoding dropped from a branch that answered `{}` on purpose. Disclosed rather than repaired, and the quieter direction of the version-1 `len` case, which fails loudly before consuming an entry while this one completes and says nothing. Measured at the rule's own commit on four records produced before it: wire `{}`, `{"a":{}}`, `{}`, `{}` against live key sets `["a"]`, `["x"]`, `["x"]`, `["x"]`; all four loaded, all four resumed to completion, and each replayed program read an empty key set. |
 | 2026-08-19 | The scope value rule's absence exemption follows the scope's KIND (§10.6): `parallel`, `fanOut` and `race` exempt a BRANCH SLOT that answered nothing, while a `conclave` assembles nothing and exempts only a body that produced no value at all, so its record fields answer to the rule like any other recorded value. Measured before it: a conclave body returning a record with an absent field completed, the store wrote the field away, and a replay handed the program a record one key short of the live run's, silently. |

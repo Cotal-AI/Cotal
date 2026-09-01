@@ -37,7 +37,7 @@
 
 import type { MessagePort } from "node:worker_threads";
 import type { EffectContext, EffectHandler } from "../effects.js";
-import { EffectError } from "../effects.js";
+import { EffectError, EffectRefused } from "../effects.js";
 import type { JournalEntry, JournalStore } from "../journal.js";
 import type { StepKey } from "../keys.js";
 
@@ -69,6 +69,8 @@ interface WireError {
   readonly detail?: Readonly<Record<string, unknown>>;
   /** Preserved for append failures: `JournalAppendRejected` reads it off the store's throw. */
   readonly indeterminate?: boolean;
+  /** A capability refusal (`EffectRefused`): the thread must rebuild the class, not a plain Error. */
+  readonly refused?: true;
 }
 
 /** The plain-data half of an {@link EffectContext}; `signal` and `bind` are rebuilt per side. */
@@ -102,6 +104,12 @@ function flatten(e: unknown): WireError {
       ...(e.detail !== undefined ? { detail: e.detail } : {}),
     };
   }
+  // A refusal is graded on CLASS by perform.ts (it settles the entry `refused` and holds the
+  // run), so it crosses with a marker the other side rebuilds the class from. The subclass name
+  // is carried for the message; the rebuilt class is the base, which is all the grading reads.
+  if (e instanceof EffectRefused) {
+    return { domain: "host", name: e.name, message: e.message, code: e.code, refused: true };
+  }
   const err = e as { name?: unknown; message?: unknown; code?: unknown; indeterminate?: unknown };
   return {
     domain: "host",
@@ -122,6 +130,7 @@ function flatten(e: unknown): WireError {
  */
 function rehydrate(w: WireError): Error {
   if (w.domain === "effect") return new EffectError(w.code ?? "L4000", w.kind ?? "handler-fault", w.message, w.detail);
+  if (w.refused === true) return new EffectRefused(w.code ?? "L5016", w.message);
   const e = new Error(w.message);
   e.name = w.name;
   if (w.code !== undefined) (e as Error & { code?: string }).code = w.code;

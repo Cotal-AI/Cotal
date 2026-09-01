@@ -247,6 +247,52 @@ export class RunReleased extends Error {
 }
 
 /**
+ * A handler's refusal to perform an effect this host has no substrate for.
+ *
+ * Not a failure, and the distinction is durable: nothing was attempted, so settling the entry
+ * `failed` would replay a failure forever for work the world never saw. A handler throws this,
+ * the interpreter settles the entry `refused` — keeping the code the handler raised, L5016 for
+ * the reference handler — and halts the run with {@link RunHeld}. A later resume finds the
+ * `refused` entry and performs the step live, as a fresh attempt, which is how a run started
+ * before a substrate landed heals the day it does.
+ */
+export class EffectRefused extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "EffectRefused";
+  }
+}
+
+/**
+ * The halt a refusal unwinds the run with (L5025).
+ *
+ * It travels like {@link RunReleased}: a workflow's `try` cannot catch it and `finally` does not
+ * run on the way out (§9.2). The program is not at fault and has not failed; the run is exactly
+ * where its journal says it is, holding one `refused` entry, and the repair is a capable host
+ * rather than anything the program could do with one more effect. Like {@link RunReleased}, the
+ * language raises it and never accepts it from outside.
+ */
+export class RunHeld extends Error {
+  readonly code = "L5025";
+
+  constructor(
+    readonly step: string,
+    /** The refusal's own message. Named `reason` so it crosses the worker boundary like {@link RunReleased.reason}. */
+    readonly reason: string,
+  ) {
+    super(
+      `L5025 Effect refused; run held for a capable host\n\n  step  ${step}\n\n${reason}\n\n` +
+        `The step was never attempted: its entry is settled \`refused\`, and a resume on a host ` +
+        `that can perform it picks the run up exactly here.`,
+    );
+    this.name = "RunHeld";
+  }
+}
+
+/**
  * Raw outcome to what the program sees, computed from TODAY's source.
  *
  * The same call runs on the live path and after a journal hit, which is the whole point: a resumed

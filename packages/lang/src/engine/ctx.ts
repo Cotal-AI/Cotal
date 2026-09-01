@@ -1029,6 +1029,7 @@ const UNCATCHABLE_NAMES: ReadonlySet<string> = new Set([
   "JournalAppendRejected",
   "EffectResultTooLarge",
   "RunReleased",
+  "RunHeld",
   "RunDivergence",
   "ScopeBranchMissing",
   "UnwalkableScope",

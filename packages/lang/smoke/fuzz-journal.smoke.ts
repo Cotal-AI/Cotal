@@ -206,4 +206,47 @@ const replayTo = async (entries: readonly JournalEntry[], runId = RUN_ID) => {
   ok("a result under the bound settles and persists", small.status === "ok" && appended.length === before + 1);
 }
 
+// ---- (9) `refused` is IN the vocabulary, and it re-begins exactly once ------------------------
+//
+// A refusal is the one settled status that is not an outcome: the step was never attempted. So the
+// vocabulary admits it, lookup says "perform it live", and `begin` accepts exactly one shape of
+// re-begin — over a refusal — while refusing to rewrite anything that actually ran.
+
+{
+  const H = "sha256:" + "2".repeat(64);
+  const refusedEntry = {
+    v: 1 as const, seq: 0, run: "r-refused", scope: "", kind: "spawn" as const, name: "dev",
+    occurrence: 0, inputHash: H, state: "settled" as const, status: "refused" as const,
+    error: { code: "L5016", kind: "refused", message: "not durable here" },
+    startedAt: 0, endedAt: 1,
+  };
+  const journal = new Journal({ run: "r-refused", entries: [refusedEntry] });
+  const key = { scope: [], kind: "spawn" as const, name: "dev", occurrence: 0 };
+  ok("a refused entry loads: the vocabulary admits it", journal.entries().length === 1);
+  ok("and lookup says perform it live, never replay it", journal.lookup(key, H).verdict === "refused");
+
+  const again = await journal.begin(key, H, 5);
+  ok("begin over a refused entry writes a fresh pending row", again.state === "pending" && again.seq === 1);
+  ok("without duplicating the step in the order", journal.entries().length === 1);
+  const done = await journal.settle(key, { status: "ok", result: 7 }, 6);
+  ok("and the fresh attempt settles over the refusal", done.status === "ok");
+  ok("so the next activation replays the answer", journal.lookup(key, H).verdict === "replay");
+
+  let guard: unknown;
+  try {
+    await journal.begin(key, H, 9);
+  } catch (e) {
+    guard = e;
+  }
+  ok("while begin over anything else already begun is refused loudly",
+    guard instanceof Error && guard.message.includes("only a refused step may begin again"), (guard as Error)?.message);
+
+  const fresh = new Journal({ run: "r-r2" });
+  const k2 = { scope: [], kind: "turn" as const, name: "t", occurrence: 0 };
+  await fresh.begin(k2, H, 0);
+  const r2 = await fresh.settle(k2, { status: "refused", error: { code: "L5016", kind: "refused", message: "m" } }, 1);
+  ok("settle records a refusal with its error, exclusive of result",
+    r2.status === "refused" && r2.error?.code === "L5016" && r2.result === undefined);
+}
+
 console.log(`fuzz-journal.smoke: ${pass} checks passed`);
