@@ -1216,6 +1216,80 @@ log(r.index, r.value);
   ok("and a resume replays the same winner from the record", replayLog[0]?.[0] === "a", replayLog);
 }
 
+// A REFUSED APPEND inside a race outranks any winner. The journal refused to record the ask arm's
+// outcome (here the L5006 result bound, ahead of the settling append), so completing the race
+// would settle a scope over an entry the run can no longer record, and a resume would
+// short-circuit the settled scope past the step forever. The unwind must fire even though the
+// sleep arm won: a candidate winner is a decision, a refused append is the journal saying the run
+// can no longer keep decisions.
+{
+  const runId = "r-race-refused-append";
+  const journal = new Journal({ run: runId, resultBytes: 200 });
+  const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+  const P = `
+const a = await spawn("w", { name: "a" });
+const r = await race({
+  big: async () => { const v = await ask(a, { name: "q", schema: {} }); return v; },
+  other: async () => { await sleep("2m"); return "other"; },
+}, { name: "either" });
+log("winner", r.index, r.value);
+`;
+  let outcome: unknown;
+  try {
+    await run(P, { runId, pins, journal, handler: new SimHandler({ asks: { q: { blob: "x".repeat(400) } } }) });
+  } catch (e) { outcome = e; }
+  const o = outcome as { name?: string; code?: string } | undefined;
+  ok("a refused append inside a race unwinds the run even though a sibling won",
+    o?.name === "EffectResultTooLarge" && o?.code === "L5006", `${o?.name} ${o?.code}`);
+  ok("and the race entry settles nothing over it",
+    journal.entries().find((e) => e.kind === "race")?.state === "pending",
+    journal.entries().map((e) => `${e.kind}:${e.name}/${e.state}`));
+  ok("and the refused step is still pending, not recorded as anything it is not",
+    journal.entries().find((e) => e.kind === "ask")?.state === "pending",
+    journal.entries().find((e) => e.kind === "ask")?.status);
+}
+
+// A HELD arm inside a race rides the same rule. The ask is refused (L5016), its entry settles
+// `refused`, and the heal law says a resume that REACHES it performs it live — but a resume
+// short-circuits a settled scope. So if the sleeping sibling's win settled the race over the held
+// arm, the heal would be buried forever inside a scope no walk re-enters. The unwind must fire
+// despite the winner, and the same journal on a capable host must then complete.
+{
+  class RefusingAsk extends SimHandler {
+    override async ask(): Promise<never> {
+      throw new EffectRefused("L5016", "ask(…) rides machinery that has not landed on this host");
+    }
+  }
+  const runId = "r-race-held";
+  const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+  const journal = new Journal({ run: runId });
+  const P = `
+const a = await spawn("w", { name: "a" });
+const r = await race({
+  big: async () => { const v = await ask(a, { name: "q", schema: {} }); return v; },
+  other: async () => { await sleep("2m"); return "other"; },
+}, { name: "either" });
+log("winner", r.index);
+`;
+  let held: unknown;
+  try {
+    await run(P, { runId, pins, journal, handler: new RefusingAsk({}) });
+  } catch (e) { held = e; }
+  const h = held as { name?: string; code?: string } | undefined;
+  ok("a held arm inside a race unwinds the run even though a sibling won",
+    h?.name === "RunHeld" && h?.code === "L5025", `${h?.name} ${h?.code}`);
+  ok("with the step settled refused, not buried under the winner",
+    journal.entries().find((e) => e.kind === "ask")?.status === "refused",
+    journal.entries().map((e) => `${e.kind}:${e.name}/${e.status ?? e.state}`));
+  let healed: unknown;
+  try {
+    await run(P, { runId, pins, journal, handler: new SimHandler({ asks: { q: { ok: true } } }) });
+  } catch (e) { healed = e; }
+  ok("and the same journal on a capable host performs the refused arm live and completes the race",
+    healed === undefined && journal.entries().find((e) => e.kind === "race")?.status === "ok",
+    `${(healed as Error)?.name}: ${(healed as Error)?.message?.slice(0, 60)}`);
+}
+
 // ── a program cannot catch its host leaving ──────────────────────────────────────────────────
 //
 // `try` is the workflow's own handling of the world going wrong, and a driver's shutdown is not the
