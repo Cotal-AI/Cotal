@@ -14,9 +14,9 @@
     "ever printing the assertion registered for it. A red here is not a kill, and a reader who",
     "takes it for one records coverage this platform does not have.",
     "",
-    "Run it on macOS or a BSD, where the pin actually executes. No CI job executes it: every lane",
-    "that runs a smoke suite is ubuntu-latest, and the macos-latest job in installer.yml runs",
-    "install.sh only."
+    "Run it on macOS or a BSD, where the pin actually executes. No CI job can run it: the smoke",
+    "lanes are ubuntu-latest and windows-latest, and the only macos-latest job, in installer.yml,",
+    "runs install.sh with no smoke suite."
   ],
   "mutations": [
     {
