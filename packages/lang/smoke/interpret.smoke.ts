@@ -1216,6 +1216,39 @@ log(r.index, r.value);
   ok("and a resume replays the same winner from the record", replayLog[0]?.[0] === "a", replayLog);
 }
 
+// A REFUSED APPEND inside a race outranks any winner. The journal refused to record the ask arm's
+// outcome (here the L5006 result bound, ahead of the settling append), so completing the race
+// would settle a scope over an entry the run can no longer record, and a resume would
+// short-circuit the settled scope past the step forever. The unwind must fire even though the
+// sleep arm won: a candidate winner is a decision, a refused append is the journal saying the run
+// can no longer keep decisions.
+{
+  const runId = "r-race-refused-append";
+  const journal = new Journal({ run: runId, resultBytes: 200 });
+  const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+  const P = `
+const a = await spawn("w", { name: "a" });
+const r = await race({
+  big: async () => { const v = await ask(a, { name: "q", schema: {} }); return v; },
+  other: async () => { await sleep("2m"); return "other"; },
+}, { name: "either" });
+log("winner", r.index, r.value);
+`;
+  let outcome: unknown;
+  try {
+    await run(P, { runId, pins, journal, handler: new SimHandler({ asks: { q: { blob: "x".repeat(400) } } }) });
+  } catch (e) { outcome = e; }
+  const o = outcome as { name?: string; code?: string } | undefined;
+  ok("a refused append inside a race unwinds the run even though a sibling won",
+    o?.name === "EffectResultTooLarge" && o?.code === "L5006", `${o?.name} ${o?.code}`);
+  ok("and the race entry settles nothing over it",
+    journal.entries().find((e) => e.kind === "race")?.state === "pending",
+    journal.entries().map((e) => `${e.kind}:${e.name}/${e.state}`));
+  ok("and the refused step is still pending, not recorded as anything it is not",
+    journal.entries().find((e) => e.kind === "ask")?.state === "pending",
+    journal.entries().find((e) => e.kind === "ask")?.status);
+}
+
 // ── a program cannot catch its host leaving ──────────────────────────────────────────────────
 //
 // `try` is the workflow's own handling of the world going wrong, and a driver's shutdown is not the
