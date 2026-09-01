@@ -135,8 +135,10 @@ writeFileSync(CHECKPOINT, 'const d = await checkpoint("approve", "Ship it?");\nl
     .then(() => true, (e: Error) => e);
   c("answer presents as the arming holder and is accepted", answered === true, answered);
   c("and reports the resumed settle", captured().includes('"settle": "resumed"'), captured());
-  await driven;
-  c("and the held start completes", captured().includes("run c-1: completed"), captured());
+  // Bounded on purpose: a refused answer leaves the run paused forever, and a suite that awaits it
+  // unconditionally HANGS on that defect instead of failing on it. A hang is not a red.
+  const outcome = await Promise.race([driven.then(() => "completed"), wait(15_000).then(() => "still-paused")]);
+  c("and the held start completes", outcome === "completed" && captured().includes("run c-1: completed"), outcome);
 }
 
 console.log = origLog;
