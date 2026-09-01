@@ -1,5 +1,6 @@
 ---
 "@cotal-ai/connector-jcode": minor
+"@cotal-ai/connector-core": minor
 ---
 
 Managed Jcode seats launch on macOS and the BSDs again. Credential mirroring pins each parent

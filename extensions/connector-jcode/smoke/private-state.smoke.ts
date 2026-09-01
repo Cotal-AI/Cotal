@@ -362,7 +362,7 @@ try {
     try {
       removeCredentialMirror(refuseHome, "auth.json");
     } catch (error) {
-      removalNamed = /cannot pin parent directories on this platform/.test((error as Error).message);
+      removalNamed = /requires a directory pin to name each parent by inode/.test((error as Error).message);
     }
     check("Windows credential mirror removal names the unavailable directory pin", removalNamed);
     console.log(`  .. credential mirror battery skipped on ${process.platform}: the connector refuses it before launch`);

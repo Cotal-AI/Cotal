@@ -4,6 +4,20 @@
   "command": "pnpm smoke:jcode-private-state",
   "progressPattern": "\u2713",
   "minTicks": 19,
+  "why": [
+    "THIS CONFIG IS NOT GRADABLE ON LINUX, and its two mutants fail differently rather than both",
+    "surviving. `pinMode` returns \"procfs-fd\" on linux, so `#assertCwdIsPinned` never runs and",
+    "`#entryCwd` is never set. Measured on ubuntu at 1a330c7a: the swapped-parent mutant is",
+    "UNGRADABLE, the suite stays green at 23/23 and nothing in the file is killed. The restore",
+    "mutant WRONG-REDs rather than surviving: with `#entryCwd` undefined the flipped condition",
+    "calls `process.chdir(undefined)`, which throws in an earlier cell, so the run exits 1 without",
+    "ever printing the assertion registered for it. A red here is not a kill, and a reader who",
+    "takes it for one records coverage this platform does not have.",
+    "",
+    "Run it on macOS or a BSD, where the pin actually executes. No CI job executes it: every lane",
+    "that runs a smoke suite is ubuntu-latest, and the macos-latest job in installer.yml runs",
+    "install.sh only."
+  ],
   "mutations": [
     {
       "name": "cwd-inode pin trusts the directory it entered",
