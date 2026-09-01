@@ -1141,6 +1141,19 @@ export async function runScope(
     for (const f of frames) f.signal.cancel("a sibling branch won the race");
     frame.clock.join(frames.map((f) => f.clock));
 
+    // A REFUSED APPEND OUTRANKS ANY WINNER, and this check sits ABOVE the winner scan on purpose.
+    // The journal refused to record an arm's outcome (L5006 ahead of the append, L5010 at the
+    // store), so completing the race would settle a scope over an entry the run can no longer
+    // record: a loud durability failure converted into a silent success, with the refused step
+    // left pending forever inside a settled scope a resume short-circuits past. Measured before
+    // the rule: race:either settled ok, ask:q pending, outcome COMPLETED. A release is different
+    // and stays below: a released arm is no candidate, but in-flight work that already won is a
+    // decision this driver may keep (its own cell).
+    const refusedAppend = settled.find(
+      (r): r is PromiseRejectedResult => r.status === "rejected" && r.reason instanceof JournalAppendRejected,
+    );
+    if (refusedAppend !== undefined) throw refusedAppend.reason as Error;
+
     let winnerAt = -1;
     let winnerIndex = -1;
     for (let i = 0; i < settled.length; i += 1) {
@@ -1159,10 +1172,11 @@ export async function runScope(
     }
     if (winnerIndex === -1) {
       // A host-side unwind outranks the cancellation story: the run was stopped, not decided,
-      // and the reason has to travel bare so the scope settles nothing.
+      // and the reason has to travel bare so the scope settles nothing. A refused append never
+      // reaches this branch (it threw above the winner scan); what remains here is a release
+      // with no surviving candidate.
       const hostSide = settled.find(
-        (r): r is PromiseRejectedResult =>
-          r.status === "rejected" && (r.reason instanceof RunReleased || r.reason instanceof JournalAppendRejected),
+        (r): r is PromiseRejectedResult => r.status === "rejected" && r.reason instanceof RunReleased,
       );
       if (hostSide !== undefined) throw hostSide.reason as Error;
       // Every arm was cancelled, so the race itself was: nothing here decided anything.
