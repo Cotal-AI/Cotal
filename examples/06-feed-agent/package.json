@@ -1,0 +1,24 @@
+{
+  "name": "@cotal-ai/example-06-feed-agent",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "pump": "tsx src/pump.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "test": "node --experimental-strip-types --test --test-reporter=tap test/*.test.ts"
+  },
+  "dependencies": {
+    "@cotal-ai/core": "workspace:*",
+    "ipaddr.js": "^2.5.0",
+    "node-ical": "^0.27.1",
+    "rss-parser": "^3.13.0",
+    "undici": "^7.29.0",
+    "yaml": "^2.9.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.22.4"
+  }
+}
