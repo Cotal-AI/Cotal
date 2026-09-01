@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { copyFileSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { copyCredentialFile, ensurePinnedPrivateDirectory, jcodeCredentialMirrorInventory, mirrorJcodeCredentials, removeCredentialMirror, shortSocketHome } from "../src/private-state.js";
+import { copyCredentialFile, ensurePinnedPrivateDirectory, jcodeCredentialMirrorInventory, mirrorJcodeCredentials, removeCredentialMirror, shortSocketHome, unlinkThroughSwappedPinForTest } from "../src/private-state.js";
 
 let pass = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
@@ -34,7 +34,7 @@ try {
   check("short API socket home aliases the managed home", lstatSync(short.jcodeHome).isSymbolicLink() && readlinkSync(short.jcodeHome) === pathological, short.jcodeHome);
   short.dispose();
 
-  if (process.platform === "linux") {
+  if (process.platform !== "win32") {
   const sources = {
     jcodeHome: join(root, "source-jcode"),
     appConfigDir: join(root, "source-config", "jcode"),
@@ -274,6 +274,60 @@ try {
       { pdPinError: pdPinError instanceof Error ? pdPinError.message : pdPinError, pdPinVictim },
     );
 
+    // The pin is entered by path on macOS and BSD (there is no /dev/fd subpath namespace to name a
+    // child through), so a swap landing between the descriptor open and that entry is the one
+    // window the two mechanisms close differently: procfs holds the inode and proceeds, cwd-inode
+    // detects the inode disagreement and refuses. Both must leave the outside namesake alone.
+    const enterHome = join(root, "enter-swap-home");
+    const enterOutside = join(root, "enter-swap-outside");
+    mkdirSync(enterHome, { recursive: true, mode: 0o700 });
+    mkdirSync(enterOutside, { mode: 0o700 });
+    writeFileSync(join(enterHome, "auth.json"), "mirror", { mode: 0o600 });
+    writeFileSync(join(enterOutside, "auth.json"), "victim", { mode: 0o600 });
+    const enterSaved = `${enterHome}.real`;
+    const enterOutcome = unlinkThroughSwappedPinForTest(enterHome, "auth.json", () => {
+      renameSync(enterHome, enterSaved);
+      symlinkSync(enterOutside, enterHome, "dir");
+    });
+    check(
+      "a directory swapped between the pin open and the pin entry never unlinks outside",
+      leafKind(join(enterOutside, "auth.json")).bytes === "victim" &&
+        (enterOutcome.unlinked
+          ? leafKind(join(enterSaved, "auth.json")).kind === "absent"
+          : /refusing swapped Jcode credential mirror parent/.test(enterOutcome.refusal ?? "")),
+      enterOutcome,
+    );
+
+    // The cwd-inode pin moves the process working directory. Every mirror entry point must put it
+    // back, including the ones that throw: a leaked chdir would silently re-root every later
+    // relative path in the host process.
+    const cwdBefore = process.cwd();
+    const cwdHome = join(root, "cwd-restore-home");
+    mkdirSync(join(cwdHome, "external", ".codex"), { recursive: true, mode: 0o700 });
+    const cwdSources = {
+      jcodeHome: join(root, "cwd-restore-src", "jcode"),
+      appConfigDir: join(root, "cwd-restore-src", "config", "jcode"),
+      externalHome: join(root, "cwd-restore-src", "home"),
+    };
+    mkdirSync(cwdSources.jcodeHome, { recursive: true, mode: 0o700 });
+    writeFileSync(join(cwdSources.jcodeHome, "auth.json"), "token", { mode: 0o600 });
+    mirrorJcodeCredentials(cwdHome, cwdSources);
+    const cwdAfterMirror = process.cwd();
+    rmSync(join(cwdHome, "external", ".codex"), { recursive: true, force: true });
+    symlinkSync(join(root, "cwd-restore-outside"), join(cwdHome, "external", ".codex"), "dir");
+    mkdirSync(join(root, "cwd-restore-outside"), { mode: 0o700 });
+    let cwdThrew = false;
+    try {
+      mirrorJcodeCredentials(cwdHome, cwdSources);
+    } catch {
+      cwdThrew = true;
+    }
+    check(
+      "credential mirroring restores the working directory, including when it refuses",
+      cwdAfterMirror === cwdBefore && cwdThrew && process.cwd() === cwdBefore,
+      { cwdBefore, cwdAfterMirror, cwdThrew, cwdNow: process.cwd() },
+    );
+
     const pdMkParent = join(root, "pd-mkdir-parent");
     const pdMkOutside = join(root, "pd-mkdir-outside");
     mkdirSync(pdMkParent, { mode: 0o700 });
@@ -299,33 +353,19 @@ try {
       { pdMkError: pdMkError instanceof Error ? pdMkError.message : pdMkError },
     );
   } else {
+    // The connector refuses Windows in buildLaunch, so the pin never runs there. Assert that
+    // refusal is named and skip the battery. A `check(name, true)` here would report a passing
+    // cell that cannot fail, which reads as coverage this platform does not have.
     const refuseHome = join(root, "managed");
     mkdirSync(refuseHome, { recursive: true, mode: 0o700 });
     let removalNamed = false;
     try {
       removeCredentialMirror(refuseHome, "auth.json");
     } catch (error) {
-      removalNamed = /Linux-only/.test((error as Error).message);
+      removalNamed = /requires a directory pin to name each parent by inode/.test((error as Error).message);
     }
-    check("non-Linux credential mirror removal names the missing /dev/fd pin", removalNamed);
-    check("external auth mirror is copied rather than symlinked", true);
-    check("copied external auth file is owner-only", true);
-    check("external auth mirror directory is owner-only", true);
-    check("Jcode-home auth file is copied rather than symlinked", true);
-    check("credential copies refresh on every launch", true);
-    check("credential removal drives all four persistent mirror families", true);
-    check("all driven credential mirrors exist before source removal", true);
-    check("removed credentials are absent from every persistent mirror on the next launch", true);
-    check("credential reconciliation preserves unrelated private-home state", true);
-    check("absent-source symlink escape guard is unreachable off Linux", true);
-    check("parent-walk TOCTOU control is unreachable off Linux", true);
-    check("parent-swap after the parent is pinned does not delete outside", true);
-    check("destination-symlink unlink keeps the outside target", true);
-    check("control: copyFileSync after a parent-walk lstat writes the credential outside", true);
-    check("parent-swap after the write parent is pinned does not copy outside", true);
-    check("control: rmSync after privateDirectory lstat replaces the namesake file", true);
-    check("parent-swap after privateDirectory parent is pinned does not replace the outside file", true);
-    check("parent-swap after privateDirectory parent is pinned does not mkdir outside", true);
+    check("Windows credential mirror removal names the unavailable directory pin", removalNamed);
+    console.log(`  .. credential mirror battery skipped on ${process.platform}: the connector refuses it before launch`);
   }
 
   console.log(`\n${pass} checks passed`);

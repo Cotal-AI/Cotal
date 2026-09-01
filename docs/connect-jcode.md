@@ -15,11 +15,7 @@ supported.
 ## Install
 
 The connector is seeded with the Cotal CLI. Jcode's released Harness API bridge is a Unix-socket
-surface, so Windows is not supported. That socket bound is Linux and macOS. Credential mirroring
-pins each parent through `/dev/fd/<fd>/<name>`, which needs Linux procfs traversal. macOS mounts
-`/dev/fd` but has no subpath namespace under a descriptor, so managed credential copy, mkdir, and
-unlink are Linux-only. A managed Jcode seat launches on Linux only because launch always mirrors
-credentials.
+surface, so Windows is not supported. Managed seats run on Linux, macOS, and the BSDs.
 Install Jcode 0.78.1 or later from its GitHub release and make the binary available as `jcode` on `PATH`:
 
 ```bash
@@ -96,12 +92,20 @@ codes rather than arbitrary Harness API messages.
 Credential mirroring is mandatory for managed Jcode seats: each launch atomically refreshes the
 allowlisted Jcode, provider-config, and external-login destinations, and removes a destination when
 its source login was removed. Cleanup addresses only that explicit inventory; transcripts, MCP
-configuration, logs, and other private-home state are untouched. Copy, mkdir, and removal open each
-parent with `O_NOFOLLOW` through the previous directory fd after proving `/dev/fd/<fd>/.` traverses,
-then publish, create, or unlink the leaf through that pinned parent. Replacing a walked directory
-with a symlink cannot write, create, or delete a namesake outside the private home. If `/dev/fd`
-cannot traverse, the connector throws a named error. After that probe succeeds, `ENOENT` on a child
-means the mirror path is absent. The Unix-socket short home stays on its Linux and macOS bound.
+configuration, logs, and other private-home state are untouched. Copy, mkdir, and removal walk the
+parents with `O_NOFOLLOW`, then publish, create, or unlink the leaf through the pinned parent rather
+than through a path the kernel re-walks. Replacing a walked directory with a symlink cannot write,
+create, or delete a namesake outside the private home.
+
+Two mechanisms provide that pin. On Linux the leaf is named `/dev/fd/<fd>/<name>`, the openat and
+unlinkat equivalent Node does not expose, after `/dev/fd/<fd>/.` is proven to traverse. macOS mounts
+`/dev/fd` but has no subpath namespace under a descriptor, so there the connector pins the parent as
+the process working directory instead: a single-component name resolves from that directory's inode
+and no ancestor is walked again. Entering by path is verified rather than trusted, because `chdir`
+takes a path: the entered directory's inode must equal the inode of the descriptor opened a moment
+earlier, and a mismatch is refused by name. The working directory is restored on every exit,
+including the refusing ones. If neither pin is available, the connector throws a named error and
+mirrors nothing. Once a pin holds, `ENOENT` on a child means the mirror path is absent.
 
 There is no credential-free opt-out today because the private instance must reproduce the operator's
 current provider-login state rather than silently start with stale or partial authorization.
