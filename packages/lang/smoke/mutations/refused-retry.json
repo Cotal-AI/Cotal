@@ -9,10 +9,10 @@
       "file": "packages/lang/src/perform.ts",
       "find": "    if (e instanceof EffectRefused) {\n      await host.journal.settle(\n        key,\n        { status: \"refused\", error: { code: e.code, kind: \"refused\", message: e.message } },\n        endedAt,\n      );\n      throw new RunHeld(stepKeyString(key), e.message);\n    }",
       "replace": "    // mutant: a refusal is an ordinary handler failure",
-      "expectRed": "the refusal halts the run uncatchably, past try and finally alike",
-      "completionMarker": "ok a workflow's catch does not swallow its host's stop",
-      "cell": "the refusal halts the run uncatchably, past try and finally alike",
-      "note": "Under the mutant the refusal settles `failed` as an EffectError, so the run rejects with the effect failure rather than RunHeld and the heal cell downstream replays the failure forever; the first cell of the section is the one that names the contract."
+      "expectRed": "a held arm inside a race unwinds the run even though a sibling won",
+      "completionMarker": "ok and the refused step is still pending, not recorded as anything it is not",
+      "cell": "a held arm inside a race unwinds the run even though a sibling won",
+      "note": "Under the mutant a refusal settles `failed` as an EffectError and the run rejects with L5016 in place of RunHeld, so the earliest cell that names the distinction is the race-held cell, which fails showing `EffectError L5016` where the contract requires the hold. Measured, not assumed: the uncatchability cell further down is never reached under this mutant (the suite is fail-fast), and the uncatchability law itself is guarded by mutant 3 at the walker."
     },
     {
       "name": "a refused entry is replayed instead of re-performed",

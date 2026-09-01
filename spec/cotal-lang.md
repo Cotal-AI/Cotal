@@ -785,7 +785,7 @@ The journal is an append-only log of entries. An entry is JSON:
   state,               // "pending" | "settled"
   status?,             // "ok" | "failed" | "cancelled" | "refused"
   result?,             // status ok: the recorded value
-  error?,              // status failed: { code, kind, message, detail? }
+  error?,              // status failed or refused: { code, kind, message, detail? }
   external?,           // what the handler bound (recovery)
   cancel?,             // a scope: { losers: [branch keys], issued }
   branchDigest?,       // a race: the digest over the losers' bodies (§10.6)
