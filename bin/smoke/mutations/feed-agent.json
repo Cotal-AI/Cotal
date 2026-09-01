@@ -42,7 +42,7 @@
     {
       "name": "private and reserved addresses are accepted",
       "file": "examples/06-feed-agent/src/pump.ts",
-      "find": "  return !BLOCKED_ADDRESSES.check(address, kind);",
+      "find": "    return parsed.range() === \"unicast\";",
       "replace": "  return true;",
       "expectRed": "private, loopback, link-local, documentation and multicast addresses are blocked"
     },

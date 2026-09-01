@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@cotal-ai/core": "workspace:*",
+    "ipaddr.js": "^2.5.0",
     "node-ical": "^0.27.1",
     "rss-parser": "^3.13.0",
     "undici": "^7.29.0",

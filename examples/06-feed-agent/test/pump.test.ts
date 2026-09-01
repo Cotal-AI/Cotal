@@ -64,10 +64,14 @@ test("all-day events retain their calendar day", () => {
 });
 
 test("private, loopback, link-local, documentation and multicast addresses are blocked", () => {
-  for (const address of ["127.0.0.1", "10.0.0.1", "169.254.169.254", "192.0.2.1", "224.0.0.1", "::1", "::ffff:127.0.0.1", "fe80::1", "fc00::1", "2001:db8::1"])
-    assert.equal(isPublicAddress(address), false, address);
-  assert.equal(isPublicAddress("1.1.1.1"), true);
-  assert.equal(isPublicAddress("2606:4700:4700::1111"), true);
+  for (const address of [
+    "127.0.0.1", "10.0.0.1", "169.254.169.254", "192.0.2.1", "224.0.0.1",
+    "::1", "::ffff:127.0.0.1", "64:ff9b:1::1", "100:0:0:1::1", "2001::1",
+    "2001:2::1", "2001:10::1", "2001:20::1", "2001:db8::1", "3fff::1", "5f00::1",
+    "fe80::1", "fc00::1",
+  ]) assert.equal(isPublicAddress(address), false, address);
+  for (const address of ["1.1.1.1", "8.8.8.8", "2606:4700:4700::1111", "2001:4860:4860::8888"])
+    assert.equal(isPublicAddress(address), true, address);
 });
 
 test("fetch rejects non-HTTP and private literal destinations before dialing", async () => {

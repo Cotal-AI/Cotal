@@ -2,12 +2,13 @@ import { parseArgs } from "node:util";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { lookup } from "node:dns/promises";
-import { BlockList, isIP, type LookupFunction } from "node:net";
+import { type LookupFunction } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import Parser from "rss-parser";
 import { expandRecurringEvent, parseICS, type CalendarComponent, type EventInstance, type ParameterValue, type VEvent } from "node-ical";
+import ipaddr from "ipaddr.js";
 import { Agent, fetch } from "undici";
 import { CotalEndpoint, DEFAULT_SERVER, isReachable } from "@cotal-ai/core";
 
@@ -89,28 +90,23 @@ function loadSubscriptions(file: string): Subscription[] {
   });
 }
 
-const BLOCKED_ADDRESSES = new BlockList();
-for (const [network, prefix] of [
-  ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8],
-  ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24],
-  ["192.168.0.0", 16], ["198.18.0.0", 15], ["198.51.100.0", 24], ["203.0.113.0", 24],
-  ["224.0.0.0", 4], ["240.0.0.0", 4],
-] as const) BLOCKED_ADDRESSES.addSubnet(network, prefix, "ipv4");
-for (const [network, prefix] of [
-  ["::", 128], ["::1", 128], ["64:ff9b::", 96], ["100::", 64],
-  ["2001:db8::", 32], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8],
-] as const) BLOCKED_ADDRESSES.addSubnet(network, prefix, "ipv6");
+const EXTRA_NON_GLOBAL = [ipaddr.parseCIDR("100:0:0:1::/64")];
 
-export function isPublicAddress(address: string, family?: number): boolean {
-  if (/^::ffff:/i.test(address)) return false;
-  const kind = family === 6 || address.includes(":") ? "ipv6" : "ipv4";
-  return !BLOCKED_ADDRESSES.check(address, kind);
+export function isPublicAddress(address: string): boolean {
+  try {
+    const parsed = ipaddr.process(address);
+    if (EXTRA_NON_GLOBAL.some(([network, prefix]) =>
+      network.kind() === parsed.kind() && parsed.match(network, prefix))) return false;
+    return parsed.range() === "unicast";
+  } catch {
+    return false;
+  }
 }
 
 const publicLookup: LookupFunction = (hostname, options, callback) => {
   void lookup(hostname, { all: true, verbatim: true }).then((addresses) => {
     if (addresses.length === 0) throw new Error(`feed host ${hostname} resolved to no addresses`);
-    const blocked = addresses.find((entry) => !isPublicAddress(entry.address, entry.family));
+    const blocked = addresses.find((entry) => !isPublicAddress(entry.address));
     if (blocked) throw new Error(`feed host ${hostname} resolves to blocked address ${blocked.address}`);
     if (typeof options === "object" && options.all) callback(null, addresses);
     else callback(null, addresses[0]!.address, addresses[0]!.family);
@@ -124,12 +120,12 @@ async function assertPublicUrl(url: URL): Promise<void> {
     throw new Error(`feed URL must use http or https, got ${url.protocol}`);
   if (url.username || url.password) throw new Error("feed URL must not contain credentials");
   const hostname = url.hostname.replace(/^\[|\]$/g, "");
-  const literalFamily = isIP(hostname);
-  if (literalFamily && !isPublicAddress(hostname, literalFamily))
+  const literal = ipaddr.isValid(hostname);
+  if (literal && !isPublicAddress(hostname))
     throw new Error(`feed URL resolves to blocked address ${hostname}`);
-  if (!literalFamily) {
+  if (!literal) {
     const addresses = await lookup(hostname, { all: true, verbatim: true });
-    const blocked = addresses.find((entry) => !isPublicAddress(entry.address, entry.family));
+    const blocked = addresses.find((entry) => !isPublicAddress(entry.address));
     if (blocked) throw new Error(`feed host ${hostname} resolves to blocked address ${blocked.address}`);
   }
 }
