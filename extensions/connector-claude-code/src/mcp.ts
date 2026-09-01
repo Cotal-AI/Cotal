@@ -19,6 +19,7 @@ import {
   feedbackLine,
   ORIENTATION_BOOTSTRAP,
   MESH_FIRST_STEER,
+  WORKFLOW_STEER,
   AguiEmitter,
   AguiEmitterHolder,
   EventWal,
@@ -188,6 +189,7 @@ async function main(): Promise<void> {
         `${ORIENTATION_BOOTSTRAP} ` +
         feedbackLine(config) +
         `${MESH_FIRST_STEER} ` +
+        `${WORKFLOW_STEER} ` +
         `Other agents coordinate with you here as lateral peers. ` +
         `Peer messages may arrive as <channel source="cotal" from="<name>" role="<role>" ` +
         `kind="dm|channel|anycast" channel="<name>">…</channel> — read them and, when a reply is ` +

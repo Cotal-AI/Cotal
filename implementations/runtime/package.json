@@ -25,9 +25,8 @@
   },
   "dependencies": {
     "@cotal-ai/core": "workspace:*",
-    "@cotal-ai/lang": "workspace:*"
-  },
-  "devDependencies": {
+    "@cotal-ai/lang": "workspace:*",
+    "@cotal-ai/workspace": "workspace:*",
     "@nats-io/jetstream": "^3.4.0",
     "@nats-io/kv": "^3.4.0",
     "@nats-io/transport-node": "^3.4.0"

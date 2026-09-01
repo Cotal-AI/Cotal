@@ -81,6 +81,9 @@ importers:
       '@cotal-ai/manager':
         specifier: workspace:*
         version: link:../implementations/manager
+      '@cotal-ai/runtime':
+        specifier: workspace:*
+        version: link:../implementations/runtime
       '@cotal-ai/workspace':
         specifier: workspace:*
         version: link:../packages/workspace
@@ -609,7 +612,9 @@ importers:
       '@cotal-ai/lang':
         specifier: workspace:*
         version: link:../../packages/lang
-    devDependencies:
+      '@cotal-ai/workspace':
+        specifier: workspace:*
+        version: link:../../packages/workspace
       '@nats-io/jetstream':
         specifier: ^3.4.0
         version: 3.4.0

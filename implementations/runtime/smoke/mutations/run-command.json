@@ -1,0 +1,17 @@
+{
+  "suite": "implementations/runtime/smoke/run-command.smoke.ts",
+  "guard": "The `cotal run answer` verb presents the checkpoint resume as the ARMING holder read back from the checkpoint record, because resume is holder-bound (SPEC 13.10) and the CLI is not the driver.",
+  "command": "pnpm smoke:runtime-run-command",
+  "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/run-command.json",
+  "mutations": [
+    {
+      "name": "the answer presents as a fresh principal instead of the arming holder",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "    { kv: planes.kv, js: planes.js, jsm: planes.jsm, space: planes.space, endpoint, holder: spec.holder },",
+      "replace": "    { kv: planes.kv, js: planes.js, jsm: planes.jsm, space: planes.space, endpoint, holder: { id: \"cli-run\", lifecycleUid: \"u_mutant0000000000000000\" } },",
+      "expectRed": "answer presents as the arming holder and is accepted",
+      "cell": "answer presents as the arming holder and is accepted",
+      "note": "The wire refuses a presenter that is not the arming holder (permission-denied, SPEC 13.10); the smoke converts that throw into the named cell going red rather than the suite dying."
+    }
+  ]
+}

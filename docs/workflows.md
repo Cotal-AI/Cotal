@@ -99,6 +99,28 @@ pins (seed included, so the copied history's pure draws are the same draws). The
 under a new id whose record names the parent and the cut step (`forkedFrom`); the parent is
 untouched.
 
+## Operating a run
+
+`cotal run` is the operator surface over the driver. Every verb opens one connection to the
+resolved mesh target (the usual `--space` / `--server` / `--creds` flags) and exits when the drive
+settles.
+
+```bash
+cotal run start --file build.cotal.js --run nightly     # drive a new run to quiescence
+cotal run ps                                            # list run records: state, holder, lineage
+cotal run journal nightly                               # print the durable step journal
+cotal run resume nightly --file build.cotal.js          # take the run over and continue it
+cotal run answer nightly "/checkpoint:approve#0" --by dana --value '"yes"'
+```
+
+`start` and `resume` need `--file`: the record stores no source, so the caller supplies the same
+program (handing an edited one is a migration decision, and the resume stops on the divergence).
+A run whose step was refused (L5016) exits with code 2 and stays held; `resume` on a host that can
+perform the step performs it live and continues from there. `answer` resolves an open checkpoint
+through the run driver, presenting as the arming holder, with the answerer's name on the record.
+Checkpoint expiry rides the mediated timer writer, which the delivery daemon pumps on a live mesh;
+on a bare broker a pause still resolves, it just cannot expire.
+
 ## What is on the wire
 
 The run's wire footprint is [SPEC §14](../SPEC.md#14-workflow-runs-v05):
@@ -131,8 +153,7 @@ durable on this host)** until the durable action machinery they ride lands. That
 run rather than ending it: the entry is settled `refused` (never `failed`, since nothing was
 attempted), the run unwinds with the uncatchable L5025 and is recorded `released`, and a resume on
 a host that can perform the step performs it live. A run started today heals the day those effects
-land. No `cotal` command starts or resumes a run yet. Those are the next lanes, and this page will
-say so when they change.
+land. The operator surface over the driver is `cotal run`; the section above has the verbs.
 
 **Two engines, and which one runs your program.** The tree-walker is language version `1` and the
 compiled engine is version `2`, two languages rather than two speeds of one (`spec/cotal-lang.md`
