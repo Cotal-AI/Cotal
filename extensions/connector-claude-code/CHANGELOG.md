@@ -1,5 +1,11 @@
 # @cotal-ai/connector-claude-code
 
+## 0.38.0
+
+### Patch Changes
+
+- 7ea4757: Keep Claude personas out of process arguments by writing them to an owner-private file and using Claude Code's prompt-file flag.
+
 ## 0.37.0
 
 ### Patch Changes
