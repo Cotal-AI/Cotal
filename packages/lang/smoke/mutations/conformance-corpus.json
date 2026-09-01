@@ -32,7 +32,16 @@
       "expectRed": "the artifact is byte-identical to a fresh build from the reference",
       "completionMarker": "every recorded verdict holds against the validator today",
       "cell": "the artifact is byte-identical to a fresh build from the reference",
-      "note": "The edit renames a binding inside a refused fence without changing its verdict (L1025 still answers, so the builder stays green rather than throwing upstream), which makes the byte cell the EARLIEST red: measured before authoring, cells 1-5 print ok and the run fails on cell 6 alone. This is the spec-drift gate proven as a property rather than exercised green."
+      "note": "The edit renames a binding inside a refused fence without changing its verdict (L1025 still answers, so the builder stays green rather than throwing upstream), which makes the byte cell the EARLIEST red: measured before authoring (cells 1-5 print ok, the run fails on cell 6 alone), and structurally guaranteed besides, since buildCorpus() is the suite's only spec reader and appears once, inside cell 6, while cells 1-5 read only the artifact and the validator. This is the spec-drift gate proven as a property rather than exercised green."
+    },
+    {
+      "name": "the artifact's adjudication sentence drifts from the constant",
+      "file": "packages/lang/conformance/corpus.json",
+      "find": "a refused verdict names one code the validator's answer must include, and the answer may carry more; an accepted verdict means the validator answers no codes",
+      "replace": "a refused verdict names one code, and the answer must equal it exactly; an accepted verdict means the validator answers no codes",
+      "expectRed": "the artifact does not carry the adjudication rule",
+      "completionMarker": "the shipped artifact parses to a cases array",
+      "note": "expectRed is the accessor's refusal text, not a cell name: measured before authoring, cell 1 prints ok and the accessor throws before cell 2, so no FAIL line ever names a cell. The guard this proves is the one that makes the adjudication field load-bearing for package consumers; without it a drifted rule would still red the disk-agreement cell here, but a consumer reading the corpus through the accessor would be served a rule the artifact does not carry."
     }
   ]
 }

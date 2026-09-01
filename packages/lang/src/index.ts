@@ -50,7 +50,7 @@ export { MUTATING_METHODS } from "./library.js";
 
 export { validate, type ValidateResult } from "./grammar.js";
 
-export { conformanceCorpus, type ConformanceCase, type ConformanceCorpus } from "./conformance.js";
+export { ADJUDICATION, conformanceCorpus, type ConformanceCase, type ConformanceCorpus } from "./conformance.js";
 
 export {
   RunDivergence,
