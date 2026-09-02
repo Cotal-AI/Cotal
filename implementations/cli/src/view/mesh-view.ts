@@ -7,7 +7,7 @@
 // See docs/protocol-view.md.
 
 import { EventEmitter } from "node:events";
-import type { CotalEndpoint, CotalMessage, EndpointRef, Presence, PresenceStatus } from "@cotal-ai/core";
+import type { CotalEndpoint, CotalMessage, EndpointRef, MembershipSnapshot, Presence, PresenceStatus } from "@cotal-ai/core";
 import { deliveryOf, chatWildcard, isEventChannel, partsToText } from "@cotal-ai/core";
 
 // ---- the model the surfaces render -----------------------------------------
@@ -82,11 +82,25 @@ export interface MeshSignals {
   dms: DmPeer[]; // per-peer DM roll-up (only populated when DMs are visible)
 }
 
+/** The broker-authoritative membership feed as THIS viewer last saw it. Two facts, kept apart so a
+ *  failed read can never be mistaken for an empty feed: `snapshot` is the last successful read;
+ *  `unreadable` is the reason the most recent read or watch attempt failed (a fact about the
+ *  viewer, cleared by the next successful read). A feed that does not exist (no delivery daemon:
+ *  the bucket is absent, or it was never written) is a snapshot with no `asOf` and no members, which
+ *  renders as traffic-only: a fact about the mesh, and a different one. */
+export interface MembershipView {
+  snapshot?: MembershipSnapshot;
+  unreadable?: string;
+}
+
 export interface MeshSnapshot {
   agents: Presence[]; // card.kind === "agent", status-sorted then by name
   endpoints: Presence[]; // everything else
   channels: { channel: string; messages: number }[];
   feed: FeedEntry[]; // classified + coalesced + windowed
+  /** Broker-authoritative channel membership (the delivery daemon's CONNZ view plus the durable
+   *  registry), as last read; the topology lens overlays it to show silent subscribers. */
+  membership: MembershipView;
   /** `msgsPerSec`: the rolling 1 s rate. `activity`: a fixed 15-bucket message-volume series over
    *  the last 60 s (one ~4 s bucket each), oldest→newest, raw counts: the status bar's sparkline. */
   rates: { msgsPerSec: number; activity: number[] };
@@ -112,11 +126,22 @@ const CHANNELS_MS = 2000; // listChannels() refresh
 const DEFAULT_WINDOW = 300;
 const HISTORY_LIMIT = 50; // per-channel prefill depth
 const DM_LOG_CAP = 1000; // raw DMs retained for the roll-up
+const MEMBERSHIP_DEBOUNCE_MS = 150; // coalesce the watch's replay burst into one re-read (the web's 150 ms)
 const BUCKET_MS = 4000; // activity series bucket width
 const BUCKET_COUNT = 15; // activity series length → 15×4s = 60s window
 
 function bodyText(msg: CotalMessage): string {
   return partsToText(msg.parts);
+}
+
+/** Does this error say the membership feed's bucket does not exist (no delivery daemon ever
+ *  provisioned it)? The JetStream "stream not found" answer, by API code and by message; anything
+ *  else (a permission refusal, a timeout, a closed connection) is a failed read, not an absent feed. */
+function feedAbsent(e: unknown): boolean {
+  const err = e as { message?: string; code?: number | string; api_error?: { err_code?: number } } | null;
+  if (err?.api_error?.err_code === 10059) return true;
+  if (err?.code === 404 || err?.code === "404") return true;
+  return /stream not found/i.test(err?.message ?? "");
 }
 
 function sortRoster(r: Presence[]): Presence[] {
@@ -167,6 +192,9 @@ export class MeshView extends EventEmitter {
   private error?: string;
   private warning?: string;
   private dirty = true;
+  private membership: MembershipView = {};
+  private membershipWatch?: { stop(): Promise<void> };
+  private membershipTimer?: ReturnType<typeof setTimeout>;
 
   private readonly window: number;
   private readonly tapSubject?: string;
@@ -213,6 +241,7 @@ export class MeshView extends EventEmitter {
     );
     void this.prefill();
     void this.refreshChannels();
+    void this.startMembership();
     this.timers.push(setInterval(() => this.flush(), TICK_MS));
     this.timers.push(setInterval(() => void this.refreshChannels(), CHANNELS_MS));
     this.timers.push(setInterval(() => (this.dirty = true), 1000)); // refresh ages + decay rate
@@ -227,7 +256,44 @@ export class MeshView extends EventEmitter {
     this.ep.off("warning", this.onWarning);
     this.ep.off("roster", this.onRoster);
     this.ep.off("presence", this.onPresence);
+    clearTimeout(this.membershipTimer);
+    await this.membershipWatch?.stop().catch(() => undefined);
     await this.ep.stop();
+  }
+
+  /** Read the broker-authoritative membership feed and follow it. A membership fault is never
+   *  a connection fault: it lands on `membership.unreadable` (with its reason), not on
+   *  `status.error`, because the mesh is fine and only this viewer's read of one feed is not. */
+  private async startMembership(): Promise<void> {
+    await this.loadMembership();
+    try {
+      this.membershipWatch = await this.ep.watchMembership(() => this.scheduleMembership());
+    } catch (e) {
+      // A feed that does not exist cannot be watched, and that is the traffic-only fact the read
+      // above already recorded; any other failure is this viewer's, named as such.
+      if (!feedAbsent(e)) this.membership = { ...this.membership, unreadable: `watch: ${(e as Error).message}` };
+      this.dirty = true;
+    }
+  }
+
+  private scheduleMembership(): void {
+    clearTimeout(this.membershipTimer);
+    this.membershipTimer = setTimeout(() => void this.loadMembership(), MEMBERSHIP_DEBOUNCE_MS);
+  }
+
+  /** One read of the feed. Three outcomes, kept distinct: a snapshot (readable, whatever it holds),
+   *  an absent feed (readable in the sense that the mesh has no daemon writing one: an empty
+   *  snapshot, traffic-only), and a failed read (`unreadable`, reason kept, last snapshot kept so
+   *  the reason is shown against what was last known rather than against nothing). */
+  private async loadMembership(): Promise<void> {
+    try {
+      this.membership = { snapshot: await this.ep.readMembership() };
+    } catch (e) {
+      this.membership = feedAbsent(e)
+        ? { snapshot: { asOf: undefined, members: [] } }
+        : { ...this.membership, unreadable: (e as Error).message };
+    }
+    this.dirty = true;
   }
 
   snapshot(): MeshSnapshot {
@@ -239,6 +305,7 @@ export class MeshView extends EventEmitter {
       endpoints: this.roster.filter((p) => p.card.kind !== "agent"),
       channels,
       feed: this.feed.slice(),
+      membership: { ...this.membership },
       rates: { msgsPerSec: this.msgsPerSec, activity: this.bucketCounts.slice() },
       status: {
         connected: this.connected,

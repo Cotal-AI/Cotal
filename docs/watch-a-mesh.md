@@ -42,7 +42,7 @@ tiles strip, and toggleable lenses:
 | `1`–`9`, `[` `]` | select a channel tab |
 | `n` | the NEEDS-YOU rail: agents currently blocked or waiting |
 | `d` | the DM lens: per-peer roll-up and threads (god-view only; shows "DMs hidden" under chat-only creds) |
-| `t`, then `v` / `1`–`3` | the topology lens: who-talks-to-whom, as a swimlane, a heat matrix, or a ring map |
+| `t`, then `v` / `1`–`3` | the topology lens: who-talks-to-whom, as a swimlane, a heat matrix, or a ring map, with the broker's own membership overlaid when the delivery daemon serves it (a header pill reads live, stale, traffic-only, or unreadable) |
 | `/` | search / filter the feed |
 | `:` | the command palette |
 | `D` | kill the selected agent (control-gated, below) |

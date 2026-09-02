@@ -307,6 +307,9 @@ export function App({
         <Topo
           feed={mesh.feed}
           agents={mesh.agents}
+          membership={mesh.membership}
+          channels={mesh.channels}
+          nameOf={mesh.nameOf}
           variant={topoVariant}
           width={size.cols}
           height={bodyH}

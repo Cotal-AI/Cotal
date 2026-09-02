@@ -4,7 +4,8 @@
 // so the fold is deterministic and the recency kernel needs no stored EWMA state.
 
 import type { Presence, PresenceStatus } from "@cotal-ai/core";
-import type { FeedDelivery, FeedEntry } from "../../mesh.js";
+import { subjectMatches } from "@cotal-ai/core";
+import type { FeedDelivery, FeedEntry, MembershipView } from "../../mesh.js";
 
 export type TopoNodeKind = "agent" | "channel" | "service";
 
@@ -18,6 +19,21 @@ export interface TopoNode {
   role?: string;
   /** Last involvement inside the window (0 = present but silent). */
   lastTs: number;
+  /** Present in the broker-authoritative membership feed (agents only). */
+  member?: boolean;
+  /** Subscribes `>` or `*` — a wide "reads all" reader; badged, not spoked per hub. */
+  wide?: boolean;
+}
+
+/** A broker-authoritative membership link — an agent subscribes a channel. Kept SEPARATE from
+ *  traffic {@link TopoEdge}s (which carry rate/count): a membership link has no traffic, so folding
+ *  it into edges would prune it (heatLevel 0) or create phantom empty matrix columns. */
+export interface TopoMembership {
+  agent: string; // TopoNode.key ("a:...")
+  channel: string; // TopoNode.key ("c:...")
+  /** Which broker arm proves it: `live` (a current CONNZ subscription) vs `durable` (registry only,
+   *  i.e. a member whose connection is currently down). */
+  state: "live" | "durable";
 }
 
 export interface TopoEdge {
@@ -36,13 +52,20 @@ export interface TopoGraph {
   nodes: TopoNode[];
   /** Ascending by rate — renderers overdraw hot edges last. */
   edges: TopoEdge[];
+  /** Broker-authoritative membership links (the resting subscription skeleton). */
+  memberships: TopoMembership[];
   byKey: Map<string, TopoNode>;
   windowMs: number;
   now: number;
+  /** The membership feed as the viewer last saw it (see {@link membershipFreshness}). */
+  membership: MembershipView;
 }
 
 const RATE_TAU_MS = 20_000;
 export const DEFAULT_TOPO_WINDOW_MS = 120_000;
+export const MEMBERSHIP_STALE_MS = 45_000; // mirror the web dashboard's FEED_STALE_MS
+
+const isWild = (pat: string): boolean => pat.includes("*") || pat.includes(">");
 
 /** The target node(s) a feed entry talks to — the single place delivery → node mapping lives. */
 export function targetsOf(e: FeedEntry): { key: string; kind: TopoNodeKind; name: string }[] {
@@ -62,7 +85,17 @@ export function targetsOf(e: FeedEntry): { key: string; kind: TopoNodeKind; name
 export function foldTopo(
   feed: FeedEntry[],
   agents: Presence[],
-  opts?: { windowMs?: number; now?: number },
+  opts?: {
+    windowMs?: number;
+    now?: number;
+    /** The broker-authoritative membership feed as MeshView last read it. Absent, or a feed the
+     *  viewer could not read, overlays nothing: the fold never draws what the wire did not say. */
+    membership?: MembershipView;
+    /** Channel registry names, for expanding bounded wildcard subscriptions. */
+    knownChannels?: string[];
+    /** id → display name (defaults to the roster, then an 8-char id prefix). */
+    nameOf?: (id: string) => string;
+  },
 ): TopoGraph {
   const now = opts?.now ?? Date.now();
   const windowMs = opts?.windowMs ?? DEFAULT_TOPO_WINDOW_MS;
@@ -113,6 +146,41 @@ export function foldTopo(
     }
   }
 
+  // Overlay broker-authoritative membership: silent subscribers become nodes, subscriptions become
+  // resting spokes. Resolve id→name against the roster so a member that ALSO has traffic merges onto
+  // the same node (no double-count), keeping the fold otherwise unchanged when membership is absent.
+  const memberships: TopoMembership[] = [];
+  const rosterById = new Map(agents.map((p) => [p.card.id, p.card.name]));
+  const nameFor = opts?.nameOf ?? ((id: string) => rosterById.get(id) ?? id.slice(0, 8));
+  // Only a snapshot this viewer actually read is drawn. An `unreadable` feed keeps its last
+  // snapshot for the pill's sake, but spokes from a reading the viewer has disowned would be the
+  // web dashboard's "acting on the reading it just disowned" defect, so they stay off.
+  const membership = opts?.membership?.unreadable === undefined ? opts?.membership?.snapshot : undefined;
+  if (membership) {
+    const known = new Set<string>([
+      ...[...byKey.values()].filter((n) => n.kind === "channel").map((n) => n.name),
+      ...(opts?.knownChannels ?? []),
+    ]);
+    for (const m of membership.members) {
+      const node = touch("a:" + nameFor(m.id), "agent", nameFor(m.id), 0);
+      node.member = true;
+      // Which channels this agent subscribes, and whether it's a wide reader.
+      const chans = new Map<string, "live" | "durable">();
+      let wide = false;
+      for (const pat of m.live ?? []) {
+        if (pat === ">" || pat === "*") wide = true;
+        else if (isWild(pat)) for (const ch of known) { if (subjectMatches(pat, ch)) chans.set(ch, "live"); }
+        else chans.set(pat, "live");
+      }
+      for (const ch of m.durable ?? []) if (!chans.has(ch)) chans.set(ch, "durable");
+      if (wide) node.wide = true;
+      for (const [ch, state] of chans) {
+        touch("c:" + ch, "channel", ch, 0); // materialize a hub even if silent
+        memberships.push({ agent: node.key, channel: "c:" + ch, state });
+      }
+    }
+  }
+
   // Agents keep roster order (traffic-only senders appended by name); hubs alphabetical.
   const rosterOrder = new Map(agents.map((p, i) => ["a:" + p.card.name, i]));
   const all = [...byKey.values()];
@@ -129,10 +197,30 @@ export function foldTopo(
   return {
     nodes: [...agentNodes, ...hub("channel"), ...hub("service")],
     edges: [...edges.values()].sort((a, b) => a.rate - b.rate),
+    memberships,
     byKey,
     windowMs,
     now,
+    membership: opts?.membership ?? {},
   };
+}
+
+/** The four things the header pill can say about the membership feed, mirroring the web graph's
+ *  pill and checked in the same order: `unreadable` first, because "traffic-only" is a claim about
+ *  the MESH (no daemon writes a feed) while a failed read is a claim about US, and the two must
+ *  never collapse; then absent or never-written (traffic-only); then the heartbeat's age. */
+export type MembershipFreshness =
+  | { label: "unreadable"; color: "red"; reason: string }
+  | { label: "traffic-only"; color?: undefined }
+  | { label: "live"; color: "green" }
+  | { label: "stale"; color: "yellow" };
+
+export function membershipFreshness(now: number, m: MembershipView): MembershipFreshness {
+  if (m.unreadable !== undefined) return { label: "unreadable", color: "red", reason: m.unreadable };
+  const s = m.snapshot;
+  if (!s || (s.asOf === undefined && s.members.length === 0)) return { label: "traffic-only" };
+  const age = s.asOf !== undefined ? now - s.asOf : Infinity;
+  return age < MEMBERSHIP_STALE_MS ? { label: "live", color: "green" } : { label: "stale", color: "yellow" };
 }
 
 // Heat shading shared by the matrix and map: rate → 5 intensity steps.

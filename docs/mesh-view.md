@@ -57,6 +57,7 @@ interface MeshSnapshot {
   endpoints: Presence[];        // everything else
   channels:  { channel: string; messages: number }[];
   feed:      FeedEntry[];       // classified + coalesced + windowed
+  membership: { snapshot?: MembershipSnapshot; unreadable?: string };  // the feed as last read (below)
   rates:     { msgsPerSec: number; activity: number[] };  // rolling 1 s rate; 15 x 4 s volume buckets (60 s)
   status:    { connected: boolean; space: string; dmVisible: boolean; error?: string };
   signals:   MeshSignals;       // derived operator signals (below)
@@ -102,6 +103,22 @@ can never be acted on.
 the pairs that actually talked, never the n² cross-product. It is populated only when DMs are
 visible (god-view / open mode); a chat-only observer leaves it empty.
 
+### Membership feed
+
+`membership` carries the feed as this viewer last saw it, as two facts kept apart: `snapshot`, the
+last successful read, and `unreadable`, the reason the most recent read or watch attempt failed.
+The topology lens turns them into one of four pill states, checked in this order:
+
+| Pill | Means |
+|---|---|
+| `unreadable` (reason shown) | the read or the watch itself failed: a fact about this viewer, never shown as an empty mesh; the overlay is withheld |
+| `traffic-only` | no daemon writes a feed here (the bucket is absent, or was never written): the lens is traffic-derived, an honest mesh fact |
+| `live` | a snapshot whose heartbeat (`asOf`) is younger than 45 seconds |
+| `stale` | a snapshot older than that, or one with no heartbeat at all |
+
+A membership fault never lands on `status.error`: the mesh is fine, and only this viewer's read of
+one feed is not.
+
 ## Feature to surface map
 
 | Feature | Model field | console (Ink) | stream | web |
@@ -112,7 +129,7 @@ visible (god-view / open mode); a chat-only observer leaves it empty.
 | golden-signal counts | `signals.counts` | ✓ tiles strip |  | ✓ tiles |
 | needs-you / blocked | `signals.waiting` | ✓ rail (`n`) |  | ✓ NEEDS-YOU rail |
 | direct-message lens | `signals.dms` | ✓ lens (`d`) |  | ✓ DM view |
-| topology (who-talks-to-whom) | `feed` + `agents` (derived) | ✓ lens (`t`, 3 variants) |  |  |
+| topology (membership plus who-talks-to-whom) | `feed` + `agents` + `membership` | ✓ lens (`t`, 3 variants) |  | ✓ graph |
 | message / agent **detail** | `feed` / `agents` | ✓ select → detail |  | ✓ row / thread |
 | search / filter | client | ✓ `/` | (grep) | ✓ mode chips |
 | msgs/s, activity sparkline, connected, dmVisible | `rates` / `status` | ✓ status bar |  | ✓ conn pill |
@@ -125,7 +142,12 @@ visible (god-view / open mode); a chat-only observer leaves it empty.
 Both interactive surfaces render every model field. The console adds the signals as an always-on
 tiles strip, a NEEDS-YOU rail (`n`), and a DM lens (`d`); the topology lens (`t`) collapses the feed
 plus roster into a who-talks-to-whom graph client-side and renders it three switchable ways
-(`v` / `1`–`3`): swimlane sequence, adjacency heat matrix, and a ring node-link map. The stream is
+(`v` / `1`–`3`): swimlane sequence, adjacency heat matrix, and a ring node-link map. It also
+overlays the **broker-authoritative membership** feed (`readMembership` / `watchMembership`, the
+same source as the web graph): silent subscribers appear as nodes, subscriptions as resting
+spokes (live solid and faint, durable-offline dashed), and wide readers (`>` / `*`) carry a `≫`
+badge. The map draws the full skeleton, the matrix a light `∘` / `◌` marker, the sequence stays a
+traffic timeline. The stream is
 line-oriented, so the signals stay out of it.
 
 ## Future work
