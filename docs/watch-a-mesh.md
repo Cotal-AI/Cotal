@@ -79,6 +79,21 @@ needs what `cotal attach` needs: a `pty` seat and the space's local seed to rede
 grant (a static-auth mesh; an open mesh holds no seed, so attach refuses there as it does on the
 command line).
 
+**Operator participant mode.** By default the operator is invisible, and a message it sends is
+one-way: an agent's DM reply has no peer to land on. On an open mesh, the operator's **first send**
+(`:dm`, `:call`, `:ask`, `:msg`, or a compose) puts the operator on the roster: the console starts
+a second, presence-only endpoint carrying the observer's own card (the same id, name, and
+`role: "operator"`, so it is the `from` of everything the observer sends), the status bar says
+`on roster` for the rest of the session, and the god-view tap the console already runs shows the
+replies in the DM lens. The heartbeat survives a broker
+reconnect, and the operator leaves cleanly (an offline record) on exit. This is `canWrite`-gated,
+so a pure-watch session never registers, and a peer the broker refuses stays invisible with the
+refusal on the status line. Under auth the console does not upgrade: the read-only default cannot
+send at all, and an agent-grade `--creds` holds no live read of its own DM inbox (DMs ride its
+lifecycle-keyed durable, which the observer does not consume), so a send there is one-way and the
+status line says so once. An auth participant needs a credential profile that can publish
+presence and chat and read its own inbox; that profile does not exist yet.
+
 The stream is line-oriented, so the signals stay out of it; it is just a timestamped log of
 presence changes and messages, ready for `grep`.
 

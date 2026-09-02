@@ -1,0 +1,28 @@
+{
+  "suite": "implementations/cli/smoke/console-participant.smoke.ts",
+  "guard": "the operator becomes a roster peer under the observer's own card on its first send",
+  "command": "pnpm --filter @cotal-ai/cli smoke:console-participant",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/console-participant.json",
+  "why": [
+    "A peer that does not register presence leaves the operator invisible and every reply one-way; a peer under a fresh id advertises a roster entry that is not the sender of the operator's messages, so a reply to the `from` goes nowhere.",
+    "Each mutation is compile-clean and unique in the named file, and the suite imports src directly, so no build is involved."
+  ],
+  "mutations": [
+    {
+      "name": "P1 the peer does not register presence",
+      "file": "implementations/cli/src/console/root.tsx",
+      "find": "registerPresence: true,",
+      "replace": "registerPresence: false,",
+      "expectRed": "after the first send the operator is on the roster",
+      "cell": "after the first send the operator is on the roster"
+    },
+    {
+      "name": "P2 the peer takes a fresh id",
+      "file": "implementations/cli/src/console/root.tsx",
+      "find": "card: { ...observer.card },",
+      "replace": "card: { name: observer.card.name, role: observer.card.role, kind: observer.card.kind },",
+      "expectRed": "...under the observer's own id, so it is the `from` of what the observer sends",
+      "cell": "...under the observer's own id, so it is the `from` of what the observer sends"
+    }
+  ]
+}

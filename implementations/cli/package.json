@@ -23,6 +23,7 @@
     "smoke:console-attach": "tsx smoke/console-attach.smoke.ts",
     "smoke:console-gaps": "tsx smoke/console-gaps.smoke.ts",
     "smoke:console-control": "tsx smoke/console-control.smoke.ts",
+    "smoke:console-participant": "tsx smoke/console-participant.smoke.ts",
     "build": "tsc -p tsconfig.json",
     "prepublishOnly": "pnpm run build"
   },

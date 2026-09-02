@@ -13,6 +13,7 @@ export function StatusBar({
   canBack,
   canWrite,
   canControl,
+  onRoster,
   width,
 }: {
   status: MeshState["status"];
@@ -24,6 +25,8 @@ export function StatusBar({
   canBack?: boolean;
   canWrite?: boolean;
   canControl?: boolean;
+  /** The operator's presence peer is up (participant mode): agents can reply. */
+  onRoster?: boolean;
   width: number;
 }) {
   const keys =
@@ -50,6 +53,7 @@ export function StatusBar({
         <Text dimColor>{" 60s"}</Text>
         {status.dmVisible ? null : <Text color="yellow">{"  chat-only"}</Text>}
         {canWrite ? null : <Text color="yellow">{"  read-only"}</Text>}
+        {onRoster ? <Text color="green">{"  on roster"}</Text> : null}
         {status.error ? (
           <Text color="red">{"  ! " + status.error}</Text>
         ) : status.warning ? (

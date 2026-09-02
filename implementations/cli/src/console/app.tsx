@@ -51,6 +51,7 @@ export function App({
   canWrite,
   canControl,
   controlCtx,
+  makeParticipant,
 }: {
   ep: CotalEndpoint;
   tapSubject?: string;
@@ -59,6 +60,8 @@ export function App({
   canControl?: boolean;
   /** The `--server` / `--creds` half of the control coordinates; the App adds the watched space. */
   controlCtx?: Omit<ControlCtx, "space">;
+  /** Builds the operator's presence peer (root.tsx); absent where the mesh cannot host one. */
+  makeParticipant?: () => CotalEndpoint;
 }) {
   const mesh = useMesh(ep, { tapSubject });
   const { exit } = useApp();
@@ -317,6 +320,42 @@ export function App({
         ? "→ @" + c.toName
         : "↩ " + c.entry.from.name + (c.entry.delivery === "multicast" && c.entry.channel ? " #" + c.entry.channel : "");
 
+  // First time the operator sends anything, put the operator on the roster: start the presence
+  // peer (root.tsx's makeParticipant, the observer's own card), so agents see the operator and
+  // their DM replies have a peer to land on; the whole-space tap the open-mesh console already
+  // runs is what shows them in the DM lens. Idempotent, canWrite-gated (a pure-watch session never
+  // calls it). A refused start leaves the operator invisible and is shown; the next send retries.
+  //
+  // OPEN MESH ONLY, and said so rather than degraded: Root offers no peer under auth, where the
+  // tap is narrowed to chat and an agent-grade credential holds no live read of its own DM inbox
+  // (DMs ride its lifecycle-keyed durable, which the observer does not consume), so a reply could
+  // never be shown here. A send there is one-way, and the status line says exactly that once.
+  const participant = useRef<CotalEndpoint | null>(null);
+  const activatedRef = useRef(false);
+  const [onRoster, setOnRoster] = useState(false); // the status bar says so for the rest of the session
+  const ensureParticipant = useCallback(async () => {
+    if (activatedRef.current || !canWrite) return;
+    activatedRef.current = true;
+    if (!makeParticipant) return setNotice("sent one-way: under this credential replies cannot land in the console");
+    const peer = makeParticipant();
+    try {
+      await peer.start();
+      participant.current = peer;
+      setOnRoster(true);
+    } catch (e) {
+      activatedRef.current = false; // let the next send retry
+      setNotice("participant: " + (e as Error).message);
+    }
+  }, [canWrite, makeParticipant]);
+  // The peer leaves with the console (an offline record, like the observer's own stop in useMesh).
+  useEffect(
+    () => () => {
+      void participant.current?.stop();
+      participant.current = null;
+    },
+    [],
+  );
+
   // Send the in-progress compose over the live endpoint.
   const submitCompose = () => {
     const c = compose;
@@ -326,17 +365,19 @@ export function App({
     if (!text) return;
     const ok = (label: string) => () => setNotice(label);
     const fail = (e: unknown) => setNotice("send: " + (e as Error).message);
-    if (c.kind === "channel")
-      void ep.multicast(text, { channel: c.channel, mentions: mentionsIn(text) }).then(ok("→ #" + c.channel)).catch(fail);
-    else if (c.kind === "dm") void ep.unicast(c.toId, text).then(ok("→ " + c.toName)).catch(fail);
-    else {
-      const e = c.entry;
-      const send =
-        e.delivery === "multicast" && e.channel
-          ? ep.multicast(text, { channel: e.channel, replyTo: e.id, mentions: mentionsIn(text) })
-          : ep.unicast(e.from.id, text, { replyTo: e.id });
-      void send.then(ok("↩ " + e.from.name)).catch(fail);
-    }
+    void ensureParticipant().then(() => {
+      if (c.kind === "channel")
+        void ep.multicast(text, { channel: c.channel, mentions: mentionsIn(text) }).then(ok("→ #" + c.channel)).catch(fail);
+      else if (c.kind === "dm") void ep.unicast(c.toId, text).then(ok("→ " + c.toName)).catch(fail);
+      else {
+        const e = c.entry;
+        const send =
+          e.delivery === "multicast" && e.channel
+            ? ep.multicast(text, { channel: e.channel, replyTo: e.id, mentions: mentionsIn(text) })
+            : ep.unicast(e.from.id, text, { replyTo: e.id });
+        void send.then(ok("↩ " + e.from.name)).catch(fail);
+      }
+    });
   };
 
   // Run a typed palette line against the live endpoint.
@@ -358,6 +399,7 @@ export function App({
       confirmPurge: () => setConfirm({ kind: "purge", space: ep.space }),
       confirmDelchan: (channel: string) => setConfirm({ kind: "delchan", channel }),
       startAttach: handleAttach,
+      ensureParticipant,
     };
     runCommand(line, ctx, !!canWrite, !!canControl);
   };
@@ -571,6 +613,7 @@ export function App({
         canBack={!!onBack}
         canWrite={!!canWrite}
         canControl={!!canControl}
+        onRoster={onRoster}
         width={size.cols}
       />
     </Box>
