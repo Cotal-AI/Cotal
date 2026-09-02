@@ -14,6 +14,9 @@
  *      the manager allocated, and the seat is live on `ps`.
  *   2  a losing race branch's REAL seat is released by the driver's own sweep — the winner's is
  *      not touched.
+ *   3  spawn→conclave flow-through: the handle a REAL spawn minted resolves through the seat's
+ *      own presence row, a membership row is written for exactly that incarnation, and the close
+ *      tombstones it and deletes the minted channel's registry row.
  *
  * Throwaway everything: own open nats-server on a free port, scratch COTAL_HOME + workspace root.
  * Needs nats-server + node on PATH. Run: pnpm smoke:lang-spawn-live
@@ -36,13 +39,14 @@ const {
   probeConnect, registry, DEV_OWNER, openRecordsBucket,
   timerWriterContext, timerWriterConsumerConfig, timerWriterDurable, armCheckpointTimer,
   eptReqStreamName, replayRunJournal, newTakeoverId, resolveService, invokeCommand,
+  setupSpaceStreams, openMembersRegistry, openChannelRegistry, listMembers, readChannelConfig,
 } = await import("@cotal-ai/core");
 type LaunchOptsT = import("@cotal-ai/core").LaunchOpts;
 type LaunchSpecT = import("@cotal-ai/core").LaunchSpec;
 type ConnectorT = import("@cotal-ai/core").Connector;
 type EpCallerT = import("@cotal-ai/core").EpCaller;
 // The lang entry, structurally (bin does not depend on @cotal-ai/lang): only the fields read here.
-interface JournalEntryT { kind: string; state: string; status?: string; result?: unknown }
+interface JournalEntryT { kind: string; state: string; status?: string; result?: unknown; closed?: boolean; external?: Record<string, unknown> }
 const { recordMesh } = await import("@cotal-ai/workspace");
 const { Manager } = await import("@cotal-ai/manager");
 const { MeshHandler, EpfSettleWatcher, startRun } = await import("@cotal-ai/runtime");
@@ -72,7 +76,7 @@ const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-langspawn-ws-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 // The persona pins the harness (`agent: join`): the lang `spawn` sends no harness of its own, so
 // this is exactly how a workflow-spawned seat picks its connector in production.
-for (const n of ["wf1", "wf2"])
+for (const n of ["wf1", "wf2", "wf3"])
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\nagent: join\n---\n`);
 
 // A real agent child: joins presence under the manager-assigned id, then parks. Readiness
@@ -100,6 +104,9 @@ try {
   let up = false;
   for (let i = 0; i < 60 && !up; i++) { up = (await probeConnect(SERVER, { timeoutMs: 400 })).ok; if (!up) await wait(120); }
   if (!up) throw new Error(`nats-server did not come up on ${PORT}`);
+  // The real `cotal up` seed: pre-creates the presence/channel/members registries a conclave
+  // opens (the handler never self-provisions a bucket).
+  await setupSpaceStreams({ servers: SERVER, space: SPACE });
   recordMesh({ space: SPACE, server: SERVER, root: workspaceRoot, mode: "open", ts: new Date().toISOString() });
 
   mgr = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot });
@@ -195,6 +202,40 @@ log("winner", out.index);
     c("the loser's REAL seat is gone: the driver's sweep despawned it through the real manager",
       !names.includes("wf2"), names);
     c("and the winner-unrelated seat from the first run was not touched", names.includes("wf1"), names);
+  }
+
+  // ── 3) spawn→conclave flow-through: a REAL seat's presence resolves its membership ──────────
+  {
+    console.log("• 3 — a conclave joins a real seat off its own presence, and releases it");
+    const source = `
+const d = await spawn("wf3");
+const r = await conclave([d], async (room) => { log("room", room.channel); return room.channel; }, { name: "standup" });
+log("done", r);
+`;
+    const out = await startRun(js, jsm, {
+      space: SPACE, endpoint: "manager", kv, runId: "ls-3", lease: lease(),
+      source, handler: mk("ls-3"),
+    });
+    c("the conclave run completes", out.status === "completed", JSON.stringify(out));
+    const spawnEntry = (await entriesOf("ls-3", "spawn")).find((e) => e.state === "settled");
+    const handle = String((spawnEntry?.result as { agent?: unknown } | undefined)?.agent ?? "");
+    const uid = handle.slice(handle.lastIndexOf("#") + 1);
+    const entries = await entriesOf("ls-3", "conclave");
+    const settled = entries.find((e) => e.state === "settled");
+    c("the conclave entry settles ok with the closed fact", settled?.status === "ok" && settled?.closed === true,
+      { status: settled?.status, closed: settled?.closed });
+    const plan = entries.filter((e) => e.state === "pending").at(-1)?.external as
+      { channel?: string; members?: Array<{ uid?: string; principal?: string }> } | undefined;
+    c("the plan pinned the REAL seat's incarnation, resolved from its own presence row",
+      plan?.members?.length === 1 && plan.members[0]?.uid === uid && uid.length >= 26,
+      JSON.stringify(plan));
+    const rows = await listMembers(await openMembersRegistry(nc, SPACE), { channel: plan?.channel ?? "" });
+    c("one membership row was written for the seat and tombstoned by the close",
+      rows.length === 1 && rows[0]?.lifecycleUid === uid && rows[0]?.leaveCursor !== undefined
+        && rows[0]?.owner === plan?.members?.[0]?.principal,
+      JSON.stringify(rows));
+    c("the minted channel's registry row is gone after the close",
+      (await readChannelConfig(await openChannelRegistry(nc, SPACE), plan?.channel ?? "")) === undefined);
   }
 
   pumpState.over = true;

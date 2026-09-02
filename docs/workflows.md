@@ -148,12 +148,17 @@ the compiled engine, as the engine paragraph below says. The wire
 substrate of §14 (the `WFJ_<space>` stream, the four record kinds, the activation barrier, the
 per-run grants) is in `@cotal-ai/core`, and the run driver, journal store, migrate and fork are
 `@cotal-ai/runtime` (`implementations/runtime`). On the mesh handler, `sleep`, `checkpoint`,
-`wait(message(...))`, `wait(idle(...))`, `notify` and `spawn` are durable. `spawn` is the
-manager's spawn action submitted under the step's own identity: the goal binds under the step's
+`wait(message(...))`, `wait(idle(...))`, `notify`, `spawn` and `conclave` are durable. `spawn` is
+the manager's spawn action submitted under the step's own identity: the goal binds under the step's
 request id, so a resumed run re-attaches to the same seat instead of allocating a second one, a
 failed or refused spawn is catchable as L4002 with the manager's recorded reason, and a spawn on a
-race branch that loses is despawned by the run's own cancellation sweep. `turn`, `ask`, `monitor`,
-`wait(replied(...))`, `wait(down(...))`, `conclave` and a `spawn` with a `worktree` refuse with
+race branch that loses is despawned by the run's own cancellation sweep. `conclave` joins its
+members to a real channel as durable membership rows: the channel derives from the step's own
+request id when the program names none (a program-named channel is borrowed, never torn down, and
+a membership that predates the conclave survives its close), each member handle resolves to its
+principal through the seat's own presence row (an absent member is catchable as L4002), and a
+conclave cancelled on a losing branch is released by the same cancellation sweep. `turn`, `ask`,
+`monitor`, `wait(replied(...))`, `wait(down(...))` and a `spawn` with a `worktree` refuse with
 **L5016 (effect not durable on this host)** until the machinery they ride lands. That refusal
 holds the run rather than ending it: the entry is settled `refused` (never `failed`, since nothing
 was attempted), the run unwinds with the uncatchable L5025 and is recorded `released`, and a

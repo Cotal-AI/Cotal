@@ -35,6 +35,16 @@ import {
   chatSubject,
   isConcreteChannel,
   assertSafePattern,
+  assertValidChannel,
+  presenceBucket,
+  liveKvEntries,
+  openMembersRegistry,
+  openChannelRegistry,
+  writeChannelConfig,
+  readMember,
+  commitMember,
+  tombstoneMember,
+  StaleMembershipWrite,
   runNoticeId,
   writeRunNotice,
   actionContext,
@@ -50,11 +60,12 @@ import {
   type EpCaller,
   type GoalRef,
   type GoalResultFact,
+  type Presence,
   type ResolvedService,
 } from "@cotal-ai/core";
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
-import type { KV } from "@nats-io/kv";
+import { Kvm, type KV } from "@nats-io/kv";
 import {
   parseDuration,
   Cancelled,
@@ -62,6 +73,8 @@ import {
   EffectRefused,
   type AgentHandleValue,
   type CancelSignal,
+  type ChannelHandleValue,
+  type ConclaveRequest,
   type WaitRequest,
   type CheckpointRaw,
   type CheckpointRequest,
@@ -151,7 +164,8 @@ export interface SettleWatcher {
 
 /**
  * The one subject the remaining seam is gated by: every still-refused effect CONSUMES an agent
- * handle (`spawn`, which produces one, performs). Named once so the refusals cannot drift apart.
+ * handle (`spawn`, which produces one, and `conclave`, which assembles a sub-team of them,
+ * perform). Named once so the refusals cannot drift apart.
  */
 const ACTION_MACHINERY = "the durable-action machinery an agent handle rides";
 
@@ -190,6 +204,48 @@ export class MeshHandler {
     });
     return this.actions;
   }
+
+  // The three registries a conclave touches, memoized like the service resolves above. All three
+  // are OPENED, never created: the provisioner pre-creates them at `cotal up` (auth mode) and the
+  // endpoints create presence/channels lazily in open mode — a mesh where one is genuinely absent
+  // was never provisioned for durable membership, and that fails loud rather than self-provisions.
+  private presenceKvOpen: Promise<KV> | undefined;
+  private presenceRegistry(): Promise<KV> {
+    this.presenceKvOpen ??= new Kvm(this.nc).open(presenceBucket(this.binding.space)).catch((e) => {
+      this.presenceKvOpen = undefined;
+      throw e;
+    });
+    return this.presenceKvOpen;
+  }
+
+  private membersKvOpen: Promise<KV> | undefined;
+  private membersRegistry(): Promise<KV> {
+    this.membersKvOpen ??= openMembersRegistry(this.nc, this.binding.space).catch((e) => {
+      this.membersKvOpen = undefined;
+      throw e;
+    });
+    return this.membersKvOpen;
+  }
+
+  private channelsKvOpen: Promise<KV> | undefined;
+  private channelRegistry(): Promise<KV> {
+    this.channelsKvOpen ??= openChannelRegistry(this.nc, this.binding.space).catch((e) => {
+      this.channelsKvOpen = undefined;
+      throw e;
+    });
+    return this.channelsKvOpen;
+  }
+
+  /** The chat stream's current last sequence — a conclave join/leave cursor (SPEC §7 interval). */
+  private async chatFrontier(): Promise<number> {
+    return (await this.jsm.streams.info(chatStream(this.binding.space))).state.last_seq;
+  }
+
+  /** The open conclaves this process performed, keyed by the scope's request id, so the close that
+   *  follows the body reads the SAME plan the open executed. A crash loses the map and loses
+   *  nothing: the plan was bound as the entry's external state before a single row was written,
+   *  and a re-entered open repopulates the map from `ctx.resume`. */
+  private readonly conclaves = new Map<string, ConclavePlan>();
 
   now(): number {
     return this.clock();
@@ -231,6 +287,10 @@ export class MeshHandler {
       if (e.requestId === undefined) continue;
       if (e.kind === "spawn") {
         await this.dischargeSpawn(e);
+        continue;
+      }
+      if (e.kind === "conclave") {
+        await this.dischargeConclave(e);
         continue;
       }
       if (e.kind !== "sleep" && e.kind !== "checkpoint" && e.kind !== "wait") continue;
@@ -296,6 +356,23 @@ export class MeshHandler {
     const code = reply.reply.ok === false ? reply.reply.error?.code : undefined;
     if (code !== undefined && code !== "not-found" && code !== "expired")
       throw new Error(`the cancelled spawn's agent could not be despawned: ${reply.reply.error?.message ?? "refused"}`);
+  }
+
+  /**
+   * Release a cancelled conclave's MEMBERSHIP (spec §7.5): a cancelled body performs no new
+   * effect, so it never closed its room, and the release travels this recovery path like every
+   * other branch-local resource. The entry's own `closed` fact is the gate — a conclave whose
+   * body failed but whose close acknowledged holds nothing. An entry with no bound plan created
+   * nothing (rows are written only after the bind), so there is nothing to release and no retry
+   * that could learn more. Failures are raised: an unfinished release must not be flipped to
+   * `issued`, and the driver's next sweep retries idempotently.
+   */
+  private async dischargeConclave(e: JournalEntry): Promise<void> {
+    if (e.closed === true) return;
+    const plan = e.external;
+    if (!isConclavePlan(plan)) return;
+    await this.releaseConclave(plan);
+    this.conclaves.delete(e.requestId as string);
   }
 
   /**
@@ -519,16 +596,18 @@ export class MeshHandler {
 
   // ── The Lane-A seam ────────────────────────────────────────────────────────────────────────────
   //
-  // Every effect below addresses an AGENT HANDLE. `spawn` — the effect that produces one — now
-  // performs above, so the remaining refusals are the handle CONSUMERS whose durable machinery has
-  // not landed yet; they still refuse through one class with one reason.
+  // Every effect in this group addresses an AGENT HANDLE. `spawn` — the effect that produces one —
+  // and `conclave` — the scope that assembles a sub-team of them — now perform, so the remaining
+  // refusals are `turn`, `ask` and `monitor` (with `wait(replied|down)` gated above and the
+  // `worktree` sub-refusal on `spawn` itself): the handle consumers whose durable machinery has
+  // not landed yet, still refusing through one class with one reason.
   //
   // THEY ARE HERE RATHER THAN ABSENT, and that is the point of the slice. A handler that simply
   // lacks the method fails as a TypeError from inside the interpreter: a fault about JavaScript
   // rather than about the run, at a call site that says nothing about what is missing or when it
-  // arrives. The refusal is the honest two-exit — the simulator performs all five, so a program
-  // using them can be written, validated and dry-run today, and a DURABLE run declines rather than
-  // performing an effect it could not recover after a crash.
+  // arrives. The refusal is the honest two-exit — the simulator performs the whole group, so a
+  // program using them can be written, validated and dry-run today, and a DURABLE run declines
+  // rather than performing an effect it could not recover after a crash.
   //
   // THE REFUSAL HOLDS THE RUN RATHER THAN ENDING IT. `NotYetDurable` is an `EffectRefused`, so
   // the interpreter settles the entry `refused` under L5016 — never `failed`, which would replay
@@ -630,20 +709,176 @@ export class MeshHandler {
   }
 
   /**
-   * A conclave, refused with the rest — and this one is an OVER-refusal, stated rather than hidden.
+   * `conclave` open: mint (or take) the channel and join the members as durable membership rows.
    *
-   * A conclave's members are agent handles, so the ordinary case is gated exactly like the others.
-   * `conclave([], …)` is not: a sub-team with nobody in it is a channel, and the channel plane is
-   * here. It is refused anyway, because shipping the empty case alone would put half a primitive on
-   * the durable plane — a program that works with no members and refuses with one is a worse thing
-   * to explain than a primitive that is not here yet.
+   * **The plan is the recovery identity.** Everything the close and the discharge need — the
+   * channel, whether this open minted its registry row, and per member the resolved principal,
+   * incarnation, generation and whether THIS conclave created the row — is computed first, bound
+   * as the entry's external state, and only then executed. A crash before the bind created
+   * nothing (rows are written after it); a crash after it re-enters with `ctx.resume` carrying
+   * the plan, and the execute converges idempotently without re-resolving anything: the members
+   * may have died since, and the recorded plan — not the world's current shape — is what a
+   * release answers to.
+   *
+   * **The channel is handler-derived** when the program names none: `conclave-` plus a digest of
+   * the step's own request id, so a resumed run re-derives the same room instead of opening a
+   * second one. A program-named channel is taken as-is (validated concrete) and its registry row
+   * is left alone — naming a room is not creating one, and the close must not tear down a channel
+   * the run merely borrowed.
+   *
+   * **Members resolve through presence.** A handle carries `<name>#<lifecycleUid>`; the row that
+   * maps it to the principal a membership record needs is the seat's own self-published presence —
+   * the same source DM name-resolution reads, and the witness the manager's readiness gate
+   * requires before a spawn reports `succeeded`. A member with no matching row is down or gone,
+   * which is the effect's own catchable failure (L4002), not a handler fault.
+   *
+   * A member already durably in the channel (a pinned pre-existing room) is planned `joined:
+   * false`: the conclave neither re-joins nor — at close — evicts a membership it did not create.
    */
-  async openConclave(_req: unknown, _ctx: EffectContext): Promise<never> {
-    throw new NotYetDurable("conclave(…)", ACTION_MACHINERY);
+  async openConclave(req: ConclaveRequest, ctx: EffectContext): Promise<ChannelHandleValue> {
+    if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
+    let plan: ConclavePlan;
+    if (isConclavePlan(ctx.resume)) {
+      plan = ctx.resume;
+    } else {
+      plan = await this.planConclave(req, ctx);
+      await ctx.bind({ ...plan });
+    }
+    await this.executeConclavePlan(plan);
+    this.conclaves.set(ctx.requestId, plan);
+    return { channel: plan.channel };
   }
 
-  async closeConclave(_req: unknown, _ctx: EffectContext): Promise<never> {
-    throw new NotYetDurable("conclave(…)", ACTION_MACHINERY);
+  /**
+   * `conclave` close: release exactly what the recorded plan says the open created — tombstone
+   * the memberships planned `joined: true`, delete the registry row when this conclave minted the
+   * channel. A member that left and rejoined on its own since carries a newer generation, and the
+   * stale-write guard makes this leave a no-op for it: the membership is theirs now.
+   *
+   * Idempotent by the plane (a tombstone at or below an existing leave cursor is a no-op), so the
+   * re-entry that retries an unacknowledged close converges. The failure mode is the interpreter's
+   * `CloseOwed`: a close that throws leaves the entry pending, which IS the durable "a close is
+   * still owed".
+   */
+  async closeConclave(_req: ConclaveRequest, ctx: EffectContext): Promise<null> {
+    const plan = this.conclaves.get(ctx.requestId) ?? (isConclavePlan(ctx.resume) ? ctx.resume : undefined);
+    if (plan === undefined)
+      throw new Error(`conclave close for "${ctx.requestId}" has no recorded plan: the open that owes this close bound none`);
+    await this.releaseConclave(plan);
+    this.conclaves.delete(ctx.requestId);
+    return null;
+  }
+
+  /** Compute the conclave plan from the world: derive or validate the channel, resolve every
+   *  member handle to its principal, and read each existing membership row so the join generation
+   *  and the created-by-us fact are decided BEFORE anything is written. Duplicate handles collapse
+   *  to one planned member — one identity is one membership row. */
+  private async planConclave(req: ConclaveRequest, ctx: EffectContext): Promise<ConclavePlan> {
+    const derived = req.channel === undefined;
+    const channel = derived
+      ? `conclave-${createHash("sha256").update(ctx.requestId).digest("hex").slice(0, 12)}`
+      : assertConclaveChannel(req.channel!);
+    const members: ConclavePlanMember[] = [];
+    if (req.members.length > 0) {
+      const presence = await this.presenceRows();
+      const membersKv = await this.membersRegistry();
+      const seen = new Set<string>();
+      for (const m of req.members) {
+        const { name, uid } = parseAgentHandle(m.agent);
+        if (seen.has(`${name}#${uid}`)) continue;
+        seen.add(`${name}#${uid}`);
+        const principal = resolveMemberPrincipal(presence, m.agent, name, uid);
+        const existing = await readMember(membersKv, channel, principal, uid);
+        const open = existing !== undefined && existing.record.state === "durable-active" && existing.record.leaveCursor === undefined;
+        members.push({
+          agent: m.agent,
+          principal,
+          uid,
+          generation: open ? existing.record.generation : (existing?.record.generation ?? 0) + 1,
+          joined: !open,
+        });
+      }
+    }
+    return { channel, registered: derived, members };
+  }
+
+  /** Execute a conclave plan against the registries, idempotently: the registry row is a merge
+   *  the re-entry rewrites byte-identical, and a member row is committed only where the plan's
+   *  generation is NEWER than what is stored — a re-entry must not roll a landed row's join
+   *  cursor forward (the members were mid-conversation when the host died), and a row the world
+   *  moved past (an independent leave or rejoin) is theirs, not this conclave's. */
+  private async executeConclavePlan(plan: ConclavePlan): Promise<void> {
+    if (plan.registered) {
+      await writeChannelConfig(await this.channelRegistry(), plan.channel, {
+        description: `a workflow conclave of run ${this.binding.runId}`,
+      });
+    }
+    const joins = plan.members.filter((m) => m.joined);
+    if (joins.length === 0) return;
+    const membersKv = await this.membersRegistry();
+    const joinCursor = await this.chatFrontier();
+    for (const m of joins) {
+      const existing = await readMember(membersKv, plan.channel, m.principal, m.uid);
+      if (existing !== undefined && existing.record.generation >= m.generation) continue;
+      try {
+        await commitMember(membersKv, {
+          channel: plan.channel,
+          owner: m.principal,
+          lifecycleUid: m.uid,
+          state: "durable-active",
+          joinCursor,
+          generation: m.generation,
+          // No activation catch-up is owed: eligibility starts at the join cursor captured here,
+          // so the completeness the flag reports holds by construction — nothing before the join
+          // is in this membership's interval.
+          activated: true,
+          writerIdentity: `${this.binding.caller.owner}.${this.binding.caller.actor}`,
+          updatedAt: this.now(),
+        });
+      } catch (e) {
+        // A concurrent newer write won between the read and the commit — same verdict as the
+        // read-side skip above: the membership is the newer writer's now.
+        if (!(e instanceof StaleMembershipWrite)) throw e;
+      }
+    }
+  }
+
+  /** The world half of ending a conclave, shared by the close and the discharge: tombstone the
+   *  memberships this conclave created, then delete the registry row it minted. Idempotent, and
+   *  tolerant of exactly one foreign move — a NEWER generation on a row (the member left and
+   *  rejoined on its own), which the stale-write guard reports and this leave must not evict. */
+  private async releaseConclave(plan: ConclavePlan): Promise<void> {
+    const joined = plan.members.filter((m) => m.joined);
+    if (joined.length > 0) {
+      const membersKv = await this.membersRegistry();
+      const leaveCursor = await this.chatFrontier();
+      const writer = `${this.binding.caller.owner}.${this.binding.caller.actor}`;
+      for (const m of joined) {
+        try {
+          await tombstoneMember(membersKv, plan.channel, m.principal, m.uid, leaveCursor, writer, m.generation);
+        } catch (e) {
+          if (!(e instanceof StaleMembershipWrite)) throw e;
+        }
+      }
+    }
+    if (plan.registered) {
+      await (await this.channelRegistry()).delete(plan.channel);
+    }
+  }
+
+  /** Every live presence row that decodes. Foreign bytes in the bucket are skipped — a peer's
+   *  malformed self-publish must not break another agent's name resolution — and the decision
+   *  about an UNRESOLVED member is `resolveMemberPrincipal`'s, made loudly. */
+  private async presenceRows(): Promise<Presence[]> {
+    const rows: Presence[] = [];
+    for (const e of await liveKvEntries(await this.presenceRegistry())) {
+      try {
+        rows.push(e.json<Presence>());
+      } catch {
+        // not a presence row
+      }
+    }
+    return rows;
   }
 
   /**
@@ -987,6 +1222,70 @@ function spawnHandleOf(req: SpawnRequest, fact: GoalResultFact, endpoint: string
     persona: req.persona,
     ...(typeof d.role === "string" ? { role: d.role } : {}),
   };
+}
+
+/**
+ * A conclave's recovery identity: everything the execute, the close and the discharge act on,
+ * decided before anything was written and bound as the entry's external state. `registered` is
+ * whether THIS conclave minted the channel's registry row (a program-named channel is borrowed,
+ * never torn down); per member, `joined` is whether this conclave created the membership row.
+ */
+interface ConclavePlanMember {
+  readonly agent: string;
+  /** The member's owner+actor dot-form principal, resolved from its presence row. */
+  readonly principal: string;
+  readonly uid: string;
+  readonly generation: number;
+  readonly joined: boolean;
+}
+interface ConclavePlan {
+  readonly channel: string;
+  readonly registered: boolean;
+  readonly members: readonly ConclavePlanMember[];
+}
+
+/** Whether a recorded external is a conclave plan. A journal is bytes from an earlier process, so
+ *  the shape is checked rather than trusted — a malformed external reads as "nothing was bound". */
+function isConclavePlan(v: unknown): v is ConclavePlan {
+  if (typeof v !== "object" || v === null) return false;
+  const p = v as Record<string, unknown>;
+  if (typeof p.channel !== "string" || typeof p.registered !== "boolean" || !Array.isArray(p.members)) return false;
+  return p.members.every((m) => {
+    if (typeof m !== "object" || m === null) return false;
+    const r = m as Record<string, unknown>;
+    return typeof r.agent === "string" && typeof r.principal === "string" && typeof r.uid === "string"
+      && typeof r.generation === "number" && typeof r.joined === "boolean";
+  });
+}
+
+/** Split an agent handle `<name>#<lifecycleUid>` on its LAST `#` — the uid alphabet
+ *  (`[a-z0-9]{26,32}`) cannot carry one, a name could. */
+function parseAgentHandle(agent: string): { name: string; uid: string } {
+  const i = agent.lastIndexOf("#");
+  if (i <= 0 || i === agent.length - 1)
+    throw new Error(`"${agent}" is not an agent handle of the form <name>#<lifecycleUid>`);
+  return { name: agent.slice(0, i), uid: agent.slice(i + 1) };
+}
+
+/** The one presence row that carries the handle's name AND incarnation, as a principal. None is
+ *  the effect's own catchable failure — the agent is down or gone (L4002) — and more than one is
+ *  an ambiguity no membership row may be written under. */
+function resolveMemberPrincipal(rows: readonly Presence[], agent: string, name: string, uid: string): string {
+  const matches = rows.filter((p) => p.card?.name === name && p.lifecycleUid === uid && typeof p.card?.id === "string");
+  if (matches.length === 1) return matches[0]!.card.id;
+  if (matches.length === 0)
+    throw new EffectError("L4002", "conclave",
+      `conclave member "${agent}" is not present on the mesh: no live presence row carries that name and incarnation, so the agent is down or gone`);
+  throw new Error(`conclave member "${agent}" is ambiguous: ${matches.length} presence rows claim that name and incarnation`);
+}
+
+/** A program-named conclave channel: valid channel grammar AND concrete — membership rows and a
+ *  room to talk in are per-channel things a wildcard cannot name. */
+function assertConclaveChannel(channel: string): string {
+  assertValidChannel(channel);
+  if (!isConcreteChannel(channel))
+    throw new Error(`conclave channel "${channel}" is a wildcard; a conclave joins its members to one concrete channel`);
+  return channel;
 }
 
 /** How often a pause that nobody will answer looks for the broker's fire. Same argument as

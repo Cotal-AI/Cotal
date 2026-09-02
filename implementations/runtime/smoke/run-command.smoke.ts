@@ -69,11 +69,12 @@ const wf = (positionals: string[], values: Record<string, string | boolean | und
 
 const PURE = join(sd, "pure.cotal.js");
 writeFileSync(PURE, 'const xs = [1, 2, 3];\nlog("doubled", xs.map((x) => x * 2));\n');
-// `conclave` is still on the not-yet-durable seam (`spawn` itself now performs, so it no longer
-// refuses); when the conclave substrate lands this program moves to whatever the seam still holds,
-// and when the seam empties the block that drives it goes with it.
+// A `worktree` spawn is still on the not-yet-durable seam (`spawn` and `conclave` themselves now
+// perform), and its guard fires before any plane is reached — which is what makes it the one
+// refusal a program can drive on this manager-less broker. It dies with the §9 worktree binding;
+// when the seam empties, the block that drives it goes with it.
 const REFUSING = join(sd, "refusing.cotal.js");
-writeFileSync(REFUSING, 'await conclave([], async (room) => { return 1; }, { name: "huddle" });\n');
+writeFileSync(REFUSING, 'await spawn("dev", { name: "dev", worktree: "wt-a" });\n');
 const CHECKPOINT = join(sd, "checkpoint.cotal.js");
 writeFileSync(CHECKPOINT, 'const d = await checkpoint("approve", "Ship it?");\nlog("resolved", d.status);\n');
 
