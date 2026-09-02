@@ -243,6 +243,13 @@ export interface DriveRequest {
   readonly effectCeiling?: number;
   readonly stepBudget?: number;
   /**
+   * The most bytes a settled `ok` result may canonicalize to, checked by the journal AHEAD of the
+   * append (L5006). The host that opens the broker connection knows its `max_payload` and passes
+   * the bound here; omitted, the journal enforces none and an oversized entry fails at the store
+   * (L5010) after the append was attempted.
+   */
+  readonly resultBytes?: number;
+  /**
    * The ABSOLUTE work horizon this driver accepted the item under (`WorkLease.workExpiry`).
    *
    * Past it the pool has already reconciled the item, so a driver still appending is writing into a
@@ -431,6 +438,7 @@ async function drive(
     // The prefix the barrier validated and activated on, not a second read of the subject.
     entries: resumed,
     store,
+    ...(req.resultBytes !== undefined ? { resultBytes: req.resultBytes } : {}),
   });
 
   // Asked before every effect that is not already recorded. Both reasons are the HOST's and neither

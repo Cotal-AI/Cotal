@@ -453,12 +453,17 @@ on `spawn` are policy over a result and are never hashed.
   on one handle (two branches turning the same agent); whether they are serialized or refused is the
   handler's, and the reference handlers do neither in this revision.
 - **`ask`** is the narrow case where the program needs a value: the agent publishes a record, the
-  program awaits it, and the handler checks it against `schema`; `attempts` bounds how many
-  non-conforming replies are tolerated before the handler reports L4006. `schema` (here and on
-  `checkpoint`) is an opaque record to the language: it is canonicalized into the input hash and
-  handed to the handler unchanged, and its meaning is the handler's. No handler in the reference
-  implementation interprets it in this revision (the simulator and the mesh handler accept any
-  value), so a program MUST NOT rely on a shape being enforced.
+  program awaits it, and the handler checks it against `schema`; `attempts` (default 1) bounds how
+  many non-conforming replies are tolerated before the handler reports L4006. `schema` (here and
+  on `checkpoint`) is an opaque record to the language: it is canonicalized into the input hash
+  and handed to the handler unchanged. Its handler-side contract on `ask` is the **shorthand**: a
+  record mapping each required top-level field of the reply to one of `"string"`, `"number"`,
+  `"boolean"`, `"array"`, `"record"`, `"null"`. A conforming reply is a record carrying every
+  declared field with its declared kind; extra fields are allowed, and `{}` accepts any record. A
+  handler enforcing the shorthand MUST refuse a schema it cannot read as one (L4022) rather than
+  skip the check, MUST count each non-conforming reply against `attempts`, and MUST report L4006
+  when they are exhausted. The reference simulator enforces exactly this; a `checkpoint`'s
+  `schema` remains uninterpreted in this revision.
 - **`checkpoint`** is a durable pause a human or an agent resolves from anywhere, raced against a
   durable timer. The handler reports the **raw** outcome, `resolved` (`value?`, `by?`, `artifact?`,
   `answerId?`, `at`) or `expired` (`at`); the journal holds that outcome plus the interpreter's
@@ -592,7 +597,11 @@ its own gap: a cancellation raised while the pending entry was being written is 
 the write, so the effect is still not dispatched and the entry settles `cancelled` — the signal
 reaches a branch asynchronously, but from the moment it is raised no new effect starts. Work
 already in flight is
-the handler's: an agent reply already in progress completes and is ignored. A `catch` never sees a
+the handler's: an agent reply already in progress completes and is ignored. Cancellation is issued only by the scope's own semantics: a race's decision, and a
+branch's failure cancelling its siblings. A host release (L5012) and a refused append (L5010,
+L5006) are not failures of a branch: a scope such an unwind passes through cancels no sibling and
+settles nothing, its in-flight branches run to their own next boundary (where each releases in
+turn), and the journal stays exactly where it was (§9.2, §10.5). A `catch` never sees a
 cancellation (§9.2). A `race` may additionally cut a loser's pure work at a yield point once it can
 no longer win (§7.3); a pure loop in an arm that could still win ends on the step budget (L4013).
 
@@ -737,7 +746,7 @@ try {
 A `catch` MUST NOT see, and an implementation MUST unwind the run through, five things that are not
 the program's to handle: a **cancellation** (§7.6); a **journal append the store refused** (L5010:
 the run has lost its ability to have a result, and effects performed past it would exist only in the
-world); a **host release** (L5012: the driver stopped, the program did not); a **divergence**
+world; L5006, the result-size refusal ahead of the append, travels the same way); a **host release** (L5012: the driver stopped, the program did not); a **divergence**
 (L5001, §11.1: the journal is saying this program is not the one that wrote it); and a **migration
 walk's refusal to enter a scope** (L5022, or an unwalkable `conclave`). These unwind past `finally`
 too: a finalizer neither runs on the way out nor replaces the fault, because none of the five
@@ -958,8 +967,11 @@ An implementation MUST enforce the run's `stepBudget` per walk (L4013) and `effe
 (L4009), and MUST yield to its host at least every `yieldEvery` dispatches so a pure loop cannot
 starve the host's timers. The step and the dispatch are the engine's own unit (§8.4); an effect is
 not, and `effectCeiling` counts the same thing under either version. The journal store's payload bound is the store's own: an entry it will not
-take is a refused append (L5010, §10.5). L5006 is reserved for a result-size check ahead of the
-append and is not raised by this revision.
+take is a refused append (L5010, §10.5). A journal MAY be constructed with a **result bound**, the
+most bytes a settled `ok` result may canonicalize to; a result over it is refused **ahead of the
+settling append** (L5006), before anything is written, and travels the L5010 path (§9.2): the
+effect stands in the world and the entry stays pending. A journal constructed without a bound
+enforces none.
 
 ## Appendix A. The error catalog
 
@@ -1041,6 +1053,7 @@ time, L5xxx durability, L6xxx simulation.
 | L4019 | Array write past the end |
 | L4020 | A method is not a value |
 | L4021 | A callable `then` is not a record member |
+| L4022 | Unreadable ask schema |
 | L5001 | Run divergence |
 | L5002 | Program hash not available |
 | L5003 | Orphaned `spawn` on migrate |
@@ -1072,7 +1085,7 @@ time, L5xxx durability, L6xxx simulation.
 `handler-fault`, `scope-fault`, or `host`), and it is what a program sees for a failure the catalog
 does not name. L3022, L4001 to L4006 and L4008 are the effect handler's failure vocabulary: a host
 reports them, the interpreter journals and delivers them, and none is raised by the language itself.
-L1006, L1014, L5005, L5006, L5007 and L6002 are reserved: no path in this revision raises them.
+L1006, L1014, L5005, L5007 and L6002 are reserved: no path in this revision raises them.
 L6001 and L6002 belong to the reference implementation's simulator (`SimHandler`, `dryRun`), which
 runs a program against a script of scripted answers and refuses an effect the script does not
 answer; simulation is a tool, not part of this language, and this document does not define it.
@@ -1093,3 +1106,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-08-19 | Language version `2`, the compiled engine, alongside version `1`, the tree-walker (§8.4): a step is the engine's own unit and budgets are not comparable across versions (§8.3, §12); `log` is data under version 2 and refuses code (L4016); an engine stamps and compares its own version, so a record binds only under the engine that wrote it (L5008); and a build that dispatches to engines refuses a version none of its engines serves, naming what it does serve, leaving the run untouched (L5023, §11.1). |
 | 2026-08-19 | A binding is a value and answers to the value rule (§10.1): a host refuses a binding that is not crossable at the bind, carrying `L4000` with the dispatch's own kind rather than a code of its own, and a resume refuses a journal whose recorded `external` is not crossable, naming the entry and the field (L5024). Stated as canonical and NOT round-trip-exact, because a store may lose distinctions the canonical form keeps: JSON writes `-0` as `0`. |
 | 2026-08-19 | The same rule reaches a failure's `detail` (§10.1): it is a value the handler chose and the record keeps, so it is refused where it is written and on load, and a failure whose detail is refused is recorded under `L4000` with the reason rather than under the handler's own code with the field quietly missing. Reachable because a program that CATCHES an effect failure still completes, so a successful run can carry a settled failure. |
+| 2026-09-01 | The `ask` schema shorthand is the handler-side reply contract (§6.5): a handler enforcing it refuses a schema it cannot read (L4022) and reports exhausted `attempts` as L4006; the reference simulator enforces it. A journal MAY carry a result bound, refusing an oversized `ok` result ahead of the settling append (L5006, §12), which leaves the reserved list. A host release or refused append inside a scope cancels no sibling and settles nothing (§7.6): the run unwinds with the journal exactly where it was, so a stopped run resumes past the scope instead of replaying a cancellation it never chose. A refused append among a race's settled arms unwinds the run ahead of the winner scan: a race may not settle over an entry the journal refused to record, whichever arm won. |

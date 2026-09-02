@@ -80,23 +80,22 @@ let racePins: import("../src/index.js").RunPins;
   ok("it records the branches it launched", JSON.stringify((scope?.result as { branches: string[] }).branches) === '["slow","fast"]');
 
   const value = (scope?.result as { value: { index: string; value: unknown } }).value;
-  // On the LIVE pass the simulator advances ONE virtual clock serially and both sleeps are in
-  // flight before either settles, so both arms record the SAME endedAt (measured: 360000 and
-  // 360000) and the tie goes to declaration order. That is a property of the simulator, not of the
-  // rule, and it is fine: the live pass is where the choice is MADE and RECORDED, and the rule
-  // itself is held by the disagreeing-clocks cell below and by section 4's replay. What must never
-  // vary is what a replay does with the record.
-  ok("the live pass records a winner (a simulator tie, broken by declaration order)", value.index === "slow", value);
+  // On the LIVE pass the simulator delivers parked sleeps in wake order: `fast` parks at 60000,
+  // `slow` at 300000, so `fast` settles first with the earlier clock and wins under the rule
+  // (least recorded clock). Declaration order says `slow`, so the live pick discriminates the
+  // rule from declaration order here; the disagreeing-clocks cell below holds it where wake
+  // order and clocks disagree, and section 4 holds what a replay does with the record.
+  ok("the live pass records the arm with the least clock, not the first declared", value.index === "fast", value);
   ok("both arms did run on the live pass", logged.some((l) => l[0] === "entered-slow") && logged.some((l) => l[0] === "entered-fast"));
   ok(
     "and BOTH the index and the value are recorded, so an edit to the arm's expression cannot resume as the new value",
-    value.value === "from-slow",
+    value.value === "from-fast",
     value,
   );
   const said = logged.find((l) => l.length === 2);
   ok("the program saw the same winner the journal recorded", said?.[0] === value.index && said?.[1] === value.value, logged);
 
-  ok("the losers are recorded WITH the outcome, as intent", JSON.stringify(scope?.cancel?.losers) === '["fast"]');
+  ok("the losers are recorded WITH the outcome, as intent", JSON.stringify(scope?.cancel?.losers) === '["slow"]');
   ok(
     "and the intent is UNDISCHARGED: a journal write cancels nothing by itself",
     scope?.cancel?.issued === false,
@@ -215,8 +214,8 @@ await sleep("1m", { name: "after" });`,
     !logged.some((l) => String(l[0]).startsWith("entered-")),
     logged,
   );
-  ok("and the program is handed the recorded winner", logged[0]?.[0] === "slow", logged);
-  ok("and the recorded value, not a re-derived one", logged[0]?.[1] === "from-slow");
+  ok("and the program is handed the recorded winner", logged[0]?.[0] === "fast", logged);
+  ok("and the recorded value, not a re-derived one", logged[0]?.[1] === "from-fast");
   ok("its subtree is accounted for rather than left as removed steps", j.orphans().length === 0, j.orphans().map((o) => o.kind));
 }
 
@@ -236,8 +235,11 @@ await sleep("1m", { name: "after" });`,
       return { v: 1, seq: e.seq, run: e.run, scope: e.scope, kind: e.kind, name: e.name, occurrence: e.occurrence, inputHash: e.inputHash, state: "pending", startedAt: e.startedAt };
     }
     if (e.kind === "sleep") {
+      // The live recording cancels the loser's parked sleep, so the two-settled-arms state this
+      // cell needs is CONSTRUCTED: both sleeps are forced to settled ok at the times the comment
+      // names, whatever the live pass recorded for them.
       const at = e.scope.endsWith("/b:fast") ? 60_000 : 300_000;
-      return { ...e, startedAt: 0, endedAt: at };
+      return { ...e, startedAt: 0, endedAt: at, state: "settled", status: "ok", result: null };
     }
     return e;
   });
@@ -708,7 +710,9 @@ await race({
       // `fast` was cancelled at 10ms — far earlier than either real arm finished.
       return { ...e, startedAt: 0, endedAt: 10, status: "cancelled", result: undefined };
     }
-    if (e.kind === "sleep") return { ...e, startedAt: 0, endedAt: 300_000 };
+    // The candidate arm must be a real settle: the live pass cancelled `slow` as the loser, so
+    // this fixture forces it ok at 300000.
+    if (e.kind === "sleep") return { ...e, startedAt: 0, endedAt: 300_000, state: "settled", status: "ok", result: null };
     return e;
   });
   logged.length = 0;

@@ -153,6 +153,53 @@ export interface ConclaveRequest {
   readonly channel?: string;
 }
 
+// ---- the ask schema shorthand -----------------------------------------------------------------
+
+/**
+ * The reply contract a reference handler enforces on `ask`. The language itself leaves `schema`
+ * opaque (it is hashed and handed over unchanged, §6.5); this shorthand is the handler-side
+ * contract: a record mapping each required top-level field of the reply to one of six kind
+ * names. A reply must be a record; extra fields are allowed; a missing or mistyped declared
+ * field makes the reply non-conforming, which costs one attempt.
+ */
+export type AskFieldKind = "string" | "number" | "boolean" | "array" | "record" | "null";
+
+const ASK_FIELD_KINDS: readonly string[] = ["string", "number", "boolean", "array", "record", "null"];
+
+/**
+ * Read a schema as the shorthand, or return null for one this contract cannot read. A handler
+ * that enforces the shorthand refuses an unreadable schema (L4022) rather than skipping it: a
+ * schema the program wrote and nobody checks is worse than a loud refusal.
+ */
+export function askSchemaShape(schema: unknown): Readonly<Record<string, AskFieldKind>> | null {
+  if (typeof schema !== "object" || schema === null || Array.isArray(schema)) return null;
+  const out: Record<string, AskFieldKind> = {};
+  for (const [field, kind] of Object.entries(schema)) {
+    if (typeof kind !== "string" || !ASK_FIELD_KINDS.includes(kind)) return null;
+    out[field] = kind as AskFieldKind;
+  }
+  return out;
+}
+
+/** Whether a reply conforms: a record carrying every declared field with its declared kind. */
+export function conformsToAskSchema(
+  value: unknown,
+  shape: Readonly<Record<string, AskFieldKind>>,
+): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  for (const [field, kind] of Object.entries(shape)) {
+    const v = record[field];
+    if (kind === "string" && typeof v !== "string") return false;
+    if (kind === "number" && typeof v !== "number") return false;
+    if (kind === "boolean" && typeof v !== "boolean") return false;
+    if (kind === "array" && !Array.isArray(v)) return false;
+    if (kind === "record" && (typeof v !== "object" || v === null || Array.isArray(v))) return false;
+    if (kind === "null" && v !== null) return false;
+  }
+  return true;
+}
+
 // ---- the handler contract ---------------------------------------------------------------------
 
 /** Raised by a handler when an effect fails in a way the program can catch. */
