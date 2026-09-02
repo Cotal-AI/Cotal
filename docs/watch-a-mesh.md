@@ -45,8 +45,21 @@ tiles strip, and toggleable lenses:
 | `t`, then `v` / `1`–`3` | the topology lens: who-talks-to-whom, as a swimlane, a heat matrix, or a ring map |
 | `/` | search / filter the feed |
 | `:` | the command palette |
+| `D` | kill the selected agent (control-gated, below) |
 | arrows / `h` `l` | move focus; select a row for its detail card |
 | `?` · `b` · `q` | help · back to overview · quit |
+
+**Operator control.** Watching stays read-only, but the console can also drive the
+[manager](architecture.md#manager-agent-supervisor). The observer endpoint never carries
+control: each action is one call through the same per-action path `cotal stop`, `cotal ps`, and
+`cotal spawn --detach` take. It resolves the mesh, mints a one-shot instrument (or connects bare
+on an open mesh, or rides your bearer on a user-auth mesh), calls the manager over the endpoint
+rails, and keeps nothing. That gate is `canControl`, decided by whether that path can produce a
+caller at all (a raw `--creds` file cannot), and it is independent of `canWrite`, which gates
+chat. `D` kills the selected agent behind a confirm (`y` graceful stop, `f` force-kill), and the
+`:` palette adds `spawn <persona> [name]` (waits for the join, like
+`cotal spawn --detach`), `status <agent>`, `ps`, and `purge` (type the space name to confirm, like
+the space delete). A refusal, from the broker or the manager, lands on the status line.
 
 The stream is line-oriented, so the signals stay out of it; it is just a timestamped log of
 presence changes and messages, ready for `grep`.

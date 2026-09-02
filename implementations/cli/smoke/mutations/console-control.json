@@ -1,0 +1,59 @@
+{
+  "suite": "implementations/cli/smoke/console-control.smoke.ts",
+  "guard": "the console's operator verbs reach the manager that hosts the seat, name the seat the operator asked for, kill the way the key says, and purge for real",
+  "command": "pnpm --filter @cotal-ai/cli build && pnpm --filter @cotal-ai/cli smoke:console-control",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/console-control.json",
+  "why": [
+    "The suite drives bin/cotal.ts, which imports @cotal-ai/cli from dist: a mutation must be built to be seen, and the tree must be rebuilt after the restore or dist keeps the mutant.",
+    "Each mutation is compile-clean and unique in the named file."
+  ],
+  "mutations": [
+    {
+      "name": "C1 :ps from one manager's answer instead of the scatter merge",
+      "file": "implementations/cli/src/console/control.ts",
+      "find": "    return { ok: true, rows: s.instances.flatMap((i) => (i.reachable && !i.error ? ((i.data as ManagedRow[]) ?? []) : [])) };",
+      "replace": "    return { ok: true, rows: ((s.instances.find((i) => i.reachable && !i.error)?.data as ManagedRow[] | undefined) ?? []) };",
+      "expectRed": ":ps lists the seats of both managers",
+      "cell": ":ps lists the seats of both managers",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "note": "The rows of the first manager that answered, which is what a single class-queue call would have returned."
+    },
+    {
+      "name": "C2 :status unpinned, answered by whichever manager is quickest",
+      "file": "implementations/cli/src/console/control.ts",
+      "find": "  status: { profile: \"control-caller-privileged\", targeted: true },",
+      "replace": "  status: { profile: \"control-caller-privileged\", targeted: false },",
+      "expectRed": ":status on a seat no manager hosts is refused by the locate step, naming both reachable managers",
+      "cell": ":status on a seat no manager hosts is refused by the locate step, naming both reachable managers",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "note": "Deterministic: an unpinned inspect skips the locate, so a seat nobody hosts gets one manager's own not-found error instead of the locate's sentence counting both reachable managers. The 6/6 cell is behavioural evidence, not the kill."
+    },
+    {
+      "name": "C3 :spawn drops the requested name",
+      "file": "implementations/cli/src/console/commands.ts",
+      "find": "      const r = await ctx.control(\"start\", identity ? { name: persona, identity } : { name: persona });",
+      "replace": "      const r = await ctx.control(\"start\", { name: persona });",
+      "expectRed": ":spawn shows the accepted name, the one requested rather than the persona's",
+      "cell": ":spawn shows the accepted name, the one requested rather than the persona's",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "C4 f confirms a graceful stop",
+      "file": "implementations/cli/src/console/ui/Confirm.tsx",
+      "find": "      if (input === \"f\" || input === \"F\") return onConfirm({ force: true });",
+      "replace": "      if (input === \"f\" || input === \"F\") return onConfirm();",
+      "expectRed": "f: the notice reports the force-kill",
+      "cell": "f: the notice reports the force-kill",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "C5 purge confirmed but never sent",
+      "file": "implementations/cli/src/console/app.tsx",
+      "find": "      void ctl(\"purge\", {}).then((r) => setNotice(r.ok ? \"purged space history\" : `purge: ${r.error ?? \"failed\"}`));",
+      "replace": "      void Promise.resolve({ ok: true, error: undefined as string | undefined }).then((r) => setNotice(r.ok ? \"purged space history\" : `purge: ${r.error ?? \"failed\"}`));",
+      "expectRed": "purge: the space history is gone",
+      "cell": "purge: the space history is gone",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    }
+  ]
+}

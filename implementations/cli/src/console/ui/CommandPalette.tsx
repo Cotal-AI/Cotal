@@ -5,7 +5,7 @@ import { COMMANDS } from "../commands.js";
 
 const CAP = 6; // suggestion rows; the palette is a fixed CAP+1 rows tall so the layout doesn't jump
 
-type Sugg = { value: string; label: string; summary?: string; write?: boolean };
+type Sugg = { value: string; label: string; summary?: string; write?: boolean; control?: boolean };
 
 /** Suggestions for the current token: the command name (no space yet), or an @agent / #channel arg. */
 function suggest(query: string, snap: MeshSnapshot): { items: Sugg[]; tokenStart: number; matchLen: number } {
@@ -16,6 +16,7 @@ function suggest(query: string, snap: MeshSnapshot): { items: Sugg[]; tokenStart
       label: c.name,
       summary: c.summary,
       write: c.write,
+      control: c.control,
     }));
     return { items, tokenStart: 0, matchLen: q.length };
   }
@@ -46,6 +47,7 @@ export function CommandPalette({
   query,
   snapshot,
   canWrite,
+  canControl,
   width,
   onChange,
   onRun,
@@ -55,6 +57,7 @@ export function CommandPalette({
   query: string;
   snapshot: MeshSnapshot;
   canWrite: boolean;
+  canControl?: boolean;
   width: number;
   onChange: (q: string) => void;
   onRun: (line: string) => void;
@@ -110,7 +113,7 @@ export function CommandPalette({
               {s.label.slice(m)}
             </Text>
             {s.summary ? <Text dimColor>{"   " + s.summary}</Text> : null}
-            {s.write && !canWrite ? <Text color="red">{"  read-only"}</Text> : null}
+            {(s.write && !canWrite) || (s.control && !canControl) ? <Text color="red">{"  read-only"}</Text> : null}
           </Text>
         );
       })}

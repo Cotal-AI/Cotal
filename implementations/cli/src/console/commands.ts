@@ -1,9 +1,13 @@
 // The console's `:` command catalog — the operator's send/control verbs. A small local list (NOT
 // the CLI `Command` registry, which is argv/process-exit shaped). The catalog drives both execution
 // and the palette's autocomplete. Write commands publish over the mesh via the observer endpoint;
-// they are gated on `canWrite` (open mode, or a privileged --creds).
+// they are gated on `canWrite` (open mode, or a privileged --creds). Control commands go through
+// `ctx.control` (one per-action call on the CLI's control path, console/control.ts), gated on
+// `canControl`; the observer endpoint never carries control.
 import { resolvePeer, AmbiguousPeerError, type CotalEndpoint } from "@cotal-ai/core";
 import type { MeshSnapshot } from "../view/mesh-view.js";
+import type { ManagerReply } from "../lib/control.js";
+import type { ControlOp, ManagedRow } from "./control.js";
 import { mentionsIn } from "../lib/mentions.js";
 
 export interface CommandCtx {
@@ -17,15 +21,26 @@ export interface CommandCtx {
   back?: () => void; // to the space overview
   exit: () => void;
   notify: (msg: string) => void; // transient status line
+  /** One control call against this space's manager (console/control.ts). */
+  control: (op: ControlOp, args?: Record<string, unknown>) => Promise<ManagerReply>;
+  /** The managed rows of EVERY reachable manager in the space (the `cotal ps` scatter, merged):
+   *  a single class-queue call would answer for one manager and omit the others' seats. */
+  ps: () => Promise<{ ok: true; rows: ManagedRow[] } | { ok: false; error: string }>;
+  /** Open the type-the-space-name purge confirm (the palette never purges directly). */
+  confirmPurge: () => void;
 }
 
 export interface ConsoleCommand {
   name: string;
   summary: string;
   usage?: string;
-  write?: boolean; // requires canWrite (publishes / controls)
+  write?: boolean; // requires canWrite (publishes over the observer endpoint)
+  control?: boolean; // requires canControl (the manager, through the control door)
   run(ctx: CommandCtx, rest: string): Promise<void> | void;
 }
+
+/** The reply's error, or a generic word: the status line has one row. */
+const why = (r: ManagerReply): string => r.error ?? "failed";
 
 /** Resolve an agent/endpoint name (with or without a leading @) to its instance id. Fail-loud:
  *  an exact id or a unique name resolves; a same-name collision throws `AmbiguousPeerError`
@@ -113,16 +128,48 @@ export const COMMANDS: ConsoleCommand[] = [
   {
     name: "ps",
     summary: "list manager-spawned agents",
+    control: true,
     run: async (ctx) => {
-      try {
-        const r = await ctx.ep.invokeService("manager", "ps");
-        if (r.reply.ok !== true) return ctx.notify("ps: " + (r.reply.error?.message ?? r.reply.error?.code ?? "failed"));
-        const list = (r.reply.data as { name: string }[]) ?? [];
-        ctx.notify(list.length ? "agents: " + list.map((a) => a.name).join(", ") : "no managed agents");
-      } catch (e) {
-        ctx.notify("ps: " + (e as Error).message);
-      }
+      const r = await ctx.ps();
+      if (!r.ok) return ctx.notify("ps: " + r.error);
+      ctx.notify(r.rows.length ? "agents: " + r.rows.map((a) => a.name).join(", ") : "no managed agents");
     },
+  },
+  {
+    name: "spawn",
+    summary: "spawn an agent from a persona (waits for it to join)",
+    usage: "spawn <persona> [name]",
+    control: true,
+    run: async (ctx, rest) => {
+      const [persona, identity] = rest.trim().split(/\s+/).filter(Boolean);
+      if (!persona) return ctx.notify("usage: spawn <persona> [name]");
+      ctx.notify(`spawning ${persona}… (the manager answers on join, exit, or its readiness deadline)`);
+      const r = await ctx.control("start", identity ? { name: persona, identity } : { name: persona });
+      if (!r.ok) return ctx.notify("spawn: " + why(r));
+      ctx.notify(`spawned ${(r.data as { name?: string })?.name ?? persona}`);
+    },
+  },
+  {
+    name: "status",
+    summary: "one managed agent's state",
+    usage: "status <agent>",
+    control: true,
+    run: async (ctx, rest) => {
+      const name = rest.replace(/^@/, "").trim().split(/\s+/)[0] ?? "";
+      if (!name) return ctx.notify("usage: status <agent>");
+      const r = await ctx.control("status", { name });
+      if (!r.ok) return ctx.notify("status: " + why(r));
+      const a = r.data as ManagedRow;
+      ctx.notify(
+        `${a.name}${a.role ? " (" + a.role + ")" : ""} · ${a.agent} · ${a.mode} · ${a.status} · mesh ${a.mesh} · up ${Math.round(a.uptimeMs / 60000)}m`,
+      );
+    },
+  },
+  {
+    name: "purge",
+    summary: "clear the space's history (type the space name to confirm)",
+    control: true,
+    run: (ctx) => ctx.confirmPurge(),
   },
   { name: "dms", summary: "toggle the DM lens", run: (ctx) => ctx.setMode("dm") },
   { name: "topo", summary: "toggle the topology lens", run: (ctx) => ctx.setMode("topo") },
@@ -133,7 +180,7 @@ export const COMMANDS: ConsoleCommand[] = [
 ];
 
 /** Parse + dispatch a typed palette line. Unknown / read-only-blocked commands notify and no-op. */
-export function runCommand(line: string, ctx: CommandCtx, canWrite: boolean): void {
+export function runCommand(line: string, ctx: CommandCtx, canWrite: boolean, canControl: boolean): void {
   const trimmed = line.trim();
   if (!trimmed) return;
   const name = trimmed.split(/\s+/)[0].toLowerCase();
@@ -141,5 +188,8 @@ export function runCommand(line: string, ctx: CommandCtx, canWrite: boolean): vo
   const cmd = COMMANDS.find((c) => c.name === name);
   if (!cmd) return ctx.notify(`unknown command: ${name}`);
   if (cmd.write && !canWrite) return ctx.notify("read-only - pass --creds to send");
-  void cmd.run(ctx, rest);
+  if (cmd.control && !canControl) return ctx.notify("no control path - a raw --creds file cannot drive the manager; run against a registered mesh");
+  // A verb that throws (a control call that could not even start) lands on the status line rather
+  // than as an unhandled rejection that would take the console down over one bad line.
+  void Promise.resolve(cmd.run(ctx, rest)).catch((e: unknown) => ctx.notify(`${name}: ${(e as Error).message}`));
 }

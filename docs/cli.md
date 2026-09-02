@@ -1088,7 +1088,8 @@ cotal console [--plain] [--space <s>]
 
 A live protocol view for a space: a lazygit-style TUI, or a plain line stream on `--plain`. On a
 user-auth mesh it rides the read-only admin view over your login, which needs ledger scope
-`admin`. See [Watch a mesh](watch-a-mesh.md).
+`admin`. Inside the TUI, operator control (`D` kill, `:spawn`, `:status`, `:purge`) rides the same per-action instrument path as `cotal stop` and `cotal ps`, never the
+observer; a raw `--creds` file cannot drive it. See [Watch a mesh](watch-a-mesh.md).
 
 ## web
 

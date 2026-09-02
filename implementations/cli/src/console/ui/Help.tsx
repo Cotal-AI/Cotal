@@ -38,7 +38,7 @@ export function Help({
           : [
               ["↑↓ / j k", "move selection"],
               ["Enter", "open agent detail"],
-              ["D", "kill agent (confirm)"],
+              ["D", "kill agent (y stop · f force)"],
             ];
   const global: [string, string][] = [
     ["Tab / ← → / h l", "switch panel"],
@@ -47,7 +47,7 @@ export function Help({
     ["n", "toggle needs-you rail"],
     ["d", "direct-message lens"],
     ["t", "topology lens (v / 1-3 variants)"],
-    [":", "command palette (send / call / ask)"],
+    [":", "command palette (send / call / spawn / status / purge)"],
     ["c", "compose to channel / DM selected agent"],
     ["r", "reply to current message"],
     ["D", "delete - kill agent / drop space"],

@@ -148,16 +148,23 @@ function fmtUptime(ms: number): string {
  * scatters"). Rather than widen admin for convenience, the lookup runs as its own privileged
  * instrument and the admin instrument is then minted pinned to the answer.
  */
-type SeatLocation =
+export type SeatLocation =
   | { kind: "pin"; instanceId: string }
   | { kind: "unpinned" } // one instance, or a mode that cannot scatter — no ambiguity to resolve
   | { kind: "absent"; checked: number; unreachable: string[] };
 
-async function locateSeat(v: FlagValues<typeof stopFlags>, name: string): Promise<SeatLocation> {
+/** Exported for the console, which drives the same targeted verbs (`stop`/`attach`) from
+ *  inside a TUI and so needs the THROWING resolve: an unreachable mesh there is a notice on the
+ *  status line, never a `process.exit` that blanks the screen. The CLI commands keep the default. */
+export async function locateSeat(
+  v: Pick<FlagValues<typeof stopFlags>, "space" | "server" | "creds">,
+  name: string,
+  opts: { onRefusal?: "exit" | "throw" } = {},
+): Promise<SeatLocation> {
   // USER mode cannot do this: a ledger-scoped bearer does not hold the freeze rows, so a scatter
   // dies on a permissions violation that reads as "no manager". Left unpinned — `--on` stays the
   // manual escape hatch there, and docs/cli.md says so rather than this failing mysteriously.
-  const probe = await resolveControlTarget(v, "control-caller-privileged");
+  const probe = await resolveControlTarget(v, "control-caller-privileged", undefined, opts);
   if (probe.auth.bearer) return { kind: "unpinned" };
   const scatter = await scatterManager(probe.space, probe.server, "ps", probe.auth, probe.spaceAuth);
   if (!scatter.ok) return { kind: "unpinned" }; // cannot locate ⇒ behave exactly as before, never worse
@@ -177,16 +184,23 @@ async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Prom
   const loc = await locateSeat(v, String(v.name));
   if (loc.kind === "pin") return loc.instanceId;
   if (loc.kind === "unpinned") return undefined;
-  // The honest error #383 asked for: name the search, not just the absence. A registration that
-  // gave no answer within the deadline is NOT told to "retry": a manager whose host died never
-  // deregisters, so its row stays in the registry indefinitely and answers nothing, and a retry
-  // against it loops forever. Say what is known (registered, silent), what it may mean (a live
-  // slow host OR a dead registration), and the two real actions.
-  const missed = loc.unreachable.length
-    ? ` ${loc.unreachable.length} registered manager instance(s) gave no answer within the deadline (${loc.unreachable.join(", ")}). Either that host is alive but slow, or it died and its registration was never removed; if it is dead, deregister it. To address it directly: \`${verb} --on <instance>\` (the whole id, as printed).`
-    : "";
-  console.error(c.red(`✗ no managed agent "${v.name}" on any of the ${loc.checked} reachable manager instance(s) in this space.${missed}`));
+  console.error(c.red(`✗ ${seatNotFoundMessage(loc, String(v.name), verb)}`));
   process.exit(1);
+}
+
+/** The honest error #383 asked for: name the search, not just the absence. A registration that
+ *  gave no answer within the deadline is NOT told to "retry": a manager whose host died never
+ *  deregisters, so its row stays in the registry indefinitely and answers nothing, and a retry
+ *  against it loops forever. Say what is known (registered, silent), what it may mean (a live
+ *  slow host OR a dead registration), and the two real actions. `verb` names the command whose
+ *  `--on` is the remedy; the console has no flag to offer, so it passes none and the sentence
+ *  stops at the fact. */
+export function seatNotFoundMessage(loc: { checked: number; unreachable: string[] }, name: string, verb?: string): string {
+  const remedy = verb ? ` To address it directly: \`${verb} --on <instance>\` (the whole id, as printed).` : "";
+  const missed = loc.unreachable.length
+    ? ` ${loc.unreachable.length} registered manager instance(s) gave no answer within the deadline (${loc.unreachable.join(", ")}). Either that host is alive but slow, or it died and its registration was never removed; if it is dead, deregister it.${remedy}`
+    : "";
+  return `no managed agent "${name}" on any of the ${loc.checked} reachable manager instance(s) in this space.${missed}`;
 }
 
 /**

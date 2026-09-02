@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { Box, Text, useApp, useFocusManager, useInput, useStdout } from "ink";
-import { DEV_OWNER, type CotalEndpoint, type Presence } from "@cotal-ai/core";
+import type { CotalEndpoint, Presence } from "@cotal-ai/core";
 import { useMesh } from "./mesh.js";
+import { control, type ControlCtx, type ControlOp } from "./control.js";
 import { Tabs } from "./ui/Tabs.js";
 import { Tiles } from "./ui/Tiles.js";
 import { Roster } from "./ui/Roster.js";
@@ -28,9 +29,11 @@ type ComposeTarget =
 
 /**
  * The lazygit-style console: channel tabs · golden-signal tiles · roster · live feed · status bar,
- * plus the NEEDS-YOU rail (`n`), the DM lens (`d`), the `:` operator command palette, and `D` to
- * kill a selected agent. `useMesh` owns the observer endpoint; panels lay out `mesh` and (when
- * `canWrite`) the palette/`D` publish + control over the same endpoint. Input is single-source:
+ * plus the NEEDS-YOU rail (`n`), the DM lens (`d`), and the `:` operator command palette. `useMesh`
+ * owns the observer endpoint; panels lay out `mesh` and (when `canWrite`) the palette publishes
+ * chat over the same endpoint. Control (`D` kill, `:spawn` / `:purge` / `:status` / `:ps`)
+ * never rides the observer: each action is one call through the CLI's
+ * per-action control path (console/control.ts), gated on `canControl`. Input is single-source:
  * this global handler owns the keys/overlays; panels' keys are gated on focus and `blocked`.
  */
 export function App({
@@ -38,11 +41,16 @@ export function App({
   tapSubject,
   onBack,
   canWrite,
+  canControl,
+  controlCtx,
 }: {
   ep: CotalEndpoint;
   tapSubject?: string;
   onBack?: () => void;
   canWrite?: boolean;
+  canControl?: boolean;
+  /** The `--server` / `--creds` half of the control coordinates; the App adds the watched space. */
+  controlCtx?: Omit<ControlCtx, "space">;
 }) {
   const mesh = useMesh(ep, { tapSubject });
   const { exit } = useApp();
@@ -107,6 +115,13 @@ export function App({
     else focus(normalFocus);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [helpOpen, detail, mode, railOpen, confirm]);
+
+  // One control call against the manager of THIS space (console/control.ts): resolve, mint a
+  // one-shot instrument, call, drop. The observer endpoint is never involved.
+  const ctl = useCallback(
+    (op: ControlOp, args?: Record<string, unknown>) => control({ ...controlCtx, space: ep.space }, op, args),
+    [ep.space, controlCtx],
+  );
 
   // Keep last-seen ages fresh.
   const [, tick] = useState(0);
@@ -191,28 +206,29 @@ export function App({
       back: onBack,
       exit,
       notify: setNotice,
+      control: ctl,
+      ps: () => controlPs({ ...controlCtx, space: ep.space }),
+      confirmPurge: () => setConfirm({ kind: "purge", space: ep.space }),
     };
-    runCommand(line, ctx, !!canWrite);
+    runCommand(line, ctx, !!canWrite, !!canControl);
   };
 
-  // Confirmed destructive action (kill only; space-delete is handled in the picker). Resolve the
-  // alias to its principal triple via the manager's `inspect` read, then `despawn` over the ep
-  // rails (1d: the manager's ctl door is gone). Any-mode reach - the console's operator stop is
-  // cross-agent; on an open mesh the broker enforces nothing, on an authed mesh the read-only
-  // console cred is cleanly denied (its stop never functioned there).
-  const onConfirmed = () => {
+  // Confirmed destructive action (kill / purge; space-delete is handled in the picker). Both go
+  // through the control door: `stop` is the CLI's own `cotal stop` (seat locality, then the
+  // targeted despawn with any-mode reach on a static or open mesh, owner reach on a user mesh);
+  // `purge` is the manager.admin op behind the typed-name confirm.
+  const onConfirmed = (opts?: { force?: boolean }) => {
     const c = confirm;
     setConfirm(null);
     if (c?.kind === "kill") {
-      void (async () => {
-        const info = await ep.invokeService("manager", "inspect", { name: c.name });
-        if (info.reply.ok !== true) return setNotice(`stop: ${info.reply.error?.message ?? info.reply.error?.code ?? "failed"}`);
-        const row = info.reply.data as { id: string; lifecycleUid: string };
-        const dot = row.id.indexOf(".");
-        const [owner, actor] = dot > 0 ? [row.id.slice(0, dot), row.id.slice(dot + 1)] : [DEV_OWNER, row.id];
-        const r = await ep.invokeService("manager", "despawn", undefined, { target: { mode: "any", owner, actor, lifecycleUid: row.lifecycleUid } });
-        setNotice(r.reply.ok === true ? `stopped ${c.name}` : `stop: ${r.reply.error?.message ?? r.reply.error?.code ?? "failed"}`);
-      })().catch((e) => setNotice("stop: " + (e as Error).message));
+      const graceful = !opts?.force;
+      setNotice(`${graceful ? "stopping" : "force-killing"} ${c.name}…`);
+      void ctl("stop", { name: c.name, graceful }).then((r) =>
+        setNotice(r.ok ? `${graceful ? "stopped" : "force-killed"} ${c.name}` : `stop: ${r.error ?? "failed"}`),
+      );
+    } else if (c?.kind === "purge") {
+      setNotice(`purging ${c.space}…`);
+      void ctl("purge", {}).then((r) => setNotice(r.ok ? "purged space history" : `purge: ${r.error ?? "failed"}`));
     }
   };
 
@@ -312,7 +328,7 @@ export function App({
               blocked={blocked}
               onFocus={onFocus}
               onOpenDetail={openAgent}
-              onKill={canWrite ? handleKill : undefined}
+              onKill={canControl ? handleKill : undefined}
               onCompose={canWrite ? rosterCompose : undefined}
             />
             <Feed
@@ -362,6 +378,7 @@ export function App({
           query={palette.query}
           snapshot={mesh}
           canWrite={!!canWrite}
+          canControl={!!canControl}
           width={size.cols}
           onChange={(q) => setPalette((p) => ({ ...p, query: q }))}
           onRun={runPaletteLine}
@@ -386,6 +403,7 @@ export function App({
         railOpen={railOpen}
         canBack={!!onBack}
         canWrite={!!canWrite}
+        canControl={!!canControl}
         width={size.cols}
       />
     </Box>

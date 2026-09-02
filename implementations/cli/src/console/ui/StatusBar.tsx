@@ -12,6 +12,7 @@ export function StatusBar({
   railOpen,
   canBack,
   canWrite,
+  canControl,
   width,
 }: {
   status: MeshState["status"];
@@ -22,6 +23,7 @@ export function StatusBar({
   railOpen: boolean;
   canBack?: boolean;
   canWrite?: boolean;
+  canControl?: boolean;
   width: number;
 }) {
   const keys =
@@ -33,7 +35,8 @@ export function StatusBar({
         ": cmd · j/k select · Enter detail · " +
         (railOpen ? "n hide-rail" : "n needs-you") +
         " · d DMs" +
-        (canWrite ? " · c compose · D kill" : "") +
+        (canWrite ? " · c compose" : "") +
+        (canControl ? " · D kill" : "") +
         " · / search · [ ] chan · ? help · q quit";
   return (
     <Box width={width} paddingX={1}>

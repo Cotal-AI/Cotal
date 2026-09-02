@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { CotalEndpoint, chatWildcard, mintLifecycleUid } from "@cotal-ai/core";
 import { App } from "./app.js";
+import type { ControlCtx } from "./control.js";
 import { SpacePicker } from "./ui/SpacePicker.js";
 
 /** How the observer authenticates: a static/open creds file, OR the user-mode admin-view material
@@ -54,12 +55,17 @@ export function Root({
   auth,
   space,
   canWrite,
+  canControl,
+  controlCtx,
   name,
 }: {
   server: string;
   auth: ObserverAuth;
   space?: string;
   canWrite?: boolean;
+  canControl?: boolean;
+  /** Trust material for per-action control mints — space-less; App adds its own space. */
+  controlCtx?: Omit<ControlCtx, "space">;
   name?: string;
 }) {
   const [selected, setSelected] = useState<string | undefined>(space);
@@ -80,6 +86,8 @@ export function Root({
       tapSubject={auth.creds || auth.user ? chatWildcard(selected) : undefined}
       onBack={space === undefined ? () => setSelected(undefined) : undefined}
       canWrite={canWrite}
+      canControl={canControl}
+      controlCtx={controlCtx}
     />
   );
 }
