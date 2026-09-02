@@ -17,6 +17,8 @@
  *   3  spawn→conclave flow-through: the handle a REAL spawn minted resolves through the seat's
  *      own presence row, a membership row is written for exactly that incarnation, and the close
  *      tombstones it and deletes the minted channel's registry row.
+ *   4  monitor + wait(down) flow-through: a run parks on a REAL seat's down-event, the manager
+ *      tears the seat down mid-run, its presence lapses, and the died branch wins the race.
  *
  * Throwaway everything: own open nats-server on a free port, scratch COTAL_HOME + workspace root.
  * Needs nats-server + node on PATH. Run: pnpm smoke:lang-spawn-live
@@ -76,7 +78,7 @@ const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-langspawn-ws-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 // The persona pins the harness (`agent: join`): the lang `spawn` sends no harness of its own, so
 // this is exactly how a workflow-spawned seat picks its connector in production.
-for (const n of ["wf1", "wf2", "wf3"])
+for (const n of ["wf1", "wf2", "wf3", "wf4"])
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\nagent: join\n---\n`);
 
 // A real agent child: joins presence under the manager-assigned id, then parks. Readiness
@@ -236,6 +238,55 @@ log("done", r);
       JSON.stringify(rows));
     c("the minted channel's registry row is gone after the close",
       (await readChannelConfig(await openChannelRegistry(nc, SPACE), plan?.channel ?? "")) === undefined);
+  }
+
+  // ── 4) monitor + wait(down) flow-through: a REAL seat's death observed off its own presence ─
+  {
+    console.log("• 4 — a real seat dies mid-run and the down-wait observes the lapse");
+    const source = `
+const d = await spawn("wf4");
+await monitor(d, { name: "watch" });
+const r = await race({
+  died: () => wait(down(d), { name: "died" }),
+  work: () => sleep("10m", { name: "work" }),
+}, { name: "scope" });
+log("outcome", r.index);
+`;
+    const drv = startRun(js, jsm, {
+      space: SPACE, endpoint: "manager", kv, runId: "ls-4", lease: lease(),
+      source, handler: mk("ls-4"),
+    }).catch((e: unknown) => ({ status: "threw" as const, error: String((e as Error)?.message).slice(0, 140) }));
+    // Park first: the death must be observed by a wait that BEGAN while the seat was alive —
+    // tearing the seat down before the park would prove only the immediate-down path the runtime
+    // suite already owns.
+    let parked = false;
+    const until = Date.now() + 30_000;
+    while (!parked && Date.now() < until) {
+      parked = (await entriesOf("ls-4", "wait")).some((e) => e.state === "pending");
+      if (!parked) await wait(400);
+    }
+    c("the run parks on the down-wait while the real seat is alive", parked);
+    // The spawn's bound acceptance floor is the despawn address — the same identity the
+    // discharge despawns by. A hard (non-graceful) teardown is the crash this pair exists for.
+    const floor = (await entriesOf("ls-4", "spawn")).find((e) => e.external !== undefined)?.external as
+      { owner?: string; actor?: string; uid?: string } | undefined;
+    c("the spawn bound the acceptance floor the teardown addresses",
+      typeof floor?.owner === "string" && typeof floor?.actor === "string" && typeof floor?.uid === "string",
+      JSON.stringify(floor));
+    const reply = await invokeCommand(nc, SPACE, service, "despawn", { graceful: false }, {
+      target: { mode: "owner", owner: floor?.owner ?? "", actor: floor?.actor ?? "", lifecycleUid: floor?.uid ?? "" },
+      deadlineMs: 20_000,
+    });
+    c("the real manager tore the seat down", reply.reply.ok === true, JSON.stringify(reply.reply));
+    const out = await Promise.race([drv, wait(45_000).then(() => undefined)]);
+    c("the died branch ends the run once the presence row lapses",
+      (out as { status?: string } | undefined)?.status === "completed", JSON.stringify(out));
+    const settledWait = (await entriesOf("ls-4", "wait")).find((e) => e.state === "settled");
+    const downV = settledWait?.result as { agent?: string; reason?: string; at?: number } | undefined;
+    const spawnV = (await entriesOf("ls-4", "spawn")).find((e) => e.state === "settled")?.result as { agent?: string } | undefined;
+    c("the down value names the seat's own incarnation, lapsed",
+      downV?.agent !== undefined && downV.agent === spawnV?.agent && downV?.reason === "lapsed",
+      JSON.stringify({ down: downV, spawned: spawnV?.agent }));
   }
 
   pumpState.over = true;

@@ -150,7 +150,8 @@ the compiled engine, as the engine paragraph below says. The wire
 substrate of §14 (the `WFJ_<space>` stream, the four record kinds, the activation barrier, the
 per-run grants) is in `@cotal-ai/core`, and the run driver, journal store, migrate and fork are
 `@cotal-ai/runtime` (`implementations/runtime`). On the mesh handler, `sleep`, `checkpoint`,
-`wait(message(...))`, `wait(idle(...))`, `notify`, `spawn`, `conclave` and `ask` are durable.
+`wait(message(...))`, `wait(idle(...))`, `wait(down(...))`, `notify`, `spawn`, `conclave`, `ask`
+and `monitor` are durable.
 `spawn` is
 the manager's spawn action submitted under the step's own identity: the goal binds under the step's
 request id, so a resumed run re-attaches to the same seat instead of allocating a second one, a
@@ -165,8 +166,14 @@ checkpoint-plane pause per attempt, answered through `cotal run answer` as a che
 the shorthand of the language reference §6.5 is enforced (an unreadable schema is L4022), a
 non-conforming answer costs one attempt and its refusal reason is recorded on the entry for the
 answerer to read, exhausted attempts (default one) are the catchable L4006, and the one absolute
-deadline for the whole ask elapsing is L4003. `turn`,
-`monitor`, `wait(replied(...))`, `wait(down(...))` and a `spawn` with a `worktree` refuse with
+deadline for the whole ask elapsing is L4003. `monitor` registers interest in an agent, and the
+registration is the journal entry itself: monitoring an agent that is already dead succeeds, and
+the death is the wait's to observe. `wait(down(...))` reads that death off presence liveness, the
+same witness a conclave join resolves members through: the value carries the handle, the reason
+(`lapsed` when nothing live holds the name any more, `superseded` when a live row holds it under
+a different incarnation) and the time of observation, a wait that begins after the death resolves
+at once, and a timeout resolves null on one absolute deadline a resumed run re-attaches to.
+`turn`, `wait(replied(...))` and a `spawn` with a `worktree` refuse with
 **L5016 (effect not durable on this host)** until the machinery they ride lands. That refusal
 holds the run rather than ending it: the entry is settled `refused` (never `failed`, since nothing
 was attempted), the run unwinds with the uncatchable L5025 and is recorded `released`, and a

@@ -1,0 +1,92 @@
+{
+  "suite": "implementations/runtime/smoke/mesh-monitor.smoke.ts",
+  "guard": "the mesh handler's liveness pair is real: `down` is the death of ONE incarnation read off presence (name AND lifecycle uid), the reason distinguishes a lapsed name from a superseded one, the timeout is one absolute deadline that arms, expires, is attached to on re-entry, and is claimed on every ending, and `monitor` validates the registration it journals",
+  "command": "pnpm smoke:runtime-mesh-monitor",
+  "completionMarker": "mesh-monitor.smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/mesh-monitor.json",
+  "why": [
+    "Lane F durable-actions step 5 (2026-09-02): `monitor` + `wait(down)` leave the not-yet-durable",
+    "seam and perform over presence liveness. Each half of the contract has a mutant: the",
+    "incarnation pin in the liveness match (MM1), the death check itself (MM2), the two reasons",
+    "(MM3), the expiry observation (MM4), the timer claimed on a down (MM5), the arm that makes the",
+    "deadline exist at all (MM6), monitor's validation of the handle it registers (MM7), and the",
+    "routing that sends a down descriptor to this machinery instead of the channel path (MM8).",
+    "",
+    "All eight mutate mesh-handler.ts, which the suite imports through a relative `../src` path —",
+    "no build sits between the mutation and the run."
+  ],
+  "mutations": [
+    {
+      "name": "the liveness match drops the incarnation: any row under the name reads as this agent",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      if (!rows.some((p) => p.card?.name === name && p.lifecycleUid === uid)) {",
+      "replace": "      if (!rows.some((p) => p.card?.name === name)) {",
+      "expectRed": "a live successor under the name reads as superseded: this incarnation is dead",
+      "cell": "a live successor under the name reads as superseded: this incarnation is dead",
+      "note": "The handle pins <name>#<lifecycleUid>; with the uid dropped, a successor keeps the DEAD incarnation looking alive forever. Measured 2026-09-02: two reds — the superseded block's wait never resolves (its bounded deadline fails) and its reason cell reads undefined; 22 passed, 2 failed."
+    },
+    {
+      "name": "the death check is dropped: nothing is ever down",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      if (!rows.some((p) => p.card?.name === name && p.lifecycleUid === uid)) {",
+      "replace": "      if (false) {",
+      "expectRed": "an already-dead incarnation resolves without waiting for anything",
+      "cell": "an already-dead incarnation resolves without waiting for anything",
+      "note": "The primitive gone: every down-wait parks forever and only timeouts end anything. Measured 2026-09-02: twelve reds across the rescue-idiom, immediate-down and superseded blocks (each bounded wait fails its deadline and its value cells read undefined); 14 passed, 12 failed, the suite reaching its own exit."
+    },
+    {
+      "name": "the reason collapses to lapsed whatever the name shows",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "        const reason = rows.some((p) => p.card?.name === name) ? \"superseded\" : \"lapsed\";",
+      "replace": "        const reason = \"lapsed\";",
+      "expectRed": "a live successor under the name reads as superseded: this incarnation is dead",
+      "cell": "a live successor under the name reads as superseded: this incarnation is dead",
+      "note": "The two reasons are the value's whole vocabulary; collapsed, a program cannot tell a vanished seat from a replaced one. Measured 2026-09-02: exactly one red, the superseded cell reading \"lapsed\" in the transcript; 22 passed."
+    },
+    {
+      "name": "the expiry is read but never acted on: a timed-out wait polls forever",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      const ended = await this.expired(primary);\n      if (ended !== undefined) return null;\n      let rows: readonly Presence[];",
+      "replace": "      const ended = await this.expired(primary);\n      if (false) { void ended; return null; }\n      let rows: readonly Presence[];",
+      "expectRed": "a live incarnation is not down: the wait resolves null on its timeout, never a throw",
+      "cell": "a live incarnation is not down: the wait resolves null on its timeout, never a throw",
+      "note": "The wait contract's null half gone: a live agent's wait outlives its recorded deadline. Measured 2026-09-02: nine reds — the timeout, re-entry and driven-timeout blocks all fail their bounded deadlines and their cells; 18 passed, 9 failed, the suite reaching its own exit."
+    },
+    {
+      "name": "a down leaves its armed timeout live",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "        const reason = rows.some((p) => p.card?.name === name) ? \"superseded\" : \"lapsed\";\n        if (primary !== undefined) await this.cancelTimer(primary);\n        return { agent: ev.agent, reason, at: this.now() };",
+      "replace": "        const reason = rows.some((p) => p.card?.name === name) ? \"superseded\" : \"lapsed\";\n        return { agent: ev.agent, reason, at: this.now() };",
+      "expectRed": "the down claims its armed timeout: the pause is settled, so no timer fires into the run",
+      "cell": "the down claims its armed timeout: the pause is settled, so no timer fires into the run",
+      "note": "A resolved down that forgets its pause leaves a deadline armed to fire into a run that moved on. Measured 2026-09-02: exactly one red — the immediate-down block's settle read is undefined; 22 passed."
+    },
+    {
+      "name": "the timeout is never armed, so no deadline exists on the plane",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (primary !== undefined) await this.arm(primary, this.now() + parseDuration(req.timeout!));",
+      "replace": "    if (false) await this.arm(primary!, this.now() + parseDuration(req.timeout!));",
+      "expectRed": "the timeout pause settled expired on the plane",
+      "cell": "the timeout pause settled expired on the plane",
+      "note": "With no mint there is nothing to expire, attach to, or claim: every timed block hangs to its bounded deadline and every settle read is empty. Measured 2026-09-02: twelve reds across the immediate-down settle, timeout, re-entry and cancellation blocks; 15 passed, 12 failed."
+    },
+    {
+      "name": "monitor registers whatever it is handed",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? \"cancelled\");\n    parseAgentHandle(req.agent.agent);\n    return null;\n  }",
+      "replace": "    if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? \"cancelled\");\n    void req;\n    return null;\n  }",
+      "expectRed": "monitor of a value that is not an agent handle refuses loudly, naming the form",
+      "cell": "monitor of a value that is not an agent handle refuses loudly, naming the form",
+      "note": "The registration's one obligation: a wait parked on a malformed handle would poll for a death nothing can report. Measured 2026-09-02: exactly one red; 22 passed. The seam suite stays green (24/24), so this is the pair's own guard, not the seam's."
+    },
+    {
+      "name": "a down descriptor is routed to the channel machinery",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (ev.event === \"down\") return await this.waitDown(ev, req, ctx);",
+      "replace": "    if (false) return await this.waitDown(ev as never, req, ctx);",
+      "expectRed": "the run completes",
+      "cell": "the run completes",
+      "note": "The branch gone, a down descriptor falls into the channel path and dies reading a channel it does not have. Measured 2026-09-02 (after hardening every direct wait call with the graded `safe` wrapper — the bare-call trap): sixteen reds across every block; 7 passed, 16 failed, the suite reaching its own exit."
+    }
+  ]
+}

@@ -38,6 +38,7 @@ import {
   assertValidChannel,
   presenceBucket,
   liveKvEntries,
+  IncompleteKvScan,
   openMembersRegistry,
   openChannelRegistry,
   writeChannelConfig,
@@ -84,6 +85,7 @@ import {
   type CheckpointRequest,
   type EffectContext,
   type JournalEntry,
+  type MonitorRequest,
   type NotifyRequest,
   type SleepRequest,
   type SpawnRequest,
@@ -167,9 +169,9 @@ export interface SettleWatcher {
 }
 
 /**
- * The one subject the remaining seam is gated by: every still-refused effect CONSUMES an agent
- * handle (`spawn`, which produces one, and `conclave`, which assembles a sub-team of them,
- * perform). Named once so the refusals cannot drift apart.
+ * The one subject the remaining seam is gated by: `turn` and `wait(replied)` both ride the turn
+ * machinery an agent handle answers through (`spawn`, `conclave`, `ask`, `monitor` and
+ * `wait(down)` perform). Named once so the refusals cannot drift apart.
  */
 const ACTION_MACHINERY = "the durable-action machinery an agent handle rides";
 
@@ -463,15 +465,17 @@ export class MeshHandler {
    * resumed 20-minute wait with 30 seconds left has 30 seconds left. A timeout resolves `null` and
    * never throws: `??` is `otherwise`.
    *
-   * `replied(agent)` and `down(agent)` are not here. They address an agent handle, which only
-   * `spawn` produces, so they refuse through the same named seam as the durable actions.
+   * `down(agent)` is an agent-addressed event with no channel, so it branches to `waitDown`
+   * before any of the channel machinery. `replied(agent)` rides the turn machinery that has not
+   * landed, so it refuses through the same named seam as the durable actions.
    */
   async wait(req: WaitRequest, ctx: EffectContext): Promise<unknown | null> {
     if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
     const ev = req.event;
-    if (ev.event === "replied" || ev.event === "down") {
-      throw new NotYetDurable(`wait(${ev.event}(…))`, ACTION_MACHINERY);
+    if (ev.event === "replied") {
+      throw new NotYetDurable("wait(replied(…))", ACTION_MACHINERY);
     }
+    if (ev.event === "down") return await this.waitDown(ev, req, ctx);
     if (!isConcreteChannel(ev.channel)) {
       throw new Error(`wait() cannot await a wildcard channel ("${ev.channel}"); an await names one channel`);
     }
@@ -571,6 +575,71 @@ export class MeshHandler {
   }
 
   /**
+   * `wait(down(agent))` — the death of one incarnation, read off presence liveness.
+   *
+   * The handle pins `<name>#<lifecycleUid>` and DOWN is a fact about the INCARNATION. The mesh's
+   * liveness witness is the presence row a seat heartbeats — TTL'd out of the bucket when the
+   * heartbeats stop — and it is the same source conclave membership resolves members through, so
+   * "down" here and "down or gone" at a conclave join are one definition. No live row carrying
+   * the name AND this incarnation is the death, with the reason split by what the name shows now:
+   * `"lapsed"` when nothing live holds the name any more, `"superseded"` when a live row holds it
+   * under a DIFFERENT incarnation — this incarnation dead with a successor already up.
+   *
+   * NOTHING BINDS, because a death is re-observable where a matched message is not: a lifecycle
+   * uid is minted once per incarnation and never heartbeats again after its row lapses, so a
+   * crash between the observation and the settle re-observes the same death on resume — at worst
+   * with the reason upgraded from `"lapsed"` to `"superseded"` by a successor that appeared in
+   * between. `at` is the time of OBSERVATION: presence records no time of death, and inventing
+   * one would be a value the planes cannot back.
+   *
+   * The TIMEOUT is the same mediated pause every wait arms — minted once with an absolute
+   * deadline under the step's own request id, so a resume ATTACHES to the recorded deadline
+   * rather than restarting the clock — and it resolves `null`, never a throw: `??` is
+   * `otherwise`. The discharge and the adoption re-arm already speak this wait's tokens (the
+   * `wait` kind arms under its request id), so a cancelled or adopted down-wait needs nothing of
+   * its own.
+   */
+  private async waitDown(
+    ev: { readonly agent: string },
+    req: WaitRequest,
+    ctx: EffectContext,
+  ): Promise<unknown | null> {
+    const { name, uid } = parseAgentHandle(ev.agent);
+    const primary = req.timeout === undefined
+      ? undefined
+      : { endpoint: this.binding.endpoint, token: ctx.requestId };
+    if (primary !== undefined) await this.arm(primary, this.now() + parseDuration(req.timeout!));
+    for (;;) {
+      if (ctx.signal.cancelled) {
+        if (primary !== undefined) await this.cancelTimer(primary);
+        throw new Cancelled(ctx.signal.reason ?? "cancelled");
+      }
+      const ended = await this.expired(primary);
+      if (ended !== undefined) return null;
+      let rows: readonly Presence[];
+      try {
+        rows = await this.presenceRows();
+      } catch (e) {
+        // `liveKvEntries` REFUSES a pass cut short mid-scan instead of returning a partial view —
+        // and a partial view is exactly what must not decide a death. Its own contract says retry,
+        // so the next poll is the retry; a link that stays down keeps surfacing here rather than
+        // as a false DOWN, and the deadline above still ends the wait.
+        if (e instanceof IncompleteKvScan) {
+          await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref());
+          continue;
+        }
+        throw e;
+      }
+      if (!rows.some((p) => p.card?.name === name && p.lifecycleUid === uid)) {
+        const reason = rows.some((p) => p.card?.name === name) ? "superseded" : "lapsed";
+        if (primary !== undefined) await this.cancelTimer(primary);
+        return { agent: ev.agent, reason, at: this.now() };
+      }
+      await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref());
+    }
+  }
+
+  /**
    * `notify` writes one bounded decision record per addressee, onto the run.
    *
    * NOT a channel post, and that is the whole point of the primitive: a post would put the program
@@ -606,11 +675,12 @@ export class MeshHandler {
   // ── The Lane-A seam ────────────────────────────────────────────────────────────────────────────
   //
   // Every effect in this group addresses an AGENT HANDLE. `spawn` — the effect that produces one —
-  // `conclave` — the scope that assembles a sub-team of them — and `ask` — the schema-checked
-  // pause the agent answers — now perform, so the remaining refusals are `turn` and `monitor`
-  // (with `wait(replied|down)` gated above and the `worktree` sub-refusal on `spawn` itself): the
-  // handle consumers whose durable machinery has not landed yet, still refusing through one class
-  // with one reason.
+  // `conclave` — the scope that assembles a sub-team of them — `ask` — the schema-checked pause
+  // the agent answers — and `monitor` with `wait(down)` — the liveness pair over presence — now
+  // perform, so the remaining refusals are `turn` (with `wait(replied)` gated above, which rides
+  // the same turn machinery, and the `worktree` sub-refusal on `spawn` itself): the handle
+  // consumers whose durable machinery has not landed yet, still refusing through one class with
+  // one reason.
   //
   // THEY ARE HERE RATHER THAN ABSENT, and that is the point of the slice. A handler that simply
   // lacks the method fails as a TypeError from inside the interpreter: a fault about JavaScript
@@ -790,8 +860,26 @@ export class MeshHandler {
     }
   }
 
-  async monitor(_req: unknown, _ctx: EffectContext): Promise<never> {
-    throw new NotYetDurable("monitor(…)", ACTION_MACHINERY);
+  /**
+   * `monitor` registers interest: after it, `down(agent)` is an event a branch can await (§5.9).
+   *
+   * THE REGISTRATION IS THE JOURNAL ENTRY, and that is the whole mechanism. Death is a STATE on
+   * this mesh — the monitored incarnation's presence row gone (see `waitDown`) — not a message
+   * that must find a standing mailbox, so there is no subscription to create, nothing to arm, and
+   * nothing for a discharge or a migration to release: `wait(down(...))` reads the same fact
+   * whenever it is asked, and the migration table's row for `monitor` ("nothing outlives it")
+   * stays true. What the step performs is the validation a registration owes: the value must BE
+   * an agent handle, refused loudly when it is not, because a wait parked on a malformed handle
+   * would poll for a death nothing can ever report.
+   *
+   * Monitoring an agent that is ALREADY dead succeeds — Erlang's monitor of a dead process
+   * delivers its DOWN rather than failing, and the rescue idiom (race work against
+   * `wait(down(...))`) needs exactly that: the death is observed by the wait, immediately.
+   */
+  async monitor(req: MonitorRequest, ctx: EffectContext): Promise<null> {
+    if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
+    parseAgentHandle(req.agent.agent);
+    return null;
   }
 
   /**
@@ -953,8 +1041,9 @@ export class MeshHandler {
   }
 
   /** Every live presence row that decodes. Foreign bytes in the bucket are skipped — a peer's
-   *  malformed self-publish must not break another agent's name resolution — and the decision
-   *  about an UNRESOLVED member is `resolveMemberPrincipal`'s, made loudly. */
+   *  malformed self-publish must not break another agent's name resolution — and what an ABSENT
+   *  row means belongs to the caller: `resolveMemberPrincipal` refuses the join loudly, and
+   *  `waitDown` reads it as the death it is waiting for. */
   private async presenceRows(): Promise<Presence[]> {
     const rows: Presence[] = [];
     for (const e of await liveKvEntries(await this.presenceRegistry())) {

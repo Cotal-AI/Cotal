@@ -1,6 +1,6 @@
 {
   "suite": "implementations/runtime/smoke/mesh-seam.smoke.ts",
-  "guard": "The seam that refuses an effect whose substrate has not landed: it must refuse BY NAME, with a code that survives the interpreter, and must not swallow an effect it does not gate.",
+  "guard": "The seam that refuses an effect whose substrate has not landed: it must refuse BY NAME, with a code that survives the interpreter, must not swallow an effect it does not gate, and must not re-swallow one that has left it (monitor and wait(down) now perform).",
   "command": "pnpm smoke:runtime-mesh-seam",
   "completionMarker": "mesh-seam.smoke:",
   "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/not-yet-durable-seam.json   # --config resolves against the repo root, never the cwd",
@@ -13,7 +13,7 @@
       "expectRed": "spawn({worktree}) carries the code that crosses the run boundary",
       "cell": "spawn({worktree}) carries the code that crosses the run boundary",
       "cellTemplate": "${name} carries the code that crosses the run boundary",
-      "note": "Re-anchored to the worktree sub-refusal when conclave left the seam (2026-09-02): the one driven refusal is now spawn({worktree}), and the handler-level loop covers the consumers. Re-measured after ask left too: three named reds (the driven worktree journal cell plus turn's and monitor's code cells); 24 passed, 3 failed."
+      "note": "Re-anchored to the worktree sub-refusal when conclave left the seam (2026-09-02): the one driven refusal is now spawn({worktree}), and the handler-level loop covers the consumers. Re-measured after monitor and wait(down) left too: two named reds (the driven worktree journal cell plus turn's code cell); 22 passed, 2 failed."
     },
     {
       "name": "turn is not seamed, so it fails as a missing method",
@@ -23,7 +23,7 @@
       "expectRed": "turn refuses at the handler, as the class itself",
       "cell": "turn refuses at the handler, as the class itself",
       "cellTemplate": "${name} refuses at the handler, as the class itself",
-      "note": "Re-measured 2026-09-02 after the ask step shrank the 1b loop to turn/monitor: three named reds for turn ('the method is absent'); 24 passed, 3 failed."
+      "note": "Re-measured 2026-09-02 after the monitor step shrank the 1b loop to turn alone: three named reds for turn ('the method is absent'); 21 passed, 3 failed."
     },
     {
       "name": "the worktree sub-refusal is dropped, so a worktree spawn reaches the planes",
@@ -32,26 +32,25 @@
       "replace": "    if (false) throw new NotYetDurable(\"spawn({worktree})\", \"the §9 worktree binding\");",
       "expectRed": "spawn with a worktree refuses as the class itself",
       "cell": "spawn with a worktree refuses as the class itself, before any plane is reached",
-      "note": "Silently dropping the field is the defect this guard exists for: the seat would come up with no worktree the program asked for. Re-measured 2026-09-02 (the driven block rides this same guard): eight reds — the driven block's five cells, both 1c cells, and block 2's different-failures cell; 19 passed, 8 failed. Dies with the seam when the §9 binding lands."
+      "note": "Silently dropping the field is the defect this guard exists for: the seat would come up with no worktree the program asked for. Re-measured 2026-09-02 (the driven block rides this same guard): eight reds — the driven block's five cells, both 1c cells, and block 2's different-failures cell; 16 passed, 8 failed. Dies with the seam when the §9 binding lands."
     },
     {
-      "name": "the wait(replied|down) gate is dropped, so both events reach the planes",
+      "name": "the wait(replied) gate is dropped, so the turn-shaped event reaches the planes",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    if (ev.event === \"replied\" || ev.event === \"down\") {",
+      "find": "    if (ev.event === \"replied\") {",
       "replace": "    if (false) {",
       "expectRed": "wait(replied) refuses as the class itself, before any plane is reached",
       "cell": "wait(replied) refuses as the class itself, before any plane is reached",
-      "note": "Re-anchored from the ask stub when the ask implementation replaced it (2026-09-02): the wait-side gate is the seam's other half and had no mutant. Measured: four named reds (both events' class and reason cells, each dying as a TypeError into the null planes); 23 passed, 4 failed."
+      "note": "Re-measured 2026-09-02 after wait(down) left the gate: two named reds (replied's class and reason cells, dying as a TypeError into the null planes); 22 passed, 2 failed."
     },
     {
-      "name": "monitor is not seamed",
+      "name": "monitor regresses back into the seam",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "  async monitor(_req: unknown, _ctx: EffectContext): Promise<never> {",
-      "replace": "  async monitorNotSeamed(_req: unknown, _ctx: EffectContext): Promise<never> {",
-      "expectRed": "monitor refuses at the handler, as the class itself",
-      "cell": "monitor refuses at the handler, as the class itself",
-      "cellTemplate": "${name} refuses at the handler, as the class itself",
-      "note": "Re-measured 2026-09-02: three named reds for monitor; 24 passed, 3 failed."
+      "find": "  async monitor(req: MonitorRequest, ctx: EffectContext): Promise<null> {\n    if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? \"cancelled\");",
+      "replace": "  async monitor(req: MonitorRequest, ctx: EffectContext): Promise<null> {\n    throw new NotYetDurable(\"monitor(…)\", ACTION_MACHINERY);\n    if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? \"cancelled\");",
+      "expectRed": "monitor is not refused by the seam: it performs against no planes at all",
+      "cell": "monitor is not refused by the seam: it performs against no planes at all",
+      "note": "Replaced the monitorNotSeamed mutant when monitor left the seam (2026-09-02): the seam must not swallow an effect that has moved out of it, which is block 4's argument pointed at the pair. Measured: exactly one red on this cell in mesh-seam (23 passed) and thirteen reds in mesh-monitor, whose own config guards the behavior."
     },
     {
       "name": "the two refusals drift into two reasons",
@@ -61,7 +60,7 @@
       "expectRed": "turn gives the one shared reason",
       "cell": "turn gives the one shared reason",
       "cellTemplate": "${name} gives the one shared reason",
-      "note": "Re-measured 2026-09-02: exactly one red; 26 passed."
+      "note": "Re-measured 2026-09-02: exactly one red; 23 passed."
     },
     {
       "name": "the seam swallows an UNGATED effect too",
@@ -70,7 +69,7 @@
       "replace": "  async sleep(req: SleepRequest, ctx: EffectContext): Promise<null> {\n    throw new NotYetDurable(\"sleep(…)\", ACTION_MACHINERY);",
       "expectRed": "sleep is not refused by the seam",
       "cell": "sleep is not refused by the seam: it reaches the plane and fails there instead",
-      "note": "Re-measured 2026-09-02: exactly one red; 26 passed."
+      "note": "Re-measured 2026-09-02: exactly one red; 23 passed."
     }
   ],
   "why": [

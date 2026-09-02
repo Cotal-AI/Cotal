@@ -401,11 +401,13 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
   c("and when the traffic stops, the idle window closes and the wait resolves", got?.channel === CHANNEL, JSON.stringify(got));
 }
 
-// ── 8) the two event kinds whose subject is an agent refuse, by name ──────────────────────────
+// ── 8) the agent-addressed event kinds: `replied` still refuses, `down` now performs ──────────
 //
-// Gated by their INPUT rather than their mechanism: an agent handle comes from `spawn`, and `down`
-// additionally needs `monitor` to have registered interest. Both ride the same seam as the durable
-// actions themselves — one place to look when the durable-action surface lands, not two.
+// `replied` rides the turn machinery that has not landed, so it refuses through the same seam as
+// the durable actions themselves — one place to look when that surface lands. `down` LEFT the
+// seam (it rides presence liveness; `mesh-monitor` owns the pair), so what this suite holds is
+// the boundary: a value that is not an agent handle refuses loudly at the call, never as the
+// seam's hold and never as a park.
 {
   // BOUNDED. A refusal that stops refusing must be observable as "did not refuse", not as a suite
   // that stops: an implementation which accepts one of these would otherwise wait for an event that
@@ -417,9 +419,11 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
   const replied = await refuse({ event: "replied", agent: "builder" });
   const down = await refuse({ event: "down", agent: "builder" });
   c("wait(replied(…)) refuses as NOT YET DURABLE rather than pretending", replied instanceof NotYetDurable, (replied as Error)?.name);
-  c("wait(down(…)) refuses the same way, through the same seam", down instanceof NotYetDurable, (down as Error)?.name);
   c("and the refusal says what it is waiting on, so it is a seam and not a mystery",
     (replied as Error)?.message.includes("durable-action machinery"), (replied as Error)?.message?.slice(0, 60));
+  c("wait(down(…)) left the seam: a value that is not an agent handle refuses loudly at the call",
+    down instanceof Error && !(down instanceof NotYetDurable) && down.message.includes("not an agent handle"),
+    (down as Error)?.message?.slice(0, 90));
 }
 
 // ── 9) inputs that could not be awaited safely are refused at the call ────────────────────────
