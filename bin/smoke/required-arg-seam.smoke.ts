@@ -277,8 +277,10 @@ const SEAMS: Seam[] = [
   // 102/75 -> 108/79: component status and remote manager registration add two typechecked calls;
   // 108/79 -> 109/80: the static-lifecycle eviction audit (2579d7f8) adds one smoke-side call.
   // the manager boot self-heal and registered-user-authority smokes add four untypechecked calls.
+  // 109/80 -> 110/80: `cotal run`'s command connection (implementations/runtime/src/run-command.ts)
+  // adds one typechecked call carrying the endpoint auth and the resolved tls decision.
   // Every added site states the transport decision explicitly.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 109, untypecheckedSites: 80 },
+  { fn: "standaloneConnectOpts", key: "tls", sites: 110, untypecheckedSites: 80 },
 ];
 
 /**

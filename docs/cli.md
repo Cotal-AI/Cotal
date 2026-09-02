@@ -68,6 +68,7 @@ runtimes ship this way.
 | Extensions & misc | [`completion`](#completion) | Print or install shell completion |
 | Extensions & misc | [`feedback`](#feedback) | Send feedback to the Cotal developers |
 | Extensions & misc | [`deliver`](#server-daemons) | Run the server-side Plane-3 delivery daemon |
+| Workflow runs | [`run`](#run) | Operate durable workflow runs: start, resume, list, inspect, answer a checkpoint |
 | Extensions & misc | [`feedback-intake`](#server-daemons) | Run a self-hosted feedback intake server |
 
 The manifest modes of `up`, `spawn`, and `down` (`-f <cotal.yaml>`) plus `topology` are covered
@@ -1347,6 +1348,25 @@ Sends feedback to the Cotal developers. With a key (`--key` / `COTAL_FEEDBACK_KE
 keyed beta intake; without one it goes to the public `cotal.ai` intake and requires a contact email
 (`--email` / `COTAL_FEEDBACK_EMAIL`, else your git email). Run a self-hosted intake with
 [`feedback-intake`](#server-daemons).
+
+## run
+
+Operate durable workflow runs (cotal-lang programs) from the terminal.
+
+```bash
+cotal run start --file <program> [--timeout <dur>] [--endpoint <ep>]
+cotal run resume <runId> --file <program>
+cotal run ps
+cotal run journal <runId>
+cotal run answer <runId> <stepKey> --by <who> [--value <json>] [--artifact <ref>]
+```
+
+`start` mints the run id (the record never takes a caller-supplied one), prints it, and drives the
+run to quiescence. `resume` takes an existing run over and continues it from its step journal.
+`ps` lists the run records on the endpoint and `journal` renders one run's durable records; both
+only inspect, driving nothing. `answer` resolves an open checkpoint, presenting as the holder that
+armed it, with `--by` naming the answerer inside the resolution. `--timeout` sets the default
+checkpoint timeout for a drive (default 1h). The guide is [workflows](workflows.md).
 
 ## Server daemons
 

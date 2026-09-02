@@ -47,6 +47,7 @@
     "@cotal-ai/core": "workspace:*",
     "@cotal-ai/delivery": "workspace:*",
     "@cotal-ai/manager": "workspace:*",
+    "@cotal-ai/runtime": "workspace:*",
     "@cotal-ai/workspace": "workspace:*"
   },
   "devDependencies": {

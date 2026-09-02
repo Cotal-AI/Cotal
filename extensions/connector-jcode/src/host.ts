@@ -23,6 +23,7 @@ import {
   MeshAgent,
   ORIENTATION_BOOTSTRAP,
   MESH_FIRST_STEER,
+  WORKFLOW_STEER,
   configFromEnv,
   controlFromEnv,
   feedbackLine,
@@ -174,6 +175,7 @@ function instructions(config: AgentConfig, persona: string | undefined): string 
   const mesh =
     `You are connected to the Cotal mesh as "${config.name}"${config.role ? ` (role: ${config.role})` : ""} in space "${config.space}". ` +
     `${ORIENTATION_BOOTSTRAP} ${feedbackLine(config)}${MESH_FIRST_STEER} ` +
+    `${WORKFLOW_STEER} ` +
     "Peer messages are delivered into your turns as blocks marked 📨. Reply with cotal_dm (privately, to the sender), cotal_send (to a channel), or cotal_anycast (to a role); use cotal_roster to see who is present and cotal_status to report what you are doing. Reply only when a reply is actually needed — silent acknowledgement is correct, and @-mention a peer only when you need that peer to act now.";
   return persona ? `${persona}\n\n${mesh}` : mesh;
 }

@@ -31,6 +31,15 @@ export const MESH_FIRST_STEER =
   "(cotal_spawn if you have it, otherwise cotal_dm or cotal_anycast to reach one) so the work stays " +
   "visible to the user and addressable by peers rather than hidden inside a private subagent.";
 
+/** Workflow-run steer, folded in beside {@link MESH_FIRST_STEER} for every connector. Points agents
+ *  at durable cotal-lang runs for coordination that must outlive their own session, so the reflex is
+ *  a journalled `cotal run` rather than an improvised loop held in one agent's context. */
+export const WORKFLOW_STEER =
+  "Coordination that must survive restarts (multi-step plans, human checkpoints, timed waits, " +
+  "fan-out over agents) belongs in a durable workflow run: a cotal-lang program driven with " +
+  "`cotal run start`, resumable on any host from its step journal. Read the `workflows` page via " +
+  "cotal_docs before improvising such a loop in your own context.";
+
 /** A tool the agent can actually call (already gated), as it appears in the card. */
 export interface OrientationTool {
   name: string;
