@@ -1,0 +1,43 @@
+{
+  "suite": "implementations/runtime/smoke/mesh-seam.smoke.ts",
+  "guard": "The not-yet-durable seam stays gone: every effect the language defines has a performing method on the mesh handler, no runtime source raises L5016 or names NotYetDurable, the lang catalog keeps the L5016 row for hosts that still refuse, and the docs promise exactly that",
+  "command": "pnpm smoke:runtime-mesh-seam",
+  "completionMarker": "mesh-seam.smoke:",
+  "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/mesh-seam.json   # --config resolves against the repo root, never the cwd",
+  "why": [
+    "The seam suite once graded the refusal itself; with every effect performing, the same chain",
+    "slot now grades the refusal's ABSENCE, which is the only regression left to catch here: a",
+    "handler method going missing (S3), a refusal creeping back under the seam's old code (S1), and",
+    "the catalog losing the row other hosts still need (S2). All three are source-level claims, so",
+    "each mutant edits the text the suite reads and nothing else runs under it."
+  ],
+  "mutations": [
+    {
+      "name": "the worktree refusal comes back under the seam's code",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "        \"L4008\", \"worktree\",",
+      "replace": "        \"L5016\", \"worktree\",",
+      "expectRed": "no runtime source names L5016: the reference handler refuses nothing as not-yet-durable",
+      "cell": "no runtime source names L5016: the reference handler refuses nothing as not-yet-durable",
+      "note": "A guard raising the retired code would read as a hold to the driver instead of the catchable L4008. Measured 2026-09-03: exactly one red, the L5016 cell naming mesh-handler.ts; 15 passed, 1 failed."
+    },
+    {
+      "name": "the catalog row is dropped",
+      "file": "packages/lang/src/errors.ts",
+      "find": "  L5016: \"Effect not durable on this host\",\n",
+      "replace": "",
+      "expectRed": "the lang catalog still carries L5016 with its meaning",
+      "cell": "the lang catalog still carries L5016 with its meaning",
+      "note": "The row outlives the reference handler's use of it because the language admits hosts that refuse. Measured 2026-09-03: exactly one red, the catalog cell; 15 passed, 1 failed."
+    },
+    {
+      "name": "a handler method goes missing",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "\n  async turn(req: TurnRequest, ctx: EffectContext)",
+      "replace": "\n  async turnX(req: TurnRequest, ctx: EffectContext)",
+      "expectRed": "the handler performs `turn`",
+      "cell": "the handler performs `turn`",
+      "note": "One method stands in for the ten the loop pins; the anchor is code-only and unique. Measured 2026-09-03: exactly one red, the `turn` cell with sites: 0; 15 passed, 1 failed."
+    }
+  ]
+}

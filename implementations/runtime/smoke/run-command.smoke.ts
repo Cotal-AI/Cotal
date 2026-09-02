@@ -69,12 +69,6 @@ const wf = (positionals: string[], values: Record<string, string | boolean | und
 
 const PURE = join(sd, "pure.cotal.js");
 writeFileSync(PURE, 'const xs = [1, 2, 3];\nlog("doubled", xs.map((x) => x * 2));\n');
-// A `worktree` spawn is still on the not-yet-durable seam (`spawn` and `conclave` themselves now
-// perform), and its guard fires before any plane is reached — which is what makes it the one
-// refusal a program can drive on this manager-less broker. It dies with the §9 worktree binding;
-// when the seam empties, the block that drives it goes with it.
-const REFUSING = join(sd, "refusing.cotal.js");
-writeFileSync(REFUSING, 'await spawn("dev", { name: "dev", worktree: "wt-a" });\n');
 const CHECKPOINT = join(sd, "checkpoint.cotal.js");
 writeFileSync(CHECKPOINT, 'const d = await checkpoint("approve", "Ship it?");\nlog("resolved", d.status);\n');
 const ASKING = join(sd, "asking.cotal.js");
@@ -115,20 +109,10 @@ let P = "";
   c("resume replays a completed run to completed", captured().includes(`run ${P}: completed`), captured());
 }
 
-// ── 5) a refused effect holds the run, and the command says so ───────────────────────────────
-let H = "";
-{
-  reset();
-  await wf(["start"], { file: REFUSING });
-  H = startedId() ?? "";
-  c("a refused effect reports released", H !== "" && captured().includes(`run ${H}: released`), captured());
-  c("names RunHeld", captured().includes("RunHeld"), captured());
-  c("and tells the operator what a hold means", captured().includes("held"), captured());
-  c("a held start exits nonzero", process.exitCode === 2, process.exitCode);
-  reset();
-  await wf(["journal", H]);
-  c("its journal shows the step settled refused with the crossing code", captured().includes("refused (L5016)"), captured());
-}
+// The refusal block that once sat here (a `worktree` spawn held on the not-yet-durable seam) went
+// with the seam: every effect the language defines performs on this host now, so no program can
+// drive a hold on a manager-less broker. The hold rendering itself is graded where the halt is
+// raised, in the lang engine suites.
 
 // ── 6) answer: an open checkpoint is resolved through the command ────────────────────────────
 {
@@ -263,7 +247,7 @@ let H = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 27;
+const DECLARED = 22;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

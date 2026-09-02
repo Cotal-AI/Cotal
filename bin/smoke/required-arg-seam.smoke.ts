@@ -279,8 +279,11 @@ const SEAMS: Seam[] = [
   // the manager boot self-heal and registered-user-authority smokes add four untypechecked calls.
   // 109/80 -> 110/80: `cotal run`'s command connection (implementations/runtime/src/run-command.ts)
   // adds one typechecked call carrying the endpoint auth and the resolved tls decision.
+  // 110/80 -> 114/83: the delivery daemon's checkpoint timer writer (implementations/delivery/src/
+  // delivery.ts) adds one typechecked call, and its suite (delivery-timer-writer.smoke.ts) three
+  // smoke-side calls.
   // Every added site states the transport decision explicitly.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 110, untypecheckedSites: 80 },
+  { fn: "standaloneConnectOpts", key: "tls", sites: 114, untypecheckedSites: 83 },
 ];
 
 /**
