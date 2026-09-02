@@ -30,20 +30,20 @@
     {
       "name": "a resume re-invokes instead of re-attaching to the recorded acceptance",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    if (ctx.resume?.goalId !== goalId) {",
-      "replace": "    if (true) {",
+      "find": "    let ext: Readonly<Record<string, unknown>> | undefined =\n      ctx.resume?.goalId === goalId ? (ctx.resume as Readonly<Record<string, unknown>>) : undefined;\n    if (ext === undefined) {\n      let reply: EpAttributedReply | undefined;\n      try {\n        const service = await this.manager();\n        reply = await invokeCommand(this.nc, this.binding.space, service, \"spawn\", spawnArgs(req), {",
+      "replace": "    let ext: Readonly<Record<string, unknown>> | undefined = undefined;\n    if (ext === undefined) {\n      let reply: EpAttributedReply | undefined;\n      try {\n        const service = await this.manager();\n        reply = await invokeCommand(this.nc, this.binding.space, service, \"spawn\", spawnArgs(req), {",
       "expectRed": "the resume sent NOTHING to the endpoint: the recorded acceptance is the submission",
       "cell": "the resume sent NOTHING to the endpoint: the recorded acceptance is the submission",
-      "note": "The short-circuit gone: a resumed spawn submits again. The fake serves the recorded acceptance so nothing else breaks — which is exactly why the invoke COUNT is the cell: a manager that restarted since would judge the resend against a live seat instead. Measured 2026-09-02: exactly one red, 31 passed."
+      "note": "The short-circuit gone: a resumed spawn submits again. The fake serves the recorded acceptance so nothing else breaks — which is exactly why the invoke COUNT is the cell: a manager that restarted since would judge the resend against a live seat instead. Measured 2026-09-02: exactly one red, 31 passed. Re-anchored 2026-09-02 when the turn step reshaped spawn's resume adoption into the captured-ext form; re-measured: exactly one named red, 31 passed, 1 failed."
     },
     {
       "name": "the acceptance is never bound as the entry's external state",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "      await ctx.bind({\n        goalId,\n        ...(floor !== undefined ? pickAcceptanceFloor(floor) : {}),\n      });",
-      "replace": "      void floor;",
+      "find": "      ext = {\n        goalId,\n        ...(floor !== undefined ? pickAcceptanceFloor(floor) : {}),\n      };\n      await ctx.bind(ext);",
+      "replace": "      ext = {\n        goalId,\n        ...(floor !== undefined ? pickAcceptanceFloor(floor) : {}),\n      };",
       "expectRed": "the acceptance floor is bound as the entry's external state before the terminal wait",
       "cell": "the acceptance floor is bound as the entry's external state before the terminal wait",
-      "note": "The bind dropped: the live path still completes (the goalId re-derives), but the journal carries no landed-submission marker and no identity floor — the resume and the uncertain-discharge paths lose their durable input. Measured 2026-09-02: exactly one red, 31 passed."
+      "note": "The bind dropped: the live path still completes (the goalId re-derives), but the journal carries no landed-submission marker and no identity floor — the resume and the uncertain-discharge paths lose their durable input. Measured 2026-09-02: exactly one red, 31 passed. Re-anchored 2026-09-02 (the bind now rides the captured ext the roster registration reads); re-measured: exactly one named red, 31 passed, 1 failed."
     },
     {
       "name": "the discharge skips spawn entries",
