@@ -1,0 +1,68 @@
+{
+  "suite": "implementations/delivery/smoke/delivery-timer-writer.smoke.ts",
+  "guard": "the delivery daemon hosts the space's checkpoint timer writer on its scoped cred: a parked .schedule is armed and broker-fired with no manual pump, a poison request is terminated not redelivered, and the grant rows that authorize the pump are load-bearing",
+  "command": "pnpm smoke:delivery-timer-writer",
+  "completionMarker": "DELIVERY-TIMER-WRITER SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/delivery/smoke/mutations/delivery-timer-writer.json",
+  "why": [
+    "THE GAP WAS FOUND LIVE (lane F, 2026-09-02): nothing in production pumped the checkpoint timer",
+    "plane. The suites pump armCheckpointTimer by hand, and run-command.ts documented the delivery",
+    "daemon as pumping it, but the daemon had no such code and core's timerWriterGrants had zero",
+    "consumers — so no workflow pause on a live mesh ever expired. The build is three pieces, each",
+    "with a mutant aimed at it: the daemon's hosting loop (M1), core's pump (M2, M3), and the",
+    "delivery credential's new grant rows (M4, M5).",
+    "",
+    "EVERY MUTANT'S COMMAND REBUILDS THROUGH THE SUITE SCRIPT: the daemon child runs `bin/cotal.ts`",
+    "via tsx, which resolves workspace packages to their compiled dist, so a source mutant is",
+    "invisible until built — the suite script's own `pnpm --filter cotal-ai... build` prefix is what",
+    "makes the mutation reach the process under test. The tool's restore verifies source, not dist;",
+    "after a proof, rebuild once by hand so the dist matches the restored source."
+  ],
+  "mutations": [
+    {
+      "name": "the daemon dials a connection but never starts the writer",
+      "file": "implementations/delivery/src/delivery.ts",
+      "find": "        const handle = await startTimerWriter(nc, space);",
+      "replace": "        const handle: TimerWriterHandle = { stop: async () => undefined, done: new Promise(() => undefined) };",
+      "expectRed": "the daemon's timer writer armed the parked .schedule (no manual pump ran)",
+      "cell": "the daemon's timer writer armed the parked .schedule (no manual pump ran)",
+      "note": "The hosting call replaced by an inert handle: the daemon logs nothing wrong and stays up, and only the pump is gone. Measured 2026-09-02 before this entry was written: the arm cell reds first, then everything downstream of it (target header, fire, poison drain); 6 passed, 6 failed."
+    },
+    {
+      "name": "the pump acks every request without arming anything",
+      "file": "packages/core/src/endpoint-checkpoint.ts",
+      "find": "          await armCheckpointTimer(ctx, { subject: m.subject, ...(m.headers !== undefined ? { headers: m.headers } : {}), data: m.data });",
+      "replace": "          void ctx;",
+      "expectRed": "the daemon's timer writer armed the parked .schedule (no manual pump ran)",
+      "cell": "the daemon's timer writer armed the parked .schedule (no manual pump ran)",
+      "note": "The pump consumes and acknowledges but the fenced arm never runs — the request plane drains cleanly while the space silently stops expiring pauses, which is exactly the shipped gap this build closes. Measured 2026-09-02: the arm cell reds first; the poison cells stay green because a swallowed request still drains; 7 passed, 5 failed. The 'writer logged the permanent refusal' cell also reds, so the split's log line is graded too."
+    },
+    {
+      "name": "a permanent refusal is naked instead of terminated",
+      "file": "packages/core/src/endpoint-checkpoint.ts",
+      "find": "            m.term();",
+      "replace": "            m.nak(pollMs);",
+      "expectRed": "the poison request is terminated: the writer's durable drains it and holds nothing pending",
+      "cell": "the poison request is terminated: the writer's durable drains it and holds nothing pending",
+      "note": "The ack-decision split inverted: a poison request that answers identically on every redelivery is retried forever. Measured 2026-09-02: exactly ONE cell reds — the poison-drain cell, because the naked message never leaves the consumer's pending state — and 11 pass, which is why the split needs its own mutant rather than riding the arm cell."
+    },
+    {
+      "name": "the delivery cred loses the timer-writer consumer rows",
+      "file": "packages/core/src/provision.ts",
+      "find": "    ...timerWriterGrants(space),",
+      "replace": "    ...([] as string[]),",
+      "expectRed": "the daemon's timer writer armed the parked .schedule (no manual pump ran)",
+      "cell": "the daemon's timer writer armed the parked .schedule (no manual pump ran)",
+      "note": "The shared grant set the pump binds with, removed at its one delivery consumer. The writer's bind is broker-denied, the supervised loop retries loudly, and nothing ever arms. Measured 2026-09-02: the arm cell reds first and the 'timer writer up' cell reds with it; 5 passed, 7 failed. Kills the row-set half of the permission story."
+    },
+    {
+      "name": "the delivery cred loses the .armed publish row",
+      "file": "packages/core/src/provision.ts",
+      "find": "    `${p}.ept.*.*.*.*.armed`,",
+      "replace": "    ...([] as string[]),",
+      "expectRed": "the daemon's timer writer armed the parked .schedule (no manual pump ran)",
+      "cell": "the daemon's timer writer armed the parked .schedule (no manual pump ran)",
+      "note": "The one publish this feature adds, removed alone: the writer binds and consumes fine but its authoritative .armed publish is broker-denied, so the arm fails as transient and retries forever. Measured 2026-09-02: the arm cell reds first and the poison behind the retried request never drains; 7 passed, 5 failed. Kills the publish half of the permission story separately from M4."
+    }
+  ]
+}

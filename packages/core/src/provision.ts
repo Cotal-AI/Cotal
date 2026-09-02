@@ -77,7 +77,7 @@ import {
   type EpCapability,
 } from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
-import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, endpointPlaneStreamNames } from "./endpoint-binding.js";
+import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, endpointPlaneStreamNames, eptReqStreamName, eptStreamName, timerWriterDurable, timerWriterGrants } from "./endpoint-binding.js";
 import { epsSubject, epCallerReplyFilter, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE } from "./endpoint-subjects.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix, eprepairKey } from "./lifecycle-state.js";
@@ -2270,6 +2270,21 @@ function deliveryPermissions(space: string, pr: MintPrincipal): Record<string, u
     // Delivery lease/readiness KV: read the bucket (renew CAS) + write ONLY lease keys.
     `$JS.API.STREAM.INFO.${DKV}`, `$JS.API.STREAM.MSG.GET.${DKV}`,
     `$KV.${deliveryBucket(space)}.lease.*`,
+    // The timer writer (SPEC 13.2): the daemon hosts the pump that turns `.schedule` requests into
+    // the authoritative `.armed` publishes — without it no workflow pause on the space ever
+    // expires. Its consumer rows are the shared timer-writer grant set; both create forms for the
+    // same reason CHAT carries both (the client picks by whether the create embeds a filter). The
+    // arm itself needs the fence's two leader reads — the `.armed` head on EPT and the checkpoint
+    // status on the records KV — and exactly ONE publish: the `.armed` subject. Never `.fire`
+    // (the broker's own schedule delivery) and never `.schedule` (it consumes those).
+    ...timerWriterGrants(space),
+    `$JS.API.CONSUMER.DURABLE.CREATE.${eptReqStreamName(space)}.${timerWriterDurable(space)}`,
+    `$JS.API.STREAM.INFO.${eptReqStreamName(space)}`,
+    `$JS.API.STREAM.INFO.${eptStreamName(space)}`,
+    `$JS.API.STREAM.MSG.GET.${eptStreamName(space)}`,
+    `$JS.API.STREAM.INFO.KV_${recordsBucket(space)}`,
+    `$JS.API.STREAM.MSG.GET.KV_${recordsBucket(space)}`,
+    `${p}.ept.*.*.*.*.armed`,
     // Plane-3 data writes: dinbox (fan-out target) + dlv (post-auth handoff) for ANY lifecycle — the
     // identity slots widen to `.*.*.*` (owner+actor+lifecycleUid: dinbox/dlv are per-LIFECYCLE now,
     // SPEC 13.1; NATS subject arity is exact, so the old two-token form is broker-denied on every

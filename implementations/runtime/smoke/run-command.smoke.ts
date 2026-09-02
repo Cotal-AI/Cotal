@@ -196,7 +196,10 @@ let H = "";
   c("the answer is accepted with no holder supplied: the resolver reads the arming holder off the record", answered === true, answered);
   const outcome = await Promise.race([resumed.then(() => "completed"), wait(15_000).then(() => "still-paused")]);
   c("and the RESUME completes the run under its own holder", outcome === "completed" && captured().includes(`run ${cid}: completed`), outcome);
-  await orphan;
+  // Bounded like the raced completions above: when every answer is refused, the abandoned driver
+  // never resolves, and a suite that awaits it unconditionally HANGS on that defect. On the green
+  // path it has already settled (its superseded append reports released).
+  await Promise.race([orphan, wait(15_000)]);
   const rec = await readRunRecord(kv, EP, cid);
   c("the record ends completed, never failed", rec?.status?.value.state === "completed", rec?.status?.value.state);
 }
