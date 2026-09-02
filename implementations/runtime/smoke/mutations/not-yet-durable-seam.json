@@ -10,18 +10,29 @@
       "file": "implementations/runtime/src/mesh-handler.ts",
       "find": "      \"L5016\",",
       "replace": "      undefined as unknown as string,",
-      "expectRed": "spawn carries the code that crosses the run boundary",
-      "cell": "spawn carries the code that crosses the run boundary",
-      "cellTemplate": "${name} carries the code that crosses the run boundary"
+      "expectRed": "conclave carries the code that crosses the run boundary",
+      "cell": "conclave carries the code that crosses the run boundary",
+      "cellTemplate": "${name} carries the code that crosses the run boundary",
+      "note": "Re-anchored to conclave when spawn left the seam (2026-09-02, durable-spawn step): spawn now performs, so the driven-program refusal cells belong to conclave and the handler-level loop covers the consumers. Re-measured: six named reds (the driven conclave's journal cell plus all five handler-level code cells); 25 passed, 6 failed."
     },
     {
-      "name": "spawn is not seamed, so it fails as a missing method",
+      "name": "turn is not seamed, so it fails as a missing method",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "  async spawn(_req: unknown, _ctx: EffectContext): Promise<never> {",
-      "replace": "  async spawnNotSeamed(_req: unknown, _ctx: EffectContext): Promise<never> {",
-      "expectRed": "spawn refuses at the handler, as the class itself",
-      "cell": "spawn refuses at the handler, as the class itself",
-      "cellTemplate": "${name} refuses at the handler, as the class itself"
+      "find": "  async turn(_req: unknown, _ctx: EffectContext): Promise<never> {",
+      "replace": "  async turnNotSeamed(_req: unknown, _ctx: EffectContext): Promise<never> {",
+      "expectRed": "turn refuses at the handler, as the class itself",
+      "cell": "turn refuses at the handler, as the class itself",
+      "cellTemplate": "${name} refuses at the handler, as the class itself",
+      "note": "Was anchored on the spawn stub, which the durable-spawn step replaced with a real implementation (2026-09-02): the claim moved to a consumer that still refuses. Re-measured: the guarded 1b loop prints three named reds for turn ('the method is absent'); 28 passed, 3 failed."
+    },
+    {
+      "name": "the worktree sub-refusal is dropped, so a worktree spawn reaches the planes",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (req.worktree !== undefined) throw new NotYetDurable(\"spawn({worktree})\", \"the §9 worktree binding\");",
+      "replace": "    if (false) throw new NotYetDurable(\"spawn({worktree})\", \"the §9 worktree binding\");",
+      "expectRed": "spawn with a worktree refuses as the class itself",
+      "cell": "spawn with a worktree refuses as the class itself, before any plane is reached",
+      "note": "Silently dropping the field is the defect this guard exists for: the seat would come up with no worktree the program asked for. Measured 2026-09-02: two named reds (the class cell reads an EpEnvelopeError from the null planes, the machinery cell reds with it); 29 passed, 2 failed. Dies with the seam when the §9 binding lands."
     },
     {
       "name": "conclave is not seamed, so a zero-member conclave reaches a null plane",
