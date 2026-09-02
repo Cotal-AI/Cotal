@@ -28,6 +28,8 @@ export interface CommandCtx {
   ps: () => Promise<{ ok: true; rows: ManagedRow[] } | { ok: false; error: string }>;
   /** Open the type-the-space-name purge confirm (the palette never purges directly). */
   confirmPurge: () => void;
+  /** Open the type-the-channel-name delete confirm for one channel's history and registry entry. */
+  confirmDelchan: (channel: string) => void;
   /** Attach to a managed seat's live terminal (suspends the console until detach). */
   startAttach: (name: string) => void;
 }
@@ -183,6 +185,17 @@ export const COMMANDS: ConsoleCommand[] = [
     summary: "clear the space's history (type the space name to confirm)",
     control: true,
     run: (ctx) => ctx.confirmPurge(),
+  },
+  {
+    name: "delchan",
+    summary: "delete one channel's history + registry entry (type its name to confirm)",
+    usage: "delchan <channel>",
+    control: true,
+    run: (ctx, rest) => {
+      const channel = rest.replace(/^#/, "").trim().split(/\s+/)[0] ?? "";
+      if (!channel) return ctx.notify("usage: delchan <channel>");
+      ctx.confirmDelchan(channel);
+    },
   },
   { name: "dms", summary: "toggle the DM lens", run: (ctx) => ctx.setMode("dm") },
   { name: "topo", summary: "toggle the topology lens", run: (ctx) => ctx.setMode("topo") },

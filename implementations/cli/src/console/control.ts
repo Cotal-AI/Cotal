@@ -8,8 +8,9 @@
 // Every refusal comes back as a `{ok:false, error}` the status line can show. The THROWING resolve
 // form is used throughout (`onRefusal: "throw"`): the CLI commands' default prints a sentence and
 // exits the process, which inside a TUI would blank the screen mid-session.
-import { askManager, resolveControlTarget, START_TIMEOUT_MS, type ManagerReply } from "../lib/control.js";
-import type { ConnectFlags } from "../lib/connect.js";
+import { assertValidChannel, clearChannel, isConcreteChannel } from "@cotal-ai/core";
+import { askManager, resolveControlTarget, scatterManager, START_TIMEOUT_MS, type ManagerReply } from "../lib/control.js";
+import { connectOrThrow, userViewAuth, type ConnectFlags } from "../lib/connect.js";
 import { locateSeat, seatNotFoundMessage } from "../commands/agents.js";
 
 /** The console's control coordinates: the same `ConnectFlags` triple the CLI's control commands
@@ -29,6 +30,29 @@ const OPS = {
   stop: { profile: "control-caller-admin", targeted: true },
 } as const;
 export type ControlOp = keyof typeof OPS;
+
+/** Delete one channel: its retained history (a filtered purge) and its registry entry, through
+ *  core's `clearChannel`, the operation the web dashboard's delete button runs, with the same
+ *  per-action authority: a static-auth mesh mints a one-shot `channel-purger` credential from the
+ *  resolved mesh's seed, a user mesh asks for a `channel-purger` view (a fresh ledger check per
+ *  click), an open mesh connects bare. No manager involved. The name must be the one the mesh
+ *  uses, concrete and valid: a wildcard is refused (it would purge channels the operator did not
+ *  name) and a name the wire would rewrite is refused rather than quietly rewritten. */
+export async function deleteChannel(ctx: ControlCtx, channel: string): Promise<{ ok: true; purged: number } | { ok: false; error: string }> {
+  try {
+    assertValidChannel(channel);
+    if (!isConcreteChannel(channel)) return { ok: false, error: `"${channel}" is a wildcard, not a deletable channel` };
+    const conn = await connectOrThrow(ctx, "channel-purger");
+    const r = conn.bearer
+      ? await userViewAuth(conn, "channel-purger").then((p) =>
+          clearChannel({ servers: conn.server, space: conn.space, channel, bearer: p.bearer, sentinelCreds: p.sentinelCreds }),
+        )
+      : await clearChannel({ servers: conn.server, space: conn.space, channel, creds: conn.creds });
+    return { ok: true, purged: r.purged };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
 
 /** One managed-agent row as the manager's `ps` / `inspect` answer it (the fields the console reads). */
 export interface ManagedRow {
@@ -64,6 +88,25 @@ export async function control(ctx: ControlCtx, op: ControlOp, args?: Record<stri
     // `args` goes through as given: a void-input command is refused by the manager's schema when it
     // is handed `{}` instead of nothing, so no default is filled in here.
     return await askManager(t.space, t.server, op, args, t.auth, reach, timeoutMs, spec.targeted ? { instanceId: on } : undefined);
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+/** The managed rows of every reachable manager in the space: the `cotal ps` read, merged. A static
+ *  or open mesh scatters across the registered instances (a silent instance contributes nothing
+ *  and is not an error here: the console shows what answered); a user mesh asks the one manager
+ *  its bearer reaches. */
+export async function controlPs(ctx: ControlCtx): Promise<{ ok: true; rows: ManagedRow[] } | { ok: false; error: string }> {
+  try {
+    const t = await resolveControlTarget(ctx, "control-caller-privileged", undefined, { onRefusal: "throw" });
+    if (t.auth.bearer) {
+      const r = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, {});
+      return r.ok ? { ok: true, rows: (r.data as ManagedRow[]) ?? [] } : { ok: false, error: r.error ?? "error" };
+    }
+    const s = await scatterManager(t.space, t.server, "ps", t.auth, t.spaceAuth);
+    if (!s.ok) return s;
+    return { ok: true, rows: s.instances.flatMap((i) => (i.reachable && !i.error ? ((i.data as ManagedRow[]) ?? []) : [])) };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }

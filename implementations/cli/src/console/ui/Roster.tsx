@@ -9,7 +9,16 @@ function progressText(p: Presence): string {
   return progressSignal(undefined, Date.now()).kind === "unknown" ? "progress unknown" : "progress observed";
 }
 
-function RosterRow({ p, selected, wide }: { p: Presence; selected: boolean; wide: boolean }) {
+/** Short display tag for an agent's harness (which tool it IS): known connectors get a familiar
+ *  abbreviation (`cc` = Claude Code, whose manager-default alias is `cotal`), anything else its
+ *  first two letters. Pure presentation; undefined in, undefined out (never fake a tag). */
+export function harnessTag(connector: string | undefined): string | undefined {
+  if (!connector) return undefined;
+  const known: Record<string, string> = { claude: "cc", cotal: "cc", opencode: "oc", hermes: "hm", codex: "cx", jcode: "jc", pi: "pi" };
+  return known[connector] ?? connector.slice(0, 2).toLowerCase();
+}
+
+function RosterRow({ p, selected, wide, tag }: { p: Presence; selected: boolean; wide: boolean; tag?: string }) {
   const isAgent = p.card.kind === "agent";
   const s = STATUS[p.status];
   const age = progressText(p);
@@ -19,7 +28,7 @@ function RosterRow({ p, selected, wide }: { p: Presence; selected: boolean; wide
     const act = p.activity ? "  " + p.activity : "";
     return (
       <Text inverse bold color="cyan" wrap="truncate-end">
-        {(isAgent ? s.dot : "⚙") + " " + p.card.name + kind + act + "  " + age}
+        {(isAgent ? s.dot : "⚙") + " " + p.card.name + (tag ? " " + tag : "") + kind + act + "  " + age}
       </Text>
     );
   }
@@ -29,6 +38,7 @@ function RosterRow({ p, selected, wide }: { p: Presence; selected: boolean; wide
       <Text color={isAgent ? agentColor(p.card.name) : undefined} dimColor={!isAgent}>
         {p.card.name}
       </Text>
+      {tag ? <Text dimColor>{" " + tag}</Text> : null}
       {wide ? (
         isAgent ? (
           <Text color={s.color}>{"  " + s.word}</Text>
@@ -60,6 +70,7 @@ export function Roster({
   onOpenDetail,
   onKill,
   onAttach,
+  harness,
   onCompose,
 }: {
   agents: Presence[];
@@ -74,6 +85,8 @@ export function Roster({
   onKill?: (p: Presence) => void;
   /** Attach to the selected agent's live terminal. */
   onAttach?: (p: Presence) => void;
+  /** id → short harness tag (see {@link harnessTag}); rows without an entry show no tag. */
+  harness?: Map<string, string>;
   onCompose?: (p: Presence) => void;
 }) {
   const { isFocused } = useFocus({ id: "roster" });
@@ -135,6 +148,7 @@ export function Roster({
             p={p}
             selected={isFocused && start + i === selClamped}
             wide={wide}
+            tag={harness?.get(p.card.id)}
           />
         ))
       )}

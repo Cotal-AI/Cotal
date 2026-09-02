@@ -57,9 +57,17 @@ on an open mesh, or rides your bearer on a user-auth mesh), calls the manager ov
 rails, and keeps nothing. That gate is `canControl`, decided by whether that path can produce a
 caller at all (a raw `--creds` file cannot), and it is independent of `canWrite`, which gates
 chat. `D` kills the selected agent behind a confirm (`y` graceful stop, `f` force-kill), and the
-`:` palette adds `spawn <persona> [name]` (waits for the join, like
-`cotal spawn --detach`), `status <agent>`, `ps`, and `purge` (type the space name to confirm, like
-the space delete). A refusal, from the broker or the manager, lands on the status line.
+`:` palette adds `spawn <persona> [name]` (waits for the join, like `cotal spawn --detach`),
+`status <agent>`, `ps`, `purge` (type the space name to confirm, like the space delete), and
+`delchan <channel>` (type the channel name to confirm): the web dashboard's channel delete, run
+from the console. It is core's `clearChannel` (a filtered history purge plus the registry entry)
+with the dashboard's per-action authority, a one-shot `channel-purger` credential minted from the
+resolved mesh's seed on a static mesh, a `channel-purger` view on a user mesh, a bare connection
+on an open one; no manager is involved. A wildcard is refused, so the one destructive control
+names one channel. A refusal, from the broker or the manager, lands on the status line. On a
+space with several managers, `D`, `:status`, and `a` are pinned to the manager hosting the seat and
+`:ps` merges every manager's rows; `:spawn` and `:purge` ride the class queue, as `cotal spawn
+--detach` and `cotal purge` do without `--on`.
 
 `a` on a roster agent (or `:attach <agent>`) suspends the console and hands the terminal to the
 seat: it is `cotal attach` run in place, the same one-use holder-bound mesh session, the same

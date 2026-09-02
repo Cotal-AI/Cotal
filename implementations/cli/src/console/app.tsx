@@ -1,14 +1,14 @@
 import { writeSync } from "node:fs";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useFocusManager, useInput, useStdout } from "ink";
 import type { CotalEndpoint, Presence } from "@cotal-ai/core";
 import { useMesh } from "./mesh.js";
-import { control, type ControlCtx, type ControlOp } from "./control.js";
+import { control, controlPs, deleteChannel, type ControlCtx, type ControlOp } from "./control.js";
 import { attachSeat } from "../commands/agents.js";
 import { detachKey } from "../lib/attach-client.js";
 import { Tabs } from "./ui/Tabs.js";
 import { Tiles } from "./ui/Tiles.js";
-import { Roster } from "./ui/Roster.js";
+import { Roster, harnessTag } from "./ui/Roster.js";
 import { Feed } from "./ui/Feed.js";
 import { NeedsYou } from "./ui/NeedsYou.js";
 import { Dm } from "./ui/Dm.js";
@@ -29,6 +29,11 @@ type ComposeTarget =
   | { kind: "channel"; channel: string; value: string }
   | { kind: "dm"; toId: string; toName: string; value: string }
   | { kind: "reply"; entry: FeedEntry; value: string };
+
+/** How often the console re-reads the manager's managed rows (which harness runs each seat). Each
+ *  poll is a full per-action control call (resolve, mint, connect, describe, invoke), so it is
+ *  deliberately slow. */
+const PS_POLL_MS = 10_000;
 
 /**
  * The lazygit-style console: channel tabs · golden-signal tiles · roster · live feed · status bar,
@@ -127,6 +132,44 @@ export function App({
     [ep.space, controlCtx],
   );
 
+  // Managed state lives in the manager, not in presence: only the manager knows WHICH harness it
+  // launched (`agent` = connector, `mode` = runtime) for a seat whose card carries no meta. Poll
+  // the manager's rows at a low rate and merge by the non-forgeable id; fail QUIET and stop
+  // polling when nothing answers (an open mesh without a supervisor must not spin or flash errors
+  // on every tick).
+  const [managed, setManaged] = useState<Map<string, { agent?: string; mode?: string }>>(new Map());
+  const psDead = useRef(false);
+  useEffect(() => {
+    if (!canControl || !controlCtx) return;
+    psDead.current = false;
+    let alive = true;
+    const poll = async () => {
+      if (!alive || psDead.current) return;
+      const r = await controlPs({ ...controlCtx, space: ep.space });
+      if (!alive) return;
+      if (!r.ok) {
+        psDead.current = true; // no manager on this mesh: stop knocking
+        return;
+      }
+      setManaged((prev) => {
+        const next = new Map(r.rows.map((a) => [a.id, { agent: a.agent, mode: a.mode }]));
+        const same =
+          next.size === prev.size &&
+          [...next].every(([id, m]) => {
+            const p = prev.get(id);
+            return p !== undefined && p.agent === m.agent && p.mode === m.mode;
+          });
+        return same ? prev : next;
+      });
+    };
+    void poll();
+    const t = setInterval(() => void poll(), PS_POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [canControl, controlCtx, ep.space]);
+
   // Keep last-seen ages fresh.
   const [, tick] = useState(0);
   useEffect(() => {
@@ -185,6 +228,57 @@ export function App({
   const tabs = ["all", ...mesh.channels.map((ch) => ch.channel)];
   const counts: Record<string, number> = {};
   for (const ch of mesh.channels) counts[ch.channel] = ch.messages;
+
+  // Per-channel unread: pure client state over MeshView's live ARRIVAL counters (the web
+  // sidebar's badges are the same kind of state). The broker's retained count is not the base: it
+  // is capped per sender, so it stops climbing under live traffic and a badge built on it goes
+  // quiet at the cap. Arrivals start at zero for every channel when the console starts, so history
+  // is not unread and no baseline snapshot is needed: a channel with no watermark, including one
+  // that first appears on a mesh that was empty at start, has every arrival unread. Viewing a
+  // concrete channel keeps its watermark pinned to the arrivals so far (viewing clears).
+  const [seen, setSeen] = useState<Record<string, number>>({});
+  useEffect(() => {
+    setSeen((s) => {
+      let next = s;
+      const bump = (channel: string, v: number) => {
+        if (next === s) next = { ...s };
+        next[channel] = v;
+      };
+      // A channel that left the strip (deleted) drops its watermark once it is gone, not before:
+      // dropping it while the tab is still listed would badge everything seen so far as unread.
+      // MeshView drops its arrivals with the channel, so a channel created again later is new, and
+      // every arrival on it is unread, like any channel that appears after the baseline.
+      const listed = new Set(mesh.channels.map((ch) => ch.channel));
+      for (const channel of Object.keys(next))
+        if (!listed.has(channel)) {
+          if (next === s) next = { ...s };
+          delete next[channel];
+        }
+      const cur = mesh.channels.find((ch) => ch.channel === activeChannel)?.arrivals;
+      if (activeChannel !== "all" && cur !== undefined && next[activeChannel] !== cur) bump(activeChannel, cur);
+      return next;
+    });
+    // an activeChannel change must also re-pin the watermark.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mesh.channels, activeChannel]);
+  const unread: Record<string, number> = {};
+  for (const ch of mesh.channels) {
+    const n = ch.arrivals - (seen[ch.channel] ?? 0);
+    if (n > 0 && ch.channel !== activeChannel) unread[ch.channel] = n;
+  }
+
+  // id → short harness tag for the roster (what the agent IS): the card's self-published
+  // meta.connector first, the manager's launch record for a seat whose card carries no meta.
+  const harness = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const p of mesh.agents) {
+      const meta = p.card.meta as Record<string, unknown> | undefined;
+      const connector = typeof meta?.connector === "string" ? meta.connector : managed.get(p.card.id)?.agent;
+      const tag = harnessTag(connector);
+      if (tag) m.set(p.card.id, tag);
+    }
+    return m;
+  }, [mesh.agents, managed]);
 
   const onFocus = useCallback((id: FocusId) => setFocusedId(id), []);
   const openAgent = useCallback((p: Presence) => setDetail({ kind: "agent", agent: p }), []);
@@ -262,6 +356,7 @@ export function App({
       control: ctl,
       ps: () => controlPs({ ...controlCtx, space: ep.space }),
       confirmPurge: () => setConfirm({ kind: "purge", space: ep.space }),
+      confirmDelchan: (channel: string) => setConfirm({ kind: "delchan", channel }),
       startAttach: handleAttach,
     };
     runCommand(line, ctx, !!canWrite, !!canControl);
@@ -283,6 +378,16 @@ export function App({
     } else if (c?.kind === "purge") {
       setNotice(`purging ${c.space}…`);
       void ctl("purge", {}).then((r) => setNotice(r.ok ? "purged space history" : `purge: ${r.error ?? "failed"}`));
+    } else if (c?.kind === "delchan") {
+      // Core's clearChannel with the web's per-action authority (console/control.ts). The tab
+      // vanishes on the next channel poll (MeshView rebuilds the list from the broker) and its
+      // unread bookkeeping goes with it; leave it now if it is the one being viewed.
+      setNotice(`deleting #${c.channel}…`);
+      void deleteChannel({ ...controlCtx, space: ep.space }, c.channel).then((r) => {
+        if (!r.ok) return setNotice(`delchan: ${r.error}`);
+        setNotice(`deleted #${c.channel} · ${r.purged} messages purged`);
+        setActiveChannel((ch) => (ch === c.channel ? "all" : ch));
+      });
     }
   };
 
@@ -329,7 +434,7 @@ export function App({
   // terminal). App stays mounted, so the observer endpoint + MeshView survive in the background.
   if (attachTarget) return null;
   if (helpOpen) return <Help focusedId={focusedId} width={size.cols} height={size.rows} />;
-  if (detail) return <Detail target={detail} feed={mesh.feed} width={size.cols} height={size.rows} />;
+  if (detail) return <Detail target={detail} feed={mesh.feed} width={size.cols} height={size.rows} managed={managed} />;
   if (confirm)
     return (
       <Confirm target={confirm} width={size.cols} height={size.rows} onConfirm={onConfirmed} onCancel={() => setConfirm(null)} />
@@ -348,7 +453,7 @@ export function App({
 
   return (
     <Box flexDirection="column" width={size.cols} height={size.rows}>
-      <Tabs tabs={tabs} active={activeChannel} counts={counts} width={size.cols} />
+      <Tabs tabs={tabs} active={activeChannel} counts={counts} unread={unread} width={size.cols} />
       <Tiles counts={mesh.signals.counts} stalestLiveTs={mesh.signals.stalestLiveTs} width={size.cols} />
       {mode === "dm" ? (
         <Dm
@@ -390,6 +495,7 @@ export function App({
               onOpenDetail={openAgent}
               onKill={canControl ? handleKill : undefined}
               onAttach={canControl ? (p) => handleAttach(p.card.name) : undefined}
+              harness={harness}
               onCompose={canWrite ? rosterCompose : undefined}
             />
             <Feed

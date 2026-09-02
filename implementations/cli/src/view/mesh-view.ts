@@ -96,7 +96,10 @@ export interface MembershipView {
 export interface MeshSnapshot {
   agents: Presence[]; // card.kind === "agent", status-sorted then by name
   endpoints: Presence[]; // everything else
-  channels: { channel: string; messages: number }[];
+  /** `messages`: the broker's retained count (capped per sender, so it can stop climbing under
+   *  live traffic). `arrivals`: messages this viewer saw ARRIVE on the live tap since it started,
+   *  monotonic, dropped with the channel: the honest base for an unread badge. */
+  channels: { channel: string; messages: number; arrivals: number }[];
   feed: FeedEntry[]; // classified + coalesced + windowed
   /** Broker-authoritative channel membership (the delivery daemon's CONNZ view plus the durable
    *  registry), as last read; the topology lens overlays it to show silent subscribers. */
@@ -180,6 +183,7 @@ export class MeshView extends EventEmitter {
   private roster: Presence[] = [];
   private byId = new Map<string, string>();
   private channelCounts = new Map<string, number>();
+  private arrivals = new Map<string, number>();
   private feed: FeedEntry[] = [];
   private seen = new Set<string>(); // feed ids, for prefill ∪ live dedupe-by-id
   private pending = new Map<string, Burst>();
@@ -298,7 +302,7 @@ export class MeshView extends EventEmitter {
 
   snapshot(): MeshSnapshot {
     const channels = [...this.channelCounts]
-      .map(([channel, messages]) => ({ channel, messages }))
+      .map(([channel, messages]) => ({ channel, messages, arrivals: this.arrivals.get(channel) ?? 0 }))
       .sort((a, b) => a.channel.localeCompare(b.channel));
     return {
       agents: this.roster.filter((p) => p.card.kind === "agent"),
@@ -405,8 +409,12 @@ export class MeshView extends EventEmitter {
     // is not redundant: this one runs on live arrival, so without it an event channel would appear
     // as a tab the moment a frame landed and then vanish at the next `refreshChannels`, which reads
     // as a flickering bug rather than as a filter.
-    if (e.delivery === "multicast" && e.channel && !e.events && !this.channelCounts.has(e.channel))
-      this.channelCounts.set(e.channel, 1);
+    if (e.delivery === "multicast" && e.channel && !e.events) {
+      if (!this.channelCounts.has(e.channel)) this.channelCounts.set(e.channel, 1);
+      // Counted on ARRIVAL, not read back from the broker: the retained count is capped per sender
+      // and stops climbing under live traffic, so a badge derived from it goes quiet at the cap.
+      this.arrivals.set(e.channel, (this.arrivals.get(e.channel) ?? 0) + 1);
+    }
     this.dirty = true;
     this.emit("entry", e);
   }
@@ -501,9 +509,14 @@ export class MeshView extends EventEmitter {
     }
     // Event channels are not chat tabs: one per agent that has ever run would bury the handful of
     // channels a human actually talks on. Same classifier as the prefill, so the tab strip and the
-    // backlog cannot disagree about what a channel is.
+    // backlog cannot disagree about what a channel is. The map is REBUILT, not merged: a channel
+    // the broker no longer lists (deleted, its history purged and its registry entry gone) leaves
+    // the strip on this poll instead of lingering with its last count.
+    const next = new Map<string, number>();
     for (const { channel, messages } of chans)
-      if (!isEventChannel(channel)) this.channelCounts.set(channel, messages);
+      if (!isEventChannel(channel)) next.set(channel, messages);
+    this.channelCounts = next;
+    for (const channel of this.arrivals.keys()) if (!next.has(channel)) this.arrivals.delete(channel);
     this.dirty = true;
   }
 

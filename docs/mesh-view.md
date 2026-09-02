@@ -55,7 +55,7 @@ interface FeedEntry {           // one feed row
 interface MeshSnapshot {
   agents:    Presence[];        // card.kind === "agent", status-sorted (working→waiting→idle→offline) then by name
   endpoints: Presence[];        // everything else
-  channels:  { channel: string; messages: number }[];
+  channels:  { channel: string; messages: number; arrivals: number }[];  // retained count; live arrivals seen by this viewer
   feed:      FeedEntry[];       // classified + coalesced + windowed
   membership: { snapshot?: MembershipSnapshot; unreadable?: string };  // the feed as last read (below)
   rates:     { msgsPerSec: number; activity: number[] };  // rolling 1 s rate; 15 x 4 s volume buckets (60 s)
@@ -125,21 +125,22 @@ one feed is not.
 |---|---|---|---|---|
 | roster (status, activity, age) | `agents` / `endpoints` | ✓ panel | ✓ presence lines | ✓ sidebar |
 | all-activity feed | `feed` | ✓ feed panel | ✓ log | ✓ Monitor view |
-| channels plus counts | `channels` | ✓ tabs (`1`–`9`) |  | ✓ sidebar + Channel view |
+| channels plus counts, unread badges | `channels` (+ client state) | ✓ tabs (`1`–`9`, `+N`) |  | ✓ sidebar + Channel view |
 | golden-signal counts | `signals.counts` | ✓ tiles strip |  | ✓ tiles |
 | needs-you / blocked | `signals.waiting` | ✓ rail (`n`) |  | ✓ NEEDS-YOU rail |
 | direct-message lens | `signals.dms` | ✓ lens (`d`) |  | ✓ DM view |
 | topology (membership plus who-talks-to-whom) | `feed` + `agents` + `membership` | ✓ lens (`t`, 3 variants) |  | ✓ graph |
-| message / agent **detail** | `feed` / `agents` | ✓ select → detail |  | ✓ row / thread |
+| message / agent **detail** (incl. harness, model, skills) | `feed` / `agents` | ✓ select → detail |  | ✓ row / thread |
 | search / filter | client | ✓ `/` | (grep) | ✓ mode chips |
 | msgs/s, activity sparkline, connected, dmVisible | `rates` / `status` | ✓ status bar |  | ✓ conn pill |
 | attention mode (`dnd` / `focus`) | `agents[].attention` |  |  | ✓ roster + detail + graph |
 | per-channel attention (`quiet` / `muted`) | `agents[].channelModes` |  |  | ✓ agent detail |
-| harness, model, variant | `agents[].card.meta` |  |  | ✓ badges + graph |
+| harness, model, variant | `agents[].card.meta` | ✓ roster tag + detail |  | ✓ badges + graph |
 | host (which machine it runs on) | `agents[].card.meta.host` |  |  | ✓ agent detail |
 | channel policy (replay, delivery class) | `/api/channels` (web) |  |  | ✓ sidebar + header chips |
 
-Both interactive surfaces render every model field. The console adds the signals as an always-on
+Each interactive surface renders the fields its column above marks; `rates.activity` is the
+console's alone. The console adds the signals as an always-on
 tiles strip, a NEEDS-YOU rail (`n`), and a DM lens (`d`); the topology lens (`t`) collapses the feed
 plus roster into a who-talks-to-whom graph client-side and renders it three switchable ways
 (`v` / `1`–`3`): swimlane sequence, adjacency heat matrix, and a ring node-link map. It also
@@ -147,7 +148,12 @@ overlays the **broker-authoritative membership** feed (`readMembership` / `watch
 same source as the web graph): silent subscribers appear as nodes, subscriptions as resting
 spokes (live solid and faint, durable-offline dashed), and wide readers (`>` / `*`) carry a `≫`
 badge. The map draws the full skeleton, the matrix a light `∘` / `◌` marker, the sequence stays a
-traffic timeline. The stream is
+traffic timeline. Channel tabs carry a per-channel unread badge (`+N`, viewer-local: messages since
+that channel was last viewed, the same kind of state as the web sidebar's pill; a deleted channel's
+tab leaves the strip on the next channel poll, with no badge on the way out), the roster tags each
+agent with its harness when known (`cc` for Claude Code, `oc` for OpenCode, and so on, from the card's
+`meta.connector` or, for a managed seat whose card carries none, the manager's launch record), and
+the agent detail adds `runs`, `model`, and `skills` from the same sources. The stream is
 line-oriented, so the signals stay out of it.
 
 ## Future work
@@ -162,7 +168,6 @@ on the live surfaces, design intent until the wire grows to support them:
 | approval requests (approve / deny) | a request message kind plus a response path (interactive) |
 | task-failed alerts | a failure signal: a manager lifecycle event or a presence status |
 | unclaimed-anycast / status roll-up | mostly derivable from existing traffic; a `MeshView` signal |
-| per-conversation unread | per-viewer client state, not really protocol |
 
 ## Principles
 
