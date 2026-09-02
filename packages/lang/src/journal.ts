@@ -19,7 +19,7 @@ import { type JournalKind, type StepKey, stepKeyString } from "./keys.js";
 import { EFFECT_KINDS } from "./primitives.js";
 
 export type EntryState = "pending" | "settled";
-export type EntryStatus = "ok" | "failed" | "cancelled";
+export type EntryStatus = "ok" | "failed" | "cancelled" | "refused";
 
 export interface EntryError {
   readonly code: string;
@@ -123,6 +123,8 @@ export type LookupVerdict =
   | { readonly verdict: "replay-failed"; readonly entry: JournalEntry }
   /** Recorded as cancelled: re-raise cancellation in this branch. */
   | { readonly verdict: "replay-cancelled"; readonly entry: JournalEntry }
+  /** Recorded as refused: no host could perform it yet. Perform it live, as a fresh attempt. */
+  | { readonly verdict: "refused"; readonly entry: JournalEntry }
   /** Started but never settled: re-bind to `entry.external` and await its terminal. */
   | { readonly verdict: "pending"; readonly entry: JournalEntry }
   /** Recorded with different inputs: abort, mutate nothing, and report the diff. */
@@ -358,7 +360,7 @@ export class Journal {
         throw new Error(
           `journal for run ${this.run} was seeded with an entry whose state ${JSON.stringify((e as { state?: unknown }).state)} is not in the vocabulary (${journalEntryKeyString(e)}); a journal this package cannot read is refused, never replayed as data`,
         );
-      if (e.state === "settled" && e.status !== "ok" && e.status !== "failed" && e.status !== "cancelled")
+      if (e.state === "settled" && e.status !== "ok" && e.status !== "failed" && e.status !== "cancelled" && e.status !== "refused")
         throw new Error(
           `journal for run ${this.run} was seeded with a settled entry whose status ${JSON.stringify((e as { status?: unknown }).status)} is not in the vocabulary (${journalEntryKeyString(e)}); a journal this package cannot read is refused, never replayed as data`,
         );
@@ -455,6 +457,7 @@ export class Journal {
     if (entry.state === "pending") return { verdict: "pending", entry };
     if (entry.status === "failed") return { verdict: "replay-failed", entry };
     if (entry.status === "cancelled") return { verdict: "replay-cancelled", entry };
+    if (entry.status === "refused") return { verdict: "refused", entry };
     return { verdict: "replay", entry };
   }
 
@@ -488,6 +491,12 @@ export class Journal {
   async begin(key: StepKey, inputHash: string, startedAt: number, requestId?: string): Promise<JournalEntry> {
     if (this.readOnly) throw new JournalReadOnlyError(key);
     const k = Journal.keyOf(key);
+    // A fresh attempt over a `refused` entry is the ONE re-begin there is: the step was never
+    // attempted, so the new pending row supersedes the refusal, and readers folding by key see
+    // the attempt. Anything else already begun is a caller bug, refused rather than rewritten.
+    const existing = this.byKey.get(k);
+    if (existing !== undefined && !(existing.state === "settled" && existing.status === "refused"))
+      throw new Error(`begin over an existing entry for ${k}; only a refused step may begin again`);
     const entry: JournalEntry = {
       v: 1,
       seq: this.nextSeq++,
@@ -503,7 +512,9 @@ export class Journal {
     };
     await this.persist(k, entry);
     this.byKey.set(k, entry);
-    this.order.push(k);
+    // A re-begin keeps the step's first position: `order` is the order the run PERFORMED its
+    // steps in, and the step began when its first pending row was written.
+    if (existing === undefined) this.order.push(k);
     this.consumed.add(k);
     return entry;
   }
@@ -554,7 +565,8 @@ export class Journal {
     outcome:
       | { readonly status: "ok"; readonly result: unknown }
       | { readonly status: "failed"; readonly error: EntryError }
-      | { readonly status: "cancelled" },
+      | { readonly status: "cancelled" }
+      | { readonly status: "refused"; readonly error: EntryError },
     endedAt: number,
     facts: {
       readonly cancel?: { readonly losers: readonly string[]; readonly issued: boolean };
@@ -573,7 +585,7 @@ export class Journal {
       status: outcome.status,
       endedAt,
       ...(outcome.status === "ok" ? { result: outcome.result } : {}),
-      ...(outcome.status === "failed" ? { error: outcome.error } : {}),
+      ...(outcome.status === "failed" || outcome.status === "refused" ? { error: outcome.error } : {}),
       ...(facts.cancel !== undefined ? { cancel: facts.cancel } : {}),
       ...(facts.closed !== undefined ? { closed: facts.closed } : {}),
       ...(facts.branchDigest !== undefined ? { branchDigest: facts.branchDigest } : {}),

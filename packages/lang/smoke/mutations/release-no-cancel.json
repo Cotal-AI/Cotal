@@ -7,7 +7,7 @@
     {
       "name": "a release inside parallel is treated as a branch failure and cancels siblings",
       "file": "packages/lang/src/perform.ts",
-      "find": "        if (e instanceof RunReleased || e instanceof JournalAppendRejected) {\n          await Promise.allSettled(running);\n          throw e;\n        }",
+      "find": "        if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected) {\n          await Promise.allSettled(running);\n          throw e;\n        }",
       "replace": "        // mutant: a release rides the branch-failure path and cancels siblings",
       "expectRed": "so a healthy driver resumes past a parallel it was stopped inside",
       "completionMarker": "ok a host stop inside parallel releases the run rather than failing it",
@@ -17,7 +17,7 @@
     {
       "name": "a release inside fanOut is treated as a branch failure and cancels siblings",
       "file": "packages/lang/src/perform.ts",
-      "find": "      if (e instanceof RunReleased || e instanceof JournalAppendRejected) {\n        await Promise.allSettled(launched);\n        throw e;\n      }",
+      "find": "      if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected) {\n        await Promise.allSettled(launched);\n        throw e;\n      }",
       "replace": "      // mutant: a release rides the branch-failure path and cancels siblings",
       "expectRed": "so a healthy driver resumes past a fanOut it was stopped inside",
       "completionMarker": "ok so a healthy driver resumes past a parallel it was stopped inside",
@@ -27,7 +27,7 @@
     {
       "name": "a released race arm counts as a candidate and wins by failing",
       "file": "packages/lang/src/perform.ts",
-      "find": "        (e: unknown) =>\n          onSettle(i, e instanceof Cancelled || e instanceof RunReleased || e instanceof JournalAppendRejected),",
+      "find": "        (e: unknown) =>\n          onSettle(\n            i,\n            e instanceof Cancelled || e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected,\n          ),",
       "replace": "        (e: unknown) => onSettle(i, e instanceof Cancelled),",
       "expectRed": "a race whose sibling was released still lets in-flight work win, and the run completes",
       "completionMarker": "ok so a healthy driver resumes past a fanOut it was stopped inside",

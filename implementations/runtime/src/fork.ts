@@ -355,14 +355,11 @@ export interface ForkCommitResult {
   readonly child: string;
   readonly copied: number;
   /**
-   * Always false, and reported rather than omitted.
-   *
-   * The child's record cannot say it is a fork of anything: `RunSpecValue` has no lineage field,
-   * and adding one — or a `fork` record kind beside `migration` — changes the run record's shape,
-   * which is a decision to raise rather than one to make in this file. A caller that needs the
-   * lineage has it in the {@link ForkPlan} it passed; nothing durable carries it yet.
+   * True: the child's spec names its parent and the cut step (`RunSpecValue.forkedFrom`), written
+   * with the spec itself so the lineage cannot exist without the record it describes. Kept as a
+   * field rather than dropped, because callers were told to read it while it was still false.
    */
-  readonly lineageRecorded: false;
+  readonly lineageRecorded: true;
 }
 
 /**
@@ -413,9 +410,13 @@ export async function commitFork(
     await store.append({ ...entry, run: plan.child });
   }
 
-  await createRunSpec(kv, endpoint, plan.child, { pins: plan.pins, createdAt: plan.at });
+  await createRunSpec(kv, endpoint, plan.child, {
+    pins: plan.pins,
+    createdAt: plan.at,
+    forkedFrom: { run: plan.parent, step: plan.fromStep },
+  });
 
-  return { child: plan.child, copied: plan.cut.length, lineageRecorded: false };
+  return { child: plan.child, copied: plan.cut.length, lineageRecorded: true };
 }
 
 /** A fork the plan refused, offered for commit anyway. The plan carries the per-step reason. */

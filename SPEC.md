@@ -3678,7 +3678,7 @@ run, and a language revision never requires one here.
 A run is described by the `run` record kind (§13.7): `run.<endpoint>.<runId>`, `.spec`/`.status`
 split, mediated, written by the driver's commit path only.
 
-- **Spec** (create-only, decided once): `{ v: 1, run, pins, createdAt }`. `pins` is
+- **Spec** (create-only, decided once): `{ v: 1, run, pins, createdAt, forkedFrom? }`. `pins` is
   the **resolved pin set** the run started under, `{ seed, startedAt, yieldEvery, stepBudget,
   effectCeiling, languageVersion }` (`spec/cotal-lang.md` §8.3): every one selects which effects run,
   so a resume MUST read them back and bind to them, and MUST refuse a caller value that differs.
@@ -3686,10 +3686,11 @@ split, mediated, written by the driver's commit path only.
   replayed program. The RESOLVED value is pinned, never the default: a default is a property of the
   interpreter, and the interpreter is the thing that may have changed between attempts. A spec that
   already exists MUST refuse a second start under the same id. A fork (`spec/cotal-lang.md` §11.3)
-  is a new run with its own id and its own spec; this revision records NO lineage on the child (the
-  spec has no parent field), so the fork's parent and cut are known only to the caller that asked
-  for it. A later revision that adds a field to the spec half does so as its own binding revision,
-  never by rewriting a spec that exists.
+  is a new run with its own id and its own spec, and the child's spec names its lineage:
+  `forkedFrom` is `{ run, step }`, the parent run and the step key the cut excluded, written with
+  the spec and absent on a run started fresh. Absence reads as "lineage unknown" (a child recorded
+  before the field existed), never as "not a fork". A later revision that adds a field to the spec
+  half does so as its own binding revision, never by rewriting a spec that exists.
 - **Status** (last-value-wins, CAS-written): `{ v: 1, observedSpecRevision, state, holder, epoch,
   fencingToken, journalHigh, at }`. `state` is one of `running`, `released`, `completed`, `failed`,
   and `released` and `failed` are different facts: a failed program has a result and the journal has

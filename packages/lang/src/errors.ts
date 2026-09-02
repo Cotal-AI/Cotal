@@ -167,6 +167,11 @@ export const CATALOG = {
   // already says exactly that, and a second name for one fact is the defect the L5017..L5020 note
   // above was written about.
   L5024: "A recorded value has no canonical form",
+  // The HALT a capability refusal unwinds the run with, not the refusal itself: the refusal is
+  // recorded on the entry under the code the handler raised (L5016 for the reference handler),
+  // and this is what the program cannot catch (§9.2). Its own code because the run has not failed
+  // and has not been released: it is held, with one `refused` entry a capable host re-performs.
+  L5025: "Effect refused; run held for a capable host",
 
   // ---- L6xxx: simulation -------------------------------------------------------------------------
   L6001: "Unscripted effect in simulation",

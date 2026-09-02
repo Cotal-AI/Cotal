@@ -21,7 +21,7 @@ import { Journal, RunClock } from "../src/journal.js";
 import { KeyScope, programHashOf, stepKeyString } from "../src/keys.js";
 import { ENGINE_LANGUAGE_VERSION, WALKER_LANGUAGE_VERSION, resolvePins, type RunPins } from "../src/pins.js";
 import { RuntimeFault, RunDivergence } from "../src/errors.js";
-import { Cancelled, EffectError, type EffectContext, type EffectHandler } from "../src/effects.js";
+import { Cancelled, EffectError, EffectRefused, type EffectContext, type EffectHandler } from "../src/effects.js";
 import type { JournalEntry, JournalStore } from "../src/journal.js";
 import { LangErrors } from "../src/errors.js";
 import { SimHandler } from "../src/sim.js";
@@ -1771,6 +1771,34 @@ const SIM_HANDLER = new URL("./_sim-handler.mjs", import.meta.url).href;
   ok("a handler's EffectError crosses the bridge and the thread with its code and kind intact, matching the walker's own raise",
     refused.ok === false && refused.code === walkerRefusal?.code && refused.kind === walkerRefusal?.kind && refused.code === "L4009" && refused.kind === "sim-refusal",
     { bridged: refused.ok === false ? { code: refused.code, kind: refused.kind } : refused, walker: { code: walkerRefusal?.code, kind: walkerRefusal?.kind } });
+
+  // A CAPABILITY REFUSAL CROSSES AS A HOLD, matching the walker: the refusal crosses the bridge
+  // as its class (never a plain Error), the thread settles the entry `refused`, and the run comes
+  // back L5025 with the step and the refusal carried as fields for the host to rebuild the class
+  // a driver grades `released`.
+  class HeldHandler extends SimHandler {
+    override async spawn(): Promise<never> {
+      throw new EffectRefused("L5016", "spawn(…) rides machinery that has not landed");
+    }
+  }
+  const heldStored: JournalEntry[] = [];
+  const held = await runInWorker(
+    { source: SOURCE, module: transform(SOURCE).module, runId: "host-b4", handler: "bridged" },
+    { entry: WORKER_ENTRY, bridge: { handler: new HeldHandler(SCRIPT), store: { append: async (e) => { heldStored.push(e); } } } },
+  ).done;
+  const walkerHeld = await walkerRun(SOURCE, { runId: "host-b4", handler: new HeldHandler(SCRIPT) }).then(
+    () => undefined,
+    (e: unknown) => e as Error & { reason?: string; step?: string },
+  );
+  ok("a capability refusal crosses both boundaries as the hold, matching the walker's own raise",
+    held.ok === false && held.code === "L5025" && held.name === "RunHeld"
+    && walkerHeld?.name === "RunHeld"
+    && held.reason === walkerHeld?.reason
+    && held.step === walkerHeld?.step,
+    { bridged: held.ok === false ? { code: held.code, name: held.name, step: held.step } : held, walker: { name: walkerHeld?.name, step: walkerHeld?.step } });
+  ok("and the thread's journal settled the entry refused under the handler's own code",
+    heldStored.some((e) => e.state === "settled" && e.status === "refused" && e.error?.code === "L5016"),
+    heldStored.map((e) => `${e.kind}:${e.state}:${e.status ?? ""}`));
 }
 
 // ---- a race loser's cancellation crosses the bridge while the loser is parked -------------------

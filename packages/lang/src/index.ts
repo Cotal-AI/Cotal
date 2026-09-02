@@ -78,6 +78,8 @@ export {
 export {
   Cancelled,
   RunReleased,
+  EffectRefused,
+  RunHeld,
   EffectError,
   askSchemaShape,
   conformsToAskSchema,

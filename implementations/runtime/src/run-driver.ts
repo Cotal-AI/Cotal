@@ -48,6 +48,7 @@ import {
   run as runProgram,
   resume as resumeProgram,
   RunReleased,
+  RunHeld,
   resolvePins,
   RuntimeFault,
   ENGINE_LANGUAGE_VERSION,
@@ -495,6 +496,13 @@ async function drive(
     // The host stopping is the same kind of answer: this driver no longer holds the run, and the
     // program has neither failed nor finished.
     if (e instanceof RunReleased) {
+      await note(req, "released", appender.journalHigh, specRevision, statusRevision);
+      return { status: "released", reason: e };
+    }
+    // A HELD run is released with its refusal already recorded: this host could not perform the
+    // next step (the entry is settled `refused`, L5025), the program has neither failed nor
+    // finished, and a capable host's resume performs the step live.
+    if (e instanceof RunHeld) {
       await note(req, "released", appender.journalHigh, specRevision, statusRevision);
       return { status: "released", reason: e };
     }
