@@ -44,6 +44,7 @@ const EP = "manager";
 const IID = "i".repeat(26);
 const EPOCH = 3;
 const HOLDER = { id: "manager", lifecycleUid: "u_meshsleep" };
+const CALLER = { owner: "local", actor: "wf_meshsuite", uid: "a".repeat(26) };
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -132,8 +133,8 @@ const waitPast = async (deadline: number) => {
   CLOCK = Date.now();
 };
 const handler = new MeshHandler(
-  kv, js, jsm,
-  { space: SPACE, endpoint: EP, runId: "r-sleep", instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
+  nc, kv, js, jsm,
+  { space: SPACE, endpoint: EP, runId: "r-sleep", caller: CALLER, instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
   new EpfSettleWatcher(js, jsm, SPACE, 3_000),
   () => CLOCK,
 );
@@ -209,8 +210,8 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
   console.log("• 2 — the same step after a crash");
   const TOKEN2 = "cnRlc3RfYXR0YWNoX3Rva2VuXzAwMDI";
   const live = new MeshHandler(
-    kv, js, jsm,
-    { space: SPACE, endpoint: EP, runId: "r-sleep", instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
+    nc, kv, js, jsm,
+    { space: SPACE, endpoint: EP, runId: "r-sleep", caller: CALLER, instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
     new EpfSettleWatcher(js, jsm, SPACE, 3_000),
     () => Date.now(),
   );
@@ -258,8 +259,8 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
   console.log("• 3 — a resume that arrives after its own deadline, never armed");
   const TOKEN3 = "cnRlc3Rfb3ZlcmR1ZV90b2tlbl8wMDAz";
   const live = new MeshHandler(
-    kv, js, jsm,
-    { space: SPACE, endpoint: EP, runId: "r-sleep", instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
+    nc, kv, js, jsm,
+    { space: SPACE, endpoint: EP, runId: "r-sleep", caller: CALLER, instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
     new EpfSettleWatcher(js, jsm, SPACE, 3_000),
     () => Date.now(),
   );

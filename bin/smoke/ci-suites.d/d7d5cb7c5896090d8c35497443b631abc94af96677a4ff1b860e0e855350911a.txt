@@ -1,0 +1,3 @@
+# cotal-lang spawn against the REAL manager: a driven program spawns a real seat (live on ps),
+# and a losing race branch's real seat is released by the driver's own discharge sweep.
+smoke:lang-spawn-live

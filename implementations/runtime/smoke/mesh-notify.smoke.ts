@@ -46,6 +46,7 @@ const RUN = "r-notify";
 const IID = "i".repeat(26);
 const EPOCH = 3;
 const HOLDER = { id: "manager", lifecycleUid: "u_meshnotify" };
+const CALLER = { owner: "local", actor: "wf_meshsuite", uid: "a".repeat(26) };
 /** Agent names are DOTTED, which is the whole reason the key holds a digest instead. */
 const PLANNER = "local.planner-1";
 const BUILDER = "local.builder-2";
@@ -76,8 +77,8 @@ const kv = await openRecordsBucket(nc, SPACE);
 
 const NOW = Date.now();
 const handler = new MeshHandler(
-  kv, js, jsm,
-  { space: SPACE, endpoint: EP, runId: RUN, instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
+  nc, kv, js, jsm,
+  { space: SPACE, endpoint: EP, runId: RUN, caller: CALLER, instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
   new EpfSettleWatcher(js, jsm, SPACE, 3_000),
   () => NOW,
 );

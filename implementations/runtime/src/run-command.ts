@@ -12,17 +12,19 @@
  * pumps on a live mesh; `start` on a bare broker still runs and still resolves, it just cannot
  * expire a pause.
  */
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { connect } from "@nats-io/transport-node";
+import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
 import {
+  DEV_OWNER,
   newTakeoverId,
   openRecordsBucket,
   readRunRecord,
   replayRunJournal,
   standaloneConnectOpts,
+  type EpCaller,
   type ParsedArgs,
 } from "@cotal-ai/core";
 import { journalEntryKeyString, type JournalEntry } from "@cotal-ai/lang";
@@ -47,6 +49,7 @@ interface RunValues {
 }
 
 interface Planes {
+  nc: NatsConnection;
   js: JetStreamClient;
   jsm: JetStreamManager;
   kv: KV;
@@ -67,6 +70,7 @@ async function openPlanes(values: RunValues): Promise<Planes> {
   const kv = await openRecordsBucket(nc, conn.space);
   const max = nc.info?.max_payload;
   return {
+    nc,
     js,
     jsm,
     kv,
@@ -91,6 +95,18 @@ async function openPlanes(values: RunValues): Promise<Planes> {
 function cliHolder(): { id: string; lifecycleUid: string; instanceId: string } {
   const uid = randomUUID().replaceAll("-", "");
   return { id: `cli-run-${uid.slice(0, 8)}`, lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };
+}
+
+/**
+ * The RUN-STABLE caller triple the run's durable actions ride, derived from the run id and nothing
+ * else: goal facts key on the submitting triple, so a resume — any host, any invocation — must
+ * re-derive the same one or it polls terminals its own submissions never wrote. The holder above is
+ * deliberately fresh per invocation (the activation barrier needs that); this is deliberately not.
+ * Grammar: actor is `[A-Za-z0-9_]+` and uid `[a-z0-9]{26,32}`, both satisfied by hex slices.
+ */
+function runCaller(runId: string): EpCaller {
+  const h = createHash("sha256").update(runId, "utf8").digest("hex");
+  return { owner: DEV_OWNER, actor: `wf_${h.slice(0, 12)}`, uid: h.slice(12, 38) };
 }
 
 function readProgram(values: RunValues): string {
@@ -126,6 +142,7 @@ async function start(values: RunValues, planes: Planes): Promise<void> {
   const runId = `run-${randomBytes(16).toString("hex")}`;
   const who = cliHolder();
   const handler = new MeshHandler(
+    planes.nc,
     planes.kv,
     planes.js,
     planes.jsm,
@@ -133,6 +150,7 @@ async function start(values: RunValues, planes: Planes): Promise<void> {
       space: planes.space,
       endpoint,
       runId,
+      caller: runCaller(runId),
       instanceId: who.instanceId,
       epoch: 1,
       holder: { id: who.id, lifecycleUid: who.lifecycleUid },
@@ -172,6 +190,7 @@ async function resume(values: RunValues, planes: Planes, runId: string | undefin
   const who = cliHolder();
   const epoch = (status?.epoch ?? 0) + 1;
   const handler = new MeshHandler(
+    planes.nc,
     planes.kv,
     planes.js,
     planes.jsm,
@@ -179,6 +198,7 @@ async function resume(values: RunValues, planes: Planes, runId: string | undefin
       space: planes.space,
       endpoint,
       runId,
+      caller: runCaller(runId),
       instanceId: who.instanceId,
       epoch,
       holder: { id: who.id, lifecycleUid: who.lifecycleUid },

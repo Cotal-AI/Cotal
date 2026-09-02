@@ -37,16 +37,30 @@ import {
   assertSafePattern,
   runNoticeId,
   writeRunNotice,
+  actionContext,
+  invokeCommand,
+  readGoalResult,
+  readGoalStatus,
+  resolveService,
+  type ActionContext,
   type CheckpointRef,
   type CheckpointSettleFact,
   type CotalMessage,
+  type EpAttributedReply,
+  type EpCaller,
+  type GoalRef,
+  type GoalResultFact,
+  type ResolvedService,
 } from "@cotal-ai/core";
+import type { NatsConnection } from "@nats-io/transport-node";
 import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
 import {
   parseDuration,
   Cancelled,
+  EffectError,
   EffectRefused,
+  type AgentHandleValue,
   type CancelSignal,
   type WaitRequest,
   type CheckpointRaw,
@@ -55,6 +69,7 @@ import {
   type JournalEntry,
   type NotifyRequest,
   type SleepRequest,
+  type SpawnRequest,
   journalEntryKeyString,
   stepKeyString,
 } from "@cotal-ai/lang";
@@ -75,6 +90,14 @@ export interface MeshHandlerBinding {
    * the caller hands `drive()` a run id and a handler together.
    */
   readonly runId: string;
+  /**
+   * The caller triple this run's durable ACTIONS ride: goal facts key on
+   * `epf.<e>.goal.<owner>.<actor>.<uid>.<goalId>.result`, so the triple that submits a spawn must
+   * be the triple that reads its terminal back after a crash — on any host, at any epoch. It is
+   * therefore RUN-STABLE by contract: derive it from the run id (the run-command derivation), never
+   * from the process identity, or a resumed run polls a subject its own submission never wrote.
+   */
+  readonly caller: EpCaller;
   readonly instanceId: string;
   readonly epoch: number;
   /**
@@ -127,13 +150,14 @@ export interface SettleWatcher {
 }
 
 /**
- * The one subject the whole seam is gated by: every refused effect addresses an agent handle, and
- * only `spawn` produces one. Named once so the five refusals cannot drift into five reasons.
+ * The one subject the remaining seam is gated by: every still-refused effect CONSUMES an agent
+ * handle (`spawn`, which produces one, performs). Named once so the refusals cannot drift apart.
  */
-const ACTION_MACHINERY = "the durable-action machinery an agent handle comes from";
+const ACTION_MACHINERY = "the durable-action machinery an agent handle rides";
 
 export class MeshHandler {
   constructor(
+    private readonly nc: NatsConnection,
     private readonly kv: KV,
     private readonly js: JetStreamClient,
     private readonly jsm: JetStreamManager,
@@ -141,6 +165,31 @@ export class MeshHandler {
     private readonly watcher: SettleWatcher,
     private readonly clock: () => number = () => Date.now(),
   ) {}
+
+  /**
+   * The resolved manager service, memoized as a PROMISE so concurrent branches share one describe
+   * round-trip — and dropped on failure, so a resolve that lost to a manager restart is retried by
+   * the next effect instead of poisoning every spawn for the handler's lifetime.
+   */
+  private managerService: Promise<ResolvedService> | undefined;
+  private manager(): Promise<ResolvedService> {
+    this.managerService ??= resolveService(this.nc, this.binding.space, this.binding.endpoint, this.binding.caller)
+      .catch((e) => {
+        this.managerService = undefined;
+        throw e;
+      });
+    return this.managerService;
+  }
+
+  /** The branded goal-fact context over this handler's own connection, memoized the same way. */
+  private actions: Promise<ActionContext> | undefined;
+  private actionCtx(): Promise<ActionContext> {
+    this.actions ??= actionContext(this.nc, this.binding.space).catch((e) => {
+      this.actions = undefined;
+      throw e;
+    });
+    return this.actions;
+  }
 
   now(): number {
     return this.clock();
@@ -180,6 +229,10 @@ export class MeshHandler {
   async discharge(entries: readonly JournalEntry[]): Promise<void> {
     for (const e of entries) {
       if (e.requestId === undefined) continue;
+      if (e.kind === "spawn") {
+        await this.dischargeSpawn(e);
+        continue;
+      }
       if (e.kind !== "sleep" && e.kind !== "checkpoint" && e.kind !== "wait") continue;
       await this.cancelTimer({ endpoint: this.binding.endpoint, token: e.requestId });
       if (e.kind === "wait") {
@@ -189,6 +242,60 @@ export class MeshHandler {
         } catch { /* never created, or already deleted — nothing is held either way */ }
       }
     }
+  }
+
+  /**
+   * Release a cancelled spawn's AGENT (§8.6.4): the world half a loser `spawn` leaves behind is a
+   * seat the run will never address, so the discharge despawns it. The goal's identity re-derives
+   * from the entry alone — the request id IS the goalId (the pinned envelope id), and the caller
+   * triple is run-stable — so a crash before the acceptance was even bound still finds its goal.
+   *
+   * The terminal is what says whether a seat exists. No goal at all: the submission never landed,
+   * nothing to release. Accepted but not terminal: the manager owes a terminal within the accepted
+   * readiness window, so this waits it out (bounded by the recorded window plus one poll of slack)
+   * and THROWS if none lands — an unfinished discharge must not be flipped to `issued`, and the
+   * driver's next sweep retries idempotently. `succeeded` and `uncertain` both despawn (an
+   * uncertain readiness verdict leaves the process running); `failed` was reaped by the manager
+   * and `cancelled` means a despawn already drove the teardown, so both are already released.
+   */
+  private async dischargeSpawn(e: JournalEntry): Promise<void> {
+    const goalId = e.requestId as string;
+    const ref: GoalRef = { endpoint: this.binding.endpoint, caller: this.binding.caller, goalId };
+    const actx = await this.actionCtx();
+    let fact = await readGoalResult(actx, ref);
+    if (fact === undefined) {
+      if ((await readGoalStatus(actx, ref)) === undefined) return;
+      const window = typeof e.external?.readinessDeadlineMs === "number" ? e.external.readinessDeadlineMs : DISCHARGE_TERMINAL_BOUND_MS;
+      const deadline = this.now() + window + GOAL_POLL_MS;
+      for (;;) {
+        fact = await readGoalResult(actx, ref);
+        if (fact !== undefined) break;
+        if (this.now() >= deadline)
+          throw new Error(`the cancelled spawn goal "${goalId}" is accepted but reached no terminal within its ${window}ms readiness window; its agent cannot be released yet, and the discharge stays open to retry`);
+        await new Promise((r) => setTimeout(r, GOAL_POLL_MS).unref());
+      }
+    }
+    if (fact.state !== "succeeded" && fact.state !== "uncertain") return;
+    const target = spawnDespawnTarget(e.external, fact);
+    if (target === undefined) {
+      // An `uncertain` terminal carries no identity, and this entry bound none (the crash landed
+      // between the acceptance and the bind). The seat — if one came up — is not addressable from
+      // here, and no retry will ever learn more, so throwing would wedge every future sweep of
+      // this run behind an answer that cannot arrive. Name the leak for the operator instead.
+      console.error(`! discharge: the cancelled spawn goal "${goalId}" settled ${fact.state} with no readable agent identity; if its seat is up it must be despawned by hand (cotal ps)`);
+      return;
+    }
+    const service = await this.manager();
+    const reply = await invokeCommand(this.nc, this.binding.space, service, "despawn", { graceful: true }, {
+      target: { mode: "owner", ...target },
+      deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
+    });
+    // Tolerated refusals are the two "already gone" shapes: `not-found` (no such agent), and
+    // `expired` (the target's lifecycle mapping is gone or rotated — this despawn pins one
+    // incarnation, and an incarnation the mapping no longer names is not running).
+    const code = reply.reply.ok === false ? reply.reply.error?.code : undefined;
+    if (code !== undefined && code !== "not-found" && code !== "expired")
+      throw new Error(`the cancelled spawn's agent could not be despawned: ${reply.reply.error?.message ?? "refused"}`);
   }
 
   /**
@@ -412,9 +519,9 @@ export class MeshHandler {
 
   // ── The Lane-A seam ────────────────────────────────────────────────────────────────────────────
   //
-  // Every effect below addresses an AGENT HANDLE, and only `spawn` produces one. So the whole group
-  // is gated by a single subject — the durable-action machinery `spawn` rides — rather than by five
-  // separate absences, which is why they refuse through one class with one reason.
+  // Every effect below addresses an AGENT HANDLE. `spawn` — the effect that produces one — now
+  // performs above, so the remaining refusals are the handle CONSUMERS whose durable machinery has
+  // not landed yet; they still refuse through one class with one reason.
   //
   // THEY ARE HERE RATHER THAN ABSENT, and that is the point of the slice. A handler that simply
   // lacks the method fails as a TypeError from inside the interpreter: a fault about JavaScript
@@ -431,8 +538,83 @@ export class MeshHandler {
   // live, so a run started today heals the day the substrate arrives. This was referred up as a
   // live question and is now settled: an effect a host cannot perform is a hold, not a failure.
 
-  async spawn(_req: unknown, _ctx: EffectContext): Promise<never> {
-    throw new NotYetDurable("spawn(…)", ACTION_MACHINERY);
+  /**
+   * `spawn` is the manager's spawn ACTION, submitted under the step's own identity.
+   *
+   * **The request id is the goalId.** The envelope id is pinned to `ctx.requestId`, and the
+   * manager binds its goal under the envelope id — so a resumed run that re-submits is served the
+   * RECORDED acceptance (same fingerprint, same goal) instead of allocating a second seat, and the
+   * goal's terminal fact sits on a subject this run can re-derive from nothing but its journal.
+   *
+   * The ACCEPTANCE is bound as the entry's external state before the terminal is awaited, so a
+   * crash mid-await resumes straight into the poll — it must NOT re-invoke, because by then the
+   * manager may have restarted and a fresh submission would be judged against a live seat rather
+   * than served from its acceptance cache. The terminal await itself is a read of a durable fact,
+   * deliberately not `submitAndFollowGoal`: a live progress subscription dies with the process,
+   * and the fact is the thing a resume can still read.
+   *
+   * `permits`, `supervise` and `onFork` are POLICY, not identity (§6.4): they ride the journalled
+   * request and are enforced where they bind (`permits` at `turn`, `supervise` by `monitor`, an
+   * `onFork` at fork adoption) — nothing about them travels in the submission.
+   */
+  async spawn(req: SpawnRequest, ctx: EffectContext): Promise<AgentHandleValue> {
+    if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
+    if (req.worktree !== undefined) throw new NotYetDurable("spawn({worktree})", "the §9 worktree binding");
+    const goalId = ctx.requestId;
+    const ref: GoalRef = { endpoint: this.binding.endpoint, caller: this.binding.caller, goalId };
+
+    // A recorded goalId is a previous attempt's ACCEPTANCE: the submission landed and its
+    // identity was bound before the crash. Go straight back to the terminal.
+    if (ctx.resume?.goalId !== goalId) {
+      let reply: EpAttributedReply | undefined;
+      try {
+        const service = await this.manager();
+        reply = await invokeCommand(this.nc, this.binding.space, service, "spawn", spawnArgs(req), {
+          id: goalId,
+          deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
+        });
+      } catch (err) {
+        // The invoke did not come back — which does not prove nothing happened: the request may
+        // have been accepted while the reply was lost. The goal record is the arbiter: a durable
+        // trace under this goalId means the submission landed, so proceed to its terminal; none
+        // means it never did, and the raised error is the honest outcome.
+        if ((await readGoalStatus(await this.actionCtx(), ref)) === undefined) throw err;
+      }
+      if (reply !== undefined && reply.reply.ok === false) {
+        // Refused AT ACCEPT (persona not found, name collision, capacity): the manager bound no
+        // goal and provisioned nothing, so this is the effect's own failure, catchable as such.
+        const err = reply.reply.error;
+        throw new EffectError("L4002", "spawn",
+          `spawn(${req.persona}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? "refused with no message"}`,
+          err?.code !== undefined ? { code: err.code } : undefined);
+      }
+      const floor = reply === undefined ? undefined : (reply.reply.data as Record<string, unknown> | undefined);
+      if (floor !== undefined && floor.goalId !== goalId)
+        throw new Error(`the spawn acceptance names goal "${String(floor.goalId)}" but this submission pinned "${goalId}"; a mismatched acceptance never authorizes (SPEC 13.6)`);
+      // BIND BEFORE AWAITING: the goalId is re-derivable, but the bind is what tells a resume the
+      // submission LANDED — and the identity floor beside it is what a discharge despawns by when
+      // the terminal alone carries none (an `uncertain` verdict).
+      await ctx.bind({
+        goalId,
+        ...(floor !== undefined ? pickAcceptanceFloor(floor) : {}),
+      });
+    }
+
+    const fact = await this.goalTerminal(ref, ctx.signal);
+    return spawnHandleOf(req, fact, this.binding.endpoint);
+  }
+
+  /** Poll the goal's durable terminal fact, observing cancellation on the poll cadence — the same
+   *  discipline as `wait`: a race decided against this branch stops parking within one poll, and
+   *  the seat its acceptance may have produced is the DISCHARGE's to release, not this branch's. */
+  private async goalTerminal(ref: GoalRef, signal: CancelSignal): Promise<GoalResultFact> {
+    const actx = await this.actionCtx();
+    for (;;) {
+      if (signal.cancelled) throw new Cancelled(signal.reason ?? "cancelled");
+      const fact = await readGoalResult(actx, ref);
+      if (fact !== undefined) return fact;
+      await new Promise((r) => setTimeout(r, GOAL_POLL_MS).unref());
+    }
   }
 
   async turn(_req: unknown, _ctx: EffectContext): Promise<never> {
@@ -727,6 +909,85 @@ export function waitConsumerConfig(space: string, requestId: string, channel: st
 /** How long one poll of a wait's consumer blocks. The deadline itself is durable; this is only how
  *  late its observation can be, and a shorter poll buys latency at the cost of fetch traffic. */
 const WAIT_POLL_MS = 2_000;
+
+/** How often an action's durable terminal fact is looked for. Same argument as `WAIT_POLL_MS`. */
+const GOAL_POLL_MS = 2_000;
+
+/** How long one acceptance round-trip may take. The ACCEPT is synchronous and cheap on the far
+ *  side (the manager replies at identity mint, before any provision), so this bounds a lost
+ *  broker, not the spawn itself — the spawn's own outcome rides the goal terminal. */
+const SPAWN_ACCEPT_DEADLINE_MS = 30_000;
+
+/** The terminal wait a discharge grants a goal whose entry recorded no readiness window (the
+ *  crash-before-bind case). Matches the manager's default readiness budget. */
+const DISCHARGE_TERMINAL_BOUND_MS = 30_000;
+
+/** The manager `spawn` args a {@link SpawnRequest} submits: persona names the persona file
+ *  (`name`), `join` becomes the seat's channel subscriptions. Policy fields do not travel. */
+function spawnArgs(req: SpawnRequest): Record<string, unknown> {
+  return {
+    name: req.persona,
+    ...(req.model !== undefined ? { model: req.model } : {}),
+    ...(req.variant !== undefined ? { variant: req.variant } : {}),
+    ...(req.role !== undefined ? { role: req.role } : {}),
+    ...(req.join !== undefined && req.join.length > 0 ? { subscribe: req.join.map((c) => c.channel) } : {}),
+  };
+}
+
+/** The acceptance-floor fields worth binding: the allocated identity a discharge despawns by, and
+ *  the readiness window that bounds its wait for a terminal. Copied field-by-field so a widened
+ *  acceptance never smuggles unknown keys into the journal. */
+function pickAcceptanceFloor(floor: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of ["name", "owner", "actor", "uid", "readinessDeadlineMs"] as const) {
+    if (floor[k] !== undefined) out[k] = floor[k];
+  }
+  return out;
+}
+
+/** The despawn target for a discharged spawn: the bound acceptance floor when the entry carries
+ *  one, else the identity the SUCCEEDED terminal itself records (`id` is the `owner.actor`
+ *  principal, `lifecycleUid` the incarnation). `undefined` when neither names an agent. */
+function spawnDespawnTarget(
+  external: Readonly<Record<string, unknown>> | undefined,
+  fact: GoalResultFact,
+): { owner: string; actor: string; lifecycleUid: string } | undefined {
+  if (typeof external?.owner === "string" && typeof external.actor === "string" && typeof external.uid === "string")
+    return { owner: external.owner, actor: external.actor, lifecycleUid: external.uid };
+  const d = fact.data as { id?: unknown; lifecycleUid?: unknown } | undefined;
+  if (typeof d?.id !== "string" || typeof d.lifecycleUid !== "string") return undefined;
+  const dot = d.id.indexOf(".");
+  if (dot <= 0 || dot === d.id.length - 1) return undefined;
+  return { owner: d.id.slice(0, dot), actor: d.id.slice(dot + 1), lifecycleUid: d.lifecycleUid };
+}
+
+/**
+ * The program's value from a spawn terminal. `succeeded` yields the agent handle — `agent` is the
+ * `<name>#<lifecycleUid>` composite, one string that addresses the NAME the mesh knows the seat by
+ * while pinning WHICH incarnation this run spawned (a respawned namesake is not this handle).
+ * Every other state throws the catchable spawn failure (L4002) carrying the terminal's own reason:
+ * `failed` and `uncertain` are the manager's readiness verdicts, `cancelled` means a despawn ended
+ * the launch under it, and each replays identically because the fact is durable.
+ */
+function spawnHandleOf(req: SpawnRequest, fact: GoalResultFact, endpoint: string): AgentHandleValue {
+  if (fact.state !== "succeeded") {
+    const d = fact.data as { error?: unknown; reason?: unknown; cancelledBy?: unknown } | undefined;
+    const why =
+      typeof d?.error === "string" ? d.error
+      : typeof d?.reason === "string" ? d.reason
+      : d?.cancelledBy !== undefined ? `cancelled by ${JSON.stringify(d.cancelledBy)}`
+      : `the ${endpoint} endpoint recorded no reason`;
+    throw new EffectError("L4002", "spawn", `spawn(${req.persona}) ${fact.state}: ${why}`, { state: fact.state });
+  }
+  const d = fact.data as { name?: unknown; lifecycleUid?: unknown; role?: unknown } | undefined;
+  if (typeof d?.name !== "string" || typeof d.lifecycleUid !== "string")
+    throw new Error(`the spawn goal's succeeded terminal carries no readable agent identity (${JSON.stringify(fact.data)}); a garbled terminal never yields a handle (SPEC 13.6)`);
+  return {
+    agent: `${d.name}#${d.lifecycleUid}`,
+    persona: req.persona,
+    ...(typeof d.role === "string" ? { role: d.role } : {}),
+  };
+}
 
 /** How often a pause that nobody will answer looks for the broker's fire. Same argument as
  *  `WAIT_POLL_MS`: the deadline is durable and this is only how late its observation can be. */

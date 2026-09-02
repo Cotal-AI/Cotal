@@ -62,6 +62,7 @@ const EP = "manager";
 const IID = "i".repeat(26);
 const EPOCH = 4;
 const HOLDER = { id: "manager", lifecycleUid: "u_meshcp" };
+const CALLER = { owner: "local", actor: "wf_meshsuite", uid: "a".repeat(26) };
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -126,10 +127,10 @@ const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise
 
 const NOW = Date.now(); // real schedules need real wall-clock deadlines
 const binding = {
-  space: SPACE, endpoint: EP, runId: "r-cp", instanceId: IID, epoch: EPOCH, holder: HOLDER,
+  space: SPACE, endpoint: EP, runId: "r-cp", caller: CALLER, instanceId: IID, epoch: EPOCH, holder: HOLDER,
   defaultCheckpointTimeout: "1h",
 };
-const handler = new MeshHandler(kv, js, jsm, binding, new EpfSettleWatcher(js, jsm, SPACE, 3_000), () => NOW);
+const handler = new MeshHandler(nc, kv, js, jsm, binding, new EpfSettleWatcher(js, jsm, SPACE, 3_000), () => NOW);
 const deps = { kv, js, jsm, space: SPACE, endpoint: EP };
 
 const PROGRAM = `
@@ -242,7 +243,7 @@ const a = await checkpoint("approve", "Ship it?", { timeout: "2s", onExpiry: "pr
   // Its OWN handler, on a clock that MOVES. Everywhere else here the clock is pinned so a deadline
   // is a value the cells can name; this block's subject is a deadline actually passing, and a clock
   // frozen before its own deadline judges every real fire premature and re-arms instead of expiring.
-  const expiring = new MeshHandler(kv, js, jsm, binding, new EpfSettleWatcher(js, jsm, SPACE, 3_000), () => Date.now());
+  const expiring = new MeshHandler(nc, kv, js, jsm, binding, new EpfSettleWatcher(js, jsm, SPACE, 3_000), () => Date.now());
   const driven = startRun(js, jsm, {
     space: SPACE, endpoint: EP, kv, runId: "cp-3", source, lease: lease("m1", 1, takeovers + 1), handler: expiring,
   });
@@ -457,7 +458,7 @@ const a = await checkpoint("approve", "Ship it?", { timeout: "2s", onExpiry: "pr
     ...binding, runId: "cp-7b", instanceId: "j".repeat(26), epoch: EPOCH + 1,
     holder: { id: "cli-run-successor", lifecycleUid: "u_meshcp_b" },
   };
-  const h2 = new MeshHandler(kv, js, jsm, successor, new EpfSettleWatcher(js, jsm, SPACE, 3_000), () => NOW);
+  const h2 = new MeshHandler(nc, kv, js, jsm, successor, new EpfSettleWatcher(js, jsm, SPACE, 3_000), () => NOW);
   // The rejection shim is part of the cell: an attach that REFUSES (the pre-repair behaviour)
   // must fail the cell that names it, never kill the suite as an unhandled rejection.
   const attached = h2.checkpoint({ prompt: "Ship it?", timeout: "1h" } as never, { requestId: token, signal: { cancelled: false, onCancel() { /* never fires here */ } } } as never)

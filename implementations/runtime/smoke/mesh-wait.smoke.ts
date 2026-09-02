@@ -62,6 +62,7 @@ const EP = "manager";
 const IID = "i".repeat(26);
 const EPOCH = 5;
 const HOLDER = { id: "manager", lifecycleUid: "u_meshwait" };
+const CALLER = { owner: "local", actor: "wf_meshsuite", uid: "a".repeat(26) };
 const CHANNEL = "build";
 
 let ok = 0, fail = 0;
@@ -139,8 +140,8 @@ const pastDue = async (token: string): Promise<boolean> => {
   return await brokerFired(token);
 };
 const handler = new MeshHandler(
-  kv, js, jsm,
-  { space: SPACE, endpoint: EP, runId: "r-wait", instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
+  nc, kv, js, jsm,
+  { space: SPACE, endpoint: EP, runId: "r-wait", caller: CALLER, instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
   new EpfSettleWatcher(js, jsm, SPACE, 3_000),
   now,
 );
