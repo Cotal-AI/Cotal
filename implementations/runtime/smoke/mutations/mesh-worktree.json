@@ -1,0 +1,64 @@
+{
+  "suite": "implementations/runtime/smoke/mesh-worktree.smoke.ts",
+  "guard": "The runtime half of `two agents MUST NOT share a worktree concurrently` is real: the spawn-time guard refuses a live holder's tree as L4008, the refusal reads presence liveness so a dead holder releases with no bookkeeping, the holder registry is fed at spawn and reseeded at adoption, and the handle carries the logical worktree into the journal",
+  "command": "pnpm smoke:runtime-mesh-worktree",
+  "completionMarker": "mesh-worktree.smoke:",
+  "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/mesh-worktree.json   # --config resolves against the repo root, never the cwd",
+  "why": [
+    "Lane F durable-actions step 8 (2026-09-03): the SPEC 6.5 worktree binding is a logical",
+    "contract with one rule, and the runtime enforces the half the validator cannot see. Each",
+    "obligation has a mutant: the guard call itself (W1), the presence-liveness read that makes a",
+    "dead holder's tree reusable rather than locked forever (W2), the registration that makes the",
+    "guard able to refuse at all (W3), the adoption reseed that keeps a resumed run enforcing what",
+    "its journal shows (W4), and the handle spread that carries the worktree into the journal and",
+    "the turn client's L4004 (W5). All five mutate mesh-handler.ts, which the suite imports through",
+    "a relative `../src` path — no build sits between the mutation and the run."
+  ],
+  "mutations": [
+    {
+      "name": "the spawn guard is never consulted",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      if (req.worktree !== undefined) await this.guardWorktree(req.worktree, req.persona);",
+      "replace": "      if (false) await this.guardWorktree(req.worktree!, req.persona);",
+      "expectRed": "the second spawn refuses as the effect's own L4008, naming the tree and its holder",
+      "cell": "the second spawn refuses as the effect's own L4008, naming the tree and its holder",
+      "note": "The one call site that enforces the rule at spawn. Measured 2026-09-03: both refusal cells red — the live-holder L4008 and the adopted-registry L4008 — 7 passed, 2 failed."
+    },
+    {
+      "name": "the liveness read is inverted, so a dead holder still blocks its tree",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (rows.some((p) => p.card?.name === holder.name && p.lifecycleUid === holder.uid))",
+      "replace": "    if (true || rows.some((p) => p.card?.name === holder.name && p.lifecycleUid === holder.uid))",
+      "expectRed": "a spawn into the dead holder's tree performs: sequential reuse is legal",
+      "cell": "a spawn into the dead holder's tree performs: sequential reuse is legal",
+      "note": "Presence IS the release: nothing else ever unbinds a tree. Measured 2026-09-03: both sequential-reuse cells red — the dead holder's tree and the lapsed adopted holder's tree stay refused — 7 passed, 2 failed."
+    },
+    {
+      "name": "a fresh spawn never records its holder",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (typeof handle.worktree === \"string\")\n      this.worktreeHolders.set(handle.worktree, { name: parseAgentHandle(handle.agent).name, uid: parseAgentHandle(handle.agent).uid });",
+      "replace": "    if (false)\n      this.worktreeHolders.set(String(handle.worktree), { name: parseAgentHandle(handle.agent).name, uid: parseAgentHandle(handle.agent).uid });",
+      "expectRed": "the second spawn refuses as the effect's own L4008, naming the tree and its holder",
+      "cell": "the second spawn refuses as the effect's own L4008, naming the tree and its holder",
+      "note": "With no registration the guard has nothing to refuse over. Measured 2026-09-03: exactly one cell red — the live-holder L4008 — and the adoption block stays green because its holder arrives through the journal reseed, 8 passed, 1 failed. The single red is why W4 exists separately."
+    },
+    {
+      "name": "adoption never reseeds the holders, so a resumed run stops enforcing its journal",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "        if (typeof handle.worktree === \"string\") this.worktreeHolders.set(handle.worktree, { name, uid });",
+      "replace": "        if (false) this.worktreeHolders.set(String(handle.worktree), { name, uid });",
+      "expectRed": "the adopted holder registry refuses a spawn into the recorded live holder's tree",
+      "cell": "the adopted holder registry refuses a spawn into the recorded live holder's tree",
+      "note": "The other feed line, deletable separately from W3. Measured 2026-09-03: the adopted-registry L4008 cell reds, and the block's follow-up cell reds with it because the unrefused intruder then holds the tree against the successor, 7 passed, 2 failed."
+    },
+    {
+      "name": "the handle loses its worktree, so the journal and the turn client ride bare handles",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    ...(typeof req.worktree === \"string\" ? { worktree: req.worktree } : {}),",
+      "replace": "",
+      "expectRed": "the settled handle carries the logical worktree into the journal",
+      "cell": "the settled handle carries the logical worktree into the journal",
+      "note": "The spread is what everything downstream reads: registration, the journal record, and the turn client's cross-tree L4004. Measured 2026-09-03: six cells red across four blocks — the journal cell, both spawn-holds cells, the live-holder L4008, the cross-tree L4004 (the yield succeeds instead), and the lapsed-holder reuse cell whose handle comes back bare — 3 passed, 6 failed."
+    }
+  ]
+}

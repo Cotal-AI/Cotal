@@ -68,6 +68,17 @@
       "note": "The whole second half of #532 deleted at its one call site. Measured 2026-09-02: block 12's issued cell reds first with `{losers:[\"slow\"],issued:false}` — the exact bytes every completed run in the tree carried before the sweep existed — then block 13's consumer and record cells. The runs still complete, which is why nothing upstream of the discharge cells notices."
     },
     {
+      "name": "adoption never re-issues, so recovery waits for completion to sweep a dead loser",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "  await dischargeCancellations(resumed, store, req.handler);",
+      "replace": "  void resumed;",
+      "command": "pnpm smoke:runtime-mesh-wait",
+      "completionMarker": "mesh-wait.smoke:",
+      "expectRed": "the adoption sweep ends the dead loser's world state and flips the record WHILE the run is still parked",
+      "cell": "the adoption sweep ends the dead loser's world state and flips the record WHILE the run is still parked",
+      "note": "The adoption-time call, deletable separately from the completion sweep: a takeover of a run parked past its race decision must re-issue the recorded cancellation BEFORE any new step, or the dead loser's consumer and pause outlive the crash for as long as the run keeps running. Measured 2026-09-03: exactly one cell red — block 14's WHILE-parked cell reads issued:false with the consumer still live — and the block's completes cell stays green because the completion sweep still fires at the end, which is precisely the discrimination the cell exists to grade; 53 passed, 1 failed."
+    },
+    {
       "name": "the sweep flips the record without sweeping the world",
       "file": "implementations/runtime/src/run-driver.ts",
       "find": "    if (discharger !== undefined) {\n      const prefixes = e.cancel.losers.map((b) => `${scopeKey}/b:${b}/`);\n      const losers = entries.filter((x) =>\n        x !== e && prefixes.some((p) => journalEntryKeyString(x).startsWith(p)));\n      await discharger.discharge(losers);\n    }",
