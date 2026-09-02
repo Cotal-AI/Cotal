@@ -14,7 +14,6 @@ export {
   MeshHandler,
   EpfSettleWatcher,
   CheckpointAnswerMissing,
-  NotYetDurable,
   waitConsumerName,
   waitConsumerConfig,
   rearmOutstandingPauses,

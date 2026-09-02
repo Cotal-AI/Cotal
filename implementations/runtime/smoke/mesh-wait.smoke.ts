@@ -50,8 +50,8 @@ import { Cancelled, journalEntryKeyString, type JournalEntry } from "@cotal-ai/l
 import {
   MeshHandler,
   EpfSettleWatcher,
-  NotYetDurable,
   startRun,
+  driveRun,
   waitConsumerName,
   waitConsumerConfig,
 } from "../src/index.js";
@@ -171,13 +171,14 @@ const ctx = (requestId: string, resume?: Record<string, unknown>) => {
   return { ctx: value as never, bound, cancel };
 };
 
-const say = async (text: string, from = "ann") => {
+const sayOn = async (channel: string, text: string, from = "ann") => {
   const msg: CotalMessage = {
     id: `m-${Date.now()}-${text.length}-${from}`, ts: now(), space: SPACE,
-    from: { id: "x".repeat(26), name: from }, channel: CHANNEL, parts: [{ kind: "text", text }],
+    from: { id: "x".repeat(26), name: from }, channel, parts: [{ kind: "text", text }],
   };
-  await js.publish(chatSubject(SPACE, "o", "a", CHANNEL), new TextEncoder().encode(JSON.stringify(msg)));
+  await js.publish(chatSubject(SPACE, "o", "a", channel), new TextEncoder().encode(JSON.stringify(msg)));
 };
+const say = async (text: string, from = "ann") => await sayOn(CHANNEL, text, from);
 
 const tok = (n: string) => `w${n}`.padEnd(20, "0");
 
@@ -403,11 +404,10 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
 
 // ── 8) the agent-addressed event kinds: `replied` still refuses, `down` now performs ──────────
 //
-// `replied` rides the turn machinery that has not landed, so it refuses through the same seam as
-// the durable actions themselves — one place to look when that surface lands. `down` LEFT the
-// seam (it rides presence liveness; `mesh-monitor` owns the pair), so what this suite holds is
-// the boundary: a value that is not an agent handle refuses loudly at the call, never as the
-// seam's hold and never as a park.
+// `replied` and `down` both perform now (`mesh-replied` and `mesh-monitor` own them), so what
+// this suite holds is the boundary: a value that is not an agent handle refuses loudly at the
+// call, and a well-formed handle the run cannot observe refuses on the run roster — never a
+// park either way.
 {
   // BOUNDED. A refusal that stops refusing must be observable as "did not refuse", not as a suite
   // that stops: an implementation which accepts one of these would otherwise wait for an event that
@@ -418,11 +418,15 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
   };
   const replied = await refuse({ event: "replied", agent: "builder" });
   const down = await refuse({ event: "down", agent: "builder" });
-  c("wait(replied(…)) refuses as NOT YET DURABLE rather than pretending", replied instanceof NotYetDurable, (replied as Error)?.name);
-  c("and the refusal says what it is waiting on, so it is a seam and not a mystery",
-    (replied as Error)?.message.includes("durable-action machinery"), (replied as Error)?.message?.slice(0, 60));
-  c("wait(down(…)) left the seam: a value that is not an agent handle refuses loudly at the call",
-    down instanceof Error && !(down instanceof NotYetDurable) && down.message.includes("not an agent handle"),
+  c("wait(replied(…)) on a value that is not an agent handle refuses loudly at the call",
+    replied instanceof Error && replied.message.includes("not an agent handle"),
+    (replied as Error)?.message?.slice(0, 90));
+  const stranger = await refuse({ event: "replied", agent: `builder#${"u".repeat(26)}` });
+  c("wait(replied(…)) on a handle this run never spawned or turned refuses on the roster, never parks",
+    stranger instanceof Error && stranger.message.includes("roster"),
+    (stranger as Error)?.message?.slice(0, 90));
+  c("wait(down(…)): a value that is not an agent handle refuses loudly at the call",
+    down instanceof Error && down.message.includes("not an agent handle"),
     (down as Error)?.message?.slice(0, 90));
 }
 
@@ -647,6 +651,99 @@ log("winner", r.index);
   const scope = folded(await journalOf("race-2")).get("/race:decided#0");
   c("and the record agrees: `issued` flipped true only after the world was swept",
     scope?.cancel?.issued === true, JSON.stringify(scope?.cancel));
+}
+
+// ── 14) THE DISCHARGE ALSO RUNS AT ADOPTION: recovery does not wait for the run to end ─────────
+// Block 13 grades the completion sweep. But a resumed run can hold its lease for hours, and a
+// crash that left `issued: false` would leave the dead loser's world state live that whole time.
+// So the driver sweeps the replayed prefix at ADOPTION too, before the engine performs any new
+// step — graded here by a takeover of a run that is still PARKED: the flip and the world sweep
+// must land while the run is demonstrably not finished.
+{
+  let dirtyId: string | undefined;
+  let holdId: string | undefined;
+  const dirty = {
+    now: () => handler.now(),
+    discharge: (entries: readonly JournalEntry[]) => handler.discharge(entries),
+    sleep: (r: never, kc: never) => handler.sleep(r, kc),
+    checkpoint: (r: never, kc: never) => handler.checkpoint(r, kc),
+    notify: (r: never, kc: never) => handler.notify(r, kc),
+    wait: async (
+      req: { event?: { channel?: string } },
+      kc: { requestId: string; signal: { cancelled: boolean; reason?: string; onCancel(fn: (reason: string) => void): void } },
+    ): Promise<unknown> => {
+      // The hold is parked BLIND in this incarnation: the successor is who performs it for
+      // real, so the two drivers never contend for one consumer's message.
+      if (req.event?.channel === "wf-hold") { holdId = kc.requestId; return await new Promise(() => { /* superseded, never settles */ }); }
+      if (req.event?.channel !== "wf-lost3") return await handler.wait(req as never, kc as never);
+      dirtyId = kc.requestId;
+      await jsm.consumers.add(chatStream(SPACE), waitConsumerConfig(SPACE, kc.requestId, "wf-lost3") as never);
+      return await new Promise((_, reject) => {
+        const die = (reason: string): void => reject(new Cancelled(reason));
+        if (kc.signal.cancelled) die(kc.signal.reason ?? "cancelled");
+        else kc.signal.onCancel(die);
+      });
+    },
+  };
+  const source = `
+const r = await race({
+  quick: async () => await wait(message(channel("${CHANNEL}"))),
+  slow: async () => await wait(message(channel("wf-lost3"))),
+}, { name: "decided" });
+await wait(message(channel("wf-hold")), { name: "hold" });
+log("released", r.index);
+`;
+  const first = startRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "race-3", source, lease: lease(), handler: dirty as never,
+  }).catch((e: unknown) => ({ status: "threw" as const, error: String((e as Error)?.message).slice(0, 120) }));
+  for (let i = 0; i < 100 && dirtyId === undefined; i += 1) await wait(100);
+  await say("the winner a third time");
+  // The first driver crosses the decided race and parks on the hold — with the cancel recorded
+  // and NOT yet issued, because the completion sweep is still nowhere in sight.
+  let held = false;
+  for (let i = 0; i < 100 && !held; i += 1) {
+    held = (await journalOf("race-3")).some((e) => e.kind === "wait" && e.name === "hold" && e.state === "pending");
+    if (!held) await wait(100);
+  }
+  const before = folded(await journalOf("race-3")).get("/race:decided#0");
+  c("the parked run's recorded cancellation is still un-issued and the dead loser's consumer is live",
+    held && before?.cancel?.issued === false && dirtyId !== undefined &&
+      (await jsm.consumers.info(chatStream(SPACE), waitConsumerName(dirtyId)).then(() => "still-there", () => "gone")) === "still-there",
+    JSON.stringify({ held, cancel: before?.cancel }));
+  // The takeover: a successor lease adopts the run. The sweep must land at ADOPTION, while the
+  // run is still parked on the hold — not at a completion that has not happened.
+  const second = driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "race-3", source, lease: lease(), handler,
+  }).catch((e: unknown) => ({ status: "threw" as const, error: String((e as Error)?.message).slice(0, 120) }));
+  let sweptAt = "never";
+  for (let i = 0; i < 150; i += 1) {
+    const scope = folded(await journalOf("race-3")).get("/race:decided#0");
+    const consumer = dirtyId === undefined ? "?" :
+      await jsm.consumers.info(chatStream(SPACE), waitConsumerName(dirtyId)).then(() => "still-there", () => "gone");
+    if (scope?.cancel?.issued === true && consumer === "gone") {
+      const stillParked = (await journalOf("race-3")).some(
+        (e) => e.kind === "wait" && e.name === "hold" && e.state === "pending")
+        && !(await journalOf("race-3")).some((e) => e.kind === "wait" && e.name === "hold" && e.state === "settled");
+      sweptAt = stillParked ? "adoption" : "completion";
+      break;
+    }
+    await wait(200);
+  }
+  c("the adoption sweep ends the dead loser's world state and flips the record WHILE the run is still parked",
+    sweptAt === "adoption", sweptAt);
+  // Release only once the SUCCESSOR is demonstrably reading the hold: its re-performed wait is
+  // what creates the durable consumer (the first driver parked blind), so its existence is the
+  // signal, and no message can be eaten by a superseded reader.
+  for (let i = 0; i < 150; i += 1) {
+    if (holdId !== undefined &&
+      (await jsm.consumers.info(chatStream(SPACE), waitConsumerName(holdId)).then(() => true, () => false))) break;
+    await wait(200);
+  }
+  await sayOn("wf-hold", "release the hold");
+  const outcome = await withDeadline(second, 30_000, "the adopted run");
+  c("the adopted run then completes on its own schedule",
+    (outcome as { status?: string } | undefined)?.status === "completed", JSON.stringify(outcome));
+  void first; // superseded mid-park — released or parked forever; its ending is not this block's claim
 }
 
 console.log(`mesh-wait.smoke: ${ok} passed, ${fail} failed`);

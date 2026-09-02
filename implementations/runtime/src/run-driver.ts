@@ -494,6 +494,14 @@ async function drive(
   if (adopt !== undefined) await adopt(resumed);
 
   const store = new RunJournalStore(appender);
+  // ADOPTION-TIME discharge, the recovery half of the `cancel.issued` stages: a crash between a
+  // scope's cancel record and its discharge leaves the losers' external state live — a seat still
+  // up in its worktree, a pause still armed — for as long as the resumed run keeps running. The
+  // completion sweep alone would wait until the END of a run that may hold the lease for hours,
+  // so recovery re-issues the owed cancellations before the engine performs any new step.
+  // Idempotent by the plane, exactly as the completion sweep is; an empty or fully-issued prefix
+  // is a no-op, so a fresh run pays nothing.
+  await dischargeCancellations(resumed, store, req.handler);
   const journal = new Journal({
     run: req.runId,
     // The prefix the barrier validated and activated on, not a second read of the subject.

@@ -44,7 +44,7 @@ import {
   type Presence,
 } from "@cotal-ai/core";
 import type { JournalEntry } from "@cotal-ai/lang";
-import { MeshHandler, EpfSettleWatcher, startRun, NotYetDurable } from "../src/index.js";
+import { MeshHandler, EpfSettleWatcher, startRun } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
 const SPACE = "meshmonitor";
@@ -320,7 +320,7 @@ const pendingEntry = async (runId: string, kind: string, ms = 15_000): Promise<J
     stepCtx(token("j")).ctx,
   ).then(() => null, (e: unknown) => e as Error);
   c("monitor of a value that is not an agent handle refuses loudly, naming the form",
-    bad !== null && bad.message.includes("not an agent handle") && !(bad instanceof NotYetDurable),
+    bad !== null && bad.message.includes("not an agent handle"),
     bad?.message?.slice(0, 120));
   const deadOk = await h.monitor(
     { agent: { agent: `long-gone#${uid("k")}`, persona: "dev" } } as never,

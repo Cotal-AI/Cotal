@@ -193,12 +193,20 @@ resolves the wait at once, and two replies resolve to the latest by the yield's 
 or cancelled turn is never a reply, so an unanswered wait rides its own mediated timeout to
 `null`, and a handle the run never spawned or turned refuses loudly, since only this run's turns
 are observable.
-A `spawn` with a `worktree` refuses with
-**L5016 (effect not durable on this host)** until the §9 binding it rides lands. That refusal
-holds the run rather than ending it: the entry is settled `refused` (never `failed`, since nothing
-was attempted), the run unwinds with the uncatchable L5025 and is recorded `released`, and a
-resume on a host that can perform the step performs it live. A run started today heals the day
-that binding lands. The operator surface over the driver is `cotal run`; the section above has the verbs.
+A `spawn` may bind its agent to a **logical worktree** (`spawn("builder", { worktree: "wt-1" })`):
+the handle carries the id, and the run enforces the one rule the language states about it: two
+agents never share a worktree concurrently. The validator rejects the literal case up front
+(L3022: two branches of one concurrent scope spawning into one literal worktree), and the runtime
+guards the rest: a spawn into a tree whose recorded holder is still live on presence is the
+catchable L4008, and the tree is reusable the moment that holder's presence row is gone, so a
+discharged race loser or a crashed seat releases its tree with no bookkeeping. A turn handoff
+across worktrees is the L4004 described above. Recovery keeps these honest: a resumed run
+reseeds its roster, holders and handoff memos from its own journal, and the driver re-issues any
+recorded-but-undischarged cancellation at adoption, before the engine performs a new step, so a
+loser a crash left alive does not keep its seat or its tree while the resumed run works on.
+
+Every effect the language defines performs on the mesh handler; nothing is refused as
+not-yet-durable any more. The operator surface over the driver is `cotal run`; the section above has the verbs.
 
 **Two engines, and which one runs your program.** The tree-walker is language version `1` and the
 compiled engine is version `2`, two languages rather than two speeds of one (`spec/cotal-lang.md`

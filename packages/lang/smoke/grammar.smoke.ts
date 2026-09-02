@@ -41,9 +41,11 @@ const accepts = (name: string, source: string) => {
 
 // ---- 1) the shape of a real program parses ------------------------------------------------
 
-// The module body IS the workflow, so this is written with top-level await exactly as the
-// design doc's section 1 example writes it. If this shape ever stops parsing, the language has
-// stopped being the thing the design describes.
+// The module body IS the workflow, so this is written with top-level await as the design doc's
+// section 1 example writes it — with one correction the design's own section 9.6 demands: the
+// fanned-out reviewers no longer share the builders' worktree, because two agents in one working
+// tree inside a concurrent scope is exactly what L3022 rejects below. If this shape ever stops
+// parsing, the language has stopped being the thing the design describes.
 accepts(
   "the worked example from the design doc, at the top level",
   `
@@ -67,7 +69,7 @@ while (r.status === "blocked") {
 
 const reviews = await fanOut(
   ["security", "perf"],
-  async (lens) => turn(await spawn("reviewer", { worktree: "wt-1", join: [team], role: lens }), { name: "review" }),
+  async (lens) => turn(await spawn("reviewer", { join: [team], role: lens }), { name: "review" }),
   { name: "reviews", key: (lens) => lens },
 );
 log(reviews);
@@ -562,5 +564,42 @@ rejects("and a builtin's name cannot be taken as the inner name", "L2002",
 
 rejects("a bigint literal is not a value here", "L1030", "log(1n);");
 rejects("even in arithmetic that never crosses a boundary", "L1030", "log(1n + 2n === 3n);");
+
+// ---- two agents MUST NOT share a worktree concurrently (L3022, the static half) ----------------
+//
+// The runtime guard (L4008) owns the computed case; this owns what the source shows. Sequential
+// reuse is legal, and so is the same worktree twice inside ONE branch (that branch runs alone).
+
+rejects("two parallel branches spawning into one literal worktree", "L3022",
+  `await parallel({
+     a: async () => { await spawn("dev", { name: "a", worktree: "wt-1" }); },
+     b: async () => { await spawn("dev", { name: "b", worktree: "wt-1" }); },
+   }, { name: "build" });`);
+rejects("two race branches spawning into one literal worktree", "L3022",
+  `await race({
+     a: async () => { await spawn("dev", { name: "a", worktree: "wt-1" }); },
+     b: async () => { await spawn("dev", { name: "b", worktree: "wt-1" }); },
+   }, { name: "r" });`);
+rejects("a fanOut whose function spawns a literal worktree runs it in every branch", "L3022",
+  `await fanOut(["x", "y"], async (item) => { await spawn("dev", { name: "s", worktree: "wt-1" }); }, { name: "f", key: (i) => i });`);
+accepts("sequential reuse of a worktree is legal",
+  `await spawn("dev", { name: "a", worktree: "wt-1" });
+   await spawn("dev", { name: "b", worktree: "wt-1" });`);
+accepts("branches with their own worktrees are legal",
+  `await parallel({
+     a: async () => { await spawn("dev", { name: "a", worktree: "wt-1" }); },
+     b: async () => { await spawn("dev", { name: "b", worktree: "wt-2" }); },
+   }, { name: "build" });`);
+accepts("one branch spawning the same worktree twice runs alone in it",
+  `await parallel({
+     a: async () => { await spawn("dev", { name: "a", worktree: "wt-1" }); await spawn("dev", { name: "b", worktree: "wt-1" }); },
+     b: async () => { await sleep("1s", { name: "nap" }); },
+   }, { name: "build" });`);
+accepts("a computed worktree is the runtime guard's to decide",
+  `const wt = "wt-" + "1";
+   await parallel({
+     a: async () => { await spawn("dev", { name: "a", worktree: wt }); },
+     b: async () => { await spawn("dev", { name: "b", worktree: wt }); },
+   }, { name: "build" });`);
 
 console.log(`grammar.smoke: ${pass} checks passed`);

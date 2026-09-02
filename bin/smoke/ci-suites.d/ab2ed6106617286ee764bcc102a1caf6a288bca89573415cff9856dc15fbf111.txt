@@ -1,0 +1,2 @@
+# The section-9 worktree binding: the handle carries the logical id, L4008 exclusivity, live L4004, adoption reseed.
+smoke:runtime-mesh-worktree

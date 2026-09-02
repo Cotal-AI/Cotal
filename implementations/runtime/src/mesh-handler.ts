@@ -181,7 +181,6 @@ export interface SettleWatcher {
  * machinery an agent handle answers through (`spawn`, `conclave`, `ask`, `monitor` and
  * `wait(down)` perform). Named once so the refusals cannot drift apart.
  */
-const ACTION_MACHINERY = "the durable-action machinery an agent handle rides";
 
 export class MeshHandler {
   constructor(
@@ -277,6 +276,10 @@ export class MeshHandler {
    *  rides. Fed by `turn` at submission and adoption, reseeded from journal turn entries. */
   private readonly turnGoals = new Map<string, Set<string>>();
 
+  /** The last agent this run spawned into each logical worktree — what the L4008 guard reads.
+   *  Fed by `spawn` and reseeded from journal spawn results at adoption. */
+  private readonly worktreeHolders = new Map<string, { name: string; uid: string }>();
+
   now(): number {
     return this.clock();
   }
@@ -320,6 +323,7 @@ export class MeshHandler {
           ...(typeof ext?.owner === "string" ? { owner: ext.owner } : {}),
           ...(typeof ext?.actor === "string" ? { actor: ext.actor } : {}),
         });
+        if (typeof handle.worktree === "string") this.worktreeHolders.set(handle.worktree, { name, uid });
         continue;
       }
       if (e.kind !== "turn") continue;
@@ -332,6 +336,35 @@ export class MeshHandler {
       if (r.status !== "handoff" || r.to === undefined || typeof r.to.agent !== "string") continue;
       this.recordHandoffMemo(e.scope, parseAgentHandle(r.to.agent).name, e.requestId ?? "");
     }
+  }
+
+  /**
+   * The runtime half of "two agents MUST NOT share a worktree concurrently" (spec 6.5; the
+   * validator owns the literal case as L3022). The registry records the last agent this run
+   * spawned into each logical worktree, and a new spawn into one is admitted only when that
+   * holder is no longer live on presence: sequential reuse is legal, concurrency is data loss.
+   * The liveness read is the same witness `wait(down)` and a conclave join use, so "still
+   * holding" and "down" are one definition — a discharged loser or a crashed seat releases its
+   * tree the moment its presence row is gone, with no bookkeeping of its own.
+   */
+  private async guardWorktree(worktree: string, persona: string): Promise<void> {
+    const holder = this.worktreeHolders.get(worktree);
+    if (holder === undefined) return;
+    let rows: readonly Presence[];
+    for (;;) {
+      try {
+        rows = await this.presenceRows();
+        break;
+      } catch (e) {
+        if (e instanceof IncompleteKvScan) { await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref()); continue; }
+        throw e;
+      }
+    }
+    if (rows.some((p) => p.card?.name === holder.name && p.lifecycleUid === holder.uid))
+      throw new EffectError(
+        "L4008", "worktree",
+        `spawn(${persona}) would put a second agent into the worktree "${worktree}" while ${holder.name}#${holder.uid} is live in it; two agents MUST NOT share a worktree concurrently (L3022/L4008)`,
+      );
   }
 
   /** One turn goal registered under its handle composite — what `wait(replied)` observes. */
@@ -806,28 +839,6 @@ export class MeshHandler {
     return null;
   }
 
-  // ── The Lane-A seam ────────────────────────────────────────────────────────────────────────────
-  //
-  // Every effect that addresses an AGENT HANDLE now performs — `spawn`, `conclave`, `ask`, the
-  // liveness pair, `turn`, and `wait(replied)` over turn terminals — so the one remaining refusal
-  // is the `worktree` sub-refusal on `spawn` itself: the §9 binding has not landed, and silently
-  // dropping the field would be worse than refusing it.
-  //
-  // THEY ARE HERE RATHER THAN ABSENT, and that is the point of the slice. A handler that simply
-  // lacks the method fails as a TypeError from inside the interpreter: a fault about JavaScript
-  // rather than about the run, at a call site that says nothing about what is missing or when it
-  // arrives. The refusal is the honest two-exit — the simulator performs the whole group, so a
-  // program using them can be written, validated and dry-run today, and a DURABLE run declines
-  // rather than performing an effect it could not recover after a crash.
-  //
-  // THE REFUSAL HOLDS THE RUN RATHER THAN ENDING IT. `NotYetDurable` is an `EffectRefused`, so
-  // the interpreter settles the entry `refused` under L5016 — never `failed`, which would replay
-  // a failure forever for work nobody attempted — and unwinds the run with the uncatchable L5025
-  // (spec §9.2). The driver records the run `released`; a resume on a host where the
-  // durable-action surface has landed finds the `refused` verdict (§10.7) and performs the step
-  // live, so a run started today heals the day the substrate arrives. This was referred up as a
-  // live question and is now settled: an effect a host cannot perform is a hold, not a failure.
-
   /**
    * `spawn` is the manager's spawn ACTION, submitted under the step's own identity.
    *
@@ -849,7 +860,6 @@ export class MeshHandler {
    */
   async spawn(req: SpawnRequest, ctx: EffectContext): Promise<AgentHandleValue> {
     if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
-    if (req.worktree !== undefined) throw new NotYetDurable("spawn({worktree})", "the §9 worktree binding");
     const goalId = ctx.requestId;
     const ref: GoalRef = { endpoint: this.binding.endpoint, caller: this.binding.caller, goalId };
 
@@ -858,6 +868,7 @@ export class MeshHandler {
     let ext: Readonly<Record<string, unknown>> | undefined =
       ctx.resume?.goalId === goalId ? (ctx.resume as Readonly<Record<string, unknown>>) : undefined;
     if (ext === undefined) {
+      if (req.worktree !== undefined) await this.guardWorktree(req.worktree, req.persona);
       let reply: EpAttributedReply | undefined;
       try {
         const service = await this.manager();
@@ -904,6 +915,8 @@ export class MeshHandler {
       uid: parseAgentHandle(handle.agent).uid,
       ...(address !== undefined ? { owner: address.owner, actor: address.actor } : {}),
     });
+    if (typeof handle.worktree === "string")
+      this.worktreeHolders.set(handle.worktree, { name: parseAgentHandle(handle.agent).name, uid: parseAgentHandle(handle.agent).uid });
     return handle;
   }
 
@@ -1742,6 +1755,7 @@ function spawnHandleOf(req: SpawnRequest, fact: GoalResultFact, endpoint: string
   return {
     agent: `${d.name}#${d.lifecycleUid}`,
     persona: req.persona,
+    ...(typeof req.worktree === "string" ? { worktree: req.worktree } : {}),
     ...(typeof d.role === "string" ? { role: d.role } : {}),
   };
 }
@@ -1890,28 +1904,6 @@ function matchesEvent(msg: CotalMessage, from: string | undefined, matcher: RegE
   return matcher.test(text);
 }
 
-/**
- * An effect whose durable substrate has not landed on this host.
- *
- * An honest two-exit, and deliberately not a fake success: the simulator implements these, so a
- * program that uses them can be written, validated and dry-run today — but a DURABLE run refuses
- * rather than performing them on a plane that could not recover them. A run that "succeeded" at an
- * effect nothing can replay would be a lie the journal then carries forever.
- */
-export class NotYetDurable extends EffectRefused {
-  constructor(readonly effect: string, readonly needs: string) {
-    super(
-      // L5016, and it is load-bearing rather than decorative: the interpreter settles the entry
-      // `refused` under the code the refusal carries, so the journal says which thing happened —
-      // "no substrate on this host" rather than "the handler broke".
-      "L5016",
-      `${effect} is not durable on this host yet: it rides ${needs}, which has not landed. ` +
-        `The simulator performs it, so the program can be tested and dry-run; a durable run refuses ` +
-        `rather than performing an effect it could not recover after a crash.`,
-    );
-    this.name = "NotYetDurable";
-  }
-}
 
 /**
  * RE-ARM the timers of every pause this run is still holding, under THIS driver's coordinates.
