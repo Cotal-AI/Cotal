@@ -20,6 +20,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "test": "tsx smoke/manifest.smoke.ts && tsx smoke/backup.smoke.ts && tsx smoke/sparkline.smoke.ts && tsx smoke/topo-membership.smoke.ts",
+    "smoke:console-attach": "tsx smoke/console-attach.smoke.ts",
     "smoke:console-control": "tsx smoke/console-control.smoke.ts",
     "build": "tsc -p tsconfig.json",
     "prepublishOnly": "pnpm run build"

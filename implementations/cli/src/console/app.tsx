@@ -1,8 +1,11 @@
+import { writeSync } from "node:fs";
 import { useCallback, useEffect, useState } from "react";
 import { Box, Text, useApp, useFocusManager, useInput, useStdout } from "ink";
 import type { CotalEndpoint, Presence } from "@cotal-ai/core";
 import { useMesh } from "./mesh.js";
 import { control, type ControlCtx, type ControlOp } from "./control.js";
+import { attachSeat } from "../commands/agents.js";
+import { detachKey } from "../lib/attach-client.js";
 import { Tabs } from "./ui/Tabs.js";
 import { Tiles } from "./ui/Tiles.js";
 import { Roster } from "./ui/Roster.js";
@@ -70,6 +73,7 @@ export function App({
   const [confirm, setConfirm] = useState<ConfirmTarget | null>(null);
   const [compose, setCompose] = useState<ComposeTarget | null>(null);
   const [notice, setNotice] = useState<string | undefined>();
+  const [attachTarget, setAttachTarget] = useState<{ name: string } | null>(null);
 
   const overlay = helpOpen || detail !== null;
   const blocked = overlay || search.active || palette.active || confirm !== null || compose !== null;
@@ -108,7 +112,7 @@ export function App({
 
   // Focus the right pane after an overlay closes, or when switching into/out of a view.
   useEffect(() => {
-    if (overlay || confirm) return;
+    if (overlay || confirm || attachTarget) return;
     if (railOverlay) focus("needsyou");
     else if (mode === "dm") focus("dmpeers");
     else if (mode === "topo") focus("topo");
@@ -137,6 +141,39 @@ export function App({
     return () => clearTimeout(t);
   }, [notice]);
 
+  // Suspend the console and hand the terminal to the seat. The `attachTarget` render commits
+  // App→null and gates the top-level useInput, so Ink releases stdin (ref-counted raw mode) BEFORE
+  // the attach loop takes it. The loop is the CLI's own (`attachSeat`): seat locality, the
+  // one-use holder-bound session over the mesh, reconnect with backoff, end-reason classification,
+  // the abandoned-session hand-back, and the terminal given back before the verdict returns. The
+  // observer endpoint + MeshView keep running in the background (App stays mounted). On return,
+  // re-assert the console's alt-screen / alt-scroll / cursor (the loop leaves us in the main
+  // buffer after a full-screen child) and show the verdict.
+  useEffect(() => {
+    if (!attachTarget) return;
+    let cancelled = false;
+    const { name } = attachTarget;
+    void (async () => {
+      let verdict: Awaited<ReturnType<typeof attachSeat>>;
+      try {
+        verdict = await attachSeat({ ...controlCtx, space: ep.space, name }, { reconnect: true, onRefusal: "throw" });
+      } catch (e) {
+        verdict = { kind: "failed", message: (e as Error).message };
+      }
+      try {
+        writeSync(process.stdout.fd, "\x1b[?1049h\x1b[?1007h\x1b[?25h");
+      } catch {
+        /* stdout gone */
+      }
+      if (cancelled) return;
+      setAttachTarget(null);
+      setNotice(verdict.kind === "ended" ? `detached from ${name}` : verdict.kind === "gone" ? `seat ${name} is gone` : `attach: ${verdict.message}`);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [attachTarget, controlCtx, ep.space]);
+
   useEffect(() => {
     const onResize = () => setSize({ cols: stdout.columns || 80, rows: stdout.rows || 24 });
     stdout.on("resize", onResize);
@@ -153,6 +190,22 @@ export function App({
   const openAgent = useCallback((p: Presence) => setDetail({ kind: "agent", agent: p }), []);
   const openMessage = useCallback((e: FeedEntry) => setDetail({ kind: "message", entry: e }), []);
   const handleKill = useCallback((p: Presence) => setConfirm({ kind: "kill", name: p.card.name }), []);
+  // Attach: open the seat's live terminal. Keyed by NAME (a managed seat need not be a roster peer,
+  // same as `cotal attach --name`). A bad COTAL_DETACH_KEY is refused BEFORE suspending, as a
+  // notice: the loop would only throw it after the takeover, with the screen already gone.
+  const handleAttach = useCallback(
+    (name: string) => {
+      if (!canControl) return setNotice("no control path - a raw --creds file cannot drive the manager; run against a registered mesh");
+      try {
+        detachKey();
+      } catch (e) {
+        return setNotice("attach: " + (e as Error).message);
+      }
+      setNotice(`attaching to ${name}…`);
+      setAttachTarget({ name });
+    },
+    [canControl],
+  );
   const feedCompose = useCallback(
     () => setCompose({ kind: "channel", channel: activeChannel === "all" ? "general" : activeChannel, value: "" }),
     [activeChannel],
@@ -209,6 +262,7 @@ export function App({
       control: ctl,
       ps: () => controlPs({ ...controlCtx, space: ep.space }),
       confirmPurge: () => setConfirm({ kind: "purge", space: ep.space }),
+      startAttach: handleAttach,
     };
     runCommand(line, ctx, !!canWrite, !!canControl);
   };
@@ -268,9 +322,12 @@ export function App({
         if (idx < tabs.length) setActiveChannel(tabs[idx]);
       }
     },
-    { isActive: !palette.active && confirm === null && compose === null },
+    { isActive: !attachTarget && !palette.active && confirm === null && compose === null },
   );
 
+  // Attached: render nothing so Ink releases stdin/stdout to the seat (the suspend effect owns the
+  // terminal). App stays mounted, so the observer endpoint + MeshView survive in the background.
+  if (attachTarget) return null;
   if (helpOpen) return <Help focusedId={focusedId} width={size.cols} height={size.rows} />;
   if (detail) return <Detail target={detail} feed={mesh.feed} width={size.cols} height={size.rows} />;
   if (confirm)
@@ -332,6 +389,7 @@ export function App({
               onFocus={onFocus}
               onOpenDetail={openAgent}
               onKill={canControl ? handleKill : undefined}
+              onAttach={canControl ? (p) => handleAttach(p.card.name) : undefined}
               onCompose={canWrite ? rosterCompose : undefined}
             />
             <Feed

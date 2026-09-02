@@ -36,7 +36,7 @@ export function StatusBar({
         (railOpen ? "n hide-rail" : "n needs-you") +
         " · d DMs" +
         (canWrite ? " · c compose" : "") +
-        (canControl ? " · D kill" : "") +
+        (canControl ? " · a attach · D kill" : "") +
         " · / search · [ ] chan · ? help · q quit";
   return (
     <Box width={width} paddingX={1}>

@@ -59,6 +59,7 @@ export function Roster({
   onFocus,
   onOpenDetail,
   onKill,
+  onAttach,
   onCompose,
 }: {
   agents: Presence[];
@@ -71,6 +72,8 @@ export function Roster({
   onFocus: (id: "roster" | "feed") => void;
   onOpenDetail: (p: Presence) => void;
   onKill?: (p: Presence) => void;
+  /** Attach to the selected agent's live terminal. */
+  onAttach?: (p: Presence) => void;
   onCompose?: (p: Presence) => void;
 }) {
   const { isFocused } = useFocus({ id: "roster" });
@@ -90,6 +93,8 @@ export function Roster({
       else if (key.downArrow || input === "j") setSel((v) => Math.min(list.length - 1, v + 1));
       else if (input === "D" && onKill && list[selClamped]?.card.kind === "agent")
         onKill(list[selClamped]);
+      else if (input === "a" && onAttach && list[selClamped]?.card.kind === "agent")
+        onAttach(list[selClamped]);
       else if (input === "c" && onCompose && list[selClamped]?.card.kind === "agent")
         onCompose(list[selClamped]);
       else if (key.return && list.length) onOpenDetail(list[selClamped]);

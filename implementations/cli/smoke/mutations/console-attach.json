@@ -1,0 +1,33 @@
+{
+  "suite": "implementations/cli/smoke/console-attach.smoke.ts",
+  "guard": "the console attaches through the CLI attach loop in place: the seat gets the keyboard, Ctrl-] returns and repaints",
+  "command": "pnpm --filter @cotal-ai/cli build && pnpm --filter @cotal-ai/cli smoke:console-attach",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/console-attach.json",
+  "why": [
+    "The suite drives bin/cotal.ts, which imports @cotal-ai/cli from dist: a mutation must be built to be seen, and the tree must be rebuilt after the restore or dist keeps the mutant.",
+    "The detach pressed here lands during a live session, so the compare under test is the session reader's (attach-client.ts); the between-sessions watcher in agents.ts carries the same normalisation but is reached only while a reconnect is in flight, which this suite does not stage.",
+    "Each mutation is compile-clean and unique in the named file."
+  ],
+  "mutations": [
+    {
+      "name": "A1 compare the detach key on the raw stream",
+      "file": "implementations/cli/src/lib/attach-client.ts",
+      "find": "const d = Buffer.isBuffer(data) ? data : Buffer.from(data, \"utf8\");",
+      "replace": "const d = data as Buffer;",
+      "expectRed": "detach: the console re-enters its alternate screen",
+      "cell": "detach: the console re-enters its alternate screen",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "note": "Under the console Ink has set a utf8 encoding on stdin, so the one-byte detach arrives as a string and never matches a number; Ctrl-] forwards to the child and the key goes dead for the session."
+    },
+    {
+      "name": "A2 come back without re-entering the alternate screen",
+      "file": "implementations/cli/src/console/app.tsx",
+      "find": "writeSync(process.stdout.fd, \"\\x1b[?1049h\\x1b[?1007h\\x1b[?25h\");",
+      "replace": "writeSync(process.stdout.fd, \"\\x1b[?1007h\\x1b[?25h\");",
+      "expectRed": "detach: the console re-enters its alternate screen",
+      "cell": "detach: the console re-enters its alternate screen",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "note": "The attach loop leaves the terminal in the main buffer; a console that does not re-enter its own screen repaints over the seat's scrollback."
+    }
+  ]
+}

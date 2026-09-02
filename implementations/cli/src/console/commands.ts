@@ -28,6 +28,8 @@ export interface CommandCtx {
   ps: () => Promise<{ ok: true; rows: ManagedRow[] } | { ok: false; error: string }>;
   /** Open the type-the-space-name purge confirm (the palette never purges directly). */
   confirmPurge: () => void;
+  /** Attach to a managed seat's live terminal (suspends the console until detach). */
+  startAttach: (name: string) => void;
 }
 
 export interface ConsoleCommand {
@@ -163,6 +165,17 @@ export const COMMANDS: ConsoleCommand[] = [
       ctx.notify(
         `${a.name}${a.role ? " (" + a.role + ")" : ""} · ${a.agent} · ${a.mode} · ${a.status} · mesh ${a.mesh} · up ${Math.round(a.uptimeMs / 60000)}m`,
       );
+    },
+  },
+  {
+    name: "attach",
+    summary: "open a managed seat's terminal (Ctrl-] to detach)",
+    usage: "attach <agent>",
+    control: true,
+    run: (ctx, rest) => {
+      const name = rest.replace(/^@/, "").trim().split(/\s+/)[0] ?? "";
+      if (!name) return ctx.notify("usage: attach <agent>");
+      ctx.startAttach(name);
     },
   },
   {

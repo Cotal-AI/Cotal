@@ -61,6 +61,16 @@ chat. `D` kills the selected agent behind a confirm (`y` graceful stop, `f` forc
 `cotal spawn --detach`), `status <agent>`, `ps`, and `purge` (type the space name to confirm, like
 the space delete). A refusal, from the broker or the manager, lands on the status line.
 
+`a` on a roster agent (or `:attach <agent>`) suspends the console and hands the terminal to the
+seat: it is `cotal attach` run in place, the same one-use holder-bound mesh session, the same
+reconnect on a lost link, the same end reasons, with the observer running in the background
+throughout. `Ctrl-]` (or `COTAL_DETACH_KEY`) returns and repaints the console, and the verdict
+lands on the status line: detached, the seat is gone, or why it could not attach. A bad
+`COTAL_DETACH_KEY` is refused before the screen is handed over. Attach is `canControl`-gated and
+needs what `cotal attach` needs: a `pty` seat and the space's local seed to redeem the session
+grant (a static-auth mesh; an open mesh holds no seed, so attach refuses there as it does on the
+command line).
+
 The stream is line-oriented, so the signals stay out of it; it is just a timestamped log of
 presence changes and messages, ready for `grep`.
 
