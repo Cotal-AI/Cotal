@@ -150,8 +150,8 @@ the compiled engine, as the engine paragraph below says. The wire
 substrate of §14 (the `WFJ_<space>` stream, the four record kinds, the activation barrier, the
 per-run grants) is in `@cotal-ai/core`, and the run driver, journal store, migrate and fork are
 `@cotal-ai/runtime` (`implementations/runtime`). On the mesh handler, `sleep`, `checkpoint`,
-`wait(message(...))`, `wait(idle(...))`, `wait(down(...))`, `notify`, `spawn`, `conclave`, `ask`
-and `monitor` are durable.
+`wait(message(...))`, `wait(idle(...))`, `wait(down(...))`, `notify`, `spawn`, `conclave`, `ask`,
+`monitor` and `turn` are durable.
 `spawn` is
 the manager's spawn action submitted under the step's own identity: the goal binds under the step's
 request id, so a resumed run re-attaches to the same seat instead of allocating a second one, a
@@ -173,12 +173,25 @@ same witness a conclave join resolves members through: the value carries the han
 (`lapsed` when nothing live holds the name any more, `superseded` when a live row holds it under
 a different incarnation) and the time of observation, a wait that begins after the death resolves
 at once, and a timeout resolves null on one absolute deadline a resumed run re-attaches to.
-`turn`, `wait(replied(...))` and a `spawn` with a `worktree` refuse with
+`turn` wakes one seat for one host turn through the manager as a pull-shaped relay: the run
+submits the turn under the step's own identity, the manager holds it as a goal pinned to the
+seat's incarnation, and the seat pulls it under its own reach ahead of its next host turn, so
+nothing is pushed into a session mid-thought. The payload the seat reads names the run and the
+step and carries the rendered run context, plus any pending notices addressed to it, which the
+turn consumes. The seat yields through `cotal_yield` (`done`, `blocked`, or `handoff` with an
+addressee), and ending its host turn yields `done` for every turn it was shown. A `handoff` names
+another seat the same run spawned: the next `turn` in the same scope to that seat records the
+link and moves the run's conversation owner, a handoff to a name the run never spawned is the
+catchable L4005, and one to a seat bound to a different worktree is L4004. The deadline elapsing
+before any yield is the catchable L4003, held by the run's own pause as well as the manager's
+goal-bound hold, so either side outliving the other still converges on the same answer. A seat
+that dies mid-turn is read off its own presence row by the run itself and is the catchable L4002.
+`wait(replied(...))` and a `spawn` with a `worktree` refuse with
 **L5016 (effect not durable on this host)** until the machinery they ride lands. That refusal
 holds the run rather than ending it: the entry is settled `refused` (never `failed`, since nothing
 was attempted), the run unwinds with the uncatchable L5025 and is recorded `released`, and a
 resume on a host that can perform the step performs it live. A run started today heals the day
-those effects land. The operator surface over the driver is `cotal run`; the section above has the verbs.
+those pieces land. The operator surface over the driver is `cotal run`; the section above has the verbs.
 
 **Two engines, and which one runs your program.** The tree-walker is language version `1` and the
 compiled engine is version `2`, two languages rather than two speeds of one (`spec/cotal-lang.md`

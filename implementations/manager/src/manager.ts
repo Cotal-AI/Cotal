@@ -126,6 +126,13 @@ import {
   readGoalIndex,
   clearGoalIndex,
   listGoalIndex,
+  mintCheckpoint,
+  resumeCheckpoint,
+  readCheckpointSettle,
+  handleCheckpointFire,
+  eptSubject,
+  eptStreamName,
+  type CheckpointSettleFact,
   type GoalIndexEntry,
   GOAL_TERMINAL_STATES,
   goalRefOf,
@@ -164,6 +171,10 @@ const MAX_AGENTS = 50;
  *  before living this long leaves a cooling stamp that still counts toward the ceiling until it
  *  expires — so churn (spawn↔despawn or spawn↔fast-exit) can't outrun the concurrency bound. */
 const MIN_LIFETIME = 10_000;
+/** Cadence of the turn-deadline sweep while turns are pending: the poll that turns an elapsed
+ *  hold's fire into its expired settle and commits the deadline terminal. Deadlines are
+ *  minutes-scale; a few seconds of lateness on the commit is invisible to the run. */
+const TURN_SWEEP_MS = 5_000;
 /** Backstop for the detached-launch readiness race (#159 B1). `startAgent` waits on two REAL outcomes —
  *  the assigned id joining the mesh (presence) = started, the child process exiting = failed — NOT a
  *  liveness-inferring timer. This is only the last-resort bound for "neither happened in time": the launch
@@ -610,6 +621,68 @@ export interface SpawnAcceptance {
   executor: { lifecycleUid: string; epoch: number };
 }
 
+/** The `turn` acceptance floor: the resolved seat incarnation the payload is addressed to, the
+ *  goal coordinates the caller follows to the terminal, and the ABSOLUTE deadline the goal-bound
+ *  hold is armed at — a follower bounds its wait on `deadlineAt`, never a relative window. */
+export interface TurnAcceptance {
+  name: string;
+  owner: string;
+  actor: string;
+  uid: string;
+  goalId: string;
+  fingerprint: string;
+  deadlineAt: number;
+  executor: { lifecycleUid: string; epoch: number };
+}
+
+/** One relayed turn awaiting its seat's yield. `holdEpoch` is the MINT-time serve epoch: the
+ *  hold's fire subject embeds it, so a restarted manager (whose current epoch moved on) must
+ *  carry it here — and in the index entry's note — to take the fire at all. */
+interface PendingTurn {
+  ref: GoalRef;
+  goalId: string;
+  seat: { name: string; owner: string; actor: string; uid: string };
+  payload: string;
+  acceptedAt: number;
+  deadlineAt: number;
+  holdToken: string;
+  holdEpoch: number;
+  /** The goal-chain link the caller declared (lang §5.3), mirrored into every terminal's data. */
+  handoffFrom?: string;
+  /** When the addressed seat incarnation was reaped, if it died before yielding. A dead target
+   *  has NO early goal ending (a completion must prove the executor's LIVE currency, and the
+   *  hold is only owner-expirable once due — SPEC 13.6 item 7), so the entry rides to its
+   *  deadline; this stamp makes the deadline terminal say what actually happened. */
+  seatDiedAt?: number;
+}
+
+/** The turn relay's durable half of a pending entry, riding the goal-index `note` (opaque to
+ *  core): what a successor incarnation needs beyond the acceptance floor to rebuild the relay. */
+interface TurnNote {
+  payload: string;
+  deadlineAt: number;
+  holdEpoch: number;
+  owner: string;
+  handoffFrom?: string;
+}
+
+function parseTurnNote(raw: string): TurnNote | undefined {
+  let o: unknown;
+  try { o = JSON.parse(raw); } catch { return undefined; }
+  if (o === null || typeof o !== "object") return undefined;
+  const n = o as Record<string, unknown>;
+  if (typeof n.payload !== "string" || typeof n.deadlineAt !== "number"
+    || typeof n.holdEpoch !== "number" || typeof n.owner !== "string") return undefined;
+  if (n.handoffFrom !== undefined && typeof n.handoffFrom !== "string") return undefined;
+  return { payload: n.payload, deadlineAt: n.deadlineAt, holdEpoch: n.holdEpoch, owner: n.owner, ...(typeof n.handoffFrom === "string" ? { handoffFrom: n.handoffFrom } : {}) };
+}
+
+/** A turn hold's token, DERIVED from the goal id (same recipe as the runtime's pause tokens): a
+ *  same-goalId retry or a successor incarnation re-derives the identical token with no lookup. */
+function turnHoldToken(goalId: string): string {
+  return createHash("sha256").update(`${goalId}:turn-deadline`, "utf8").digest("base64url").slice(0, 43);
+}
+
 /** One ep request/reply round-trip on the caller's OWN reply-plane filter (§13.2). The responder
  *  derives the reply subject from the authenticated request, so there is no caller-selected reply
  *  target to honour; the caller binds the answer off the reply SUBJECT — endpoint and nonce, both
@@ -808,6 +881,17 @@ export class Manager {
   /** P2 item 2 (M4): the live spawn goal ref for each managed agent name, so a despawn MID-GOAL
    *  drives the cancel path (transition -> cancel terminal). Cleared when the goal terminalizes. */
   private agentGoals = new Map<string, GoalRef>();
+  /** The turn relay's same-incarnation idempotency map ({@link goalAcceptances}'s twin): a
+   *  same-goalId retry serves the identical acceptance; cross-incarnation retries rebuild from
+   *  the goal-index entry (its acceptance floor + note). */
+  private turnAcceptances = new Map<string, TurnAcceptance>();
+  /** Every relayed turn awaiting its seat's yield, by goal id. The seat's `turn-pending` pull
+   *  scans it; the deadline sweep drives expiry; a seat reap fails its entries `agent-down`.
+   *  Rebuilt at boot from goal-index entries carrying a turn note. */
+  private pendingTurns = new Map<string, PendingTurn>();
+  /** The deadline sweep behind {@link pendingTurns}: takes the hold's fire into an expired
+   *  settle and commits the deadline terminal. Unref'd; idle when no turn is pending. */
+  private turnSweepTimer?: ReturnType<typeof setInterval>;
   /** Process start, for the served `status` uptime. */
   private readonly startedAtMs = Date.now();
   /** Connector harness paths resolved ONCE at boot. Missing binaries do not stop unrelated manager
@@ -2201,6 +2285,19 @@ export class Manager {
         if (denied) throw new EpEnvelopeError("permission-denied", denied);
         return this.inputAuthorized(a, args(ctx));
       }),
+      // The turn relay (§8 durable actions): `turn` shares despawn/input's reach policy — the
+      // caller must hold owner-equality or admin over the TARGET seat — written out for the same
+      // reason `input` is (a shared policy, not a shared body).
+      turn: (ctx) => this.serveGated(ctx, async () => {
+        const a = targetAgent(ctx);
+        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
+        if (denied) throw new EpEnvelopeError("permission-denied", denied);
+        return this.serveTurnGoal(ctx, a);
+      }),
+      // The seat's own half of the relay (`manager.self`, stop-self's tier): a seat pulls the
+      // turns addressed to ITS incarnation and yields them; no reach beyond itself exists here.
+      turnPending: (ctx) => this.serveGated(ctx, () => this.turnPendingFor(ctx.subject.caller)),
+      turnYield: (ctx) => this.serveGated(ctx, () => this.serveTurnYield(ctx.subject.caller, args(ctx))),
       stopSelf: (ctx) => this.serveGated(ctx, () => unwrap(this.opStopSelf(callerOf(ctx), args(ctx)))),
       definePersona: (ctx) => this.serveGated(ctx, () => unwrap(this.opDefinePersona(args(ctx), callerOf(ctx), false))),
       listPersonas: (ctx) => this.serveGated(ctx, () => unwrap(this.opListPersonas(callerOf(ctx), false))),
@@ -2603,6 +2700,9 @@ export class Manager {
     // `target-despawn` reason. Fires once per agent on every free path (despawn / self-stop / reap /
     // exit) via the `agents` guard above; a no-op when no plane or no live session for the target.
     this.sessionPlane?.endForTarget(a.name, a.lifecycleUid, "target-despawn");
+    // The turn relay's reap hook: every pending turn addressed to THIS incarnation fails
+    // `agent-down` — the addressee is gone and no successor may answer for it.
+    this.failSeatTurns(a.name, a.lifecycleUid);
     if (floor && Date.now() - a.startedAt < MIN_LIFETIME) this.cooling.push(a.startedAt + MIN_LIFETIME);
     // #29 piece 3: on a USER mesh the name is RESERVED PENDING RETIREMENT — despawn started this
     // lifecycle's FULL teardown (footprint + standing-authority revoke + the auth-side retirement),
@@ -5431,7 +5531,7 @@ export class Manager {
     const gw = this.goalWriter;
     if (!gw) { this.goalReconcileDone = true; return; }
     try {
-      let entries: { ref: GoalRef; iid: string }[] = [];
+      let entries: { ref: GoalRef; iid: string; allocated?: GoalIndexEntry["allocated"]; note?: string }[] = [];
       const nc = this.auth
         ? await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds: await mintCreds(this.auth, newIdentity(), "provisioner"), /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 })
         : await connect({ servers: this.servers ?? DEFAULT_SERVER, maxReconnectAttempts: 0 });
@@ -5445,10 +5545,15 @@ export class Manager {
       // Single-manager item 2: EVERY inherited entry belongs to a DEAD predecessor (only one manager
       // at a time), so all are reconciled. The `iid` field is the hook item-3's multi-instance sweep
       // filters on (skip a goal whose accepting `iid` is a still-LIVE sibling — never settle its goal).
-      for (const { ref, iid } of entries) {
-        if (this.goalAcceptances.has(ref.goalId)) continue; // never settle a goal THIS incarnation drives
-        try { await this.reconcileOneGoal(ref, iid); }
-        catch (e) { console.error(`! goal reconcile for ${ref.goalId}: ${(e as Error).message}`); }
+      for (const entry of entries) {
+        if (this.goalAcceptances.has(entry.ref.goalId) || this.turnAcceptances.has(entry.ref.goalId)) continue; // never settle a goal THIS incarnation drives
+        try {
+          // A note marks a TURN entry: its relay is rebuilt (the hold is its bounded ending), never
+          // settled uncertain — the spawn arm's readiness window is the wrong ending for a relay.
+          if (entry.note !== undefined) await this.adoptTurnGoal(entry);
+          else await this.reconcileOneGoal(entry.ref, entry.iid);
+        }
+        catch (e) { console.error(`! goal reconcile for ${entry.ref.goalId}: ${(e as Error).message}`); }
       }
       if (entries.length) console.error(`goal-index boot reconcile: swept ${entries.length} inherited goal(s)`);
     } catch (e) {
@@ -5781,6 +5886,294 @@ export class Manager {
     if (typeof d.name === "string" && d.name.length > 0 && typeof d.id === "string" && d.id.length > 0 && typeof d.lifecycleUid === "string" && d.lifecycleUid.length > 0 && readinessDeadlineMs !== undefined)
       return { name: d.name, owner: DEV_OWNER, actor: d.id, uid: d.lifecycleUid, goalId, fingerprint, readinessDeadlineMs, executor };
     throw new EpEnvelopeError("unavailable", `goal "${goalId}" is already accepted but its allocated identity is not readable (no acceptance floor, and no terminal carrying one); retry (SPEC 13.6)`);
+  }
+
+  // ---- the turn relay (§8 durable actions) ------------------------------------------------------
+  //
+  // A seat is NOT an endpoint: a run's `turn(agent, payload)` rides the manager, which accepts it
+  // as a goal (the spawn-as-action pattern minus the launch closure), parks the payload durably on
+  // the goal-index entry's note, and lets the seat PULL it (`turn-pending`) and answer it
+  // (`turn-yield`) under its own `manager.self` reach. The deadline is a goal-bound HOLD minted at
+  // accept: the delivery daemon's timer writer pumps its schedule, the fire settles it `expired`,
+  // and THIS manager commits the deny (`hold-expired` is the predicate core verifies). Three
+  // endings, one each: yield -> succeeded (the TurnResult rides the terminal's data), deadline ->
+  // failed `turn-deadline`, seat death -> failed `agent-down` (the reap hook + adoption sweep).
+
+  /** Accept one `turn` goal against a live managed seat. Mirrors {@link serveSpawnGoal}'s accept
+   *  path (idempotent retry map, index-CAS-before-bind, create-only bindGoal) but runs it INLINE:
+   *  there is no launch to hand off, so the accept either completes durably or unwinds its own
+   *  bound goal with a `failed` terminal before refusing. */
+  private async serveTurnGoal(ctx: EpServeContext, a: ManagedAgent): Promise<TurnAcceptance> {
+    const gw = this.goalWriter;
+    if (!gw) throw new EpEnvelopeError("unavailable", "the manager goal-writer connection is not standing; turn-as-action cannot accept (SPEC 13.6)");
+    if (!this.goalReconcileDone)
+      throw new EpEnvelopeError("unavailable", "the manager is still reconciling accepted goals at boot; retry shortly (SPEC 13.6)");
+    const t = ctx.request.target!; // targeted command: the serve boundary enforced presence + currency
+    const goalId = ctx.request.id;
+    const { fingerprint } = submissionFingerprint(ctx.request as unknown, ctx.subject);
+    const ref = goalRefOf(ctx.subject, goalId);
+    const executor = { lifecycleUid: this.managerInstanceId, epoch: this.serviceServe?.grant.epoch ?? 0 };
+    const acceptedAt = Date.now();
+
+    const prior = this.turnAcceptances.get(goalId);
+    if (prior !== undefined) {
+      if (prior.fingerprint !== fingerprint)
+        throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted under a different submission; one goalId never carries two specs (SPEC 13.6)`);
+      return prior;
+    }
+
+    const raw = (ctx.request.args ?? {}) as Record<string, unknown>;
+    const payload = String(raw.payload);
+    const deadlineMs = Number(raw.deadlineMs);
+    const handoffFrom = raw.handoffFrom === undefined ? undefined : String(raw.handoffFrom);
+    const deadlineAt = acceptedAt + deadlineMs;
+    const note = JSON.stringify({ payload, deadlineAt, holdEpoch: executor.epoch, owner: t.owner, ...(handoffFrom !== undefined ? { handoffFrom } : {}) } satisfies TurnNote);
+
+    // Index-CAS-before-bind, exactly as spawn: the entry (floor + note) is the durable relay
+    // record a successor rebuilds from, so it must exist before the acceptance is servable.
+    const idx = await recordGoalIndex(gw.ctx, ref, executor.lifecycleUid, { name: a.name, actor: t.actor, uid: t.lifecycleUid, readinessDeadlineMs: deadlineMs }, note);
+    if (!idx.recorded && idx.existing.iid !== executor.lifecycleUid)
+      throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted by instance "${idx.existing.iid}"; that instance owns its relay and this attempt provisions nothing (SPEC 13.6)`);
+    const b = await bindGoal(gw.ctx, ref, fingerprint);
+    if (!b.bound) {
+      if (b.existing.fingerprint !== fingerprint)
+        throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" is already bound to a different submission; one goalId never carries two specs (SPEC 13.6)`);
+      // Same submission, not in the live map: a predecessor incarnation accepted it (the boot
+      // sweep already adopted its pending relay). Serve the acceptance its index entry records.
+      return this.turnAcceptanceFromIndex(idx.recorded ? await readGoalIndex(gw.ctx, ref) : idx.existing, goalId, fingerprint, executor);
+    }
+    try {
+      await createGoal(gw.ctx, ref, {
+        fingerprint,
+        command: ctx.subject.command,
+        caller: { id: `${ctx.subject.caller.owner}.${ctx.subject.caller.actor}`, lifecycleUid: ctx.subject.caller.uid },
+        acceptedEpoch: executor.epoch,
+        requestId: goalId,
+        sourceSeq: 0,
+        acceptedAt,
+        readinessDeadlineMs: deadlineMs,
+        // The §13.6 target pin: the seat INCARNATION this payload is addressed to. A successor
+        // under the same name is a different addressee; its uid differs and the pin holds that.
+        target: { owner: t.owner, actor: t.actor, lifecycleUid: t.lifecycleUid, mappingRevision: 0 },
+      });
+      // The deadline, as a goal-bound hold on the plane: the timer writer pumps its schedule and
+      // its EXPIRED settle is the one predicate `commitGoalResult` accepts for the deny.
+      await mintCheckpoint(gw.ctx.kv, gw.ctx.js, this.space, {
+        ref: { endpoint: ref.endpoint, token: turnHoldToken(goalId) },
+        instanceId: this.managerInstanceId,
+        epoch: executor.epoch,
+        goal: { caller: { owner: ctx.subject.caller.owner, actor: ctx.subject.caller.actor, uid: ctx.subject.caller.uid }, goalId },
+        holder: { id: MANAGER_ENDPOINT, lifecycleUid: this.managerInstanceId },
+        deadline: deadlineAt,
+        now: acceptedAt,
+      });
+    } catch (e) {
+      // The accept is inline (no launch closure to fail later), so a post-bind throw unwinds HERE:
+      // commit the failed terminal this attempt owns, clear the index, and refuse the accept — an
+      // accepted-but-unanswered goal must never be left for the boot sweep to find (H1's rule).
+      const msg = (e as Error)?.message ?? String(e);
+      try {
+        await this.assertGoalWriterEpochCurrent(executor.epoch);
+        await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "failed", data: { error: msg }, committer: { instanceId: this.managerInstanceId, epoch: executor.epoch } });
+        await clearGoalIndex(gw.ctx, ref);
+      } catch (e2) { console.error(`! turn accept unwind for ${goalId}: ${(e2 as Error).message}`); }
+      throw e instanceof EpEnvelopeError ? e : new EpEnvelopeError("internal", `turn accept for ${goalId} failed: ${msg}`);
+    }
+    const pending: PendingTurn = {
+      ref, goalId,
+      seat: { name: a.name, owner: t.owner, actor: t.actor, uid: t.lifecycleUid },
+      payload, acceptedAt, deadlineAt,
+      holdToken: turnHoldToken(goalId), holdEpoch: executor.epoch,
+      ...(handoffFrom !== undefined ? { handoffFrom } : {}),
+    };
+    this.pendingTurns.set(goalId, pending);
+    this.ensureTurnSweep();
+    const acceptance: TurnAcceptance = { name: a.name, owner: t.owner, actor: t.actor, uid: t.lifecycleUid, goalId, fingerprint, deadlineAt, executor };
+    this.turnAcceptances.set(goalId, acceptance);
+    this.emitGoalProgress(ref, executor.epoch, { phase: "relayed" });
+    return acceptance;
+  }
+
+  /** Rebuild a turn acceptance from its durable index entry (cross-incarnation retry, or a
+   *  bind-loss whose winner is a dead predecessor). Refuses rather than inventing a floor. */
+  private turnAcceptanceFromIndex(entry: GoalIndexEntry | undefined, goalId: string, fingerprint: string, executor: { lifecycleUid: string; epoch: number }): TurnAcceptance {
+    const parsed = entry?.note !== undefined ? parseTurnNote(entry.note) : undefined;
+    if (entry?.allocated === undefined || parsed === undefined)
+      throw new EpEnvelopeError("unavailable", `goal "${goalId}" is already accepted but its relay record is not readable (no acceptance floor, or a garbled note); retry (SPEC 13.6)`);
+    return { name: entry.allocated.name, owner: parsed.owner, actor: entry.allocated.actor, uid: entry.allocated.uid, goalId, fingerprint, deadlineAt: parsed.deadlineAt, executor };
+  }
+
+  /** The seat's pull: every pending turn addressed to the CALLER's incarnation, oldest first.
+   *  The uid is part of the address — a successor seat never receives a predecessor's turn. */
+  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt: number }[] } {
+    const turns = [...this.pendingTurns.values()]
+      .filter((p) => p.seat.owner === c.owner && p.seat.actor === c.actor && p.seat.uid === c.uid)
+      .sort((x, y) => x.acceptedAt - y.acceptedAt)
+      .map((p) => ({ goalId: p.goalId, payload: p.payload, acceptedAt: p.acceptedAt, deadlineAt: p.deadlineAt }));
+    return { turns };
+  }
+
+  /** The seat's yield: claim the hold (one-use; expiry fails closed), then commit the goal
+   *  `succeeded` carrying the TurnResult. A yield AFTER the deadline drives the deadline terminal
+   *  instead and refuses — the expiry outcome stands, never a late success over it. */
+  private async serveTurnYield(c: { owner: string; actor: string; uid: string }, raw: Record<string, unknown>): Promise<{ goalId: string; state: string }> {
+    const gw = this.goalWriter;
+    if (!gw) throw new EpEnvelopeError("unavailable", "the manager goal-writer connection is not standing (SPEC 13.6)");
+    const goalId = String(raw.goalId);
+    const status = String(raw.status);
+    const to = raw.to === undefined ? undefined : String(raw.to);
+    const yieldNote = raw.note === undefined ? undefined : String(raw.note);
+    if (status === "handoff" && (to === undefined || to.length === 0))
+      throw new EpEnvelopeError("failed-precondition", `a handoff yield names its addressee ("to"); a handoff to nobody relays nothing`);
+    const p = this.pendingTurns.get(goalId);
+    if (!p) throw new EpEnvelopeError("not-found", `no pending turn "${goalId}" on this manager`);
+    if (p.seat.owner !== c.owner || p.seat.actor !== c.actor || p.seat.uid !== c.uid)
+      throw new EpEnvelopeError("permission-denied", `turn "${goalId}" is addressed to ${p.seat.owner}.${p.seat.actor}/${p.seat.uid}; a yield is the addressee's own (SPEC 13.6)`);
+    const cpRef = { endpoint: p.ref.endpoint, token: p.holdToken };
+    try {
+      await resumeCheckpoint(gw.ctx.kv, gw.ctx.js, gw.ctx.jsm, this.space, { ref: cpRef, presenter: { id: MANAGER_ENDPOINT, lifecycleUid: this.managerInstanceId }, now: Date.now() });
+    } catch (e) {
+      const settle = await readCheckpointSettle(gw.ctx.jsm, this.space, cpRef).catch(() => undefined);
+      if (settle?.settle === "expired") {
+        await this.commitTurnDeadline(p);
+        throw new EpEnvelopeError("failed-precondition", `turn "${goalId}" elapsed its deadline before the yield; the deadline terminal stands (SPEC 13.6)`);
+      }
+      // Already resumed BY THIS MANAGER (the hold is holder-bound): a prior yield attempt claimed
+      // it and then failed to commit. Fall through and commit — the claim is ours to finish.
+      if (settle?.settle !== "resumed") throw e;
+    }
+    const epoch = this.serviceServe?.grant.epoch ?? 0;
+    await this.assertGoalWriterEpochCurrent(epoch);
+    const at = Date.now();
+    const data = { status, ...(to !== undefined ? { to } : {}), ...(yieldNote !== undefined ? { note: yieldNote } : {}), ...(p.handoffFrom !== undefined ? { handoffFrom: p.handoffFrom } : {}), at };
+    // The goal is TARGET-PINNED, so this completion proves the EXECUTOR's (the seat's) fresh
+    // currency, not the manager's: managed-seat epochs are 0 within an incarnation (the same
+    // convention resolveTarget serves), and the resolver answers from the live agents map — a
+    // seat that died between its yield call and this commit refuses `expired` here.
+    const { fact } = await commitGoalResult(gw.ctx, {
+      ref: p.ref, now: at, cause: "complete", state: "succeeded", data,
+      committer: { instanceId: this.managerInstanceId, epoch },
+      executor: { lifecycleUid: p.seat.uid, epoch: 0 },
+      resolveCurrentEpoch: (target) => this.agents.get(p.seat.name)?.lifecycleUid === target.lifecycleUid ? 0 : null,
+    });
+    this.emitGoalProgress(p.ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
+    await clearGoalIndex(gw.ctx, p.ref);
+    this.pendingTurns.delete(goalId);
+    if (this.pendingTurns.size === 0) this.stopTurnSweep();
+    return { goalId, state: fact.state };
+  }
+
+  /** Commit the deadline terminal for one pending turn whose hold settled EXPIRED: the deny's
+   *  predicate is that recorded settle, verified by core against the spec's goal binding. The map
+   *  delete is the idempotency latch (yield-loss and sweep race here); a commit failure after it
+   *  converges through the goal index at the next boot, the same narrow leg spawn leaves open. */
+  private async commitTurnDeadline(p: PendingTurn): Promise<void> {
+    const gw = this.goalWriter;
+    if (!gw) return;
+    if (!this.pendingTurns.delete(p.goalId)) return;
+    if (this.pendingTurns.size === 0) this.stopTurnSweep();
+    const epoch = this.serviceServe?.grant.epoch ?? 0;
+    try {
+      await this.assertGoalWriterEpochCurrent(epoch);
+      const { fact } = await commitGoalResult(gw.ctx, { ref: p.ref, now: Date.now(), cause: "deny", denial: { kind: "hold-expired", token: p.holdToken }, data: { reason: "turn-deadline", ...(p.seatDiedAt !== undefined ? { agentDownAt: p.seatDiedAt } : {}), ...(p.handoffFrom !== undefined ? { handoffFrom: p.handoffFrom } : {}) }, committer: { instanceId: this.managerInstanceId, epoch } });
+      this.emitGoalProgress(p.ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
+      await clearGoalIndex(gw.ctx, p.ref);
+    } catch (e) { console.error(`! turn deadline terminal for ${p.goalId}: ${(e as Error).message}`); }
+  }
+
+  /** The reap hook: a pending turn addressed to the reaped INCARNATION is MARKED dead, never
+   *  settled early — no honest terminal exists for it (a completion must prove the executor's
+   *  live currency, and the hold is only expirable once due), so the entry rides to its deadline
+   *  and the deny then records both facts. The addressee's own client observes the death from
+   *  presence long before that, which is the run's L4002. */
+  private failSeatTurns(name: string, uid: string): void {
+    for (const p of this.pendingTurns.values()) {
+      if (p.seat.name !== name || p.seat.uid !== uid || p.seatDiedAt !== undefined) continue;
+      p.seatDiedAt = Date.now();
+      console.error(`turn ${p.goalId}: addressed seat ${name}/${uid} died before yielding; the deadline terminal will record it`);
+    }
+  }
+
+  /** Read-or-produce one hold's settle: a fire is a MESSAGE and a settlement is a FACT, and
+   *  {@link handleCheckpointFire} is what turns one into the other — at the MINT-time coordinates
+   *  (`holdEpoch`), which a restarted manager's current epoch does not match. */
+  private async takeTurnFire(p: PendingTurn): Promise<CheckpointSettleFact | undefined> {
+    const gw = this.goalWriter;
+    if (!gw) return undefined;
+    const cpRef = { endpoint: p.ref.endpoint, token: p.holdToken };
+    const settled = await readCheckpointSettle(gw.ctx.jsm, this.space, cpRef);
+    if (settled !== undefined) return settled;
+    const subject = eptSubject(this.space, p.ref.endpoint, this.managerInstanceId, p.holdEpoch, p.holdToken, "fire");
+    const fired = await gw.ctx.jsm.streams.getMessage(eptStreamName(this.space), { last_by_subj: subject }).catch(() => null);
+    if (fired === null || fired === undefined) return undefined;
+    const verdict = await handleCheckpointFire(gw.ctx.kv, gw.ctx.js, gw.ctx.jsm, this.space, {
+      ref: cpRef, instanceId: this.managerInstanceId, epoch: p.holdEpoch,
+      msg: { subject, ...(fired.header !== undefined ? { headers: fired.header } : {}), data: fired.data },
+      now: Date.now(),
+    });
+    return verdict.acted ? verdict.settle : await readCheckpointSettle(gw.ctx.jsm, this.space, cpRef);
+  }
+
+  private ensureTurnSweep(): void {
+    if (this.turnSweepTimer !== undefined) return;
+    const t = setInterval(() => { void this.sweepTurnDeadlines().catch((e) => console.error(`! turn deadline sweep: ${(e as Error).message}`)); }, TURN_SWEEP_MS);
+    t.unref?.();
+    this.turnSweepTimer = t;
+  }
+
+  private stopTurnSweep(): void {
+    if (this.turnSweepTimer === undefined) return;
+    clearInterval(this.turnSweepTimer);
+    this.turnSweepTimer = undefined;
+  }
+
+  /** Drive every elapsed pending turn to its deadline terminal. Only entries at/past their own
+   *  `deadlineAt` are read at all; a `resumed` settle is a yield mid-commit and is left alone. */
+  private async sweepTurnDeadlines(): Promise<void> {
+    const now = Date.now();
+    for (const p of [...this.pendingTurns.values()]) {
+      if (now < p.deadlineAt) continue;
+      try {
+        const settle = await this.takeTurnFire(p);
+        if (settle?.settle === "expired") await this.commitTurnDeadline(p);
+      } catch (e) { console.error(`! turn deadline sweep for ${p.goalId}: ${(e as Error).message}`); }
+    }
+  }
+
+  /** Adopt one inherited TURN goal at boot (the reconcile sweep's turn branch): a non-terminal
+   *  entry carrying a parseable note rebuilds its pending relay — never an `uncertain` settle,
+   *  because the deadline hold IS this goal's bounded ending and it survived the restart. A dead
+   *  seat at adoption fails `agent-down` here (the reap hook never saw that death); a garbled
+   *  note or a missing floor is logged and left, the dead-pointer honesty rule. */
+  private async adoptTurnGoal(entry: { ref: GoalRef; iid: string; allocated?: GoalIndexEntry["allocated"]; note?: string }): Promise<void> {
+    const gw = this.goalWriter;
+    if (!gw) return;
+    const status = await readGoalStatus(gw.ctx, entry.ref);
+    if (status === undefined) return; // index points at no goal record: a dead pointer, left for honesty
+    if (GOAL_TERMINAL_STATES.includes(status.value.state)) { await clearGoalIndex(gw.ctx, entry.ref); return; }
+    if (entry.iid !== this.managerInstanceId) {
+      console.error(`turn reconcile ${entry.ref.goalId}: accepted by instance "${entry.iid}", not this incarnation "${this.managerInstanceId}"; left for its owner (never a cross-instance settle)`);
+      return;
+    }
+    const parsed = entry.note !== undefined ? parseTurnNote(entry.note) : undefined;
+    if (entry.allocated === undefined || parsed === undefined) {
+      console.error(`turn reconcile ${entry.ref.goalId}: the relay record is garbled (no floor, or an unparseable note); left unsettled`);
+      return;
+    }
+    const spec = await readGoalSpec(gw.ctx, entry.ref);
+    const p: PendingTurn = {
+      ref: entry.ref, goalId: entry.ref.goalId,
+      seat: { name: entry.allocated.name, owner: parsed.owner, actor: entry.allocated.actor, uid: entry.allocated.uid },
+      payload: parsed.payload,
+      acceptedAt: spec?.value.acceptedAt ?? Date.now(),
+      deadlineAt: parsed.deadlineAt,
+      holdToken: turnHoldToken(entry.ref.goalId), holdEpoch: parsed.holdEpoch,
+      ...(parsed.handoffFrom !== undefined ? { handoffFrom: parsed.handoffFrom } : {}),
+    };
+    this.pendingTurns.set(p.goalId, p);
+    if (this.agents.get(p.seat.name)?.lifecycleUid !== p.seat.uid) this.failSeatTurns(p.seat.name, p.seat.uid);
+    console.error(`turn reconcile ${p.goalId}: pending relay to ${p.seat.name}/${p.seat.uid} adopted (deadline ${p.deadlineAt})`);
+    this.ensureTurnSweep();
   }
 
   /** M4 (settle race): a despawn MID-GOAL drives the goal's cancel terminal - transition to

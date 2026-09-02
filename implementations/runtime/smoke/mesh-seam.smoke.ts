@@ -1,13 +1,11 @@
 /**
  * The Lane-A seam: what a durable run does when it reaches an effect whose substrate has not landed.
  *
- * `turn` and `wait(replied)` CONSUME an agent handle through the turn machinery that has not
- * landed; `spawn`, which produces a handle, `conclave`, which assembles a sub-team of them,
- * `ask`, the schema-checked pause the agent answers, and the liveness pair — `monitor` with
- * `wait(down)` — now perform on the mesh handler, so the seam is the turn-shaped remainder,
- * gated by a single subject rather than by separate absences. One sub-refusal stays on `spawn`
- * itself: a `worktree` binding rides §9 machinery that has not landed, and silently dropping the
- * field would be worse than refusing it.
+ * `wait(replied)` observes a turn ANOTHER branch is taking, through machinery that has not
+ * landed; everything else agent-shaped — `spawn`, `conclave`, `ask`, the liveness pair, and now
+ * `turn` itself — performs on the mesh handler, so the seam is that one observation, gated by a
+ * single subject. One sub-refusal stays on `spawn` itself: a `worktree` binding rides §9
+ * machinery that has not landed, and silently dropping the field would be worse than refusing it.
  *
  * **The claim under test is not "it throws".** It is that a durable run REFUSES, by name, with a
  * reason a reader can act on — and that a MISSING method is not the same thing. A handler that
@@ -81,12 +79,11 @@ const drive = async (source: string, handler: EffectHandler, journal?: Journal, 
 
 // ── 1) what a DURABLE PROGRAM can actually reach ───────────────────────────────────────────────
 //
-// Only the `worktree` sub-refusal is reachable from a broker-less program: `turn` takes a handle
-// only `spawn` produces, and `spawn`, `conclave`, `ask` and `monitor` now PERFORM — against no
-// planes they die reaching for them (or, for `monitor`, succeed without touching any), so a
-// program using the consumers never arrives at the remaining refusal. The worktree guard fires
-// before any plane is touched, so it is driven; `turn` is called at the handler, where it can be
-// reached at all.
+// Only the `worktree` sub-refusal is reachable from a broker-less program: `wait(replied)` takes
+// a handle only `spawn` produces, and every performing effect against no planes dies reaching
+// for them (or, for `monitor`, succeeds without touching any), so a program never arrives at the
+// remaining refusal. The worktree guard fires before any plane is touched, so it is driven;
+// `wait(replied)` is exercised at the handler (1d), where it can be reached at all.
 {
   const name = "spawn({worktree})";
   // Pinned up front: a held run has no result to take pins from, and the heal below has to be
@@ -115,31 +112,6 @@ const drive = async (source: string, handler: EffectHandler, journal?: Journal, 
   const healed = await drive(PROGRAMS.spawnWorktree as string, new SimHandler(SCRIPT as never) as unknown as EffectHandler, journal, pins);
   c(`${name} heals on a capable host: the refused step is performed live and the run completes`,
     healed === null, `${healed?.name}: ${healed?.message?.slice(0, 100)}`);
-}
-
-// ── 1b) the consumers, at the handler, where they can be reached ───────────────────────────────
-{
-  for (const name of ["turn"] as const) {
-    const fn = (mesh as unknown as Record<string, unknown>)[name];
-    // GUARDED, because a missing method is precisely what this slice replaces: calling `undefined`
-    // would kill the process here and the cell would never print, which is red without being an
-    // answer. An absent seam is a FAILED CELL that names the method.
-    if (typeof fn !== "function") {
-      c(`${name} refuses at the handler, as the class itself`, false, "the method is absent");
-      c(`${name} carries the code that crosses the run boundary`, false, "the method is absent");
-      c(`${name} gives the one shared reason`, false, "the method is absent");
-      continue;
-    }
-    const e = await (fn as (r: unknown, c: unknown) => Promise<unknown>)
-      .call(mesh, {}, {} as never).then(() => null, (x: unknown) => x as Error);
-    c(`${name} refuses at the handler, as the class itself`, e instanceof NotYetDurable, e?.name);
-    c(`${name} carries the code that crosses the run boundary`,
-      (e as unknown as { code?: string })?.code === "L5016", (e as unknown as { code?: string })?.code);
-    // ALL THREE, not just what a program can reach: refusals with separate reasons would be
-    // separate seams wearing one name, and only the shared reason makes it one gate, one subject.
-    c(`${name} gives the one shared reason`,
-      e?.message.includes("an agent handle rides") === true, e?.message?.slice(0, 140));
-  }
 }
 
 // ── 1c) the spawn(worktree) sub-refusal at the handler: §9 machinery, refused not dropped ──────
@@ -192,6 +164,16 @@ const drive = async (source: string, handler: EffectHandler, journal?: Journal, 
     .then(() => null, (x: unknown) => x as Error);
   c("wait(down) is not refused by the seam: it reaches for the planes and fails there instead",
     e !== null && !(e instanceof NotYetDurable), e?.name);
+  // `turn` too: with an empty run roster it refuses on the ROSTER — a loud contract error raised
+  // before any plane, and pointedly not the seam's hold.
+  const t = await mesh
+    .turn(
+      { agent: { agent: `dev#${"u".repeat(26)}`, persona: "dev" } } as never,
+      { key: { scope: [], kind: "turn", name: "", occurrence: 0 }, signal: { cancelled: false, onCancel() {} }, requestId: "o".repeat(43), attempt: 0, bind: async () => {} } as never,
+    )
+    .then(() => null, (x: unknown) => x as Error);
+  c("turn is not refused by the seam: it refuses on the run roster instead",
+    t !== null && !(t instanceof NotYetDurable) && t.message.includes("roster"), `${t?.name}: ${t?.message?.slice(0, 90)}`);
 }
 
 // ── 2) the failure a missing method produces, which is what this slice replaces ─────────────────

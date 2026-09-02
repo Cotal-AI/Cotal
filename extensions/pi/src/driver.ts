@@ -37,6 +37,9 @@ interface Batch {
   started: boolean;
   confirmed: boolean;
   watchdog?: ReturnType<typeof setTimeout>;
+  /** Run-turn goal ids riding this batch; they commit as surfaced only when the batch confirms
+   *  (two-phase — a lost batch re-surfaces them instead of arming a `done` for unseen work). */
+  turnIds?: string[];
 }
 
 function detailsOf(message: unknown): CotalBatchDetails | undefined {
@@ -276,7 +279,9 @@ export class PiDriver {
     this.inbox.discardMatching((item) => ownChannelEcho(this.mesh, item));
     const reserved = new Set(this.batches.flatMap((batch) => batch.ids));
     const available = this.inbox.peek("automatic").filter((item) => !reserved.has(item.recvKey));
-    if (!force && this.nudges.length === 0 && !available.some((item) => wakeable(this.mesh, item))) {
+    // A pending run turn is directed-strength: it justifies a pump on its own, like a wakeable item.
+    const turnPeek = this.mesh.peekPendingTurns();
+    if (!force && this.nudges.length === 0 && !turnPeek && !available.some((item) => wakeable(this.mesh, item))) {
       if (this.batches.length === 0) this.publishIdleWhenSettled(this.context);
       return;
     }
@@ -287,13 +292,14 @@ export class PiDriver {
       content = this.nudges.splice(0).join("\n");
     } else {
       const items = this.inbox.select(reserved, BATCH_LIMIT);
-      if (items.length === 0) return;
+      if (items.length === 0 && !turnPeek) return;
       ids = items.map((item) => item.recvKey);
-      content = formatInjection(items);
+      content = items.length > 0 ? formatInjection(items) : undefined;
     }
+    if (turnPeek) content = content ? `${content}\n\n${turnPeek.text}` : turnPeek.text;
     if (!content) return;
 
-    const batch: Batch = { id: randomUUID(), ids, content, started: false, confirmed: false };
+    const batch: Batch = { id: randomUUID(), ids, content, started: false, confirmed: false, ...(turnPeek ? { turnIds: turnPeek.goalIds } : {}) };
     this.batches.push(batch);
     this._state = "dispatching";
     try {
@@ -323,6 +329,8 @@ export class PiDriver {
     const confirmed = this.batches.filter((batch) => batch.confirmed);
     const ids = confirmed.flatMap((batch) => batch.ids);
     const committed = this.inbox.commitConfirmed(ids);
+    const confirmedTurnIds = confirmed.flatMap((batch) => batch.turnIds ?? []);
+    if (confirmedTurnIds.length) this.mesh.commitSurfacedTurns(confirmedTurnIds);
     this.batches = this.batches.filter((batch) => !batch.confirmed);
 
     if (this.batches.length > 0) {

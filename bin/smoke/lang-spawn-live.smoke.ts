@@ -19,6 +19,10 @@
  *      tombstones it and deletes the minted channel's registry row.
  *   4  monitor + wait(down) flow-through: a run parks on a REAL seat's down-event, the manager
  *      tears the seat down mid-run, its presence lapses, and the died branch wins the race.
+ *   5  turn flow-through: a run's turn is relayed through the REAL manager, the suite plays the
+ *      seat's own side (`turn-pending` / `turn-yield` under the seat's self reach), and the yield
+ *      resumes the run; an unanswered turn is caught in-program as L4003 while the manager's own
+ *      hold-expiry deny converges the goal on the plane.
  *
  * Throwaway everything: own open nats-server on a free port, scratch COTAL_HOME + workspace root.
  * Needs nats-server + node on PATH. Run: pnpm smoke:lang-spawn-live
@@ -42,13 +46,14 @@ const {
   timerWriterContext, timerWriterConsumerConfig, timerWriterDurable, armCheckpointTimer,
   eptReqStreamName, replayRunJournal, newTakeoverId, resolveService, invokeCommand,
   setupSpaceStreams, openMembersRegistry, openChannelRegistry, listMembers, readChannelConfig,
+  actionContext, readGoalResult,
 } = await import("@cotal-ai/core");
 type LaunchOptsT = import("@cotal-ai/core").LaunchOpts;
 type LaunchSpecT = import("@cotal-ai/core").LaunchSpec;
 type ConnectorT = import("@cotal-ai/core").Connector;
 type EpCallerT = import("@cotal-ai/core").EpCaller;
 // The lang entry, structurally (bin does not depend on @cotal-ai/lang): only the fields read here.
-interface JournalEntryT { kind: string; state: string; status?: string; result?: unknown; closed?: boolean; external?: Record<string, unknown> }
+interface JournalEntryT { kind: string; state: string; status?: string; result?: unknown; closed?: boolean; external?: Record<string, unknown>; error?: { code?: string; kind?: string }; requestId?: string }
 const { recordMesh } = await import("@cotal-ai/workspace");
 const { Manager } = await import("@cotal-ai/manager");
 const { MeshHandler, EpfSettleWatcher, startRun } = await import("@cotal-ai/runtime");
@@ -78,7 +83,7 @@ const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-langspawn-ws-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 // The persona pins the harness (`agent: join`): the lang `spawn` sends no harness of its own, so
 // this is exactly how a workflow-spawned seat picks its connector in production.
-for (const n of ["wf1", "wf2", "wf3", "wf4"])
+for (const n of ["wf1", "wf2", "wf3", "wf4", "wf5", "wf6"])
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\nagent: join\n---\n`);
 
 // A real agent child: joins presence under the manager-assigned id, then parks. Readiness
@@ -287,6 +292,93 @@ log("outcome", r.index);
     c("the down value names the seat's own incarnation, lapsed",
       downV?.agent !== undefined && downV.agent === spawnV?.agent && downV?.reason === "lapsed",
       JSON.stringify({ down: downV, spawned: spawnV?.agent }));
+  }
+
+  // ── 5) turn flow-through: the REAL relay carries a yield, and a deadline denies ─────────────
+  {
+    console.log("• 5 — a real turn is relayed, pulled and yielded; an unanswered one denies at its deadline");
+    // Leg A: the yield. The suite plays the SEAT's side over the real self-reach commands — the
+    // same two calls a connector's intake makes.
+    const drv = startRun(js, jsm, {
+      space: SPACE, endpoint: "manager", kv, runId: "ls-5", lease: lease(),
+      source: `const d = await spawn("wf5");
+const r = await turn(d, { name: "poke", deadline: "2m" });
+log("turned", r.status, r.note);`,
+      handler: mk("ls-5"),
+    }).catch((e: unknown) => ({ status: "threw" as const, error: String((e as Error)?.message).slice(0, 140) }));
+    let turnEntry: JournalEntryT | undefined;
+    {
+      const until = Date.now() + 30_000;
+      while (turnEntry === undefined && Date.now() < until) {
+        turnEntry = (await entriesOf("ls-5", "turn")).find((e) => e.state === "pending" && e.external !== undefined);
+        if (turnEntry === undefined) await wait(400);
+      }
+    }
+    c("the run parks on the relayed turn once the REAL manager accepts it",
+      typeof turnEntry?.external?.goalId === "string", JSON.stringify(turnEntry?.external));
+    // The seat's own reach: the spawn's acceptance floor IS the caller `turn-pending` rides.
+    const floor = (await entriesOf("ls-5", "spawn")).find((e) => e.external !== undefined)?.external as
+      { owner?: string; actor?: string; uid?: string } | undefined;
+    const seatCaller: EpCallerT = { owner: String(floor?.owner), actor: String(floor?.actor), uid: String(floor?.uid) };
+    const seatService = await resolveService(nc, SPACE, "manager", seatCaller);
+    let pulled: { goalId?: string; payload?: string } | undefined;
+    {
+      const until = Date.now() + 20_000;
+      while (pulled === undefined && Date.now() < until) {
+        const r = await invokeCommand(nc, SPACE, seatService, "turn-pending", undefined, { target: { mode: "self" }, deadlineMs: 10_000 });
+        const turns = ((r.reply.data as { turns?: unknown[] } | undefined)?.turns ?? []) as Array<{ goalId?: string; payload?: string }>;
+        if (turns.length > 0) pulled = turns[0];
+        else await wait(500);
+      }
+    }
+    c("the seat pulls the relayed turn under its own self reach",
+      pulled?.goalId !== undefined && pulled.goalId === turnEntry?.external?.goalId, JSON.stringify(pulled)?.slice(0, 120));
+    const payload = pulled?.payload !== undefined
+      ? JSON.parse(pulled.payload) as { run?: unknown; context?: unknown } : undefined;
+    c("the pulled payload names the run and carries its rendered context",
+      payload?.run === "ls-5" && typeof payload?.context === "string", JSON.stringify(payload)?.slice(0, 120));
+    const y = await invokeCommand(nc, SPACE, seatService, "turn-yield",
+      { goalId: pulled?.goalId ?? "", status: "done", note: "built it" }, { target: { mode: "self" }, deadlineMs: 20_000 });
+    c("the real manager accepts the yield and completes the goal with the seat's live currency",
+      y.reply.ok === true && (y.reply.data as { state?: unknown } | undefined)?.state === "succeeded", JSON.stringify(y.reply));
+    const out = await Promise.race([drv, wait(45_000).then(() => undefined)]);
+    c("the yield resumes the run", (out as { status?: string } | undefined)?.status === "completed", JSON.stringify(out));
+    const turnV = (await entriesOf("ls-5", "turn")).find((e) => e.state === "settled")?.result as
+      { status?: string; note?: string } | undefined;
+    c("the journal records the yield the seat gave", turnV?.status === "done" && turnV?.note === "built it", JSON.stringify(turnV));
+
+    // Leg B: the deadline. Nobody yields; the client's own pause is the run's L4003, and the
+    // manager's hold-expiry deny is the goal's terminal on the plane — poll for BOTH.
+    const drv2 = startRun(js, jsm, {
+      space: SPACE, endpoint: "manager", kv, runId: "ls-6", lease: lease(),
+      source: `const d = await spawn("wf6");
+try {
+  await turn(d, { name: "poke", deadline: "6s" });
+  log("reached", true);
+} catch (e) {
+  log("caught", e.code);
+}`,
+      handler: mk("ls-6"),
+    }).catch((e: unknown) => ({ status: "threw" as const, error: String((e as Error)?.message).slice(0, 140) }));
+    const out2 = await Promise.race([drv2, wait(60_000).then(() => undefined)]);
+    c("the unanswered turn is caught in-program and the run completes",
+      (out2 as { status?: string } | undefined)?.status === "completed", JSON.stringify(out2));
+    const expired = (await entriesOf("ls-6", "turn")).find((e) => e.state === "settled");
+    c("the entry settles as the deadline-elapsed L4003",
+      expired?.status === "failed" && expired?.error?.code === "L4003" && expired?.error?.kind === "turn-deadline",
+      JSON.stringify(expired?.error));
+    const goalId = String(expired?.external?.goalId ?? "");
+    const actx = await actionContext(nc, SPACE);
+    let fact: { state?: string; data?: unknown } | undefined;
+    {
+      const until = Date.now() + 30_000;
+      while (fact === undefined && Date.now() < until) {
+        fact = await readGoalResult(actx, { endpoint: "manager", caller: CALLER, goalId });
+        if (fact === undefined) await wait(1_000);
+      }
+    }
+    c("the REAL manager's hold-expiry deny converges the goal: failed, reason turn-deadline",
+      fact?.state === "failed" && (fact?.data as { reason?: unknown } | undefined)?.reason === "turn-deadline", JSON.stringify(fact));
   }
 
   pumpState.over = true;

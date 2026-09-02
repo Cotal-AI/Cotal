@@ -1202,6 +1202,29 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       },
     },
     {
+      name: "cotal_yield",
+      title: "Cotal: yield a run turn",
+      description:
+        "Yield the run turn you were handed (the 🎯 context block) back to its workflow. You rarely need this: simply ending your session turn yields `done` automatically. Call it only when you are BLOCKED (can't make progress; say why in `note`) or HANDING OFF the turn to another agent (`status: handoff` with `to`). Applies to the oldest turn you were handed; pass `turn` (its goal id, shown in the block) only when you hold several.",
+      schema: {
+        status: z
+          .enum(["done", "blocked", "handoff"])
+          .describe("done = finished (usually implicit: just end your turn instead); blocked = can't proceed; handoff = another agent should take it."),
+        to: z.string().optional().describe("handoff only: the agent name the turn should pass to."),
+        note: z.string().max(4096).optional().describe("Short free-text for the run: what blocked you, or what the next agent should know."),
+        turn: z.string().optional().describe("The turn's goal id, from the 🎯 block. Omit when you hold only one."),
+      },
+      async run(agent, _config, { status, to, note, turn }: { status: "done" | "blocked" | "handoff"; to?: string; note?: string; turn?: string }) {
+        try {
+          const reply = await agent.yieldTurn(status, { to, note, turn });
+          if (!reply.ok) return err(`Couldn't yield: ${reply.error ?? "manager refused"}`);
+          return ok(`Turn yielded (${status}${to ? ` → ${to}` : ""}) — the run continues.`);
+        } catch (e) {
+          return err(`Couldn't yield: ${(e as Error).message}`);
+        }
+      },
+    },
+    {
       name: "cotal_persona",
       title: "Cotal: define a persona",
       description:

@@ -53,6 +53,11 @@ import {
   readGoalResult,
   readGoalStatus,
   resolveService,
+  listRunNotices,
+  markRunNoticeConsumed,
+  readRunRecord,
+  writeRunStatus,
+  EpEnvelopeError,
   type ActionContext,
   type CheckpointRef,
   type CheckpointSettleFact,
@@ -64,6 +69,7 @@ import {
   type Presence,
   type ResolvedService,
 } from "@cotal-ai/core";
+import { renderRunContext } from "./run-context.js";
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
@@ -89,6 +95,8 @@ import {
   type NotifyRequest,
   type SleepRequest,
   type SpawnRequest,
+  type TurnRequest,
+  type TurnResultValue,
   journalEntryKeyString,
   stepKeyString,
 } from "@cotal-ai/lang";
@@ -253,6 +261,18 @@ export class MeshHandler {
    *  and a re-entered open repopulates the map from `ctx.resume`. */
   private readonly conclaves = new Map<string, ConclavePlan>();
 
+  /** The run's roster: every agent this run spawned, by name — the handle a handoff resolves to,
+   *  and the owner/actor address a `turn` targets (absent when the spawn's acceptance floor was
+   *  never served; a `turn` on such an agent refuses loudly rather than guessing an address).
+   *  Seeded live by `spawn`, rebuilt at adoption from the journal's settled spawn entries. */
+  private readonly roster = new Map<string, { handle: AgentHandleValue; owner?: string; actor?: string; uid: string }>();
+
+  /** The most recent unhonored handoff yield per SCOPE (lang §5.3): the goal-chain linkage memo.
+   *  `"ambiguous"` when two pending handoffs in one scope named the same agent — ambiguity records
+   *  no linkage at all. Spent (deleted) by the next `turn` in the scope, honored or not: honoring
+   *  is immediate-only. Rebuilt at adoption by replaying the same two rules over the journal. */
+  private readonly handoffMemos = new Map<string, { to: string; fromGoalId: string } | "ambiguous">();
+
   now(): number {
     return this.clock();
   }
@@ -268,11 +288,50 @@ export class MeshHandler {
    * cannot advance it.
    */
   async adopted(entries: readonly JournalEntry[]): Promise<string[]> {
+    this.seedRunMemos(entries);
     return await rearmOutstandingPauses(
       { kv: this.kv, js: this.js, jsm: this.jsm },
       this.binding,
       entries,
     );
+  }
+
+  /**
+   * Rebuild the in-memory run memos an adopted run needs to keep performing `turn`: the roster
+   * (from every settled ok `spawn`, its result the handle and its bound floor the address) and the
+   * handoff memos (replaying, in journal order, the same two rules the live path applies — a turn's
+   * begin spends its scope's memo, a settled handoff yield writes one, a second pending handoff to
+   * the same name in one scope makes it ambiguous). Deterministic from the journal alone.
+   */
+  private seedRunMemos(entries: readonly JournalEntry[]): void {
+    for (const e of entries) {
+      if (e.kind === "spawn" && e.state === "settled" && e.status === "ok" && e.result !== undefined) {
+        const handle = e.result as AgentHandleValue;
+        if (typeof handle.agent !== "string") continue; // a garbled result seeds nothing; the turn that needs it refuses loudly
+        const { name, uid } = parseAgentHandle(handle.agent);
+        const ext = e.external as { owner?: unknown; actor?: unknown } | undefined;
+        this.roster.set(name, {
+          handle,
+          uid,
+          ...(typeof ext?.owner === "string" ? { owner: ext.owner } : {}),
+          ...(typeof ext?.actor === "string" ? { actor: ext.actor } : {}),
+        });
+        continue;
+      }
+      if (e.kind !== "turn") continue;
+      this.handoffMemos.delete(e.scope); // its begin spent whatever was pending, honored or not
+      if (e.state !== "settled" || e.status !== "ok" || e.result === undefined) continue;
+      const r = e.result as TurnResultValue;
+      if (r.status !== "handoff" || r.to === undefined || typeof r.to.agent !== "string") continue;
+      this.recordHandoffMemo(e.scope, parseAgentHandle(r.to.agent).name, e.requestId ?? "");
+    }
+  }
+
+  /** One handoff yield's memo write: most-recent-wins across different names, ambiguous when a
+   *  pending handoff to the SAME name is already waiting (lang §5.3 — ambiguity records nothing). */
+  private recordHandoffMemo(scope: string, to: string, fromGoalId: string): void {
+    const prev = this.handoffMemos.get(scope);
+    this.handoffMemos.set(scope, prev !== undefined && (prev === "ambiguous" || prev.to === to) ? "ambiguous" : { to, fromGoalId });
   }
 
   /**
@@ -299,7 +358,7 @@ export class MeshHandler {
         await this.dischargeConclave(e);
         continue;
       }
-      if (e.kind !== "sleep" && e.kind !== "checkpoint" && e.kind !== "wait" && e.kind !== "ask") continue;
+      if (e.kind !== "sleep" && e.kind !== "checkpoint" && e.kind !== "wait" && e.kind !== "ask" && e.kind !== "turn") continue;
       // An ask's armed timer is its CURRENT attempt's, whose token is bound as `askToken`; a
       // crash before the first bind leaves attempt 1, which is the request id itself.
       const current = e.kind === "ask" && typeof e.external?.askToken === "string"
@@ -724,7 +783,9 @@ export class MeshHandler {
 
     // A recorded goalId is a previous attempt's ACCEPTANCE: the submission landed and its
     // identity was bound before the crash. Go straight back to the terminal.
-    if (ctx.resume?.goalId !== goalId) {
+    let ext: Readonly<Record<string, unknown>> | undefined =
+      ctx.resume?.goalId === goalId ? (ctx.resume as Readonly<Record<string, unknown>>) : undefined;
+    if (ext === undefined) {
       let reply: EpAttributedReply | undefined;
       try {
         const service = await this.manager();
@@ -753,14 +814,25 @@ export class MeshHandler {
       // BIND BEFORE AWAITING: the goalId is re-derivable, but the bind is what tells a resume the
       // submission LANDED — and the identity floor beside it is what a discharge despawns by when
       // the terminal alone carries none (an `uncertain` verdict).
-      await ctx.bind({
+      ext = {
         goalId,
         ...(floor !== undefined ? pickAcceptanceFloor(floor) : {}),
-      });
+      };
+      await ctx.bind(ext);
     }
 
     const fact = await this.goalTerminal(ref, ctx.signal);
-    return spawnHandleOf(req, fact, this.binding.endpoint);
+    const handle = spawnHandleOf(req, fact, this.binding.endpoint);
+    // Register the run-roster entry `turn` addresses and a handoff resolves to. The owner/actor
+    // address prefers the bound floor and falls back to the terminal's own recorded identity —
+    // the same discipline the discharge uses (see spawnDespawnTarget).
+    const address = spawnDespawnTarget(ext, fact);
+    this.roster.set(parseAgentHandle(handle.agent).name, {
+      handle,
+      uid: parseAgentHandle(handle.agent).uid,
+      ...(address !== undefined ? { owner: address.owner, actor: address.actor } : {}),
+    });
+    return handle;
   }
 
   /** Poll the goal's durable terminal fact, observing cancellation on the poll cadence — the same
@@ -776,8 +848,202 @@ export class MeshHandler {
     }
   }
 
-  async turn(_req: unknown, _ctx: EffectContext): Promise<never> {
-    throw new NotYetDurable("turn(…)", ACTION_MACHINERY);
+  /**
+   * `turn` wakes ONE AGENT for one turn, over the manager's relay (a seat is not an endpoint):
+   * the manager accepts the goal, parks the rendered context durably, the seat pulls and yields
+   * under its own self reach, and the yield is this goal's terminal. The request id is the goalId,
+   * the same recovery discipline as `spawn`: a resumed run re-enters the poll, never re-submits.
+   *
+   * THREE AUTHORITIES END IT, one per ending. The seat's yield is the manager's `succeeded`
+   * terminal, carrying the TurnResult. The DEADLINE is double-covered: the manager arms a
+   * goal-bound hold (its expiry commits `failed` reason `turn-deadline`), and this client arms its
+   * OWN pause under the step's request id — the L4003 authority that survives a dead manager.
+   * DEATH likewise: the manager's reap hook fails pending turns `agent-down`, and this client
+   * watches presence itself (the L4002 authority when the manager died with the seat).
+   *
+   * Handoff honoring (lang §5.3) happens HERE: the scope's pending memo is spent at every turn's
+   * begin, and when this turn targets its `to`, the link rides the submission (`handoffFrom`, the
+   * manager mirrors it into the terminal), the bound external state, and the run record's
+   * `conversationOwner`. A handoff YIELD is validated against the run roster: an addressee
+   * outside it is L4005, one in a different worktree is L4004.
+   */
+  async turn(req: TurnRequest, ctx: EffectContext): Promise<TurnResultValue> {
+    if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
+    const { name, uid } = parseAgentHandle(req.agent.agent);
+    const goalId = ctx.requestId;
+    const ref: GoalRef = { endpoint: this.binding.endpoint, caller: this.binding.caller, goalId };
+    const primary: CheckpointRef = { endpoint: this.binding.endpoint, token: goalId };
+    const scope = scopeOf(ctx.key);
+
+    let ext: Readonly<Record<string, unknown>> | undefined =
+      ctx.resume?.goalId === goalId ? (ctx.resume as Readonly<Record<string, unknown>>) : undefined;
+    if (ext === undefined) {
+      const entry = this.roster.get(name);
+      if (entry === undefined || entry.uid !== uid)
+        throw new Error(`turn(${name}#${uid}) addresses an agent that is not in this run's roster; a turn wakes an agent this run spawned`);
+      if (entry.owner === undefined || entry.actor === undefined)
+        throw new Error(`turn(${name}#${uid}) has no address: the spawn's acceptance floor was never served, so the seat's owner/actor coordinates are unknown`);
+      // Spend the scope's handoff memo at BEGIN, honored or not — honoring is immediate-only.
+      const memo = this.handoffMemos.get(scope);
+      this.handoffMemos.delete(scope);
+      const handoffFrom = memo !== undefined && memo !== "ambiguous" && memo.to === name ? memo.fromGoalId : undefined;
+      // Render the seat's context: every unconsumed notice addressed to it, as one durable payload.
+      const step = stepKeyString(ctx.key);
+      // Addressed by the HANDLE COMPOSITE, exactly as `notify` filed them (an incarnation is the
+      // addressee, and a successor under the name is somebody else).
+      const notices = (await listRunNotices(this.kv, this.binding.endpoint, this.binding.runId, req.agent.agent))
+        .filter((n) => n.consumed === undefined);
+      const context = renderRunContext({ run: this.binding.runId, step, notices });
+      const deadlineMs = parseDuration(req.deadline ?? this.binding.defaultCheckpointTimeout);
+      const deadlineAt = this.now() + deadlineMs;
+      const payload = JSON.stringify({ run: this.binding.runId, step, context, noticeIds: notices.map((n) => n.noticeId) });
+
+      let reply: EpAttributedReply | undefined;
+      try {
+        const service = await this.manager();
+        reply = await invokeCommand(this.nc, this.binding.space, service, "turn",
+          { payload, deadlineMs, ...(handoffFrom !== undefined ? { handoffFrom } : {}) }, {
+            id: goalId,
+            deadlineMs: TURN_ACCEPT_DEADLINE_MS,
+            target: { mode: "owner", owner: entry.owner, actor: entry.actor, lifecycleUid: uid },
+          });
+      } catch (err) {
+        // The invoke did not come back — the goal record is the arbiter, exactly as in `spawn`.
+        if ((await readGoalStatus(await this.actionCtx(), ref)) === undefined) throw err;
+      }
+      if (reply !== undefined && reply.reply.ok === false) {
+        const err = reply.reply.error;
+        // `expired` is the serve boundary's "target is not a live managed agent": the seat is gone.
+        if (err?.code === "expired")
+          throw new EffectError("L4002", "turn", `turn(${name}#${uid}) found the agent down before the relay began: ${err.message}`);
+        throw new Error(`turn(${name}#${uid}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? "refused with no message"}`);
+      }
+      ext = {
+        goalId, name, owner: entry.owner, actor: entry.actor, uid, deadlineAt,
+        noticeIds: notices.map((n) => n.noticeId),
+        ...(handoffFrom !== undefined ? { handoffFrom } : {}),
+      };
+      await ctx.bind(ext);
+    }
+    const deadlineAt = ext.deadlineAt;
+    if (typeof deadlineAt !== "number")
+      throw new Error(`turn(${name}#${uid}) resumed with no recorded deadline; a garbled external state never authorizes`);
+    // The client's OWN deadline authority: minted on the first pass, attached to on re-entry.
+    await this.arm(primary, deadlineAt);
+    // Honoring moves the conversation owner. Re-driven on resume — idempotent when already moved.
+    if (typeof ext.handoffFrom === "string") await this.moveConversationOwner(name);
+
+    const actx = await this.actionCtx();
+    for (;;) {
+      if (ctx.signal.cancelled) {
+        await this.cancelTimer(primary);
+        throw new Cancelled(ctx.signal.reason ?? "cancelled");
+      }
+      const fact = await readGoalResult(actx, ref);
+      if (fact !== undefined) {
+        await this.cancelTimer(primary);
+        return await this.turnOutcome(req, fact, ext, scope, name, uid);
+      }
+      const ended = await this.expired(primary);
+      if (ended !== undefined)
+        throw new EffectError("L4003", "turn-deadline", `turn(${name}#${uid}) deadline elapsed before a yield`);
+      let rows: readonly Presence[];
+      try {
+        rows = await this.presenceRows();
+      } catch (e) {
+        if (e instanceof IncompleteKvScan) { await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref()); continue; }
+        throw e;
+      }
+      if (!rows.some((pr) => pr.card?.name === name && pr.lifecycleUid === uid)) {
+        const reason = rows.some((pr) => pr.card?.name === name) ? "superseded" : "lapsed";
+        await this.cancelTimer(primary);
+        throw new EffectError("L4002", "turn", `turn(${name}#${uid}) found the agent down (${reason}) before a yield`);
+      }
+      await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref());
+    }
+  }
+
+  /** Map a turn goal's terminal onto the effect's contract: `succeeded` carries the TurnResult
+   *  (a handoff addressee resolved against the roster — L4005 outside it, L4004 across
+   *  worktrees), `failed` splits on the manager's recorded reason, `cancelled` unwinds. The
+   *  consumed notices are marked HERE, by the goal that carried them, tolerating the re-entry
+   *  conflict (a crash between the terminal and the mark re-marks on resume). */
+  private async turnOutcome(
+    req: TurnRequest,
+    fact: GoalResultFact,
+    ext: Readonly<Record<string, unknown>>,
+    scope: string,
+    name: string,
+    uid: string,
+  ): Promise<TurnResultValue> {
+    if (fact.state === "cancelled") throw new Cancelled(`the turn goal for ${name}#${uid} was cancelled`);
+    if (fact.state === "failed") {
+      const d = fact.data as { reason?: unknown; error?: unknown } | undefined;
+      // The one reasoned failure a relay commits. Seat DEATH deliberately has no arm here: a
+      // dead target has no honest early terminal on the goal plane (SPEC 13.6 item 7), so the
+      // client's own presence watch in the poll loop is the L4002 authority, and a death that
+      // rode to the deadline arrives as this same turn-deadline deny.
+      if (d?.reason === "turn-deadline")
+        throw new EffectError("L4003", "turn-deadline", `turn(${name}#${uid}) deadline elapsed before a yield`);
+      throw new Error(`turn(${name}#${uid}) failed at the ${this.binding.endpoint} endpoint: ${typeof d?.error === "string" ? d.error : JSON.stringify(fact.data)}`);
+    }
+    if (fact.state !== "succeeded")
+      throw new Error(`turn(${name}#${uid}) settled ${fact.state}; a turn's yield is a succeeded terminal or a reasoned failure, never this`);
+    const d = fact.data as { status?: unknown; to?: unknown; note?: unknown; at?: unknown } | undefined;
+    if ((d?.status !== "done" && d?.status !== "blocked" && d?.status !== "handoff") || typeof d.at !== "number")
+      throw new Error(`turn(${name}#${uid}) succeeded with a malformed TurnResult (${JSON.stringify(fact.data)}); a garbled terminal never yields a result`);
+    let to: AgentHandleValue | undefined;
+    if (d.status === "handoff") {
+      const toName = typeof d.to === "string" ? d.to : "";
+      const target = this.roster.get(toName);
+      if (toName.length === 0 || target === undefined)
+        throw new EffectError("L4005", "turn-handoff", `turn(${name}#${uid}) yielded a handoff to "${toName}", which is not in this run's roster`);
+      if ((target.handle.worktree ?? undefined) !== (req.agent.worktree ?? undefined))
+        throw new EffectError("L4004", "turn-handoff", `turn(${name}#${uid}) yielded a handoff to "${toName}" across worktrees (${req.agent.worktree ?? "none"} -> ${target.handle.worktree ?? "none"}); you cannot hand someone a working tree they are not in`);
+      to = target.handle;
+    }
+    // The notices this turn carried are consumed by THIS goal — the create-only CAS arbitrates,
+    // and a re-entry's conflict reads as "already recorded", never as a failure.
+    const noticeIds = Array.isArray(ext.noticeIds) ? ext.noticeIds.filter((n): n is string => typeof n === "string") : [];
+    for (const noticeId of noticeIds) {
+      try {
+        await markRunNoticeConsumed(this.kv, this.binding.endpoint, this.binding.runId, req.agent.agent, noticeId, String(ext.goalId), this.now());
+      } catch (e) {
+        if (!(e instanceof EpEnvelopeError && e.code === "conflict")) throw e;
+      }
+    }
+    if (d.status === "handoff" && to !== undefined)
+      this.recordHandoffMemo(scope, parseAgentHandle(to.agent).name, String(ext.goalId));
+    return {
+      status: d.status,
+      ...(to !== undefined ? { to } : {}),
+      ...(typeof d.note === "string" ? { note: d.note } : {}),
+      at: d.at,
+    };
+  }
+
+  /**
+   * Move the run record's `conversationOwner` to the agent whose turn honors a handoff — the
+   * observers' answer to "who is driving". A read-modify-write CAS preserving every driver-owned
+   * status field; contended against the driver's own activation writes, so it retries on a lost
+   * CAS and refuses loudly when the record stays contended — never a silent skip.
+   */
+  private async moveConversationOwner(name: string): Promise<void> {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const record = await readRunRecord(this.kv, this.binding.endpoint, this.binding.runId);
+      if (record?.status === undefined) return; // no status yet — nothing is observing this run
+      const current = record.status.value;
+      if (current.conversationOwner === name) return;
+      const { v: _v, ...rest } = current;
+      try {
+        await writeRunStatus(this.kv, this.binding.endpoint, this.binding.runId, { ...rest, conversationOwner: name }, record.status.revision);
+        return;
+      } catch (e) {
+        if (e instanceof EpEnvelopeError && e.code === "conflict") continue;
+        throw e;
+      }
+    }
+    throw new Error(`the conversation-owner move to "${name}" lost the run-status CAS five times; the run record is under active contention`);
   }
 
   /**
@@ -1327,6 +1593,14 @@ const GOAL_POLL_MS = 2_000;
  *  side (the manager replies at identity mint, before any provision), so this bounds a lost
  *  broker, not the spawn itself — the spawn's own outcome rides the goal terminal. */
 const SPAWN_ACCEPT_DEADLINE_MS = 30_000;
+/** Bound on the manager's synchronous `turn` ACCEPT reply (the relay registration, not the yield). */
+const TURN_ACCEPT_DEADLINE_MS = 30_000;
+/** A step key's enclosing scope: the journal's own rendering (`entry.scope`), re-derived so the
+ *  live path and the adoption rebuild key the handoff memos identically. */
+function scopeOf(key: Parameters<typeof stepKeyString>[0]): string {
+  const k = stepKeyString(key);
+  return k.slice(0, k.lastIndexOf("/"));
+}
 
 /** The terminal wait a discharge grants a goal whose entry recorded no readiness window (the
  *  crash-before-bind case). Matches the manager's default readiness budget. */

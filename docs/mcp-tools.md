@@ -27,6 +27,7 @@ The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` an
 | [`cotal_spawn`](#cotalspawn) | spawn a new teammate | starts a new agent process via the manager |
 | [`cotal_feedback`](#cotalfeedback) | send beta feedback | sends data to an external HTTPS intake (network egress) |
 | [`cotal_despawn`](#cotaldespawn) | stop a teammate | stops a teammate (or yourself) |
+| [`cotal_yield`](#cotalyield) | yield a run turn | settles one run turn via the manager (done / blocked / handoff) |
 | [`cotal_persona`](#cotalpersona) | define a persona | writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce` |
 | [`cotal_personas`](#cotalpersonas) | list or show personas | read-only |
 | [`cotal_reconnect`](#cotalreconnect) | reconnect to the mesh | tears down and rebuilds your own mesh connection |
@@ -284,6 +285,23 @@ Ask the manager to tear a teammate down: it leaves the mesh and its process/tab 
 |---|---|---|---|
 | `name` | string | no | Name of the peer to stop. Omit to stop yourself (self-despawn). |
 | `graceful` | boolean | no | Default true: let the session exit cleanly. false = hard kill. |
+
+## `cotal_yield`
+
+*yield a run turn*
+
+Yield the run turn you were handed (the 🎯 context block) back to its workflow. You rarely need this: simply ending your session turn yields `done` automatically. Call it only when you are BLOCKED (can't make progress; say why in `note`) or HANDING OFF the turn to another agent (`status: handoff` with `to`). Applies to the oldest turn you were handed; pass `turn` (its goal id, shown in the block) only when you hold several.
+
+- **Side-effect:** settles one run turn via the manager (done / blocked / handoff).
+- **Available:** always; only meaningful while a run turn is pending on you.
+- Ending your session turn already yields `done` for every turn you were shown; call this only when blocked or handing off.
+
+| Argument | Type | Required | Meaning |
+|---|---|---|---|
+| `status` | `done` \| `blocked` \| `handoff` | yes | done = finished (usually implicit: just end your turn instead); blocked = can't proceed; handoff = another agent should take it. |
+| `to` | string | no | handoff only: the agent name the turn should pass to. |
+| `note` | string | no | Short free-text for the run: what blocked you, or what the next agent should know. |
+| `turn` | string | no | The turn's goal id, from the 🎯 block. Omit when you hold only one. |
 
 ## `cotal_persona`
 
