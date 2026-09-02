@@ -150,8 +150,8 @@ the compiled engine, as the engine paragraph below says. The wire
 substrate of §14 (the `WFJ_<space>` stream, the four record kinds, the activation barrier, the
 per-run grants) is in `@cotal-ai/core`, and the run driver, journal store, migrate and fork are
 `@cotal-ai/runtime` (`implementations/runtime`). On the mesh handler, `sleep`, `checkpoint`,
-`wait(message(...))`, `wait(idle(...))`, `wait(down(...))`, `notify`, `spawn`, `conclave`, `ask`,
-`monitor` and `turn` are durable.
+`wait(message(...))`, `wait(idle(...))`, `wait(down(...))`, `wait(replied(...))`, `notify`,
+`spawn`, `conclave`, `ask`, `monitor` and `turn` are durable.
 `spawn` is
 the manager's spawn action submitted under the step's own identity: the goal binds under the step's
 request id, so a resumed run re-attaches to the same seat instead of allocating a second one, a
@@ -186,12 +186,19 @@ catchable L4005, and one to a seat bound to a different worktree is L4004. The d
 before any yield is the catchable L4003, held by the run's own pause as well as the manager's
 goal-bound hold, so either side outliving the other still converges on the same answer. A seat
 that dies mid-turn is read off its own presence row by the run itself and is the catchable L4002.
-`wait(replied(...))` and a `spawn` with a `worktree` refuse with
-**L5016 (effect not durable on this host)** until the machinery they ride lands. That refusal
+`wait(replied(...))` observes those turns from another branch: a completed turn is a reply, and
+the wait resolves with the observation record (the handle, the yield's status and note, the
+yield's own stamp). It reads as a level, the way `wait(down)` does: a reply that already exists
+resolves the wait at once, and two replies resolve to the latest by the yield's stamp. A denied
+or cancelled turn is never a reply, so an unanswered wait rides its own mediated timeout to
+`null`, and a handle the run never spawned or turned refuses loudly, since only this run's turns
+are observable.
+A `spawn` with a `worktree` refuses with
+**L5016 (effect not durable on this host)** until the §9 binding it rides lands. That refusal
 holds the run rather than ending it: the entry is settled `refused` (never `failed`, since nothing
 was attempted), the run unwinds with the uncatchable L5025 and is recorded `released`, and a
 resume on a host that can perform the step performs it live. A run started today heals the day
-those pieces land. The operator surface over the driver is `cotal run`; the section above has the verbs.
+that binding lands. The operator surface over the driver is `cotal run`; the section above has the verbs.
 
 **Two engines, and which one runs your program.** The tree-walker is language version `1` and the
 compiled engine is version `2`, two languages rather than two speeds of one (`spec/cotal-lang.md`

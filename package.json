@@ -56,6 +56,7 @@
     "smoke:runtime-mesh-ask": "tsx implementations/runtime/smoke/mesh-ask.smoke.ts",
     "smoke:runtime-mesh-monitor": "tsx implementations/runtime/smoke/mesh-monitor.smoke.ts",
     "smoke:runtime-mesh-turn": "tsx implementations/runtime/smoke/mesh-turn.smoke.ts",
+    "smoke:runtime-mesh-replied": "tsx implementations/runtime/smoke/mesh-replied.smoke.ts",
     "smoke:runtime-fork": "tsx implementations/runtime/smoke/fork-run.smoke.ts",
     "smoke:runtime-run-command": "tsx implementations/runtime/smoke/run-command.smoke.ts",
     "smoke:lang-pins": "tsx packages/lang/smoke/pins.smoke.ts",

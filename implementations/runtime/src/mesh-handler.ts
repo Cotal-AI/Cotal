@@ -273,6 +273,10 @@ export class MeshHandler {
    *  is immediate-only. Rebuilt at adoption by replaying the same two rules over the journal. */
   private readonly handoffMemos = new Map<string, { to: string; fromGoalId: string } | "ambiguous">();
 
+  /** This run's turn goals per handle composite ("name#uid") — the observable `wait(replied)`
+   *  rides. Fed by `turn` at submission and adoption, reseeded from journal turn entries. */
+  private readonly turnGoals = new Map<string, Set<string>>();
+
   now(): number {
     return this.clock();
   }
@@ -319,12 +323,22 @@ export class MeshHandler {
         continue;
       }
       if (e.kind !== "turn") continue;
+      const x = e.external as { name?: unknown; uid?: unknown; goalId?: unknown } | undefined;
+      if (typeof x?.name === "string" && typeof x?.uid === "string" && typeof x?.goalId === "string")
+        this.recordTurnGoal(`${x.name}#${x.uid}`, x.goalId);
       this.handoffMemos.delete(e.scope); // its begin spent whatever was pending, honored or not
       if (e.state !== "settled" || e.status !== "ok" || e.result === undefined) continue;
       const r = e.result as TurnResultValue;
       if (r.status !== "handoff" || r.to === undefined || typeof r.to.agent !== "string") continue;
       this.recordHandoffMemo(e.scope, parseAgentHandle(r.to.agent).name, e.requestId ?? "");
     }
+  }
+
+  /** One turn goal registered under its handle composite — what `wait(replied)` observes. */
+  private recordTurnGoal(handle: string, goalId: string): void {
+    const set = this.turnGoals.get(handle);
+    if (set === undefined) this.turnGoals.set(handle, new Set([goalId]));
+    else set.add(goalId);
   }
 
   /** One handoff yield's memo write: most-recent-wins across different names, ambiguous when a
@@ -524,16 +538,13 @@ export class MeshHandler {
    * resumed 20-minute wait with 30 seconds left has 30 seconds left. A timeout resolves `null` and
    * never throws: `??` is `otherwise`.
    *
-   * `down(agent)` is an agent-addressed event with no channel, so it branches to `waitDown`
-   * before any of the channel machinery. `replied(agent)` rides the turn machinery that has not
-   * landed, so it refuses through the same named seam as the durable actions.
+   * `down(agent)` and `replied(agent)` are agent-addressed events with no channel, so they branch
+   * to `waitDown` and `waitReplied` before any of the channel machinery.
    */
   async wait(req: WaitRequest, ctx: EffectContext): Promise<unknown | null> {
     if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
     const ev = req.event;
-    if (ev.event === "replied") {
-      throw new NotYetDurable("wait(replied(…))", ACTION_MACHINERY);
-    }
+    if (ev.event === "replied") return await this.waitReplied(ev, req, ctx);
     if (ev.event === "down") return await this.waitDown(ev, req, ctx);
     if (!isConcreteChannel(ev.channel)) {
       throw new Error(`wait() cannot await a wildcard channel ("${ev.channel}"); an await names one channel`);
@@ -699,6 +710,70 @@ export class MeshHandler {
   }
 
   /**
+   * `wait(replied(agent))` — the agent finished a reply, observed over THIS RUN's turn terminals.
+   *
+   * The honest observable a run holds for "finished a reply" is the terminal fact of a turn it
+   * relayed itself: a `succeeded` turn goal IS a completed reply, durable on the goal plane. The
+   * wait resolves off the run's turn-goal registry for the handle — fed by `turn` at submission
+   * and reseeded from the journal on adoption — and REPLIED IS A LEVEL, exactly as `down` is: a
+   * reply that already exists resolves the wait at once (the latest, by the yield's own `at`
+   * stamp), and a wait that begins before any reply parks for the next terminal. A denied or
+   * cancelled turn is not a reply — the agent never finished one — so it leaves the wait parked.
+   * A handle outside the run's roster with no recorded turn can never be observed (only this
+   * run's turns are), so it refuses loudly instead of parking on nothing.
+   *
+   * NOTHING BINDS, for `down`'s reason: goal terminals are durable facts, so a crash between the
+   * observation and the settle re-observes the same reply on resume — at worst a NEWER reply
+   * completed in between. The value is the observation record, `down`-shaped:
+   * `{ agent, status, note?, at }`, where `at` is the yield's own stamp. The TIMEOUT is the same
+   * mediated pause every wait arms, resolving `null`, never a throw.
+   */
+  private async waitReplied(
+    ev: { readonly agent: string },
+    req: WaitRequest,
+    ctx: EffectContext,
+  ): Promise<unknown | null> {
+    const { name, uid } = parseAgentHandle(ev.agent);
+    const handle = `${name}#${uid}`;
+    if (this.turnGoals.get(handle) === undefined) {
+      const entry = this.roster.get(name);
+      if (entry === undefined || entry.uid !== uid)
+        throw new Error(`wait(replied(${handle})) addresses an agent that is not in this run's roster; a reply is observed on a turn this run relayed`);
+    }
+    const primary = req.timeout === undefined
+      ? undefined
+      : { endpoint: this.binding.endpoint, token: ctx.requestId };
+    if (primary !== undefined) await this.arm(primary, this.now() + parseDuration(req.timeout!));
+    const actx = await this.actionCtx();
+    for (;;) {
+      if (ctx.signal.cancelled) {
+        if (primary !== undefined) await this.cancelTimer(primary);
+        throw new Cancelled(ctx.signal.reason ?? "cancelled");
+      }
+      const ended = await this.expired(primary);
+      if (ended !== undefined) return null;
+      const goals = this.turnGoals.get(handle);
+      let latest: { status: string; note?: string; at: number } | undefined;
+      for (const goalId of goals ?? []) {
+        const fact = await readGoalResult(actx, { endpoint: this.binding.endpoint, caller: this.binding.caller, goalId });
+        if (fact === undefined) continue;
+        // Denied (deadline) or cancelled: the agent never finished a reply. Stop reading it.
+        if (fact.state !== "succeeded") { goals!.delete(goalId); continue; }
+        const d = fact.data as { status?: unknown; note?: unknown; at?: unknown } | undefined;
+        if ((d?.status !== "done" && d?.status !== "blocked" && d?.status !== "handoff") || typeof d.at !== "number")
+          throw new Error(`wait(replied(${handle})) observed a malformed turn terminal (${JSON.stringify(fact.data)}); a garbled yield never resolves a wait`);
+        if (latest === undefined || d.at > latest.at)
+          latest = { status: d.status, ...(typeof d.note === "string" ? { note: d.note } : {}), at: d.at };
+      }
+      if (latest !== undefined) {
+        if (primary !== undefined) await this.cancelTimer(primary);
+        return { agent: ev.agent, ...latest };
+      }
+      await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref());
+    }
+  }
+
+  /**
    * `notify` writes one bounded decision record per addressee, onto the run.
    *
    * NOT a channel post, and that is the whole point of the primitive: a post would put the program
@@ -733,13 +808,10 @@ export class MeshHandler {
 
   // ── The Lane-A seam ────────────────────────────────────────────────────────────────────────────
   //
-  // Every effect in this group addresses an AGENT HANDLE. `spawn` — the effect that produces one —
-  // `conclave` — the scope that assembles a sub-team of them — `ask` — the schema-checked pause
-  // the agent answers — and `monitor` with `wait(down)` — the liveness pair over presence — now
-  // perform, so the remaining refusals are `turn` (with `wait(replied)` gated above, which rides
-  // the same turn machinery, and the `worktree` sub-refusal on `spawn` itself): the handle
-  // consumers whose durable machinery has not landed yet, still refusing through one class with
-  // one reason.
+  // Every effect that addresses an AGENT HANDLE now performs — `spawn`, `conclave`, `ask`, the
+  // liveness pair, `turn`, and `wait(replied)` over turn terminals — so the one remaining refusal
+  // is the `worktree` sub-refusal on `spawn` itself: the §9 binding has not landed, and silently
+  // dropping the field would be worse than refusing it.
   //
   // THEY ARE HERE RATHER THAN ABSENT, and that is the point of the slice. A handler that simply
   // lacks the method fails as a TypeError from inside the interpreter: a fault about JavaScript
@@ -925,6 +997,7 @@ export class MeshHandler {
       };
       await ctx.bind(ext);
     }
+    this.recordTurnGoal(`${name}#${uid}`, goalId);
     const deadlineAt = ext.deadlineAt;
     if (typeof deadlineAt !== "number")
       throw new Error(`turn(${name}#${uid}) resumed with no recorded deadline; a garbled external state never authorizes`);

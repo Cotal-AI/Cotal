@@ -1,11 +1,10 @@
 /**
  * The Lane-A seam: what a durable run does when it reaches an effect whose substrate has not landed.
  *
- * `wait(replied)` observes a turn ANOTHER branch is taking, through machinery that has not
- * landed; everything else agent-shaped — `spawn`, `conclave`, `ask`, the liveness pair, and now
- * `turn` itself — performs on the mesh handler, so the seam is that one observation, gated by a
- * single subject. One sub-refusal stays on `spawn` itself: a `worktree` binding rides §9
- * machinery that has not landed, and silently dropping the field would be worse than refusing it.
+ * Everything agent-shaped performs on the mesh handler now — `spawn`, `conclave`, `ask`, the
+ * liveness pair, `turn`, and `wait(replied)` over turn terminals — so the seam has shrunk to one
+ * sub-refusal on `spawn` itself: a `worktree` binding rides §9 machinery that has not landed,
+ * and silently dropping the field would be worse than refusing it.
  *
  * **The claim under test is not "it throws".** It is that a durable run REFUSES, by name, with a
  * reason a reader can act on — and that a MISSING method is not the same thing. A handler that
@@ -79,11 +78,9 @@ const drive = async (source: string, handler: EffectHandler, journal?: Journal, 
 
 // ── 1) what a DURABLE PROGRAM can actually reach ───────────────────────────────────────────────
 //
-// Only the `worktree` sub-refusal is reachable from a broker-less program: `wait(replied)` takes
-// a handle only `spawn` produces, and every performing effect against no planes dies reaching
-// for them (or, for `monitor`, succeeds without touching any), so a program never arrives at the
-// remaining refusal. The worktree guard fires before any plane is touched, so it is driven;
-// `wait(replied)` is exercised at the handler (1d), where it can be reached at all.
+// Only the `worktree` sub-refusal is left, and it fires before any plane is touched, so it is
+// driven; every performing effect against no planes dies reaching for them (or, for `monitor`,
+// succeeds without touching any), so a program never arrives at anything else refusal-shaped.
 {
   const name = "spawn({worktree})";
   // Pinned up front: a held run has no result to take pins from, and the heal below has to be
@@ -125,23 +122,7 @@ const drive = async (source: string, handler: EffectHandler, journal?: Journal, 
     e?.message.includes("worktree binding") === true, e?.message?.slice(0, 140));
 }
 
-// ── 1d) the wait(replied) gate: the turn-shaped event refuses inside wait ──────────────────────
-{
-  for (const ev of ["replied"] as const) {
-    const e = await mesh
-      .wait(
-        { event: { event: ev, agent: "dev#u" } } as never,
-        { signal: { cancelled: false, onCancel() {} }, requestId: "w".repeat(43) } as never,
-      )
-      .then(() => null, (x: unknown) => x as Error);
-    c(`wait(${ev}) refuses as the class itself, before any plane is reached`,
-      e instanceof NotYetDurable, e?.name);
-    c(`wait(${ev}) gives the one shared reason`,
-      e?.message.includes("an agent handle rides") === true, e?.message?.slice(0, 140));
-  }
-}
-
-// ── 1e) the liveness pair LEFT the seam: monitor performs, wait(down) reaches for the planes ───
+// ── 1e) the effects that LEFT the seam fail as themselves, never as the seam's hold ────────────
 {
   // `monitor` against no planes at all: the registration is the journal entry, so against null
   // planes it still performs — which is the sharpest possible statement that it left the seam.
@@ -174,6 +155,16 @@ const drive = async (source: string, handler: EffectHandler, journal?: Journal, 
     .then(() => null, (x: unknown) => x as Error);
   c("turn is not refused by the seam: it refuses on the run roster instead",
     t !== null && !(t instanceof NotYetDurable) && t.message.includes("roster"), `${t?.name}: ${t?.message?.slice(0, 90)}`);
+  // `wait(replied)` left with it: on a handle this run never spawned or turned it refuses on the
+  // ROSTER too — its own contract error, not the seam's hold.
+  const r = await mesh
+    .wait(
+      { event: { event: "replied", agent: `dev#${"u".repeat(26)}` } } as never,
+      { signal: { cancelled: false, onCancel() {} }, requestId: "p".repeat(43) } as never,
+    )
+    .then(() => null, (x: unknown) => x as Error);
+  c("wait(replied) is not refused by the seam: it refuses on the run roster instead",
+    r !== null && !(r instanceof NotYetDurable) && r.message.includes("roster"), `${r?.name}: ${r?.message?.slice(0, 90)}`);
 }
 
 // ── 2) the failure a missing method produces, which is what this slice replaces ─────────────────

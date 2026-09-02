@@ -64,11 +64,11 @@
     {
       "name": "the timeout is never armed, so no deadline exists on the plane",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    if (primary !== undefined) await this.arm(primary, this.now() + parseDuration(req.timeout!));",
-      "replace": "    if (false) await this.arm(primary!, this.now() + parseDuration(req.timeout!));",
+      "find": "    if (primary !== undefined) await this.arm(primary, this.now() + parseDuration(req.timeout!));\n    for (;;) {",
+      "replace": "    if (false) await this.arm(primary!, this.now() + parseDuration(req.timeout!));\n    for (;;) {",
       "expectRed": "the timeout pause settled expired on the plane",
       "cell": "the timeout pause settled expired on the plane",
-      "note": "With no mint there is nothing to expire, attach to, or claim: every timed block hangs to its bounded deadline and every settle read is empty. Measured 2026-09-02: twelve reds across the immediate-down settle, timeout, re-entry and cancellation blocks; 15 passed, 12 failed."
+      "note": "With no mint there is nothing to expire, attach to, or claim: every timed block hangs to its bounded deadline and every settle read is empty. Measured 2026-09-02: twelve reds across the immediate-down settle, timeout, re-entry and cancellation blocks; 15 passed, 12 failed. Re-anchored 2026-09-02 with waitDown's own loop head when waitReplied gained an identical arm line; re-measured: twelve reds as before, 15 passed, 12 failed."
     },
     {
       "name": "monitor registers whatever it is handed",

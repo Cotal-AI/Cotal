@@ -1,0 +1,92 @@
+{
+  "suite": "implementations/runtime/smoke/mesh-replied.smoke.ts",
+  "guard": "The mesh handler's wait(replied) observer is real: the descriptor routes to the turn-terminal machinery, an unobservable handle refuses on the roster, only a succeeded terminal is a reply, two replies resolve to the latest by the yield's own stamp, the mediated timeout is armed and claimed, and the turn-goal registry is fed at submission and reseeded at adoption",
+  "command": "pnpm smoke:runtime-mesh-replied",
+  "completionMarker": "mesh-replied.smoke:",
+  "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/mesh-replied.json   # --config resolves against the repo root, never the cwd",
+  "why": [
+    "Lane F durable-actions step 7 (2026-09-02): `wait(replied)` leaves the not-yet-durable seam",
+    "and observes the run's own turn terminals as a LEVEL, `down`'s shape. Each obligation has a",
+    "mutant: the routing that sends a replied descriptor to this machinery instead of the channel",
+    "path (R1), the roster refusal that keeps an unobservable handle from parking on nothing (R2),",
+    "the succeeded-only filter that keeps a deadline deny from reading as a reply (R3), the",
+    "latest-wins selection (R4), the mediated timeout's arm (R5) and the claim on resolution (R6),",
+    "and the registry the observation rides: fed by `turn` at submission (R7) and reseeded from",
+    "the journal at adoption (R8). All eight mutate mesh-handler.ts, which the suite imports",
+    "through a relative `../src` path — no build sits between the mutation and the run."
+  ],
+  "mutations": [
+    {
+      "name": "a replied descriptor is routed to the channel machinery",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (ev.event === \"replied\") return await this.waitReplied(ev, req, ctx);",
+      "replace": "    if (false) return await this.waitReplied(ev, req, ctx);",
+      "expectRed": "the run completes",
+      "cell": "the run completes",
+      "note": "The branch gone, a replied descriptor falls into the channel path and dies reading a channel it does not have. Measured 2026-09-02: fifteen reds — every block, the suite reaching its own exit; 0 passed, 15 failed."
+    },
+    {
+      "name": "the roster refusal is dropped, so an unobservable handle parks on nothing",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (this.turnGoals.get(handle) === undefined) {\n      const entry = this.roster.get(name);\n      if (entry === undefined || entry.uid !== uid)\n        throw new Error(`wait(replied(${handle})) addresses an agent that is not in this run's roster; a reply is observed on a turn this run relayed`);\n    }",
+      "replace": "    if (false) {\n      const entry = this.roster.get(name);\n      if (entry === undefined || entry.uid !== uid)\n        throw new Error(`wait(replied(${handle})) addresses an agent that is not in this run's roster; a reply is observed on a turn this run relayed`);\n    }",
+      "expectRed": "wait(replied) on an unknown handle refuses naming the roster",
+      "cell": "wait(replied) on an unknown handle refuses naming the roster",
+      "note": "Only this run's turns are observable, so a stranger's handle can never resolve; unrefused, it parks silently to the block's bounded deadline. Measured 2026-09-02: two reds — the bounded deadline and the named cell; 14 passed, 2 failed."
+    },
+    {
+      "name": "a denied terminal is read as a reply",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "        if (fact.state !== \"succeeded\") { goals!.delete(goalId); continue; }",
+      "replace": "        if (false) { goals!.delete(goalId); continue; }",
+      "expectRed": "the denied turn never resolves the wait: the timeout resolves null, never a throw",
+      "cell": "the denied turn never resolves the wait: the timeout resolves null, never a throw",
+      "note": "A deadline deny means the agent never finished a reply; read as one, its reason-shaped data fails the shape check and the wait throws where the contract promises a timeout null. Measured 2026-09-02: two reds — the null cell and the expired-settle cell behind it; 13 passed, 2 failed."
+    },
+    {
+      "name": "the latest-wins selection collapses to first-seen",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "        if (latest === undefined || d.at > latest.at)",
+      "replace": "        if (latest === undefined)",
+      "expectRed": "a wait over two completed turns resolves to the later yield",
+      "cell": "a wait over two completed turns resolves to the later yield",
+      "note": "The level's whole answer to \"which reply\" is the yield's own stamp; collapsed, registry insertion order decides instead. Measured 2026-09-02: exactly one named red (the value reads \"first\"); 14 passed, 1 failed."
+    },
+    {
+      "name": "the timeout is never armed, so no deadline exists on the plane",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (primary !== undefined) await this.arm(primary, this.now() + parseDuration(req.timeout!));\n    const actx = await this.actionCtx();",
+      "replace": "    if (false) await this.arm(primary!, this.now() + parseDuration(req.timeout!));\n    const actx = await this.actionCtx();",
+      "expectRed": "the timeout pause settled expired on the plane",
+      "cell": "the timeout pause settled expired on the plane",
+      "note": "With no mint there is nothing to expire or claim: the unanswered wait parks to its bounded deadline and every settle read is empty. Measured 2026-09-02: five reds across the timeout, level-claim and cancellation cells; 11 passed, 5 failed."
+    },
+    {
+      "name": "a resolution leaves the armed pause live",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      if (latest !== undefined) {\n        if (primary !== undefined) await this.cancelTimer(primary);\n        return { agent: ev.agent, ...latest };\n      }",
+      "replace": "      if (latest !== undefined) {\n        return { agent: ev.agent, ...latest };\n      }",
+      "expectRed": "the resolution claims the armed pause: no timer fires into a run that moved on",
+      "cell": "the resolution claims the armed pause: no timer fires into a run that moved on",
+      "note": "A resolved wait that forgets its pause leaves a deadline armed to fire into a run that moved on. Measured 2026-09-02: exactly one named red; 14 passed, 1 failed."
+    },
+    {
+      "name": "turn never feeds the registry the observation rides",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    this.recordTurnGoal(`${name}#${uid}`, goalId);\n    const deadlineAt = ext.deadlineAt;",
+      "replace": "    const deadlineAt = ext.deadlineAt;",
+      "expectRed": "the settled wait records the reply as the observation value: the handle, the yield, its stamp",
+      "cell": "the settled wait records the reply as the observation value: the handle, the yield, its stamp",
+      "note": "The registry IS the observable: unfed, every live-path wait parks forever while its turn completes unseen. Measured 2026-09-02: ten reds across the driven, parked and level blocks; 8 passed, 10 failed."
+    },
+    {
+      "name": "adoption reseeds nothing, so a resumed run cannot re-observe",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      const x = e.external as { name?: unknown; uid?: unknown; goalId?: unknown } | undefined;\n      if (typeof x?.name === \"string\" && typeof x?.uid === \"string\" && typeof x?.goalId === \"string\")\n        this.recordTurnGoal(`${x.name}#${x.uid}`, x.goalId);",
+      "replace": "      const x = e.external as { name?: unknown; uid?: unknown; goalId?: unknown } | undefined;\n      if (false)\n        this.recordTurnGoal(`${String(x?.name)}#${String(x?.uid)}`, String(x?.goalId));",
+      "expectRed": "the adopted handler re-observes the recorded reply at once",
+      "cell": "the adopted handler re-observes the recorded reply at once",
+      "note": "The registry is deterministic from the journal alone; unseeded, an adopted run parks on a reply its own journal records. Measured 2026-09-02: three reds — the bounded deadline and both adoption cells; 13 passed, 3 failed."
+    }
+  ]
+}
