@@ -1,0 +1,85 @@
+{
+  "suite": "implementations/runtime/smoke/mesh-spawn.smoke.ts",
+  "guard": "the mesh handler's durable spawn recovers by derivation: the envelope id is pinned to the step's request id (the goalId), the acceptance is bound before the terminal wait, a resume re-attaches without re-invoking, refusals and terminals surface as the catchable spawn failure, the terminal await observes cancellation, and a cancelled loser's seat is released by the discharge",
+  "command": "pnpm smoke:runtime-mesh-spawn",
+  "completionMarker": "mesh-spawn.smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/mesh-spawn.json",
+  "why": [
+    "Lane F durable-actions step 2 (2026-09-02): `spawn` leaves the not-yet-durable seam and performs",
+    "as the manager's spawn action. Recovery rests on derived identity, and each half has a mutant:",
+    "core honoring the pinned envelope id (M1), the resume short-circuit (M2), the acceptance bind",
+    "(M3), the discharge that releases loser seats (M4), the two catchable-failure mappings (M5, M6),",
+    "and the terminal poll's cancellation observation (M7).",
+    "",
+    "M1 mutates CORE, which the suite resolves from dist: its command builds core first, and its",
+    "afterRestore rebuilds so the tree never keeps a dist compiled from the mutant. The runtime-side",
+    "mutants (M2-M7) are imported as source through ../src and need no build."
+  ],
+  "mutations": [
+    {
+      "name": "core mints a nonce instead of honoring the pinned envelope id",
+      "file": "packages/core/src/endpoint-verbs.ts",
+      "find": "  const requestId = op.id !== undefined ? assertIdToken(op.id, \"pinned envelope id\") : nonce();",
+      "replace": "  const requestId = nonce();",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-mesh-spawn",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "the goal was bound under the step's own request id: the envelope id IS the goalId",
+      "cell": "the goal was bound under the step's own request id: the envelope id IS the goalId",
+      "note": "The id seam ignored: the far side binds its goal under a fresh nonce, so nothing the run derives ever addresses it. Measured 2026-09-02: the handler's own acceptance-mismatch guard catches it, block 1 reds on 'the run completes' and the named id cell, and every recovery block downstream reds with it; 12 passed, 21 failed, the suite reaching its own exit line."
+    },
+    {
+      "name": "a resume re-invokes instead of re-attaching to the recorded acceptance",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (ctx.resume?.goalId !== goalId) {",
+      "replace": "    if (true) {",
+      "expectRed": "the resume sent NOTHING to the endpoint: the recorded acceptance is the submission",
+      "cell": "the resume sent NOTHING to the endpoint: the recorded acceptance is the submission",
+      "note": "The short-circuit gone: a resumed spawn submits again. The fake serves the recorded acceptance so nothing else breaks — which is exactly why the invoke COUNT is the cell: a manager that restarted since would judge the resend against a live seat instead. Measured 2026-09-02: exactly one red, 31 passed."
+    },
+    {
+      "name": "the acceptance is never bound as the entry's external state",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      await ctx.bind({\n        goalId,\n        ...(floor !== undefined ? pickAcceptanceFloor(floor) : {}),\n      });",
+      "replace": "      void floor;",
+      "expectRed": "the acceptance floor is bound as the entry's external state before the terminal wait",
+      "cell": "the acceptance floor is bound as the entry's external state before the terminal wait",
+      "note": "The bind dropped: the live path still completes (the goalId re-derives), but the journal carries no landed-submission marker and no identity floor — the resume and the uncertain-discharge paths lose their durable input. Measured 2026-09-02: exactly one red, 31 passed."
+    },
+    {
+      "name": "the discharge skips spawn entries",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      if (e.kind === \"spawn\") {\n        await this.dischargeSpawn(e);\n        continue;\n      }",
+      "replace": "      if (e.kind === \"spawn\") {\n        continue;\n      }",
+      "expectRed": "the discharge despawned exactly the allocated incarnation",
+      "cell": "the discharge despawned exactly the allocated incarnation",
+      "note": "Design 8.6.4 removed: a cancelled loser's seat lives on with nobody addressing it. Measured 2026-09-02: five reds — both handler-level discharge blocks, the floor-less and uncertain variants, and the driver-integration cell 'and the driver's completion sweep despawned its seat'; 27 passed, 5 failed."
+    },
+    {
+      "name": "a refuse-at-accept loses its catchable class",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "        const err = reply.reply.error;\n        throw new EffectError(\"L4002\", \"spawn\",\n          `spawn(${req.persona}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? \"refused with no message\"}`,\n          err?.code !== undefined ? { code: err.code } : undefined);",
+      "replace": "        const err = reply.reply.error;\n        throw new Error(\n          `spawn(${req.persona}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? \"refused with no message\"}`);",
+      "expectRed": "the entry settles as the spawn effect's own catchable L4002",
+      "cell": "the entry settles as the spawn effect's own catchable L4002",
+      "note": "The refusal thrown raw: the journal records a generic L4000 handler fault, so a program acting on e.code reads 'the handler broke' where the manager said 'this spawn is refused'. Measured 2026-09-02: exactly one red with the recorded L4000 in the transcript, 31 passed."
+    },
+    {
+      "name": "every terminal is read as succeeded",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "function spawnHandleOf(req: SpawnRequest, fact: GoalResultFact, endpoint: string): AgentHandleValue {\n  if (fact.state !== \"succeeded\") {",
+      "replace": "function spawnHandleOf(req: SpawnRequest, fact: GoalResultFact, endpoint: string): AgentHandleValue {\n  if (false) {",
+      "expectRed": "the failure is the catchable L4002",
+      "cell": "the failure is the catchable L4002",
+      "note": "The state gate inverted: a failed or uncertain terminal is mined for a handle it does not carry, and the garbled-terminal guard turns it into an L4000 fault instead of the effect's own L4002. Measured 2026-09-02: two reds — block 5's failed terminal and block 8b's uncertain one; 30 passed."
+    },
+    {
+      "name": "the terminal await stops observing cancellation",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    const actx = await this.actionCtx();\n    for (;;) {\n      if (signal.cancelled) throw new Cancelled(signal.reason ?? \"cancelled\");\n      const fact = await readGoalResult(actx, ref);",
+      "replace": "    const actx = await this.actionCtx();\n    for (;;) {\n      void signal;\n      const fact = await readGoalResult(actx, ref);",
+      "expectRed": "the await ends Cancelled within one poll",
+      "cell": "the await ends Cancelled within one poll",
+      "note": "The per-poll observation removed: a race-lost branch keeps parking on its terminal and then RESOLVES with a handle the run must never see (section 7.6 — a cancelled branch performs no new work). Measured 2026-09-02: exactly one red, the cancelled await resolving instead of throwing; 31 passed."
+    }
+  ]
+}

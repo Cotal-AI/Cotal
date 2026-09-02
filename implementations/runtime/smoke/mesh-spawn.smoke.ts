@@ -318,6 +318,11 @@ const stepCtx = (requestId: string, resume?: Record<string, unknown>) => {
 };
 const token = (tag: string) => (tag.repeat(43)).slice(0, 43);
 const lease = (() => { let n = 0; return () => ({ holder: "m1", epoch: 1, fencingToken: (n += 1), takeoverId: newTakeoverId() }); })();
+/** A drive that FAILS as a graded cell rather than a process kill: a run whose program dies
+ *  rethrows out of `startRun`, and an uncaught throw here would end the suite before the named
+ *  cell prints — red without being an answer (the bare-call trap). */
+const driven = (args: Parameters<typeof startRun>[2]) =>
+  startRun(js, jsm, args).catch((e: unknown) => ({ status: "threw" as const, error: `${(e as Error)?.name}: ${(e as Error)?.message?.slice(0, 140)}` }));
 
 /** The run's journal entries of one kind, in append order (pending first, settled after). */
 const journalEntries = async (runId: string, kind: string): Promise<JournalEntry[]> => {
@@ -332,7 +337,7 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
 // ── 1) a driven program spawns end to end ─────────────────────────────────────────────────────
 {
   console.log("• 1 — a driven program spawns end to end");
-  const out = await withDeadline(startRun(js, jsm, {
+  const out = await withDeadline(driven({
     space: SPACE, endpoint: EP, kv, runId: "sp-1", lease: lease(),
     source: `const d = await spawn("builder");\nlog("spawned", d.agent);`,
     handler: mk("sp-1"),
@@ -365,9 +370,9 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
   console.log("• 2 — the same pinned id resubmitted is served, not re-allocated");
   const handler = mk("sp-2");
   const T = token("b");
-  const first = await withDeadline(handler.spawn({ persona: "builder" }, stepCtx(T).ctx), 20_000, "the first submission");
+  const first = await withDeadline(handler.spawn({ persona: "builder" }, stepCtx(T).ctx).then((v) => v, (e: unknown) => { console.log("  ! spawn rejected:", (e as Error)?.message?.slice(0, 90)); return undefined; }), 20_000, "the first submission");
   const before = allocations.length;
-  const again = await withDeadline(handler.spawn({ persona: "builder" }, stepCtx(T).ctx), 20_000, "the resubmission");
+  const again = await withDeadline(handler.spawn({ persona: "builder" }, stepCtx(T).ctx).then((v) => v, (e: unknown) => { console.log("  ! spawn rejected:", (e as Error)?.message?.slice(0, 90)); return undefined; }), 20_000, "the resubmission");
   c("both submissions return the identical handle", first !== undefined && again?.agent === first.agent,
     { first: first?.agent, again: again?.agent });
   c("the far side saw two submissions and allocated once",
@@ -380,10 +385,12 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
   console.log("• 3 — a resume with the bound acceptance re-attaches without re-invoking");
   const handler = mk("sp-3");
   const T = token("c");
-  await withDeadline(handler.spawn({ persona: "builder" }, stepCtx(T).ctx), 20_000, "the first attempt");
+  await withDeadline(handler.spawn({ persona: "builder" }, stepCtx(T).ctx).then((v) => v, (e: unknown) => { console.log("  ! spawn rejected:", (e as Error)?.message?.slice(0, 90)); return undefined; }), 20_000, "the first attempt");
   const invokesBefore = spawnInvokes.length;
   const resumed = await withDeadline(
-    handler.spawn({ persona: "builder" }, stepCtx(T, { goalId: T }).ctx), 20_000, "the resumed attempt");
+    handler.spawn({ persona: "builder" }, stepCtx(T, { goalId: T }).ctx)
+      .then((v) => v, (e: unknown) => { console.log("  ! spawn rejected:", (e as Error)?.message?.slice(0, 90)); return undefined; }),
+    20_000, "the resumed attempt");
   c("the resumed attempt reads the recorded terminal and returns the same handle",
     resumed?.agent === allocations.find((a) => a.goalId === T)?.name + "#" + allocations.find((a) => a.goalId === T)?.uid,
     resumed?.agent);
@@ -395,7 +402,7 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
 {
   console.log("• 4 — a refusal at accept is catchable, and binds nothing");
   const before = allocations.length;
-  const out = await withDeadline(startRun(js, jsm, {
+  const out = await withDeadline(driven({
     space: SPACE, endpoint: EP, kv, runId: "sp-4", lease: lease(),
     source: `try {\n  await spawn("missing");\n  log("reached", true);\n} catch (e) {\n  log("caught", e.code + ":" + e.kind);\n}`,
     handler: mk("sp-4"),
@@ -412,7 +419,7 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
 {
   console.log("• 5 — a failed terminal is catchable and carries the recorded reason");
   OUTCOME.flaky = { state: "failed", error: "persona exploded" };
-  const out = await withDeadline(startRun(js, jsm, {
+  const out = await withDeadline(driven({
     space: SPACE, endpoint: EP, kv, runId: "sp-5", lease: lease(),
     source: `try {\n  await spawn("flaky");\n  log("reached", true);\n} catch (e) {\n  log("caught", e.code);\n}`,
     handler: mk("sp-5"),
@@ -446,7 +453,7 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
   });
   await serve.stop(); // the responder is DOWN from here on
   const handler = mk("sp-6");
-  const got = await withDeadline(handler.spawn({ persona: "ghost" }, stepCtx(T).ctx), 40_000, "the probe-attached spawn");
+  const got = await withDeadline(handler.spawn({ persona: "ghost" }, stepCtx(T).ctx).then((v) => v, (e: unknown) => { console.log("  ! spawn rejected:", (e as Error)?.message?.slice(0, 90)); return undefined; }), 40_000, "the probe-attached spawn");
   c("the handler attaches to the accepted goal and returns its terminal's handle despite the dead responder",
     got?.agent === `ghost-9#${"s".repeat(26)}`, got?.agent);
 
@@ -475,6 +482,8 @@ const serve2 = serveEndpoint(nc, SPACE, grant, defs, { public: true }, {
   const T = token("g");
   const s = stepCtx(T);
   const attempt = handler.spawn({ persona: "racer" }, s.ctx);
+  // Observed later; a rejection landing before the observer attaches must fail cells, not the process.
+  attempt.catch(() => undefined);
   // Cancel once the acceptance is in: the branch lost its race while awaiting the terminal.
   let alloc: typeof allocations[number] | undefined;
   for (let i = 0; i < 100 && alloc === undefined; i += 1) { await wait(100); alloc = allocations.find((a) => a.goalId === T); }
@@ -508,7 +517,7 @@ const serve2 = serveEndpoint(nc, SPACE, grant, defs, { public: true }, {
   OUTCOME.racer2 = { state: "succeeded" };
   const handler = mk("sp-8");
   const T = token("h");
-  await withDeadline(handler.spawn({ persona: "racer2" }, stepCtx(T).ctx), 20_000, "the seat spawn");
+  await withDeadline(handler.spawn({ persona: "racer2" }, stepCtx(T).ctx).then((v) => v, (e: unknown) => { console.log("  ! spawn rejected:", (e as Error)?.message?.slice(0, 90)); return undefined; }), 20_000, "the seat spawn");
   const alloc = allocations.find((a) => a.goalId === T);
   const bare = { kind: "spawn", requestId: T, state: "pending" } as unknown as JournalEntry;
   await withDeadline(handler.discharge([bare]), 20_000, "the floor-less discharge");
@@ -573,7 +582,7 @@ log("winner", out.index);
   const pump = (async () => { while (!pumpState.over) { await armPending(2); } })();
   let out;
   try {
-    out = await withDeadline(startRun(js, jsm, {
+    out = await withDeadline(driven({
       space: SPACE, endpoint: EP, kv, runId: "sp-9", lease: lease(),
       source, handler: mk("sp-9"),
     }), 60_000, "the racing run");
