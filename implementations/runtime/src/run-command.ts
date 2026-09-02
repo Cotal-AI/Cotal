@@ -4,7 +4,8 @@
  * Five verbs over the exports this package already ships: `start` drives a new run on the mesh
  * handler, `resume` takes an existing run over and drives it to quiescence, `ps` lists the run
  * records of an endpoint, `journal` prints a run's durable step journal, and `answer` resolves an
- * open checkpoint through the run driver, which is the only door an answer has (§14).
+ * open checkpoint, or an open `ask` attempt, through the run driver, which is the only door an
+ * answer has (§14).
  *
  * The composition is the run-driver suite's, against a resolved mesh instead of a scratch broker:
  * one raw NATS connection, JetStream + the records bucket over it, the mesh handler bound to this

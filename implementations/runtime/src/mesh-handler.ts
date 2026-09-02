@@ -71,6 +71,10 @@ import {
   Cancelled,
   EffectError,
   EffectRefused,
+  askSchemaShape,
+  conformsToAskSchema,
+  type AskFieldKind,
+  type AskRequest,
   type AgentHandleValue,
   type CancelSignal,
   type ChannelHandleValue,
@@ -293,8 +297,13 @@ export class MeshHandler {
         await this.dischargeConclave(e);
         continue;
       }
-      if (e.kind !== "sleep" && e.kind !== "checkpoint" && e.kind !== "wait") continue;
-      await this.cancelTimer({ endpoint: this.binding.endpoint, token: e.requestId });
+      if (e.kind !== "sleep" && e.kind !== "checkpoint" && e.kind !== "wait" && e.kind !== "ask") continue;
+      // An ask's armed timer is its CURRENT attempt's, whose token is bound as `askToken`; a
+      // crash before the first bind leaves attempt 1, which is the request id itself.
+      const current = e.kind === "ask" && typeof e.external?.askToken === "string"
+        ? e.external.askToken
+        : e.requestId;
+      await this.cancelTimer({ endpoint: this.binding.endpoint, token: current });
       if (e.kind === "wait") {
         await this.cancelTimer({ endpoint: this.binding.endpoint, token: derivedToken(e.requestId, "wait-timeout") });
         try {
@@ -597,10 +606,11 @@ export class MeshHandler {
   // ── The Lane-A seam ────────────────────────────────────────────────────────────────────────────
   //
   // Every effect in this group addresses an AGENT HANDLE. `spawn` — the effect that produces one —
-  // and `conclave` — the scope that assembles a sub-team of them — now perform, so the remaining
-  // refusals are `turn`, `ask` and `monitor` (with `wait(replied|down)` gated above and the
-  // `worktree` sub-refusal on `spawn` itself): the handle consumers whose durable machinery has
-  // not landed yet, still refusing through one class with one reason.
+  // `conclave` — the scope that assembles a sub-team of them — and `ask` — the schema-checked
+  // pause the agent answers — now perform, so the remaining refusals are `turn` and `monitor`
+  // (with `wait(replied|down)` gated above and the `worktree` sub-refusal on `spawn` itself): the
+  // handle consumers whose durable machinery has not landed yet, still refusing through one class
+  // with one reason.
   //
   // THEY ARE HERE RATHER THAN ABSENT, and that is the point of the slice. A handler that simply
   // lacks the method fails as a TypeError from inside the interpreter: a fault about JavaScript
@@ -700,8 +710,84 @@ export class MeshHandler {
     throw new NotYetDurable("turn(…)", ACTION_MACHINERY);
   }
 
-  async ask(_req: unknown, _ctx: EffectContext): Promise<never> {
-    throw new NotYetDurable("ask(…)", ACTION_MACHINERY);
+  /**
+   * `ask` is a schema-checked pause the ADDRESSED AGENT is expected to answer.
+   *
+   * Each attempt is one checkpoint-plane pause — the same mint, settle and answer record a
+   * `checkpoint` rides, answered through the run driver's `resolveCheckpoint` (`cotal run
+   * answer`), which is how "the agent publishes a record" reaches a holder-bound plane: the agent,
+   * or anyone the run's ACL admits on its behalf, answers through the driver exactly as a human
+   * answers a checkpoint. What `ask` adds is the handler-side contract of §6.5: the schema is read
+   * as the SHORTHAND (refused L4022 when it cannot be), every answer is checked against it, a
+   * non-conforming answer costs one attempt and the refusal reason is bound onto the entry for the
+   * answerer to read, and exhausted attempts are the effect's own catchable L4006.
+   *
+   * **One absolute deadline for the whole ask**, computed once and bound with the first attempt: a
+   * re-ask does not restart the clock, or a stream of non-conforming answers could stretch the
+   * pause forever. The deadline elapsing with no conforming answer is L4003, the deadline-elapsed
+   * class of the agent-addressed effects.
+   *
+   * **Attempt N's token derives from the step's request id** (attempt 1 IS the request id), and
+   * the CURRENT attempt's token is bound as `askToken` before its pause is armed — so a resume
+   * re-enters the attempt in flight, an answer judged non-conforming just before a crash is
+   * re-judged identically from its durable settle, and the discharge and the adoption re-arm
+   * address the one timer that is actually armed.
+   */
+  async ask(req: AskRequest, ctx: EffectContext): Promise<unknown> {
+    if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
+    const shape = askSchemaShape(req.schema);
+    if (shape === null) {
+      throw new EffectError(
+        "L4022",
+        "ask-schema-unreadable",
+        `L4022 Unreadable ask schema\n\n  step  ${stepKeyString(ctx.key)}\n\nThe schema is not the shorthand this handler enforces: a record mapping each field name to one of "string", "number", "boolean", "array", "record", "null".\n\nFix: write the shorthand, for example { steps: "array" }, or pass {} to accept any record.`,
+      );
+    }
+    const attempts = req.attempts ?? 1;
+    const resume = askResume(ctx.resume);
+    const deadlineAt = resume?.deadlineAt
+      ?? this.now() + parseDuration(req.deadline ?? this.binding.defaultCheckpointTimeout);
+    let attempt = resume?.attempt ?? 1;
+    // The resumed attempt is already bound; every attempt this call opens binds before it arms.
+    let bindOwed = resume === undefined;
+    let refused: string | undefined;
+    for (;;) {
+      const token = askAttemptToken(ctx.requestId, attempt);
+      if (bindOwed) {
+        await ctx.bind({
+          attempt,
+          askToken: token,
+          deadlineAt,
+          ...(refused !== undefined ? { refused } : {}),
+        });
+      }
+      bindOwed = true;
+      const ref: CheckpointRef = { endpoint: this.binding.endpoint, token };
+      await this.arm(ref, deadlineAt);
+      const settled = await this.settle(ref, ctx.signal);
+      if (settled.settle === "expired") {
+        throw new EffectError(
+          "L4003",
+          "ask-deadline",
+          `ask(${stepKeyString(ctx.key)}) deadline elapsed before a conforming reply: attempt ${attempt} of ${attempts} was still open when the recorded deadline passed`,
+        );
+      }
+      const answer = settled.answerId === undefined
+        ? undefined
+        : await readCheckpointAnswer(this.kv, this.binding.endpoint, token, settled.answerId);
+      if (answer === undefined) throw new CheckpointAnswerMissing(token, settled.answerId);
+      if (conformsToAskSchema(answer.value, shape)) return answer.value;
+      const why = askNonconformance(answer.value, shape);
+      if (attempt >= attempts) {
+        throw new EffectError(
+          "L4006",
+          "ask-nonconforming",
+          `L4006 ask never produced a conforming record\n\n  step  ${stepKeyString(ctx.key)}\n\n${attempts} repl${attempts === 1 ? "y was" : "ies were"} checked against the schema and none conformed; the last was refused: ${why}.\n\nFix: have the agent publish a record matching the schema, widen the schema, or raise attempts.`,
+        );
+      }
+      refused = why;
+      attempt += 1;
+    }
   }
 
   async monitor(_req: unknown, _ctx: EffectContext): Promise<never> {
@@ -1298,6 +1384,34 @@ function derivedToken(requestId: string, purpose: string): string {
   return createHash("sha256").update(`${requestId}:${purpose}`, "utf8").digest("base64url").slice(0, 43);
 }
 
+/** An ask attempt's pause token: attempt 1 IS the step's request id; a re-ask derives its own. */
+function askAttemptToken(requestId: string, attempt: number): string {
+  return attempt === 1 ? requestId : derivedToken(requestId, `ask-attempt-${attempt}`);
+}
+
+/** The recorded ask progress a resume re-enters at, or undefined for a fresh first attempt. The
+ *  external is bytes from an earlier process, so the shape is checked rather than trusted. */
+function askResume(v: Readonly<Record<string, unknown>> | undefined): { attempt: number; deadlineAt: number } | undefined {
+  if (v === undefined) return undefined;
+  return typeof v.attempt === "number" && v.attempt >= 1 && typeof v.deadlineAt === "number"
+    ? { attempt: v.attempt, deadlineAt: v.deadlineAt }
+    : undefined;
+}
+
+/** WHY a reply does not conform, per declared field — the refusal an answerer reads off the entry
+ *  before answering again. Judged with the same single-field check that judged the reply, so the
+ *  description can never disagree with the verdict. */
+function askNonconformance(value: unknown, shape: Readonly<Record<string, AskFieldKind>>): string {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return "the reply is not a record";
+  const record = value as Record<string, unknown>;
+  const bad: string[] = [];
+  for (const [field, kind] of Object.entries(shape)) {
+    if (conformsToAskSchema({ [field]: record[field] }, { [field]: kind })) continue;
+    bad.push(field in record ? `"${field}" wants ${kind}` : `"${field}" is missing (wants ${kind})`);
+  }
+  return bad.join("; ");
+}
+
 /**
  * A `matches` pattern, admitted through the repo's bounded-regex subset before it is compiled.
  *
@@ -1404,10 +1518,10 @@ export async function rearmOutstandingPauses(
  * later record wins — a step that settled has a settled entry after its pending one, and reading
  * only the first would re-arm timers for pauses that are already over.
  *
- * THE KINDS ARE THE THREE THAT ARM A TIMER, and `wait` is one of them. It mints no pause of its own
- * so it does not look like one, but its idle window and its timeout are mediated deadlines exactly
- * as `sleep`'s is, and a `wait` adopted at a new epoch would otherwise wait on a deadline no live
- * epoch fires.
+ * THE KINDS ARE THE FOUR THAT ARM A TIMER, and `wait` and `ask` are two of them. Neither mints a
+ * pause that looks like its own, but a wait's idle window and timeout, and an ask attempt's
+ * deadline, are mediated deadlines exactly as `sleep`'s is, and one adopted at a new epoch would
+ * otherwise wait on a deadline no live epoch fires.
  *
  * An idle wait with a timeout arms TWO, and the second is DERIVED rather than recorded, so it is
  * re-derived here for the same reason the live path derives it: a resume that had to remember it
@@ -1415,6 +1529,8 @@ export async function rearmOutstandingPauses(
  * is harmless by construction — the reconciler reads the checkpoint's status first and re-emits
  * nothing when there is none — and the alternative, reading the request shape back out of the
  * entry to decide, would make the repair depend on a field a replay is not guaranteed to carry.
+ * An ask's armed pause is its CURRENT attempt's, whose token is bound as `askToken`; before the
+ * first bind it is attempt 1, which is the request id itself.
  */
 export function outstandingPauseTokens(entries: readonly JournalEntry[]): string[] {
   const last = new Map<string, JournalEntry>();
@@ -1423,6 +1539,7 @@ export function outstandingPauseTokens(entries: readonly JournalEntry[]): string
   for (const e of last.values()) {
     if (e.state !== "pending" || e.requestId === undefined) continue;
     if (e.kind === "sleep" || e.kind === "checkpoint") tokens.push(e.requestId);
+    else if (e.kind === "ask") tokens.push(typeof e.external?.askToken === "string" ? e.external.askToken : e.requestId);
     else if (e.kind === "wait") tokens.push(e.requestId, derivedToken(e.requestId, "wait-timeout"));
   }
   return tokens;

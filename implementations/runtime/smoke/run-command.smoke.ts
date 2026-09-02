@@ -77,6 +77,8 @@ const REFUSING = join(sd, "refusing.cotal.js");
 writeFileSync(REFUSING, 'await spawn("dev", { name: "dev", worktree: "wt-a" });\n');
 const CHECKPOINT = join(sd, "checkpoint.cotal.js");
 writeFileSync(CHECKPOINT, 'const d = await checkpoint("approve", "Ship it?");\nlog("resolved", d.status);\n');
+const ASKING = join(sd, "asking.cotal.js");
+writeFileSync(ASKING, 'const a = { agent: "dev#u", persona: "dev" };\nconst v = await ask(a, { name: "size", schema: { estimate: "number" } });\nlog("estimate", v.estimate);\n');
 
 // ── 1) start: a pure program completes through the command, under a minted id ────────────────
 let P = "";
@@ -159,6 +161,32 @@ let H = "";
   c("and the held start completes", outcome === "completed" && captured().includes(`run ${cid}: completed`), outcome);
 }
 
+// ── 6b) answer: an open ASK attempt rides the same verb, current attempt's token and all ──────
+{
+  reset();
+  const driven = wf(["start"], { file: ASKING });
+  let A: string | undefined;
+  for (let i = 0; i < 100 && A === undefined; i += 1) { await wait(50); A = startedId(); }
+  const aid = A ?? "";
+  let open = false;
+  for (let i = 0; i < 100 && !open; i += 1) {
+    await wait(200);
+    const back = await replayRunJournal(js, jsm, SPACE, aid, `t${(takeovers += 1)}`).catch(() => undefined);
+    for (const r of back?.records ?? []) {
+      if (r.record.kind !== "step") continue;
+      const e = r.record.entry as JournalEntry;
+      if (e.kind === "ask" && e.state === "pending") open = true;
+    }
+  }
+  c("the ask opens durably", open);
+  const answered = await wf(["answer", aid, "/ask:size#0"], { by: "smoke", value: '{"estimate": 3}' })
+    .then(() => true, (e: Error) => e);
+  c("the answer verb reaches an ask attempt exactly as it reaches a checkpoint", answered === true, answered);
+  const outcome = await Promise.race([driven.then(() => "completed"), wait(15_000).then(() => "still-paused")]);
+  c("and the asking start completes on the conforming record",
+    outcome === "completed" && captured().includes(`run ${aid}: completed`), outcome);
+}
+
 // ── 6b) a parked run survives its driver dying: a fresh holder's resume attaches and completes ─
 //
 // The strand measured through the real binary before the repair: every invocation mints its own
@@ -235,7 +263,7 @@ let H = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 24;
+const DECLARED = 27;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

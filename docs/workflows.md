@@ -38,7 +38,8 @@ log("outcome", outcome.index)
 
 Read it as the flowchart it is. `spawn` brings agents in; `ask` is the narrow case where the
 program itself needs a value (`schema` is a record the program hands the handler unchanged; the
-language hashes it and gives it no meaning, and no handler in this repository enforces one yet);
+language hashes it and gives it no meaning, and the handlers in this repository enforce it as the
+shorthand of the language reference §6.5);
 `checkpoint` is a durable pause a human resolves from anywhere, raced against a durable timer; `turn`
 wakes an agent for one turn and returns how it yielded; `race` runs two branches and keeps the one
 whose recorded clock is earliest. Agents talk to each other in channels as they always do; the
@@ -117,8 +118,9 @@ cotal run answer run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --
 `start` and `resume` need `--file`: the record stores no source, so the caller supplies the same
 program (handing an edited one is a migration decision, and the resume stops on the divergence).
 A run whose step was refused (L5016) exits with code 2 and stays held; `resume` on a host that can
-perform the step performs it live and continues from there. `answer` resolves an open checkpoint
-through the run driver, presenting as the arming holder, with the answerer's name on the record.
+perform the step performs it live and continues from there. `answer` resolves an open checkpoint,
+or an open `ask` attempt, through the run driver, presenting as the arming holder, with the
+answerer's name on the record.
 Checkpoint expiry rides the mediated timer writer, which the delivery daemon pumps on a live mesh;
 on a bare broker a pause still resolves, it just cannot expire.
 
@@ -148,7 +150,8 @@ the compiled engine, as the engine paragraph below says. The wire
 substrate of §14 (the `WFJ_<space>` stream, the four record kinds, the activation barrier, the
 per-run grants) is in `@cotal-ai/core`, and the run driver, journal store, migrate and fork are
 `@cotal-ai/runtime` (`implementations/runtime`). On the mesh handler, `sleep`, `checkpoint`,
-`wait(message(...))`, `wait(idle(...))`, `notify`, `spawn` and `conclave` are durable. `spawn` is
+`wait(message(...))`, `wait(idle(...))`, `notify`, `spawn`, `conclave` and `ask` are durable.
+`spawn` is
 the manager's spawn action submitted under the step's own identity: the goal binds under the step's
 request id, so a resumed run re-attaches to the same seat instead of allocating a second one, a
 failed or refused spawn is catchable as L4002 with the manager's recorded reason, and a spawn on a
@@ -157,7 +160,12 @@ members to a real channel as durable membership rows: the channel derives from t
 request id when the program names none (a program-named channel is borrowed, never torn down, and
 a membership that predates the conclave survives its close), each member handle resolves to its
 principal through the seat's own presence row (an absent member is catchable as L4002), and a
-conclave cancelled on a losing branch is released by the same cancellation sweep. `turn`, `ask`,
+conclave cancelled on a losing branch is released by the same cancellation sweep. `ask` parks one
+checkpoint-plane pause per attempt, answered through `cotal run answer` as a checkpoint is:
+the shorthand of the language reference §6.5 is enforced (an unreadable schema is L4022), a
+non-conforming answer costs one attempt and its refusal reason is recorded on the entry for the
+answerer to read, exhausted attempts (default one) are the catchable L4006, and the one absolute
+deadline for the whole ask elapsing is L4003. `turn`,
 `monitor`, `wait(replied(...))`, `wait(down(...))` and a `spawn` with a `worktree` refuse with
 **L5016 (effect not durable on this host)** until the machinery they ride lands. That refusal
 holds the run rather than ending it: the entry is settled `refused` (never `failed`, since nothing

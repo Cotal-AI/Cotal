@@ -13,7 +13,7 @@
       "expectRed": "spawn({worktree}) carries the code that crosses the run boundary",
       "cell": "spawn({worktree}) carries the code that crosses the run boundary",
       "cellTemplate": "${name} carries the code that crosses the run boundary",
-      "note": "Re-anchored to the worktree sub-refusal when conclave left the seam (2026-09-02, durable-conclave step): the one driven refusal is now spawn({worktree}), and the handler-level loop covers turn/ask/monitor. Re-measured: four named reds (the driven worktree journal cell plus the three handler-level code cells); 22 passed, 4 failed."
+      "note": "Re-anchored to the worktree sub-refusal when conclave left the seam (2026-09-02): the one driven refusal is now spawn({worktree}), and the handler-level loop covers the consumers. Re-measured after ask left too: three named reds (the driven worktree journal cell plus turn's and monitor's code cells); 24 passed, 3 failed."
     },
     {
       "name": "turn is not seamed, so it fails as a missing method",
@@ -23,7 +23,7 @@
       "expectRed": "turn refuses at the handler, as the class itself",
       "cell": "turn refuses at the handler, as the class itself",
       "cellTemplate": "${name} refuses at the handler, as the class itself",
-      "note": "Re-measured 2026-09-02 after the conclave step shrank the 1b loop to turn/ask/monitor: three named reds for turn ('the method is absent'); 23 passed, 3 failed."
+      "note": "Re-measured 2026-09-02 after the ask step shrank the 1b loop to turn/monitor: three named reds for turn ('the method is absent'); 24 passed, 3 failed."
     },
     {
       "name": "the worktree sub-refusal is dropped, so a worktree spawn reaches the planes",
@@ -32,17 +32,16 @@
       "replace": "    if (false) throw new NotYetDurable(\"spawn({worktree})\", \"the §9 worktree binding\");",
       "expectRed": "spawn with a worktree refuses as the class itself",
       "cell": "spawn with a worktree refuses as the class itself, before any plane is reached",
-      "note": "Silently dropping the field is the defect this guard exists for: the seat would come up with no worktree the program asked for. Re-measured 2026-09-02 (the driven block now rides this same guard): eight reds — the driven block's five cells, both 1c cells, and block 2's different-failures cell; 18 passed, 8 failed. Dies with the seam when the §9 binding lands."
+      "note": "Silently dropping the field is the defect this guard exists for: the seat would come up with no worktree the program asked for. Re-measured 2026-09-02 (the driven block rides this same guard): eight reds — the driven block's five cells, both 1c cells, and block 2's different-failures cell; 19 passed, 8 failed. Dies with the seam when the §9 binding lands."
     },
     {
-      "name": "ask is not seamed, so it fails as a missing method",
+      "name": "the wait(replied|down) gate is dropped, so both events reach the planes",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "  async ask(_req: unknown, _ctx: EffectContext): Promise<never> {",
-      "replace": "  async askNotSeamed(_req: unknown, _ctx: EffectContext): Promise<never> {",
-      "expectRed": "ask refuses at the handler, as the class itself",
-      "cell": "ask refuses at the handler, as the class itself",
-      "cellTemplate": "${name} refuses at the handler, as the class itself",
-      "note": "Re-anchored from openConclave when the conclave implementation replaced the stub (2026-09-02). Measured: three named reds for ask ('the method is absent'); 23 passed, 3 failed."
+      "find": "    if (ev.event === \"replied\" || ev.event === \"down\") {",
+      "replace": "    if (false) {",
+      "expectRed": "wait(replied) refuses as the class itself, before any plane is reached",
+      "cell": "wait(replied) refuses as the class itself, before any plane is reached",
+      "note": "Re-anchored from the ask stub when the ask implementation replaced it (2026-09-02): the wait-side gate is the seam's other half and had no mutant. Measured: four named reds (both events' class and reason cells, each dying as a TypeError into the null planes); 23 passed, 4 failed."
     },
     {
       "name": "monitor is not seamed",
@@ -52,17 +51,17 @@
       "expectRed": "monitor refuses at the handler, as the class itself",
       "cell": "monitor refuses at the handler, as the class itself",
       "cellTemplate": "${name} refuses at the handler, as the class itself",
-      "note": "Re-measured 2026-09-02: three named reds for monitor; 23 passed, 3 failed."
+      "note": "Re-measured 2026-09-02: three named reds for monitor; 24 passed, 3 failed."
     },
     {
-      "name": "the three refusals drift into three reasons",
+      "name": "the two refusals drift into two reasons",
       "file": "implementations/runtime/src/mesh-handler.ts",
       "find": "    throw new NotYetDurable(\"turn(…)\", ACTION_MACHINERY);",
       "replace": "    throw new NotYetDurable(\"turn(…)\", \"something else entirely\");",
       "expectRed": "turn gives the one shared reason",
       "cell": "turn gives the one shared reason",
       "cellTemplate": "${name} gives the one shared reason",
-      "note": "Re-measured 2026-09-02: exactly one red; 25 passed."
+      "note": "Re-measured 2026-09-02: exactly one red; 26 passed."
     },
     {
       "name": "the seam swallows an UNGATED effect too",
@@ -71,7 +70,7 @@
       "replace": "  async sleep(req: SleepRequest, ctx: EffectContext): Promise<null> {\n    throw new NotYetDurable(\"sleep(…)\", ACTION_MACHINERY);",
       "expectRed": "sleep is not refused by the seam",
       "cell": "sleep is not refused by the seam: it reaches the plane and fails there instead",
-      "note": "Re-measured 2026-09-02: exactly one red; 25 passed."
+      "note": "Re-measured 2026-09-02: exactly one red; 26 passed."
     }
   ],
   "why": [

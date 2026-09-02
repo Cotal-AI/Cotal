@@ -1,0 +1,102 @@
+{
+  "suite": "implementations/runtime/smoke/mesh-ask.smoke.ts",
+  "guard": "the mesh handler's durable ask enforces the §6.5 contract and recovers by derivation: the shorthand is enforced (L4022), a non-conforming answer costs one attempt with its refusal bound for the answerer, attempts default to ONE and exhaust as the catchable L4006, the run driver's answer door reaches the CURRENT attempt's pause, and the discharge and adoption re-arm address the attempt actually armed",
+  "command": "pnpm smoke:runtime-mesh-ask",
+  "completionMarker": "mesh-ask.smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/mesh-ask.json",
+  "why": [
+    "Lane F durable-actions step 4 (2026-09-02): `ask` leaves the not-yet-durable seam and performs",
+    "as one checkpoint-plane pause per attempt, answered through the run driver's resolveCheckpoint.",
+    "Each contract half has a mutant: the spec's attempts default of ONE (MA1), the L4022 refusal of",
+    "an unreadable schema (MA2), the conformance check itself (MA3), the L4006 class (MA4), the",
+    "refusal reason bound for the answerer (MA5), the resolver accepting ask entries at all (MA6)",
+    "and addressing the CURRENT attempt's token (MA7), the discharge ending the attempt actually",
+    "armed (MA8), and the adoption re-arm inventory reading it the same way (MA9).",
+    "",
+    "MA6 and MA7 mutate resolve-checkpoint.ts; the rest mutate mesh-handler.ts. Both are imported",
+    "by the suite through relative source paths — no build sits between the mutation and the run."
+  ],
+  "mutations": [
+    {
+      "name": "attempts default to three, the design's number the spec overruled",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    const attempts = req.attempts ?? 1;",
+      "replace": "    const attempts = req.attempts ?? 3;",
+      "expectRed": "the default is one attempt: no second pause was opened",
+      "cell": "the default is one attempt: no second pause was opened",
+      "note": "Spec §6.5 pins the default at one. Measured 2026-09-02: four reds — the exhaustion block's run parks on an attempt 2 nobody asked for, its journal shows attempt 2 opened, and the L4006 cells red with it (the suite drains the parked run so nothing floats); 21 passed, 4 failed."
+    },
+    {
+      "name": "an unreadable schema is silently accepted instead of refused",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    const shape = askSchemaShape(req.schema);\n    if (shape === null) {",
+      "replace": "    const shape = askSchemaShape(req.schema);\n    if (false) {",
+      "expectRed": "the entry settles as L4022 before anything was bound or armed",
+      "cell": "the entry settles as L4022 before anything was bound or armed",
+      "note": "The MUST of §6.5: a handler enforcing the shorthand refuses a schema it cannot read rather than skip the check. Measured 2026-09-02: three reds — the unreadable-schema ask parks as an ordinary pause instead of refusing, so the run never completes and the L4022 cell reads an empty error; 22 passed, 3 failed."
+    },
+    {
+      "name": "every answer conforms",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      if (conformsToAskSchema(answer.value, shape)) return answer.value;",
+      "replace": "      if (true) return answer.value;",
+      "expectRed": "the refusal names the field and the kind it wants, judged by the same check that refused it",
+      "cell": "the refusal names the field and the kind it wants, judged by the same check that refused it",
+      "note": "The check gone, the contract is decoration: a non-conforming record flows into the program as the ask's value. Measured 2026-09-02: nine reds across the re-ask, exhaustion, re-judgment and cancellation blocks (each read a value that should have been refused); 15 passed, 9 failed, the suite reaching its own exit."
+    },
+    {
+      "name": "exhaustion loses its catchable class",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      if (attempt >= attempts) {\n        throw new EffectError(\n          \"L4006\",\n          \"ask-nonconforming\",",
+      "replace": "      if (attempt >= attempts) {\n        throw new EffectError(\n          \"L4000\",\n          \"ask-nonconforming\",",
+      "expectRed": "the entry settles as the ask effect's own catchable L4006",
+      "cell": "the entry settles as the ask effect's own catchable L4006",
+      "note": "A program acting on e.code reads 'the handler broke' where the contract says 'nothing conformed'. Measured 2026-09-02: exactly one red with the recorded L4000 in the transcript; 23 passed."
+    },
+    {
+      "name": "the refusal reason is never bound for the answerer",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "          ...(refused !== undefined ? { refused } : {}),",
+      "replace": "          ...({}),",
+      "expectRed": "the refusal names the field and the kind it wants, judged by the same check that refused it",
+      "cell": "the refusal names the field and the kind it wants, judged by the same check that refused it",
+      "note": "Design §5.4's 'refused with the validation error returned to the agent' dropped: the re-ask opens with nothing saying why the last answer was refused. Measured 2026-09-02: two reds — the driven re-ask's refusal cell and the resume re-judgment's; 22 passed."
+    },
+    {
+      "name": "the run driver's answer door refuses ask entries",
+      "file": "implementations/runtime/src/resolve-checkpoint.ts",
+      "find": "  if (entry.kind !== \"checkpoint\" && entry.kind !== \"ask\") throw new CheckpointNotOpen(runId, stepKey, \"not-a-checkpoint\");",
+      "replace": "  if (entry.kind !== \"checkpoint\") throw new CheckpointNotOpen(runId, stepKey, \"not-a-checkpoint\");",
+      "expectRed": "the run completes",
+      "cell": "the run completes",
+      "note": "The one door an answer has, closed to ask: nothing on the mesh can ever answer one. Measured 2026-09-02: thirteen reds — every driven block's answer is refused and its run parks to the block deadline; 15 passed, 13 failed, the suite reaching its own exit."
+    },
+    {
+      "name": "the answer lands on attempt 1's token whatever attempt is open",
+      "file": "implementations/runtime/src/resolve-checkpoint.ts",
+      "find": "  if (entry.kind === \"ask\" && typeof entry.external?.askToken === \"string\") return entry.external.askToken;\n  return entry.requestId;",
+      "replace": "  return entry.requestId;",
+      "expectRed": "the conforming second answer completes the run",
+      "cell": "the conforming second answer completes the run",
+      "note": "The current-attempt selection dropped: a second answer presents attempt 1's already-settled token (a one-use conflict) and the re-asked run parks forever. Measured 2026-09-02: three reds in the re-ask block; 22 passed."
+    },
+    {
+      "name": "the discharge ends attempt 1's pause, not the one actually armed",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      const current = e.kind === \"ask\" && typeof e.external?.askToken === \"string\"\n        ? e.external.askToken\n        : e.requestId;",
+      "replace": "      const current = e.requestId;",
+      "expectRed": "the discharge settled the CURRENT attempt's pause, so its timer cannot fire into the run",
+      "cell": "the discharge settled the CURRENT attempt's pause, so its timer cannot fire into the run",
+      "note": "A cancelled re-asked loser's armed deadline stays live and fires into a run that moved on. Measured 2026-09-02: exactly one red (attempt 2's pause is never settled); 23 passed."
+    },
+    {
+      "name": "the adoption re-arm inventory forgets which attempt is armed",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    else if (e.kind === \"ask\") tokens.push(typeof e.external?.askToken === \"string\" ? e.external.askToken : e.requestId);",
+      "replace": "    else if (e.kind === \"ask\") tokens.push(e.requestId);",
+      "expectRed": "a bound entry re-arms the CURRENT attempt's derived token",
+      "cell": "a bound entry re-arms the CURRENT attempt's derived token",
+      "note": "An adopted run re-arms a settled attempt's deadline and leaves the open attempt's unfired at the dead epoch. Measured 2026-09-02: exactly one red; 23 passed."
+    }
+  ]
+}

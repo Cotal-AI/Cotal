@@ -1,9 +1,10 @@
 /**
  * The Lane-A seam: what a durable run does when it reaches an effect whose substrate has not landed.
  *
- * `turn`, `ask` and `monitor` all CONSUME an agent handle; `spawn`, which produces one, and
- * `conclave`, which assembles a sub-team of them, now perform on the mesh handler, so the seam is
- * the remaining consumer group, gated by a single subject rather than by three absences. One
+ * `turn` and `monitor` CONSUME an agent handle, and `wait(replied|down)` addresses one; `spawn`,
+ * which produces a handle, `conclave`, which assembles a sub-team of them, and `ask`, the
+ * schema-checked pause the agent answers, now perform on the mesh handler, so the seam is the
+ * remaining consumer group, gated by a single subject rather than by separate absences. One
  * sub-refusal stays on `spawn` itself: a `worktree` binding rides §9 machinery that has not
  * landed, and silently dropping the field would be worse than refusing it.
  *
@@ -116,7 +117,7 @@ const drive = async (source: string, handler: EffectHandler, journal?: Journal, 
 
 // ── 1b) the consumers, at the handler, where they can be reached ───────────────────────────────
 {
-  for (const name of ["turn", "ask", "monitor"] as const) {
+  for (const name of ["turn", "monitor"] as const) {
     const fn = (mesh as unknown as Record<string, unknown>)[name];
     // GUARDED, because a missing method is precisely what this slice replaces: calling `undefined`
     // would kill the process here and the cell would never print, which is red without being an
@@ -148,6 +149,22 @@ const drive = async (source: string, handler: EffectHandler, journal?: Journal, 
     e instanceof NotYetDurable, e?.name);
   c("the worktree refusal names its own machinery: the §9 worktree binding",
     e?.message.includes("worktree binding") === true, e?.message?.slice(0, 140));
+}
+
+// ── 1d) the wait(replied|down) gate: the two agent-addressed events refuse inside wait ─────────
+{
+  for (const ev of ["replied", "down"] as const) {
+    const e = await mesh
+      .wait(
+        { event: { event: ev, agent: "dev#u" } } as never,
+        { signal: { cancelled: false, onCancel() {} }, requestId: "w".repeat(43) } as never,
+      )
+      .then(() => null, (x: unknown) => x as Error);
+    c(`wait(${ev}) refuses as the class itself, before any plane is reached`,
+      e instanceof NotYetDurable, e?.name);
+    c(`wait(${ev}) gives the one shared reason`,
+      e?.message.includes("an agent handle rides") === true, e?.message?.slice(0, 140));
+  }
 }
 
 // ── 2) the failure a missing method produces, which is what this slice replaces ─────────────────
