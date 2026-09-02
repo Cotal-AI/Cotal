@@ -1,5 +1,6 @@
 import { Box, Text } from "ink";
 import type { MeshState } from "../mesh.js";
+import { Sparkline } from "./Sparkline.js";
 
 /** Bottom bar: connection + space + active channel + msgs/s, then context keybindings. */
 export function StatusBar({
@@ -40,8 +41,10 @@ export function StatusBar({
         <Text color={status.connected ? "green" : "red"}>{status.connected ? "● " : "⨯ "}</Text>
         <Text dimColor>
           {status.space + " · #" + activeChannel + " · " + agentCount + " agents · " +
-            rates.msgsPerSec.toFixed(1) + " msg/s"}
+            rates.msgsPerSec.toFixed(1) + " msg/s "}
         </Text>
+        <Sparkline values={rates.activity} />
+        <Text dimColor>{" 60s"}</Text>
         {status.dmVisible ? null : <Text color="yellow">{"  chat-only"}</Text>}
         {canWrite ? null : <Text color="yellow">{"  read-only"}</Text>}
         {status.error ? (

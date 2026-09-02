@@ -87,7 +87,9 @@ export interface MeshSnapshot {
   endpoints: Presence[]; // everything else
   channels: { channel: string; messages: number }[];
   feed: FeedEntry[]; // classified + coalesced + windowed
-  rates: { msgsPerSec: number };
+  /** `msgsPerSec`: the rolling 1 s rate. `activity`: a fixed 15-bucket message-volume series over
+   *  the last 60 s (one ~4 s bucket each), oldest→newest, raw counts: the status bar's sparkline. */
+  rates: { msgsPerSec: number; activity: number[] };
   status: { connected: boolean; space: string; dmVisible: boolean; error?: string; warning?: string };
   signals: MeshSignals;
   nameOf: (id: string) => string; // unicast target id → display name
@@ -110,6 +112,8 @@ const CHANNELS_MS = 2000; // listChannels() refresh
 const DEFAULT_WINDOW = 300;
 const HISTORY_LIMIT = 50; // per-channel prefill depth
 const DM_LOG_CAP = 1000; // raw DMs retained for the roll-up
+const BUCKET_MS = 4000; // activity series bucket width
+const BUCKET_COUNT = 15; // activity series length → 15×4s = 60s window
 
 function bodyText(msg: CotalMessage): string {
   return partsToText(msg.parts);
@@ -157,6 +161,8 @@ export class MeshView extends EventEmitter {
   private dmLog: RawDm[] = []; // raw unicast for the DM roll-up
   private recentTs: number[] = []; // tap arrivals in the last 1s → msgs/s
   private msgsPerSec = 0;
+  private bucketCounts: number[] = new Array(BUCKET_COUNT).fill(0); // 60s volume series, oldest→newest
+  private bucketEpoch = 0; // floor(now/BUCKET_MS) of the newest (last) bucket; 0 = uninitialized
   private connected = false;
   private error?: string;
   private warning?: string;
@@ -233,7 +239,7 @@ export class MeshView extends EventEmitter {
       endpoints: this.roster.filter((p) => p.card.kind !== "agent"),
       channels,
       feed: this.feed.slice(),
-      rates: { msgsPerSec: this.msgsPerSec },
+      rates: { msgsPerSec: this.msgsPerSec, activity: this.bucketCounts.slice() },
       status: {
         connected: this.connected,
         space: this.ep.space,
@@ -261,7 +267,10 @@ export class MeshView extends EventEmitter {
   private ingest(subject: string, msg: CotalMessage): void {
     const kind = deliveryOf(subject);
     if (!kind) return;
-    this.recentTs.push(Date.now());
+    const now = Date.now();
+    this.recentTs.push(now);
+    this.roll(now);
+    this.bucketCounts[BUCKET_COUNT - 1]++; // count into the newest bucket
     if (msg.from?.id && msg.from.name) this.byId.set(msg.from.id, msg.from.name); // sharpen id→name
     if (kind === "unicast") return this.coalesce(msg);
     this.push({
@@ -488,10 +497,32 @@ export class MeshView extends EventEmitter {
     return [...peers.values()].sort((a, b) => b.lastTs - a.lastTs);
   }
 
+  /** Advance the activity ring to `now`: shift past buckets out the left, fill the gap with zeros,
+   *  so idle time decays the series. The newest (last) bucket is always the current ~4s window. */
+  private roll(now: number): void {
+    const epoch = Math.floor(now / BUCKET_MS);
+    if (this.bucketEpoch === 0) {
+      this.bucketEpoch = epoch;
+      return;
+    }
+    const advance = epoch - this.bucketEpoch;
+    if (advance <= 0) return;
+    if (advance >= BUCKET_COUNT) {
+      this.bucketCounts.fill(0);
+    } else {
+      this.bucketCounts.splice(0, advance);
+      while (this.bucketCounts.length < BUCKET_COUNT) this.bucketCounts.push(0);
+    }
+    this.bucketEpoch = epoch;
+    this.dirty = true;
+  }
+
   /** The single batch point: recompute the rolling rate, then emit one snapshot if dirty. */
   private flush(): void {
-    const cutoff = Date.now() - 1000;
+    const now = Date.now();
+    const cutoff = now - 1000;
     while (this.recentTs.length && this.recentTs[0] < cutoff) this.recentTs.shift();
+    this.roll(now); // decay the activity window even when no message arrived
     if (this.recentTs.length !== this.msgsPerSec) {
       this.msgsPerSec = this.recentTs.length;
       this.dirty = true;

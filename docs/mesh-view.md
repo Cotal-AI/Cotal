@@ -57,7 +57,7 @@ interface MeshSnapshot {
   endpoints: Presence[];        // everything else
   channels:  { channel: string; messages: number }[];
   feed:      FeedEntry[];       // classified + coalesced + windowed
-  rates:     { msgsPerSec: number };
+  rates:     { msgsPerSec: number; activity: number[] };  // rolling 1 s rate; 15 x 4 s volume buckets (60 s)
   status:    { connected: boolean; space: string; dmVisible: boolean; error?: string };
   signals:   MeshSignals;       // derived operator signals (below)
   nameOf:    (id: string) => string;   // unicast target id → display name
@@ -74,6 +74,9 @@ interface MeshSnapshot {
 - **History prefill.** A one-shot per-channel backlog (multicast; plus DM backlog when DMs are
   visible), deduped against the live tap by `id`.
 - **Windowing.** The feed is capped (~300 entries) with a rolling `msgs/s` rate.
+- **Activity series.** `rates.activity` is a fixed 15-bucket, 60-second message-volume series (one
+  4-second bucket each, oldest first, raw counts) that decays on the tick even when nothing arrives.
+  The console draws it as a sparkline in the status bar next to `msgs/s`.
 
 ### Derived operator signals
 
@@ -112,7 +115,7 @@ visible (god-view / open mode); a chat-only observer leaves it empty.
 | topology (who-talks-to-whom) | `feed` + `agents` (derived) | ✓ lens (`t`, 3 variants) |  |  |
 | message / agent **detail** | `feed` / `agents` | ✓ select → detail |  | ✓ row / thread |
 | search / filter | client | ✓ `/` | (grep) | ✓ mode chips |
-| msgs/s, connected, dmVisible | `rates` / `status` | ✓ status bar |  | ✓ conn pill |
+| msgs/s, activity sparkline, connected, dmVisible | `rates` / `status` | ✓ status bar |  | ✓ conn pill |
 | attention mode (`dnd` / `focus`) | `agents[].attention` |  |  | ✓ roster + detail + graph |
 | per-channel attention (`quiet` / `muted`) | `agents[].channelModes` |  |  | ✓ agent detail |
 | harness, model, variant | `agents[].card.meta` |  |  | ✓ badges + graph |
