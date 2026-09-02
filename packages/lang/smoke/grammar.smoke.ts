@@ -582,6 +582,21 @@ rejects("two race branches spawning into one literal worktree", "L3022",
    }, { name: "r" });`);
 rejects("a fanOut whose function spawns a literal worktree runs it in every branch", "L3022",
   `await fanOut(["x", "y"], async (item) => { await spawn("dev", { name: "s", worktree: "wt-1" }); }, { name: "f", key: (i) => i });`);
+rejects("named branch functions are branches too: two of them into one literal worktree", "L3022",
+  `async function a() { await spawn("dev", { name: "a", worktree: "wt-1" }); }
+   async function b() { await spawn("dev", { name: "b", worktree: "wt-1" }); }
+   await parallel({ a, b }, { name: "build" });`);
+rejects("the array form resolves its named branches the same way", "L3022",
+  `async function a() { await spawn("dev", { name: "a", worktree: "wt-1" }); }
+   async function b() { await spawn("dev", { name: "b", worktree: "wt-1" }); }
+   await race([a, b], { name: "r" });`);
+rejects("a named fanOut function that spawns a literal worktree runs it in every branch", "L3022",
+  `async function each(item) { await spawn("dev", { name: "s", worktree: "wt-1" }); }
+   await fanOut(["x", "y"], each, { name: "f", key: (i) => i });`);
+accepts("named branches with their own worktrees are legal",
+  `async function a() { await spawn("dev", { name: "a", worktree: "wt-1" }); }
+   async function b() { await spawn("dev", { name: "b", worktree: "wt-2" }); }
+   await parallel({ a, b }, { name: "build" });`);
 accepts("sequential reuse of a worktree is legal",
   `await spawn("dev", { name: "a", worktree: "wt-1" });
    await spawn("dev", { name: "b", worktree: "wt-1" });`);

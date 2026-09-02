@@ -70,8 +70,8 @@
     {
       "name": "adoption never re-issues, so recovery waits for completion to sweep a dead loser",
       "file": "implementations/runtime/src/run-driver.ts",
-      "find": "  await dischargeCancellations(resumed, store, req.handler);",
-      "replace": "  void resumed;",
+      "find": "  const flipped = new Set(await dischargeCancellations(resumed, store, req.handler));",
+      "replace": "  const flipped = new Set<string>();",
       "command": "pnpm smoke:runtime-mesh-wait",
       "completionMarker": "mesh-wait.smoke:",
       "expectRed": "the adoption sweep ends the dead loser's world state and flips the record WHILE the run is still parked",
@@ -110,6 +110,15 @@
       "expectRed": "the losing wait settled `cancelled` — the class crossed the engine bridge instead of flattening to a fault",
       "cell": "the losing wait settled `cancelled` — the class crossed the engine bridge instead of flattening to a fault",
       "note": "The crossing has two separately deletable halves — the marker written and the marker read — and a refactor that drops either reproduces the flattening whole. Measured 2026-09-02 independently of the flatten mutant: the same single red, same failed/L4000 record. After the full proof, rebuild lang dist once by hand: the tool restores source and verifies source, and dist keeps this mutant's bytes until rebuilt."
+    },
+    {
+      "name": "the adopted engine is seeded from the pre-sweep prefix",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "    flipped.has(journalEntryKeyString(e)) && e.cancel !== undefined",
+      "replace": "    false && e.cancel !== undefined",
+      "expectRed": "the flip is written once: adoption's sweep is what the completion sweep then sees",
+      "cell": "the flip is written once: adoption's sweep is what the completion sweep then sees",
+      "note": "The adoption sweep flips the record; an engine seeded from the raw prefix re-issues the same cancellation at completion. Measured 2026-09-03: exactly one named red (flips: 2); 54 passed, 1 failed."
     }
   ]
 }

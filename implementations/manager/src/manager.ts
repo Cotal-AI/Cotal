@@ -6006,9 +6006,13 @@ export class Manager {
   /** The seat's pull: every pending turn addressed to the CALLER's incarnation, oldest first.
    *  The uid is part of the address — a successor seat never receives a predecessor's turn. */
   private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt: number }[] } {
+    // Two turns on one seat are serialized at the dispatch (cotal-lang 6.5): only the oldest
+    // unsettled one is served, and the next surfaces once it yields or its deadline denies, so a
+    // seat is never shown two turns at once.
     const turns = [...this.pendingTurns.values()]
       .filter((p) => p.seat.owner === c.owner && p.seat.actor === c.actor && p.seat.uid === c.uid)
       .sort((x, y) => x.acceptedAt - y.acceptedAt)
+      .slice(0, 1)
       .map((p) => ({ goalId: p.goalId, payload: p.payload, acceptedAt: p.acceptedAt, deadlineAt: p.deadlineAt }));
     return { turns };
   }

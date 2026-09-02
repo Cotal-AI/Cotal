@@ -278,7 +278,7 @@ export class MeshHandler {
 
   /** The last agent this run spawned into each logical worktree — what the L4008 guard reads.
    *  Fed by `spawn` and reseeded from journal spawn results at adoption. */
-  private readonly worktreeHolders = new Map<string, { name: string; uid: string }>();
+  private readonly worktreeHolders = new Map<string, WorktreeHolder>();
 
   now(): number {
     return this.clock();
@@ -305,13 +305,21 @@ export class MeshHandler {
 
   /**
    * Rebuild the in-memory run memos an adopted run needs to keep performing `turn`: the roster
-   * (from every settled ok `spawn`, its result the handle and its bound floor the address) and the
-   * handoff memos (replaying, in journal order, the same two rules the live path applies — a turn's
-   * begin spends its scope's memo, a settled handoff yield writes one, a second pending handoff to
-   * the same name in one scope makes it ambiguous). Deterministic from the journal alone.
+   * (from every settled ok `spawn`, its result the handle and its bound floor the address), the
+   * worktree holders (a settled spawn holds its tree by identity, a spawn still in flight by the
+   * reservation its bound request took) and the handoff memos (replaying, in journal order, the
+   * same two rules the live path applies — a turn's begin spends its scope's memo, a settled
+   * handoff yield writes one, a second pending handoff to the same name in one scope makes it
+   * ambiguous). Deterministic from the journal alone.
    */
   private seedRunMemos(entries: readonly JournalEntry[]): void {
     for (const e of entries) {
+      if (e.kind === "spawn" && e.state === "pending") {
+        const x = e.external as { goalId?: unknown; worktree?: unknown } | undefined;
+        if (typeof x?.goalId === "string" && typeof x?.worktree === "string")
+          this.worktreeHolders.set(x.worktree, { pending: x.goalId });
+        continue;
+      }
       if (e.kind === "spawn" && e.state === "settled" && e.status === "ok" && e.result !== undefined) {
         const handle = e.result as AgentHandleValue;
         if (typeof handle.agent !== "string") continue; // a garbled result seeds nothing; the turn that needs it refuses loudly
@@ -328,7 +336,7 @@ export class MeshHandler {
       }
       if (e.kind !== "turn") continue;
       const x = e.external as { name?: unknown; uid?: unknown; goalId?: unknown } | undefined;
-      if (typeof x?.name === "string" && typeof x?.uid === "string" && typeof x?.goalId === "string")
+      if (typeof x?.name === "string" && typeof x?.uid === "string" && typeof x?.goalId === "string" && (e.state === "pending" || e.status === "ok"))
         this.recordTurnGoal(`${x.name}#${x.uid}`, x.goalId);
       this.handoffMemos.delete(e.scope); // its begin spent whatever was pending, honored or not
       if (e.state !== "settled" || e.status !== "ok" || e.result === undefined) continue;
@@ -340,24 +348,38 @@ export class MeshHandler {
 
   /**
    * The runtime half of "two agents MUST NOT share a worktree concurrently" (spec 6.5; the
-   * validator owns the literal case as L3022). The registry records the last agent this run
-   * spawned into each logical worktree, and a new spawn into one is admitted only when that
-   * holder is no longer live on presence: sequential reuse is legal, concurrency is data loss.
+   * validator owns the literal case as L3022). The registry records who holds each logical
+   * worktree this run spawned into — the live seat, or the spawn still bringing one up — and a
+   * new spawn CLAIMS the tree here before anything is submitted: a tree nobody holds is taken in
+   * the same synchronous step that read it, so two branches spawning into one computed id cannot
+   * both pass; a tree held by a spawn in flight refuses; a tree held by a seat is admitted only
+   * when that holder is no longer live on presence, and re-read after the liveness wait, because
+   * a sibling may have claimed it meanwhile. Sequential reuse is legal, concurrency is data loss.
    * The liveness read is the same witness `wait(down)` and a conclave join use, so "still
    * holding" and "down" are one definition — a discharged loser or a crashed seat releases its
    * tree the moment its presence row is gone, with no bookkeeping of its own.
    */
-  private async guardWorktree(worktree: string, persona: string): Promise<void> {
+  private async claimWorktree(worktree: string, persona: string, goalId: string): Promise<void> {
     const holder = this.worktreeHolders.get(worktree);
-    if (holder === undefined) return;
+    if (holder === undefined) {
+      this.worktreeHolders.set(worktree, { pending: goalId });
+      return;
+    }
+    if ("pending" in holder)
+      throw new EffectError(
+        "L4008", "worktree",
+        `spawn(${persona}) would put a second agent into the worktree "${worktree}" while spawn goal ${holder.pending} is still bringing one up in it; two agents MUST NOT share a worktree concurrently (L3022/L4008)`,
+      );
     let rows: readonly Presence[];
-    for (;;) {
+    for (let attempt = 1; ; attempt += 1) {
       try {
         rows = await this.presenceRows();
         break;
       } catch (e) {
-        if (e instanceof IncompleteKvScan) { await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref()); continue; }
-        throw e;
+        // A scan that keeps coming back incomplete is a broken presence plane, and a guard that
+        // never answers would park the spawn for good: bounded, then the scan's own error.
+        if (!(e instanceof IncompleteKvScan) || attempt >= WORKTREE_SCAN_ATTEMPTS) throw e;
+        await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref());
       }
     }
     if (rows.some((p) => p.card?.name === holder.name && p.lifecycleUid === holder.uid))
@@ -365,6 +387,13 @@ export class MeshHandler {
         "L4008", "worktree",
         `spawn(${persona}) would put a second agent into the worktree "${worktree}" while ${holder.name}#${holder.uid} is live in it; two agents MUST NOT share a worktree concurrently (L3022/L4008)`,
       );
+    const now = this.worktreeHolders.get(worktree);
+    if (now !== undefined && now !== holder)
+      throw new EffectError(
+        "L4008", "worktree",
+        `spawn(${persona}) would put a second agent into the worktree "${worktree}", which ${"pending" in now ? `spawn goal ${now.pending}` : `${now.name}#${now.uid}`} claimed while this spawn read its previous holder's liveness; two agents MUST NOT share a worktree concurrently (L3022/L4008)`,
+      );
+    this.worktreeHolders.set(worktree, { pending: goalId });
   }
 
   /** One turn goal registered under its handle composite — what `wait(replied)` observes. */
@@ -404,6 +433,12 @@ export class MeshHandler {
       if (e.kind === "conclave") {
         await this.dischargeConclave(e);
         continue;
+      }
+      if (e.kind === "turn") {
+        // A cancelled turn is never a reply, whatever the seat yields to the relay later.
+        const x = e.external as { name?: unknown; uid?: unknown; goalId?: unknown } | undefined;
+        if (typeof x?.name === "string" && typeof x?.uid === "string" && typeof x?.goalId === "string")
+          this.turnGoals.get(`${x.name}#${x.uid}`)?.delete(x.goalId);
       }
       if (e.kind !== "sleep" && e.kind !== "checkpoint" && e.kind !== "wait" && e.kind !== "ask" && e.kind !== "turn") continue;
       // An ask's armed timer is its CURRENT attempt's, whose token is bound as `askToken`; a
@@ -795,6 +830,12 @@ export class MeshHandler {
         const d = fact.data as { status?: unknown; note?: unknown; at?: unknown } | undefined;
         if ((d?.status !== "done" && d?.status !== "blocked" && d?.status !== "handoff") || typeof d.at !== "number")
           throw new Error(`wait(replied(${handle})) observed a malformed turn terminal (${JSON.stringify(fact.data)}); a garbled yield never resolves a wait`);
+        // A handoff the turn refuses (an addressee outside the run, or across worktrees) is the
+        // turn's own failure, so it is not a reply here either: both observers read one verdict.
+        if (d.status === "handoff" && this.handoffRefusal(this.roster.get(name)?.handle.worktree, (d as { to?: unknown }).to) !== undefined) {
+          goals!.delete(goalId);
+          continue;
+        }
         if (latest === undefined || d.at > latest.at)
           latest = { status: d.status, ...(typeof d.note === "string" ? { note: d.note } : {}), at: d.at };
       }
@@ -867,57 +908,84 @@ export class MeshHandler {
     // identity was bound before the crash. Go straight back to the terminal.
     let ext: Readonly<Record<string, unknown>> | undefined =
       ctx.resume?.goalId === goalId ? (ctx.resume as Readonly<Record<string, unknown>>) : undefined;
-    if (ext === undefined) {
-      if (req.worktree !== undefined) await this.guardWorktree(req.worktree, req.persona);
-      let reply: EpAttributedReply | undefined;
-      try {
-        const service = await this.manager();
-        reply = await invokeCommand(this.nc, this.binding.space, service, "spawn", spawnArgs(req), {
-          id: goalId,
-          deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
-        });
-      } catch (err) {
-        // The invoke did not come back — which does not prove nothing happened: the request may
-        // have been accepted while the reply was lost. The goal record is the arbiter: a durable
-        // trace under this goalId means the submission landed, so proceed to its terminal; none
-        // means it never did, and the raised error is the honest outcome.
-        if ((await readGoalStatus(await this.actionCtx(), ref)) === undefined) throw err;
+    if (ext === undefined && req.worktree !== undefined) await this.claimWorktree(req.worktree, req.persona, goalId);
+    try {
+      if (ext === undefined) {
+        let reply: EpAttributedReply | undefined;
+        try {
+          const service = await this.manager();
+          reply = await invokeCommand(this.nc, this.binding.space, service, "spawn", spawnArgs(req), {
+            id: goalId,
+            deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
+          });
+        } catch (err) {
+          // The invoke did not come back — which does not prove nothing happened: the request may
+          // have been accepted while the reply was lost. The goal record is the arbiter: a durable
+          // trace under this goalId means the submission landed, so proceed to its terminal; none
+          // means it never did, and the raised error is the honest outcome.
+          if ((await readGoalStatus(await this.actionCtx(), ref)) === undefined) throw err;
+        }
+        if (reply !== undefined && reply.reply.ok === false) {
+          // Refused AT ACCEPT: the manager bound no goal and provisioned nothing, so this is the
+          // effect's own failure, catchable as such — and never L4002, because no agent existed to
+          // be down. A seat budget the endpoint will not extend is a permit the run does not hold
+          // (L4001); every other refusal (persona unknown, name taken) is the host declining the
+          // request (L4000), the manager's own code carried in the detail.
+          const err = reply.reply.error;
+          throw new EffectError(err?.code === "resource-exhausted" ? "L4001" : "L4000", "spawn",
+            `spawn(${req.persona}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? "refused with no message"}`,
+            err?.code !== undefined ? { code: err.code } : undefined);
+        }
+        const floor = reply === undefined ? undefined : (reply.reply.data as Record<string, unknown> | undefined);
+        if (floor !== undefined && floor.goalId !== goalId)
+          throw new Error(`the spawn acceptance names goal "${String(floor.goalId)}" but this submission pinned "${goalId}"; a mismatched acceptance never authorizes (SPEC 13.6)`);
+        // BIND BEFORE AWAITING: the goalId is re-derivable, but the bind is what tells a resume the
+        // submission LANDED — and the identity floor beside it is what a discharge despawns by when
+        // the terminal alone carries none (an `uncertain` verdict). The worktree rides along so an
+        // adoption re-takes this spawn's reservation; `onFork` so a fork can read the policy.
+        ext = {
+          goalId,
+          ...(floor !== undefined ? pickAcceptanceFloor(floor) : {}),
+          ...(req.worktree !== undefined ? { worktree: req.worktree } : {}),
+          ...(req.onFork !== undefined ? { onFork: req.onFork } : {}),
+        };
+        await ctx.bind(ext);
       }
-      if (reply !== undefined && reply.reply.ok === false) {
-        // Refused AT ACCEPT (persona not found, name collision, capacity): the manager bound no
-        // goal and provisioned nothing, so this is the effect's own failure, catchable as such.
-        const err = reply.reply.error;
-        throw new EffectError("L4002", "spawn",
-          `spawn(${req.persona}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? "refused with no message"}`,
-          err?.code !== undefined ? { code: err.code } : undefined);
-      }
-      const floor = reply === undefined ? undefined : (reply.reply.data as Record<string, unknown> | undefined);
-      if (floor !== undefined && floor.goalId !== goalId)
-        throw new Error(`the spawn acceptance names goal "${String(floor.goalId)}" but this submission pinned "${goalId}"; a mismatched acceptance never authorizes (SPEC 13.6)`);
-      // BIND BEFORE AWAITING: the goalId is re-derivable, but the bind is what tells a resume the
-      // submission LANDED — and the identity floor beside it is what a discharge despawns by when
-      // the terminal alone carries none (an `uncertain` verdict).
-      ext = {
-        goalId,
-        ...(floor !== undefined ? pickAcceptanceFloor(floor) : {}),
-      };
-      await ctx.bind(ext);
-    }
 
-    const fact = await this.goalTerminal(ref, ctx.signal);
-    const handle = spawnHandleOf(req, fact, this.binding.endpoint);
-    // Register the run-roster entry `turn` addresses and a handoff resolves to. The owner/actor
-    // address prefers the bound floor and falls back to the terminal's own recorded identity —
-    // the same discipline the discharge uses (see spawnDespawnTarget).
-    const address = spawnDespawnTarget(ext, fact);
-    this.roster.set(parseAgentHandle(handle.agent).name, {
-      handle,
-      uid: parseAgentHandle(handle.agent).uid,
-      ...(address !== undefined ? { owner: address.owner, actor: address.actor } : {}),
-    });
-    if (typeof handle.worktree === "string")
-      this.worktreeHolders.set(handle.worktree, { name: parseAgentHandle(handle.agent).name, uid: parseAgentHandle(handle.agent).uid });
-    return handle;
+      const fact = await this.goalTerminal(ref, ctx.signal);
+      const handle = spawnHandleOf(req, fact, this.binding.endpoint);
+      // Register the run-roster entry `turn` addresses and a handoff resolves to. The owner/actor
+      // address prefers the bound floor and falls back to the terminal's own recorded identity —
+      // the same discipline the discharge uses (see spawnDespawnTarget).
+      const address = spawnDespawnTarget(ext, fact);
+      this.roster.set(parseAgentHandle(handle.agent).name, {
+        handle,
+        uid: parseAgentHandle(handle.agent).uid,
+        ...(address !== undefined ? { owner: address.owner, actor: address.actor } : {}),
+      });
+      if (typeof handle.worktree === "string")
+        this.worktreeHolders.set(handle.worktree, { name: parseAgentHandle(handle.agent).name, uid: parseAgentHandle(handle.agent).uid });
+      return handle;
+    } catch (e) {
+      if (req.worktree !== undefined) this.releaseWorktree(req.worktree, goalId, ext, e instanceof Cancelled);
+      throw e;
+    }
+  }
+
+  /**
+   * A spawn that ends without a handle gives its tree back. The one exception is a cancellation
+   * while parked on an ACCEPTED submission: the seat may well be up in the tree until its
+   * discharge lands, so the reservation becomes a hold by the accepted identity, which presence
+   * liveness then releases the way it releases any holder.
+   */
+  private releaseWorktree(worktree: string, goalId: string, ext: Readonly<Record<string, unknown>> | undefined, parked: boolean): void {
+    const holder = this.worktreeHolders.get(worktree);
+    if (holder === undefined || !("pending" in holder) || holder.pending !== goalId) return;
+    if (parked && typeof ext?.name === "string" && typeof ext.uid === "string") {
+      this.worktreeHolders.set(worktree, { name: ext.name, uid: ext.uid });
+      return;
+    }
+    this.worktreeHolders.delete(worktree);
   }
 
   /** Poll the goal's durable terminal fact, observing cancellation on the poll cadence — the same
@@ -948,9 +1016,9 @@ export class MeshHandler {
    *
    * Handoff honoring (lang §5.3) happens HERE: the scope's pending memo is spent at every turn's
    * begin, and when this turn targets its `to`, the link rides the submission (`handoffFrom`, the
-   * manager mirrors it into the terminal), the bound external state, and the run record's
-   * `conversationOwner`. A handoff YIELD is validated against the run roster: an addressee
-   * outside it is L4005, one in a different worktree is L4004.
+   * manager mirrors it into the terminal) and the bound external state. A handoff YIELD is
+   * validated against the run roster: an addressee outside it is L4005, one in a different
+   * worktree is L4004.
    */
   async turn(req: TurnRequest, ctx: EffectContext): Promise<TurnResultValue> {
     if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
@@ -968,6 +1036,7 @@ export class MeshHandler {
         throw new Error(`turn(${name}#${uid}) addresses an agent that is not in this run's roster; a turn wakes an agent this run spawned`);
       if (entry.owner === undefined || entry.actor === undefined)
         throw new Error(`turn(${name}#${uid}) has no address: the spawn's acceptance floor was never served, so the seat's owner/actor coordinates are unknown`);
+      const { owner, actor } = entry;
       // Spend the scope's handoff memo at BEGIN, honored or not — honoring is immediate-only.
       const memo = this.handoffMemos.get(scope);
       this.handoffMemos.delete(scope);
@@ -980,18 +1049,18 @@ export class MeshHandler {
         .filter((n) => n.consumed === undefined);
       const context = renderRunContext({ run: this.binding.runId, step, notices });
       const deadlineMs = parseDuration(req.deadline ?? this.binding.defaultCheckpointTimeout);
-      const deadlineAt = this.now() + deadlineMs;
       const payload = JSON.stringify({ run: this.binding.runId, step, context, noticeIds: notices.map((n) => n.noticeId) });
-
-      let reply: EpAttributedReply | undefined;
-      try {
-        const service = await this.manager();
-        reply = await invokeCommand(this.nc, this.binding.space, service, "turn",
+      const submit = async (): Promise<EpAttributedReply> =>
+        invokeCommand(this.nc, this.binding.space, await this.manager(), "turn",
           { payload, deadlineMs, ...(handoffFrom !== undefined ? { handoffFrom } : {}) }, {
             id: goalId,
             deadlineMs: TURN_ACCEPT_DEADLINE_MS,
-            target: { mode: "owner", owner: entry.owner, actor: entry.actor, lifecycleUid: uid },
+            target: { mode: "owner", owner, actor, lifecycleUid: uid },
           });
+
+      let reply: EpAttributedReply | undefined;
+      try {
+        reply = await submit();
       } catch (err) {
         // The invoke did not come back — the goal record is the arbiter, exactly as in `spawn`.
         if ((await readGoalStatus(await this.actionCtx(), ref)) === undefined) throw err;
@@ -1003,8 +1072,23 @@ export class MeshHandler {
           throw new EffectError("L4002", "turn", `turn(${name}#${uid}) found the agent down before the relay began: ${err.message}`);
         throw new Error(`turn(${name}#${uid}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? "refused with no message"}`);
       }
+      if (reply === undefined) {
+        // The acceptance carries the deadline authority, so a lost reply is asked for again: the
+        // same goalId under the same fingerprint is served from the manager's acceptance cache.
+        reply = await submit();
+        if (reply.reply.ok === false)
+          throw new Error(`turn(${name}#${uid}) landed but its acceptance could not be re-read: ${reply.reply.error?.message ?? "refused with no message"}`);
+      }
+      const floor = reply.reply.data as { deadlineAt?: unknown } | undefined;
+      if (typeof floor?.deadlineAt !== "number")
+        throw new Error(`turn(${name}#${uid}) was accepted with no readable deadline (${JSON.stringify(reply.reply.data)}); a garbled acceptance never authorizes (SPEC 13.6)`);
+      // ONE deadline for the turn: the acceptance's `deadlineAt` is the instant the manager's own
+      // hold denies at, and the client's pause is armed on that same instant. A second clock read
+      // before the accept round-trip would fire first by the round-trip plus skew and throw away a
+      // yield the manager's window still admitted.
+      const deadlineAt = floor.deadlineAt;
       ext = {
-        goalId, name, owner: entry.owner, actor: entry.actor, uid, deadlineAt,
+        goalId, name, owner, actor, uid, deadlineAt,
         noticeIds: notices.map((n) => n.noticeId),
         ...(handoffFrom !== undefined ? { handoffFrom } : {}),
       };
@@ -1016,36 +1100,42 @@ export class MeshHandler {
       throw new Error(`turn(${name}#${uid}) resumed with no recorded deadline; a garbled external state never authorizes`);
     // The client's OWN deadline authority: minted on the first pass, attached to on re-entry.
     await this.arm(primary, deadlineAt);
-    // Honoring moves the conversation owner. Re-driven on resume — idempotent when already moved.
-    if (typeof ext.handoffFrom === "string") await this.moveConversationOwner(name);
 
     const actx = await this.actionCtx();
-    for (;;) {
-      if (ctx.signal.cancelled) {
-        await this.cancelTimer(primary);
-        throw new Cancelled(ctx.signal.reason ?? "cancelled");
+    try {
+        for (;;) {
+        if (ctx.signal.cancelled) {
+          await this.cancelTimer(primary);
+          throw new Cancelled(ctx.signal.reason ?? "cancelled");
+        }
+        const fact = await readGoalResult(actx, ref);
+        if (fact !== undefined) {
+          await this.cancelTimer(primary);
+          return await this.turnOutcome(req, fact, ext, scope, name, uid);
+        }
+        const ended = await this.expired(primary);
+        if (ended !== undefined)
+          throw new EffectError("L4003", "turn-deadline", `turn(${name}#${uid}) deadline elapsed before a yield`);
+        let rows: readonly Presence[];
+        try {
+          rows = await this.presenceRows();
+        } catch (e) {
+          if (e instanceof IncompleteKvScan) { await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref()); continue; }
+          throw e;
+        }
+        if (!rows.some((pr) => pr.card?.name === name && pr.lifecycleUid === uid)) {
+          const reason = rows.some((pr) => pr.card?.name === name) ? "superseded" : "lapsed";
+          await this.cancelTimer(primary);
+          throw new EffectError("L4002", "turn", `turn(${name}#${uid}) found the agent down (${reason}) before a yield`);
+        }
+        await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref());
       }
-      const fact = await readGoalResult(actx, ref);
-      if (fact !== undefined) {
-        await this.cancelTimer(primary);
-        return await this.turnOutcome(req, fact, ext, scope, name, uid);
-      }
-      const ended = await this.expired(primary);
-      if (ended !== undefined)
-        throw new EffectError("L4003", "turn-deadline", `turn(${name}#${uid}) deadline elapsed before a yield`);
-      let rows: readonly Presence[];
-      try {
-        rows = await this.presenceRows();
-      } catch (e) {
-        if (e instanceof IncompleteKvScan) { await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref()); continue; }
-        throw e;
-      }
-      if (!rows.some((pr) => pr.card?.name === name && pr.lifecycleUid === uid)) {
-        const reason = rows.some((pr) => pr.card?.name === name) ? "superseded" : "lapsed";
-        await this.cancelTimer(primary);
-        throw new EffectError("L4002", "turn", `turn(${name}#${uid}) found the agent down (${reason}) before a yield`);
-      }
-      await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref());
+    } catch (e) {
+      // A turn that ends on the run's side without a yield the run accepted (its deadline, the
+      // seat's death, a refused handoff, a cancellation) is not a reply, whatever the relay
+      // records later: `wait(replied)` reads the verdict this branch raised, never a stale yield.
+      this.turnGoals.get(`${name}#${uid}`)?.delete(goalId);
+      throw e;
     }
   }
 
@@ -1054,6 +1144,20 @@ export class MeshHandler {
    *  worktrees), `failed` splits on the manager's recorded reason, `cancelled` unwinds. The
    *  consumed notices are marked HERE, by the goal that carried them, tolerating the re-entry
    *  conflict (a crash between the terminal and the mark re-marks on resume). */
+  /**
+   * A yielded handoff's refusal class: L4005 when the addressee is not in this run's roster,
+   * L4004 when it sits in a different worktree than the seat handing off, undefined when the
+   * handoff is honorable. One reading for the turn that raises it and the `wait(replied)` that
+   * must not count it, so the two observers never diverge on a spoofed or misdirected `to`.
+   */
+  private handoffRefusal(fromWorktree: string | undefined, to: unknown): "L4005" | "L4004" | undefined {
+    const toName = typeof to === "string" ? to : "";
+    const target = this.roster.get(toName);
+    if (toName.length === 0 || target === undefined) return "L4005";
+    if ((target.handle.worktree ?? undefined) !== (fromWorktree ?? undefined)) return "L4004";
+    return undefined;
+  }
+
   private async turnOutcome(
     req: TurnRequest,
     fact: GoalResultFact,
@@ -1064,13 +1168,17 @@ export class MeshHandler {
   ): Promise<TurnResultValue> {
     if (fact.state === "cancelled") throw new Cancelled(`the turn goal for ${name}#${uid} was cancelled`);
     if (fact.state === "failed") {
-      const d = fact.data as { reason?: unknown; error?: unknown } | undefined;
-      // The one reasoned failure a relay commits. Seat DEATH deliberately has no arm here: a
-      // dead target has no honest early terminal on the goal plane (SPEC 13.6 item 7), so the
-      // client's own presence watch in the poll loop is the L4002 authority, and a death that
-      // rode to the deadline arrives as this same turn-deadline deny.
-      if (d?.reason === "turn-deadline")
+      const d = fact.data as { reason?: unknown; error?: unknown; agentDownAt?: unknown } | undefined;
+      // The one reasoned failure a relay commits. A dead target has no early terminal of its own
+      // on the goal plane (SPEC 13.6 item 7): the client's presence watch in the poll loop is the
+      // first L4002 authority, and a death that rode to the deadline arrives on this same deny,
+      // MARKED by the relay (`agentDownAt`) — read here as the agent-down failure it is, never as
+      // a deadline the program could have set longer.
+      if (d?.reason === "turn-deadline") {
+        if (typeof d.agentDownAt === "number")
+          throw new EffectError("L4002", "turn", `turn(${name}#${uid}) found the agent down (it left presence at ${new Date(d.agentDownAt).toISOString()}) before a yield; the deadline terminal carries its death`);
         throw new EffectError("L4003", "turn-deadline", `turn(${name}#${uid}) deadline elapsed before a yield`);
+      }
       throw new Error(`turn(${name}#${uid}) failed at the ${this.binding.endpoint} endpoint: ${typeof d?.error === "string" ? d.error : JSON.stringify(fact.data)}`);
     }
     if (fact.state !== "succeeded")
@@ -1081,10 +1189,11 @@ export class MeshHandler {
     let to: AgentHandleValue | undefined;
     if (d.status === "handoff") {
       const toName = typeof d.to === "string" ? d.to : "";
-      const target = this.roster.get(toName);
-      if (toName.length === 0 || target === undefined)
+      const refusal = this.handoffRefusal(req.agent.worktree, d.to);
+      if (refusal === "L4005")
         throw new EffectError("L4005", "turn-handoff", `turn(${name}#${uid}) yielded a handoff to "${toName}", which is not in this run's roster`);
-      if ((target.handle.worktree ?? undefined) !== (req.agent.worktree ?? undefined))
+      const target = this.roster.get(toName)!;
+      if (refusal === "L4004")
         throw new EffectError("L4004", "turn-handoff", `turn(${name}#${uid}) yielded a handoff to "${toName}" across worktrees (${req.agent.worktree ?? "none"} -> ${target.handle.worktree ?? "none"}); you cannot hand someone a working tree they are not in`);
       to = target.handle;
     }
@@ -1106,30 +1215,6 @@ export class MeshHandler {
       ...(typeof d.note === "string" ? { note: d.note } : {}),
       at: d.at,
     };
-  }
-
-  /**
-   * Move the run record's `conversationOwner` to the agent whose turn honors a handoff — the
-   * observers' answer to "who is driving". A read-modify-write CAS preserving every driver-owned
-   * status field; contended against the driver's own activation writes, so it retries on a lost
-   * CAS and refuses loudly when the record stays contended — never a silent skip.
-   */
-  private async moveConversationOwner(name: string): Promise<void> {
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const record = await readRunRecord(this.kv, this.binding.endpoint, this.binding.runId);
-      if (record?.status === undefined) return; // no status yet — nothing is observing this run
-      const current = record.status.value;
-      if (current.conversationOwner === name) return;
-      const { v: _v, ...rest } = current;
-      try {
-        await writeRunStatus(this.kv, this.binding.endpoint, this.binding.runId, { ...rest, conversationOwner: name }, record.status.revision);
-        return;
-      } catch (e) {
-        if (e instanceof EpEnvelopeError && e.code === "conflict") continue;
-        throw e;
-      }
-    }
-    throw new Error(`the conversation-owner move to "${name}" lost the run-status CAS five times; the run record is under active contention`);
   }
 
   /**
@@ -1188,10 +1273,12 @@ export class MeshHandler {
       await this.arm(ref, deadlineAt);
       const settled = await this.settle(ref, ctx.signal);
       if (settled.settle === "expired") {
+        // The deadline is the ask's whole budget of time: passing it with no conforming record
+        // is the same outcome exhausted attempts name (L4006), never a turn's deadline (L4003).
         throw new EffectError(
-          "L4003",
+          "L4006",
           "ask-deadline",
-          `ask(${stepKeyString(ctx.key)}) deadline elapsed before a conforming reply: attempt ${attempt} of ${attempts} was still open when the recorded deadline passed`,
+          `ask(${stepKeyString(ctx.key)}) produced no conforming record before its recorded deadline: attempt ${attempt} of ${attempts} was still open when it passed`,
         );
       }
       const answer = settled.answerId === undefined
@@ -1671,6 +1758,10 @@ export function waitConsumerConfig(space: string, requestId: string, channel: st
 /** How long one poll of a wait's consumer blocks. The deadline itself is durable; this is only how
  *  late its observation can be, and a shorter poll buys latency at the cost of fetch traffic. */
 const WAIT_POLL_MS = 2_000;
+/** A worktree's holder: the live seat spawned into it, or the spawn goal still bringing one up. */
+type WorktreeHolder = { name: string; uid: string } | { pending: string };
+/** How many incomplete presence scans the worktree guard tolerates before it fails loudly. */
+const WORKTREE_SCAN_ATTEMPTS = 5;
 
 /** How often an action's durable terminal fact is looked for. Same argument as `WAIT_POLL_MS`. */
 const GOAL_POLL_MS = 2_000;
@@ -1737,7 +1828,9 @@ function spawnDespawnTarget(
  * while pinning WHICH incarnation this run spawned (a respawned namesake is not this handle).
  * Every other state throws the catchable spawn failure (L4002) carrying the terminal's own reason:
  * `failed` and `uncertain` are the manager's readiness verdicts, `cancelled` means a despawn ended
- * the launch under it, and each replays identically because the fact is durable.
+ * the launch under it. Each of them leaves the program with an agent that is not up, which is
+ * what L4002 names; each replays identically because the fact is durable. A refusal at accept is
+ * a different thing (no agent was ever allocated) and is classed at the accept, in `spawn`.
  */
 function spawnHandleOf(req: SpawnRequest, fact: GoalResultFact, endpoint: string): AgentHandleValue {
   if (fact.state !== "succeeded") {

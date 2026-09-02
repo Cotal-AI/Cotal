@@ -501,11 +501,18 @@ async function drive(
   // so recovery re-issues the owed cancellations before the engine performs any new step.
   // Idempotent by the plane, exactly as the completion sweep is; an empty or fully-issued prefix
   // is a no-op, so a fresh run pays nothing.
-  await dischargeCancellations(resumed, store, req.handler);
+  const flipped = new Set(await dischargeCancellations(resumed, store, req.handler));
+  // The prefix the barrier validated and activated on, not a second read of the subject — with
+  // the flips the sweep just appended applied in place, so the engine's picture of `issued` never
+  // lags the store it writes to and the completion sweep finds nothing left to re-issue. Both
+  // seeds below take THIS view: the journal, and the engine request that folds its own.
+  const seeded: readonly JournalEntry[] = resumed.map((e) =>
+    flipped.has(journalEntryKeyString(e)) && e.cancel !== undefined
+      ? { ...e, cancel: { losers: e.cancel.losers, issued: true } }
+      : e);
   const journal = new Journal({
     run: req.runId,
-    // The prefix the barrier validated and activated on, not a second read of the subject.
-    entries: resumed,
+    entries: seeded,
     store,
     ...(req.resultBytes !== undefined ? { resultBytes: req.resultBytes } : {}),
   });
@@ -547,7 +554,7 @@ async function drive(
   statusRevision = await note(req, "running", appender.journalHigh, specRevision, statusRevision);
 
   try {
-    const engineReq: HostedEngineRequest = { source: req.source, journal, store, entries: resumed, options };
+    const engineReq: HostedEngineRequest = { source: req.source, journal, store, entries: seeded, options };
     const result = expect === "new" ? await engine.run(engineReq) : await engine.resume(engineReq);
     // The discharge BEFORE the completed note: `result.journal` is the final folded record on both
     // engines, and a crash between the two leaves `issued: false` for the next completion's sweep

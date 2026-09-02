@@ -7,7 +7,8 @@
  * contract is the load-bearing surface: the shorthand is enforced (L4022 for a schema it cannot
  * read), a non-conforming answer costs one attempt and its refusal reason is bound onto the entry
  * for the answerer to read, attempts default to ONE (spec, not the design's three), exhaustion is
- * the catchable L4006, and the one absolute deadline for the whole ask elapsing is L4003.
+ * the catchable L4006, and so is the one absolute deadline for the whole ask elapsing (its kind
+ * is `ask-deadline`): no conforming record within the budget, whichever budget ran out.
  *
  * Recovery is the same derivation story as every other pause: attempt N's token derives from the
  * step's request id, the CURRENT attempt rides the entry's external state as `askToken`, a resume
@@ -306,9 +307,9 @@ const HANDLE = `{ agent: "dev-1#${"b".repeat(26)}", persona: "dev" }`;
     JSON.stringify({ error: settled?.error?.code, external: settled?.external }));
 }
 
-// ── 5) the one absolute deadline elapsing is L4003 ─────────────────────────────────────────────
+// ── 5) the one absolute deadline elapsing is L4006 ─────────────────────────────────────────────
 {
-  console.log("• 5 — an unanswered ask expires at its deadline as L4003");
+  console.log("• 5 — an unanswered ask expires at its deadline as L4006 (kind ask-deadline)");
   const drv = driven({
     space: SPACE, endpoint: EP, kv, runId: "ak-5", lease: lease(),
     source: `const a = ${HANDLE};\ntry {\n  await ask(a, { name: "size", schema: { estimate: "number" }, deadline: "2s" });\n  log("reached", true);\n} catch (e) {\n  log("caught", e.code);\n}`,
@@ -321,8 +322,8 @@ const HANDLE = `{ agent: "dev-1#${"b".repeat(26)}", persona: "dev" }`;
   const out = await withDeadline(drv, 30_000, "the expiring run");
   c("the run completes with the deadline caught", (out as { status?: string } | undefined)?.status === "completed", JSON.stringify(out));
   const settled = (await askEntries("ak-5")).find((e) => e.state === "settled");
-  c("the entry settles as the deadline-elapsed L4003",
-    settled?.status === "failed" && settled?.error?.code === "L4003" && settled?.error?.kind === "ask-deadline",
+  c("the entry settles as the deadline-elapsed L4006, kind ask-deadline",
+    settled?.status === "failed" && settled?.error?.code === "L4006" && settled?.error?.kind === "ask-deadline",
     JSON.stringify(settled?.error)?.slice(0, 120));
 }
 

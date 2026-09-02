@@ -159,6 +159,8 @@ const row = (goalId: string, context: string, acceptedAt = Date.now()): PendingT
   await poll();
   const peek = a.peekPendingTurns()!;
   check("the surface orders oldest first", peek.goalIds[0] === "g5" && peek.goalIds[1] === "g6", peek.goalIds);
+  const early = await a.yieldTurn("done", { turn: "g6" });
+  check("an explicit id yields nothing the session has not been shown yet", early.ok === false && String(early.error).includes("surfaced"), early.error);
   a.commitSurfacedTurns(peek.goalIds);
   const handoffNoTo = await a.yieldTurn("handoff");
   check("a handoff without an addressee refuses locally", handoffNoTo.ok === false && String(handoffNoTo.error).includes("addressee"), handoffNoTo.error);
@@ -174,7 +176,7 @@ const row = (goalId: string, context: string, acceptedAt = Date.now()): PendingT
     JSON.stringify(state.yields.at(-1)));
 }
 
-const EXPECTED_CELLS = 19;
+const EXPECTED_CELLS = 20;
 const ran = pass + fail;
 console.log(`\nturn-intake.smoke: ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

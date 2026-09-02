@@ -202,6 +202,15 @@
       "cell": "not with L5014, which would send the caller to fork before a conclave that is not there",
       "completionMarker": "fork-run.smoke:",
       "note": "A TRUE-shaped refusal with a FALSE reason, which is the same defect the L5014/L5018 pairing above was written for: both codes mean the walk stopped at a scope, and only the code tells the caller whether to fork before a conclave or to put an arm's name back."
+    },
+    {
+      "name": "an adopted spawn is refused like a respawned one",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "    if ((e.external as { onFork?: unknown } | undefined)?.onFork === \"adopt\") continue;\n",
+      "replace": "",
+      "expectRed": "a spawn that said onFork: \"adopt\" is copied and the fork is admissible: the child shares the parent's agent",
+      "cell": "a spawn that said onFork: \"adopt\" is copied and the fork is admissible: the child shares the parent's agent",
+      "note": "Unskipped, the adopted spawn is treated as one the fork must respawn and the fork is refused L5019 where the copy is owed. Measured 2026-09-03: exactly one named red; fork-run.smoke: 91 passed, 1 failed."
     }
   ],
   "unkillable": [

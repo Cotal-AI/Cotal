@@ -285,7 +285,7 @@ const spawnHandler = async (ctx: EpServeContext): Promise<unknown> => {
  *  answers). */
 type TurnEnding =
   | { state: "succeeded"; status: "done" | "blocked" | "handoff"; to?: string; note?: string; delayMs?: number }
-  | { state: "deadline"; delayMs?: number };
+  | { state: "deadline"; delayMs?: number; agentDownAt?: number };
 const turnEndings: TurnEnding[] = [];
 const turnAccepts = new Map<string, Record<string, unknown>>();
 const turnInvokes: Array<{ goalId: string; payload: string; deadlineMs: number; handoffFrom?: string; target: { owner: string; actor: string; lifecycleUid: string } }> = [];
@@ -307,6 +307,9 @@ const turnHandler = async (ctx: EpServeContext): Promise<unknown> => {
   }
   const alloc = allocations.find((a) => a.owner === t.owner && a.actor === t.actor && a.uid === t.lifecycleUid);
   const name = alloc?.name ?? `${t.owner}.${t.actor}`;
+  // The hold instant is the manager's, read at accept BEFORE the goal-plane writes and the reply;
+  // a client that read its own clock after the round-trip could not coincide with it.
+  const heldAt = Date.now();
   const ref = goalRefOf(ctx.subject, goalId);
   const b = await bindGoal(goalCtx, ref, fingerprint);
   if (!b.bound) throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" is already bound (SPEC 13.6)`);
@@ -319,9 +322,10 @@ const turnHandler = async (ctx: EpServeContext): Promise<unknown> => {
   });
   const acceptance = {
     name, owner: t.owner, actor: t.actor, uid: t.lifecycleUid, goalId, fingerprint,
-    deadlineAt: Date.now() + deadlineMs, executor: { lifecycleUid: MGR_IID, epoch: EXEC_EPOCH },
+    deadlineAt: heldAt + deadlineMs, executor: { lifecycleUid: MGR_IID, epoch: EXEC_EPOCH },
   };
   turnAccepts.set(goalId, acceptance);
+  await wait(10);
   const ending = turnEndings.shift();
   const handoffFrom = args.handoffFrom !== undefined ? String(args.handoffFrom) : undefined;
   const runCaller = { owner: ctx.subject.caller.owner, actor: ctx.subject.caller.actor, uid: ctx.subject.caller.uid };
@@ -352,7 +356,7 @@ const turnHandler = async (ctx: EpServeContext): Promise<unknown> => {
       await expireCheckpoint(kv, js, jsm, SPACE, { ref: holdRef, now: Date.now() });
       await commitGoalResult(goalCtx, {
         ref, now: Date.now(), cause: "deny", denial: { kind: "hold-expired", token: holdRef.token },
-        data: { reason: "turn-deadline", ...(handoffFrom !== undefined ? { handoffFrom } : {}) },
+        data: { reason: "turn-deadline", ...(handoffFrom !== undefined ? { handoffFrom } : {}), ...(ending.agentDownAt !== undefined ? { agentDownAt: ending.agentDownAt } : {}) },
         committer: { instanceId: MGR_IID, epoch: EXEC_EPOCH },
       });
     })().catch((e) => { console.log("  ! fake turn terminal failed:", (e as Error).message); }));
@@ -439,6 +443,9 @@ const isTurnResult = (v: unknown): v is { status: string; to?: { agent: string }
       && typeof pending?.external?.actor === "string"
       && Array.isArray(pending?.external?.noticeIds),
     JSON.stringify(pending?.external));
+  c("the bound deadline is the acceptance's own instant (the manager's hold), not a second clock read before the round-trip",
+    inv !== undefined && pending?.external?.deadlineAt === (turnAccepts.get(inv.goalId) as { deadlineAt?: unknown } | undefined)?.deadlineAt,
+    { bound: pending?.external?.deadlineAt, served: (turnAccepts.get(inv?.goalId ?? "") as { deadlineAt?: unknown } | undefined)?.deadlineAt });
   c("the settled entry records the yield: status done, at stamped",
     settled?.status === "ok" && isTurnResult(settled.result) && settled.result.status === "done",
     JSON.stringify(settled?.result));
@@ -556,6 +563,19 @@ const isTurnResult = (v: unknown): v is { status: string; to?: { agent: string }
     const settle = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: T });
     c("the terminal claims the client's armed pause on the way out", settle !== undefined, settle?.settle);
   }
+  // The relay marks a seat that died while the turn was outstanding on the deny it rides to
+  // (`agentDownAt`): read here, before the client's own presence poll could notice, that death is
+  // the agent-down failure, never a deadline the program could have set longer.
+  const a2 = await spawnSeat(handler, "j2");
+  if (a2 !== undefined) {
+    const T2 = token("k2");
+    turnEndings.push({ state: "deadline", delayMs: 300, agentDownAt: Date.now() });
+    const got2 = await withDeadline(safe(handler.turn({ agent: a2, deadline: "5m" }, stepCtx(T2).ctx)), 20_000, "the deadline deny of a dead seat");
+    c("a deny marked agentDownAt is the agent-down L4002, never the deadline",
+      (got2 as { code?: string })?.code === "L4002" && (got2 as { kind?: string })?.kind === "turn"
+        && String((got2 as { message?: string })?.message).includes("carries its death"),
+      JSON.stringify(got2));
+  }
 }
 
 // (There is deliberately NO manager agent-down terminal block: a dead target has no honest early
@@ -606,9 +626,6 @@ const isTurnResult = (v: unknown): v is { status: string; to?: { agent: string }
     const inv = turnInvokes.find((i) => i.goalId === T2);
     c("the honoring submission carries the goal-chain link: handoffFrom is the previous turn's goalId",
       inv?.handoffFrom === T1, JSON.stringify(inv));
-    const rec = await readRunRecord(kv, EP, "tn-9");
-    c("the run record's conversation owner moved to the honored agent",
-      rec?.status?.value.conversationOwner === bName, JSON.stringify(rec?.status?.value));
     const settled = await readGoalResultData(T2);
     c("the manager mirrors the link into the terminal's own data",
       settled?.handoffFrom === T1, JSON.stringify(settled));
@@ -770,6 +787,13 @@ async function readGoalResultData(goalId: string): Promise<Record<string, unknow
 await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
 await nc.close();
+const EXPECTED_CELLS = 35;
+const ran = ok + fail;
 console.log(`mesh-turn.smoke: ${ok} passed, ${fail} failed`);
+if (ran !== EXPECTED_CELLS) {
+  console.log(`SUITE INCOMPLETE — ran ${ran} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
+  done();
+  process.exit(1);
+}
 done();
 process.exit(fail === 0 ? 0 : 1);

@@ -1453,6 +1453,9 @@ export class MeshAgent extends EventEmitter {
       ? this.activeTurns.get(opts.turn)
       : [...this.activeTurns.values()].filter((x) => x.surfaced).sort((a, b) => a.acceptedAt - b.acceptedAt)[0];
     if (!t) return { ok: false, error: opts.turn !== undefined ? `no active turn "${opts.turn}" on this seat` : "no turn is active — nothing to yield" };
+    // The surfaced gate holds for an explicit id too: a yield for a payload the session has not
+    // been shown would record work nobody did.
+    if (!t.surfaced) return { ok: false, error: `turn "${t.goalId}" has not been surfaced into this session yet; nothing was seen, so nothing can be yielded for it` };
     if (status === "handoff" && (opts.to === undefined || opts.to.length === 0))
       return { ok: false, error: "a handoff yield names its addressee (to)" };
     const r = await this.managerInvoke("turn-yield", { goalId: t.goalId, status, to: opts.to, note: opts.note }, { target: { mode: "self" } });

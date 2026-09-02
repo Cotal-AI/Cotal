@@ -30,8 +30,8 @@
     {
       "name": "a resume re-invokes instead of re-attaching to the recorded acceptance",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    let ext: Readonly<Record<string, unknown>> | undefined =\n      ctx.resume?.goalId === goalId ? (ctx.resume as Readonly<Record<string, unknown>>) : undefined;\n    if (ext === undefined) {\n      if (req.worktree !== undefined) await this.guardWorktree(req.worktree, req.persona);\n      let reply: EpAttributedReply | undefined;\n      try {\n        const service = await this.manager();\n        reply = await invokeCommand(this.nc, this.binding.space, service, \"spawn\", spawnArgs(req), {",
-      "replace": "    let ext: Readonly<Record<string, unknown>> | undefined = undefined;\n    if (ext === undefined) {\n      if (req.worktree !== undefined) await this.guardWorktree(req.worktree, req.persona);\n      let reply: EpAttributedReply | undefined;\n      try {\n        const service = await this.manager();\n        reply = await invokeCommand(this.nc, this.binding.space, service, \"spawn\", spawnArgs(req), {",
+      "find": "    let ext: Readonly<Record<string, unknown>> | undefined =\n      ctx.resume?.goalId === goalId ? (ctx.resume as Readonly<Record<string, unknown>>) : undefined;\n    if (ext === undefined && req.worktree !== undefined) await this.claimWorktree(req.worktree, req.persona, goalId);",
+      "replace": "    let ext: Readonly<Record<string, unknown>> | undefined = undefined;\n    if (ext === undefined && req.worktree !== undefined) await this.claimWorktree(req.worktree, req.persona, goalId);",
       "expectRed": "the resume sent NOTHING to the endpoint: the recorded acceptance is the submission",
       "cell": "the resume sent NOTHING to the endpoint: the recorded acceptance is the submission",
       "note": "The short-circuit gone: a resumed spawn submits again. The fake serves the recorded acceptance so nothing else breaks — which is exactly why the invoke COUNT is the cell: a manager that restarted since would judge the resend against a live seat instead. Measured 2026-09-02: exactly one red, 31 passed. Re-anchored 2026-09-02 when the turn step reshaped spawn's resume adoption into the captured-ext form; re-measured: exactly one named red, 31 passed, 1 failed. Re-anchored again 2026-09-02 when the fresh path gained the worktree guard; re-measured: exactly one named red, 31 passed, 1 failed."
@@ -39,8 +39,8 @@
     {
       "name": "the acceptance is never bound as the entry's external state",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "      ext = {\n        goalId,\n        ...(floor !== undefined ? pickAcceptanceFloor(floor) : {}),\n      };\n      await ctx.bind(ext);",
-      "replace": "      ext = {\n        goalId,\n        ...(floor !== undefined ? pickAcceptanceFloor(floor) : {}),\n      };",
+      "find": "        ext = {\n          goalId,\n          ...(floor !== undefined ? pickAcceptanceFloor(floor) : {}),\n          ...(req.worktree !== undefined ? { worktree: req.worktree } : {}),\n          ...(req.onFork !== undefined ? { onFork: req.onFork } : {}),\n        };\n        await ctx.bind(ext);",
+      "replace": "        ext = {\n          goalId,\n          ...(floor !== undefined ? pickAcceptanceFloor(floor) : {}),\n          ...(req.worktree !== undefined ? { worktree: req.worktree } : {}),\n          ...(req.onFork !== undefined ? { onFork: req.onFork } : {}),\n        };",
       "expectRed": "the acceptance floor is bound as the entry's external state before the terminal wait",
       "cell": "the acceptance floor is bound as the entry's external state before the terminal wait",
       "note": "The bind dropped: the live path still completes (the goalId re-derives), but the journal carries no landed-submission marker and no identity floor — the resume and the uncertain-discharge paths lose their durable input. Measured 2026-09-02: exactly one red, 31 passed. Re-anchored 2026-09-02 (the bind now rides the captured ext the roster registration reads); re-measured: exactly one named red, 31 passed, 1 failed."
@@ -57,11 +57,20 @@
     {
       "name": "a refuse-at-accept loses its catchable class",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "        const err = reply.reply.error;\n        throw new EffectError(\"L4002\", \"spawn\",\n          `spawn(${req.persona}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? \"refused with no message\"}`,\n          err?.code !== undefined ? { code: err.code } : undefined);",
-      "replace": "        const err = reply.reply.error;\n        throw new Error(\n          `spawn(${req.persona}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? \"refused with no message\"}`);",
-      "expectRed": "the entry settles as the spawn effect's own catchable L4002",
-      "cell": "the entry settles as the spawn effect's own catchable L4002",
+      "find": "          const err = reply.reply.error;\n          throw new EffectError(err?.code === \"resource-exhausted\" ? \"L4001\" : \"L4000\", \"spawn\",\n            `spawn(${req.persona}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? \"refused with no message\"}`,\n            err?.code !== undefined ? { code: err.code } : undefined);",
+      "replace": "          const err = reply.reply.error;\n          throw new Error(\n            `spawn(${req.persona}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? \"refused with no message\"}`);",
+      "expectRed": "the entry settles as the host declining the request: the catchable L4000, kind spawn (no agent existed to be down)",
+      "cell": "the entry settles as the host declining the request: the catchable L4000, kind spawn (no agent existed to be down)",
       "note": "The refusal thrown raw: the journal records a generic L4000 handler fault, so a program acting on e.code reads 'the handler broke' where the manager said 'this spawn is refused'. Measured 2026-09-02: exactly one red with the recorded L4000 in the transcript, 31 passed."
+    },
+    {
+      "name": "a capacity refusal is classed like any other refusal",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "          throw new EffectError(err?.code === \"resource-exhausted\" ? \"L4001\" : \"L4000\", \"spawn\",",
+      "replace": "          throw new EffectError(\"L4000\", \"spawn\",",
+      "expectRed": "a seat-capacity refusal is the permit the run does not hold: L4001, kind spawn",
+      "cell": "a seat-capacity refusal is the permit the run does not hold: L4001, kind spawn",
+      "note": "A seat budget the endpoint will not extend is the permit the run does not hold (L4001); flattened, the program cannot tell it from a persona it misspelled. Measured 2026-09-03: exactly one named red (the cell reads L4000); 32 passed, 1 failed."
     },
     {
       "name": "every terminal is read as succeeded",

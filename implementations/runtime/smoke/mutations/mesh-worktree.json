@@ -18,8 +18,8 @@
     {
       "name": "the spawn guard is never consulted",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "      if (req.worktree !== undefined) await this.guardWorktree(req.worktree, req.persona);",
-      "replace": "      if (false) await this.guardWorktree(req.worktree!, req.persona);",
+      "find": "    if (ext === undefined && req.worktree !== undefined) await this.claimWorktree(req.worktree, req.persona, goalId);",
+      "replace": "    if (false) await this.claimWorktree(req.worktree!, req.persona, goalId);",
       "expectRed": "the second spawn refuses as the effect's own L4008, naming the tree and its holder",
       "cell": "the second spawn refuses as the effect's own L4008, naming the tree and its holder",
       "note": "The one call site that enforces the rule at spawn. Measured 2026-09-03: both refusal cells red — the live-holder L4008 and the adopted-registry L4008 — 7 passed, 2 failed."
@@ -36,8 +36,8 @@
     {
       "name": "a fresh spawn never records its holder",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    if (typeof handle.worktree === \"string\")\n      this.worktreeHolders.set(handle.worktree, { name: parseAgentHandle(handle.agent).name, uid: parseAgentHandle(handle.agent).uid });",
-      "replace": "    if (false)\n      this.worktreeHolders.set(String(handle.worktree), { name: parseAgentHandle(handle.agent).name, uid: parseAgentHandle(handle.agent).uid });",
+      "find": "      if (typeof handle.worktree === \"string\")\n        this.worktreeHolders.set(handle.worktree, { name: parseAgentHandle(handle.agent).name, uid: parseAgentHandle(handle.agent).uid });",
+      "replace": "      if (false)\n        this.worktreeHolders.set(String(handle.worktree), { name: parseAgentHandle(handle.agent).name, uid: parseAgentHandle(handle.agent).uid });",
       "expectRed": "the second spawn refuses as the effect's own L4008, naming the tree and its holder",
       "cell": "the second spawn refuses as the effect's own L4008, naming the tree and its holder",
       "note": "With no registration the guard has nothing to refuse over. Measured 2026-09-03: exactly one cell red — the live-holder L4008 — and the adoption block stays green because its holder arrives through the journal reseed, 8 passed, 1 failed. The single red is why W4 exists separately."
@@ -54,11 +54,74 @@
     {
       "name": "the handle loses its worktree, so the journal and the turn client ride bare handles",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    ...(typeof req.worktree === \"string\" ? { worktree: req.worktree } : {}),",
-      "replace": "",
+      "find": "    ...(typeof req.worktree === \"string\" ? { worktree: req.worktree } : {}),\n    ...(typeof d.role === \"string\" ? { role: d.role } : {}),",
+      "replace": "    ...(typeof d.role === \"string\" ? { role: d.role } : {}),",
       "expectRed": "the settled handle carries the logical worktree into the journal",
       "cell": "the settled handle carries the logical worktree into the journal",
       "note": "The spread is what everything downstream reads: registration, the journal record, and the turn client's cross-tree L4004. Measured 2026-09-03: six cells red across four blocks — the journal cell, both spawn-holds cells, the live-holder L4008, the cross-tree L4004 (the yield succeeds instead), and the lapsed-holder reuse cell whose handle comes back bare — 3 passed, 6 failed."
+    },
+    {
+      "name": "a free tree is read but never claimed",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (holder === undefined) {\n      this.worktreeHolders.set(worktree, { pending: goalId });\n      return;\n    }",
+      "replace": "    if (holder === undefined) return;",
+      "expectRed": "a second spawn into the tree refuses as L4008 while the first is still bringing its seat up",
+      "cell": "a second spawn into the tree refuses as L4008 while the first is still bringing its seat up",
+      "note": "Reading a free tree without taking it is the race: two concurrent spawns both read free and both proceed. Measured 2026-09-03: two reds, the in-flight refusal and the computed-concurrent race (both admitted); 17 passed, 2 failed."
+    },
+    {
+      "name": "the in-flight arm is dropped, so a reservation refuses nothing",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (\"pending\" in holder)\n      throw new EffectError(",
+      "replace": "    if (false)\n      throw new EffectError(",
+      "expectRed": "a spawn into the tree refuses as L4008 naming the in-flight goal",
+      "cell": "a spawn into the tree refuses as L4008 naming the in-flight goal",
+      "note": "A tree held by a spawn still bringing its seat up must refuse; unarmed, a second spawn is admitted beside it. Measured 2026-09-03: three reds, the in-flight refusal, the adopted in-flight refusal and the concurrent race; 16 passed, 3 failed."
+    },
+    {
+      "name": "a spawn that ends without a handle keeps its reservation",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    this.worktreeHolders.delete(worktree);\n  }",
+      "replace": "    return;\n  }",
+      "expectRed": "the tree is free again: the failed spawn left no reservation behind",
+      "cell": "the tree is free again: the failed spawn left no reservation behind",
+      "note": "A failed spawn that keeps its claim leaves a tree nobody holds refusing forever. Measured 2026-09-03: exactly one named red (the next spawn is L4008); 18 passed, 1 failed."
+    },
+    {
+      "name": "adoption ignores a spawn still in flight",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "        if (typeof x?.goalId === \"string\" && typeof x?.worktree === \"string\")\n          this.worktreeHolders.set(x.worktree, { pending: x.goalId });",
+      "replace": "        if (false)\n          this.worktreeHolders.set(String(x?.worktree), { pending: String(x?.goalId) });",
+      "expectRed": "a spawn into the tree refuses as L4008 naming the in-flight goal",
+      "cell": "a spawn into the tree refuses as L4008 naming the in-flight goal",
+      "note": "The bound external carries the worktree so an adopted run re-takes the reservation; ignored, the adopted run admits a second spawn into a tree its own pending spawn holds. Measured 2026-09-03: exactly one named red; 18 passed, 1 failed."
+    },
+    {
+      "name": "the incomplete-scan retry is unbounded",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "        if (!(e instanceof IncompleteKvScan) || attempt >= WORKTREE_SCAN_ATTEMPTS) throw e;",
+      "replace": "        if (!(e instanceof IncompleteKvScan)) throw e;",
+      "expectRed": "the guard gives up with the scan's own error after its bounded retries instead of parking the spawn for good",
+      "cell": "the guard gives up with the scan's own error after its bounded retries instead of parking the spawn for good",
+      "note": "A registry scan that never completes must end in the scan's own error, never park the spawn for good. Measured 2026-09-03: two reds, the guard parking past 25s and the bounded give-up cell, and the suite reports itself incomplete because the timed-out await counts as its own failure; 18 passed, 2 failed."
+    },
+    {
+      "name": "the claim is not re-read after the liveness wait",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (now !== undefined && now !== holder)",
+      "replace": "    if (false)",
+      "expectRed": "exactly one of the two is admitted and the other is L4008: the claim is re-read after the wait, not assumed",
+      "cell": "exactly one of the two is admitted and the other is L4008: the claim is re-read after the wait, not assumed",
+      "note": "Two spawns waiting on one dead holder must not both assume the tree once the wait ends. Measured 2026-09-03: exactly one named red (both admitted); 18 passed, 1 failed."
+    },
+    {
+      "name": "the bound external state carries neither the worktree nor the onFork policy",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "          ...(req.worktree !== undefined ? { worktree: req.worktree } : {}),\n          ...(req.onFork !== undefined ? { onFork: req.onFork } : {}),\n",
+      "replace": "",
+      "expectRed": "the bound external state carries the worktree (for adoption's reservation) and the onFork policy (for a fork)",
+      "cell": "the bound external state carries the worktree (for adoption's reservation) and the onFork policy (for a fork)",
+      "note": "Without them, adoption cannot re-take the reservation and a fork cannot read the policy. Measured 2026-09-03: exactly one named red; 18 passed, 1 failed."
     }
   ]
 }

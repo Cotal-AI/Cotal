@@ -388,6 +388,26 @@ const isReplied = (v: unknown): v is { agent: string; status: string; note?: str
   v !== null && typeof v === "object" && typeof (v as { agent?: unknown }).agent === "string"
   && typeof (v as { status?: unknown }).status === "string" && typeof (v as { at?: unknown }).at === "number";
 
+/** The entries a recovering run reads for a seat and a turn STILL PENDING on it: what `adopted`
+ *  seeds the registry from while the turn itself has not re-entered. */
+const adoptedPending = (runId: string, d: { agent: string; persona: string }, spawnTok: string, turnGoalId: string): JournalEntry[] => {
+  const name = d.agent.slice(0, d.agent.lastIndexOf("#"));
+  const uid = d.agent.slice(d.agent.lastIndexOf("#") + 1);
+  return [
+    {
+      v: 1, seq: 1, run: runId, scope: "", kind: "spawn", name: "seat", occurrence: 0,
+      inputHash: "sha256:0", requestId: spawnTok, state: "settled", status: "ok",
+      result: { agent: d.agent, persona: d.persona },
+      external: { goalId: spawnTok, name, owner: "local", actor: "seatX", uid },
+    },
+    {
+      v: 1, seq: 2, run: runId, scope: "", kind: "turn", name: "drive", occurrence: 0,
+      inputHash: "sha256:0", requestId: turnGoalId, state: "pending",
+      external: { goalId: turnGoalId, name, owner: "local", actor: "seatX", uid, deadlineAt: 1, noticeIds: [] },
+    },
+  ] as unknown as JournalEntry[];
+};
+
 // ── 1) a driven program observes its own completed turn at once ────────────────────────────────
 {
   console.log("• 1 — a driven wait(replied) resolves at once on the run's completed turn");
@@ -462,6 +482,17 @@ const isReplied = (v: unknown): v is { agent: string; status: string; note?: str
   c("the denied turn never resolves the wait: the timeout resolves null, never a throw", got === null, JSON.stringify(got));
   const settle = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: W });
   c("the timeout pause settled expired on the plane", (settle as { settle?: string } | undefined)?.settle === "expired", JSON.stringify(settle));
+  // The guard is reached without the run's own turn in flight: an adopted run holds the goal in
+  // its rebuilt registry until that turn re-enters, and a wait polling meanwhile must read the
+  // deny for what it is rather than take its reason-shaped data for a reply.
+  const fresh4 = mk("rp-4");
+  await fresh4.adopted(adoptedPending("rp-4", d!, token("h"), T));
+  const W4 = token("j4");
+  const p4 = safe(fresh4.wait({ event: { event: "replied", agent: d!.agent }, timeout: "2s" } as never, stepCtx(W4).ctx));
+  await armPending(6);
+  await armPending(2);
+  const got4 = await withDeadline(p4, 30_000, "the adopted wait over the denied goal");
+  c("an adopted registry still holding the denied goal reads it the same way: not a reply, the timeout resolves null", got4 === null, JSON.stringify(got4));
 }
 
 // ── 5) a handle the run never spawned or turned refuses on the roster ──────────────────────────
@@ -521,10 +552,96 @@ const isReplied = (v: unknown): v is { agent: string; status: string; note?: str
   c("its value rides the durable terminal, not the dead handler's memory", isReplied(got) && got.agent === d!.agent, JSON.stringify(got));
 }
 
+// ── 8) a handoff the run refuses is not a reply: both observers read one verdict ──────────────
+{
+  console.log("• 8 — a yield handing off to a stranger is the turn's L4005 and never resolves the wait");
+  const h = mk("rp-8");
+  const d = await spawnSeat(h, "o");
+  turnEndings.push({ state: "succeeded", status: "handoff", to: "stranger", delayMs: 50 });
+  const got = await withDeadline(safe(h.turn({ agent: { agent: d!.agent, persona: d!.persona }, deadline: "5m" } as never, stepCtx(token("p"), { key: { scope: [], kind: "turn", name: "", occurrence: 0 } }).ctx)), 30_000, "the refused-handoff turn");
+  c("the turn refuses the spoofed addressee as L4005", (got as { code?: string } | undefined)?.code === "L4005", JSON.stringify(got));
+  const W = token("q");
+  const p = safe(h.wait({ event: { event: "replied", agent: d!.agent }, timeout: "2s" } as never, stepCtx(W).ctx));
+  await armPending(12);
+  await armPending(4);
+  const w = await withDeadline(p, 30_000, "the replied wait over a refused handoff");
+  c("the relay's succeeded fact is not a reply: the wait rides its timeout to null", w === null, JSON.stringify(w));
+  // And through a rebuilt registry that still holds the goal: the succeeded fact carries a handoff
+  // the roster refuses, and the wait reads that verdict itself.
+  const fresh8 = mk("rp-8");
+  await fresh8.adopted(adoptedPending("rp-8", d!, token("o8"), token("p")));
+  const W8 = token("q8");
+  const p8 = safe(fresh8.wait({ event: { event: "replied", agent: d!.agent }, timeout: "2s" } as never, stepCtx(W8).ctx));
+  await armPending(6);
+  await armPending(2);
+  const w8 = await withDeadline(p8, 30_000, "the adopted wait over the refused handoff");
+  c("an adopted registry still holding the goal refuses the handoff the same way: not a reply, the timeout resolves null", w8 === null, JSON.stringify(w8));
+}
+
+// ── 9) a turn cancelled on the run's side is not a reply even when the seat yields later ──────
+{
+  console.log("• 9 — a cancelled turn's late yield never resolves the wait");
+  const h = mk("rp-9");
+  const d = await spawnSeat(h, "r");
+  turnEndings.push({ state: "succeeded", status: "done", note: "too late", delayMs: 2_500 });
+  const s = stepCtx(token("s"), { key: { scope: [], kind: "turn", name: "", occurrence: 0 } });
+  const p = safe(h.turn({ agent: { agent: d!.agent, persona: d!.persona }, deadline: "5m" } as never, s.ctx));
+  await armPending(6);
+  await wait(800);
+  s.cancel("race decided elsewhere");
+  const got = await withDeadline(p, 20_000, "the cancelled turn");
+  c("the turn unwinds as Cancelled", (got as { name?: string } | undefined)?.name === "Cancelled", JSON.stringify(got));
+  await wait(2_500); // the seat's yield lands on the relay after the run moved on
+  const W = token("t");
+  const w = safe(h.wait({ event: { event: "replied", agent: d!.agent }, timeout: "2s" } as never, stepCtx(W).ctx));
+  await armPending(12);
+  await armPending(4);
+  const r = await withDeadline(w, 30_000, "the replied wait over a cancelled turn");
+  c("the late yield is not a reply: the wait rides its timeout to null", r === null, JSON.stringify(r));
+}
+
+// ── 10) a discharged (race-lost) turn leaves the registry an adopted run rebuilt ──────────────
+{
+  console.log("• 10 — adoption re-registers a pending turn; discharging it as a race loser drops it again");
+  const h = mk("rp-10");
+  const d = await spawnSeat(h, "u");
+  const name = d!.agent.slice(0, d!.agent.lastIndexOf("#"));
+  const uid = d!.agent.slice(d!.agent.lastIndexOf("#") + 1);
+  const T = token("v");
+  turnEndings.push({ state: "succeeded", status: "done", note: "late", delayMs: 1_500 });
+  const s = stepCtx(T, { key: { scope: [], kind: "turn", name: "", occurrence: 0 } });
+  const p = safe(h.turn({ agent: { agent: d!.agent, persona: d!.persona }, deadline: "5m" } as never, s.ctx));
+  await armPending(6);
+  await wait(600);
+  s.cancel("race decided elsewhere");
+  await withDeadline(p, 20_000, "the losing turn");
+  await wait(2_000); // the relay records the seat's yield regardless
+  const fresh = mk("rp-10");
+  const spawnEntry = {
+    v: 1, seq: 1, run: "rp-10", scope: "", kind: "spawn", name: "seat", occurrence: 0,
+    inputHash: "sha256:0", requestId: token("x"), state: "settled", status: "ok",
+    result: { agent: d!.agent, persona: d!.persona },
+    external: { goalId: token("x"), name, owner: "local", actor: "seatY", uid },
+  };
+  const turnEntry = {
+    v: 1, seq: 2, run: "rp-10", scope: "/race:r#0/b:lose", kind: "turn", name: "drive", occurrence: 0,
+    inputHash: "sha256:0", requestId: T, state: "pending",
+    external: { goalId: T, name, owner: "local", actor: "seatY", uid, deadlineAt: Date.now() + 600_000, noticeIds: [] },
+  };
+  await fresh.adopted([spawnEntry, turnEntry] as unknown as JournalEntry[]);
+  await fresh.discharge([turnEntry] as unknown as JournalEntry[]);
+  const W = token("y");
+  const w = safe(fresh.wait({ event: { event: "replied", agent: d!.agent }, timeout: "2s" } as never, stepCtx(W).ctx));
+  await armPending(12);
+  await armPending(4);
+  const r = await withDeadline(w, 30_000, "the replied wait over a discharged turn");
+  c("the discharged turn is not a reply: the wait rides its timeout to null", r === null, JSON.stringify(r));
+}
+
 await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
 await nc.close();
-const EXPECTED_CELLS = 15;
+const EXPECTED_CELLS = 22;
 const ran = ok + fail;
 console.log(`mesh-replied.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

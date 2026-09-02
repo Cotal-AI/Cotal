@@ -1,0 +1,18 @@
+{
+  "suite": "extensions/connector-core/smoke/turn-intake.smoke.ts",
+  "guard": "The seat side of the turn relay: a turn is yielded only once its payload was surfaced into the host session, whether the yield names the turn or takes the oldest surfaced one.",
+  "command": "pnpm smoke:turn-intake",
+  "completionMarker": "turn-intake.smoke:",
+  "proveWith": "pnpm mutation-proof --config extensions/connector-core/smoke/mutations/turn-intake.json   # --config resolves against the repo root, never the cwd",
+  "mutations": [
+    {
+      "name": "an explicit id bypasses the surfaced gate",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (!t.surfaced) return { ok: false, error: `turn \"${t.goalId}\" has not been surfaced into this session yet; nothing was seen, so nothing can be yielded for it` };\n",
+      "replace": "",
+      "expectRed": "an explicit id yields nothing the session has not been shown yet",
+      "cell": "an explicit id yields nothing the session has not been shown yet",
+      "note": "Ungated, a yield for a turn the session never saw is sent as if the work were done. Measured 2026-09-03: two reds, the unsurfaced-id refusal and the explicit-id handoff cell behind it (the early yield spent the turn the later explicit yield addresses); 18 passed, 2 failed."
+    }
+  ]
+}

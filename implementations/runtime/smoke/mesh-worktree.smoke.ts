@@ -59,6 +59,7 @@ import {
   replayRunJournal,
   newTakeoverId,
   EpEnvelopeError,
+  IncompleteKvScan,
   type EpCommandDef,
   type EpServeContext,
   type EpCaller,
@@ -229,6 +230,10 @@ const putPresence = async (name: string, u: string, principal: string): Promise<
 };
 let seat = 0;
 const terminals: Promise<void>[] = [];
+/** Cell knobs: hold the next spawn's terminal back (an accepted seat still coming up), or refuse
+ *  the next submission at accept (nothing bound, nothing provisioned). */
+let spawnTerminalHoldMs = 0;
+let refuseNextSpawn: EpEnvelopeError | undefined;
 
 const spawnHandler = async (ctx: EpServeContext): Promise<unknown> => {
   const args = (ctx.request.args ?? {}) as Record<string, unknown>;
@@ -239,6 +244,11 @@ const spawnHandler = async (ctx: EpServeContext): Promise<unknown> => {
   if (prior !== undefined) {
     if (prior.fingerprint !== fingerprint) throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted under a different submission (SPEC 13.6)`);
     return prior;
+  }
+  if (refuseNextSpawn !== undefined) {
+    const refusal = refuseNextSpawn;
+    refuseNextSpawn = undefined;
+    throw refusal;
   }
   const ref = goalRefOf(ctx.subject, goalId);
   const b = await bindGoal(goalCtx, ref, fingerprint);
@@ -259,7 +269,9 @@ const spawnHandler = async (ctx: EpServeContext): Promise<unknown> => {
     executor: { lifecycleUid: MGR_IID, epoch: EXEC_EPOCH },
   };
   spawnAccepts.set(goalId, acceptance);
+  const holdMs = spawnTerminalHoldMs;
   terminals.push((async () => {
+    if (holdMs > 0) await wait(holdMs);
     await putPresence(name, uid, `local.${actor}`);
     await commitGoalResult(goalCtx, { ref, now: Date.now(), cause: "complete", state: "succeeded", data: { name, agent: "claude", id: `local.${actor}`, mode: "pty", lifecycleUid: uid }, committer: { instanceId: MGR_IID, epoch: EXEC_EPOCH } });
   })().catch((e) => { console.log("  ! fake spawn terminal failed:", (e as Error).message); }));
@@ -397,7 +409,7 @@ const isHandle = (v: unknown): v is { agent: string; persona: string; worktree?:
   console.log("• 1 — a driven worktree spawn performs end to end");
   const out = await withDeadline(startRun(js, jsm, {
     space: SPACE, endpoint: EP, kv, runId: "wt-1", lease: lease(),
-    source: `const d = await spawn("builder", { worktree: "wt-a" });\nlog("tree", d.worktree);`,
+    source: `const d = await spawn("builder", { worktree: "wt-a", onFork: "adopt" });\nlog("tree", d.worktree);`,
     handler: mk("wt-1"),
   }).catch((e: unknown) => ({ status: "threw" as const, error: `${(e as Error)?.name}: ${(e as Error)?.message?.slice(0, 140)}` })), 45_000, "the driven worktree run");
   c("the run completes: the seam refusal is gone and the spawn performs",
@@ -406,6 +418,9 @@ const isHandle = (v: unknown): v is { agent: string; persona: string; worktree?:
   const handle = settled?.result as { agent?: string; worktree?: string } | undefined;
   c("the settled handle carries the logical worktree into the journal",
     settled?.status === "ok" && handle?.worktree === "wt-a", JSON.stringify(handle));
+  const bound = settled?.external as { worktree?: unknown; onFork?: unknown } | undefined;
+  c("the bound external state carries the worktree (for adoption's reservation) and the onFork policy (for a fork)",
+    bound?.worktree === "wt-a" && bound?.onFork === "adopt", JSON.stringify(bound));
 }
 
 // ── 2) a second agent into a LIVE holder's tree is the catchable L4008 ─────────────────────────
@@ -473,10 +488,121 @@ let holder: { agent: string; persona: string } | undefined;
   c("and admits it once that holder's presence lapses", isHandle(after) && after.worktree === "wt-z", JSON.stringify(after));
 }
 
+// ── 6) a spawn still in flight already holds its tree ─────────────────────────────────────────
+{
+  console.log("• 6 — an accepted spawn holds its tree before its seat exists");
+  const h6 = mk("wt-6");
+  spawnTerminalHoldMs = 1_500;
+  const first = spawnInto(h6, "k", "wt-e");
+  await wait(400); // accepted; no presence row and no terminal yet
+  spawnTerminalHoldMs = 0;
+  const second = await spawnInto(h6, "l", "wt-e", "intruder");
+  c("a second spawn into the tree refuses as L4008 while the first is still bringing its seat up",
+    (second as { code?: string } | undefined)?.code === "L4008"
+      && String((second as { message?: string }).message).includes("still bringing one up"),
+    JSON.stringify(second));
+  const got = await first;
+  c("and the first spawn goes on to its handle", isHandle(got) && got.worktree === "wt-e", JSON.stringify(got));
+}
+
+// ── 7) a spawn that ends without a handle gives its tree back ─────────────────────────────────
+{
+  console.log("• 7 — a refused spawn releases its reservation");
+  const h7 = mk("wt-7");
+  refuseNextSpawn = new EpEnvelopeError("not-found", "no persona \"ghost\"");
+  const refused = await spawnInto(h7, "m", "wt-f", "ghost");
+  c("the refusal is the host declining the request (L4000): no agent was ever allocated, so never L4002",
+    (refused as { code?: string } | undefined)?.code === "L4000", JSON.stringify(refused));
+  const next = await spawnInto(h7, "n", "wt-f", "builder");
+  c("the tree is free again: the failed spawn left no reservation behind",
+    isHandle(next) && next.worktree === "wt-f", JSON.stringify(next));
+}
+
+// ── 8) adoption re-takes a reservation the journal shows in flight ────────────────────────────
+{
+  console.log("• 8 — an adopted run keeps a pending spawn's tree held");
+  const fresh = mk("wt-8");
+  await fresh.adopted([
+    {
+      v: 1, seq: 1, run: "wt-8", scope: "", kind: "spawn", name: "seat", occurrence: 0,
+      inputHash: "sha256:0", requestId: token("o"), state: "pending",
+      external: { goalId: token("o"), name: "inflight", owner: "local", actor: "inflight", uid: `x${"0".repeat(25)}`, worktree: "wt-y" },
+    },
+  ] as unknown as JournalEntry[]);
+  const refused = await spawnInto(fresh, "p", "wt-y", "intruder");
+  c("a spawn into the tree refuses as L4008 naming the in-flight goal",
+    (refused as { code?: string } | undefined)?.code === "L4008" && String((refused as { message?: string }).message).includes(token("o")),
+    JSON.stringify(refused));
+}
+
+// ── 9) the liveness read is bounded: a scan that never completes is raised, not parked on ─────
+{
+  console.log("• 9 — an incomplete presence scan is retried a bounded number of times, then raised");
+  const h9 = mk("wt-9");
+  const wUid = `w${"0".repeat(24)}8`;
+  await h9.adopted([
+    {
+      v: 1, seq: 1, run: "wt-9", scope: "", kind: "spawn", name: "seat", occurrence: 0,
+      inputHash: "sha256:0", requestId: token("q"), state: "settled", status: "ok",
+      result: { agent: `scan-w#${wUid}`, persona: "builder", worktree: "wt-x" },
+      external: { goalId: token("q"), name: "scan-w", owner: "local", actor: "scanw", uid: wUid },
+    },
+  ] as unknown as JournalEntry[]);
+  (h9 as unknown as { presenceRows: () => Promise<never> }).presenceRows = async () => {
+    throw new IncompleteKvScan(presenceBucket(SPACE), 1, 2);
+  };
+  const t0 = Date.now();
+  const got = await withDeadline(safe(h9.spawn({ persona: "builder", worktree: "wt-x" } as never, stepCtx(token("r")).ctx)), 25_000, "the guard over a broken scan");
+  c("the guard gives up with the scan's own error after its bounded retries instead of parking the spawn for good",
+    (got as { name?: string } | undefined)?.name === "IncompleteKvScan" && Date.now() - t0 >= 7_000,
+    JSON.stringify({ got, ms: Date.now() - t0 }));
+}
+
+// ── 10) the claim is atomic: two computed spawns into one tree in one concurrent scope ────────
+{
+  console.log("• 10 — the validator cannot see a computed worktree; the runtime admits exactly one of two concurrent spawns into it");
+  const out = await withDeadline(startRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "wt-10", lease: lease(),
+    source: `const wt = "wt-" + "g";
+await parallel({
+  a: async () => { try { await spawn("dev", { name: "a", worktree: wt }); log("a", "ok"); } catch (e) { log("a", e.code); } },
+  b: async () => { try { await spawn("dev", { name: "b", worktree: wt }); log("b", "ok"); } catch (e) { log("b", e.code); } },
+}, { name: "both" });`,
+    handler: mk("wt-10"),
+  }).catch((e: unknown) => ({ status: "threw" as const, error: `${(e as Error)?.name}: ${(e as Error)?.message?.slice(0, 140)}` })), 45_000, "the computed concurrent spawn run");
+  c("the run completes with one branch admitted and one refused in-program",
+    (out as { status?: string } | undefined)?.status === "completed", JSON.stringify(out));
+  const spawns = (await journalEntries("wt-10", "spawn")).filter((e) => e.state === "settled");
+  const held = spawns.filter((e) => e.status === "ok").length;
+  const refused = spawns.filter((e) => e.status === "failed" && e.error?.code === "L4008").length;
+  c("exactly one spawn holds the tree and the other is the catchable L4008: never two live seats in one tree",
+    held === 1 && refused === 1, JSON.stringify(spawns.map((e) => [e.name, e.status, e.error?.code])));
+}
+
+// ── 11) a dead holder's tree is claimed once: the re-read after the liveness wait ─────────────
+{
+  console.log("• 11 — two spawns pass a dead holder's liveness read together; only the first claims the tree");
+  const h11 = mk("wt-11");
+  const wUid = `w${"0".repeat(24)}7`;
+  await h11.adopted([
+    {
+      v: 1, seq: 1, run: "wt-11", scope: "", kind: "spawn", name: "seat", occurrence: 0,
+      inputHash: "sha256:0", requestId: token("u"), state: "settled", status: "ok",
+      result: { agent: `gone-w#${wUid}`, persona: "builder", worktree: "wt-h" },
+      external: { goalId: token("u"), name: "gone-w", owner: "local", actor: "gonew", uid: wUid },
+    },
+  ] as unknown as JournalEntry[]);
+  const [x, y] = await Promise.all([spawnInto(h11, "v", "wt-h", "first"), spawnInto(h11, "w", "wt-h", "second")]);
+  const handles = [x, y].filter(isHandle).length;
+  const refusals = [x, y].filter((r) => (r as { code?: string } | undefined)?.code === "L4008").length;
+  c("exactly one of the two is admitted and the other is L4008: the claim is re-read after the wait, not assumed",
+    handles === 1 && refusals === 1, JSON.stringify({ x, y }));
+}
+
 await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
 await nc.close();
-const EXPECTED_CELLS = 9;
+const EXPECTED_CELLS = 19;
 const ran = ok + fail;
 console.log(`mesh-worktree.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

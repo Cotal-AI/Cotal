@@ -1,6 +1,6 @@
 {
   "suite": "implementations/runtime/smoke/mesh-turn.smoke.ts",
-  "guard": "The mesh handler's turn client is real: the submission rides the run roster and carries the rendered context, the bound external is what a resume re-enters, the client's own pause is the L4003 authority and its presence watch the L4002 authority, a deny's turn-deadline reason maps to L4003, notices are consumed by the carrying goal, and handoff honoring (memo spend, L4005/L4004 validation, the handoffFrom link, the conversation-owner move, adoption seeding) actually happens",
+  "guard": "The mesh handler's turn client is real: the submission rides the run roster and carries the rendered context, the bound external is what a resume re-enters, the client's own pause is the L4003 authority and its presence watch the L4002 authority, a deny's turn-deadline reason maps to L4003, notices are consumed by the carrying goal, and handoff honoring (memo spend, L4005/L4004 validation, the handoffFrom link, adoption seeding) actually happens",
   "command": "pnpm smoke:runtime-mesh-turn",
   "completionMarker": "mesh-turn.smoke:",
   "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/mesh-turn.json   # --config resolves against the repo root, never the cwd",
@@ -14,7 +14,7 @@
     "executor-currency rule (TM6), the pause claimed on a terminal (TM10), notice consumption by",
     "the carrying goal (TM5), and the handoff machinery: the memo riding the submission (TM1),",
     "its immediate-only spend (TM2), the L4005/L4004 yield validation (TM3/TM4), the",
-    "conversation-owner move (TM13) and the adoption-time seeding (TM11)."
+    "adoption-time seeding (TM11), the marked seat death on a deny (L4002, not L4003) and the acceptance's own deadline instant."
   ],
   "mutations": [
     {
@@ -38,7 +38,7 @@
     {
       "name": "the L4005 roster validation of a handoff addressee is dropped",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "      if (toName.length === 0 || target === undefined)\n        throw new EffectError(\"L4005\", \"turn-handoff\", `turn(${name}#${uid}) yielded a handoff to \"${toName}\", which is not in this run's roster`);",
+      "find": "      if (refusal === \"L4005\")\n        throw new EffectError(\"L4005\", \"turn-handoff\", `turn(${name}#${uid}) yielded a handoff to \"${toName}\", which is not in this run's roster`);",
       "replace": "      if (false)\n        throw new EffectError(\"L4005\", \"turn-handoff\", `turn(${name}#${uid}) yielded a handoff to \"${toName}\", which is not in this run's roster`);",
       "expectRed": "the yield is refused as the effect's own L4005",
       "cell": "the yield is refused as the effect's own L4005",
@@ -47,7 +47,7 @@
     {
       "name": "the L4004 cross-worktree validation of a handoff addressee is dropped",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "      if ((target.handle.worktree ?? undefined) !== (req.agent.worktree ?? undefined))",
+      "find": "      if (refusal === \"L4004\")",
       "replace": "      if (false)",
       "expectRed": "the yield is refused as the effect's own L4004",
       "cell": "the yield is refused as the effect's own L4004",
@@ -74,8 +74,8 @@
     {
       "name": "the deny's turn-deadline reason stops mapping to L4003",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "      if (d?.reason === \"turn-deadline\")\n        throw new EffectError(\"L4003\", \"turn-deadline\", `turn(${name}#${uid}) deadline elapsed before a yield`);",
-      "replace": "      if (false)\n        throw new EffectError(\"L4003\", \"turn-deadline\", `turn(${name}#${uid}) deadline elapsed before a yield`);",
+      "find": "      if (d?.reason === \"turn-deadline\") {\n        if (typeof d.agentDownAt === \"number\")",
+      "replace": "      if (false) {\n        if (typeof d.agentDownAt === \"number\")",
       "expectRed": "the deny's turn-deadline reason maps to L4003",
       "cell": "the deny's turn-deadline reason maps to L4003",
       "note": "The manager's hold-expiry deny is the one reasoned failure a relay commits; unmapped, it reaches the program as a generic uncatchable Error instead of the deadline class. Measured 2026-09-02: exactly one named red; 33 passed, 1 failed."
@@ -83,8 +83,8 @@
     {
       "name": "the client's own expiry is read but never acted on",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "      const ended = await this.expired(primary);\n      if (ended !== undefined)\n        throw new EffectError(\"L4003\", \"turn-deadline\", `turn(${name}#${uid}) deadline elapsed before a yield`);",
-      "replace": "      const ended = await this.expired(primary);\n      if (false) { void ended; }",
+      "find": "        const ended = await this.expired(primary);\n        if (ended !== undefined)\n          throw new EffectError(\"L4003\", \"turn-deadline\", `turn(${name}#${uid}) deadline elapsed before a yield`);",
+      "replace": "        const ended = await this.expired(primary);\n        if (false) { void ended; }",
       "expectRed": "the turn throws the effect's own L4003",
       "cell": "the turn throws the effect's own L4003",
       "note": "The client's own pause is the L4003 authority that survives a dead manager; unread, an abandoned turn polls past its recorded deadline forever. Measured 2026-09-02: two reds — the block's bounded deadline and the L4003 cell; 33 passed, 2 failed."
@@ -92,8 +92,8 @@
     {
       "name": "spawn never registers the roster entry turn addresses",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    this.roster.set(parseAgentHandle(handle.agent).name, {\n      handle,\n      uid: parseAgentHandle(handle.agent).uid,\n      ...(address !== undefined ? { owner: address.owner, actor: address.actor } : {}),\n    });",
-      "replace": "    void address;",
+      "find": "      this.roster.set(parseAgentHandle(handle.agent).name, {\n        handle,\n        uid: parseAgentHandle(handle.agent).uid,\n        ...(address !== undefined ? { owner: address.owner, actor: address.actor } : {}),\n      });",
+      "replace": "      void address;",
       "expectRed": "the run completes through the real relay accept and the real terminal",
       "cell": "the run completes through the real relay accept and the real terminal",
       "note": "The roster IS turn's address book: unregistered, every live-path turn refuses on the roster it should ride. Measured 2026-09-02: twenty-eight reds across every block except the adoption-seeded ones; 6 passed, 28 failed, the suite reaching its own exit."
@@ -101,8 +101,8 @@
     {
       "name": "a terminal leaves the client's armed pause live",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "      const fact = await readGoalResult(actx, ref);\n      if (fact !== undefined) {\n        await this.cancelTimer(primary);\n        return await this.turnOutcome(req, fact, ext, scope, name, uid);",
-      "replace": "      const fact = await readGoalResult(actx, ref);\n      if (fact !== undefined) {\n        return await this.turnOutcome(req, fact, ext, scope, name, uid);",
+      "find": "        const fact = await readGoalResult(actx, ref);\n        if (fact !== undefined) {\n          await this.cancelTimer(primary);\n          return await this.turnOutcome(req, fact, ext, scope, name, uid);",
+      "replace": "        const fact = await readGoalResult(actx, ref);\n        if (fact !== undefined) {\n          return await this.turnOutcome(req, fact, ext, scope, name, uid);",
       "expectRed": "the done yield claims the client's own armed deadline: the pause is settled",
       "cell": "the done yield claims the client's own armed deadline: the pause is settled",
       "note": "A resolved turn that forgets its pause leaves a deadline armed to fire into a run that moved on. Measured 2026-09-02: two reds — the done yield's claim cell and the terminal claim cell; 32 passed, 2 failed."
@@ -119,20 +119,29 @@
     {
       "name": "the turn external is never bound",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "      ext = {\n        goalId, name, owner: entry.owner, actor: entry.actor, uid, deadlineAt,\n        noticeIds: notices.map((n) => n.noticeId),\n        ...(handoffFrom !== undefined ? { handoffFrom } : {}),\n      };\n      await ctx.bind(ext);",
-      "replace": "      ext = {\n        goalId, name, owner: entry.owner, actor: entry.actor, uid, deadlineAt,\n        noticeIds: notices.map((n) => n.noticeId),\n        ...(handoffFrom !== undefined ? { handoffFrom } : {}),\n      };",
+      "find": "      ext = {\n        goalId, name, owner, actor, uid, deadlineAt,\n        noticeIds: notices.map((n) => n.noticeId),\n        ...(handoffFrom !== undefined ? { handoffFrom } : {}),\n      };\n      await ctx.bind(ext);",
+      "replace": "      ext = {\n        goalId, name, owner, actor, uid, deadlineAt,\n        noticeIds: notices.map((n) => n.noticeId),\n        ...(handoffFrom !== undefined ? { handoffFrom } : {}),\n      };",
       "expectRed": "the acceptance floor and deadline are bound as the entry's external state before the wait",
       "cell": "the acceptance floor and deadline are bound as the entry's external state before the wait",
       "note": "The bound external is what a resume re-enters: unbound, a crashed run re-submits from scratch instead of re-attaching to its accepted goal. Measured 2026-09-02: three reds — both bound-external cells and the resume block's one-recorded-yield cell; 31 passed, 3 failed."
     },
     {
-      "name": "an honored handoff never moves the conversation owner",
+      "name": "a marked seat death on the deadline deny is read as the deadline",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    if (typeof ext.handoffFrom === \"string\") await this.moveConversationOwner(name);",
-      "replace": "    if (false) await this.moveConversationOwner(name);",
-      "expectRed": "the run record's conversation owner moved to the honored agent",
-      "cell": "the run record's conversation owner moved to the honored agent",
-      "note": "The observers' answer to \"who is driving\" would silently stay on the seat that handed off. Measured 2026-09-02: exactly one named red; 33 passed, 1 failed."
+      "find": "        if (typeof d.agentDownAt === \"number\")\n          throw new EffectError(\"L4002\", \"turn\",",
+      "replace": "        if (false)\n          throw new EffectError(\"L4002\", \"turn\",",
+      "expectRed": "a deny marked agentDownAt is the agent-down L4002, never the deadline",
+      "cell": "a deny marked agentDownAt is the agent-down L4002, never the deadline",
+      "note": "A death that rode to the deadline arrives on the deny marked agentDownAt; unread, the program is told to set a longer deadline for an agent that is dead. Measured 2026-09-03: exactly one named red (the cell reads L4003); 34 passed, 1 failed."
+    },
+    {
+      "name": "the client arms a second clock instead of the acceptance's deadline",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      const deadlineAt = floor.deadlineAt;",
+      "replace": "      const deadlineAt = this.now() + deadlineMs;",
+      "expectRed": "the bound deadline is the acceptance's own instant (the manager's hold), not a second clock read before the round-trip",
+      "cell": "the bound deadline is the acceptance's own instant (the manager's hold), not a second clock read before the round-trip",
+      "note": "A second clock read after the accept round-trip fires later than the manager's hold by the round-trip plus skew, and disagrees with it on every resume. The suite's fake reads its hold instant before the goal-plane writes and holds the reply 10ms, so a client clock cannot coincide with it. Measured 2026-09-03: exactly one named red (bound 12ms after the served instant); 34 passed, 1 failed."
     }
   ]
 }

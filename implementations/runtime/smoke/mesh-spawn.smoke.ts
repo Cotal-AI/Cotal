@@ -231,6 +231,8 @@ const spawnHandler = async (ctx: EpServeContext): Promise<unknown> => {
   // Refuse-at-accept: nothing bound, nothing provisioned.
   if (OUTCOME[persona] === undefined && persona.startsWith("missing"))
     throw new EpEnvelopeError("failed-precondition", `no persona "${persona}" in the catalog`);
+  if (OUTCOME[persona] === undefined && persona.startsWith("crowded"))
+    throw new EpEnvelopeError("resource-exhausted", `the endpoint's seat capacity is full`);
   const ref = goalRefOf(ctx.subject, goalId);
   const b = await bindGoal(goalCtx, ref, fingerprint);
   if (!b.bound) throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" is already bound (SPEC 13.6)`);
@@ -409,9 +411,18 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
   }), 30_000, "the refused-spawn run");
   c("the program catches the refusal and the run completes", out?.status === "completed", JSON.stringify(out));
   const settled = (await journalEntries("sp-4", "spawn")).find((e) => e.state === "settled");
-  c("the entry settles as the spawn effect's own catchable L4002",
-    settled?.status === "failed" && settled?.error?.code === "L4002" && settled?.error?.kind === "spawn",
+  c("the entry settles as the host declining the request: the catchable L4000, kind spawn (no agent existed to be down)",
+    settled?.status === "failed" && settled?.error?.code === "L4000" && settled?.error?.kind === "spawn",
     JSON.stringify(settled?.error));
+  const crowded = await withDeadline(driven({
+    space: SPACE, endpoint: EP, kv, runId: "sp-4b", lease: lease(),
+    source: `try {\n  await spawn("crowded");\n  log("reached", true);\n} catch (e) {\n  log("caught", e.code + ":" + e.kind);\n}`,
+    handler: mk("sp-4b"),
+  }), 30_000, "the capacity-refused run");
+  const settledCrowded = (await journalEntries("sp-4b", "spawn")).find((e) => e.state === "settled");
+  c("a seat-capacity refusal is the permit the run does not hold: L4001, kind spawn",
+    crowded?.status === "completed" && settledCrowded?.status === "failed" && settledCrowded?.error?.code === "L4001" && settledCrowded?.error?.kind === "spawn",
+    JSON.stringify({ run: crowded?.status, error: settledCrowded?.error }));
   c("a refuse-at-accept allocated no seat and bound no goal", allocations.length === before, allocations.length - before);
 }
 
@@ -603,5 +614,11 @@ log("winner", out.index);
 await serve2.stop();
 await Promise.allSettled(terminals);
 await nc.drain().catch(() => undefined);
+const EXPECTED_CELLS = 33;
+const ran = ok + fail;
 console.log(`mesh-spawn.smoke: ${ok} passed, ${fail} failed`);
+if (ran !== EXPECTED_CELLS) {
+  console.log(`SUITE INCOMPLETE — ran ${ran} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
+  process.exit(1);
+}
 process.exit(fail === 0 ? 0 : 1);

@@ -98,7 +98,10 @@ already happened, a removed `spawn` is a live agent you must adopt or release, a
 **Fork** starts a new run from a named step of an old one, copying the prefix under the parent's
 pins (seed included, so the copied history's pure draws are the same draws). The child is a new run
 under a new id whose record names the parent and the cut step (`forkedFrom`); the parent is
-untouched.
+untouched. A spawn inside the copied prefix is honoured by its `onFork`: `"adopt"` copies it, and
+the child shares the parent's agent (the manager shows that seat one turn at a time across both
+runs); `"respawn"`, the default, would mint a fresh identity the copied turns do not address, so
+this host refuses that cut (L5019) rather than rewriting the parent's history.
 
 ## Operating a run
 
@@ -165,8 +168,8 @@ conclave cancelled on a losing branch is released by the same cancellation sweep
 checkpoint-plane pause per attempt, answered through `cotal run answer` as a checkpoint is:
 the shorthand of the language reference §6.5 is enforced (an unreadable schema is L4022), a
 non-conforming answer costs one attempt and its refusal reason is recorded on the entry for the
-answerer to read, exhausted attempts (default one) are the catchable L4006, and the one absolute
-deadline for the whole ask elapsing is L4003. `monitor` registers interest in an agent, and the
+answerer to read, exhausted attempts (default one) are the catchable L4006, and so is the one
+absolute deadline for the whole ask passing with no conforming record (its kind is `ask-deadline`). `monitor` registers interest in an agent, and the
 registration is the journal entry itself: monitoring an agent that is already dead succeeds, and
 the death is the wait's to observe. `wait(down(...))` reads that death off presence liveness, the
 same witness a conclave join resolves members through: the value carries the handle, the reason
@@ -181,26 +184,34 @@ step and carries the rendered run context, plus any pending notices addressed to
 turn consumes. The seat yields through `cotal_yield` (`done`, `blocked`, or `handoff` with an
 addressee), and ending its host turn yields `done` for every turn it was shown. A `handoff` names
 another seat the same run spawned: the next `turn` in the same scope to that seat records the
-link and moves the run's conversation owner, a handoff to a name the run never spawned is the
-catchable L4005, and one to a seat bound to a different worktree is L4004. The deadline elapsing
-before any yield is the catchable L4003, held by the run's own pause as well as the manager's
-goal-bound hold, so either side outliving the other still converges on the same answer. A seat
-that dies mid-turn is read off its own presence row by the run itself and is the catchable L4002.
+link, a handoff to a name the run never spawned is the catchable L4005, and one to a seat bound
+to a different worktree is L4004. The deadline elapsing before any yield is the catchable L4003:
+the acceptance names the instant, the manager's goal-bound hold denies at it, and the run arms its
+own pause on that same instant, so either side outliving the other still converges on the same
+answer. A seat that dies mid-turn is read off its own presence row by the run itself and is the
+catchable L4002, and a death the manager marked on the deadline terminal reads the same way. Two
+turns on one seat, from two branches or from two runs, reach it one at a time: the language
+dispatches the second when the first settles, and the manager shows a seat the oldest unsettled
+turn alone.
 `wait(replied(...))` observes those turns from another branch: a completed turn is a reply, and
 the wait resolves with the observation record (the handle, the yield's status and note, the
 yield's own stamp). It reads as a level, the way `wait(down)` does: a reply that already exists
 resolves the wait at once, and two replies resolve to the latest by the yield's stamp. A denied
 or cancelled turn is never a reply, so an unanswered wait rides its own mediated timeout to
 `null`, and a handle the run never spawned or turned refuses loudly, since only this run's turns
-are observable.
+are observable. A turn the run itself ended without an accepted yield (its deadline, a
+cancellation, a refused handoff) is never a reply, whatever the seat yields to the relay later.
 A `spawn` may bind its agent to a **logical worktree** (`spawn("builder", { worktree: "wt-1" })`):
 the handle carries the id, and the run enforces the one rule the language states about it: two
 agents never share a worktree concurrently. The validator rejects the literal case up front
-(L3022: two branches of one concurrent scope spawning into one literal worktree), and the runtime
-guards the rest: a spawn into a tree whose recorded holder is still live on presence is the
-catchable L4008, and the tree is reusable the moment that holder's presence row is gone, so a
-discharged race loser or a crashed seat releases its tree with no bookkeeping. A turn handoff
-across worktrees is the L4004 described above. Recovery keeps these honest: a resumed run
+(L3022: two branches of one concurrent scope spawning into one literal worktree, named branch
+functions included), and the runtime guards the rest, computed ids included: a spawn claims its
+tree before it submits, so a second spawn into a tree held by a live seat or by a spawn still
+bringing one up is the catchable L4008, a spawn that ends without a handle gives the tree back,
+and the tree is reusable the moment a holder's presence row is gone, so a discharged race loser
+or a crashed seat releases its tree with no bookkeeping. A spawn the endpoint refuses at accept
+is the catchable L4000 (L4001 when the refusal is the endpoint's seat capacity), and one whose
+seat never came up is L4002. A turn handoff across worktrees is the L4004 described above. Recovery keeps these honest: a resumed run
 reseeds its roster, holders and handoff memos from its own journal, and the driver re-issues any
 recorded-but-undischarged cancellation at adoption, before the engine performs a new step, so a
 loser a crash left alive does not keep its seat or its tree while the resumed run works on.

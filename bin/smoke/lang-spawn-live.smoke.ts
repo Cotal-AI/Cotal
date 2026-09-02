@@ -381,9 +381,103 @@ try {
       fact?.state === "failed" && (fact?.data as { reason?: unknown } | undefined)?.reason === "turn-deadline", JSON.stringify(fact));
   }
 
+  // ── 5c) two turns on one seat are serialized at the dispatch (cotal-lang 6.5) ──────────────
+  // The language serializes its OWN two turns on one handle at the dispatch (a second `turn` on a
+  // handle begins when the first settles), so the manager's half is witnessed with a second turn
+  // SUBMITTED OUTSIDE the language's dispatch, under the same run caller (the manager's turn reach
+  // is the spawner's own: nobody else may turn this seat), while this run's turn is pending.
+  {
+    console.log("• 5c — two turns on one seat reach it one at a time, in dispatch order");
+    const drv3 = startRun(js, jsm, {
+      space: SPACE, endpoint: "manager", kv, runId: "ls-5c", lease: lease(),
+      source: `const d = await spawn("wf5");
+const r = await turn(d, { name: "t1", deadline: "2m" });
+log("t1", r.status);`,
+      handler: mk("ls-5c"),
+    }).catch((e: unknown) => ({ status: "threw" as const, error: String((e as Error)?.message).slice(0, 140) }));
+    let first3: JournalEntryT | undefined;
+    {
+      const until = Date.now() + 30_000;
+      while (first3 === undefined && Date.now() < until) {
+        first3 = (await entriesOf("ls-5c", "turn")).find((e) => e.state === "pending" && typeof e.external?.goalId === "string");
+        if (first3 === undefined) await wait(400);
+      }
+    }
+    const firstId = String(first3?.external?.goalId ?? "");
+    const floor3 = (await entriesOf("ls-5c", "spawn")).find((e) => e.external !== undefined)?.external as
+      { owner?: string; actor?: string; uid?: string } | undefined;
+    const otherSvc = await resolveService(nc, SPACE, "manager", CALLER);
+    const secondId = "second5c".repeat(6).slice(0, 43);
+    const accepted = await invokeCommand(nc, SPACE, otherSvc, "turn",
+      { payload: JSON.stringify({ run: "other", step: "/turn:x#0", context: "", noticeIds: [] }), deadlineMs: 120_000 },
+      { id: secondId, deadlineMs: 20_000, target: { mode: "owner", owner: String(floor3?.owner), actor: String(floor3?.actor), lifecycleUid: String(floor3?.uid) } });
+    c("a second turn on the same seat, submitted outside the language's dispatch, is accepted while the run's turn is pending",
+      firstId.length > 0 && accepted.reply.ok === true && (accepted.reply.data as { goalId?: unknown } | undefined)?.goalId === secondId, JSON.stringify(accepted.reply).slice(0, 160));
+    const seat3: EpCallerT = { owner: String(floor3?.owner), actor: String(floor3?.actor), uid: String(floor3?.uid) };
+    const svc3 = await resolveService(nc, SPACE, "manager", seat3);
+    const pull = async (): Promise<Array<{ goalId?: string }>> => {
+      const r = await invokeCommand(nc, SPACE, svc3, "turn-pending", undefined, { target: { mode: "self" }, deadlineMs: 10_000 });
+      return ((r.reply.data as { turns?: unknown[] } | undefined)?.turns ?? []) as Array<{ goalId?: string }>;
+    };
+    let shown = await pull();
+    c("the seat is shown exactly one of them", shown.length === 1 && shown[0]?.goalId === firstId, JSON.stringify(shown).slice(0, 160));
+    await invokeCommand(nc, SPACE, svc3, "turn-yield", { goalId: firstId, status: "done" }, { target: { mode: "self" }, deadlineMs: 20_000 });
+    {
+      const until = Date.now() + 20_000;
+      shown = await pull();
+      while (!(shown.length === 1 && shown[0]?.goalId === secondId) && Date.now() < until) { await wait(400); shown = await pull(); }
+    }
+    c("the other surfaces only once the first has settled", shown.length === 1 && shown[0]?.goalId === secondId, JSON.stringify(shown).slice(0, 160));
+    await invokeCommand(nc, SPACE, svc3, "turn-yield", { goalId: secondId, status: "done" }, { target: { mode: "self" }, deadlineMs: 20_000 });
+    const out3 = await Promise.race([drv3, wait(45_000).then(() => undefined)]);
+    c("the yield resumes the run", (out3 as { status?: string } | undefined)?.status === "completed", JSON.stringify(out3));
+  }
+
+  // ── 5d) a handoff to a name the run never spawned is the run's own L4005, through the relay ──
+  {
+    console.log("• 5d — a seat yielding a handoff to a stranger: the manager relays it, the run refuses it as L4005");
+    const drv4 = startRun(js, jsm, {
+      space: SPACE, endpoint: "manager", kv, runId: "ls-5d", lease: lease(),
+      source: `const d = await spawn("wf5");
+try {
+  await turn(d, { name: "h", deadline: "2m" });
+  log("reached", true);
+} catch (e) {
+  log("caught", e.code);
+}`,
+      handler: mk("ls-5d"),
+    }).catch((e: unknown) => ({ status: "threw" as const, error: String((e as Error)?.message).slice(0, 140) }));
+    let pending4: JournalEntryT | undefined;
+    {
+      const until = Date.now() + 30_000;
+      while (pending4 === undefined && Date.now() < until) {
+        pending4 = (await entriesOf("ls-5d", "turn")).find((e) => e.state === "pending" && typeof e.external?.goalId === "string");
+        if (pending4 === undefined) await wait(400);
+      }
+    }
+    const floor4 = (await entriesOf("ls-5d", "spawn")).find((e) => e.external !== undefined)?.external as
+      { owner?: string; actor?: string; uid?: string } | undefined;
+    const seat4: EpCallerT = { owner: String(floor4?.owner), actor: String(floor4?.actor), uid: String(floor4?.uid) };
+    const svc4 = await resolveService(nc, SPACE, "manager", seat4);
+    const y4 = await invokeCommand(nc, SPACE, svc4, "turn-yield",
+      { goalId: String(pending4?.external?.goalId ?? ""), status: "handoff", to: "stranger" }, { target: { mode: "self" }, deadlineMs: 20_000 });
+    c("the REAL manager relays the handoff yield as the goal's succeeded terminal (the roster is the run's to check)",
+      y4.reply.ok === true && (y4.reply.data as { state?: unknown } | undefined)?.state === "succeeded", JSON.stringify(y4.reply));
+    const out4 = await Promise.race([drv4, wait(45_000).then(() => undefined)]);
+    const refused4 = (await entriesOf("ls-5d", "turn")).find((e) => e.state === "settled");
+    c("the run refuses the addressee it never spawned as the catchable L4005 and completes in-program",
+      (out4 as { status?: string } | undefined)?.status === "completed" && refused4?.status === "failed" && refused4?.error?.code === "L4005",
+      JSON.stringify({ run: (out4 as { status?: string } | undefined)?.status, error: refused4?.error }));
+  }
+
   pumpState.over = true;
   await pump;
   await nc.drain().catch(() => undefined);
+  const EXPECTED_CELLS = 33;
+  if (pass + fail !== EXPECTED_CELLS) {
+    console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
+    fail += 1;
+  }
   rc = fail === 0 ? 0 : 1;
 } finally {
   try { await mgr?.stop(); } catch { /* teardown */ }

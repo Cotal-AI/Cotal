@@ -743,9 +743,21 @@ log("released", r.index);
   const outcome = await withDeadline(second, 30_000, "the adopted run");
   c("the adopted run then completes on its own schedule",
     (outcome as { status?: string } | undefined)?.status === "completed", JSON.stringify(outcome));
+  // The engine the successor seeds must see the flip its own adoption sweep just wrote: a seed
+  // that lagged the store would make the completion sweep find the cancel un-issued again and
+  // write a second flip record for the same scope.
+  const flips = (await journalOf("race-3")).filter((e) => journalEntryKeyString(e) === "/race:decided#0" && e.cancel?.issued === true).length;
+  c("the flip is written once: adoption's sweep is what the completion sweep then sees", flips === 1, { flips });
   void first; // superseded mid-park — released or parked forever; its ending is not this block's claim
 }
 
+const EXPECTED_CELLS = 55;
+const ran = ok + fail;
 console.log(`mesh-wait.smoke: ${ok} passed, ${fail} failed`);
+if (ran !== EXPECTED_CELLS) {
+  console.log(`SUITE INCOMPLETE — ran ${ran} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
+  done();
+  process.exit(1);
+}
 done();
 process.exit(fail === 0 ? 0 : 1);

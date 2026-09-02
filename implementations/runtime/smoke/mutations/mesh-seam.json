@@ -15,8 +15,8 @@
     {
       "name": "the worktree refusal comes back under the seam's code",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "        \"L4008\", \"worktree\",",
-      "replace": "        \"L5016\", \"worktree\",",
+      "find": "        \"L4008\", \"worktree\",\n        `spawn(${persona}) would put a second agent into the worktree \"${worktree}\" while ${holder.name}#${holder.uid} is live in it;",
+      "replace": "        \"L5016\", \"worktree\",\n        `spawn(${persona}) would put a second agent into the worktree \"${worktree}\" while ${holder.name}#${holder.uid} is live in it;",
       "expectRed": "no runtime source names L5016: the reference handler refuses nothing as not-yet-durable",
       "cell": "no runtime source names L5016: the reference handler refuses nothing as not-yet-durable",
       "note": "A guard raising the retired code would read as a hold to the driver instead of the catchable L4008. Measured 2026-09-03: exactly one red, the L5016 cell naming mesh-handler.ts; 15 passed, 1 failed."

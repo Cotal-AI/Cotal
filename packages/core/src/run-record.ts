@@ -92,13 +92,6 @@ export interface RunStatusValue {
    */
   readonly journalHigh: number;
   readonly at: number;
-  /**
-   * The agent currently driving the run's conversation, moved when the program honors a `turn`
-   * handoff (lang §5.3). A run-record field rather than a wire concept: channel membership has no
-   * single conversation-driver marker, so observers read this instead. Absent until a handoff is
-   * honored; observability, never authorization.
-   */
-  readonly conversationOwner?: string;
 }
 
 /** A run's journal is missing records from its END — which nothing inside the journal can see. */

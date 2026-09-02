@@ -1002,9 +1002,12 @@ function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
   if (name === "parallel" || name === "race") {
     const branches = args[0];
     if (branches !== undefined && (branches.type === "ObjectExpression" || branches.type === "ArrayExpression")) {
-      const branchNodes = branches.type === "ObjectExpression"
+      // A branch is a branch however it is spelled: a named function stands in for its body,
+      // resolved the way `branchThunks` resolves it for the walk.
+      const branchNodes = (branches.type === "ObjectExpression"
         ? (branches.properties as AnyNode[]).filter((prop) => prop.type === "Property").map((prop) => prop.value as AnyNode)
-        : ((branches.elements as (AnyNode | null)[]).filter((el): el is AnyNode => el !== null && isNode(el)));
+        : ((branches.elements as (AnyNode | null)[]).filter((el): el is AnyNode => el !== null && isNode(el))))
+        .map((branch) => resolveFunction(branch, v, scope) ?? branch);
       const holders = new Map<string, AnyNode>();
       for (const branch of branchNodes) {
         for (const [wt, site] of literalSpawnWorktrees(branch)) {
@@ -1025,7 +1028,7 @@ function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
     }
   }
   if (name === "fanOut") {
-    const fn = args[1];
+    const fn = args[1] !== undefined && isNode(args[1]) ? resolveFunction(args[1], v, scope) ?? args[1] : undefined;
     if (fn !== undefined && isNode(fn)) {
       for (const [wt, site] of literalSpawnWorktrees(fn)) {
         v.fail(

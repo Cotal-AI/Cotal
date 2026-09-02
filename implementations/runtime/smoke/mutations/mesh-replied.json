@@ -39,9 +39,9 @@
       "file": "implementations/runtime/src/mesh-handler.ts",
       "find": "        if (fact.state !== \"succeeded\") { goals!.delete(goalId); continue; }",
       "replace": "        if (false) { goals!.delete(goalId); continue; }",
-      "expectRed": "the denied turn never resolves the wait: the timeout resolves null, never a throw",
-      "cell": "the denied turn never resolves the wait: the timeout resolves null, never a throw",
-      "note": "A deadline deny means the agent never finished a reply; read as one, its reason-shaped data fails the shape check and the wait throws where the contract promises a timeout null. Measured 2026-09-02: two reds — the null cell and the expired-settle cell behind it; 13 passed, 2 failed."
+      "expectRed": "an adopted registry still holding the denied goal reads it the same way: not a reply, the timeout resolves null",
+      "cell": "an adopted registry still holding the denied goal reads it the same way: not a reply, the timeout resolves null",
+      "note": "The guard is reached without the run's own turn in flight (a turn that ends on the run's side already leaves the registry): an adopted run holds the pending goal until its turn re-enters, and a wait polling meanwhile reads the deny's reason-shaped data. Measured 2026-09-03: exactly one named red (the wait throws on the malformed reply); 21 passed, 1 failed."
     },
     {
       "name": "the latest-wins selection collapses to first-seen",
@@ -82,11 +82,38 @@
     {
       "name": "adoption reseeds nothing, so a resumed run cannot re-observe",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "      const x = e.external as { name?: unknown; uid?: unknown; goalId?: unknown } | undefined;\n      if (typeof x?.name === \"string\" && typeof x?.uid === \"string\" && typeof x?.goalId === \"string\")\n        this.recordTurnGoal(`${x.name}#${x.uid}`, x.goalId);",
+      "find": "      const x = e.external as { name?: unknown; uid?: unknown; goalId?: unknown } | undefined;\n      if (typeof x?.name === \"string\" && typeof x?.uid === \"string\" && typeof x?.goalId === \"string\" && (e.state === \"pending\" || e.status === \"ok\"))\n        this.recordTurnGoal(`${x.name}#${x.uid}`, x.goalId);",
       "replace": "      const x = e.external as { name?: unknown; uid?: unknown; goalId?: unknown } | undefined;\n      if (false)\n        this.recordTurnGoal(`${String(x?.name)}#${String(x?.uid)}`, String(x?.goalId));",
       "expectRed": "the adopted handler re-observes the recorded reply at once",
       "cell": "the adopted handler re-observes the recorded reply at once",
       "note": "The registry is deterministic from the journal alone; unseeded, an adopted run parks on a reply its own journal records. Measured 2026-09-02: three reds — the bounded deadline and both adoption cells; 13 passed, 3 failed."
+    },
+    {
+      "name": "a refused handoff is read as a reply",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "        if (d.status === \"handoff\" && this.handoffRefusal(this.roster.get(name)?.handle.worktree, (d as { to?: unknown }).to) !== undefined) {",
+      "replace": "        if (false) {",
+      "expectRed": "an adopted registry still holding the goal refuses the handoff the same way: not a reply, the timeout resolves null",
+      "cell": "an adopted registry still holding the goal refuses the handoff the same way: not a reply, the timeout resolves null",
+      "note": "Same reach: through an adopted registry still holding the goal, the succeeded fact carries a handoff to a stranger and the wait would resolve it as a reply. Measured 2026-09-03: exactly one named red (the wait resolves the handoff); 21 passed, 1 failed."
+    },
+    {
+      "name": "a turn that ended on the run's side stays observable as a reply",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      this.turnGoals.get(`${name}#${uid}`)?.delete(goalId);\n      throw e;",
+      "replace": "      throw e;",
+      "expectRed": "the late yield is not a reply: the wait rides its timeout to null",
+      "cell": "the late yield is not a reply: the wait rides its timeout to null",
+      "note": "A cancelled turn's late yield is not a reply the run accepted; left in the registry, wait(replied) resolves what the turn refused. Measured 2026-09-03: exactly one named red (the late yield resolves the wait); 21 passed, 1 failed."
+    },
+    {
+      "name": "a discharged turn stays observable as a reply",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "        if (typeof x?.name === \"string\" && typeof x?.uid === \"string\" && typeof x?.goalId === \"string\")\n          this.turnGoals.get(`${x.name}#${x.uid}`)?.delete(x.goalId);",
+      "replace": "        if (false)\n          this.turnGoals.get(`${String(x?.name)}#${String(x?.uid)}`)?.delete(String(x?.goalId));",
+      "expectRed": "the discharged turn is not a reply: the wait rides its timeout to null",
+      "cell": "the discharged turn is not a reply: the wait rides its timeout to null",
+      "note": "The adoption discharge ends a race-lost turn; left in the rebuilt registry, its later yield reads as a reply. Measured 2026-09-03: exactly one named red; 21 passed, 1 failed."
     }
   ]
 }

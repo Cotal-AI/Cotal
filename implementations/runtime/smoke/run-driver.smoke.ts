@@ -898,6 +898,12 @@ c("every cell the language package's matrix cites from this file is one THIS RUN
   unrun.length === 0, unrun.map(({ s, hits }) => `${hits} execution(s): ${s}`));
 console.log(`  (${seam.cells.length} cited cells checked against ${EXECUTED.length} executed)`);
 
+const EXPECTED_CELLS = 79;
 console.log(`run-driver.smoke: ${ok} passed, ${fail} failed`);
+if (ok + fail !== EXPECTED_CELLS) {
+  console.log(`SUITE INCOMPLETE — ran ${ok + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
+  done();
+  process.exit(1);
+}
 done();
 process.exit(fail === 0 ? 0 : 1);
