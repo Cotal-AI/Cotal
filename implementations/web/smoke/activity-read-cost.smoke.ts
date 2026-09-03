@@ -55,9 +55,13 @@
  * regression. The counts are the reproducible part.
  *
  * The gap between the first two rows is the per-channel cost of the narrower window, which the pull
- * request states separately. To reproduce the first row, copy this file and its `package.json`
- * script onto a checkout of `544a974b7` and run it: `activityBackfill` there IS the fan-out, so both
- * arms report the same numbers and every ratio cell fails, which is the repro.
+ * request states separately. To reproduce the first row, copy THREE things onto a checkout of
+ * `544a974b7` and run it there: this file, `slow-link-throttle.ts`, and the
+ * `smoke:web-activity-read-cost` line in `package.json`. The throttle file is not optional. The
+ * counters in `countingLink` below increment from its `onDeliver` hook, and `544a974b7`'s copy of
+ * that file takes no such parameter, so copying this file alone leaves every byte figure reading
+ * zero. On that tree `activityBackfill` IS the fan-out, so both arms report the same numbers and
+ * every ratio cell fails, which is the repro.
  *
  * THE INSTRUMENT IS CONTROLLED. A counter that reads zero for both arms would make every ratio here
  * look like a pass, so §2 requires the BASELINE's consumer creates to grow with the channel count
@@ -149,7 +153,8 @@ function countingLink(opts: {
     // records what reached the proxy, and an arm truncated at the deadline leaves chunks queued that
     // were counted and never crossed the link. That arm is section 4's fan-out, which is cut by the
     // deadline on purpose, so its published requests and bytes were arrival counts until this
-    // change. Cell 4.6 holds this property and a fixture mutation moves the increment back.
+    // change. Cells 4.7 and 4.9 hold this property, one per direction, and a fixture mutation moves
+    // each increment back.
     let pending = "";
     const onUp = (chunk: Buffer) => {
       const c = opts.cost();
@@ -569,6 +574,45 @@ try {
         { counted: local.bytesUp, received, pushed: PUSHED });
       ok("4.8 CONTROL: the truncation really did strand bytes, so 4.7 could have failed",
         received < PUSHED, { received, pushed: PUSHED });
+    }
+
+    // AND THE SAME PROPERTY ON THE WAY BACK, which is the direction every published byte figure
+    // actually uses. 4.7 above reads `local.bytesUp` and nothing else, so reverting only the down
+    // counter to arrival leaves it green: the fixture above pushes client to sink and never gives
+    // the down path any traffic to count. `bytesDown` is the column the Measured tables publish for
+    // the truncated fan-out, so the cell guarding the counter was guarding the direction next to the
+    // one the argument rests on. A reviewer found that; it was not caught here.
+    //
+    // Same construction mirrored: the source pushes 64 KB the moment the proxy dials it, so the
+    // bytes travel broker to client, and the link is cut once delivery has started.
+    {
+      const SRC = PROXY + 103;
+      const EDGE = PROXY + 104;
+      const CHUNK = 8_000;
+      const PUSHED = CHUNK * 8;
+      const src = net.createServer((sock) => {
+        for (let i = 0; i < 8; i++) sock.write(Buffer.alloc(CHUNK, 0x62));
+      });
+      await new Promise<void>((r) => { src.listen(SRC, "127.0.0.1", () => r()); });
+      const local = zero();
+      const edge = countingLink({
+        listen: EDGE, target: SRC, latency: { oneWayMs: 5, bytesPerSec: 20_000 }, cost: () => local,
+      });
+      let atClient = 0;
+      const c = net.connect(EDGE, "127.0.0.1");
+      c.on("data", (b: Buffer) => { atClient += b.length; });
+      await new Promise<void>((r) => { c.once("connect", () => r()); });
+      for (let i = 0; i < 60 && atClient === 0; i++) await wait(100);
+      await wait(100);
+      edge.close();
+      c.destroy();
+      await wait(400);
+      src.close();
+      ok("4.9 the DOWN counter reports what CROSSED the link, not what queued at the proxy",
+        local.bytesDown <= atClient && local.bytesDown < PUSHED && atClient > 0,
+        { counted: local.bytesDown, atClient, pushed: PUSHED });
+      ok("4.10 CONTROL: the down truncation really did strand bytes, so 4.9 could have failed",
+        atClient < PUSHED, { atClient, pushed: PUSHED });
     }
   }
   // ── 5. `/api/dms` ON THE FIELD LINK ───────────────────────────────────────────────────────────

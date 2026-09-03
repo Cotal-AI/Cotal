@@ -89,6 +89,16 @@
       "command": "pnpm smoke:web-activity-read-cost",
       "completionMarker": "activity-read-cost smoke:",
       "note": "Restores the pre-fix shape exactly: counting in the `data` handlers, before the throttled push. 4.7 truncates an arm mid-queue and requires the counter not to exceed what the receiving socket observed; under arrival counting it reports the full pushed total while the socket saw a fraction, so the comparison fails. 4.8 is the control that the truncation stranded bytes at all, so 4.7 cannot pass on an empty window."
+    },
+    {
+      "name": "B14 the DOWN link counter goes back to incrementing on ARRIVAL from the broker, so a truncated arm reports bytes that queued at the proxy and never crossed the link - and bytesDown is the column the Measured tables actually publish, which the up-path cell 4.7 does not guard",
+      "file": "implementations/web/smoke/activity-read-cost.smoke.ts",
+      "find": "    const toClient = throttledWriter(client, opts.latency, undefined,\n      (chunk: Buffer) => { opts.cost().bytesDown += chunk.length; });\n    client.on(\"data\", (chunk: Buffer) => { toBroker.push(chunk); });\n    upstream.on(\"data\", (chunk: Buffer) => { toClient.push(chunk); });",
+      "replace": "    const toClient = throttledWriter(client, opts.latency, undefined);\n    client.on(\"data\", (chunk: Buffer) => { toBroker.push(chunk); });\n    upstream.on(\"data\", (chunk: Buffer) => { opts.cost().bytesDown += chunk.length; toClient.push(chunk); });",
+      "expectRed": "4.9 the DOWN counter reports what CROSSED the link, not what queued at the proxy",
+      "command": "pnpm smoke:web-activity-read-cost",
+      "completionMarker": "activity-read-cost smoke:",
+      "note": "Reverts ONLY the down counter. 4.7 reads local.bytesUp alone and stays green under this mutation, which is why 4.9 exists."
     }
   ]
 }
