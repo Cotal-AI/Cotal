@@ -15,7 +15,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type AddressInfo } from "node:net";
@@ -23,6 +23,7 @@ import { CotalEndpoint, isReachable, setupSpaceStreams, type CotalMessage, type 
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { MeshView } from "../src/view/mesh-view.js";
 import { makeObserver, makeParticipant } from "../src/console/root.js";
+import { ConsoleSession, clean } from "./_console-pty.js";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const freePort = (): Promise<number> =>
@@ -132,6 +133,40 @@ try {
   await peer.stop();
   const gone = await until(() => { const p = rosterOf(watcher, "operator"); return p?.status === "offline" ? p : undefined; }, 2500);
   check("the watcher sees the operator offline within the heartbeat, not after a TTL lapse", gone !== undefined, rosterOf(watcher, "operator"));
+  console.log("D. the CONSOLE's own activation: the App wires it, not the smoke");
+  // A and B above build the peer with makeParticipant and publish on it directly, which proves the
+  // PIECES work and proves nothing about the console. Deleting App's first-send activation, its
+  // idempotence guard, or the roster flag it hands the status bar left every cell here green,
+  // because nothing rendered App. This section drives the real console under a pty instead.
+  const cHome = join(dir, "console-home");
+  mkdirSync(cHome, { recursive: true });
+  const cs = new ConsoleSession(["--space", space, "--server", OPEN], cHome, {}, { cols: 140, rows: 36 });
+  stops.push(async () => cs.close());
+  check("the console paints against the open mesh", await cs.waitFor(`${space} · #`, 40_000), clean(cs.out).slice(-200));
+
+  // Identify the console's peer by what it IS, not by a name this file already used: section A's
+  // own operator is still on the roster as an offline record, and the console names its peer after
+  // its own card. A live endpoint carrying role `operator` is exactly what participant mode adds.
+  const seats = () => watcher.getRoster().map((pr) => `${pr.card.name}/${pr.card.kind}/${pr.card.role ?? "-"}:${pr.status}`);
+  const operators = () =>
+    watcher.getRoster().filter((pr) => pr.card.kind === "endpoint" && pr.card.role === "operator" && pr.status !== "offline");
+  check("before the operator sends anything, the console has put nobody on the roster", operators().length === 0, seats());
+
+  let mk = cs.mark();
+  await cs.keys("c", 700);
+  await cs.keys("from-the-console", 400);
+  await cs.keys("\r", 900);
+  const joined = await until(() => (operators().length === 1 ? true : undefined), 12_000);
+  check("the console's FIRST send activates participant mode by itself", joined === true, seats());
+  check("...and the status bar says so, which is the flag the App passes down", await cs.waitFor("on roster", 8_000, mk), clean(cs.out.slice(mk)).slice(-200));
+
+  mk = cs.mark();
+  await cs.keys("c", 700);
+  await cs.keys("second-send", 400);
+  await cs.keys("\r", 900);
+  await wait(2_500);
+  check("a SECOND send does not put a second operator peer on the roster", operators().length === 1, seats());
+
 } catch (e) {
   fail++;
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
