@@ -25,7 +25,8 @@ the sweep goes from 43ms, 246ms, 5345ms and a timeout, to 54ms, 343ms, 1163ms an
 are single runs on one host and are shaped by it rather than being bounds; a re-run on another box
 landed outside the last of them, as the paragraph below says of every span here. A space
 with the 69 chat channels this work was aimed at is one batch, so the request counts and byte totals
-above are unchanged at that size. The walls are not claimed to be, for the reason just given. Merging on stream sequence rather than the payload's `ts` is asserted in
+above are unchanged at that size. The walls are not claimed to be, for the reason just given.
+Merging on stream sequence rather than the payload's `ts` is asserted in
 `packages/core/smoke/history-recent.smoke.ts` against a corpus whose arrival order and `ts` order are
 opposite.
 
