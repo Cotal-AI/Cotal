@@ -212,7 +212,10 @@ answer. A seat that dies mid-turn is read off its own presence row by the run it
 catchable L4002, and a death the manager marked on the deadline terminal reads the same way. Two
 turns on one seat, from two branches or from two runs, reach it one at a time: the language
 dispatches the second when the first settles, and the manager shows a seat the oldest unsettled
-turn alone.
+turn alone. On an auth mesh the relay needs no extra grant: every spawned seat's baseline
+credential carries its own pull and yield rows, the run driver's operator instrument carries the
+turn request, and the manager arms the deadline hold over its own serve grant and expires it
+itself once due.
 `wait(replied(...))` observes those turns from another branch: a completed turn is a reply, and
 the wait resolves with the observation record (the handle, the yield's status and note, the
 yield's own stamp). It reads as a level, the way `wait(down)` does: a reply that already exists

@@ -15,12 +15,13 @@
  *
  * Run: pnpm smoke:manager-reconcile-startup   (needs nats-server + node on PATH)
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
+import { jetstream } from "@nats-io/jetstream";
 import {
   createSpaceAuth,
   CotalEndpoint,
@@ -30,6 +31,7 @@ import {
   mintCreds,
   mintMembershipObserverCreds,
   newIdentity,
+  mintCheckpoint,
   mintLifecycleUid,
   setupSpaceStreams,
   standaloneConnectOpts,
@@ -302,6 +304,20 @@ try {
     check("the sweep drops a settled answer once its retry window has passed, and keeps a fresh one",
       !retryDoors.turnAcceptances.has("long-done") && retryDoors.turnAcceptances.has("done-already"),
       [...retryDoors.turnAcceptances.keys()]);
+    // AND THE SWEEP STOPS ONCE THE LAST ANSWER IS GONE. The settle-time callers of the stop check
+    // run when an answer has just been remembered, so they never see the map empty; the prune is
+    // the one event after which nothing is owed, and it is the sweep's own to notice.
+    const sweepDoors = seeded as unknown as { turnSweepTimer?: unknown; ensureTurnSweep: () => void };
+    retryDoors.turnAcceptances.set("done-already", {
+      acceptance: retryDoors.turnAcceptances.get("done-already")!.acceptance,
+      settled: { state: "succeeded", at: Date.now() - 10 * 60_000 },
+    });
+    sweepDoors.ensureTurnSweep();
+    check("the sweep runs while a settled answer is still within its window", sweepDoors.turnSweepTimer !== undefined);
+    await retryDoors.sweepTurnDeadlines();
+    check("and stops itself once the prune leaves it nothing to do: no pending turn, no answer to serve",
+      sweepDoors.turnSweepTimer === undefined && retryDoors.turnAcceptances.size === 0,
+      { timer: sweepDoors.turnSweepTimer !== undefined, answers: retryDoors.turnAcceptances.size });
   }
 
   await starting;
@@ -330,6 +346,15 @@ try {
     if (gw === undefined) throw new Error("the live manager has no goal-writer connection; the adoption fixture cannot write its goal");
     const actx = gw.ctx;
     doors.goalWriter = gw;
+    // An unstarted Manager has no instance id yet (start() mints or restores one). The hold below
+    // is minted under an instance id, and the goal-writer cred may schedule only under the LIVE
+    // manager's, so the adopting incarnation presents as that instance: the shape a restart has,
+    // where the successor reads the predecessor's records under the same persisted id.
+    doors.managerInstanceId = (manager as unknown as { managerInstanceId: string }).managerInstanceId;
+    // The schedule publish is pinned to the serving instance's EPOCH as well as its id (the
+    // goal-writer's egress rows), so the hold is minted under the live manager's serve epoch,
+    // exactly what the accept path stamps as `holdEpoch`.
+    const serveEpoch = (manager as unknown as { serviceServe?: { grant: { epoch: number } } }).serviceServe?.grant.epoch ?? 0;
     const seatUid = mintLifecycleUid();
     const runner: EpCaller = { owner: "local", actor: "runner", uid: mintLifecycleUid() };
     const goalId = "g".repeat(43);
@@ -340,10 +365,28 @@ try {
       fingerprint: "fp-adopt", command: "turn",
       caller: { id: `${runner.owner}.${runner.actor}`, lifecycleUid: runner.uid },
       acceptedEpoch: 0, requestId: goalId, sourceSeq: 0, acceptedAt: ACCEPTED_AT, readinessDeadlineMs: 600_000,
+      // The §13.6 target pin the accept path writes: the yield's commit proves the executor's
+      // currency against it, and a goal with no pin is refused there as a wiring confusion.
+      target: { owner: "local", actor: "seat9", lifecycleUid: seatUid, mappingRevision: 0 },
     });
     const allocated = { name: "adopted-seat", actor: "seat9", uid: seatUid };
-    const note = JSON.stringify({ payload: "do the thing", deadlineAt: Date.now() + 600_000, holdEpoch: 0, owner: "local" });
+    const DEADLINE_AT = Date.now() + 600_000;
+    const note = JSON.stringify({ payload: "do the thing", deadlineAt: DEADLINE_AT, holdEpoch: serveEpoch, owner: "local" });
     await recordGoalIndex(actx, ref, doors.managerInstanceId, allocated, note);
+    // The turn's HOLD, minted exactly as the accept path mints it: the record over the goal-writer's
+    // KV, the `.schedule` request over the SERVE connection (the timer row is the serving instance's
+    // own, SPEC 13.9; the goal-writer holds none, and minting over it is broker-denied). The yield
+    // claims the hold, so a fixture without it is a turn no seat could ever yield.
+    const serveJs = jetstream((manager as unknown as { serviceServe: { nc: Parameters<typeof jetstream>[0] } }).serviceServe.nc);
+    await mintCheckpoint(actx.kv, serveJs, space, {
+      // The hold token is the manager's own derivation (a module-private function), spelled here the
+      // same way so the fixture's hold is the one the yield path claims.
+      ref: { endpoint: MANAGER_ENDPOINT, token: createHash("sha256").update(`${goalId}:turn-deadline`, "utf8").digest("base64url").slice(0, 43) },
+      instanceId: doors.managerInstanceId, epoch: serveEpoch,
+      goal: { caller: runner, goalId },
+      holder: { id: MANAGER_ENDPOINT, lifecycleUid: doors.managerInstanceId },
+      deadline: DEADLINE_AT, now: ACCEPTED_AT,
+    });
 
     await doors.adoptTurnGoal({ ref, iid: doors.managerInstanceId, allocated, note });
     const adopted = doors.pendingTurns.get(goalId);
@@ -353,6 +396,45 @@ try {
       adopted?.acceptedAt === ACCEPTED_AT, { recorded: ACCEPTED_AT, adopted: adopted?.acceptedAt });
     check("and NOT marked as addressing a dead seat: an empty agents map at boot is not evidence of death",
       adopted?.seatDiedAt === undefined, adopted?.seatDiedAt);
+    // AND THE ADOPTED TURN'S ANSWER IS REMEMBERED. Adoption rebuilt the pending relay and not the
+    // acceptance the retry answer is remembered against, so a yield whose reply was lost after a
+    // restart heard `not-found` on the one path adoption exists for. The seat yields once (the
+    // reply is "lost"), then retries the same goal and must hear the answer it earned.
+    const adoptDoors = adopting as unknown as {
+      serveTurnYield: (c: { owner: string; actor: string; uid: string }, raw: Record<string, unknown>) => Promise<{ goalId: string; state: string }>;
+      goalReconcileDone: boolean;
+    };
+    adoptDoors.goalReconcileDone = true;
+    // The yield's commit proves the executor's LIVE currency against the agents map (a seat that
+    // died between its yield and the commit refuses `expired`); the adopting manager here never
+    // started, so its map is empty and the fixture registers the seat the way a resume would.
+    (adopting as unknown as { agents: Map<string, { name: string; lifecycleUid: string }> }).agents.set(allocated.name, { name: allocated.name, lifecycleUid: seatUid });
+    const adoptedSeat = { owner: "local", actor: allocated.actor, uid: seatUid };
+    const asValue = (e: unknown) => ({ code: (e as { code?: string }).code, message: String((e as Error).message).slice(0, 200) });
+    const first = await adoptDoors.serveTurnYield(adoptedSeat, { goalId, status: "done" }).then((r) => r, asValue);
+    const retried = await adoptDoors.serveTurnYield(adoptedSeat, { goalId, status: "done" }).then((r) => r, asValue);
+    check("an adopted turn yields, and a retry of that yield is served the answer it earned, never `not-found`",
+      (first as { state?: string }).state === "succeeded" && (retried as { state?: string }).state === "succeeded",
+      { first, retried });
+
+    // A RELAY RECORD WITH NO HOLD. The hold is minted after the index entry and the goal record,
+    // so a crash between them leaves exactly this shape. Adopted, it would be a pending turn
+    // nothing can settle: the sweep would try to expire a pause that was never minted, every tick,
+    // and its seat could never yield it. Left unsettled instead, said once.
+    const holdless = "h".repeat(43);
+    const holdlessRef: GoalRef = { endpoint: MANAGER_ENDPOINT, caller: runner, goalId: holdless };
+    await bindGoal(actx, holdlessRef, "fp-holdless");
+    await createGoal(actx, holdlessRef, {
+      fingerprint: "fp-holdless", command: "turn",
+      caller: { id: `${runner.owner}.${runner.actor}`, lifecycleUid: runner.uid },
+      acceptedEpoch: 0, requestId: holdless, sourceSeq: 0, acceptedAt: ACCEPTED_AT, readinessDeadlineMs: 600_000,
+      target: { owner: "local", actor: "seat9", lifecycleUid: seatUid, mappingRevision: 0 },
+    });
+    await recordGoalIndex(actx, holdlessRef, doors.managerInstanceId, allocated, note);
+    await doors.adoptTurnGoal({ ref: holdlessRef, iid: doors.managerInstanceId, allocated, note });
+    check("a turn whose hold was never minted is not adopted as pending: nothing could settle it",
+      !doors.pendingTurns.has(holdless) && !(adopting as unknown as { turnAcceptances: Map<string, unknown> }).turnAcceptances.has(holdless),
+      { pending: doors.pendingTurns.has(holdless) });
     await adopting.stop().catch(() => {});
   }
 
@@ -365,5 +447,10 @@ try {
   await broker.stop().catch(() => {});
 }
 
+const EXPECTED_CELLS = 17;
 console.log(`\n${fail === 0 ? "MANAGER RECONCILE STARTUP SMOKE OK ✅" : "MANAGER RECONCILE STARTUP SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
+if (pass + fail !== EXPECTED_CELLS) {
+  console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
+  process.exit(1);
+}
 process.exit(fail === 0 ? 0 : 1);

@@ -1,0 +1,75 @@
+{
+  "suite": "implementations/manager/smoke/turn-relay-auth.smoke.ts",
+  "guard": "On an auth mesh the manager arms a turn's deadline hold over its serve connection (the timer row is the serving instance's), a spawned seat pulls and yields its turns under the baseline credential the manager minted for it, and an unyielded turn is denied at its deadline by the manager expiring the hold it owns.",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:turn-relay-auth",
+  "completionMarker": "TURN RELAY AUTH SMOKE",
+  "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/turn-relay-auth.json",
+  "why": [
+    "Every other turn suite runs on an open mesh, where the broker enforces nothing. Two grant holes",
+    "shipped green that way: the hold minted over the goal-writer (no timer row, schedule denied,",
+    "every accept unwound) and the seat's pull under a baseline that carried self stop alone (the",
+    "and the run driver's own instrument carrying no turn request row (nothing minted one; the submit was dropped)",
+    "publish broker-dropped, the connector reading silence as no manager). This suite asks the",
+    "broker. The two grant mutants edit core, so the command builds core first and afterRestore",
+    "rebuilds it (dist/ is gitignored; the restore alone leaves the mutant compiled)."
+  ],
+  "mutations": [
+    {
+      "name": "the hold is minted over the goal-writer connection again",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      await mintCheckpoint(gw.ctx.kv, jetstream(serve.nc), this.space, {",
+      "replace": "      await mintCheckpoint(gw.ctx.kv, gw.ctx.js, this.space, {",
+      "expectRed": "the run instrument's turn is ACCEPTED (the request row is granted; the hold's schedule published)",
+      "cell": "the run instrument's turn is ACCEPTED (the request row is granted; the hold's schedule published)",
+      "note": "The goal-writer profile holds no `ept` row; the `.schedule` publish is broker-denied and the accept unwinds with a failed terminal."
+    },
+    {
+      "name": "the operator seat-write set carries input alone; no profile mints a turn row",
+      "file": "packages/core/src/endpoint-grants.ts",
+      "find": "export const OPERATOR_SEAT_COMMANDS = Object.freeze([\"input\", \"turn\"] as const);",
+      "replace": "export const OPERATOR_SEAT_COMMANDS = Object.freeze([\"input\"] as const);",
+      "expectRed": "the run instrument's turn is ACCEPTED (the request row is granted; the hold's schedule published)",
+      "cell": "the run instrument's turn is ACCEPTED (the request row is granted; the hold's schedule published)",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "Before this row existed nothing minted a turn request row; the run driver's control-caller-admin publish was broker-dropped and the caller saw deadline-exceeded."
+    },
+    {
+      "name": "the seat baseline carries self stop alone",
+      "file": "packages/core/src/endpoint-grants.ts",
+      "find": "export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze([\"stop\", \"turn-pending\", \"turn-yield\"] as const);",
+      "replace": "export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze([\"stop\"] as const);",
+      "expectRed": "the seat's minted credential is SERVED its pending turn, never broker-dropped",
+      "cell": "the seat's minted credential is SERVED its pending turn, never broker-dropped",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "Without the self-mode turn-pending row the seat's publish is broker-dropped; the caller sees no responder."
+    },
+    {
+      "name": "the seat baseline pulls but cannot yield",
+      "file": "packages/core/src/endpoint-grants.ts",
+      "find": "export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze([\"stop\", \"turn-pending\", \"turn-yield\"] as const);",
+      "replace": "export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze([\"stop\", \"turn-pending\"] as const);",
+      "expectRed": "the seat's yield is served and completes the goal with its live currency",
+      "cell": "the seat's yield is served and completes the goal with its live currency",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "The pull row alone shows a seat its turn and leaves it unable to answer; the yield publish is broker-dropped."
+    },
+    {
+      "name": "the sweep never expires the hold it owns",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        const settle = await this.expireTurnHold(p);\n        if (settle?.settle === \"expired\") await this.commitTurnDeadline(p);",
+      "replace": "        void p;",
+      "expectRed": "the goal's terminal is the deadline deny, reason `turn-deadline`",
+      "cell": "the goal's terminal is the deadline deny, reason `turn-deadline`",
+      "note": "The manager is the hold's owner and the only party that drives the deny; with the expiry gone the goal never terminalizes."
+    },
+    {
+      "name": "the sweep reads the settle but never produces it",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    return expireCheckpoint(gw.ctx.kv, gw.ctx.js, gw.ctx.jsm, this.space, { ref: { endpoint: p.ref.endpoint, token: p.holdToken }, now: Date.now() });",
+      "replace": "    return readCheckpointSettle(gw.ctx.jsm, this.space, { endpoint: p.ref.endpoint, token: p.holdToken });",
+      "expectRed": "the goal's terminal is the deadline deny, reason `turn-deadline`",
+      "cell": "the goal's terminal is the deadline deny, reason `turn-deadline`",
+      "note": "A read-only sweep waits for a settle nobody writes: the manager holds no grant to consume the broker's fire, so the settle it reads for is one it has to produce."
+    }
+  ]
+}

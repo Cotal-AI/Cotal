@@ -33,7 +33,11 @@ two-phase into host context, auto-yields `done` when the host turn ends, and yie
 arms its own pause on the acceptance's deadline as the L4003 authority, watches presence as the
 L4002 authority (a death the manager marks on the deadline terminal reads the same way), and
 honors handoffs (L4005/L4004 validation, the `handoffFrom` goal chain); the manager shows a seat
-one turn at a time. `wait(replied)` observes the run's own turn terminals as a level, and never a
+one turn at a time. The relay holds on an auth mesh: the agent baseline gains the self-mode
+`turn-pending` and `turn-yield` rows, the operator seat-write set (`control-caller-admin`, the
+`admin` capability) gains `turn` beside `input`, and the manager mints the deadline hold's
+schedule over its serve connection and owner-expires the hold once due instead of reading a
+fire it holds no grant for. `wait(replied)` observes the run's own turn terminals as a level, and never a
 turn the run itself ended without an accepted yield. A `spawn` may bind a logical worktree: the
 validator rejects two literal-worktree spawns in one concurrent scope (L3022, named branch
 functions included) and the runtime claims a tree before it submits, refusing a second spawn into

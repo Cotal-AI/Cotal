@@ -138,10 +138,15 @@ export function epCallerGrantRows(
  *  minted agent grant (the afa715b identity-vs-integrity class, executed repro). */
 export const BASELINE_DELIVERY_ENDPOINT = "delivery";
 export const BASELINE_DELIVERY_COMMANDS = Object.freeze(["join", "leave", "list"] as const);
-/** The manager endpoint's self-lifecycle baseline (the v0.3 self-service tier serves exactly
- *  no-name self stop) and the spawn-capability owner-mode lifecycle set. */
+/** The manager endpoint's self-lifecycle baseline and the spawn-capability owner-mode lifecycle
+ *  set. Self mode reaches the caller's OWN incarnation and nothing else: the no-name self stop
+ *  (the v0.3 self-service tier's only op) and the two halves of the run-turn relay, a seat
+ *  pulling the turns addressed to it and yielding them back. Both are in the baseline because
+ *  the manager pushes nothing into a seat: without the pull row, a seat on an auth mesh is
+ *  broker-denied at its first `turn-pending` and the relay is silently dead for every spawned
+ *  agent (measured: the connector reads the denial as "no manager here" and stays quiet). */
 export const BASELINE_LIFECYCLE_ENDPOINT = "manager";
-export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze(["stop"] as const);
+export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze(["stop", "turn-pending", "turn-yield"] as const);
 /** `spawn` is CREATION: a virgin spawn has no target lifecycle UID or current mapping yet, so it
  *  CANNOT ride owner mode (§13.2 owner mode resolves a body `{owner, actor, lifecycleUid}` against
  *  the CURRENT mapping — there is nothing to resolve for a not-yet-existing child). It is minted
@@ -170,13 +175,18 @@ export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze(["stop"] as const)
  *  authority for the domain. */
 export const SPAWN_CREATE_COMMANDS = Object.freeze(["spawn"] as const);
 export const SPAWN_OWNER_LIFECYCLE_COMMANDS = Object.freeze(["despawn", "attach"] as const);
-/** The seat-input command, granted ONLY into operator-authorized credentials (see the note above
- *  for why it is not in the spawn set). Both modes are minted here, unlike `despawn`/`attach`,
- *  whose owner-mode rows an operator inherits from the spawn set: with `input` absent from that
- *  set an operator would otherwise hold the any-mode row and not the owner-mode one, and the CLI
- *  rides OWNER reach on a user mesh (a bearer's one deterministic path). Granting only `any` there
- *  would leave `cotal input` broker-denied on exactly the mesh mode the feature is for. */
-export const OPERATOR_INPUT_COMMANDS = Object.freeze(["input"] as const);
+/** The two commands that WRITE INTO a seat, granted ONLY into operator-authorized credentials
+ *  (see the note above for why `input` is not in the spawn set; `turn` is the same authority
+ *  through a different door: a run's turn is a payload the seat is shown and works on, and the run
+ *  driver submits it under its own operator instrument, so it rides the same placement). Both
+ *  modes are minted here, unlike `despawn`/`attach`, whose owner-mode rows an operator inherits
+ *  from the spawn set: with these absent from that set an operator would otherwise hold the
+ *  any-mode row and not the owner-mode one, and the CLI rides OWNER reach on a user mesh (a
+ *  bearer's one deterministic path), as does the run driver's `turn`. Granting only `any` would
+ *  leave `cotal input`, and every run that turns a seat, broker-denied on exactly the mesh mode
+ *  the feature is for. Measured: no profile carried a `turn` row at all until it joined this set,
+ *  so a run on an auth mesh had its every turn submit dropped at the broker. */
+export const OPERATOR_SEAT_COMMANDS = Object.freeze(["input", "turn"] as const);
 /** The spawn capability's UNTARGETED additions (the 1c grant-migration table): the connector's
  *  persona write (`define-persona`, caller-scoped by the pinned triple), per-agent status read
  *  (`inspect` - the responder narrows the view to the caller's owner domain, like `ps`), and the
@@ -260,7 +270,7 @@ const DELIVERY_COMMANDS_SNAP = Object.freeze([...BASELINE_DELIVERY_COMMANDS]);
 const SELF_LIFECYCLE_SNAP = Object.freeze([...BASELINE_SELF_LIFECYCLE_COMMANDS]);
 const SPAWN_CREATE_SNAP = Object.freeze([...SPAWN_CREATE_COMMANDS]);
 const SPAWN_OWNER_SNAP = Object.freeze([...SPAWN_OWNER_LIFECYCLE_COMMANDS]);
-const OPERATOR_INPUT_SNAP = Object.freeze([...OPERATOR_INPUT_COMMANDS]);
+const OPERATOR_SEAT_SNAP = Object.freeze([...OPERATOR_SEAT_COMMANDS]);
 const SPAWN_SERVICE_SNAP = Object.freeze([...SPAWN_SERVICE_COMMANDS]);
 const MANAGER_READ_SNAP = Object.freeze([...MANAGER_READ_COMMANDS]);
 const MANAGER_ADMIN_SNAP = Object.freeze([...MANAGER_ADMIN_COMMANDS]);
@@ -337,7 +347,7 @@ export function operatorInstrumentCapabilities(tier: "privileged" | "admin", cal
         endpoint: BASELINE_LIFECYCLE_ENDPOINT, command,
         target: { mode: "any", tOwner: "*" } as EpTarget,
       })),
-      ...OPERATOR_INPUT_SNAP.map((command) => ({
+      ...OPERATOR_SEAT_SNAP.map((command) => ({
         endpoint: BASELINE_LIFECYCLE_ENDPOINT, command,
         target: { mode: "any", tOwner: "*" } as EpTarget,
       })),
@@ -349,7 +359,7 @@ export function operatorInstrumentCapabilities(tier: "privileged" | "admin", cal
     // command is broker-denied on exactly the mesh mode it exists for. `tOwner` is the caller's
     // own owner, never a wildcard: §13.2 forbids an owner-mode standing mint naming a foreign one.
     if (callerOwner !== undefined)
-      caps.push(...OPERATOR_INPUT_SNAP.map((command) => ({
+      caps.push(...OPERATOR_SEAT_SNAP.map((command) => ({
         endpoint: BASELINE_LIFECYCLE_ENDPOINT, command,
         target: { mode: "owner", tOwner: callerOwner } as EpTarget,
       })));

@@ -107,6 +107,33 @@
       "expectRed": "the sweep drops a settled answer once its retry window has passed",
       "cell": "the sweep drops a settled answer once its retry window has passed, and keeps a fresh one",
       "note": "The map had no eviction at all: one entry per turn for the life of the process. The mutant keeps the loop and its scope intact and only removes the delete; a first draft replaced the whole if with statements that referenced the loop bindings OUTSIDE the loop, which is a ReferenceError every sweep tick and graded WRONG-RED about nothing."
+    },
+    {
+      "name": "the sweep never re-checks its stop after pruning the last answer",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    this.maybeStopTurnSweep();\n    for (const p of [...this.pendingTurns.values()]) {",
+      "replace": "    for (const p of [...this.pendingTurns.values()]) {",
+      "expectRed": "and stops itself once the prune leaves it nothing to do: no pending turn, no answer to serve",
+      "cell": "and stops itself once the prune leaves it nothing to do: no pending turn, no answer to serve",
+      "note": "maybeStopTurnSweep's callers run at settle time, when an answer has just been remembered, so the map is never empty when they look. The prune inside the sweep is the one event after which nothing is owed; without this call the 5s interval ran for the process lifetime over two empty maps."
+    },
+    {
+      "name": "a turn with no minted hold is adopted as pending anyway",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if ((await readCheckpointSpec(gw.ctx.kv, { endpoint: p.ref.endpoint, token: p.holdToken })) === undefined) {\n      console.error(`turn reconcile ${p.goalId}: its deadline hold was never minted (the accept crashed before it); left unsettled`);\n      return;\n    }\n",
+      "replace": "",
+      "expectRed": "a turn whose hold was never minted is not adopted as pending",
+      "cell": "a turn whose hold was never minted is not adopted as pending: nothing could settle it",
+      "note": "The hold is minted after the index entry and the goal record. A crash between them leaves a goal nothing can settle; adopted, the sweep would try to expire a pause that was never minted on every tick and the seat could never yield it."
+    },
+    {
+      "name": "adoption rebuilds the pending relay and not the acceptance its answer is remembered against",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    this.turnAcceptances.set(p.goalId, {\n      acceptance: {\n        name: p.seat.name, owner: p.seat.owner, actor: p.seat.actor, uid: p.seat.uid, goalId: p.goalId,",
+      "replace": "    if (false) this.turnAcceptances.set(p.goalId, {\n      acceptance: {\n        name: p.seat.name, owner: p.seat.owner, actor: p.seat.actor, uid: p.seat.uid, goalId: p.goalId,",
+      "expectRed": "an adopted turn yields, and a retry of that yield is served the answer it earned, never `not-found`",
+      "cell": "an adopted turn yields, and a retry of that yield is served the answer it earned, never `not-found`",
+      "note": "rememberSettledTurn writes only against an acceptance this incarnation holds. Adoption rebuilt pendingTurns alone, so a yield whose reply was lost after a restart still heard not-found on the one path adoption exists for."
     }
   ]
 }
