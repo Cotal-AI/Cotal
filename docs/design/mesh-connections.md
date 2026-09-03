@@ -248,14 +248,26 @@ continuation, or a respawn brings the seat back on its home mesh alone. Persisti
 crash-restart silently re-open outbound connections without any operator act in between, and it would
 put a second mesh's identity into recovery state that the lifecycle credential does not cover.
 
-**Decision: an additional connection's material is bounded by the seat's own lifecycle, by whichever
-of the two mechanisms in 4.1 applies.** Where this host mints it (a local B), it is minted per
-lifecycle UID like every other seat secret (`agentLifecycleCredsKey`,
-`packages/workspace/src/agent-secrets.ts:194`), so it cannot outlive the incarnation that asked for
-it. Where the host only delivers what B's operator staged (a remote B), this host chose no lifetime
-and cannot impose one, so the bound is that credential's own TTL, which is why 4.2 makes the TTL
-load-bearing rather than a detail. Either way its path is recorded on the seat's tracked secret set so
-the per-seat teardown reaches it (4.2).
+**Decision: the two paths in 4.1 carry DIFFERENT bounds, and this document names which rather than
+averaging them into one claim.** An earlier draft headlined both as "bounded by the seat's own
+lifecycle", which the delivered path cannot deliver: a lifetime chosen at B is not the home seat's to
+set.
+
+- **Minted (local B):** bounded by the seat's lifecycle. Minted per lifecycle UID like every other
+  seat secret (`agentLifecycleCredsKey`, `packages/workspace/src/agent-secrets.ts:194`), so it cannot
+  outlive the incarnation that asked for it.
+- **Delivered (remote B):** **not lifecycle-bounded**, and the design does not pretend otherwise. B's
+  operator chose the expiry, this host cannot shorten a credential it did not sign, and that expiry
+  may fall after the seat that used it is gone. The bound is the credential's own TTL.
+
+The one lever the home host holds over the delivered path is a **refusal, not a shortening**: the
+manager can read the staged credential's `exp` before handing it over (`credsClaims`,
+`packages/core/src/identity.ts:142`) and refuse material that is already expired or whose remaining
+validity exceeds a configured ceiling. That is what turns "short-TTL by requirement" into something
+enforced at this end rather than requested of the other. The ceiling is Q4's to choose.
+
+Either way the material's path is recorded on the seat's tracked secret set so the per-seat teardown
+reaches it, and deleting that copy is footprint reduction rather than revocation (4.2).
 
 **Decision: a bounded number of additional connections, refused past the bound rather than queued.**
 The default bound is 3. It exists because each connection is a full endpoint with durables, a
@@ -365,9 +377,10 @@ broker. Three consequences, stated rather than glossed:
 - For a **remote** mesh, the home host holds no seed for B and there is nothing to add. It can delete
   its copy of the material and stop using it, and that is all. The credential remains valid until it
   expires or that mesh's own authority revokes it.
-- Therefore an extra-mesh credential is **short-TTL by requirement**, and for a remote mesh the TTL is
-  the only bound on exposure the home host controls. Section 9 carries the number as an open question
-  rather than a guess.
+- Therefore an extra-mesh credential is **short-TTL by requirement**, and for a remote mesh its TTL is
+  the whole of the exposure. The home host does not control that TTL; what it controls is whether to
+  accept it, by reading `exp` and refusing material beyond a ceiling (3.2). Section 9 carries the
+  ceiling as an open question rather than a guess.
 
 This is the #865 credential-revocation gate answered with its real shape. A design that claimed full
 revocation here would be claiming an authority the home host does not have.
@@ -741,10 +754,11 @@ than a design exercise. If you would rather have the default, it is one line to 
 (proposed 3, section 3.2); the attach-lease staleness window (proposed 15 minutes, matching
 `agentAuthState`'s default at `agent-health.ts:25`); the hosted retirement window (proposed 60
 minutes, deliberately longer than staleness so a slow cloud session is not terminalized for being
-slow); and the extra-mesh credential TTL, which section 4.2 makes load-bearing because on a remote
-mesh the TTL is the only bound on exposure the home host controls. I have not proposed a number for
-that last one, because it trades directly against how often a seat has to re-request material and I
-do not know your tolerance.
+slow); and the ceiling on an accepted extra-mesh credential's remaining validity, which sections 3.2
+and 4.2 make load-bearing because on a remote mesh that credential's TTL is the whole of the exposure
+and a refusal is the only lever this host has over it. I have not proposed a number for that last one,
+because it trades directly against how often a seat has to re-request material and I do not know your
+tolerance.
 
 **Q5. Should `tools:` apply to local personas in Phase 1?** Section 7.2 defines it generally but only
 `hosted` requires it, and absent means unchanged everywhere else. Making it required for local
