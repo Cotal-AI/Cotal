@@ -1,0 +1,34 @@
+{
+  "suite": "bin/smoke/goal-follow.smoke.ts + implementations/manager/smoke/manager-service-invoke.smoke.ts",
+  "guard": "spawn acceptances expose the connector-selected readiness budget and a synchronous caller follows through it instead of timing out on a shorter generic wait",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:goal-follow",
+  "completionMarker": "E. the accepted readiness budget, not a shorter generic caller wait, bounds the follow",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/spawn-follow-readiness.json",
+  "why": [
+    "Issue #979 was reproduced with a real broker, manager and child: the fixed 40s caller wait returned deadline-exceeded at 40385ms while the child joined healthy at 43807ms inside its connector-declared 50s readiness window.",
+    "The first mutation restores that ordering bug directly in the generic action follower. The second proves the manager acceptance carries the exact connector-selected budget that the follower consumes, rather than a re-spelled global constant.",
+    "Both suites import built workspace packages, so each mutation command rebuilds the affected package before running its named assertion."
+  ],
+  "mutations": [
+    {
+      "name": "the follower ignores the accepted readiness budget and uses only the shorter caller wait",
+      "file": "packages/core/src/endpoint-invoke.ts",
+      "find": "      ? Math.max(deadlineMs, readinessDeadlineMs + GOAL_FOLLOW_MARGIN_MS)\n      : deadlineMs;",
+      "replace": "      ? deadlineMs\n      : deadlineMs;",
+      "expectRed": "a terminal inside the accepted readiness budget outlives the shorter generic caller wait",
+      "cell": "a terminal inside the accepted readiness budget outlives the shorter generic caller wait",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "the manager acceptance reports its generic default instead of the connector-selected readiness budget",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "readinessDeadlineMs: readinessTimeoutMs, executor",
+      "replace": "readinessDeadlineMs: this.readinessTimeoutMs, executor",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/manager build && pnpm smoke:manager-service-invoke",
+      "completionMarker": "3. invoke spawn (the recompiled input contract gates args)",
+      "expectRed": "invoke spawn accepts the goal with the exact connector readiness budget a follower must outlive",
+      "cell": "invoke spawn accepts the goal with the exact connector readiness budget a follower must outlive",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    }
+  ]
+}

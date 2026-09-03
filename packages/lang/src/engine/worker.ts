@@ -96,10 +96,12 @@ export interface WorkerRunFailed {
   readonly name: string;
   readonly message: string;
   /**
-   * `RunReleased.reason` (L5012), carried as the field it is so a host rebuilding the class does
-   * not have to parse its own sentence back out of the message.
+   * `RunReleased.reason` (L5012) and `RunHeld.reason` (L5025), carried as the field it is so a
+   * host rebuilding either class does not have to parse its own sentence back out of the message.
    */
   readonly reason?: string;
+  /** `RunHeld.step` (L5025): the step whose refusal held the run, carried like `reason`. */
+  readonly step?: string;
   /**
    * An `EffectError`'s domain fields, carried so a host can rebuild the class whole: `kind` is what
    * failure handling branches on and `detail` is a recorded value, already fenced at its throw

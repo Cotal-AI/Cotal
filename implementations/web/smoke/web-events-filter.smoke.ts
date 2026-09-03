@@ -3,16 +3,21 @@
  *
  * WHAT THE DEFECT WAS. `/api/channels` and `/api/activity` both walked `listChannels()` with no
  * classifier: the sidebar listed one row per agent that has ever run, the graph page grew a hub node
- * for each, and the activity route issued one `channelHistory` round trip PER EVENT CHANNEL and then
- * merged the results into a global top-N nobody reading chat asked for. `listChannels()` derives a
- * row from every retained concrete subject and the chat stream caps per subject rather than by age,
- * so those rows never age out: the cost scales with the number of agents ever run.
+ * for each, and the activity route pulled every event channel's history across the link and then
+ * merged it into a global top-N nobody reading chat asked for. `listChannels()` derives a row from
+ * every retained concrete subject and the chat stream caps per subject rather than by age, so those
+ * rows never age out: the cost scales with the number of agents ever run.
  *
  * THE CLAIM THIS SUITE EXISTS TO MAKE IS ABOUT ORDER, NOT ABOUT OUTPUT. Filtering the merged result
- * would produce the same JSON while still paying every round trip. So the load-bearing cell is not
- * "no event channel appears in the answer" but "no event channel was ever ASKED FOR", and the mock
+ * would produce the same JSON while still moving every byte. So the load-bearing cell is not "no
+ * event channel appears in the answer" but "no event channel was ever ASKED FOR", and the mock
  * records exactly that. A suite that only checked the output would pass against the version this
  * change replaces.
+ *
+ * WHERE "ASKED FOR" LIVES SINCE #1210. All of chat is one read of one stream, so the classifier now
+ * decides that read's FILTER SET rather than which of seventy reads to issue. The evidence is the
+ * same and the mock records the same thing: the exact channel list handed to the read. An event
+ * channel left out of that list is dropped by the broker and never crosses the link.
  *
  * IT USES THE REAL CLASSIFIER, NOT A LOCAL PREFIX TEST. `isEventChannel` is a full derivation rather
  * than `startsWith("events.")`, and the difference is a silent chat loss: a human channel called
@@ -71,21 +76,26 @@ const msg = (channel: string, ts: number): CotalMessage =>
     channel,
   }) as CotalMessage;
 
-/** Records every channel history was ASKED for. That list is the order-of-operations evidence. */
+/** Records the channel list history was ASKED for. That list is the order-of-operations evidence. */
 class Source implements ActivitySource {
   readonly historyAsked: string[] = [];
   readonly limitsSeen: number[] = [];
+  historyCalls = 0;
   dmAsked = 0;
   constructor(private readonly rows = CHANNELS) {}
   async listChannels() {
     return this.rows.map((r) => ({ ...r }));
   }
-  async channelHistory(channel: string, opts: { limit: number }): Promise<CotalMessage[]> {
-    this.historyAsked.push(channel);
+  async multiChannelHistory(channels: readonly string[], opts: { limit: number }): Promise<{ channel: string; msg: CotalMessage }[]> {
+    this.historyCalls++;
+    this.historyAsked.push(...channels);
     this.limitsSeen.push(opts.limit);
-    // Two messages per channel, timestamps spread so the merge order is observable.
-    const base = 1000 + this.historyAsked.length * 10;
-    return [msg(channel, base), msg(channel, base + 1)];
+    // Two messages per channel, timestamps spread so the merge order is observable. The tag comes
+    // from the read, as it does in production from the delivered subject.
+    return channels.flatMap((channel, i) => {
+      const base = 1000 + (i + 1) * 10;
+      return [{ channel, msg: msg(channel, base) }, { channel, msg: msg(channel, base + 1) }];
+    });
   }
   async dmHistory(opts: { limit: number }): Promise<CotalMessage[]> {
     this.dmAsked++;
@@ -124,13 +134,14 @@ console.log("web-events-filter smoke");
     page.partial === false && page.read === page.of && page.missing.length === 0, page);
   ok("2.1 no event channel was ever ASKED for", EVENT_CHANNELS.every((c) => !src.historyAsked.includes(c)), src.historyAsked);
   ok("2.2 history was asked for exactly the chat channels", JSON.stringify(src.historyAsked) === JSON.stringify(KEPT), src.historyAsked);
-  ok("2.3 four round trips, not seven", src.historyAsked.length === 4, src.historyAsked.length);
+  ok("2.3 four channels named, not seven", src.historyAsked.length === 4, src.historyAsked.length);
+  ok("2.3b and ONE read carries all four, not one read per channel", src.historyCalls === 1, src.historyCalls);
   ok("2.4 the limit is passed down", src.limitsSeen.every((l) => l === 200));
   ok("2.5 DM history is still read", src.dmAsked === 1);
 
   const chatRows = out.filter((e) => e.mode === "chat") as { mode: "chat"; channel: string; msg: CotalMessage }[];
   ok("2.6 no event-channel message reaches the feed", chatRows.every((e) => !EVENT_CHANNELS.includes(e.channel)));
-  ok("2.7 chat rows are tagged with the channel the SERVER requested", chatRows.every((e) => e.channel === e.msg.channel));
+  ok("2.7 chat rows are tagged by the READ, not by the payload's own claim", chatRows.every((e) => e.channel === e.msg.channel));
   ok("2.8 DMs are merged as unicast", out.some((e) => e.mode === "unicast"));
   ok("2.9 oldest first", out.every((e, i) => i === 0 || out[i - 1].msg.ts <= e.msg.ts));
   ok("2.10 the DM is newest, so it survives the cap", out[out.length - 1]?.mode === "unicast");
@@ -148,7 +159,7 @@ console.log("web-events-filter smoke");
 {
   const src = new Source(EVENT_CHANNELS.map((channel) => ({ channel, messages: 10 })));
   const out = (await activityBackfill(src, 200)).entries;
-  ok("4.1 no history round trip at all", src.historyAsked.length === 0, src.historyAsked);
+  ok("4.1 no channel is named to the read at all", src.historyAsked.length === 0, src.historyAsked);
   ok("4.2 the feed is DMs only, not an error", out.every((e) => e.mode === "unicast"));
 }
 

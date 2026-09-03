@@ -8,7 +8,7 @@ import { resolveNatsServer } from "./nats-bin.js";
 import { cliVersion } from "./version.js";
 
 // Moved into `@cotal-ai/workspace` (stage 4); re-exported for the CLI's many importers.
-export { resolveSpace } from "@cotal-ai/workspace";
+export { resolveRuntimeSpace, resolveSpace } from "@cotal-ai/workspace";
 
 export interface MeshStatus {
   reachable: boolean;
@@ -54,7 +54,7 @@ export async function meshStatus(cwd: string): Promise<MeshStatus> {
 export interface MachineStatus {
   nats: "path" | "bundled" | "missing";
   claudePlugin: boolean;
-  claudeSkills: "current" | "stale" | "missing" | "broken" | "unknown";
+  claudeSkills: { state: "current" | "stale" | "missing" | "broken" | "unknown"; version?: string };
   agents: { claude: boolean; opencode: boolean };
 }
 
@@ -88,12 +88,15 @@ export async function machineStatus(): Promise<MachineStatus> {
  *  status can never bless a plugin the installer would have rejected. `unknown` when Claude isn't on PATH
  *  or can't be queried. */
 function claudeSkillsState(entries: PluginEntry[] | undefined): MachineStatus["claudeSkills"] {
-  if (entries === undefined) return "unknown";
+  if (entries === undefined) return { state: "unknown" };
   const match = entries.find((e) => e.id === "cotal-skills@cotal-mesh" && e.scope === "user");
-  if (!match || match.enabled === false) return "missing";
+  if (!match || match.enabled === false) return { state: "missing" };
   const errs = (match.errors ?? match.error) as unknown;
-  if (Array.isArray(errs) ? errs.length > 0 : Boolean(errs)) return "broken"; // present but failed to load: never "current"
-  return match.version === cliVersion() ? "current" : "stale";
+  if (Array.isArray(errs) ? errs.length > 0 : Boolean(errs)) return { state: "broken" }; // present but failed to load: never "current"
+  return {
+    state: match.version === cliVersion() ? "current" : "stale",
+    version: typeof match.version === "string" ? match.version : undefined,
+  };
 }
 
 export function onPath(bin: string): boolean {

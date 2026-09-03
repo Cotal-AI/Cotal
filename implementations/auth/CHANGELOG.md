@@ -1,5 +1,98 @@
 # @cotal-ai/auth
 
+## 0.40.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.40.0
+- @cotal-ai/workspace@0.40.0
+
+## 0.39.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.39.1
+- @cotal-ai/workspace@0.39.1
+
+## 0.39.0
+
+### Patch Changes
+
+- Updated dependencies [2277e28]
+  - @cotal-ai/core@0.39.0
+  - @cotal-ai/workspace@0.39.0
+
+## 0.38.0
+
+### Patch Changes
+
+- Updated dependencies [21d9552]
+  - @cotal-ai/workspace@0.38.0
+  - @cotal-ai/core@0.38.0
+
+## 0.37.0
+
+### Minor Changes
+
+- 9021896: Make the runtime pid/log namespace per-space. The manager and delivery daemon now record themselves
+  as `.cotal/manager.<spaceKey>.pid`, `.cotal/manager.<spaceKey>.log`,
+  `.cotal/manager.<spaceKey>.delivery-aware`, `.cotal/delivery.<spaceKey>.pid` and
+  `.cotal/delivery.<spaceKey>.log`, through the same `{space}` expansion `auth-service.<spaceKey>.pid`
+  already used. The five names were root-scoped constants, so one workspace root hosted one manager and
+  one delivery daemon by filename: a second space booting in the same root overwrote the first space's
+  record, and every reader of that file then answered about the wrong process. `status`, `down`, `up`,
+  `clean` and `spawn -f` take the space they are answering about.
+
+  Existing single-space meshes keep working across the upgrade. Reads admit a pre-segmentation
+  root-scoped record while it is the only spelling present, byte-exact, so a `cotal down` still finds
+  and stops a daemon started by the previous build instead of orphaning it. Writes are always the
+  canonical space-keyed name, and each start reclaims a provably dead pre-upgrade record first, so an
+  ordinary upgrade does not leave both spellings behind. A live pre-upgrade daemon is refused rather
+  than overwritten, and both spellings present is reported as ambiguous rather than guessed.
+
+  A folder-wide command reads its space off the runtime records the folder holds. `resolveRuntimeSpace`
+  decodes the space out of the record filenames and prefers a space whose record is running over dead
+  residue; two spaces running under one root throws and names both. The previous read came from the
+  `.cotal/auth` account records, which an open mesh (`broker: { auth: false }`) never writes, so a bare
+  `cotal down` in such a folder answered with the default space and walked past its own manager once the
+  records became space-keyed.
+
+  `MANAGER_PIDFILE` and `MANAGER_DELIVERY_AWARE_MARKER` move from `pid.ts` to `local-process.ts` and
+  are now `{space}` templates; both are still exported from the package index. `RESERVED_COTAL_CHILDREN`
+  no longer lists the five root-scoped runtime names.
+
+### Patch Changes
+
+- 9ff2363: Fix the boot crash-resume so a retirement whose head terminal never landed is resumed at the next auth-service boot. A crash between the barrier's last two durable writes (the gate terminal, then the head terminal) left the gate retired by the operation while the alias head stayed `retiring` — non-current and not replaceable per SPEC 13.1 — and the boot's owed-ness check, which read the gate alone, skipped that intent on every boot. The alias could never mint and could never be replaced. Owed-ness now reads the gate AND the alias head: a retirement whose gate terminal landed by its own operation resumes exactly while that operation's uid still owns a non-terminal head, re-entering the same barrier so only the head tail is finished (nothing past the gate terminal is re-revoked or re-drained); a retired head at the uid and a successor's head are the completed cells and stay skipped. A same-op despawn retry already repaired this state through the retire-lifecycle rail; the boot path was the dead letter. Adds a mutation-proofed smoke that stages the crash window deterministically and proves both repair triggers.
+- 0d45f44: Reached manager-surface smokes read count, revision, and names from the shipped cluster document. The resolve-rtt probe asserts injected-wait occupancy, not wall-clock versus count times RTT.
+- Updated dependencies [e5e68ed]
+- Updated dependencies [c31de91]
+- Updated dependencies [d4779db]
+- Updated dependencies [6926b34]
+- Updated dependencies [d2c0fd3]
+- Updated dependencies [7e45495]
+- Updated dependencies [135ddaf]
+- Updated dependencies [e703873]
+- Updated dependencies [6c1cefe]
+- Updated dependencies [00ac9d9]
+- Updated dependencies [c09d750]
+- Updated dependencies [b20644b]
+- Updated dependencies [74c9a1b]
+- Updated dependencies [bfd650c]
+- Updated dependencies [e6c6947]
+- Updated dependencies [b36bf50]
+- Updated dependencies [3cc980d]
+- Updated dependencies [9021896]
+- Updated dependencies [d94b617]
+- Updated dependencies [eb3b429]
+- Updated dependencies [17046ac]
+- Updated dependencies [b7b932e]
+- Updated dependencies [8eff985]
+- Updated dependencies [b88edd9]
+- Updated dependencies [063151b]
+  - @cotal-ai/core@0.37.0
+  - @cotal-ai/workspace@0.37.0
+
 ## 0.36.0
 
 ### Patch Changes

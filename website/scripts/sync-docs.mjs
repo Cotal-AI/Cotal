@@ -67,6 +67,7 @@ const groups = [
     files: [
       'docs/architecture.md',
       'docs/control-surface.md',
+      'docs/workflows.md',
       'docs/spaces.md',
       'docs/transport.md',
       'docs/presence-and-delivery.md',
@@ -85,6 +86,7 @@ const groups = [
       'docs/channels-and-permissions.md',
       'docs/config.md',
       'docs/mesh-view.md',
+      'docs/lang-card.md',
       'docs/glossary.md',
     ],
   },

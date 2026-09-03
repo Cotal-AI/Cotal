@@ -31,8 +31,8 @@
     {
       "name": "closed epoch delete rejects public stop instead of deferring cleanup",
       "file": "packages/core/src/endpoint.ts",
-      "find": "          const closedEpoch = (err as Error).name === \"ClosedConnectionError\" || /^closed connection$/i.test((err as Error).message);\n          const dyingEpochTimeout = /timeout/i.test((err as Error).message) && (this.reconnecting || !this.nc || this.nc.isClosed());\n          if (!closedEpoch && !dyingEpochTimeout) throw err;\n",
-      "replace": "          const closedEpoch = false;\n          const dyingEpochTimeout = false;\n          throw err;\n",
+      "find": "          if (timeout || closedEpoch || dyingEpochTimeout) {\n            this.emit(\"error\", err as Error);\n          } else {\n            throw err;\n          }\n",
+      "replace": "          throw err;\n",
       "expectRed": "public stop concurrent with terminal close resolves after fresh cleanup",
       "cell": "public stop concurrent with terminal close resolves after fresh cleanup",
       "note": "A closed epoch is deferred cleanup, not deletion success and not a caller-visible stop failure."

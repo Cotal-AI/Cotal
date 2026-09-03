@@ -17,7 +17,7 @@ import {
   endpointToken, assertBoundedOwner, assertLifecycleToken, assertCommandToken, assertPoolToken,
   type EpAuthzMode,
 } from "./endpoint-subjects.js";
-import { EpEnvelopeError, type EpClass } from "./endpoint-envelope.js";
+import { EpEnvelopeError, lifecycleBlocked, type EpClass } from "./endpoint-envelope.js";
 import {
   RECORD_KINDS, GOVERN_HEAD, recordSpecKey, recordStatusKey, recordAtomicKey, readRecord, recordsBucket,
   createRecordEntry, updateRecordEntry, deleteRecordEntry, assertStatusValue,
@@ -412,9 +412,18 @@ export async function registerServiceInstance(
   if (obs.space !== args.space || obs.endpoint !== spec.endpoint || obs.lifecycleUid !== args.instanceId)
     throw new EpEnvelopeError("internal", `the issuance gate is for "${obs.space}/${obs.endpoint}/${obs.lifecycleUid}", not "${args.space}/${spec.endpoint}/${args.instanceId}"; a registration drives only its OWN instance's gate, and the instance token is unique only within (space, endpoint) (SPEC 13.1)`);
   if (obs.state === "retired")
-    throw new EpEnvelopeError("failed-precondition", `the issuance gate for "${args.instanceId}" is retired; the lifecycle is permanently closed and its id is never reused, so a re-read cannot help (SPEC 13.1)`);
+    throw lifecycleBlocked("failed-precondition", `the issuance gate for "${args.instanceId}" is retired; the lifecycle is permanently closed and its id is never reused, so a re-read cannot help (SPEC 13.1)`, {
+      blockedOp: obs.op?.kind === "activation" ? "activation" : "retirement",
+      headState: "retired",
+      ...(obs.op?.opId !== undefined ? { opId: obs.op.opId } : {}),
+    });
   if (obs.state !== "open")
-    throw new EpEnvelopeError("conflict", `the issuance gate for "${args.instanceId}" is ${obs.state}; another barrier holds it; re-read and re-decide (SPEC 13.8)`);
+    throw lifecycleBlocked("conflict", `the issuance gate for "${args.instanceId}" is ${obs.state}; another barrier holds it; if the holder is a dead predecessor, run: cotal reconcile-gate (SPEC 13.8)`, {
+      blockedOp: obs.op?.kind ?? "registration",
+      headState: obs.state === "frozen" ? "retiring" : "retired",
+      ...(obs.op?.opId !== undefined ? { opId: obs.op.opId } : {}),
+      remedy: "cotal reconcile-gate",
+    });
   const token = await args.barrier.freeze(obs.revision);
   if (token === null)
     throw new EpEnvelopeError("conflict", `a concurrent barrier froze the issuance gate for "${args.instanceId}" first; re-read and re-decide (SPEC 13.1/13.8)`);
@@ -1332,6 +1341,8 @@ export interface EpGateState {
   registrationRevision: number;
   nameAuthorityRevision: number;
   revision: number;
+  /** Present when the gate is frozen or retired: the op that owns the freeze / terminal. */
+  op?: { opId: string; kind: "activation" | "takeover" | "registration" | "retirement"; successor?: string };
 }
 
 /** The successor gate coordinate a barrier reopens at (§13.1): the three currency dimensions plus

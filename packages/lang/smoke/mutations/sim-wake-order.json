@@ -1,0 +1,18 @@
+{
+  "suite": "packages/lang/smoke/sim.smoke.ts",
+  "guard": "The simulator delivers parked timed effects in wake order on one virtual clock, so concurrent branches accumulate the durations they wrote; delivery in ask order is the old shared-serial-clock behavior that decided races by the order effects were asked. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-sim",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/sim-wake-order.json",
+  "mutations": [
+    {
+      "name": "the pump pops in ask order and ignores wake times",
+      "file": "packages/lang/src/sim.ts",
+      "find": "        if (next === undefined || e.wake < next.wake || (e.wake === next.wake && e.seq < next.seq)) next = e;",
+      "replace": "        if (next === undefined || e.seq < next.seq) next = e;",
+      "expectRed": "two parked sleeps deliver in wake order, not ask order, each at its own wake",
+      "completionMarker": "ok script entries the run never reached are named",
+      "cell": "two parked sleeps deliver in wake order, not ask order, each at its own wake",
+      "note": "Ask-order delivery hands the 5m sleep its wake first and the clock never goes back, so both arrive stamped 300000 in ask order; every sequential cell upstream is indifferent to the pop rule and keeps the marker green."
+    }
+  ]
+}

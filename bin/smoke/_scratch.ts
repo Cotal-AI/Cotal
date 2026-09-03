@@ -25,7 +25,7 @@
  * sandbox is what makes the suite pass, but the assertion is what keeps it honest if the sandbox
  * ever stops working.
  */
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parsePid, probeLiveness } from "@cotal-ai/workspace";
@@ -206,8 +206,16 @@ export function assertScratchHeld(dir: string, what = "scratch"): void {
  * Returns the killed pid. Only ever kills a pid this fixture's own `cotal up` wrote.
  */
 export async function killManagerAtRoot(root: string): Promise<number> {
-  const pidFile = join(root, ".cotal", "manager.pid");
-  if (!existsSync(pidFile)) {
+  // The manager's record is named per-space (`manager.<spaceKey>.pid`), and a pre-segmentation root
+  // still spells it `manager.pid`. This fixture has no space in hand, so it matches the SHAPE and
+  // refuses a root holding more than one - which would make "the manager" a guess.
+  const records = existsSync(join(root, ".cotal"))
+    ? readdirSync(join(root, ".cotal")).filter((n) => /^manager\.([^.]+\.)?pid$/.test(n))
+    : [];
+  if (records.length > 1)
+    throw new Error(`several manager records under ${join(root, ".cotal")} (${records.join(", ")}), so "the manager" is ambiguous and none was killed`);
+  const pidFile = join(root, ".cotal", records[0] ?? "manager.pid");
+  if (records.length === 0) {
     const captor = foreignRootFor(root);
     throw new Error(
       `no manager pid at ${pidFile}, so the manager was NOT killed and anything asserted after ` +

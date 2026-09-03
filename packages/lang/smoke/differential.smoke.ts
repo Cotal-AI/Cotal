@@ -335,7 +335,7 @@ log("rounds", rounds, r.status);`,
   [
     "ask, wait and a timed-out wait",
     'const a = await spawn("one");\nconst answer = await ask(a, { name: "q", schema: { days: "number" } });\nconst got = await wait(replied(a), { name: "w", timeout: "5m" });\nconst missed = await wait(replied(a), { name: "w2", timeout: "5m" });\nlog(answer, got, missed);',
-    { asks: { q: { value: { days: 2 }, at: 0 } }, events: { w: { value: { ok: true }, at: 0 }, w2: { value: null, at: 0 } } },
+    { asks: { q: { days: 2 } }, events: { w: { value: { ok: true }, at: 0 }, w2: { value: null, at: 0 } } },
   ],
   [
     "notify and monitor, which journal and answer nothing",
@@ -513,14 +513,14 @@ log("rounds", rounds, r.status);`,
   // last two rows "L2031" would just be L4014 wearing another code.
   [
     "refusals: a member written onto a record the host has seen",
-    'const a = await spawn("w", { name: "a" });\nconst sch = { xs: keys({ a: 1 }) };\nawait ask(a, { name: "q", schema: sch });\nsch.xs.foo = 1;',
-    { asks: { q: { value: { days: 2 }, at: 0 } } },
+    'const sch = { xs: keys({ a: 1 }) };\nawait checkpoint("q", "ok?", { schema: sch });\nsch.xs.foo = 1;',
+    { checkpoints: { q: { status: "resolved", by: "sim" } } },
     "L2031",
   ],
   [
     "refusals: even a member it HAS, once the host has seen it",
-    'const a = await spawn("w", { name: "a" });\nconst sch = { xs: keys({ a: 1 }) };\nawait ask(a, { name: "q", schema: sch });\nsch.xs[0] = "z";',
-    { asks: { q: { value: { days: 2 }, at: 0 } } },
+    'const sch = { xs: keys({ a: 1 }) };\nawait checkpoint("q", "ok?", { schema: sch });\nsch.xs[0] = "z";',
+    { checkpoints: { q: { status: "resolved", by: "sim" } } },
     "L2031",
   ],
   ["the same member written before the host saw it, the control", 'const sch = { xs: keys({ a: 1 }) };\nsch.xs[0] = "z";\nlog(sch.xs[0]);', {}],

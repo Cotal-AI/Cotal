@@ -1,0 +1,3 @@
+# Claude personas can contain private instructions. Grade the built public connector: argv carries
+# only an owner-private file path, never the persona body, and no text fallback is permitted.
+smoke:claude-persona-file

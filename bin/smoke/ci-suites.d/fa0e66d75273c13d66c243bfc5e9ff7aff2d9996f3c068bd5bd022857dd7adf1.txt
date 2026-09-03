@@ -1,0 +1,7 @@
+# #969: a teardown may only signal a pid whose creation identity it can prove. The launch writes a
+# sibling `<pidfile>.identity` start pin; the four teardown paths (down's shared component stop
+# covering the broker, stopManager, stopDelivery, stopAuthService) refuse a reused pid, a legacy
+# live record, and a torn pin, preserving the record; only ESRCH-proven death clears. Broker-free
+# (real children, no nats-server). Mutation-proofed - bin/smoke/mutations/pid-identity.json.
+# Appended; shard assignments unchanged.
+smoke:pid-identity

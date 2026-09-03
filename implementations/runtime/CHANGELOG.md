@@ -1,5 +1,129 @@
 # @cotal-ai/runtime
 
+## 0.40.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.40.0
+- @cotal-ai/workspace@0.40.0
+- @cotal-ai/lang@0.40.0
+
+## 0.39.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.39.1
+- @cotal-ai/workspace@0.39.1
+- @cotal-ai/lang@0.39.1
+
+## 0.39.0
+
+### Minor Changes
+
+- 2277e28: A capability refusal is durable and retryable. A handler that cannot perform an effect on its host
+  throws the new `EffectRefused`; the interpreter settles the entry with the new status `refused`
+  under the handler's code (L5016 for the mesh handler's `NotYetDurable`, which now extends it) and
+  unwinds the run with the uncatchable `RunHeld` (L5025). The driver grades the run `released`, and a
+  resume on a capable host finds the new `refused` lookup verdict and performs the step live, so a
+  run started before the durable-action surface lands heals the day it does. Previously the refusal
+  settled `failed` and a resume replayed the failure forever.
+
+  Two concurrent `turn`s on one agent handle are serialized at the dispatch seam both engines share:
+  the second begins when the first settles, in dispatch order. Turns on different handles are
+  unaffected.
+
+  A fork's child records its lineage: the run record's spec gains `forkedFrom` (`{ run, step }`,
+  absent on runs started fresh), `commitFork` writes it with the spec, and `ForkCommitResult.
+lineageRecorded` is now true.
+
+  Spec: §6.5 (turn serialization), §9.2 (six uncatchables), §10.1/§10.7 (the `refused` status and
+  verdict), §11.1, §11.3, Appendix A (+L5025), and SPEC.md §14.3 (`forkedFrom`).
+
+- 43e1f7d: Simulator fidelity, ask schema enforcement, journal result bound, and the scope release law.
+
+  The simulator is now discrete-event: timed effects park at their wake times and are delivered in
+  wake order on one virtual clock, so concurrent branches accumulate the durations they wrote and a
+  simulated race is decided by the same rule as a live handler (least recorded clock, ties by
+  declaration order) instead of by the order effects were asked.
+
+  The reference simulator enforces the ask schema shorthand (spec §6.5): a schema it cannot read is
+  refused with the new L4022 rather than skipped, a non-conforming reply consumes one attempt, and
+  exhausted attempts report L4006.
+
+  A journal can be constructed with a result bound (`JournalInit.resultBytes`, plumbed through
+  `DriveRequest.resultBytes`); a settled ok result over it is refused ahead of the settling append
+  with L5006, which leaves the reserved list.
+
+  A host release or refused append inside a parallel, race, fanOut or conclave no longer cancels
+  sibling branches or settles their in-flight entries cancelled: the unwind propagates bare, the
+  scope settles nothing, and a resume picks the run up exactly where the journal says it stopped.
+  The old behavior permanently poisoned any run a driver stopped while an effect was in flight
+  inside a scope.
+
+- 34ff272: `cotal run`, the workflow-run operator surface, self-registered by `@cotal-ai/runtime` and composed
+  into the `cotal` binary: `start --file <program>` drives a new run on the mesh handler, `resume
+<runId> --file <program>` takes an existing run over and drives it to quiescence, `ps` lists an
+  endpoint's run records (state, holder, journal high-water, fork lineage), `journal <runId>` prints
+  the durable step journal, and `answer <runId> <stepKey> --by <who> [--value <json>]` resolves an
+  open checkpoint through the run driver, presenting as the arming holder read back from the
+  checkpoint record (resume is holder-bound). One raw connection per invocation against the resolved
+  mesh target; the journal's result bound is taken from the broker's own max_payload.
+
+  `docs/workflows.md` gains an "Operating a run" section, the connector docs bundle carries it, and
+  every connector folds a workflow steer (`WORKFLOW_STEER`) into its agent instructions beside the
+  mesh-first steer, so agents reach for a durable journalled run instead of improvising long
+  coordination loops in their own context.
+
+### Patch Changes
+
+- Updated dependencies [2277e28]
+- Updated dependencies [43e1f7d]
+  - @cotal-ai/lang@0.39.0
+  - @cotal-ai/core@0.39.0
+  - @cotal-ai/workspace@0.39.0
+
+## 0.38.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.38.0
+- @cotal-ai/lang@0.38.0
+
+## 0.37.0
+
+### Minor Changes
+
+- 00ac9d9: manager: refuse a manager-role spawn of a persona without the spawn capability. A persona defined over the wire (`cotal_persona`) carries no `capabilities:` line (the write path is content-only by design), and `cotal_spawn` takes a free-form `role`, so a wire-defined persona could be spawned with `role: "manager"` and join presenting as a manager whose credential cannot reach the control plane, silently, until the seat first tried to seat a worker (issue #966). The manager now refuses that spawn at accept, before any provisioning, naming the remediation for both authors: an operator adds `capabilities: [spawn]` to the persona file; a peer-defined persona cannot declare capabilities and must ask an operator. The guard keys on the effective role (a spawn-time role override wins over the file's, mirroring existing precedence) and leaves every non-manager spawn untouched. `cotal_spawn`'s `role` argument documents the requirement. Capabilities remain non-declarable over the wire: the closed `define-persona` input schema is unchanged and still guarded by `smoke:persona-input-closed`.
+
+### Patch Changes
+
+- Updated dependencies [e5e68ed]
+- Updated dependencies [c31de91]
+- Updated dependencies [d4779db]
+- Updated dependencies [6926b34]
+- Updated dependencies [d2c0fd3]
+- Updated dependencies [7e45495]
+- Updated dependencies [135ddaf]
+- Updated dependencies [e703873]
+- Updated dependencies [6c1cefe]
+- Updated dependencies [00ac9d9]
+- Updated dependencies [b20644b]
+- Updated dependencies [74c9a1b]
+- Updated dependencies [bfd650c]
+- Updated dependencies [e6c6947]
+- Updated dependencies [b36bf50]
+- Updated dependencies [3cc980d]
+- Updated dependencies [0098000]
+- Updated dependencies [d94b617]
+- Updated dependencies [eb3b429]
+- Updated dependencies [17046ac]
+- Updated dependencies [b7b932e]
+- Updated dependencies [8eff985]
+- Updated dependencies [b88edd9]
+- Updated dependencies [063151b]
+  - @cotal-ai/core@0.37.0
+  - @cotal-ai/lang@0.37.0
+
 ## 0.36.0
 
 ### Patch Changes

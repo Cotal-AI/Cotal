@@ -14,9 +14,9 @@ supported.
 
 ## Install
 
-The connector is seeded with the Cotal CLI. It currently supports **macOS and Linux only**:
-Jcode's released Harness API bridge is a Unix-socket surface. Install Jcode 0.78.1 or later from
-its GitHub release and make the binary available as `jcode` on `PATH`:
+The connector is seeded with the Cotal CLI. Jcode's released Harness API bridge is a Unix-socket
+surface, so Windows is not supported. Managed seats run on Linux, macOS, and the BSDs.
+Install Jcode 0.78.1 or later from its GitHub release and make the binary available as `jcode` on `PATH`:
 
 ```bash
 jcode version --json
@@ -70,16 +70,68 @@ records, sends a bounded SIGTERM, escalates survivors to an exact-PID SIGKILL, a
 failed stop instead of a clean one if any recorded process survives. It never signals by name, so
 teardown can only ever reach the seat's own tree.
 
+A seat that dies without that teardown, from a manager restart or a kill past the grace window,
+leaves its Jcode server running. The server has a process group of its own and carries no
+`COTAL_NAME`, so a name-keyed reap does not reach it, and it holds the seat's runtime directory
+until its own five-minute idle timer expires. Each launch records its identity nonce and its host
+process in the private home, and the seat's next launch stops the tree that record names. The
+recorded host is the gate: while it is still alive the seat is still serving, so nothing is
+signalled and the second launch meets Jcode's own runtime-directory lock instead.
+
 The private Jcode home lives under `<manager-workspace>/.cotal/jcode/`. It is unique per
 space/name and is owner-only. Jcode's own credential inheritance is used for the private instance,
 so provider logins work without copying its transcript/config tree into the seat. The spawned
 Jcode process does not inherit `COTAL_*` values or the Cotal launch-material pointer.
 
+Because the home is keyed by space and name, a seat respawned under the same space, name, and
+manager workspace lands in the same home, and the connector automatically continues the
+non-archived Jcode session there that was recorded for the seat's working directory and holds the
+largest transcript, since that is the session carrying the memory a restart would otherwise throw
+away. A seat spawned under a fresh name keys a different home and starts with an
+empty transcript, so keep the same name when you want a replacement seat to continue where the
+previous one stopped. This automatic continuation is a relaunch of the seat's own private session;
+it is separate from `--resume`, which names an outside session and stays unsupported. The short
+socket alias the connector derives from that home is reclaimed at every launch, so a name a stopped
+seat used stays launchable.
+
+Connector diagnostics are written both to the spawning terminal and to an owner-only
+`<private-home>/logs/connector-<timestamp>-<pid>.log`, so a failed launch remains inspectable after
+the manager's launch error scrolls away. Public startup failures stay scrubbed to allow-listed
+codes rather than arbitrary Harness API messages.
+
+Credential mirroring is mandatory for managed Jcode seats: each launch atomically refreshes the
+allowlisted Jcode, provider-config, and external-login destinations, and removes a destination when
+its source login was removed. Cleanup addresses only that explicit inventory; transcripts, MCP
+configuration, logs, and other private-home state are untouched. Copy, mkdir, and removal walk the
+parents with `O_NOFOLLOW`, then publish, create, or unlink the leaf through the pinned parent rather
+than through a path the kernel re-walks. Replacing a walked directory with a symlink cannot write,
+create, or delete a namesake outside the private home.
+
+Two mechanisms provide that pin. On Linux the leaf is named `/dev/fd/<fd>/<name>`, the openat and
+unlinkat equivalent Node does not expose, after `/dev/fd/<fd>/.` is proven to traverse. macOS mounts
+`/dev/fd` but has no subpath namespace under a descriptor, so there the connector pins the parent as
+the process working directory instead: a single-component name resolves from that directory's inode
+and no ancestor is walked again. Entering by path is verified rather than trusted, because `chdir`
+takes a path: the entered directory's inode must equal the inode of the descriptor opened a moment
+earlier, and a mismatch is refused by name. The working directory is restored on every exit,
+including the refusing ones. If neither pin is available, the connector throws a named error and
+mirrors nothing. Once a pin holds, `ENOENT` on a child means the mirror path is absent.
+
+There is no credential-free opt-out today because the private instance must reproduce the operator's
+current provider-login state rather than silently start with stale or partial authorization.
+
 If a provider failure closes the private Harness API connection during a mesh-driven turn, the
-connector leaves that turn's inbox batch unacknowledged and makes one private replacement
-connection to the same session. The seat reports `waiting` while it reconnects, then redrives that
-unacknowledged batch only after the session attaches. A failed replacement, or a second disconnect,
-ends the seat rather than silently retrying bridges without bound.
+connector leaves that turn's inbox batch unacknowledged and opens one bounded recovery window for a
+private replacement connection to the same session. A transient launch or attach failure retries
+inside that window, so a loaded host gets the same result as a fast one without creating an
+unbounded connector relaunch loop. The seat reports `waiting` while it reconnects, then redrives
+that unacknowledged batch only after the session attaches. Each failed replacement must be proven
+stopped before another launch. A permanent Harness refusal, including an invalid request, missing
+session, protocol mismatch, missing binary, or socket permission denial, ends the seat immediately;
+another launch cannot change it. An unprovable teardown, the recovery window expiring, or a second
+disconnect after a successful replacement also ends the seat. An unrecognized Harness SDK error
+code remains transient by default and retries inside the same bounded window; new permanent codes
+must be added to the explicit classifier and its exact-count regression.
 
 Jcode currently supports **stdio** MCP servers. The connector writes only its own `cotal` entry to
 the private `JCODE_HOME/mcp.json`; it starts a stdio MCP bridge for that entry and relays its calls
@@ -105,13 +157,16 @@ connected notice.
 
 For a foreground launch, the TUI opens as soon as the session is ready, before the readiness turn,
 so it streams boot activity instead of leaving the terminal blank. Presence still begins only after
-the readiness proof passes. An inbound peer message then wakes a Harness API turn. The host marks
-presence working while the turn runs, acknowledges the delivered inbox ids only after the
-SDK turn succeeds, and leaves a failed turn unacknowledged for mesh redelivery. Jcode's stable
-Harness API has no measured mid-turn steer surface here, so traffic arriving during a turn waits for
-the next turn rather than being silently treated as an interrupt. `cotal_inbox` pulls only buffered
-quiet ambient from that host-owned queue; its shared optional `peek` argument is supported, so
-`peek: true` shows those messages without clearing them.
+the readiness proof passes. An inbound peer message then wakes a Harness API turn. A directed message
+that arrives while the Harness session is busy (a Cotal-owned `run()`, a TUI-owned turn, or an
+advisory idle pulse between tool rounds of a still-open Cotal-owned run) enters Jcode's session-owned
+soft-interrupt queue. Ambient channel traffic stays buffered for the next turn. The host marks
+presence working while the session is busy, publishes `activity` naming automatic queue depth and age
+while anything remains uncommitted, and acknowledges every initial or soft-interrupted inbox id only
+after that containing turn succeeds. A failed Cotal-owned turn or private Harness replacement leaves
+those ids unacknowledged for mesh redelivery. `cotal_inbox` pulls only buffered quiet
+ambient from that host-owned queue; its shared optional `peek` argument is supported, so `peek: true`
+shows those messages without clearing them.
 
 ## Model limits
 
@@ -119,6 +174,12 @@ quiet ambient from that host-owned queue; its shared optional `peek` argument is
 against the active provider, then the connector reads runtime identity back and refuses startup if
 it is not the requested model; a seat is never allowed to join under a model label it did not
 receive.
+
+Model startup refusals are named without exposing provider output: `model_prefix_rejected` means a
+`provider/model` value was supplied where the Harness API requires a bare id, `model_refused` means
+Jcode rejected that bare id, and `model_mismatch` means Jcode accepted the request but reported a
+different effective model. `private_state` names a different step: the seat's private home, its
+credential mirror, or its short socket alias could not be prepared.
 
 `cotal models --agent jcode` reads the declared catalog from the operator Jcode home's
 `config.toml`: each provider with `model_catalog = true`, its `[[providers.<name>.models]]` ids,

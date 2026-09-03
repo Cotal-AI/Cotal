@@ -77,7 +77,7 @@ export function spawnComplete(argv: string[]): CompletionResult {
   if (flag?.name === "agent")
     return { items: registry.all<Connector>("connector").map((c) => ({ value: c.name })), directive: "nofiles" };
   if (flag?.name === "role")
-    return { items: listDeclaredRoles().map((value) => ({ value, description: "declared role" })), directive: "nofiles" };
+    return { items: declaredFrom(argv, listDeclaredRoles).map((value) => ({ value, description: "declared role" })), directive: "nofiles" };
   if (flag?.name === "config") {
     const current = argv[argv.length - 1] ?? "";
     if (current.includes("/") || current.includes("\\") || current.endsWith(".md")) return { items: [], directive: "default" };
@@ -88,7 +88,7 @@ export function spawnComplete(argv: string[]): CompletionResult {
     }
   }
   if (flag && ["subscribe", "allow-subscribe", "allow-publish"].includes(flag.name))
-    return { items: listDeclaredChannels().map((value) => ({ value, description: "declared channel" })), directive: "nofiles" };
+    return { items: declaredFrom(argv, listDeclaredChannels).map((value) => ({ value, description: "declared channel" })), directive: "nofiles" };
   if (flag && ["cwd", "file", "creds"].includes(flag.name)) return { items: [], directive: "default" };
   if (flag?.name === "runtime")
     return { items: ["pty", ...extensionNames("runtime")].filter((value, i, all) => all.indexOf(value) === i).map((value) => ({ value })), directive: "nofiles" };
@@ -113,6 +113,24 @@ function personaItems(argv: string[]) {
     server: completedFlagValue(argv, spawnFlags, "server"),
   });
   return listPersonas(target.root).map((p) => ({ value: p.name }));
+}
+
+/** Channels/roles declared by the TARGET mesh's personas — the same root {@link personaItems}
+ *  uses, so `--role`/`--subscribe` complete from the personas this spawn would actually launch
+ *  rather than from whatever project the operator is standing in. Offline (no probe) and FAIL
+ *  CLOSED: with no single resolvable target, or a malformed persona file (see `declaredValues`),
+ *  offer nothing rather than throw into the operator's shell. */
+function declaredFrom(argv: string[], list: (root: string) => string[]): string[] {
+  try {
+    return list(
+      resolveMeshTarget(process.cwd(), {
+        space: completedFlagValue(argv, spawnFlags, "space"),
+        server: completedFlagValue(argv, spawnFlags, "server"),
+      }).root,
+    );
+  } catch {
+    return [];
+  }
 }
 
 /** Persona selection precedence shared by foreground and detached spawn. */
@@ -166,6 +184,8 @@ async function uniqueMeshName(
     card: { name: "spawn-probe", kind: "endpoint" },
   });
   ep.on("error", () => {}); // advisory: a presence-read hiccup must never block the spawn
+  const ignoreNameProbeWarning = () => {};
+  ep.on("warning", ignoreNameProbeWarning); // deliberate: this best-effort naming probe never owns spawn success
   await ep.start();
   try {
     // Presence replays from the KV bucket right after connect; settle until the roster count holds
@@ -373,11 +393,18 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     if (code === "ENOENT") {
+      // A refusal that names no root is why this bug cost an hour. The old text asserted an absence
+      // ("no default persona yet") and prescribed a remedy (`cotal setup`) without saying WHERE it
+      // had looked — so when setup seeded a cwd-derived root and spawn read the resolved mesh's,
+      // the message survived running the exact command it named and pointed at nothing to check.
+      // Name the absolute directory checked and the mesh that root came from: the two facts that
+      // make the disagreement visible in one read.
+      const where = `${target.personaRoot} (mesh "${target.space}" at ${target.server}${target.source === "current" ? ", your current mesh" : target.source === "registry" ? ", the only mesh running" : ""})`;
       console.error(
         c.red(
           ref === "default" && !defaultPersona
-            ? "✗ no default persona yet - run `cotal setup` to seed one, or name a persona: `cotal spawn <name>`"
-            : `✗ no persona "${ref}"${!values.config && !positionals[0] && defaultPersona ? " from COTAL_DEFAULT_PERSONA" : ""} in ${target.space}'s ${target.personaRoot} - pass a catalog name, or use \`--config <path>\` for a file elsewhere`,
+            ? `✗ no default persona in ${where} - run \`cotal setup\` here to seed one into that directory, or name a persona: \`cotal spawn <name>\``
+            : `✗ no persona "${ref}"${!values.config && !positionals[0] && defaultPersona ? " from COTAL_DEFAULT_PERSONA" : ""} in ${where} - pass a catalog name, or use \`--config <path>\` for a file elsewhere`,
         ),
       );
     } else {
@@ -537,7 +564,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       watchChannels: false,
       card: { name: "spawn-provisioner", role: "provisioner", kind: "endpoint" },
     });
-    prov.on("error", (e: Error) => console.error(`! provisioner: ${e.message}`));
+    const reportStaticProvisioner = (e: Error) => console.error(`! provisioner: ${e.message}`);
+    prov.on("error", reportStaticProvisioner);
+    prov.on("warning", reportStaticProvisioner);
     await prov.start();
     // Foreground provisions the SAME durable footprint as `--detach` (DM/DLV durables + read-ACL
     // row): the daemon authorizes durable joins off the ACL row and leave is agent self-service, so
@@ -902,7 +931,9 @@ async function provisionUserForeground(
       watchChannels: false,
       card: { name: "spawn-provisioner", role: "provisioner", kind: "endpoint" },
     });
-    prov.on("error", (e: Error) => console.error(`! provisioner: ${e.message}`));
+    const reportUserProvisioner = (e: Error) => console.error(`! provisioner: ${e.message}`);
+    prov.on("error", reportUserProvisioner);
+    prov.on("warning", reportUserProvisioner);
     await prov.start();
     try {
       // Full durable footprint, same as the static foreground path: the ACL row is what lets the

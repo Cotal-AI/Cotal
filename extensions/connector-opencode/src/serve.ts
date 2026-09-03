@@ -30,7 +30,7 @@ import { delimiter, join } from "node:path";
  *  it directly, so there's no `cmd.exe` wrapper to orphan the server on kill. POSIX spawns the name
  *  as-is. Unresolved on Windows → returns the bare name so spawn fails with a clear ENOENT. */
 function resolveOpencodeBin(): string {
-  const override = process.env.COTAL_OPENCODE_BIN?.trim();
+  const override = process.env.COTAL_OPENCODE_BIN?.trim() || process.env.COTAL_OPENCODE_RESOLVED_BIN?.trim();
   if (override) return override;
   if (process.platform !== "win32") return "opencode";
   for (const dir of (process.env.PATH ?? "").split(delimiter)) {

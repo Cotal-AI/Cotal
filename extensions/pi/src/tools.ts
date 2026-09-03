@@ -16,6 +16,7 @@ import { isConcreteChannel } from "@cotal-ai/core";
 import {
   cotalToolSpecs,
   MESH_FIRST_STEER,
+  WORKFLOW_STEER,
   NO_TOOL_ARGS,
   type MeshAgent,
   type AgentConfig,
@@ -41,6 +42,7 @@ const SEND_GUIDELINES = [
     "specific peer to act: a mention wakes them, so mentioning in acknowledgements or sign-offs " +
     "makes peers ping-pong wake-ups in an endless loop.",
   MESH_FIRST_STEER,
+  WORKFLOW_STEER,
 ];
 
 function toParameters(schema: CotalToolInput): TSchema {

@@ -100,14 +100,20 @@ const args: ParsedArgs = { values: { space, server, port: "0" }, positionals: []
 A string is minted once, so when it expires (which it will: callout bearers live minutes) the
 endpoint has nothing to renew with. It will not present the dead token to the broker, since that is
 a guaranteed denial that still costs a full auth-callout round trip. It refuses to reconnect, emits
-`error` saying which case it is in, and retries on a widening backoff until the process
-re-authenticates and rebuilds it.
+`warning` saying which case it is in, and retries on a widening backoff until the process
+re-authenticates and rebuilds it. Retry notices use `warning` rather than `error` because Node
+rethrows an unhandled `error` event and would kill a host the endpoint is still trying to recover.
 
 Pass a **function** for anything that outlives one bearer. That is a renewal source: it is called
 ahead of each expiry and again whenever a reconnect finds the cached bearer dead, and it requires
 explicit `card.owner` and `card.actor`. The first-party surfaces already do this
 (`UserViewAuth.source`, the connector's `agentBearerCommand`). A string bearer is for a short
 one-shot connection.
+
+Long-lived hosts must also subscribe to the endpoint's `warning` event. It carries conditions the
+endpoint is surviving, including failed credential renewal and reconnect retries. A host may choose
+to ignore warnings for a one-shot endpoint whose awaited operation owns the verdict, but that choice
+should be explicit. An unhandled warning is nonfatal and silent.
 
 ## Booting the daemons
 

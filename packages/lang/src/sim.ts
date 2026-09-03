@@ -29,7 +29,7 @@ import type {
   TurnResultValue,
   WaitRequest,
 } from "./effects.js";
-import { EffectError } from "./effects.js";
+import { Cancelled, EffectError, askSchemaShape, conformsToAskSchema } from "./effects.js";
 import { parseDuration } from "./duration.js";
 import { stepKeyString } from "./keys.js";
 
@@ -99,19 +99,42 @@ interface Consumption {
  * virtual clock by the duration the program asked for, so a program that waits four hours is
  * tested in microseconds without pretending the wait did not happen.
  *
- * ONE clock, advanced in ask order — deliberately, and worth saying here because this file is
- * where a reader would conclude otherwise: concurrent branches do NOT get independent virtual
- * time. Two racing sleeps advance the same clock as their requests arrive, so under simulation a
- * race is decided by ask order (then declaration order), not by which duration is shorter. The
- * run clocks (`RunClock`, per branch) sit above this and stay per-branch; it is the TIMEBASE the
- * simulator feeds them that is shared. A live handler with real waiting behaves differently, and
- * `scopes.smoke` section 1b is the cell that pins the difference.
+ * ONE clock, advanced event by event. Time is discrete-event simulated: every timed effect
+ * (sleep, turn, ask, checkpoint, wait) computes its wake from the clock at dispatch, parks in a
+ * queue, and a self-scheduled pump delivers parked events in wake order, one per macrotask,
+ * moving the clock to each wake as it delivers. Concurrent branches therefore accumulate their
+ * own durations: two racing sleeps park at open+1m and open+5m, the 1m arm is delivered first,
+ * and its settle stamps the earlier clock, so a simulated race is decided by the durations the
+ * arms wrote, under the same rule (least recorded clock, ties by declaration order) a live
+ * handler produces. `scopes.smoke` section 1 pins the agreement.
+ *
+ * The invariant the pump keeps: the clock a parking branch reads IS that branch's own time. A
+ * delivery drains the delivered branch's microtasks before the next pop, and a scope join hands
+ * the parent its winner's clock, so at every park the shared clock equals the parking branch's
+ * time. A wrapper that defers the park across a macrotask (a handler awaiting a timeout before
+ * delegating) is choosing a different schedule, as any custom handler may.
+ *
+ * A parked event whose branch is cancelled is removed and rejected with `Cancelled`: the entry
+ * settles `cancelled` and the clock never advances to a wake nobody reached. §7.6 leaves
+ * in-flight work to the handler, and this is this handler's choice; it matches a driver
+ * abandoning a durable timer.
  */
+interface ParkedEvent {
+  readonly wake: number;
+  readonly seq: number;
+  done: boolean;
+  readonly deliver: () => void;
+  readonly cancel: (reason: Cancelled) => void;
+}
+
 export class SimHandler implements EffectHandler {
   private virtualNow: number;
   private readonly occurrences = new Map<string, number>();
   private readonly consumed: Consumption[] = [];
   private readonly agents = new Map<string, AgentHandleValue>();
+  private readonly parked: ParkedEvent[] = [];
+  private parkSeq = 0;
+  private pumpScheduled = false;
 
   constructor(readonly script: SimScript = {}) {
     this.virtualNow = script.clock?.start ?? 0;
@@ -121,13 +144,68 @@ export class SimHandler implements EffectHandler {
     return this.virtualNow;
   }
 
-  /** Advance virtual time. Sleeps do this by their full duration; turns by a scripted default. */
+  /** Advance virtual time immediately. The timed effects go through the event queue instead. */
   advance(ms: number): void {
     this.virtualNow += ms;
   }
 
-  private advanceBy(spec: string | undefined, fallback: string): void {
-    this.advance(parseDuration(spec ?? fallback));
+  /**
+   * Park a timed effect until the queue delivers its wake. The wake is computed from the clock
+   * at dispatch, which by the pump's invariant is the dispatching branch's own time.
+   */
+  private timed(ms: number, ctx: EffectContext): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      if (ctx.signal.cancelled) {
+        reject(new Cancelled(ctx.signal.reason ?? "cancelled"));
+        return;
+      }
+      const event: ParkedEvent = {
+        wake: this.virtualNow + ms,
+        seq: this.parkSeq++,
+        done: false,
+        deliver: () => {
+          if (event.done) return;
+          event.done = true;
+          this.virtualNow = Math.max(this.virtualNow, event.wake);
+          resolve();
+        },
+        cancel: (reason) => {
+          if (event.done) return;
+          event.done = true;
+          reject(reason);
+        },
+      };
+      ctx.signal.onCancel((reason) => event.cancel(new Cancelled(reason)));
+      this.parked.push(event);
+      this.schedulePump();
+    });
+  }
+
+  /**
+   * One delivery per macrotask, with the microtask queue drained between: the delivered branch
+   * runs to its next park (or its settle) before the next pop, which is what keeps the clock a
+   * parking branch reads equal to that branch's own time.
+   */
+  private schedulePump(): void {
+    if (this.pumpScheduled) return;
+    this.pumpScheduled = true;
+    setImmediate(() => {
+      this.pumpScheduled = false;
+      let next: ParkedEvent | undefined;
+      for (const e of this.parked) {
+        if (e.done) continue;
+        if (next === undefined || e.wake < next.wake || (e.wake === next.wake && e.seq < next.seq)) next = e;
+      }
+      next?.deliver();
+      for (let i = this.parked.length - 1; i >= 0; i--) {
+        if (this.parked[i]!.done) this.parked.splice(i, 1);
+      }
+      if (this.parked.length > 0) this.schedulePump();
+    });
+  }
+
+  private timedBy(spec: string | undefined, fallback: string, ctx: EffectContext): Promise<void> {
+    return this.timed(parseDuration(spec ?? fallback), ctx);
   }
 
   /** Which occurrence of this (table, name) we are on, counted per simulated run. */
@@ -205,15 +283,48 @@ export class SimHandler implements EffectHandler {
   async turn(_req: TurnRequest, ctx: EffectContext): Promise<TurnResultValue> {
     const scripted = this.resolve("turns", this.script.turns, ctx);
     await ctx.bind({ simGoal: stepKeyString(ctx.key) });
-    this.advanceBy(this.script.clock?.turn, "5m");
+    await this.timedBy(this.script.clock?.turn, "5m", ctx);
     return { ...scripted, at: this.virtualNow };
   }
 
-  async ask(_req: AskRequest, ctx: EffectContext): Promise<unknown> {
-    const value = this.resolve("asks", this.script.asks, ctx);
-    await ctx.bind({ simGoal: stepKeyString(ctx.key) });
-    this.advanceBy(this.script.clock?.ask, "1m");
-    return value;
+  /**
+   * The one effect with a reply contract. The request's schema is read as the shorthand
+   * (`askSchemaShape`), and every scripted reply is checked against it: a non-conforming reply
+   * consumes one attempt, one scripted occurrence, and one reply's worth of virtual time, and
+   * running out of attempts reports L4006, exactly as a production handler must. An unreadable
+   * schema is refused (L4022) rather than skipped, because a schema the handler cannot read and
+   * silently ignores is a contract the program believes in and nobody checks. To exercise the
+   * exhaustion path, script at least as many replies as `attempts`: the simulator still never
+   * invents one, so a script that runs out first fails as L6001.
+   */
+  async ask(req: AskRequest, ctx: EffectContext): Promise<unknown> {
+    const shape = askSchemaShape(req.schema);
+    if (shape === null) {
+      this.checkFault(ctx);
+      throw new EffectError(
+        "L4022",
+        "ask-schema-unreadable",
+        `L4022 Unreadable ask schema\n\n  step  ${stepKeyString(ctx.key)}\n\nThe schema is not the shorthand a reference handler enforces: a record mapping each field name to one of "string", "number", "boolean", "array", "record", "null".\n\nFix: write the shorthand, for example { steps: "array" }, or pass {} to accept any record.`,
+      );
+    }
+    const attempts = req.attempts ?? 1;
+    let bound = false;
+    for (let attempt = 1; ; attempt++) {
+      const value = this.resolve("asks", this.script.asks, ctx);
+      if (!bound) {
+        await ctx.bind({ simGoal: stepKeyString(ctx.key) });
+        bound = true;
+      }
+      await this.timedBy(this.script.clock?.ask, "1m", ctx);
+      if (conformsToAskSchema(value, shape)) return value;
+      if (attempt >= attempts) {
+        throw new EffectError(
+          "L4006",
+          "ask-nonconforming",
+          `L4006 ask never produced a conforming record\n\n  step  ${stepKeyString(ctx.key)}\n\n${attempts} repl${attempts === 1 ? "y was" : "ies were"} checked against the schema and none conformed.\n\nFix: script a reply that matches the schema, widen the schema, or raise attempts.`,
+        );
+      }
+    }
   }
 
   /**
@@ -224,7 +335,7 @@ export class SimHandler implements EffectHandler {
   async checkpoint(_req: CheckpointRequest, ctx: EffectContext): Promise<CheckpointRaw> {
     const scripted = this.resolve("checkpoints", this.script.checkpoints, ctx);
     await ctx.bind({ simCheckpoint: stepKeyString(ctx.key) });
-    this.advanceBy(this.script.clock?.checkpoint, "1m");
+    await this.timedBy(this.script.clock?.checkpoint, "1m", ctx);
     if (scripted.status === "expired") return { outcome: "expired", at: this.virtualNow };
     return {
       outcome: "resolved",
@@ -235,18 +346,18 @@ export class SimHandler implements EffectHandler {
     };
   }
 
-  /** Instant: the SHARED virtual clock moves by what the program asked to wait (see the class note). */
+  /** Instant in wall time: the sleep parks at its wake and the queue delivers it in order. */
   async sleep(req: SleepRequest, ctx: EffectContext): Promise<null> {
     this.checkFault(ctx);
-    this.advance(parseDuration(req.duration));
+    await this.timed(parseDuration(req.duration), ctx);
     return null;
   }
 
   async wait(req: WaitRequest, ctx: EffectContext): Promise<unknown | null> {
     const value = this.resolve("events", this.script.events, ctx);
     // A scripted null is a timeout, and a timeout consumes the whole timeout budget.
-    if (value === null && req.timeout !== undefined) this.advance(parseDuration(req.timeout));
-    else this.advanceBy(this.script.clock?.wait, "1m");
+    if (value === null && req.timeout !== undefined) await this.timed(parseDuration(req.timeout), ctx);
+    else await this.timedBy(this.script.clock?.wait, "1m", ctx);
     return value;
   }
 

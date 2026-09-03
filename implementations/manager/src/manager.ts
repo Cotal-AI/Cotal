@@ -20,6 +20,9 @@ import {
   idFromCreds,
   inspectCredHealth,
   loadAgentFile,
+  listPersonaCatalog,
+  personaCatalogDescription,
+  personaCatalogReadable,
   loadCotalConfig,
   mintCreds,
   mintLifecycleUid,
@@ -44,7 +47,7 @@ import {
   controlServiceSubject,
   eventChannelPrincipal,
 } from "@cotal-ai/core";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, findCotalRoot, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SecretStore, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -53,7 +56,7 @@ import {
   type RuntimeMode,
 } from "./runtime/index.js";
 import { AttachEndpoint, type SessionEstablishment } from "./attach-endpoint.js";
-import { makeManagerEndpointEvictor } from "./endpoint-evict.js";
+import { makeManagerEndpointEvictionEvidence, makeManagerEndpointEvictor } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec } from "./launch.js";
@@ -130,6 +133,8 @@ import {
   epeSubject,
   submissionFingerprint,
   EpEnvelopeError,
+  lifecycleBlocked,
+  renderLifecycleBlocked,
   type EpCommandDef,
   type EpServeContext,
   type EpServeGrant,
@@ -138,7 +143,7 @@ import {
   type Identity,
   type ServiceNameAuthority,
 } from "@cotal-ai/core";
-import { MANAGER_ENDPOINT, managerClusterArtifacts, managerCommandDefs, managerContractArtifactValues, type ManagerStatus } from "./manager-service-contract.js";
+import { MANAGER_ENDPOINT, managerClusterArtifacts, managerCommandDefs, managerContractArtifactValues, type ManagerConnectorStatus, type ManagerStatus } from "./manager-service-contract.js";
 import type { NatsConnection, Subscription } from "@nats-io/transport-node";
 import type { KV } from "@nats-io/kv";
 import {
@@ -599,6 +604,9 @@ export interface SpawnAcceptance {
   uid: string;
   goalId: string;
   fingerprint: string;
+  /** The connector-selected readiness budget persisted on this goal. A synchronous follower must
+   *  outlive it; otherwise it can time out while the manager is still legitimately waiting. */
+  readinessDeadlineMs: number;
   executor: { lifecycleUid: string; epoch: number };
 }
 
@@ -698,6 +706,8 @@ export class Manager {
   /** See {@link ManagerOptions.installedExtensions}. */
   private readonly installedExtensions: boolean;
   private readonly runtime: Runtime;
+  /** Internal test seam. Production leaves this undefined and uses the scoped delivery-admin evictor. */
+  private staticLifecycleEvict?: (principal: string) => Promise<import("@cotal-ai/core").EvictionResult>;
   private readonly preserveStopTimeoutMs: number;
   private readonly agents = new Map<string, ManagedAgent>();
   /** Names whose spawn is in flight (reserved synchronously before the provision await) — counted
@@ -800,6 +810,9 @@ export class Manager {
   private agentGoals = new Map<string, GoalRef>();
   /** Process start, for the served `status` uptime. */
   private readonly startedAtMs = Date.now();
+  /** Connector harness paths resolved ONCE at boot. Missing binaries do not stop unrelated manager
+   * work, but they are named before the manager reports ready and remain visible in manager status. */
+  private connectorStatuses: ManagerConnectorStatus[] = [];
   /** Static aliases whose startup exact-op terminal is still in flight. Scoped per alias: control
    * serves during the sweep, but no caller can reuse or attach an alias the sweep still owns. */
   private readonly reconcilingAliases = new Set<string>();
@@ -948,6 +961,7 @@ export class Manager {
   }
 
   async start(): Promise<void> {
+    await this.inspectConnectorsAtBoot();
     await this.attach.start();
     // In auth mode the manager is just another user in the space's account — it mints
     // itself creds from the same signing key it uses for the agents it spawns. The signer comes
@@ -1040,9 +1054,11 @@ export class Manager {
       watchChannels: false,
       card: { id, ...(this.remoteAuthority ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.supervisor } : {}), name: this.name, role: "manager", kind: "endpoint" },
     });
-    // Surface endpoint errors (incl. NATS permission denials) — without a listener an
-    // emitted "error" would crash the supervisor.
-    this.ep.on("error", (e: Error) => console.error(`! manager endpoint: ${e.message}`));
+    // Raw failures ride error; conditions the endpoint is already surviving ride warning. Both
+    // matter to a supervisor operator, especially a failed standing-credential renewal.
+    const reportEndpoint = (e: Error) => console.error(`! manager endpoint: ${e.message}`);
+    this.ep.on("error", reportEndpoint);
+    this.ep.on("warning", reportEndpoint);
     await this.ep.start();
     await this.ep.setActivity(`supervisor (${this.runtime.kind})`);
     // Per-instance liveness lease (P2 item 3 — the old per-space singleton is DEMOTED per D9). Acquire
@@ -1662,18 +1678,32 @@ export class Manager {
    *  touches NEITHER the lease NOR the endpoints — the caller owns those. */
   private async teardownManagedAgents(): Promise<void> {
     const managed = [...this.agents.values()];
+    const failures: string[] = [];
     for (const a of managed) {
       // Free the slot + hard-stop each; `stopHandle` is best-effort (never throws — see it), so one bad
       // stop can't strand the rest, and every snapshot entry is deprovisioned below regardless.
       this.agents.delete(a.name);
       this.stopHandle(a, false);
     }
+    // A runtime stop request is not exit proof. Do not release the manager lease or registration
+    // while any seat may still hold this instance's broker rails: that creates the exact orphan
+    // window where a successor sees a dead manager but live predecessor authority. Every shipped
+    // runtime now supplies waitForExit; absence or timeout is a failed shutdown, never a clean one.
+    await Promise.all(managed.map(async (a) => {
+      try {
+        await this.awaitHandleExit(a.handle);
+      } catch (e) {
+        failures.push(`${a.name}: ${(e as Error).message}`);
+      }
+    }));
     // Deprovision EVERY snapshot entry regardless of whether its stop failed (allSettled + a loud log).
     await Promise.allSettled(
       managed.filter((a) => !a.suppressCleanup).map((a) =>
         this.deprovision(a).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${(e as Error).message}`)),
       ),
     );
+    if (failures.length)
+      throw new Error(`manager shutdown could not prove every seat exited: ${failures.join("; ")}`);
   }
 
   private async stopRetainedAgentsOnExit(): Promise<void> {
@@ -2173,6 +2203,16 @@ export class Manager {
       }),
       stopSelf: (ctx) => this.serveGated(ctx, () => unwrap(this.opStopSelf(callerOf(ctx), args(ctx)))),
       definePersona: (ctx) => this.serveGated(ctx, () => unwrap(this.opDefinePersona(args(ctx), callerOf(ctx), false))),
+      listPersonas: (ctx) => this.serveGated(ctx, () => unwrap(this.opListPersonas(callerOf(ctx), false))),
+      showPersona: (ctx) => this.serveGated(ctx, () => {
+        const r = this.opShowPersona(args(ctx), callerOf(ctx), false);
+        if (!r.ok) {
+          const msg = r.error ?? "not found";
+          if (msg.startsWith("no persona")) throw new EpEnvelopeError("not-found", msg);
+          throw new EpEnvelopeError("failed-precondition", msg);
+        }
+        return r.data;
+      }),
       purge: (ctx) => this.serveGated(ctx, () => adminGated(ctx, async () => unwrap(await this.opPurge(args(ctx), callerOf(ctx))))),
       // launch is OWNER-EQUALITY on the ep door for every caller (freelance HIGH #2): the deploy
       // path is the only launch consumer and its spec stamps the CALLER's own owner, so
@@ -3179,6 +3219,44 @@ export class Manager {
     return this.installedExtensions ? manifestExtensionNames("connector") : registry.all<Connector>("connector").map((c) => c.name);
   }
 
+  /** Resolve every installed/registered connector's declared harness binaries before the manager
+   * reports ready. A missing harness degrades only that connector, never unrelated lifecycle work:
+   * boot continues, but prints a named refusal and records it on both manager status surfaces. */
+  private async inspectConnectorsAtBoot(): Promise<void> {
+    const rows: ManagerConnectorStatus[] = [];
+    let declared: Array<{ name: string; requires: readonly string[] }>;
+    if (this.installedExtensions) {
+      try {
+        declared = loadExtensionsManifest().extensions.flatMap((ext) => extensionConnectors(ext));
+      } catch (error) {
+        const reason = (error as Error).message;
+        console.error(`! manager boot: connector inventory unavailable - ${reason}`);
+        this.connectorStatuses = [{ agent: "(inventory)", state: "unavailable", binaries: {}, reason }];
+        return;
+      }
+    } else {
+      declared = registry.all<Connector>("connector").map((connector) => ({ name: connector.name, requires: connector.requires ?? [] }));
+    }
+    for (const connector of declared) {
+      const name = connector.name;
+      const binaries: Record<string, string> = {};
+      const missing: string[] = [];
+      for (const bin of connector.requires) {
+        const path = resolveOnPath(bin);
+        if (path) binaries[bin] = path;
+        else missing.push(bin);
+      }
+      if (missing.length) {
+        const reason = `${name} harness needs ${missing.join(", ")} on PATH - not found`;
+        rows.push({ agent: name, state: "unavailable", binaries, reason });
+        console.error(`! manager boot: connector ${name} unavailable - ${reason}`);
+      } else {
+        rows.push({ agent: name, state: "available", binaries });
+      }
+    }
+    this.connectorStatuses = rows.sort((a, b) => a.agent.localeCompare(b.agent));
+  }
+
   /** Return connector-provided model catalogs for selector UIs. Optional by connector: a host with no
    *  local model-list API reports `supported:false` rather than blocking the manager. A connector that
    *  fails to import shows an `error:` row (from manifest enumeration) and never blocks the others. */
@@ -3413,9 +3491,15 @@ export class Manager {
     // Harness preflight before reserving a slot or minting — a missing `claude`/`opencode` binary
     // fails here with a clear name, not obscurely at process spawn. No fallback. All synchronous, so
     // the reserve gate stays atomic. (The connector itself was resolved up top, before the capacity gate.)
-    const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(bin));
-    if (missing.length)
-      return { ok: false, error: `${agent} harness needs ${missing.join(", ")} on PATH - not found` };
+    const bootStatus = this.connectorStatuses.find((row) => row.agent === agent);
+    if (bootStatus?.state === "unavailable") return { ok: false, error: bootStatus.reason };
+    // A connector registered after boot has no inventory row. Keep the existing pre-mint backstop
+    // for that dynamic library-composition case; ordinary installed connectors were checked at boot.
+    if (!bootStatus) {
+      const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(bin));
+      if (missing.length)
+        return { ok: false, error: `${agent} harness needs ${missing.join(", ")} on PATH - not found` };
+    }
     // Resume is a connector capability: reject an unsupported resume HERE, before the reserve/mint, so
     // it can never provision creds + durables and then throw at buildLaunch (mint-then-orphan). Same
     // reject-before-side-effects window as the harness preflight above; buildLaunch stays the backstop.
@@ -3487,6 +3571,30 @@ export class Manager {
     if (model !== undefined && model.trim() === "") model = undefined;
     const idErr = this.nameError(identityName);
     if (idErr) return { ok: false, error: opts.resolved ? `launch agent: ${idErr}` : `persona ${configPath}: ${idErr}` };
+    // #966: a seat labelled `manager` that cannot spawn is a worker wearing a label, and the label
+    // is what other agents ROUTE on (role is the anycast address). The gap is silent today because
+    // the mismatch is only discovered minutes in, when the seat first reaches for a worker. The
+    // persona write path takes content only (role/capabilities are POLICY, P6), so a peer-defined
+    // persona can never fix this by declaring the capability — the only honest outcomes are "the
+    // persona grants spawn" or "say so now". Refuse at accept, before any reserve/mint, naming the
+    // exact remediation for each author: an operator edits the file to add the grant; a peer that
+    // defined the persona over the wire must ask one, because capabilities cannot be declared over
+    // the wire by design. The check keys on the EFFECTIVE role (a spawn-time role: override wins
+    // over the file, mirroring the resolution above), not the file's, so the label other agents
+    // will actually see is the label that is held to account. `manager` is the label that MEANS
+    // spawn-holding: naming it literally keeps this the narrow guard for the observed harm, not a
+    // vocabulary any caller can trigger with a synonym (roles are free-form and mostly
+    // non-manager: this workspace's own catalog carries worker/reviewer/orchestrator seats with no
+    // spawn grant, all legitimate).
+    if (role === "manager" && !capabilities?.includes("spawn"))
+      return {
+        ok: false,
+        error:
+          `persona "${ref}" would join with role "manager" but no spawn capability: it presents as a manager ` +
+          `while being unable to seat workers, and it would discover that only on first use. ` +
+          `An operator adds \`capabilities: [spawn]\` to ${configPath}; a peer-defined persona ` +
+          `(cotal_persona) cannot declare capabilities by design — ask an operator to grant it.`,
+      };
     // The alias-reuse gate (#29 piece 3): a name whose previous agent is still retiring REFUSES
     // legibly (never a silent suffix), and the refusal re-drives the FULL durable teardown so
     // "retry the spawn" is also the nudge. It routes through `deprovision` (not `requestRetirement`
@@ -3498,10 +3606,10 @@ export class Manager {
     const held = this.retiring.get(identityName);
     if (held !== undefined) {
       void this.deprovision({ id: held.agentId, name: identityName, lifecycleUid: held.lifecycleUid, userOwner: held.userOwner, secretPaths: held.secretPaths }).catch(() => {});
-      return {
-        ok: false,
-        error: `the name "${identityName}" is reserved pending retirement: its previous agent's despawn started that lifecycle's teardown (footprint + standing-authority revoke + auth-side retirement), and the name frees only when all of it completes${held.lastError !== undefined ? ` (last attempt: ${held.lastError})` : ""}. NEXT: wait a moment and retry this spawn (retrying re-drives the whole teardown), or pick another name.`,
-      };
+      const err = lifecycleBlocked("failed-precondition",
+        `the name "${identityName}" is reserved pending retirement: its previous agent's despawn started that lifecycle's teardown (footprint + standing-authority revoke + auth-side retirement), and the name frees only when all of it completes${held.lastError !== undefined ? ` (last attempt: ${held.lastError})` : ""}. NEXT: wait a moment and retry this spawn (retrying re-drives the whole teardown), or pick another name.`,
+        { blockedOp: "retirement", headState: "retiring", opId: held.opId, remedy: "retry" });
+      return { ok: false, error: renderLifecycleBlocked(err.message, err), details: err.details };
     }
     if (variant && !connector.supportsModelVariant)
       return { ok: false, error: `${agent} connector does not support model variants (variant)` };
@@ -3763,6 +3871,7 @@ export class Manager {
         events,
         mcpServers,
         envAllow,
+        resolvedBinaries: bootStatus?.binaries,
         // So a connector that keeps per-agent local state can root it at the workspace, not the
         // (possibly per-agent) launch cwd below. The cwd itself rides runtime.spawn, not the launch.
         workspaceRoot: this.workspaceRoot,
@@ -3879,6 +3988,10 @@ export class Manager {
     } catch (e) {
       // Failure after reserve (provision / launch threw): the slot was never live, so no cold-start
       // was paid — the reserved rollback (finally) is enough, no cooling stamp.
+      // A lifecycle-blocked envelope already named the barrier; keep its details on the ControlReply
+      // so follow/CLI/cotal_spawn do not collapse it to a generic string (#873).
+      if (e instanceof EpEnvelopeError)
+        return { ok: false, error: renderLifecycleBlocked(e.message, e), ...(e.details ? { details: e.details } : {}) };
       return { ok: false, error: (e as Error).message };
     } finally {
       this.reserved.delete(name);
@@ -4667,6 +4780,7 @@ export class Manager {
       runtime: this.runtime.kind,
       agentCount: this.agents.size,
       uptimeMs: Date.now() - this.startedAtMs,
+      connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),
     };
   }
 
@@ -4879,7 +4993,12 @@ export class Manager {
       // one). Key-pinned to this instance's own status key on the SAME executor.
       await writeServiceStatus(recordsKv, {
         endpoint: MANAGER_ENDPOINT, instanceId: iid, epoch: observed.processEpoch,
-        status: { state: SERVICE_READY, epoch: observed.processEpoch, observedSpecRevision: registrationRevision },
+        status: {
+          state: SERVICE_READY,
+          epoch: observed.processEpoch,
+          observedSpecRevision: registrationRevision,
+          connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),
+        },
         readProcessEpoch: async () => {
           const g = await fence.observe();
           if (g === null) throw new Error(`no issuance gate for ${MANAGER_ENDPOINT}/${iid}`);
@@ -5547,13 +5666,13 @@ export class Manager {
         // exists that early — the goal spec does not carry it and the terminal does not exist yet.
         // A same-goalId attempt that loses the bind while the winner is still in flight can then
         // serve what the winner actually allocated instead of inventing an empty identity.
-        const idx = await recordGoalIndex(gw.ctx, ref, executor.lifecycleUid, { name, actor: agentTriple.actor, uid: agentTriple.uid });
+        const idx = await recordGoalIndex(gw.ctx, ref, executor.lifecycleUid, { name, actor: agentTriple.actor, uid: agentTriple.uid, readinessDeadlineMs: readinessTimeoutMs });
         // A create loss is an idempotent retry ONLY for the same incarnation. A FOREIGN iid means a
         // sibling instance accepted this goalId (the live vector is a client retry over ANYCAST, not
         // a journal consumer): this attempt provisions nothing and answers with the winner's floor,
         // or refuses if that instance never persisted one.
         if (!idx.recorded && idx.existing.iid !== executor.lifecycleUid) {
-          acceptance = this.acceptanceFromIndex(idx.existing, goalId, fingerprint, executor);
+          acceptance = await this.acceptanceFromIndex(idx.existing, ref, goalId, fingerprint, executor);
           resolveAccept(acceptance);
           // No claim needed here: `ownsGoal` is still false, so the commit path refuses this attempt.
           throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted by instance "${idx.existing.iid}"; that instance's acceptance is served and this attempt provisions nothing (SPEC 13.6)`);
@@ -5589,7 +5708,7 @@ export class Manager {
           acceptedAt,
           readinessDeadlineMs: readinessTimeoutMs,
         });
-        acceptance = { name, owner: agentTriple.owner, actor: agentTriple.actor, uid: agentTriple.uid, goalId, fingerprint, executor };
+        acceptance = { name, owner: agentTriple.owner, actor: agentTriple.actor, uid: agentTriple.uid, goalId, fingerprint, readinessDeadlineMs: readinessTimeoutMs, executor };
         this.goalAcceptances.set(goalId, acceptance);
         this.agentGoals.set(name, ref); // M4: a despawn of this name mid-goal drives the cancel path
         resolveAccept(acceptance);
@@ -5605,17 +5724,23 @@ export class Manager {
     });
     bg.then((reply) => {
       // Refused BEFORE onAccepted (M6 hard-pin collision, capacity, persona-not-found) — no goal bound.
-      if (acceptance === undefined) { rejectAccept(new EpEnvelopeError("failed-precondition", reply.error ?? "spawn refused at accept")); return; }
+      if (acceptance === undefined) {
+        const details = reply.details;
+        rejectAccept(new EpEnvelopeError("failed-precondition", reply.error ?? "spawn refused at accept", details));
+        return;
+      }
       // H1: `run` CATCHES its own body (a throw in buildLaunch/runtime.spawn) and RESOLVES `{ok:false}`
       // rather than rejecting, so a post-accept failure arrives here, not in the catch below, and
       // reaches none of the onOutcome sites. Without this the goal stays accepted-but-unanswered:
       // the caller follows epe to a terminal that never comes, and the reconcile index that would
       // settle it is only swept at BOOT, so a manager that stays up never converges it.
-      if (reply.ok === false && !terminalEntered) return onOutcome({ kind: "failed", data: { error: reply.error ?? "spawn failed after accept" } });
+      if (reply.ok === false && !terminalEntered)
+        return onOutcome({ kind: "failed", data: { error: reply.error ?? "spawn failed after accept", ...(reply.details ? { details: reply.details } : {}) } });
     }).catch((e) => {
       if (acceptance === undefined) { rejectAccept(e); return; }
       // Same obligation for a genuine rejection (one that escaped `run`'s own catch).
-      if (!terminalEntered) return onOutcome({ kind: "failed", data: { error: (e as Error)?.message ?? String(e) } });
+      if (!terminalEntered)
+        return onOutcome({ kind: "failed", data: { error: (e as Error)?.message ?? String(e), ...(e instanceof EpEnvelopeError && e.details ? { details: e.details } : {}) } });
       console.error(`! spawn-as-action async body for ${goalId}: ${(e as Error)?.message ?? String(e)}`);
     }).catch((e) => console.error(`! goal terminal fallback for ${goalId}: ${(e as Error)?.message ?? String(e)}`));
     return acceptP;
@@ -5624,10 +5749,13 @@ export class Manager {
   /** H2: an acceptance served from a WINNER'S durable acceptance floor (the goal-index entry it
    *  wrote before its own ack). Refuses `unavailable` rather than inventing one — see
    *  {@link cachedSpawnAcceptance} for why an empty identity is never an acceptable answer. */
-  private acceptanceFromIndex(entry: GoalIndexEntry, goalId: string, fingerprint: string, executor: { lifecycleUid: string; epoch: number }): SpawnAcceptance {
+  private async acceptanceFromIndex(entry: GoalIndexEntry, ref: GoalRef, goalId: string, fingerprint: string, executor: { lifecycleUid: string; epoch: number }): Promise<SpawnAcceptance> {
     if (entry.allocated === undefined)
       throw new EpEnvelopeError("unavailable", `goal "${goalId}" was accepted by instance "${entry.iid}", which persisted no acceptance floor; its allocated identity is not readable from here (SPEC 13.6)`);
-    return { name: entry.allocated.name, owner: DEV_OWNER, actor: entry.allocated.actor, uid: entry.allocated.uid, goalId, fingerprint, executor };
+    const readinessDeadlineMs = entry.allocated.readinessDeadlineMs ?? (await readGoalSpec(this.goalWriter!.ctx, ref))?.value.readinessDeadlineMs;
+    if (readinessDeadlineMs === undefined)
+      throw new EpEnvelopeError("unavailable", `goal "${goalId}" is accepted but its readiness deadline is not readable; a synchronous follower cannot bound its wait honestly (SPEC 13.6)`);
+    return { name: entry.allocated.name, owner: DEV_OWNER, actor: entry.allocated.actor, uid: entry.allocated.uid, goalId, fingerprint, readinessDeadlineMs, executor };
   }
 
   /** Reconstruct a cached acceptance for a same-goalId retry NOT in the live map (a prior incarnation
@@ -5643,13 +5771,15 @@ export class Manager {
    *  `unavailable`, never a hollow success. */
   private async cachedSpawnAcceptance(ref: GoalRef, goalId: string, fingerprint: string, executor: { lifecycleUid: string; epoch: number }): Promise<SpawnAcceptance> {
     const entry = await readGoalIndex(this.goalWriter!.ctx, ref);
-    if (entry?.allocated !== undefined) return this.acceptanceFromIndex(entry, goalId, fingerprint, executor);
+    if (entry?.allocated !== undefined) return this.acceptanceFromIndex(entry, ref, goalId, fingerprint, executor);
     // The index is CLEARED at terminal, so a settled goal legitimately has no entry: fall back to
     // the terminal's data, which carries the same identity for exactly that case.
     const result = await readGoalResult(this.goalWriter!.ctx, ref);
     const d = (result?.data ?? {}) as { name?: string; id?: string; lifecycleUid?: string };
-    if (typeof d.name === "string" && d.name.length > 0 && typeof d.id === "string" && d.id.length > 0 && typeof d.lifecycleUid === "string" && d.lifecycleUid.length > 0)
-      return { name: d.name, owner: DEV_OWNER, actor: d.id, uid: d.lifecycleUid, goalId, fingerprint, executor };
+    const spec = await readGoalSpec(this.goalWriter!.ctx, ref);
+    const readinessDeadlineMs = spec?.value.readinessDeadlineMs;
+    if (typeof d.name === "string" && d.name.length > 0 && typeof d.id === "string" && d.id.length > 0 && typeof d.lifecycleUid === "string" && d.lifecycleUid.length > 0 && readinessDeadlineMs !== undefined)
+      return { name: d.name, owner: DEV_OWNER, actor: d.id, uid: d.lifecycleUid, goalId, fingerprint, readinessDeadlineMs, executor };
     throw new EpEnvelopeError("unavailable", `goal "${goalId}" is already accepted but its allocated identity is not readable (no acceptance floor, and no terminal carrying one); retry (SPEC 13.6)`);
   }
 
@@ -5690,6 +5820,12 @@ export class Manager {
     const acceptedRenewal = a.staticCredentialRenewal;
     if (acceptedRenewal) await acceptedRenewal.catch(() => {});
     const opId = retireOpId(a.lifecycleUid);
+    const evict = this.staticLifecycleEvict ?? makeManagerEndpointEvictionEvidence({
+      space: this.space,
+      servers: this.servers ?? DEFAULT_SERVER,
+      auth: this.auth!,
+      log: (line) => console.error(`static retirement ${a.name}: ${line}`),
+    });
     const cleanup = async (): Promise<void> => {
       const secrets = this.secrets;
       const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid);
@@ -5710,8 +5846,11 @@ export class Manager {
         }
         await runStaticTerminal(
           t,
-          { owner: DEV_OWNER, alias: a.name, actor: a.id, lifecycleUid: a.lifecycleUid, opId },
-          { cleanup, log: (line) => console.error(`static retirement ${a.name}: ${line}`) },
+          {
+            owner: DEV_OWNER, alias: a.name, actor: a.id, lifecycleUid: a.lifecycleUid, opId,
+            managerInstance: this.managerInstanceId, managerProcessUid: this.managerLifecycleUid,
+          },
+          { cleanup, evict, log: (line) => console.error(`static retirement ${a.name}: ${line}`) },
         );
       });
       this.retiredPrincipals.add(principalKey(DEV_OWNER, a.id).key);
@@ -5773,8 +5912,8 @@ export class Manager {
   /** The Unit B reconciliation (F3 "no active orphan"): ensure the authority stores, then sweep
    *  every durable slot row and act by the TOTAL resume table — `provisioning`/`terminalizing`
    *  re-drive the exact-op terminal; an `active` row survives ONLY when a LIVE managed agent this
-   *  process owns backs it at the same uid (`adopted`), else its process is gone and it
-   *  terminalizes; `retired` rows seed the F5 refusal index. Two call sites: the BOOT sweep
+   *  manager process owns backs it at the same uid (`adopted`), else no managed owner claimed it and
+   *  its broker authority is contained and terminalized; `retired` rows seed the F5 refusal index. Two call sites: the BOOT sweep
    *  (`postAdoption=false`, under the lease before control serving) DEFERS active-non-adopted
    *  slots while a resume is still pending (adoption runs after it); the POST-ADOPTION sweep
    *  (`postAdoption=true`, inside finalizeResume while `resumeRequired` still fences ordinary
@@ -5984,6 +6123,75 @@ export class Manager {
       return { ok: false, error: (e as Error).message };
     }
     return { ok: true, data: { name, path } };
+  }
+
+  /** Whether this caller may READ a catalog card's details (role/model/description/body). Same
+   *  ownership rule as redefine: owner == caller, or admin. Ownerless / operator-written files are
+   *  admin-only. Names of parseable files still appear on the list so a definer can see a taken
+   *  spawn name; details stay off the wire unless this is true. */
+  private canReadPersona(owner: string | undefined, caller: string, admin: boolean): boolean {
+    return personaCatalogReadable(owner, caller, admin);
+  }
+
+  /** Mesh-side catalog list (#402). Every parseable name is returned so a definer can see a taken
+   *  spawn name. Role / model / description / owner ride only when the caller could redefine the
+   *  file (same ownership as `definePersona`); other cards are name-only, so a peer cannot read a
+   *  prompt it does not own. Unparseable files are omitted for non-admin (no existence leak of a
+   *  broken card). */
+  private opListPersonas(caller: string, admin: boolean): ControlReply {
+    const personas = [];
+    for (const e of listPersonaCatalog(this.workspaceRoot)) {
+      if (e.error) {
+        if (!admin) continue;
+        personas.push({ name: e.name, error: "unparseable" });
+        continue;
+      }
+      const def = e.def!;
+      if (!this.canReadPersona(def.owner, caller, admin)) {
+        personas.push({ name: e.name });
+        continue;
+      }
+      const description = personaCatalogDescription(def);
+      personas.push({
+        name: e.name,
+        ...(def.role ? { role: def.role } : {}),
+        ...(def.model ? { model: def.model } : {}),
+        ...(description ? { description } : {}),
+        ...(def.owner ? { owner: def.owner } : {}),
+      });
+    }
+    return { ok: true, data: { personas } };
+  }
+
+  /** Mesh-side catalog show (#402). Same ownership as list. Unknown, unauthorized, or unparseable
+   *  names are not-found (no existence or parser-diagnostic leak). The body is included so a peer can
+   *  inspect a prompt it owns before spawn; policy fields stay off the wire. */
+  private opShowPersona(args: Record<string, unknown>, caller: string, admin: boolean): ControlReply {
+    const name = String(args.name ?? "").trim();
+    if (!name) return { ok: false, error: "name required" };
+    const nameErr = this.nameError(name);
+    if (nameErr) return { ok: false, error: nameErr };
+    const path = agentFilePath(this.workspaceRoot, name);
+    if (!existsSync(path)) return { ok: false, error: `no persona "${name}"` };
+    let def;
+    try {
+      def = loadAgentFile(path);
+    } catch {
+      return { ok: false, error: `no persona "${name}"` };
+    }
+    if (!this.canReadPersona(def.owner, caller, admin)) return { ok: false, error: `no persona "${name}"` };
+    const description = personaCatalogDescription(def);
+    return {
+      ok: true,
+      data: {
+        name,
+        ...(def.role ? { role: def.role } : {}),
+        ...(def.model ? { model: def.model } : {}),
+        ...(description ? { description } : {}),
+        ...(def.owner ? { owner: def.owner } : {}),
+        ...(def.persona ? { persona: def.persona } : {}),
+      },
+    };
   }
 
   /** The post-authorization `input` effect (C3): type `text` into the seat's terminal as if a human

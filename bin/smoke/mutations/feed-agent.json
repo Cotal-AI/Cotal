@@ -1,0 +1,81 @@
+{
+  "suite": "examples/06-feed-agent/test/pump.test.ts",
+  "guard": "the feed pump rejects private destinations, bounds remote bodies, isolates bad items, labels remote text as untrusted, and keeps agent control on a separate channel",
+  "command": "pnpm --filter @cotal-ai/example-06-feed-agent test",
+  "completionMarker": "tests 12",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/feed-agent.json",
+  "why": [
+    "M1 restores the malformed-date crash by carrying the raw RSS date into render. The date cell",
+    "requires the parsed item to omit that value, so render's defensive guard is not credited alone.",
+    "",
+    "M2 removes the untrusted-data marker from the shipped message. The output cell drives render,",
+    "rather than searching source, and turns red on the message a real agent receives.",
+    "",
+    "M3 disables private-address filtering. The address table contains loopback, link-local,",
+    "documentation and IPv6 cases plus public controls, so a predicate that always blocks or always",
+    "allows cannot pass.",
+    "",
+    "M4 removes redirect revalidation. A fake first response redirects from a public literal to the",
+    "metadata address; the test requires refusal before a second request is made.",
+    "",
+    "M5 removes the streamed body cap. The cell drives a response with no content-length header, so",
+    "checking that header alone cannot satisfy it.",
+    "",
+    "M6 puts feedkeeper back on the raw feed channel. The cell reads the persona and channel registry",
+    "that users actually spawn, and rejects the old authority path.",
+    "",
+    "M7 removes the production config guard on feeds.control. The cell drives the shipped YAML reader",
+    "with both a hostile control target and a normal feed target, so checking persona text cannot pass it."
+  ],
+  "mutations": [
+    {
+      "name": "an unparseable RSS date is carried into render again",
+      "file": "examples/06-feed-agent/src/pump.ts",
+      "find": "when: validWhen(it.isoDate ?? it.pubDate), source",
+      "replace": "when: it.isoDate ?? it.pubDate, source",
+      "expectRed": "malformed RSS dates are omitted instead of aborting the run"
+    },
+    {
+      "name": "remote feed output loses its untrusted-data marker",
+      "file": "examples/06-feed-agent/src/pump.ts",
+      "find": "return `[UNTRUSTED FEED ITEM] [${oneLine(item.source)}] ${oneLine(item.title)}${url}${renderedWhen(item)}`;",
+      "replace": "return `[${oneLine(item.source)}] ${oneLine(item.title)}${url}${renderedWhen(item)}`;",
+      "expectRed": "feed output is one line and labels every remote item as untrusted"
+    },
+    {
+      "name": "private and reserved addresses are accepted",
+      "file": "examples/06-feed-agent/src/pump.ts",
+      "find": "    return parsed.range() === \"unicast\";",
+      "replace": "  return true;",
+      "expectRed": "private, loopback, link-local, documentation and multicast addresses are blocked"
+    },
+    {
+      "name": "redirect targets skip public-address validation",
+      "file": "examples/06-feed-agent/src/pump.ts",
+      "find": "  for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {\n    await assertPublicUrl(url);",
+      "replace": "  await assertPublicUrl(url);\n  for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {",
+      "expectRed": "redirects are revalidated before the next request"
+    },
+    {
+      "name": "streamed responses have no byte ceiling",
+      "file": "examples/06-feed-agent/src/pump.ts",
+      "find": "      if (size > maxBytes) throw new Error(`feed response exceeds ${maxBytes} bytes`);",
+      "replace": "      if (false) throw new Error(`feed response exceeds ${maxBytes} bytes`);",
+      "expectRed": "response bodies are capped even without a content-length header"
+    },
+    {
+      "name": "feedkeeper listens to untrusted feed items again",
+      "file": "examples/06-feed-agent/agents/feedkeeper.md",
+      "find": "subscribe: [feeds.control]\nallowSubscribe: [feeds.control]\nallowPublish: [feeds.control]",
+      "replace": "subscribe: [feeds.events]\nallowSubscribe: [feeds.events]\nallowPublish: [feeds.events]",
+      "expectRed": "channel and persona files keep control requests separate from feed data"
+    },
+    {
+      "name": "a remote feed may publish directly onto the trusted control channel",
+      "file": "examples/06-feed-agent/src/pump.ts",
+      "find": "    if (sub.channel === FEED_CONTROL_CHANNEL)\n      throw new Error(`subscription #${i + 1} in ${file}: ${FEED_CONTROL_CHANNEL} is reserved for trusted peer requests`);\n",
+      "replace": "",
+      "expectRed": "subscriptions cannot publish remote feed data onto the trusted control channel"
+    }
+  ]
+}

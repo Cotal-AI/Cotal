@@ -1,0 +1,2 @@
+# Distinguish a live job self-timeout from intentional PR supersession.
+smoke:live-job-conclusion

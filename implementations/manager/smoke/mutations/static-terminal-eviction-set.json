@@ -1,0 +1,36 @@
+{
+  "suite": "implementations/manager/smoke/static-lifecycle.smoke.ts",
+  "guard": "The static terminal's verified-eviction barrier (SPEC 13.1) targets the credential ledger's holder principals. A lifecycle whose ledger names a holder stays `terminalizing` with its alias held until that holder is verify-evicted; a lifecycle that never released a credential retires on an empty set without asking the liveness oracle about a principal that was never issued.",
+  "command": "pnpm smoke:static-lifecycle",
+  "completionMarker": "STATIC-LIFECYCLE SMOKE",
+  "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/static-terminal-eviction-set.json",
+  "why": [
+    "§7 drives both ledger shapes through the real reconcile entrypoint against a real JWT broker,",
+    "with the eviction seam held UNVERIFIED for both. `heldorphan` releases a bounded credential in",
+    "the manager's own order (slot record -> ledger row), so its ledger names a holder; `orphan`",
+    "releases none.",
+    "",
+    "The two cells are each other's control. One mutation collapses the target set to empty and the",
+    "fail-closed cell must notice; the other restores the pre-narrowing demand on a principal",
+    "synthesized from the alias and the ledgerless cell must notice. A repair that satisfied only one",
+    "of them would have moved the barrier rather than scoped it."
+  ],
+  "mutations": [
+    {
+      "name": "the eviction target set is emptied, so a ledger-bearing lifecycle retires unverified",
+      "file": "implementations/manager/src/static-lifecycle.ts",
+      "find": "    const row = parseLedgerRow(entry.value, key);\n    holders.add(row.holderPrincipal);",
+      "replace": "    const row = parseLedgerRow(entry.value, key);",
+      "expectRed": "an unverified orphan eviction keeps the slot terminalizing",
+      "cell": "an unverified orphan eviction keeps the slot terminalizing (never frees the alias into two owners)"
+    },
+    {
+      "name": "an empty set falls back to the synthesized alias principal (the pre-narrowing demand)",
+      "file": "implementations/manager/src/static-lifecycle.ts",
+      "find": "  if (holders.length === 0) {\n    log(`no credential-ledger row was ever released under uid ${args.lifecycleUid}; the barrier's eviction set is empty (SPEC 13.1)`);\n    return;\n  }",
+      "replace": "  if (holders.length === 0) holders = [`${args.owner}.${args.actor}`];",
+      "expectRed": "a ledgerless orphan retires without a broker eviction",
+      "cell": "a ledgerless orphan retires without a broker eviction (vacuous SPEC 13.1 set)"
+    }
+  ]
+}

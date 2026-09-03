@@ -19,7 +19,7 @@ on:
 # result of any kind. It happened to 13 of 29 consecutive main runs. `queue: max` is the part that
 # actually makes them wait, FIFO, up to 100 deep.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-r2
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
   # `queue: max` with `cancel-in-progress: true` is a validation error, so this tracks the line
   # above: a PR keeps the default single slot and supersedes, main queues instead of evicting.
@@ -96,7 +96,10 @@ jobs:
 
   smoke:
     name: smoke (shard ${{ matrix.shard }}/4)
-    timeout-minutes: 40
+    # Shard 2/4 runs ~39-40 min, so the previous 40 left a median margin of 15 seconds and
+    # cancelled healthy runs (#1220 died at 40m18s). Sized at ~1.5x the slowest observed
+    # success, which absorbs runner variance and lets the corpus grow before this binds again.
+    timeout-minutes: 60
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -220,11 +223,36 @@ jobs:
         run: pnpm smoke:opencode-coop
 
   ci-ok:
-    # Single required status: green only if unit + every smoke shard + live all passed.
+    # Single required status. It owns the explicit live diagnosis too: adding a separate dependent
+    # job was measured on PR #1043 and left a superseded run queued through TWO later runner jobs,
+    # which held the replacement run behind it. One existing aggregate is the minimal queue shape.
+    name: ci-ok (live outcome classified)
     if: always()
     needs: [unit, smoke, live]
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
     steps:
+      - uses: actions/checkout@v6
+      - name: Classify a cancelled live job
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LIVE_RESULT: ${{ needs.live.result }}
+          PR_NUMBER: ${{ github.event.pull_request.number || 0 }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: >-
+          node scripts/live-job-conclusion.mjs
+          --result "$LIVE_RESULT"
+          --repo "$GITHUB_REPOSITORY"
+          --run-id "$GITHUB_RUN_ID"
+          --attempt "$GITHUB_RUN_ATTEMPT"
+          --workflow ci.yml
+          --job live
+          --timeout-seconds 1500
+          --event "$GITHUB_EVENT_NAME"
+          --pr-number "$PR_NUMBER"
+          --head-ref "$HEAD_REF"
       - name: Gate
         run: |
           echo "unit=${{ needs.unit.result }} smoke=${{ needs.smoke.result }} live=${{ needs.live.result }}"

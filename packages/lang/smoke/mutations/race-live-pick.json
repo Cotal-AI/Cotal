@@ -10,9 +10,9 @@
       "find": "      if (winnerIndex === -1 || at < winnerAt) {",
       "replace": "      if (winnerIndex === -1) {",
       "expectRed": "a live race is decided by the recorded clocks, not by which arm woke first",
-      "completionMarker": "ok the live pass records a winner (a simulator tie, broken by declaration order)",
+      "completionMarker": "ok the live pass records the arm with the least clock, not the first declared",
       "cell": "a live race is decided by the recorded clocks, not by which arm woke first",
-      "note": "The serial simulator ties both arms' clocks, so the section 1 live cell cannot see this mutant (a tie falls to declaration order under both rules); the section 1b handler stamps the arm that woke first with the LATER clock, so only the rule picks `fast`."
+      "note": "The event-queue simulator now gives the arms distinct clocks, so the section 1 live cell can also see this mutant; the guarded cell stays 1b, whose handler stamps the arm that woke first with the LATER clock, so only the rule (never wake order) picks `fast`."
     },
     {
       "name": "the live pick takes the GREATEST clock",
@@ -20,7 +20,7 @@
       "find": "      if (winnerIndex === -1 || at < winnerAt) {",
       "replace": "      if (winnerIndex === -1 || at > winnerAt) {",
       "expectRed": "a live race is decided by the recorded clocks, not by which arm woke first",
-      "completionMarker": "ok the live pass records a winner (a simulator tie, broken by declaration order)",
+      "completionMarker": "ok the live pass records the arm with the least clock, not the first declared",
       "cell": "a live race is decided by the recorded clocks, not by which arm woke first",
       "note": "Same shape as the first mutant, from the other side: proves the cell holds the DIRECTION of the comparison and not just its presence."
     }

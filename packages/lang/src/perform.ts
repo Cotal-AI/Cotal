@@ -18,6 +18,8 @@ import { notifyFactViolation } from "./notify-fact.js";
 import {
   Cancelled,
   RunReleased,
+  EffectRefused,
+  RunHeld,
   EffectError,
   applyCheckpointPolicy,
   type AgentHandleValue,
@@ -53,6 +55,34 @@ export interface EffectFrame {
 
 export function option(bag: unknown, key: string): unknown {
   return bag === null || typeof bag !== "object" ? undefined : (bag as Record<string, unknown>)[key];
+}
+
+/**
+ * The per-run turn queues, keyed by agent identity (§6.5: one agent, one turn at a time).
+ *
+ * A WeakMap off the host rather than a field on it, so neither engine's host construction
+ * changes. The map holds only a settled-swallowed tail per agent; each caller still observes its
+ * own dispatch's outcome, and a failed turn does not dam the queue behind it.
+ */
+const TURN_QUEUES = new WeakMap<EffectHost, Map<string, Promise<unknown>>>();
+
+/** Serialize live `turn` dispatches per agent handle: the next begins when the previous settled. */
+function serializeTurn(host: EffectHost, agent: string, dispatch: () => Promise<unknown>): Promise<unknown> {
+  let queues = TURN_QUEUES.get(host);
+  if (queues === undefined) {
+    queues = new Map();
+    TURN_QUEUES.set(host, queues);
+  }
+  const prev = queues.get(agent) ?? Promise.resolve();
+  const next = prev.then(dispatch, dispatch);
+  queues.set(
+    agent,
+    next.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return next;
 }
 
 /**
@@ -119,6 +149,10 @@ export async function performEffect(
       throw new Cancelled("this branch was cancelled on the recorded run");
     case "diverged":
       throw new RunDivergence(stepKeyString(key), verdict.recordedHash, verdict.programHash);
+    // A REFUSED step was never attempted (§10.7): the entry records that no host could perform
+    // it yet, and this activation gets to try. Falls to the live path, where `begin` writes a
+    // fresh pending row over the refusal.
+    case "refused":
     case "pending":
     case "miss":
       break;
@@ -163,7 +197,7 @@ export async function performEffect(
   // observation. An entry written before the index existed reads as attempt 0, which is what it
   // is for every effect that never hops.
   const attempt = recorded?.attempt ?? 0;
-  if (verdict.verdict === "miss") {
+  if (verdict.verdict === "miss" || verdict.verdict === "refused") {
     // AWAITED, and the await is the point: the request id the handler is about to submit under
     // has to be durable BEFORE the work is issued, or a crash in the gap leaves real work that
     // nothing in the journal names.
@@ -227,6 +261,19 @@ export async function performEffect(
     // A journal that just refused an append cannot be asked to record why. It leaves by its own
     // door, unwrapped, before anything tries to settle on top of it.
     if (e instanceof JournalAppendRejected) throw e;
+    // A REFUSAL IS NOT A FAILURE. The handler attempted nothing, so recording `failed` would
+    // replay a failure forever for work the world never saw (measured: the mesh handler's L5016
+    // settled `failed`, and a run started before the durable-action surface landed could never
+    // heal). The entry settles `refused` under the handler's own code, and the run halts with
+    // the uncatchable L5025: a capable host's resume finds the refusal and performs the step.
+    if (e instanceof EffectRefused) {
+      await host.journal.settle(
+        key,
+        { status: "refused", error: { code: e.code, kind: "refused", message: e.message } },
+        endedAt,
+      );
+      throw new RunHeld(stepKeyString(key), e.message);
+    }
     if (e instanceof Cancelled) {
       await host.journal.settle(key, { status: "cancelled" }, endedAt);
       throw e;
@@ -350,7 +397,11 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
         "turn",
         stepName as string,
         { agent: agent.agent, deadline: deadline ?? null },
-        (ctx) => handler.turn({ agent, ...(deadline !== undefined ? { deadline } : {}) }, ctx),
+        // ONE AGENT, ONE TURN AT A TIME (§6.5). Two branches turning the same handle used to
+        // dispatch concurrently, with nothing anywhere serializing them; the queue sits at the
+        // seam both engines share, so every handler benefits and the order is dispatch order.
+        // Replays never reach this callback, so a recorded turn waits on nothing.
+        (ctx) => serializeTurn(host, agent.agent, () => handler.turn({ agent, ...(deadline !== undefined ? { deadline } : {}) }, ctx)),
         frame,
       );
     }
@@ -818,7 +869,8 @@ export async function performScope(
     throw new Cancelled("this scope was cancelled on the recorded run");
   }
 
-  // `miss` and `pending` alike RE-ENTER the scope: there is no recorded outcome to return, and a
+  // `miss`, `refused` and `pending` alike RE-ENTER the scope: there is no recorded outcome to
+  // return (a refused conclave never opened), and a
   // pending scope's losers were never durably cancelled. Settling is idempotent, so the arm that
   // finishes first wins again, except where the journal already knows better, which is what
   // `runScope`'s replayed-branch tie-break is for.
@@ -831,7 +883,7 @@ export async function performScope(
   const resume = verdict.verdict === "pending" ? verdict.entry.external : undefined;
   const recorded = verdict.verdict === "pending" && verdict.entry.requestId !== undefined ? verdict.entry : undefined;
   const reqId = recorded?.requestId ?? requestId(host.options.runId, scopeKey, inputHash);
-  if (verdict.verdict === "miss") {
+  if (verdict.verdict === "miss" || verdict.verdict === "refused") {
     await host.journal.begin(scopeKey, inputHash, host.options.handler.now(), dispatches ? reqId : undefined);
     // The same gap as {@link Interpreter.performEffect}'s begin, for the scope that DISPATCHES: a
     // conclave cancelled while its begin was in flight must not open a channel and join members.
@@ -879,10 +931,40 @@ export async function performScope(
     // A close that did not acknowledge settles NOTHING. The entry stays pending, which is exactly
     // what "a close is still owed" looks like in a journal, and the underlying handler error is
     // what the caller sees.
-    if (reason instanceof CloseOwed) throw reason.reason;
+    if (reason instanceof CloseOwed) {
+      // A close the host CANNOT perform (a capability refusal) leaves the entry pending — the
+      // durable "a close is still owed" — and holds the run: a capable host re-enters and closes.
+      if (reason.reason instanceof EffectRefused) throw new RunHeld(stepKeyString(scopeKey), messageOf(reason.reason));
+      throw reason.reason;
+    }
     if (reason instanceof Cancelled) {
       await host.journal.settle(scopeKey, { status: "cancelled" }, endedAt, facts);
       throw reason;
+    }
+    // A RELEASE IS NOT AN OUTCOME, INSIDE A SCOPE EITHER. `shouldStop` documents the law it keeps:
+    // a driver's reason to stop "must not be recorded as its outcome", and the run stays exactly
+    // where its journal says it is. The sequential seam kept that; this path did not, because the
+    // class fell past this ladder into the generic settle below and wrote the release's own text as
+    // an `L4000` scope-fault. A resume with a healthy host then replayed that entry and threw, so a
+    // plain host stop PERMANENTLY ended any run that happened to be inside a scope while the same
+    // stop one statement earlier resumed cleanly. Settling nothing is what leaves the run where it
+    // stands: a pending scope re-enters on resume (see the `miss`/`pending` note above) and settling
+    // is idempotent, which is the same shape `CloseOwed` above relies on.
+    if (reason instanceof RunReleased) throw reason;
+    // A HELD RUN IS THE SAME SHAPE: the refusal's halt is not this scope's outcome. The refused
+    // entry inside the branch is already settled; the scope stays pending and re-enters on resume.
+    if (reason instanceof RunHeld) throw reason;
+    // A CAPABILITY REFUSAL OF THE SCOPE'S OWN DISPATCH (a conclave's open): nothing was entered
+    // and nothing was attempted, so the scope settles `refused` exactly as an effect does, and
+    // the run is held for a host that can open it.
+    if (reason instanceof EffectRefused) {
+      await host.journal.settle(
+        scopeKey,
+        { status: "refused", error: { code: reason.code, kind: "refused", message: reason.message } },
+        endedAt,
+        facts,
+      );
+      throw new RunHeld(stepKeyString(scopeKey), reason.message);
     }
     // Same rule as the effect path's. The RETHROW below is deliberately left alone: this scope
     // rethrows the raw reason, so a program catching a scope fault sees no language code where the
@@ -1031,6 +1113,16 @@ export async function runScope(
           value: Array.isArray(first) ? results : Object.fromEntries(entries.map(([k], i) => [k, results[i]])),
         };
       } catch (e) {
+        // A HOST-SIDE UNWIND IS NOT A BRANCH FAILURE. A release or a refused append must leave
+        // the run exactly where the journal says it is: cancelling siblings would settle their
+        // in-flight entries `cancelled`, a durable fact about a run that was merely stopped, and
+        // a resume then replays that cancellation into a healthy run. So the siblings run to
+        // their own boundary (each releases there in turn, or finishes work already in flight)
+        // and the unwind propagates bare, with nothing cancelled and nothing settled.
+        if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected) {
+          await Promise.allSettled(running);
+          throw e;
+        }
         // The first rejection cancels the rest, then rethrows. The intent travels WITH the
         // failure, because a rejecting branch cancels its siblings and can crash before they
         // hear it, so a failed scope owes its losers exactly as a winning one does.
@@ -1087,7 +1179,14 @@ export async function runScope(
     running.forEach((p, i) => {
       p.then(
         () => onSettle(i, false),
-        (e: unknown) => onSettle(i, e instanceof Cancelled),
+        // A branch that rejected with `Cancelled` reached no outcome, and one that rejected with
+        // a host-side unwind (a release, a held run, a refused append) reached none either:
+        // neither is a candidate, and neither may cancel the arms that are still running.
+        (e: unknown) =>
+          onSettle(
+            i,
+            e instanceof Cancelled || e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected,
+          ),
       );
     });
     // AND THE CUT IS RE-DECIDED WHEN AN ARM'S OWN CLOCK MOVES. A cancelled arm with an effect
@@ -1117,11 +1216,36 @@ export async function runScope(
     for (const f of frames) f.signal.cancel("a sibling branch won the race");
     frame.clock.join(frames.map((f) => f.clock));
 
+    // A REFUSED APPEND OUTRANKS ANY WINNER, and this check sits ABOVE the winner scan on purpose.
+    // The journal refused to record an arm's outcome (L5006 ahead of the append, L5010 at the
+    // store), so completing the race would settle a scope over an entry the run can no longer
+    // record: a loud durability failure converted into a silent success, with the refused step
+    // left pending forever inside a settled scope a resume short-circuits past. Measured before
+    // the rule: race:either settled ok, ask:q pending, outcome COMPLETED. A release is different
+    // and stays below: a released arm is no candidate, but in-flight work that already won is a
+    // decision this driver may keep (its own cell). A HELD run rides the same hoist: the refused
+    // step is settled `refused` and heals only when a resume REACHES it, and a resume
+    // short-circuits a settled scope, so a race that completed over a held arm would bury the
+    // heal forever.
+    const refusedAppend = settled.find(
+      (r): r is PromiseRejectedResult =>
+        r.status === "rejected" && (r.reason instanceof RunHeld || r.reason instanceof JournalAppendRejected),
+    );
+    if (refusedAppend !== undefined) throw refusedAppend.reason as Error;
+
     let winnerAt = -1;
     let winnerIndex = -1;
     for (let i = 0; i < settled.length; i += 1) {
       const r = settled[i] as PromiseSettledResult<unknown>;
-      if (r.status === "rejected" && r.reason instanceof Cancelled) continue;
+      if (
+        r.status === "rejected" &&
+        (r.reason instanceof Cancelled ||
+          r.reason instanceof RunReleased ||
+          r.reason instanceof RunHeld ||
+          r.reason instanceof JournalAppendRejected)
+      ) {
+        continue;
+      }
       const at = (frames[i] as Frame).clock.now();
       if (winnerIndex === -1 || at < winnerAt) {
         winnerAt = at;
@@ -1129,6 +1253,14 @@ export async function runScope(
       }
     }
     if (winnerIndex === -1) {
+      // A host-side unwind outranks the cancellation story: the run was stopped, not decided,
+      // and the reason has to travel bare so the scope settles nothing. A refused append never
+      // reaches this branch (it threw above the winner scan); what remains here is a release
+      // with no surviving candidate.
+      const hostSide = settled.find(
+        (r): r is PromiseRejectedResult => r.status === "rejected" && r.reason instanceof RunReleased,
+      );
+      if (hostSide !== undefined) throw hostSide.reason as Error;
       // Every arm was cancelled, so the race itself was: nothing here decided anything.
       const first = settled.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined;
       throw first === undefined ? new Cancelled("every branch was cancelled") : (first.reason as Error);
@@ -1204,6 +1336,12 @@ export async function runScope(
       frame.clock.join(frames.map((f) => f.clock));
       return { branches: branchKeys, value: results };
     } catch (e) {
+      // The same host-side rule as `parallel`: a release, a held run, or a refused append
+      // cancels nothing.
+      if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected) {
+        await Promise.allSettled(launched);
+        throw e;
+      }
       for (const f of frames) f.signal.cancel("a sibling branch failed");
       await Promise.allSettled(launched);
       frame.clock.join(frames.map((f) => f.clock));
@@ -1259,6 +1397,10 @@ export async function runScope(
     // resource a race loser took. A conclave whose body merely FAILED is not cancelled, because
     // this process is live and the world is reachable, and walking away from live membership on
     // an ordinary error would be the `spawn` leak in another shape.
+    // A HOST-SIDE UNWIND leaves the close owed: closing would be a new action after the driver
+    // said stop, and the pending entry is exactly what "a close is still owed" looks like.
+    if (bodyError instanceof RunReleased || bodyError instanceof RunHeld || bodyError instanceof JournalAppendRejected)
+      throw bodyError;
     if (bodyError instanceof Cancelled) throw new ScopeFailed(bodyError, { closed: false });
 
     try {

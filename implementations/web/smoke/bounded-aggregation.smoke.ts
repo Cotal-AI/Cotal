@@ -36,14 +36,18 @@ import { fileURLToPath } from "node:url";
 import { CotalEndpoint, isReachable, newIdentity, setupSpaceStreams } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import {
-  activityBackfill, AGGREGATION_CONCURRENCY, AGGREGATION_DEADLINE_MS, type ActivitySource,
+  activityBackfill, AGGREGATION_DEADLINE_MS, type ActivitySource,
 } from "../src/web.js";
+import { throttledWriter } from "./slow-link-throttle.js";
 
 let cells = 0;
 let failed = 0;
 const ok = (name: string, cond: boolean, detail?: unknown): void => {
   cells++;
-  if (cond) return;
+  if (cond) {
+    console.log(`  ✓ ${name}`);
+    return;
+  }
   failed++;
   console.log(`  x FAIL  ${name}${detail === undefined ? "" : `: ${JSON.stringify(detail)}`}`);
 };
@@ -61,14 +65,10 @@ const freePort = async (): Promise<number> =>
 function slowLink(opts: { listen: number; target: number; oneWayMs: number; bytesPerSec: number }): { close(): void } {
   const sockets = new Set<net.Socket>();
   const pipe = (from: net.Socket, to: net.Socket) => {
-    let clear = 0;
-    from.on("data", (chunk) => {
-      const now = Date.now();
-      const at = Math.max(now + opts.oneWayMs, clear) + (chunk.length / opts.bytesPerSec) * 1000;
-      clear = at;
-      setTimeout(() => { if (!to.destroyed) to.write(chunk); }, Math.max(0, at - now)).unref();
-    });
+    const writer = throttledWriter(to, opts);
+    from.on("data", (chunk: Buffer) => writer.push(chunk));
     from.on("error", () => to.destroy());
+    from.on("close", () => writer.close());
   };
   const srv = net.createServer((client) => {
     const up = net.connect(opts.target, "127.0.0.1");
@@ -82,14 +82,17 @@ function slowLink(opts: { listen: number; target: number; oneWayMs: number; byte
   return { close: () => { for (const s of sockets) s.destroy(); srv.close(); } };
 }
 
-/** How long the link is left idle between arms. A deadline stops the response, not the broker work:
- *  a read that was abandoned at the deadline keeps moving bytes, and an arm measured on top of the
- *  previous arm's leftovers is measuring the leftovers. */
+/** How long the link is left idle between arms. Kept as isolation between measured link arms even
+ *  though shipped history reads now cancel at their deadline: the flood baseline below deliberately
+ *  uses uncancelled direct reads, and TCP/proxy queues still need to drain between experiments. */
 const SETTLE_MS = 15_000;
 const LATE = Symbol("late");
 
-/** The source set `activityBackfill` builds, as reads that resolve to a count. Rebuilt here rather
- *  than imported so a baseline stays fixed while the implementation changes. */
+/** The source set `activityBackfill` built BEFORE #1210, as reads that resolve to a count: one
+ *  `channelHistory` per listed channel plus the DM backlog. Rebuilt here rather than imported so a
+ *  baseline stays fixed while the implementation changes. The shipped function now builds two
+ *  sources, which is what 3.2 below asserts; this helper is the thing that assertion is measured
+ *  against, not a description of it. */
 const sourcesOf = async (ep: CotalEndpoint): Promise<(() => Promise<number>)[]> => {
   const chans = await ep.listChannels();
   return [
@@ -113,8 +116,8 @@ const clockOf = (ms: number) => {
 const CEILING_MS = AGGREGATION_DEADLINE_MS * 3;
 const within = async <T>(work: Promise<T>, ms: number): Promise<T | typeof LATE> => {
   const clock = clockOf(ms);
-  // The abandoned work keeps running: a read in flight has no cancel (#661). Swallowing its later
-  // rejection keeps a mutant's failure on the cell that names it rather than on an unhandled reject.
+  // Some baseline/control arms in this file deliberately call history without a signal. Swallowing a
+  // later rejection keeps a mutant's failure on the cell that names it rather than an unhandled reject.
   work.catch(() => {});
   try { return await Promise.race([work, clock.until]); } finally { clock.done(); }
 };
@@ -132,8 +135,11 @@ async function floodArm(ep: CotalEndpoint): Promise<number> {
 }
 
 const CHANNELS = 40;
+/** What the aggregation ASKS FOR since #1210: all of chat in one read, plus the DM backlog. It is
+ *  two whatever `CHANNELS` is, and that independence is the fix. */
+const SOURCES = 2;
 const PER_CHANNEL = 120;
-const DMS = 1200;
+const DMS = 2000;
 const ONE_WAY_MS = 80;
 // CALIBRATED, and the calibration is part of the experiment. Too slow and NOTHING completes inside
 // the deadline, which makes the pooled and flood arms both zero and §3 unable to distinguish them;
@@ -202,14 +208,13 @@ try {
     const t = Date.now();
     const page = await activityBackfill(ep as unknown as ActivitySource, 100);
     const ms = Date.now() - t;
-    ok("1.1 CONTROL: on the broker host every source answers", page.read === page.of && page.of === CHANNELS + 1, { read: page.read, of: page.of });
+    ok("1.1 CONTROL: on the broker host every source answers", page.read === page.of && page.of === SOURCES, { read: page.read, of: page.of });
     ok("1.2 CONTROL: and the page is NOT partial", page.partial === false, page.missing);
     ok("1.3 CONTROL: nothing is named missing", page.missing.length === 0, page.missing);
     ok("1.4 CONTROL: well inside the deadline (the broker is not the cost)", ms < AGGREGATION_DEADLINE_MS / 2, ms);
     ok("1.5 CONTROL: and it carries a full page", page.entries.length === 100, page.entries.length);
     await ep.stop();
   }
-
   // ── 2. THE SAME READS ACROSS THE LINK ─────────────────────────────────────────────────────────
   link = slowLink({ listen: PROXY, target: PORT, oneWayMs: ONE_WAY_MS, bytesPerSec: BYTES_PER_SEC });
   await wait(200);
@@ -220,67 +225,71 @@ try {
     const ms = Date.now() - t;
     const page = answered === LATE ? undefined : answered;
 
-    // THE HEADLINE. The shipped version answered 500 after 15.94s on a link of this shape; this one
-    // must ANSWER, and must answer inside its own bound. The slack is for the channel list, which is
-    // read before the clock's sources start.
+    // THE HEADLINE, AND IT MOVED IN #1210. The version this file was written against answered 500
+    // after 15.94s on a link of this shape, and the first repair made it answer a bounded PARTIAL.
+    // The chat half is now one read of one stream rather than one read per channel, so on this same
+    // link it answers WHOLE. The bound is still what is under test: it must answer, inside its own
+    // deadline, and say so accurately either way. The partial ENDING has not stopped being reachable
+    // and is driven below, on a link and a page size that still reach it (§3 and §6).
     ok("2.0 the suite's own ceiling sits well above the deadline, so a cell that reaches it is a cell about the code and not about this constant", CEILING_MS > AGGREGATION_DEADLINE_MS + 3000, { ceiling: CEILING_MS, deadline: AGGREGATION_DEADLINE_MS });
     ok("2.1 the aggregation ANSWERS rather than throwing, on the link that used to 500 it", typeof page?.partial === "boolean");
     ok("2.2 and it answers inside its own deadline", ms < AGGREGATION_DEADLINE_MS + 3000, { ms, deadline: AGGREGATION_DEADLINE_MS, ceiling: CEILING_MS });
-    ok("2.3 the answer says it is PARTIAL rather than looking complete", page?.partial === true, page);
-    ok("2.4 it counts what it read, out of what it asked for", page !== undefined && page.read < page.of && page.of === CHANNELS + 1, { read: page?.read, of: page?.of });
-    ok("2.5 and NAMES every source that did not answer", page !== undefined && page.missing.length === page.of - page.read, { missing: page?.missing.length, read: page?.read, of: page?.of });
-    ok("2.6 the names are the sources, not a count dressed as one", page !== undefined && page.missing.every((m) => m === "direct messages" || names.some((n) => m === `#${n}`)), page?.missing.slice(0, 3));
-    ok("2.7 the page carries its own deadline, so a reader can tell WHY it is short", page?.deadlineMs === AGGREGATION_DEADLINE_MS, page?.deadlineMs);
-    // A partial that dropped the sources it DID read would be a slower way of returning nothing.
-    ok("2.8 every source that answered contributed", page !== undefined && (page.read === 0 || page.entries.length > 0), { read: page?.read, entries: page?.entries.length });
+    ok("2.3 on this link it now answers WHOLE, which is what one read instead of forty-one bought", page?.partial === false, page?.missing);
+    ok("2.4 it counts what it read, out of what it asked for", page !== undefined && page.read === page.of && page.of === SOURCES, { read: page?.read, of: page?.of });
+    ok("2.5 and NAMES nothing, because nothing was left out", page?.missing.length === 0, page?.missing);
+    ok("2.7 the page carries its own deadline, so a reader can tell WHY it would be short", page?.deadlineMs === AGGREGATION_DEADLINE_MS, page?.deadlineMs);
+    // A page that dropped the sources it DID read would be a slower way of returning nothing.
+    ok("2.8 every source that answered contributed", page !== undefined && page.entries.length > 0, { read: page?.read, entries: page?.entries.length });
     await ep.stop();
   }
 
-  // ── 3. THE POOL IS WHAT MAKES THE PARTIAL WORTH HAVING ───────────────────────────────────────
-  // Starting every source at once over one saturated connection finishes almost none of them: the
-  // bytes are spread over reads that all miss the deadline together. That is the shape that shipped,
-  // and the baseline is built HERE rather than by passing a wide `concurrency`, so it cannot move
-  // when the implementation does. An arm the implementation controls is an arm a regression mutates
-  // along with the thing it is supposed to catch.
+  // ── 3. ONE READ FINISHES WHAT ONE READ PER CHANNEL CANNOT ────────────────────────────────────
+  // The baseline is the SHAPE that shipped before #1210: a source per channel, every source started
+  // at once over one connection. It is built HERE rather than by passing a wide `concurrency`, so it
+  // cannot move when the implementation does. An arm the implementation controls is an arm a
+  // regression mutates along with the thing it is supposed to catch.
   //
-  // ORDER AND SETTLING ARE PART OF THE EXPERIMENT. A deadline bounds the RESPONSE, not the broker
-  // work: an arm's abandoned reads keep moving bytes after it has answered, and the next arm on the
-  // same link inherits them. So the baseline runs FIRST and the implementation runs LAST, which
-  // biases the comparison AGAINST the claim being made, and the link is left idle in between.
+  // ORDER AND SETTLING ARE PART OF THE EXPERIMENT. The fan-out baseline deliberately has no signal,
+  // so its abandoned reads keep moving bytes after it has answered. Run it FIRST and settle before
+  // the cancellation-aware implementation arm, or the second measurement inherits the baseline's
+  // work. That biases the comparison AGAINST the claim being made, and the link is left idle in
+  // between.
   {
-    // §2 abandoned reads of its own and they are still on the link. Settling first means the flood
+    // §2 abandoned reads of its own and they are still on the link. Settling first means the fan-out
     // arm is not handed a head start it did not earn.
     await wait(SETTLE_MS);
     const floodRead = await floodArm(await mkEp("flooded"));
     await wait(SETTLE_MS);
     const ep = await mkEp("pooled");
-    const pooled = await within(activityBackfill(ep as unknown as ActivitySource, 100), CEILING_MS);
+    const single = await within(activityBackfill(ep as unknown as ActivitySource, 100), CEILING_MS);
     await ep.stop();
-    const page = pooled === LATE ? undefined : pooled;
+    const page = single === LATE ? undefined : single;
 
-    ok("3.0 the pooled arm read something at all (two zeroes would compare equal and prove nothing)",
-      (page?.read ?? 0) > 0, { pooled: page?.read ?? "did not answer", of: page?.of });
-    ok("3.1 the bounded pool reads MORE sources than starting every source at once",
-      page !== undefined && page.read > floodRead, { pooled: page?.read ?? "did not answer", flood: floodRead, of: page?.of });
-    ok("3.2 and starting them all at once cannot finish the set, which is why the panel was empty rather than short",
-      floodRead < CHANNELS + 1, floodRead);
-    ok("3.3 the pool is not the whole set (a pool equal to the set is no pool)",
-      AGGREGATION_CONCURRENCY < CHANNELS + 1, AGGREGATION_CONCURRENCY);
+    ok("3.0 CONTROL: the link is genuinely constrained, so the fan-out cannot finish its set",
+      floodRead < CHANNELS + 1, { flood: floodRead, of: CHANNELS + 1 });
+    ok("3.1 the single read answers, and answers WHOLE, on the link that leaves the fan-out short",
+      page !== undefined && page.read === page.of, { read: page?.read ?? "did not answer", of: page?.of, flood: floodRead });
+    ok("3.2 and it asks for two sources rather than one per channel",
+      page?.of === SOURCES, { of: page?.of, channels: CHANNELS });
   }
 
   // ── 4. ONE BAD SOURCE DOES NOT TAKE THE PAGE ──────────────────────────────────────────────────
-  // The `Promise.all` shape turned a single channel's rejection into the route's 500. Driven here
+  // The `Promise.all` shape turned a single source's rejection into the route's 500. Driven here
   // with a source that THROWS rather than one that is slow, because they used to have the same
   // catastrophic ending and now must have the same ordinary one.
+  //
+  // THE GRANULARITY OF "ONE SOURCE" CHANGED IN #1210 AND THE CLAIM DID NOT. All of chat is now one
+  // read rather than one per channel, so a broken chat read loses chat rather than one channel. What
+  // is asserted is what was always the point: a failing source is NAMED and COUNTED, the sources
+  // that answered still reach the page, and nothing throws.
   {
     const listed = [{ channel: "good", messages: 1 }, { channel: "bad", messages: 1 }];
     const src: ActivitySource = {
       listChannels: async () => listed,
-      channelHistory: async (channel) => {
-        if (channel === "bad") throw new Error("history: read 3 of 20 messages before the stream ended early");
-        return [{ id: "m1", ts: 1, space: SPACE, from: { id: "a", name: "a" }, parts: [{ kind: "text", text: "hi" }] } as never];
+      multiChannelHistory: async () => {
+        throw new Error("history: read 3 of 20 messages before the stream ended early");
       },
-      dmHistory: async () => [],
+      dmHistory: async () => [{ id: "m1", ts: 1, space: SPACE, from: { id: "a", name: "a" }, parts: [{ kind: "text", text: "hi" }] } as never],
     };
     // The shipped shape made ONE rejection the whole response, so the first assertion is that the
     // call RETURNS at all. Asserted separately from what it returns: a throw here would skip every
@@ -288,19 +297,19 @@ try {
     let threw: Error | undefined;
     let page: Awaited<ReturnType<typeof activityBackfill>> | undefined;
     try { page = await activityBackfill(src, 100); } catch (e) { threw = e as Error; }
-    ok("4.0 one failing channel does not make the whole aggregation throw", threw === undefined, threw?.message);
+    ok("4.0 one failing source does not make the whole aggregation throw", threw === undefined, threw?.message);
     if (!page) throw new Error("4.0 failed: nothing to assert on");
-    ok("4.1 a channel that THROWS does not discard the channels that answered", page.entries.length === 1, page.entries.length);
-    ok("4.2 the failed channel is named missing", page.missing.includes("#bad"), page.missing);
+    ok("4.1 a source that THROWS does not discard the source that answered", page.entries.length === 1, page.entries.length);
+    ok("4.2 the failed source is named missing", page.missing.includes("chat"), page.missing);
     ok("4.3 the page is marked partial because of it", page.partial === true);
-    ok("4.4 and the ones that worked are counted", page.read === 2 && page.of === 3, { read: page.read, of: page.of });
+    ok("4.4 and the one that worked is counted", page.read === 1 && page.of === 2, { read: page.read, of: page.of });
   }
   // CONTROL: the identical harness with nothing failing, so 4.1 cannot be passing on an empty page.
   {
     const src: ActivitySource = {
       listChannels: async () => [{ channel: "good", messages: 1 }],
-      channelHistory: async () => [{ id: "m1", ts: 1, space: SPACE, from: { id: "a", name: "a" }, parts: [{ kind: "text", text: "hi" }] } as never],
-      dmHistory: async () => [],
+      multiChannelHistory: async () => [],
+      dmHistory: async () => [{ id: "m1", ts: 1, space: SPACE, from: { id: "a", name: "a" }, parts: [{ kind: "text", text: "hi" }] } as never],
     };
     const page = await activityBackfill(src, 100);
     ok("4.5 CONTROL: with nothing failing the page is complete and names nothing", page.partial === false && page.missing.length === 0 && page.entries.length === 1, page);
@@ -310,7 +319,7 @@ try {
   {
     const src: ActivitySource = {
       listChannels: () => new Promise(() => {}),
-      channelHistory: async () => [],
+      multiChannelHistory: async () => [],
       dmHistory: async () => [],
     };
     let threw: Error | undefined;
@@ -328,7 +337,7 @@ try {
   {
     const src: ActivitySource = {
       listChannels: async () => { throw new Error("timeout"); },
-      channelHistory: async () => [],
+      multiChannelHistory: async () => [],
       dmHistory: async () => [],
     };
     let threw: Error | undefined;
@@ -336,6 +345,30 @@ try {
     ok("4.9 a channel list that REJECTS names the read that failed, not just the broker's bare word",
       /channel list could not be read/.test(threw?.message ?? ""), threw?.message);
     ok("4.10 and it carries the underlying reason rather than replacing it", /timeout/.test(threw?.message ?? ""), threw?.message);
+  }
+
+  // THE ISSUE #661 SEAM: once the aggregation deadline answers, every source that did not finish must
+  // receive the SAME aborted signal. A response deadline without this abort only stops the HTTP answer;
+  // its JetStream reads keep occupying the shared link and starve the next poll.
+  {
+    const signals: AbortSignal[] = [];
+    const stalled = <T>(signal?: AbortSignal): Promise<T[]> => {
+      if (!signal) return Promise.reject(new Error("source received no cancellation signal"));
+      signals.push(signal);
+      return new Promise((resolve) => signal.addEventListener("abort", () => resolve([]), { once: true }));
+    };
+    const src: ActivitySource = {
+      listChannels: async () => [
+        { channel: "slow-a", messages: 1 },
+        { channel: "slow-b", messages: 1 },
+      ],
+      multiChannelHistory: async (_channels, opts) => stalled<{ channel: string; msg: CotalMessage }>(opts.signal),
+      dmHistory: async (opts) => stalled<CotalMessage>(opts.signal),
+    };
+    const page = await activityBackfill(src, 10, 100, 3);
+    ok("4.11 every started history source receives the shared cancellation signal", signals.length === 2, signals.length);
+    ok("4.12 the response deadline aborts every abandoned source", signals.every((signal) => signal.aborted), signals.map((signal) => signal.aborted));
+    ok("4.13 cancellation keeps the deadline response partial and named", page.partial && page.read === 0 && page.missing.length === 2, page);
   }
 
   // ── 5. BOTH ENDINGS OF EACH SINGLE-READ ROUTE ──────────────────────────────────────────────────
@@ -491,18 +524,24 @@ try {
     ok("6.1 CONTROL: a small route answers 200 across this link", !(cRes instanceof Error) && cRes.status === 200 && Array.isArray(cBody),
       cRes instanceof Error ? cRes.message : cRes.status);
 
+    // THE PAGE SIZE IS PART OF THE ARM, and it moved with #1210. This section needs a read that
+    // MISSES the deadline, because what it asserts is the shape of the answer when one does. A
+    // hundred entries used to be far more than this link could serve in 8s when every channel was
+    // its own read; one read of one stream serves that comfortably. So the arm asks for a page whose
+    // window is still larger than this link moves inside the deadline. If a future change makes even
+    // this cheap, 6.3 fails loudly rather than quietly asserting nothing.
     const t0 = Date.now();
-    const aRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/activity?limit=100`, {
+    const aRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/activity?limit=400`, {
       headers: authed, signal: AbortSignal.timeout(CEILING_MS),
     }).catch((e) => e as Error);
     const aMs = Date.now() - t0;
     const aBody = aRes instanceof Error ? undefined : await aRes.json().catch(() => undefined);
     const status = aRes instanceof Error ? 0 : aRes.status;
     ok("6.2 `/api/activity` ANSWERS 200 where the shipped route answered 500", status === 200, { status, aMs });
-    ok("6.3 the body the browser receives is the aggregation's page, MARKED PARTIAL", aBody?.partial === true && aBody?.of === CHANNELS + 1,
+    ok("6.3 the body the browser receives is the aggregation's page, MARKED PARTIAL", aBody?.partial === true && aBody?.of === SOURCES,
       { partial: aBody?.partial, read: aBody?.read, of: aBody?.of });
     ok("6.4 and it NAMES the sources it left out, in the response itself", Array.isArray(aBody?.missing) && aBody.missing.length > 0
-      && aBody.missing.every((m: string) => m === "direct messages" || names.some((n) => m === `#${n}`)), aBody?.missing?.slice(0, 3));
+      && aBody.missing.every((m: string) => m === "direct messages" || m === "chat"), aBody?.missing?.slice(0, 3));
     ok("6.5 the route answers inside the deadline it reports", aMs < AGGREGATION_DEADLINE_MS + 5000 && aBody?.deadlineMs === AGGREGATION_DEADLINE_MS,
       { aMs, deadlineMs: aBody?.deadlineMs });
 
@@ -526,26 +565,22 @@ try {
       /direct messages: the read (did not finish within 8000ms|failed: )/.test(String(dBody?.error)), dBody);
     ok("6.8 bounded in wall time, not just in words", dMs < AGGREGATION_DEADLINE_MS + 5000, dMs);
 
-    // A NAMED LIMIT, DRIVEN RATHER THAN DESCRIBED. The deadline bounds the RESPONSE, not the broker
-    // work: a JetStream read in flight has no cancel, so the read abandoned above keeps moving bytes
-    // and the NEXT request on this link can be starved by it. Measured: at 128 KiB/s the poll right
-    // after a refused DM read was itself refused. This suite does not assert that it fails, because
-    // that would pin a defect in place; it asserts the part that must hold either way - whatever the
-    // route answers, a reader can act on it. A bare `{"error":"timeout"}`, which is what the shipped
-    // build sent, is the thing being forbidden.
+    // THE #661 OUTCOME THROUGH THE REAL HTTP SURFACE. The DM deadline above aborts the unfinished
+    // JetStream pull and deletes its consumer. The next activity request may still be partial on this
+    // constrained link, but it must answer as an activity page rather than be starved into a refusal by
+    // work the previous response already abandoned.
     const nRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/activity?limit=100`, {
       headers: authed, signal: AbortSignal.timeout(CEILING_MS),
     }).catch((e) => e as Error);
     const nBody = nRes instanceof Error ? undefined : await nRes.json().catch(() => undefined);
     const nStatus = nRes instanceof Error ? 0 : nRes.status;
-    ok("6.9 the request following a refused read either answers or REFUSES LEGIBLY, never with a bare broker word",
-      nStatus === 200
-        ? nBody?.partial !== undefined
-        : typeof nBody?.error === "string" && /channel list|did not finish|deadline/.test(nBody.error),
+    ok("6.9 the request following a cancelled read answers instead of being starved by abandoned work",
+      nStatus === 200 && nBody?.partial !== undefined,
       { nStatus, body: nBody?.error ?? `partial=${nBody?.partial} read=${nBody?.read}` });
 
-    // The operator watching the server log is the one who can tell a slow link from a broken channel,
-    // and the browser's marker never reaches them.
+    // The operator watching the server log is the one who can tell a slow link from a half of the
+    // feed that refused, and the browser's marker never reaches them. Since #1210 the names in that
+    // line are the two sources, never an individual channel.
     ok("6.10 the server SAYS in its own log that the page was short, and what it left out",
       /partial: \d+\/\d+ sources within \d+ms, missing /.test(log), log.split("\n").filter((l) => l.includes("partial")).slice(0, 2));
   }

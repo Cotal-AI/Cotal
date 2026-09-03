@@ -160,6 +160,8 @@ export async function join(args: ParsedArgs): Promise<void> {
       // Swallow provisioner errors: this ephemeral endpoint's failures surface through the try/catch
       // below as one legible sentence, not a raw `! provisioner: …` side channel.
       prov.on("error", () => {});
+      const ignoreProvisionerWarning = () => {};
+      prov.on("warning", ignoreProvisionerWarning); // same deliberate one-shot policy; the awaited operation owns the verdict
       try {
         await prov.start();
         // Live-only: a bare join isn't under a manager, so no durable Plane-3 backstop
@@ -250,6 +252,7 @@ export async function join(args: ParsedArgs): Promise<void> {
   });
 
   ep.on("error", (e: Error) => print(c.red(`! ${e.message}`)));
+  ep.on("warning", (e: Error) => print(c.yellow(`! ${e.message}`)));
 
   try {
     await ep.start();
@@ -298,7 +301,8 @@ export async function join(args: ParsedArgs): Promise<void> {
   const setStatus = async (status: PresenceStatus, activity?: string) => {
     if (activity) await ep.setActivity(activity);
     await ep.setStatus(status);
-    print(c.dim(`(you are now ${status}${activity ? ": " + activity : ""})`));
+    const acknowledgedStatus = status === "working" ? "working · progress unknown" : status;
+    print(c.dim(`(you are now ${acknowledgedStatus}${activity ? ": " + activity : ""})`));
   };
 
   rl.on("line", async (raw) => {

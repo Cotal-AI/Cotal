@@ -1,5 +1,65 @@
 # @cotal-ai/lang
 
+## 0.40.0
+
+## 0.39.1
+
+## 0.39.0
+
+### Minor Changes
+
+- 2277e28: A capability refusal is durable and retryable. A handler that cannot perform an effect on its host
+  throws the new `EffectRefused`; the interpreter settles the entry with the new status `refused`
+  under the handler's code (L5016 for the mesh handler's `NotYetDurable`, which now extends it) and
+  unwinds the run with the uncatchable `RunHeld` (L5025). The driver grades the run `released`, and a
+  resume on a capable host finds the new `refused` lookup verdict and performs the step live, so a
+  run started before the durable-action surface lands heals the day it does. Previously the refusal
+  settled `failed` and a resume replayed the failure forever.
+
+  Two concurrent `turn`s on one agent handle are serialized at the dispatch seam both engines share:
+  the second begins when the first settles, in dispatch order. Turns on different handles are
+  unaffected.
+
+  A fork's child records its lineage: the run record's spec gains `forkedFrom` (`{ run, step }`,
+  absent on runs started fresh), `commitFork` writes it with the spec, and `ForkCommitResult.
+lineageRecorded` is now true.
+
+  Spec: §6.5 (turn serialization), §9.2 (six uncatchables), §10.1/§10.7 (the `refused` status and
+  verdict), §11.1, §11.3, Appendix A (+L5025), and SPEC.md §14.3 (`forkedFrom`).
+
+- 43e1f7d: Simulator fidelity, ask schema enforcement, journal result bound, and the scope release law.
+
+  The simulator is now discrete-event: timed effects park at their wake times and are delivered in
+  wake order on one virtual clock, so concurrent branches accumulate the durations they wrote and a
+  simulated race is decided by the same rule as a live handler (least recorded clock, ties by
+  declaration order) instead of by the order effects were asked.
+
+  The reference simulator enforces the ask schema shorthand (spec §6.5): a schema it cannot read is
+  refused with the new L4022 rather than skipped, a non-conforming reply consumes one attempt, and
+  exhausted attempts report L4006.
+
+  A journal can be constructed with a result bound (`JournalInit.resultBytes`, plumbed through
+  `DriveRequest.resultBytes`); a settled ok result over it is refused ahead of the settling append
+  with L5006, which leaves the reserved list.
+
+  A host release or refused append inside a parallel, race, fanOut or conclave no longer cancels
+  sibling branches or settles their in-flight entries cancelled: the unwind propagates bare, the
+  scope settles nothing, and a resume picks the run up exactly where the journal says it stopped.
+  The old behavior permanently poisoned any run a driver stopped while an effect was in flight
+  inside a scope.
+
+## 0.38.0
+
+## 0.37.0
+
+### Minor Changes
+
+- 00ac9d9: manager: refuse a manager-role spawn of a persona without the spawn capability. A persona defined over the wire (`cotal_persona`) carries no `capabilities:` line (the write path is content-only by design), and `cotal_spawn` takes a free-form `role`, so a wire-defined persona could be spawned with `role: "manager"` and join presenting as a manager whose credential cannot reach the control plane, silently, until the seat first tried to seat a worker (issue #966). The manager now refuses that spawn at accept, before any provisioning, naming the remediation for both authors: an operator adds `capabilities: [spawn]` to the persona file; a peer-defined persona cannot declare capabilities and must ask an operator. The guard keys on the effective role (a spawn-time role override wins over the file's, mirroring existing precedence) and leaves every non-manager spawn untouched. `cotal_spawn`'s `role` argument documents the requirement. Capabilities remain non-declarable over the wire: the closed `define-persona` input schema is unchanged and still guarded by `smoke:persona-input-closed`.
+
+### Patch Changes
+
+- 0098000: A host stop inside a concurrency scope no longer poisons the run. `shouldStop` returning a reason while the walker was inside `parallel` or `fanOut` settled the scope entry as a failure carrying the release's own text as an `L4000` scope-fault, and a resume with a healthy host then replayed that entry and threw. The one interruption the release mechanism exists to make safe permanently ended any run that happened to be inside a scope, while the identical stop at a sequential seam resumed cleanly. `RunReleased` now joins the classes a scope refuses to record as its outcome, so the scope stays pending and a resume re-enters and finishes it.
+
 ## 0.36.0
 
 ## 0.35.0

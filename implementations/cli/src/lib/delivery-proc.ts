@@ -7,13 +7,19 @@ import {
   newIdentity,
   waitForDeliveryLease,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KIND, authDir, deliveryCredsKey, findCotalRoot, getSoleSpaceAuth, listSpaceAccounts, parsePid, probeLiveness, segmentedKey, type LivenessProbe, workspaceSecretStore, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, deliveryCredsKey, findCotalRoot, getSoleSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, reclaimDeadPreUpgradeRecord, segmentedKey, type LivenessProbe, type LocalProcessContext, workspaceSecretStore, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin } from "@cotal-ai/workspace";
 import { selfArgv } from "./self-exec.js";
-import { resolveSpace } from "./status.js";
-import { cotalPath } from "./paths.js";
+import { resolveRuntimeSpace } from "./status.js";
+import { cotalRoot } from "./paths.js";
 import { MANAGER_PID_PATH, ensureManager, managerHasDeliveryMarker, managerLiveness, stopManager, type SignalFn } from "./manager-proc.js";
 
-const PID_PATH = () => cotalPath("delivery.pid");
+/** The space this folder's commands mean, and the per-space record paths over it. The daemon is
+ *  minted a space-scoped cred and binds that space's durables, so a root-scoped record gave one root
+ *  one daemon by filename; every helper below therefore takes the space it is answering about. */
+const folderSpace = (): string => resolveRuntimeSpace(process.cwd());
+const ctx = (space: string): LocalProcessContext => ({ root: cotalRoot(), space });
+/** READ-resolving: also names a pre-segmentation `delivery.pid` when that is what is on disk. */
+const PID_PATH = (space: string = folderSpace()): string => localProcessPath(DELIVERY_PIDFILE, ctx(space));
 // The daemon's cred goes through the secret-store seam; its key comes from workspace's per-kind
 // resolver (P7 §2 rule 1) — never a hand-composed path or a copied literal. The kind is per-SPACE
 // now, so the file is `.cotal/space.<hex>/delivery.creds`.
@@ -34,8 +40,11 @@ type Opts = { space?: string; server?: string; tls?: boolean; spawn?: string[]; 
  *  boolean collapse is the defect: `unknown` is reachable on a real kernel (a seccomp
  *  `SECCOMP_RET_ERRNO` filter or an LSM policy answers `kill(pid, 0)` with an arbitrary errno and
  *  libuv preserves it), and both ways of folding it into a boolean fail silently. */
-export function deliveryLiveness(probe: LivenessProbe = probeLiveness): "alive" | "dead" | "unknown" | "absent" | "unattributable" {
-  const p = PID_PATH();
+export function deliveryLiveness(
+  probe: LivenessProbe = probeLiveness,
+  space: string = folderSpace(),
+): "alive" | "dead" | "unknown" | "absent" | "unattributable" {
+  const p = PID_PATH(space);
   if (!existsSync(p)) return "absent";
   const raw = readFileSync(p, "utf8").trim();
   if (raw === "") return "absent";
@@ -46,8 +55,8 @@ export function deliveryLiveness(probe: LivenessProbe = probeLiveness): "alive" 
 
 /** True only if the daemon is PROVABLY running. Callers that ACT on the answer take
  *  {@link deliveryLiveness} instead; this cannot express "cannot tell". */
-export function deliveryUp(): boolean {
-  return deliveryLiveness() === "alive";
+export function deliveryUp(space: string = folderSpace()): boolean {
+  return deliveryLiveness(probeLiveness, space) === "alive";
 }
 
 
@@ -70,45 +79,57 @@ function hasAuth(): boolean {
  *
  *  A guard that runs after the work is not a guard, so this one reads the tri-state directly and the
  *  caller refuses BEFORE anything is minted, written or started. */
-function oldHostingManagerVerdict(probe: LivenessProbe = probeLiveness): "stop-it" | "proceed" | "indeterminate" {
-  const state = managerLiveness(probe);
+function oldHostingManagerVerdict(
+  probe: LivenessProbe = probeLiveness,
+  space: string = folderSpace(),
+): "stop-it" | "proceed" | "indeterminate" {
+  const state = managerLiveness(probe, undefined, space);
   if (state === "unknown" || state === "unattributable") return "indeterminate";
   if (state !== "alive") return "proceed"; // dead or absent: nothing is hosting Plane 3
-  return managerHasDeliveryMarker() ? "proceed" : "stop-it"; // alive: the marker decides
+  return managerHasDeliveryMarker(space) ? "proceed" : "stop-it"; // alive: the marker decides
 }
 
 /** Cutover preflight — the FIRST action, BEFORE the daemon can bind: stop any old Plane-3-hosting
  *  manager (live `manager.pid` without the delivery-aware marker) so it never double-binds the
  *  daemon's durables. A delivery-aware (this-build) manager is left running. No-op on a fresh install. */
-export async function stopOldHostingManagerIfPresent(probe: LivenessProbe = probeLiveness, signal?: SignalFn): Promise<void> {
-  const verdict = oldHostingManagerVerdict(probe);
+export async function stopOldHostingManagerIfPresent(
+  probe: LivenessProbe = probeLiveness,
+  signal?: SignalFn,
+  space: string = folderSpace(),
+): Promise<void> {
+  const verdict = oldHostingManagerVerdict(probe, space);
   // FIRST action, before any mint/write/start, so the refusal actually fences the daemon.
   if (verdict === "indeterminate")
     throw new Error(
-      `the recorded manager pid (${readFileSync(MANAGER_PID_PATH(), "utf8").trim()}) cannot be attributed, so the delivery cutover preflight cannot run: the kernel answered neither "running" nor "no such process" (a seccomp filter or LSM policy does this inside some sandboxes).\n` +
+      `the recorded manager pid (${readFileSync(MANAGER_PID_PATH(space), "utf8").trim()}) cannot be attributed, so the delivery cutover preflight cannot run: the kernel answered neither "running" nor "no such process" (a seccomp filter or LSM policy does this inside some sandboxes).\n` +
         `Refusing before the daemon starts. If that manager is an old Plane-3-hosting one it is still bound to fanout/reader, and starting the daemon anyway would double-bind them; the daemon's own lease cannot detect that.\n` +
-        `NEXT: verify the process yourself (\`ps -p <pid>\`). If it is gone, remove \`.cotal/manager.pid\` and re-run. If it is running, stop it with \`cotal down\` first.`,
+        `NEXT: verify the process yourself (\`ps -p <pid>\`). If it is gone, remove \`${MANAGER_PID_PATH(space)}\` and re-run. If it is running, stop it with \`cotal down\` first.`,
     );
   if (verdict === "stop-it") {
     console.error("• stopping an old Plane-3-hosting manager before starting the delivery daemon (cutover preflight)");
     // stopManager THROWS rather than reporting a stop it did not achieve (EPERM, or a process that
     // outlived SIGTERM), so reaching the next line is the proof the old manager is gone. Letting that
     // throw propagate is the point: the daemon must not start beside a manager still bound to Plane 3.
-    await stopManager(probe, signal);
+    await stopManager(probe, signal, undefined, space);
   }
 }
 
-/** Start the delivery daemon detached (pid in `.cotal/delivery.pid`, output to `.cotal/delivery.log`),
- *  stopped by `cotal down`. Re-execs this CLI's `deliver` command; the daemon loads the pre-minted
- *  scoped `delivery.creds` (written by {@link ensureDelivery}) — it never sees the signer. */
+/** Start the delivery daemon detached (pid in `.cotal/delivery.<spaceKey>.pid`, output to
+ *  `.cotal/delivery.<spaceKey>.log`), stopped by `cotal down`. Re-execs this CLI's `deliver` command;
+ *  the daemon loads the pre-minted scoped `delivery.creds` (written by {@link ensureDelivery}) — it
+ *  never sees the signer. */
 export function startDeliveryDetached(o: Opts = {}): number {
-  const fd = openSync(cotalPath("delivery.log"), "a");
+  const space = o.space ?? folderSpace();
+  // See startManagerDetached: reclaim a provably dead pre-upgrade record before claiming the
+  // canonical slot, and refuse rather than start a second daemon beside a live one.
+  reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx(space));
+  const fd = openSync(canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space)), "a");
   const [node, ...self] = selfArgv();
   const args = [
     ...self,
     "deliver",
     "--space",
-    o.space ?? resolveSpace(process.cwd()),
+    space,
     "--server",
     o.server ?? DEFAULT_SERVER,
     // Propagate the broker's transport decision. The daemon cannot derive it: it learns everything
@@ -126,9 +147,10 @@ export function startDeliveryDetached(o: Opts = {}): number {
   const child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" } });
   closeSync(fd);
   child.unref();
-  writeFileSync(PID_PATH(), String(child.pid));
+  const pidPath = canonicalLocalProcessPath(DELIVERY_PIDFILE, ctx(space));
+  writeFileSync(pidPath, String(child.pid)); // canonical, never a pre-upgrade name
   // #969: pin the pid to its process start so a later teardown can refuse a reused pid.
-  writeIdentityPin(PID_PATH(), child.pid ?? 0);
+  writeIdentityPin(pidPath, child.pid ?? 0);
   return child.pid ?? 0;
 }
 
@@ -139,7 +161,8 @@ export function startDeliveryDetached(o: Opts = {}): number {
  *  treat it as non-fatal (a missing daemon degrades durable delivery, never live). */
 export async function ensureDelivery(o: Opts = {}, probe: LivenessProbe = probeLiveness): Promise<{ running: boolean }> {
   if (!hasAuth()) return { running: false }; // open dev mode — no daemon, agents are live-only
-  if (oldHostingManagerVerdict(probe) === "stop-it") {
+  const space = o.space ?? folderSpace();
+  if (oldHostingManagerVerdict(probe, space) === "stop-it") {
     console.error(
       "✗ delivery: an old Plane-3-hosting manager is still live (no delivery-aware marker). Refusing to start the daemon - run `cotal down` first, then retry.",
     );
@@ -152,17 +175,16 @@ export async function ensureDelivery(o: Opts = {}, probe: LivenessProbe = probeL
   const auth = (await getSoleSpaceAuth(credsStore(), authDir(findCotalRoot())))!;
   const id = newIdentity();
   const creds = await mintCreds(auth, id, "delivery");
-  const space = o.space ?? resolveSpace(process.cwd());
   const server = o.server ?? DEFAULT_SERVER;
-  const deliveryState = deliveryLiveness(probe);
+  const deliveryState = deliveryLiveness(probe, space);
   // Same refusal as the manager: an unattributable pid must not be silently reused (a daemon
   // reported running that is not there) nor silently replaced (two daemons on one fanout).
   if (deliveryState === "unknown" || deliveryState === "unattributable")
     throw new Error(
-      `the recorded delivery daemon pid (${readFileSync(PID_PATH(), "utf8").trim()}) cannot be attributed: the kernel answered neither "running" nor "no such process".\n` +
+      `the recorded delivery daemon pid (${readFileSync(PID_PATH(space), "utf8").trim()}) cannot be attributed: the kernel answered neither "running" nor "no such process".\n` +
         `A seccomp filter or LSM policy that intercepts \`kill(pid, 0)\` does this, so it is expected inside some sandboxes and containers.\n` +
         `Cotal will not guess: reusing it would report a daemon that is not there, and starting a second would put two daemons on one fanout.\n` +
-        `NEXT: verify the process yourself (\`ps -p <pid>\`). If it is gone, remove \`.cotal/delivery.pid\` and re-run. If it is running, use it or stop it.`,
+        `NEXT: verify the process yourself (\`ps -p <pid>\`). If it is gone, remove \`${PID_PATH(space)}\` and re-run. If it is running, use it or stop it.`,
     );
   let launched: number | undefined;
   if (deliveryState !== "alive") {
@@ -193,7 +215,7 @@ export async function ensureDelivery(o: Opts = {}, probe: LivenessProbe = probeL
     throw new Error(
       `the delivery daemon started for space "${space}" (pid ${launched}) exited without becoming ready, and the shard-0 lease is not held by it.\n` +
         `That is what a lost single-flight CAS looks like: another daemon holds the lease, or a crashed holder's lease has not yet expired (it does after ${LEASE_TTL_MS / 1000}s).\n` +
-        `Refusing to report a daemon that is not running. The daemon logged its own reason to ${cotalPath("delivery.log")}.\n` +
+        `Refusing to report a daemon that is not running. The daemon logged its own reason to ${canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space))}.\n` +
         `NEXT: read that log; if no other daemon is running, wait for the stale lease to expire and re-run.`,
     );
   if (!ready)
@@ -205,9 +227,13 @@ export async function ensureDelivery(o: Opts = {}, probe: LivenessProbe = probeL
  *  kill runs even if the creds delete fails (finally) — a delete error must never leave the daemon
  *  alive to outlive the teardown and reattach to a restarted broker; the error still propagates
  *  after the kill so the caller can surface it. */
-export async function stopDelivery(probe: LivenessProbe = probeLiveness, signal?: SignalFn): Promise<void> {
+export async function stopDelivery(
+  probe: LivenessProbe = probeLiveness,
+  signal?: SignalFn,
+  space: string = folderSpace(),
+): Promise<void> {
   const send: SignalFn = signal ?? ((pid, sig) => process.kill(pid, sig));
-  const p = PID_PATH();
+  const p = PID_PATH(space);
   // ORDER MATTERS, AND IT USED TO BE BACKWARDS. The credential was deleted FIRST, in a try whose
   // finally then signalled and removed the pidfile unconditionally. Under a refused signal that left
   // a LIVE daemon with no pidfile and no standing credential: still connected, still serving, and its
@@ -217,7 +243,7 @@ export async function stopDelivery(probe: LivenessProbe = probeLiveness, signal?
   // (a blocked path, a store error) must still propagate loudly, but it must not leave behind a
   // pidfile for a process that is definitely gone. delivery-teardown.smoke.ts pins exactly that
   // combination, and caught this when the first version of this fix ordered them the other way.
-  const keys = deliveryCredsKeysToClear(resolveSpace(process.cwd()));
+  const keys = deliveryCredsKeysToClear(space);
   const dropCreds = async (): Promise<void> => {
     for (const k of keys) await credsStore().delete(k);
   };
@@ -254,7 +280,7 @@ export async function stopDelivery(probe: LivenessProbe = probeLiveness, signal?
     throw new Error(
       `refusing to stop the delivery daemon (pid ${pid}): its liveness cannot be determined (a seccomp filter or LSM policy answers kill(pid,0) with an arbitrary errno).\n` +
         `The pidfile and standing credential are LEFT IN PLACE: removing them would strand a daemon that may still be connected, with its renewal source gone.\n` +
-        `NEXT: verify with \`ps -p ${pid}\`, then stop it yourself or remove \`.cotal/delivery.pid\` if it is gone.`,
+        `NEXT: verify with \`ps -p ${pid}\`, then stop it yourself or remove \`${p}\` if it is gone.`,
     );
   // #969 OPEN-VERIFY-TERMINATE: identity before signal. The `dead` branch above already cleared
   // the record; everything here is alive or raced-dead, so the pin decides whether the pid still
@@ -273,7 +299,7 @@ export async function stopDelivery(probe: LivenessProbe = probeLiveness, signal?
     throw new Error(
       `refusing to stop the delivery daemon (pid ${pid}): the signal was rejected (${code ?? "unknown error"}).\n` +
         `EPERM means it belongs to another user, so it is running and not ours to stop. The pidfile and standing credential are LEFT IN PLACE.\n` +
-        `NEXT: stop it as its owner, or remove \`.cotal/delivery.pid\` if you are certain it is gone.`,
+        `NEXT: stop it as its owner, or remove \`${p}\` if you are certain it is gone.`,
     );
   }
   const deadline = Date.now() + 15_000;
@@ -291,7 +317,11 @@ export async function stopDelivery(probe: LivenessProbe = probeLiveness, signal?
  *  first only to close the old-manager double-bind window and so freshly-spawned agents find the
  *  `ctl.delivery` responder for their boot self-join (a miss honest-degrades to live-only). */
 export async function ensureControlPlane(o: Opts = {}): Promise<{ running: boolean }> {
-  await stopOldHostingManagerIfPresent();
-  await ensureDelivery(o);
-  return ensureManager(o);
+  // One space for all three steps. The preflight used to resolve its own from the cwd while the two
+  // ensures took `o.space`; with per-space records that would preflight one tenant's manager and then
+  // start another's.
+  const space = o.space ?? folderSpace();
+  await stopOldHostingManagerIfPresent(probeLiveness, undefined, space);
+  await ensureDelivery({ ...o, space });
+  return ensureManager({ ...o, space });
 }

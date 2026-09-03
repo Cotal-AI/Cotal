@@ -60,6 +60,13 @@ export interface RunSpecValue {
   readonly run: string;
   readonly pins: RunPinsValue;
   readonly createdAt: number;
+  /**
+   * Present on a fork's child: the parent run and the step key the cut excluded. Lineage is a
+   * fact about what this run IS, decided once at the fork, so it lives in the immutable half.
+   * Absent on a run started fresh, and legal to be absent on a child recorded before this field
+   * existed: absence reads as "lineage unknown", never as "not a fork".
+   */
+  readonly forkedFrom?: { readonly run: string; readonly step: string };
 }
 
 /**

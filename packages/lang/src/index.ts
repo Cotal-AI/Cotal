@@ -50,6 +50,8 @@ export { MUTATING_METHODS } from "./library.js";
 
 export { validate, type ValidateResult } from "./grammar.js";
 
+export { ADJUDICATION, conformanceCorpus, type ConformanceCase, type ConformanceCorpus } from "./conformance.js";
+
 export {
   RunDivergence,
   RuntimeFault,
@@ -78,8 +80,13 @@ export {
 export {
   Cancelled,
   RunReleased,
+  EffectRefused,
+  RunHeld,
   EffectError,
+  askSchemaShape,
+  conformsToAskSchema,
   type AgentHandleValue,
+  type AskFieldKind,
   type AskRequest,
   type CancelSignal,
   type ChannelHandleValue,
@@ -129,6 +136,7 @@ export {
 export { notifyFactViolation } from "./notify-fact.js";
 
 export {
+  EffectResultTooLarge,
   Journal,
   JournalAppendRejected,
   JournalReadOnlyError,

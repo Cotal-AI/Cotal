@@ -1,0 +1,28 @@
+{
+  "suite": "packages/lang/smoke/sim.smoke.ts",
+  "guard": "The reference simulator enforces the ask schema shorthand: a non-conforming reply consumes an attempt and exhausted attempts are L4006, and a schema the handler cannot read is refused (L4022), never silently skipped. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-sim",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/ask-schema.json",
+  "mutations": [
+    {
+      "name": "the conformance check is skipped and every reply passes",
+      "file": "packages/lang/src/sim.ts",
+      "find": "      if (conformsToAskSchema(value, shape)) return value;",
+      "replace": "      return value;",
+      "expectRed": "a non-conforming reply costs an attempt and the next one is checked",
+      "completionMarker": "ok two parked sleeps deliver in wake order, not ask order, each at its own wake",
+      "cell": "a non-conforming reply costs an attempt and the next one is checked",
+      "note": "With the check gone the first (non-conforming) scripted reply is returned as the answer, so the cell that expects the SECOND reply after one consumed attempt is the first to see it."
+    },
+    {
+      "name": "an unreadable schema silently degrades to accept-any-record",
+      "file": "packages/lang/src/sim.ts",
+      "find": "    const shape = askSchemaShape(req.schema);",
+      "replace": "    const shape = askSchemaShape(req.schema) ?? {};",
+      "expectRed": "a schema the handler cannot read is refused (L4022), never silently skipped",
+      "completionMarker": "ok exhausted attempts report L4006",
+      "cell": "a schema the handler cannot read is refused (L4022), never silently skipped",
+      "note": "The exact fallback the no-fallbacks rule forbids: the schema the program wrote is quietly not checked. Everything upstream stays green because readable schemas still resolve; only the L4022 cell can see it."
+    }
+  ]
+}

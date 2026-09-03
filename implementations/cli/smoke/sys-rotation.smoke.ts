@@ -26,7 +26,7 @@
  * Run: pnpm smoke:sys-rotation   (needs nats-server on PATH)
  */
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
@@ -156,7 +156,10 @@ function stopDetached(): void {
         }
       }
     } catch { /* no ps (Windows): the pid files below are the fallback */ }
-    for (const f of ["nats.pid", "manager.pid", "delivery.pid"]) {
+    // Per-space record names, so the sweep matches the shape rather than three fixed names.
+    let records: string[] = [];
+    try { records = readdirSync(join(r, ".cotal")).filter((n) => /^(nats|manager|delivery)\.([^.]+\.)?pid$/.test(n)); } catch { /* never started */ }
+    for (const f of records) {
       try {
         const pid = Number(readFileSync(join(r, ".cotal", f), "utf8").trim());
         if (Number.isInteger(pid) && pid > 0 && pid !== process.pid) process.kill(pid, "SIGKILL");

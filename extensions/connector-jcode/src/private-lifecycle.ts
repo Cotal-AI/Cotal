@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { readFileSync, readdirSync } from "node:fs";
+import { chmodSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 
@@ -226,6 +226,88 @@ async function waitGone(pids: number[], timeoutMs: number): Promise<boolean> {
     if (Date.now() > deadline) return false;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
+}
+
+const LAUNCH_RECORD_FILE = "cotal-launch.json";
+
+export interface LaunchRecord {
+  /** The launch-bound environment identity only this launch's Jcode descendants carry. */
+  identity: string;
+  /** Immutable identity of the connector host that owns those descendants. */
+  host: ProcessIdentity;
+}
+
+/** Name this launch's tree in the seat home, so the seat's NEXT launch can tell a tree an already
+ * dead lifecycle left behind from one a live seat still legitimately holds. */
+export function recordLaunch(home: string, record: LaunchRecord): void {
+  const path = join(home, LAUNCH_RECORD_FILE);
+  // `mode` applies only when the write CREATES the file, so a record that already exists keeps
+  // whatever permissions it has. Restate them on every write, or one loosened file stays loosened
+  // for the life of the seat home.
+  writeFileSync(path, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+  chmodSync(path, 0o600);
+}
+
+export function readLaunchRecord(home: string): LaunchRecord | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(join(home, LAUNCH_RECORD_FILE), "utf8"));
+  } catch {
+    return undefined;
+  }
+  const record = parsed as LaunchRecord | null;
+  const identity = record?.identity;
+  const host = record?.host;
+  if (typeof identity !== "string" || !identity) return undefined;
+  return isPid(host?.pid) && typeof host?.start === "string" && host.start ? { identity, host: { pid: host.pid, start: host.start } } : undefined;
+}
+
+export interface StopOrphanedTreeOptions {
+  home: string;
+  gracefulWaitMs?: number;
+  killWaitMs?: number;
+}
+
+/**
+ * Stop the Jcode tree a previous lifecycle of this seat home left running, and return its PIDs.
+ *
+ * A seat that dies without its connector's teardown — a manager restart, a SIGKILL past the grace
+ * window — leaves its Jcode server alive. The server setsids into a group of its own and carries no
+ * `COTAL_NAME`, so neither the manager's signal nor a name-keyed reap reaches it, and it holds the
+ * seat home's runtime dir until its own five-minute idle timer (#1211).
+ *
+ * The recorded host PID is what keeps this from stopping a seat that is still serving, and it only
+ * releases the nonce once that host is provably GONE. A PID that is still alive at the recorded
+ * slot is ambiguous: it is either the connector that owns this home, or an unrelated process that
+ * reused the number, and nothing on a live PID distinguishes them reliably. This mechanism's whole
+ * claim is that it never signals a live seat's tree, so the ambiguous case resolves toward doing
+ * nothing. Pairing liveness with the captured start token instead would resolve it toward killing:
+ * a live host whose recorded token does not match would have its tree signalled while the host
+ * itself was left running, which is the two-seats-under-one-name failure this exists to avoid.
+ *
+ * The conservative branch costs one missed reap, after which Jcode's own runtime-dir lock gives its
+ * honest refusal and the next launch tries again. The permissive branch costs a seat that is still
+ * serving. Only a PID that is gone releases the record's launch nonce, and one nonce is inherited
+ * by one launch's descendants alone.
+ */
+export async function stopOrphanedTree(options: StopOrphanedTreeOptions): Promise<number[]> {
+  const { home, gracefulWaitMs = 3_000, killWaitMs = 2_000 } = options;
+  const record = readLaunchRecord(home);
+  if (!record) return [];
+  if (alive(record.host.pid)) return [];
+  const targets = captureLaunchProcesses(record.identity)
+    .filter((identity) => identity.pid !== process.pid && processMatches(identity) && alive(identity.pid))
+    .map((identity) => identity.pid);
+  if (!targets.length) return [];
+  signalTree(targets, "SIGTERM");
+  if (!(await waitGone(targets, gracefulWaitMs))) {
+    signalTree(targets.filter(alive), "SIGKILL");
+    if (!(await waitGone(targets, killWaitMs)))
+      throw new Error(
+        `jcode connector: a previous lifecycle's Jcode processes survived teardown (pids ${targets.filter(alive).join(", ")}) — this seat's runtime directory is still held`,
+      );
+  }
+  return targets;
 }
 
 export interface StopPrivateTreeOptions {

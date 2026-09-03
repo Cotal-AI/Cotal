@@ -38,7 +38,8 @@ log("outcome", outcome.index)
 
 Read it as the flowchart it is. `spawn` brings agents in; `ask` is the narrow case where the
 program itself needs a value (`schema` is a record the program hands the handler unchanged; the
-language hashes it and gives it no meaning, and no handler in this repository enforces one yet);
+language hashes it and gives it no meaning, and the reference simulator enforces the shorthand
+contract on it);
 `checkpoint` is a durable pause a human resolves from anywhere, raced against a durable timer; `turn`
 wakes an agent for one turn and returns how it yielded; `race` runs two branches and keeps the one
 whose recorded clock is earliest. Agents talk to each other in channels as they always do; the
@@ -73,11 +74,11 @@ bounded decision record, not prose.
   recorded, and it cannot change afterwards; build a new value.
 - **The journal is the debugger.** Every entry carries its key, its inputs' hash, its outcome and
   its timing, and every error is in the program's own coordinates. A run can be **simulated** with a
-  scripted handler and **dry-run** to a plan before it touches an agent. One thing to know about the
-  simulator: it advances a single virtual clock in the order effects are asked, so under it a `race`
-  is decided by that order and declaration order, not by the durations you wrote (a `sleep("1h")` arm
-  declared first beats a `sleep("1m")` arm declared second). That is the simulator, not the rule; on
-  a live handler each arm's clock is the wall time its effects ended.
+  scripted handler and **dry-run** to a plan before it touches an agent. The simulator is
+  discrete-event: timed effects park at their wake times and are delivered in wake order on one
+  virtual clock, so concurrent branches accumulate the durations they wrote and a simulated `race`
+  is decided by the same rule a live handler produces (least recorded clock, ties by declaration
+  order). A `sleep("1m")` arm beats a `sleep("1h")` arm whatever their declaration order.
 
 Full rules, with every code: [`spec/cotal-lang.md`](../spec/cotal-lang.md).
 
@@ -96,7 +97,31 @@ already happened, a removed `spawn` is a live agent you must adopt or release, a
 
 **Fork** starts a new run from a named step of an old one, copying the prefix under the parent's
 pins (seed included, so the copied history's pure draws are the same draws). The child is a new run
-under a new id, and this revision records no lineage on it; the parent is untouched.
+under a new id whose record names the parent and the cut step (`forkedFrom`); the parent is
+untouched.
+
+## Operating a run
+
+`cotal run` is the operator surface over the driver. Every verb opens one connection to the
+resolved mesh target (the usual `--space` / `--server` / `--creds` flags). `start`, `resume` and
+`answer` drive and exit when the drive settles; `ps` and `journal` inspect and exit at once.
+`start` mints the run id and prints it, and the record never takes a caller-supplied one.
+
+```bash
+cotal run start --file build.cotal.js                   # drive a new run; the minted id is printed
+cotal run ps                                            # list run records: state, holder, lineage
+cotal run journal run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # print the durable step journal
+cotal run resume run-3f2a90c41b7e0d5a6c884e19b02df4a1 --file build.cotal.js # take the run over and continue it
+cotal run answer run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --by dana --value '"yes"'
+```
+
+`start` and `resume` need `--file`: the record stores no source, so the caller supplies the same
+program (handing an edited one is a migration decision, and the resume stops on the divergence).
+A run whose step was refused (L5016) exits with code 2 and stays held; `resume` on a host that can
+perform the step performs it live and continues from there. `answer` resolves an open checkpoint
+through the run driver, presenting as the arming holder, with the answerer's name on the record.
+Checkpoint expiry rides the mediated timer writer, which the delivery daemon pumps on a live mesh;
+on a bare broker a pause still resolves, it just cannot expire.
 
 ## What is on the wire
 
@@ -126,11 +151,11 @@ per-run grants) is in `@cotal-ai/core`, and the run driver, journal store, migra
 `@cotal-ai/runtime` (`implementations/runtime`). On the mesh handler, `sleep`, `checkpoint`,
 `wait(message(...))`, `wait(idle(...))` and `notify` are durable; `spawn`, `turn`, `ask`,
 `monitor`, `wait(replied(...))`, `wait(down(...))` and `conclave` refuse with **L5016 (effect not
-durable on this host)** until the durable action machinery they ride lands. That refusal is terminal
-for the run that hits it: the step is recorded as attempted and failed, and a resume replays the
-failure rather than retrying it, so a run started today does not heal the day those effects land. No
-`cotal` command starts or resumes a run yet. Those are the next lanes, and this page will say so
-when they change.
+durable on this host)** until the durable action machinery they ride lands. That refusal holds the
+run rather than ending it: the entry is settled `refused` (never `failed`, since nothing was
+attempted), the run unwinds with the uncatchable L5025 and is recorded `released`, and a resume on
+a host that can perform the step performs it live. A run started today heals the day those effects
+land. The operator surface over the driver is `cotal run`; the section above has the verbs.
 
 **Two engines, and which one runs your program.** The tree-walker is language version `1` and the
 compiled engine is version `2`, two languages rather than two speeds of one (`spec/cotal-lang.md`

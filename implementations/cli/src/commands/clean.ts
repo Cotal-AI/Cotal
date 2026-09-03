@@ -20,6 +20,7 @@ import {
   readMaintenanceJournal,
   releaseMaintenanceLock,
   removeMeshesByRoot,
+  resolveRuntimeSpace,
   resolveSpace,
   rollbackRestore,
   SYSTEM_CREDS_FILES,
@@ -171,7 +172,7 @@ export function liveMeshProcess(root: string, space?: string): string | undefine
  * at a `cotal down` that would not have stopped that mesh at all.
  */
 export function liveMeshOwner(root: string, space?: string): string | undefined {
-  const context: LocalProcessContext = { root, space: space ?? resolveSpace(root) };
+  const context: LocalProcessContext = { root, space: space ?? resolveRuntimeSpace(root) };
   for (const component of localProcessSurface()) {
     if (!component.clearsMesh) continue;
     const state = pidfileState(localProcessPath(component.pidFile, context));
@@ -182,10 +183,10 @@ export function liveMeshOwner(root: string, space?: string): string | undefined 
 
 /** `space` names the tenant whose pidfiles to look at. Pass it whenever the caller already knows
  *  which mesh it means (a registry entry does): re-deriving it from the root can resolve a
- *  DIFFERENT tenant on a multi-space root, and `resolveSpace` throws outright on an unreadable or
+ *  DIFFERENT tenant on a multi-space root, and the derivation throws outright on an unreadable or
  *  ambiguous one — a caller asking a yes/no liveness question should not inherit that failure. */
 export function liveMeshProcesses(root: string, space?: string): string[] {
-  const context: LocalProcessContext = { root, space: space ?? resolveSpace(root) };
+  const context: LocalProcessContext = { root, space: space ?? resolveRuntimeSpace(root) };
   const running: string[] = [];
   for (const component of localProcessSurface()) {
     const state = pidfileState(localProcessPath(component.pidFile, context));
@@ -299,7 +300,6 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     // ONLY this space's segment — the other tenants' material is not this reset's to touch.
     rm(spaceMaterialDir(root, space), `.cotal/${spaceSegment(space)} (this space's material)`);
     for (const f of [
-      "manager.delivery-aware",
       // The LEGACY FLAT copies of the raw P7 kinds: still present on a root no post-P7 `up` has
       // touched, and this surface must not leave old-operator $SYS material behind because the
       // migration had not run yet. The $SYS pair comes from its ONE named source, shared with the
@@ -310,9 +310,11 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     ]) rm(join(root, ".cotal", f), `.cotal/${f}`);
     // Crash residue: after a clean `down` none of this exists; after a crash the dead pidfiles and
     // transient launch artifacts are exactly the leftovers a "full local reset" must not keep.
-    for (const [file] of pidfileTargets(space)) {
-      rm(join(root, ".cotal", file), `.cotal/${file} (stale pidfile)`);
-      rm(join(root, ".cotal", `${file}.identity`), `.cotal/${file}.identity (stale identity pin)`); // #969 sibling of the record
+    // Absolute paths, every spelling: the runtime records are `{space}` templates now, and the
+    // delivery-aware marker rides along with them (it was a literal in the list above).
+    for (const [path] of pidfileTargets(space, root)) {
+      rm(path, `${relative(root, path)} (stale runtime record)`);
+      rm(`${path}.identity`, `${relative(root, path)}.identity (stale identity pin)`); // #969 sibling of the record
     }
     rm(join(root, ".cotal", "run"), ".cotal/run (launch artifacts)");
     // The auth dir's NON-namer contents (callout, creds, server.conf, the user-auth state dir, any

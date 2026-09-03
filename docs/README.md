@@ -28,7 +28,7 @@ Task dispatch:
 | Install + start a local mesh, non-interactive | [Quickstart](getting-started.md) | `npx cotal-ai setup --yes && npx cotal-ai up --detach` |
 | Put an agent on the mesh | [Quickstart](getting-started.md) | `cotal spawn` |
 | Message peers from inside a session | [MCP tool catalog](mcp-tools.md) | `cotal_send` · `cotal_dm` · `cotal_anycast` |
-| Spawn / define a teammate at runtime | [MCP tool catalog](mcp-tools.md) | `cotal_spawn` · `cotal_persona` |
+| Spawn / define / list a teammate at runtime | [MCP tool catalog](mcp-tools.md) | `cotal_spawn` · `cotal_persona` · `cotal_personas` |
 | Declare a team + channels in one file | [Define a team](define-a-team.md) | `cotal up -f cotal.yaml` |
 | Grant or audit channel access | [Channels & permissions](channels-and-permissions.md) | agent-file `allowPublish:` / `allowSubscribe:` |
 | Watch a live mesh | [Watch a mesh](watch-a-mesh.md) | `cotal console` / `cotal web` |
@@ -103,6 +103,7 @@ For protocol implementers:
 | [Config & env](config.md) | The config file, every `COTAL_*` variable, the on-disk layout. |
 | [MeshView](mesh-view.md) | The observer model behind console and web (reference implementation). |
 | [Glossary](glossary.md) | Definitions of every term. |
+| [cotal-lang card](lang-card.md) | The one-page cotal-lang card: effects and results, the await rule, branch keys, top refusals. |
 
 ## Specification
 

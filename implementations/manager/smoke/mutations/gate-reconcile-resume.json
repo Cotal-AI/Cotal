@@ -1,0 +1,37 @@
+{
+  "suite": "implementations/manager/smoke/gate-reconcile-resume.smoke.ts",
+  "guard": "a retry skips a holder only when durable progress matches the exact registration op, frozen-gate revision, and current sorted holder set",
+  "command": "pnpm smoke:gate-reconcile-resume",
+  "completionMarker": "GATE-RECONCILE RESUME SMOKE",
+  "proveWith": "pnpm mutation-proof -- --config implementations/manager/smoke/mutations/gate-reconcile-resume.json",
+  "why": [
+    "The defect is not that a retry fails. It succeeds after repeating a holder verification that",
+    "the prior attempt already completed. The maintained cell therefore watches the exact retry call",
+    "list and the durable completed-before count, rather than accepting a merely reopened gate.",
+    "",
+    "The smoke imports manager source directly but imports core through its package export, so the",
+    "command builds core before each run and after restore. This prevents a stale dist copy from",
+    "making the mutation invisible or leaving compiled mutant output behind."
+  ],
+  "mutations": [
+    {
+      "name": "retry ignores the durable completed set and re-verifies holder1",
+      "file": "implementations/manager/src/reconcile-gate.ts",
+      "find": "  const skipped = new Set(cursor.verified);",
+      "replace": "  const skipped = new Set<string>();",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "retry skips only durable holder1 and verifies every remaining holder",
+      "cell": "retry skips only durable holder1 and verifies every remaining holder",
+      "note": "The cursor is still written and the gate still reopens. Only the resume behavior is removed."
+    },
+    {
+      "name": "the sibling and wildcard grant assertion disappears",
+      "file": "implementations/manager/smoke/gate-reconcile-resume.smoke.ts",
+      "find": "  check(\"the executor has no wildcard or sibling repair-key grant\", !publish.includes(foreign) && !publish.some((row: string) => row.includes(\"eprepair\") && row.includes(\">\")), publish);\n",
+      "replace": "",
+      "expectRed": "every cell ran (21 before the sentinel)",
+      "cell": "every cell ran (21 before the sentinel)",
+      "note": "Deleting one security assertion used to leave the suite green at 20/0. The sentinel must make that disappearing cell a named failure."
+    }
+  ]
+}
