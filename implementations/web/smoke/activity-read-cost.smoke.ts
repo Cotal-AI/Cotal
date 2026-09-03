@@ -24,11 +24,26 @@
  *   - BYTES: every octet in each direction, so the "transfers ~70 times what it displays" claim is
  *     comparable against the size of the page that is actually returned.
  *
- * THE BASELINE IS REBUILT HERE, NOT IMPORTED. `fanOutBackfill` below is the shape that shipped
+ * THE BASELINE IS REBUILT HERE, NOT IMPORTED. `fanOutBackfill` below is the SHAPE that shipped
  * before #1210: `chatOnly(listChannels())`, then one `channelHistory` per channel plus the DM
  * backlog, pooled at the shipped concurrency against the shipped deadline, merged and capped. It is
- * frozen in this file so the "before" column stays fixed while the implementation moves, and so the
- * comparison is between two shapes rather than between two revisions of one function.
+ * frozen in this file so it stays fixed while the implementation moves, and so the comparison is
+ * between two shapes rather than between two revisions of one function.
+ *
+ * AND IT IS NOT THE SHIPPED "BEFORE", WHICH IS A DIFFERENT NUMBER. This arm runs the old shape on
+ * THIS build's read primitive, and #1210 changed that primitive too (the first window opens one page
+ * wide instead of four). So it measures the fan-out as it would cost today, not as it cost on
+ * `544a974b7`. Both are worth having and they are not interchangeable. Measured, same corpus,
+ * `/api/activity` with no link cost:
+ *
+ *     544a974b7, the code that shipped        2524 requests   8,015,723 B
+ *     this file's frozen fan-out arm          2863 requests   7,744,207 B
+ *     the single read                          143 requests     908,420 B
+ *
+ * The gap between the first two rows is the per-channel cost of the narrower window, which the pull
+ * request states separately. To reproduce the first row, copy this file and its `package.json`
+ * script onto a checkout of `544a974b7` and run it: `activityBackfill` there IS the fan-out, so both
+ * arms report the same numbers and every ratio cell fails, which is the repro.
  *
  * THE INSTRUMENT IS CONTROLLED. A counter that reads zero for both arms would make every ratio here
  * look like a pass, so §2 requires the BASELINE's consumer creates to grow with the channel count
@@ -353,8 +368,8 @@ try {
     baseBig = await arm(SPACE, "fanout-big", (ep) => fanOutBackfill(ep, LIMIT, 120_000));
     shippedBig = await arm(SPACE, "shipped-big", (ep) => activityBackfill(ep, LIMIT, 120_000));
     console.log(`  ${CORPUS.chat} chat channels + ${CORPUS.events} event channels, limit ${LIMIT}, no link cost:`);
-    console.log(row("fan-out (before)", baseBig.cost, `page=${answerBytes(baseBig.page)}B ${baseBig.ms}ms`));
-    console.log(row("single read (after)", shippedBig.cost, `page=${answerBytes(shippedBig.page)}B ${shippedBig.ms}ms`));
+    console.log(row("fan-out shape", baseBig.cost, `page=${answerBytes(baseBig.page)}B ${baseBig.ms}ms`));
+    console.log(row("single read", shippedBig.cost, `page=${answerBytes(shippedBig.page)}B ${shippedBig.ms}ms`));
 
     ok("1.1 both arms answered whole", !baseBig.page.partial && !shippedBig.page.partial,
       { base: baseBig.page.missing, shipped: shippedBig.page.missing });
@@ -392,8 +407,8 @@ try {
     const baseSmall = await arm(SPACE, "fanout-narrow", (ep) => fanOutBackfill(narrow(ep), LIMIT, 120_000));
     const shippedSmall = await arm(SPACE, "shipped-narrow", (ep) => activityBackfill(narrow(ep), LIMIT, 120_000));
     console.log(`  the same stream, only ${NARROW} chat channels asked for:`);
-    console.log(row("fan-out (before)", baseSmall.cost));
-    console.log(row("single read (after)", shippedSmall.cost));
+    console.log(row("fan-out shape", baseSmall.cost));
+    console.log(row("single read", shippedSmall.cost));
 
     ok("2.1 CONTROL: the fan-out's consumer creates grow with the channel count",
       baseBig.cost.create > baseSmall.cost.create * 2,
@@ -437,8 +452,8 @@ try {
     const shippedSlow = await arm(SPACE, "shipped-slow", (ep) => activityBackfill(ep, LIMIT));
     Object.assign(latency, NO_COST);
     console.log(`  across 82ms RTT / 554 KB/s, deadline ${AGGREGATION_DEADLINE_MS}ms:`);
-    console.log(row("fan-out (before)", baseSlow.cost, `${baseSlow.page.read}/${baseSlow.page.of} sources ${baseSlow.ms}ms`));
-    console.log(row("single read (after)", shippedSlow.cost, `${shippedSlow.page.read}/${shippedSlow.page.of} sources ${shippedSlow.ms}ms`));
+    console.log(row("fan-out shape", baseSlow.cost, `${baseSlow.page.read}/${baseSlow.page.of} sources ${baseSlow.ms}ms`));
+    console.log(row("single read", shippedSlow.cost, `${shippedSlow.page.read}/${shippedSlow.page.of} sources ${shippedSlow.ms}ms`));
 
     ok("4.1 CONTROL: the fan-out cannot finish on this link, which is the reported symptom",
       baseSlow.page.partial && baseSlow.page.read < baseSlow.page.of,
@@ -456,7 +471,7 @@ try {
     const latencyOnly = await arm(SPACE, "shipped-rtt", (ep) => activityBackfill(ep, LIMIT));
     Object.assign(latency, NO_COST);
     console.log(`  across 82ms RTT with bandwidth to spare:`);
-    console.log(row("single read (after)", latencyOnly.cost, `${latencyOnly.page.read}/${latencyOnly.page.of} sources ${latencyOnly.ms}ms`));
+    console.log(row("single read", latencyOnly.cost, `${latencyOnly.page.read}/${latencyOnly.page.of} sources ${latencyOnly.ms}ms`));
     ok("4.5 with the bytes free the feed still completes whole, and well inside the deadline",
       latencyOnly.ms < AGGREGATION_DEADLINE_MS && !latencyOnly.page.partial, { ms: latencyOnly.ms, missing: latencyOnly.page.missing });
     // WHERE THE REMAINING WALL CLOCK IS, since lifting the bandwidth cap barely moved it: this read
@@ -477,11 +492,12 @@ try {
   // decides whether it finishes.
   //
   // WHAT DECIDES IT IS THE WINDOW. `/api/dms` asks for 500, and the window used to open at four
-  // pages, and `drainWindow` delivers everything in the window and keeps the tail. Measured here at
-  // limit 500 against a 2500-message backlog, before the window was narrowed to one page:
-  // 1,995,856 bytes moved to return a 346,001-byte page, 257 requests, and 8852ms ALONE on this
-  // link, past the 8000ms deadline with nothing else on the connection. That is the reported
-  // refusal, with no contention in it at all.
+  // pages, and `drainWindow` delivers everything in the window and keeps the tail. Measured on
+  // `544a974b7` at limit 500 against a 2500-message backlog: 1,995,859 bytes moved to return a
+  // 346,001-byte page, 257 requests, and ALONE on this link 8852ms and 7857ms across two runs, so it
+  // straddles the 8000ms deadline on this host with nothing else on the connection. A deployment
+  // whose backlog is larger sits on the wrong side of it every time, which is the reported refusal,
+  // with no contention in it at all.
   {
     Object.assign(latency, FIELD);
     /** The DM read's OWN elapsed time and wire cost, not the time until everything settles. */
