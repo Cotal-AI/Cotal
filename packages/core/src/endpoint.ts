@@ -2474,10 +2474,11 @@ export class CotalEndpoint extends EventEmitter {
    * calling {@link channelHistory} once per channel and merging: each of those is a widening probe
    * loop, so the cost carried two multipliers (a probe loop per channel, and a fan-out across every
    * channel). Counted on the wire over a seeded corpus of 69 chat channels and 24 event channels at
-   * limit 200: 2524 broker requests and 8.0 MB transferred to return a 143,401-byte page, against
-   * 143 requests and 0.91 MB here. `pnpm smoke:web-activity-read-cost` reproduces the second column
-   * and a frozen copy of the fan-out shape; the first is that same suite run against `544a974b7`
-   * (Cotal #1210).
+   * limit 200: 2524 broker requests and about 8.0 MB transferred to return a 143,401-byte page,
+   * against 143 requests and about 0.91 MB here. The counts and the page size repeat exactly across
+   * runs; the byte totals move by a few hundred. `pnpm smoke:web-activity-read-cost` reproduces the
+   * second column and a frozen copy of the fan-out shape; the first is that same suite run against
+   * `544a974b7` (Cotal #1210).
    *
    * **The broker does the filtering, so the wire carries only what is asked for.** A channel left
    * out of `channels` costs nothing: its messages are never delivered, so a space whose volume is
@@ -2663,8 +2664,8 @@ export class CotalEndpoint extends EventEmitter {
       // that IS most of its stream, and the second case is the one a whole-backlog read takes: the
       // window succeeds on the first attempt and drains four pages to keep one, because
       // `drainWindow` delivers everything in the window and keeps the tail. Measured on `/api/dms`
-      // at limit 500 against a 2500-message backlog: 1,995,859 bytes moved to return a 346,001-byte
-      // page, and 8852ms and 7857ms across two runs on an 82ms/554 KB/s link, straddling the
+      // at limit 500 against a 2500-message backlog: 1,995,856 and 1,995,859 bytes moved across
+      // two runs to return a 346,001-byte page, and 8852ms and 7857ms on that link, straddling the
       // dashboard's 8000ms deadline with nothing else on the connection (Cotal #1210). A deployment
       // whose backlog is larger sits on the wrong side of it every time. One page wide makes the
       // SUCCESSFUL drain

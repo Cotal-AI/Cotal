@@ -987,7 +987,9 @@ export async function web(args: ParsedArgs): Promise<void> {
       // newest N is the tail of that ONE stream, filtered to the chat channels and merged here
       // rather than in seventy separate reads. Counted on the wire over a seeded corpus of 69 chat
       // channels plus 24 event channels at limit 200, the same 143,401-byte page costs 2524 broker
-      // requests and 8.0 MB before against 143 requests and 0.91 MB after. The event channels are
+      // requests and about 8.0 MB before against 143 requests and about 0.91 MB after. The counts
+      // and the page size repeat exactly across runs; the byte totals move by a few hundred, which
+      // is why these are rounded. The event channels are
       // load-bearing rather than scenery: they are what makes each chat filter sparse inside the
       // stream. `pnpm smoke:web-activity-read-cost` reproduces the after column and a frozen copy of
       // the old fan-out shape on this build's read primitive; the before column is that same suite

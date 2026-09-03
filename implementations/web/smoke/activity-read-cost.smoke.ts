@@ -501,8 +501,9 @@ try {
   //
   // WHAT DECIDES IT IS THE WINDOW. `/api/dms` asks for 500, and the window used to open at four
   // pages, and `drainWindow` delivers everything in the window and keeps the tail. Measured on
-  // `544a974b7` at limit 500 against a 2500-message backlog: 1,995,859 bytes moved to return a
-  // 346,001-byte page, 257 requests, and ALONE on this link 8852ms and 7857ms across two runs, so it
+  // `544a974b7` at limit 500 against a 2500-message backlog: 1,995,856 and 1,995,859 bytes moved
+  // across two runs to return a 346,001-byte page, 257 requests both times, and ALONE on this link
+  // 8852ms and 7857ms, so it
   // straddles the 8000ms deadline on this host with nothing else on the connection. A deployment
   // whose backlog is larger sits on the wrong side of it every time, which is the reported refusal,
   // with no contention in it at all.

@@ -16,12 +16,16 @@ and admin profiles already hold.
 Measured on the wire by a proxy between the endpoint and the broker that counts `$JS.API` request
 lines and bytes per direction, over a seeded corpus of 69 chat channels plus 24 event channels at
 limit 200. The before column is the committed suite run against the pre-change tree: 2524 broker
-requests and 8,015,723 bytes to return a 143,401-byte page. After: 143 requests and 908,420 bytes
-for the same 200 entries in the same order, and consumer creates fall from 347 to 6. On these
-completed no-link arms the request counts are deterministic across runs and the byte totals move by
-a few hundred; the field-link arms are truncated by the deadline, so their counts vary with the
-clock. Across an 82ms RTT / 554 KB/s link with the shipped 8000ms deadline, the fan-out answered 16
-of 70 sources and timed out, and the single read answers whole in 4503ms.
+requests and about 8,015,700 to 8,016,100 bytes to return a 143,401-byte page. After: 143 requests
+and about 908,400 bytes for the same 200 entries in the same order, and consumer creates fall from
+347 to 6.
+
+The counts are the stable claim and the walls are illustrative. On the completed no-link arms the
+request counts and the page size are identical across runs while the byte totals move by a few
+hundred. The field-link arms are truncated by the deadline, so their counts vary with the clock, and
+their wall times move by one to two percent between runs on one host. Across an 82ms RTT / 554 KB/s
+link with the shipped 8000ms deadline, the fan-out answered 16 of 70 sources and timed out, and the
+single read answers whole in 4503ms and 4565ms across two runs.
 
 `pnpm smoke:web-activity-read-cost` reproduces the after column, and beside it a frozen copy of the
 old fan-out shape as a scale-invariance control, which costs 2863 requests and 7,744,207 bytes. That
@@ -31,9 +35,10 @@ before; the before column is the same suite run against `544a974b7`.
 History reads now open their first window one page wide instead of four. `drainWindow` delivers
 everything in the window and keeps the tail, so a four-page window moved four pages to return one
 whenever the subject was most of its stream. `/api/dms` at limit 500 against a 2500-message backlog
-moved 1,995,859 bytes to return a 346,001-byte page and took 8852ms and 7857ms across two runs alone
-on that link, straddling the deadline with nothing else on the connection; it now moves 502,359
-bytes and takes 2857ms. A sparse subject pays one more widening step for that.
+moved 1,995,856 and 1,995,859 bytes across two runs to return a 346,001-byte page, and took 8852ms
+and 7857ms alone on that link, straddling the deadline with nothing else on the connection. It now
+moves 502,359 bytes and takes 2835ms and 2857ms. The first of each byte pair is the run against
+`544a974b7`. A sparse subject pays one more widening step for that.
 
 `ActivitySource` (the seam `activityBackfill` reads through) replaces `channelHistory` with
 `multiChannelHistory`. The aggregation now has two sources, chat and DMs, so a partial page names
