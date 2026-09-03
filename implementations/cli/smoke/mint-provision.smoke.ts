@@ -325,7 +325,18 @@ try {
     // From the main root, naming the other space: the root's auth and the target disagree.
     const out = join(root, "wrong.creds");
     const r = await runMint(["x", "--profile", "agent", "--provision", "--space", OPEN, "--out", out]);
-    check("--provision naming a mesh this root's auth is not for exits 1", r.code === 1 && /auth is for space "main"/.test(r.out), r.out);
+    // `--space` moves the persona/ACL/signing/storage root, not just the broker, so this is two
+    // roots whose authorities disagree rather than one root holding auth for another space. The
+    // refusal must name BOTH roots and BOTH authorities, or it does not describe the mix it
+    // refuses to make.
+    check("--provision naming a mesh on another trust root exits 1 naming both roots and both authorities",
+      r.code === 1
+        && /authorities disagree/.test(r.out)
+        && r.out.includes(openRoot)
+        && r.out.includes(root)
+        && /sandbox\/no-account/.test(r.out)
+        && /main\//.test(r.out),
+      r.out);
     check("  and mints nothing", !existsSync(out));
 
     // From the fresh open root: the mode itself is the refusal, said as such (not "run cotal up first"
@@ -339,9 +350,15 @@ try {
     check("  and mints nothing", !existsSync(out2));
 
     // Two roots that each ran `cotal up` for a space called "same": root B's mesh is the registered
-    // one, root A holds its OWN, independently generated trust material for the same label. From A,
-    // --provision resolves B by name; minting under B's key from A's folder would silently move the
-    // authority `cotal mint` has always taken from the folder it runs in.
+    // one, root A holds its OWN, independently generated trust material for the same label. Minting
+    // under B's key from A's folder would silently move the authority `cotal mint` takes from the
+    // folder it runs in.
+    //
+    // mint resolves like spawn and personas now, so a BARE `--provision` names no other mesh and
+    // stays local to A: it reaches A's own default server and stops there. The operator never named
+    // B, and spawn from A would not reach B either. Naming the two accounts is the job of the case
+    // where the operator DOES name it, which is asserted separately below. Both directions must
+    // mint nothing.
     const SAME = "same";
     const rootA = mkdtempSync(join(tmpdir(), "cotal-mint-prov-a-"));
     const rootB = mkdtempSync(join(tmpdir(), "cotal-mint-prov-b-"));
@@ -354,9 +371,24 @@ try {
     const out3 = join(rootA, "same.creds");
     const r3 = await runMint(["x", "--profile", "agent", "--provision", "--out", out3]);
     process.chdir(root);
-    check("--provision toward a same-named mesh on another trust root exits 1 naming the two accounts",
-      r3.code === 1 && /different trust root/.test(r3.out) && r3.out.includes(`run \`cotal mint\` from ${rootB}`), r3.out);
+    check("bare --provision from an unrecorded root stays local and exits 1 without reaching the other mesh",
+      r3.code === 1 && /no mesh running at nats:\/\/127\.0\.0\.1:4222/.test(r3.out), r3.out);
     check("  and mints nothing", !existsSync(out3));
+    check("  and does not mint under the other root's authority", !r3.out.includes(rootB), r3.out);
+
+    // Naming the other mesh IS the two-account case: the operator asked for B from A's folder, so
+    // the refusal must name both roots and both authorities rather than silently choosing one.
+    process.chdir(rootA);
+    const out4 = join(rootA, "same-named.creds");
+    const r4 = await runMint(["x", "--profile", "agent", "--provision", "--space", SAME, "--out", out4]);
+    process.chdir(root);
+    check("--provision naming a same-named mesh on another trust root exits 1 naming both roots and both authorities",
+      r4.code === 1
+        && /authorities disagree/.test(r4.out)
+        && r4.out.includes(rootA)
+        && r4.out.includes(rootB),
+      r4.out);
+    check("  and mints nothing", !existsSync(out4));
   }
 
   console.log(`\nMINT-PROVISION SMOKE OK ✅  (${pass} passed)`);
