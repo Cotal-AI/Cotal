@@ -13,7 +13,7 @@
  * the seats are still on the roster. Keeping rows per instance is what separates them, and these
  * cells drive the poll sequences where the difference shows.
  */
-import { foldManagedRows, managedById, type ManagedRow } from "../src/console/control.js";
+import { createManagedPoller, foldManagedRows, managedById, type ManagedRow, type PollOutcome, type PsReply } from "../src/console/control.js";
 
 let pass = 0, fail = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
@@ -58,6 +58,56 @@ console.log("6. the flattened view carries the harness facts the roster reads");
 state = foldManagedRows(new Map(), { answered: [{ instanceId: "A", rows: [row("x", { agent: "jcode", mode: "tmux" })] }], silent: [] });
 const flat = managedById(state);
 check("agent and mode reach the id-keyed map", flat.get("id-x")?.agent === "jcode" && flat.get("id-x")?.mode === "tmux", flat.get("id-x"));
+
+console.log("7. the poll is single flight, so a slow read cannot be overtaken and applied late");
+// The defect this guards: one read can outlast the interval that scheduled it, and two overlapping
+// reads are applied in COMPLETION order rather than request order, so an older answer lands after a
+// newer one and restores the rows the newer one retired. That undoes the fold's guarantee one layer
+// up, where no test of the fold can see it.
+{
+  const gate: ((r: PsReply) => void)[] = [];
+  let reads = 0;
+  let flat = new Map<string, { agent?: string; mode?: string }>();
+  const poller = createManagedPoller(
+    () => { reads++; return new Promise<PsReply>((res) => gate.push(res)); },
+    { rows: (f) => { flat = f; }, partial: () => {}, stopped: () => {} },
+  );
+  // A tick that starts a read it cannot finish would hang this file rather than fail a cell, and a
+  // suite that hangs proves nothing about which behaviour broke. Every outcome is read through a
+  // timer any settled tick beats, so an unguarded overlap fails a named cell. The timer is HELD,
+  // not unref'd: unref'd, the loop empties and the file dies on an unsettled await before it fires.
+  const outcome = (p: Promise<PollOutcome>): Promise<PollOutcome | "in flight"> => {
+    let t: ReturnType<typeof setTimeout> | undefined;
+    return Promise.race([p, new Promise<"in flight">((r) => { t = setTimeout(() => r("in flight"), 50); })])
+      .finally(() => clearTimeout(t));
+  };
+  const held = (): string => [...flat.keys()].sort().join(",");
+
+  const p1 = poller.tick();                          // starts, then stalls on the gated read
+  const overlap = await outcome(poller.tick());      // the interval fires again while p1 is in flight
+  check("a tick while a read is in flight is skipped", overlap === "skipped", overlap);
+  check("...and it starts no second read that could be applied out of order", reads === 1, { reads });
+
+  gate[0]({ ok: true, rows: [row("x")], silent: [], answered: [{ instanceId: "A", rows: [row("x")] }] });
+  check("the in-flight read still applies when it lands", (await outcome(p1)) === "applied" && held() === "id-x", held());
+
+  const p2 = poller.tick();
+  gate[1]({ ok: true, rows: [], silent: [], answered: [{ instanceId: "A", rows: [] }] });
+  check("the next read retires the seat", (await outcome(p2)) === "applied" && flat.size === 0, held());
+  check("...and no older answer is left in flight to resurrect it", gate.length === 2, { reads, gates: gate.length });
+}
+
+console.log("8. a failed read stops the poll, and cannot be raced by a newer success");
+{
+  let stoppedWith = "";
+  let reads = 0;
+  const poller = createManagedPoller(
+    async () => { reads++; return { ok: false, error: "refused" } as PsReply; },
+    { rows: () => {}, partial: () => {}, stopped: (e) => { stoppedWith = e; } },
+  );
+  check("the first failure stops it and names the reason", (await poller.tick()) === "stopped" && stoppedWith === "refused", stoppedWith);
+  check("...and a later tick does not knock again", (await poller.tick()) === "stopped" && reads === 1, { reads });
+}
 
 console.log(`\n${fail === 0 ? "CONSOLE-MANAGED-ROWS SMOKE OK ✅" : "CONSOLE-MANAGED-ROWS SMOKE FAILED ❌"} (${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);

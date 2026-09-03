@@ -138,6 +138,59 @@ export function managedById(byInstance: Map<string, ManagedRow[]>): Map<string, 
   for (const rows of byInstance.values()) for (const a of rows) flat.set(a.id, { agent: a.agent, mode: a.mode });
   return flat;
 }
+
+/** What one tick did, so a caller (and a test) can tell the three apart. */
+export type PollOutcome = "applied" | "skipped" | "stopped";
+
+/** The managed-row poll, SINGLE FLIGHT. One read may outlast the interval that scheduled it: the
+ *  scatter alone budgets a service resolve, a gather and a reconcile, and the resolve and mint in
+ *  front of it are additional. Left unguarded, two reads overlap and are applied in COMPLETION
+ *  order rather than request order, so an older answer can land after a newer one and restore the
+ *  very rows the newer one retired. That is the fold's own guarantee undone one layer up, and no
+ *  test of the fold can see it.
+ *
+ *  A tick while a read is in flight is therefore skipped outright rather than queued: the state is
+ *  a snapshot of the whole space, so a skipped tick loses nothing that the next one will not carry,
+ *  and skipping also bounds how much control traffic a slow mesh can accumulate. Being single
+ *  flight is also what keeps a STALE FAILURE from stopping the poll after a newer success, since
+ *  there can be no newer success in flight to race.
+ *
+ *  Stopping on a failed read is deliberate and reported by the caller: an open mesh with no
+ *  supervisor must not knock every tick. */
+export function createManagedPoller(
+  read: () => Promise<PsReply>,
+  on: { rows(flat: Map<string, { agent?: string; mode?: string }>): void; partial(silent: string[]): void; stopped(error: string): void },
+): { tick(): Promise<PollOutcome> } {
+  let byInstance = new Map<string, ManagedRow[]>();
+  let inFlight = false;
+  let stopped = false;
+  let announcedPartial = false;
+  return {
+    async tick(): Promise<PollOutcome> {
+      if (stopped) return "stopped";
+      if (inFlight) return "skipped";
+      inFlight = true;
+      try {
+        const r = await read();
+        if (!r.ok) {
+          stopped = true;
+          on.stopped(r.error);
+          return "stopped";
+        }
+        if (r.silent.length && !announcedPartial) {
+          announcedPartial = true;
+          on.partial(r.silent);
+        }
+        if (!r.silent.length) announcedPartial = false;
+        byInstance = foldManagedRows(byInstance, r);
+        on.rows(managedById(byInstance));
+        return "applied";
+      } finally {
+        inFlight = false;
+      }
+    },
+  };
+}
 export async function controlPs(ctx: ControlCtx): Promise<PsReply> {
   try {
     const t = await resolveControlTarget(ctx, "control-caller-privileged", undefined, { onRefusal: "throw" });

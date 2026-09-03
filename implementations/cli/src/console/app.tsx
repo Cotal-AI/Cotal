@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useFocusManager, useInput, useStdout } from "ink";
 import type { CotalEndpoint, Presence } from "@cotal-ai/core";
 import { useMesh } from "./mesh.js";
-import { control, controlPs, deleteChannel, foldManagedRows, managedById, type ControlCtx, type ControlOp, type ManagedRow } from "./control.js";
+import { control, controlPs, createManagedPoller, deleteChannel, type ControlCtx, type ControlOp } from "./control.js";
 import { attachSeat } from "../commands/agents.js";
 import { detachKey } from "../lib/attach-client.js";
 import { Tabs } from "./ui/Tabs.js";
@@ -145,52 +145,35 @@ export function App({
   // notice the harness tags and the detail card's `runs` just stay blank for the rest of the
   // session with nothing to tell the operator which of the three happened.
   const [managed, setManaged] = useState<Map<string, { agent?: string; mode?: string }>>(new Map());
-  const psDead = useRef(false);
-  const psPartial = useRef(false); // a partial scatter is announced once, not on every tick
-  const psByInstance = useRef(new Map<string, ManagedRow[]>()); // rows kept per manager, so a partial answer replaces only what spoke
   useEffect(() => {
     if (!canControl || !controlCtx) return;
-    psDead.current = false;
-    psPartial.current = false;
-    psByInstance.current = new Map(); // a new space or credential starts with no manager's rows carried over
     let alive = true;
-    const poll = async () => {
-      if (!alive || psDead.current) return;
-      const r = await controlPs({ ...controlCtx, space: ep.space });
+    // The poller owns the per-instance rows, the single-flight guard and the announce-once state;
+    // a new space or credential builds a new one, so nothing is carried over.
+    const poller = createManagedPoller(
+      () => controlPs({ ...controlCtx, space: ep.space }),
+      {
+        rows: (flat) =>
+          setManaged((prev) => {
+            const same =
+              flat.size === prev.size &&
+              [...flat].every(([id, m]) => {
+                const p = prev.get(id);
+                return p !== undefined && p.agent === m.agent && p.mode === m.mode;
+              });
+            return same ? prev : flat;
+          }),
+        partial: (silent) =>
+          setNotice(`managed rows are partial: ${silent.length} manager instance(s) gave no answer: ${silent.join(", ")}`),
+        stopped: (error) => setNotice(`no managed-agent rows: ${error}`),
+      },
+    );
+    const tick = async () => {
       if (!alive) return;
-      if (!r.ok) {
-        psDead.current = true; // nothing answered: stop knocking, having said so once
-        setNotice(`no managed-agent rows: ${r.error}`);
-        return;
-      }
-      // A scatter some instance did not answer is `ok:true` with those ids in `silent`, so this
-      // poll reads the attribution rather than the merged list. State is kept PER MANAGER
-      // INSTANCE and each answering instance's rows are replaced wholesale, so a seat despawned
-      // on a manager that spoke is dropped on that same tick, while a silent instance keeps only
-      // what it last said. A flat merge cannot do this: it can add and overwrite but never
-      // delete, so a seat that was despawned while any other instance was quiet would be shown
-      // forever, and a registration whose host is gone stays silent indefinitely. Rebuilding
-      // flat is the opposite error, emptying a quiet manager's seats off the roster.
-      // An instance that is neither answering nor silent has left the registry: its rows go.
-      if (r.silent.length && !psPartial.current) {
-        psPartial.current = true;
-        setNotice(`managed rows are partial: ${r.silent.length} manager instance(s) gave no answer: ${r.silent.join(", ")}`);
-      }
-      if (!r.silent.length) psPartial.current = false;
-      psByInstance.current = foldManagedRows(psByInstance.current, r);
-      setManaged((prev) => {
-        const next = managedById(psByInstance.current);
-        const same =
-          next.size === prev.size &&
-          [...next].every(([id, m]) => {
-            const p = prev.get(id);
-            return p !== undefined && p.agent === m.agent && p.mode === m.mode;
-          });
-        return same ? prev : next;
-      });
+      await poller.tick();
     };
-    void poll();
-    const t = setInterval(() => void poll(), PS_POLL_MS);
+    void tick();
+    const t = setInterval(() => void tick(), PS_POLL_MS);
     return () => {
       alive = false;
       clearInterval(t);
