@@ -18,6 +18,7 @@
  *
  * Run: pnpm smoke:claude-launch-env
  */
+import { readFileSync } from "node:fs";
 import { claudeConnector, CLAUDE_PROVIDER_KEYS } from "../src/extension.js";
 
 let pass = 0;
@@ -32,8 +33,40 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   }
 };
 
-const HOST_MARKERS = ["CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_ENTRYPOINT", "CLAUDECODE"] as const;
+interface ProviderEnvFixture {
+  providerKeys: string[];
+  providerCredentialKeys: Record<string, string[]>;
+  hostSessionMarkers: string[];
+}
+
+const fixture = JSON.parse(
+  readFileSync(new URL("./fixtures/claude-provider-env.json", import.meta.url), "utf8"),
+) as ProviderEnvFixture;
+const HOST_MARKERS = fixture.hostSessionMarkers;
 const UNRELATED = ["GH_TOKEN", "P3_OPERATOR_SECRET", "SOME_UNRELATED_SECRET"] as const;
+
+const expectedKeys = new Set(fixture.providerKeys);
+const actualKeys = new Set<string>(CLAUDE_PROVIDER_KEYS);
+const missingKeys = fixture.providerKeys.filter((key) => !actualKeys.has(key));
+const unexpectedKeys = CLAUDE_PROVIDER_KEYS.filter((key) => !expectedKeys.has(key));
+check(
+  "CLAUDE_PROVIDER_KEYS matches the external documented-key fixture in both directions",
+  missingKeys.length === 0 && unexpectedKeys.length === 0,
+  { missingKeys, unexpectedKeys },
+);
+check(
+  "the external documented-key fixture and CLAUDE_PROVIDER_KEYS contain no duplicates",
+  expectedKeys.size === fixture.providerKeys.length && actualKeys.size === CLAUDE_PROVIDER_KEYS.length,
+);
+
+for (const [flag, credentialKeys] of Object.entries(fixture.providerCredentialKeys)) {
+  const missingCredentials = credentialKeys.filter((key) => !actualKeys.has(key));
+  check(
+    `${flag} is not allowed without its documented credential set`,
+    actualKeys.has(flag) && credentialKeys.length > 0 && missingCredentials.length === 0,
+    { credentialKeys, missingCredentials },
+  );
+}
 
 for (const k of CLAUDE_PROVIDER_KEYS) process.env[k] = `smoke-${k}`;
 for (const k of HOST_MARKERS) process.env[k] = `parent-${k}`;
