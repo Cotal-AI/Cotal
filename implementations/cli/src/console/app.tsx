@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useFocusManager, useInput, useStdout } from "ink";
 import type { CotalEndpoint, Presence } from "@cotal-ai/core";
 import { useMesh } from "./mesh.js";
-import { control, controlPs, deleteChannel, type ControlCtx, type ControlOp, type ManagedRow } from "./control.js";
+import { control, controlPs, deleteChannel, foldManagedRows, managedById, type ControlCtx, type ControlOp, type ManagedRow } from "./control.js";
 import { attachSeat } from "../commands/agents.js";
 import { detachKey } from "../lib/attach-client.js";
 import { Tabs } from "./ui/Tabs.js";
@@ -177,14 +177,9 @@ export function App({
         setNotice(`managed rows are partial: ${r.silent.length} manager instance(s) gave no answer: ${r.silent.join(", ")}`);
       }
       if (!r.silent.length) psPartial.current = false;
-      const byInstance = psByInstance.current;
-      for (const id of [...byInstance.keys()])
-        if (!r.answered.some((a) => a.instanceId === id) && !r.silent.includes(id)) byInstance.delete(id);
-      for (const a of r.answered) byInstance.set(a.instanceId, a.rows);
+      psByInstance.current = foldManagedRows(psByInstance.current, r);
       setManaged((prev) => {
-        const next = new Map<string, { agent?: string; mode?: string }>();
-        for (const rows of byInstance.values())
-          for (const a of rows) next.set(a.id, { agent: a.agent, mode: a.mode });
+        const next = managedById(psByInstance.current);
         const same =
           next.size === prev.size &&
           [...next].every(([id, m]) => {

@@ -108,6 +108,36 @@ const BEARER_INSTANCE = "owner";
 export type PsReply =
   | { ok: true; rows: ManagedRow[]; silent: string[]; answered: { instanceId: string; rows: ManagedRow[] }[] }
   | { ok: false; error: string };
+
+/** Fold one ps answer into the rows held per manager instance, which is the only shape that can
+ *  both DROP a despawned seat and KEEP a quiet manager's seats.
+ *
+ *  An instance that answered has its rows replaced wholesale, so a seat it no longer lists is gone
+ *  on that tick. An instance that was asked and stayed silent keeps what it last said, because a
+ *  seat is not gone just because nobody could be reached to ask about it. An instance that is
+ *  neither has left the registry, and its rows leave with it.
+ *
+ *  A flat merge across instances cannot express the first of those: it can add and overwrite but
+ *  never delete, so one silent registration, which can persist indefinitely when a manager's host
+ *  dies without deregistering, would freeze every other manager's seats in place forever. A flat
+ *  rebuild is the opposite error, emptying a quiet manager's seats off the display. */
+export function foldManagedRows(
+  prev: Map<string, ManagedRow[]>,
+  reply: { answered: { instanceId: string; rows: ManagedRow[] }[]; silent: string[] },
+): Map<string, ManagedRow[]> {
+  const next = new Map(prev);
+  for (const id of [...next.keys()])
+    if (!reply.answered.some((a) => a.instanceId === id) && !reply.silent.includes(id)) next.delete(id);
+  for (const a of reply.answered) next.set(a.instanceId, a.rows);
+  return next;
+}
+
+/** The per-instance rows flattened to the id-keyed harness facts the roster and detail card read. */
+export function managedById(byInstance: Map<string, ManagedRow[]>): Map<string, { agent?: string; mode?: string }> {
+  const flat = new Map<string, { agent?: string; mode?: string }>();
+  for (const rows of byInstance.values()) for (const a of rows) flat.set(a.id, { agent: a.agent, mode: a.mode });
+  return flat;
+}
 export async function controlPs(ctx: ControlCtx): Promise<PsReply> {
   try {
     const t = await resolveControlTarget(ctx, "control-caller-privileged", undefined, { onRefusal: "throw" });
