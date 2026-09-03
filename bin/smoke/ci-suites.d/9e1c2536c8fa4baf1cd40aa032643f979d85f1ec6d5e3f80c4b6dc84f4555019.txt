@@ -1,0 +1,2 @@
+# Attaching a live agent terminal from the console and detaching back. Registered as a fragment (ci-suites.txt frozen since #1052).
+smoke:console-attach
