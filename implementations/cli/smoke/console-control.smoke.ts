@@ -70,13 +70,16 @@ const CHILD = [
   "creds:process.env.COTAL_CREDS_PATH?fs.readFileSync(process.env.COTAL_CREDS_PATH,'utf8'):undefined,",
   "lifecycleUid:process.env.COTAL_LIFECYCLE_UID||undefined,channels:[],consume:false,registerPresence:true,",
   "watchPresence:false,card:{id:process.env.COTAL_ID||undefined,name:process.env.COTAL_NAME,kind:'agent',role:'worker'}});",
-  "ep.on('error',()=>{});await ep.start();await ep.multicast('hello from '+process.env.COTAL_NAME,{channel:'general'});setInterval(()=>{},1000);});",
+  "ep.on('error',()=>{});await ep.start();await ep.multicast('hello from '+process.env.COTAL_NAME,{channel:'general'});",
+  // One seat reports WORKING so the :status row has a real mesh status to qualify. `working` is
+  // the only status the console rewords, and a hand-built row cannot prove a real seat reaches it.
+  "if(process.env.COTAL_WORKING)await ep.setStatus('working');setInterval(()=>{},1000);});",
 ].join("");
 const seatCon: Connector = {
   kind: "connector", name: "seat", requires: ["node"],
   buildLaunch: (o: LaunchOpts): LaunchSpec => ({
     command: "node", args: ["-e", CHILD],
-    env: { PATH: process.env.PATH ?? "", CORE_DIST: coreDist, COTAL_SPACE: o.space, COTAL_SERVERS: o.servers ?? "", COTAL_CREDS_PATH: o.creds ?? "", COTAL_ID: o.id ?? "", COTAL_LIFECYCLE_UID: o.lifecycleUid ?? "", COTAL_NAME: o.name },
+    env: { PATH: process.env.PATH ?? "", CORE_DIST: coreDist, COTAL_SPACE: o.space, COTAL_SERVERS: o.servers ?? "", COTAL_CREDS_PATH: o.creds ?? "", COTAL_ID: o.id ?? "", COTAL_LIFECYCLE_UID: o.lifecycleUid ?? "", COTAL_NAME: o.name, COTAL_WORKING: o.name === "w1" ? "1" : "" },
   }),
 };
 registry.register(seatCon);
@@ -149,6 +152,22 @@ try {
   }
   await wait(3_300);
   check(":status <seat> is answered by the seat's own manager on every try (6/6, both hosts)", hits === 6, { hits });
+
+  // The presence qualifier on a REAL managed seat. console-status-row proves formatManagedRow
+  // rewords `working`; nothing proved a real seat's row reaches that function, so the console
+  // could have printed the bare status and every cell would have stayed green.
+  await wait(3_300);
+  m = s.mark();
+  await s.command("status w1");
+  const qualified = await s.waitFor(/w1 \(worker\).*mesh working · progress unknown/, 20_000, m);
+  check(":status on a seat the mesh reports WORKING says progress unknown, not a bare working",
+    qualified, clean(s.out.slice(m)).match(/status: [^│\n]*/)?.[0] ?? clean(s.out.slice(m)).slice(-200));
+  await wait(3_300);
+  m = s.mark();
+  await s.command("status w2");
+  const idle = await s.waitFor(/w2 \(worker\).*mesh idle/, 20_000, m);
+  check("...while an idle seat is reported plainly, so the qualifier is not printed unconditionally",
+    idle, clean(s.out.slice(m)).match(/status: [^│\n]*/)?.[0] ?? clean(s.out.slice(m)).slice(-200));
   m = s.mark();
   await s.command("status nobody");
   const t0 = Date.now();
@@ -156,16 +175,38 @@ try {
   check(":status on a seat no manager hosts is refused by the locate step, naming both reachable managers", located, { after: `${Math.round((Date.now() - t0) / 1000)}s`, notice: clean(s.out.slice(m)).match(/status: [^│\n]*/g)?.slice(-2), tail: clean(s.out.slice(m)).slice(-200) });
 
   console.log("3. D f force-kills the seat on manager 2 (targeted, pinned to its host)");
+  // Every step used to be a fixed settle with nothing checked, so one late frame left the roster
+  // unselected and the `D` below opened nothing. The cell then blamed the console for a keystroke
+  // the suite had not managed to deliver. Each step now waits for the screen it produces.
   const select = async (name: string) => {
-    await s.keys("\x1b", 300);
-    await s.keys("/", 400); await s.keys(name, 300); await s.keys("\r", 500);
+    // The search line paints `/ ` then the query, so `/ <name>` on screen is the one signal that
+    // both the open and the typing took. Retried rather than asserted, and never thrown: a throw
+    // here abandons every later cell, and a suite that aborts says less than one that fails a
+    // named cell with the screen attached.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await s.keys("\x1b", 300);
+      const at = s.mark();
+      await s.keys("/", 250);
+      await s.keys(name, 250);
+      if (await s.waitFor(`/ ${name}`, 3_000, at)) break;
+    }
+    await s.keys("\r", 400);
     await s.keys("l", 400);
     for (let i = 0; i < 6; i++) await s.keys("k", 80);
   };
+  /** Open the kill confirm, retrying the keystroke rather than the assertion: `D` is a single raw
+   *  key and a dropped one is indistinguishable from a console that ignored it. Only retried while
+   *  the overlay is demonstrably absent, so a confirm that DID open is never sent a second D. */
+  const openKill = async (at: number): Promise<boolean> => {
+    for (let i = 0; i < 3; i++) {
+      await s.keys("D", 800);
+      if (await s.waitFor(/y = stop \(graceful\)/, 5_000, at)) return true;
+    }
+    return false;
+  };
   await select("w2");
   m = s.mark();
-  await s.keys("D", 800);
-  check("D opens the kill confirm", await s.waitFor(/y = stop \(graceful\)/, 5_000, m), clean(s.out.slice(m)).slice(-300));
+  check("D opens the kill confirm", await openKill(m), clean(s.out.slice(m)).slice(-300));
   // The overlay opening is not the same claim as the overlay GATING. Enter is the key an operator
   // hits to dismiss a dialog, so it must cancel here: a kill armed on Enter fires on a keystroke
   // nobody aimed at the selected seat. Assert the seat survives the reflex key before using the
@@ -176,8 +217,7 @@ try {
   check("Enter on the kill confirm does not stop the seat", !(await s.waitFor(/(force-killed|stopped|stopping) w2/, 3_000, m)), clean(s.out.slice(m)).slice(-200));
   check("...and w2 is still on the roster after Enter", !!live("w2"), watcher.getRoster().map((p) => `${p.card.name}:${p.status}`));
   m = s.mark();
-  await s.keys("D", 800);
-  check("D re-opens the kill confirm after the cancel", await s.waitFor(/y = stop \(graceful\)/, 5_000, m), clean(s.out.slice(m)).slice(-300));
+  check("D re-opens the kill confirm after the cancel", await openKill(m), clean(s.out.slice(m)).slice(-300));
   await s.keys("f", 300);
   check("f: the notice reports the force-kill", await s.waitFor(/force-killed w2/, 60_000, m), clean(s.out.slice(m)).match(/(force-killing|force-killed|stopped|stop:)[^│\n]*/g)?.join(" | "));
   check("...and w2 leaves the roster", !!(await until(() => (live("w2") ? undefined : true), 15_000)), watcher.getRoster().map((p) => `${p.card.name}:${p.status}`));
