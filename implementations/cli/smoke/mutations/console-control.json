@@ -11,8 +11,8 @@
     {
       "name": "C1 :ps from one manager's answer instead of the scatter merge",
       "file": "implementations/cli/src/console/control.ts",
-      "find": "    return { ok: true, rows: s.instances.flatMap((i) => (i.reachable && !i.error ? ((i.data as ManagedRow[]) ?? []) : [])) };",
-      "replace": "    return { ok: true, rows: ((s.instances.find((i) => i.reachable && !i.error)?.data as ManagedRow[] | undefined) ?? []) };",
+      "find": "    const answered = s.instances\n      .filter((i) => i.reachable && !i.error)\n      .map((i) => ({ instanceId: i.instanceId, rows: ((i.data as ManagedRow[]) ?? []) }));",
+      "replace": "    const answered = s.instances\n      .filter((i) => i.reachable && !i.error)\n      .slice(0, 1)\n      .map((i) => ({ instanceId: i.instanceId, rows: ((i.data as ManagedRow[]) ?? []) }));",
       "expectRed": ":ps lists the seats of both managers",
       "cell": ":ps lists the seats of both managers",
       "afterRestore": "pnpm --filter @cotal-ai/cli build",
