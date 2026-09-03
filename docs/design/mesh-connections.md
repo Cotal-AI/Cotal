@@ -19,12 +19,12 @@ reason attached to the decision. Section 9 holds what is not settled, addressed 
 | Read authority over host mesh records | Gated read of a redacted projection; never the record | [2.1](#21-read) |
 | Write authority over host mesh records | No agent writes the registry; the manager owns every write, and the request creates only | [2.2](#22-write) |
 | Multi-endpoint routing | One `MeshAgent` per connection, addressed by an explicit `mesh` argument | [3.1](#31-one-meshagent-per-connection) |
-| Multi-endpoint lifecycle | The home connection is permanent for the lifecycle; extras are additive and revocable | [3.2](#32-lifecycle) |
+| Multi-endpoint lifecycle | The home connection is permanent for the lifecycle; extras are additive, and revocable only where this host holds the target mesh's seed ([4.2](#42-revocation)) | [3.2](#32-lifecycle) |
 | Private credential storage | The #614 material carrier, written by the manager, read once and discarded | [4.1](#41-storage) |
 | Revocation | Reported to the manager, reaped on the real per-seat teardown path, and bounded by TTL where the home host has no authority to revoke | [4.2](#42-revocation) |
 | Host adapter keeping workspace out of connector-core | Four manager-endpoint commands and DTOs in core; connector-core learns no path | [5](#5-the-host-adapter-boundary) |
 | #1207: how a no-pid seat registers | A normal spawn through a `hosted` connector plus a `hosted` runtime | [7.1](#71-registration) |
-| #1207: where the persona limit binds | Three layers, and the network hop makes execute-time enforcement mandatory | [7.2](#72-the-persona-limited-mcp-path) |
+| #1207: where the persona limit binds | The broker for channels and control commands, the bridge for verbs; the network hop makes execute-time enforcement mandatory | [7.2](#72-the-persona-limited-mcp-path) |
 | #1207: liveness without a pid | An attach lease, on the `agentAuthState` pattern, where absence is ambiguous | [7.3](#73-liveness-without-a-pid) |
 | #1207: how stop and revocation reach it | A new control-frame revoke op before teardown, then the normal per-seat teardown | [7.4](#74-stop-and-revocation) |
 
@@ -248,11 +248,14 @@ continuation, or a respawn brings the seat back on its home mesh alone. Persisti
 crash-restart silently re-open outbound connections without any operator act in between, and it would
 put a second mesh's identity into recovery state that the lifecycle credential does not cover.
 
-**Decision: an additional connection's material is bounded by the seat's own lifecycle.** It is minted
-per lifecycle UID, like every other seat secret (`agentLifecycleCredsKey`,
+**Decision: an additional connection's material is bounded by the seat's own lifecycle, by whichever
+of the two mechanisms in 4.1 applies.** Where this host mints it (a local B), it is minted per
+lifecycle UID like every other seat secret (`agentLifecycleCredsKey`,
 `packages/workspace/src/agent-secrets.ts:194`), so it cannot outlive the incarnation that asked for
-it, and its path is recorded on the seat's tracked secret set so the per-seat teardown reaches it
-(4.2).
+it. Where the host only delivers what B's operator staged (a remote B), this host chose no lifetime
+and cannot impose one, so the bound is that credential's own TTL, which is why 4.2 makes the TTL
+load-bearing rather than a detail. Either way its path is recorded on the seat's tracked secret set so
+the per-seat teardown reaches it (4.2).
 
 **Decision: a bounded number of additional connections, refused past the bound rather than queued.**
 The default bound is 3. It exists because each connection is a full endpoint with durables, a
@@ -286,10 +289,12 @@ tool argument or result.**
 The sequence for `cotal_mesh_connect(mesh: "B")`:
 
 1. The seat invokes the manager command `mesh-material` over the existing lifecycle endpoint.
-2. The manager resolves record B, confirms operator-staged admission material for B exists under its
-   staging root (2.2), **mints** the seat's per-lifecycle credential for B from that material, and
-   writes one `LaunchMaterial` file with `writeLaunchMaterial`
-   (`packages/core/src/launch-material.ts:83`).
+2. The manager resolves record B, confirms operator-staged material for B exists under its staging
+   root (2.2), and obtains the seat's credential for B by whichever of the two paths applies under
+   the rule below: it **mints** one when this host holds B's signing seed, or **takes the per-seat
+   credential B's operator staged** when it does not. It never derives one from the other: a staged
+   JWT is not a seed and cannot be minted from. It then writes one `LaunchMaterial` file with
+   `writeLaunchMaterial` (`packages/core/src/launch-material.ts:83`).
 3. The reply carries the **path**, never the material. Path, mode, and space are not secret; the file
    is 0600 and the 0700 directory is owned by the same user the seat runs as.
 4. The seat calls `readLaunchMaterial`, constructs the second `MeshAgent`, then calls
@@ -399,7 +404,7 @@ and `define-persona`:
 |---|---|---|
 | `list-meshes` | Return the redacted projection | Yes: add to `REPEAT_SAFE_COMMANDS[manager]` (`endpoint-grants.ts:234`) |
 | `register-mesh` | Create one record from coordinates, refusing an existing name | No: it refuses on conflict, so a retry after a responded-but-unbound split cannot be told from a duplicate create |
-| `mesh-material` | Mint one material file for one target mesh | No: it mints |
+| `mesh-material` | Provide one material file for one target mesh: minted where the host holds B's seed, delivered from staged material where it does not (4.1) | No: it mints or hands out a credential |
 | `mesh-disconnect` | Drop a tracked extra-mesh material path, and deprovision on B only where a B-scoped deprovisioner exists (4.2) | No: a second run acts on whatever now holds the path, the `despawn` reasoning in that table's own comment |
 
 **Decision: a new capability, `mesh`, gates all four.** It is added to the closed set in
@@ -407,26 +412,27 @@ and `define-persona`:
 `meshCallerCapabilities` grant set on the manager endpoint in the same shape as
 `spawnCallerCapabilities` (`endpoint-grants.ts`).
 
-**Decision: the tool filter for the `mesh` family is UNCONDITIONAL on the declared capability, and
-this is deliberately NOT what `canSpawn` does.** `canSpawn` is
-`!isAuthed(config) || config.capabilities?.includes("spawn")` (`tool-specs.ts:524`): permissive on an
-open mesh, because open mode mints no identity, so the broker is not a boundary there and the filter
-would be claiming one that does not exist. That reasoning does not carry over. The authority the
-`mesh` family exercises is **host-local**: it reads and writes the machine's registry and asks the
-manager to mint material on disk. None of that is granted by the mesh's broker, so an open mesh does
-not make it free, and mirroring `canSpawn` would have handed every persona on an open mesh the whole
-family while this document claimed the capability gated it. #865 asks for these tools to be injected
-only for personas declaring the capability, and on an open mesh that is only true if the filter is the
-boundary. That leaves the open-mesh case, and the honest answer is a refusal rather than a filter. On an open
-broker the caller tuple on a request subject is not authenticated, which is the whole reason
-`canSpawn` gives up there. A manager-side re-check of the declared capability cannot bind either,
-because the handler has no authenticated principal to check the declaration against, and an earlier
-draft of this section claimed such a re-check as though it could. **Decision: the `mesh` family is
-refused outright on an open home mesh.** No listing, no registration, no material. An open mesh has
-no way to tell one caller from another, and the authority in question reaches the host filesystem, so
-the only safe answer is that nobody gets it. An operator on an open mesh uses the CLI. Stated plainly:
-for `spawn` the filter is truthfulness and the broker is the boundary; for `mesh` the broker is the
-boundary on an authenticated mesh, and on an open one the feature is off.
+**Decision: on an authenticated mesh the broker is the boundary and the tool filter mirrors it; on an
+open mesh the `mesh` family is refused outright.** This is deliberately not what `canSpawn` does, and
+the difference is worth stating because the first two drafts of this section got it wrong in opposite
+directions.
+
+`canSpawn` is `!isAuthed(config) || config.capabilities?.includes("spawn")` (`tool-specs.ts:524`):
+permissive on an open mesh, because open mode mints no identity, so the broker is not a boundary there
+and a filter would be claiming one that does not exist. Mirroring that for `mesh` would hand every
+persona on an open mesh the whole family while this document claimed a capability gated it. But the
+opposite move, which an earlier draft made, does not work either: it kept the filter and promised a
+manager-side re-check of the declared capability behind it. That re-check cannot bind. On an open
+broker the caller tuple on a request subject is not authenticated, so the handler has no principal to
+check a declaration against, which is the same reason `canSpawn` gives up.
+
+So neither a filter nor a handler check is a boundary on an open mesh, and the authority in question
+is not the broker's to grant in the first place: the `mesh` family reads and writes the machine's
+registry and asks the manager to mint material on disk. Host-local authority, offered to callers the
+host cannot tell apart, is not something to gate. It is something to withhold. **On an open home mesh
+there is no listing, no registration, no material, and no connect.** An operator on an open mesh uses
+the CLI. On an authenticated mesh the broker enforces the minted grant and the filter keeps the
+advertised surface truthful, which is #865's "injected only for personas declaring the capability".
 
 **Decision: `mesh` is a separate capability from `spawn`, not folded into it.** `spawn` is already
 documented as host-launch authority (`agent-file.ts:85` comment) because `launchOptions` is a raw
@@ -718,7 +724,8 @@ is complete and safe, but it means the common case (a cloud session that cannot 
 the operator to run a tunnel themselves. A first-party tunnel or relay would remove that step and
 would be a new network component to own. Worth it, or is an operator-run tunnel the right level?
 
-**Q3. Ratify two divergences from the #1207 sketch and requirements.**
+**Q3. Ratify the divergences from the #1207 sketch and requirements.** There are three, lettered
+below.
 (a) The sketch says the launch step does not fork; section 7.1 starts a local bridge process per
 hosted seat, for credential hygiene, reuse of the existing lifecycle machinery, and blast radius.
 (b) Requirement 3 says the hosted side receives a scoped mesh credential; section 7.2 gives it an
