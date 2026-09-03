@@ -184,6 +184,8 @@ async function uniqueMeshName(
     card: { name: "spawn-probe", kind: "endpoint" },
   });
   ep.on("error", () => {}); // advisory: a presence-read hiccup must never block the spawn
+  const ignoreNameProbeWarning = () => {};
+  ep.on("warning", ignoreNameProbeWarning); // deliberate: this best-effort naming probe never owns spawn success
   await ep.start();
   try {
     // Presence replays from the KV bucket right after connect; settle until the roster count holds
@@ -562,7 +564,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       watchChannels: false,
       card: { name: "spawn-provisioner", role: "provisioner", kind: "endpoint" },
     });
-    prov.on("error", (e: Error) => console.error(`! provisioner: ${e.message}`));
+    const reportStaticProvisioner = (e: Error) => console.error(`! provisioner: ${e.message}`);
+    prov.on("error", reportStaticProvisioner);
+    prov.on("warning", reportStaticProvisioner);
     await prov.start();
     // Foreground provisions the SAME durable footprint as `--detach` (DM/DLV durables + read-ACL
     // row): the daemon authorizes durable joins off the ACL row and leave is agent self-service, so
@@ -927,7 +931,9 @@ async function provisionUserForeground(
       watchChannels: false,
       card: { name: "spawn-provisioner", role: "provisioner", kind: "endpoint" },
     });
-    prov.on("error", (e: Error) => console.error(`! provisioner: ${e.message}`));
+    const reportUserProvisioner = (e: Error) => console.error(`! provisioner: ${e.message}`);
+    prov.on("error", reportUserProvisioner);
+    prov.on("warning", reportUserProvisioner);
     await prov.start();
     try {
       // Full durable footprint, same as the static foreground path: the ACL row is what lets the

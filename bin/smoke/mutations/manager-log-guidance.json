@@ -1,0 +1,64 @@
+{
+  "suite": "bin/smoke/manager-log-guidance.smoke.ts",
+  "guard": "operator manager-log guidance is derived from the same writer-owned path helper at all three shipped messages",
+  "command": "pnpm smoke:manager-log-guidance",
+  "completionMarker": "MANAGER LOG GUIDANCE:",
+  "mutations": [
+    {
+      "name": "the held-lease refusal goes back to the stale root-scoped manager log",
+      "file": "implementations/cli/src/commands/spawn-manifest.ts",
+      "find": "console.error(c.red(`✗ a manager lease for \"${space}\" is still held by an unresponsive holder (pid ${launchHeld.pid}) after its TTL - stop it or check ${managerLogDisplayPath(space)}`));",
+      "replace": "console.error(c.red(`✗ a manager lease for \"${space}\" is still held by an unresponsive holder (pid ${launchHeld.pid}) after its TTL - stop it or check .cotal/manager.log`));",
+      "expectRed": "the held-lease refusal derives its logfile guidance",
+      "cell": "the held-lease refusal derives its logfile guidance"
+    },
+    {
+      "name": "the manager-readiness refusal goes back to the stale root-scoped manager log",
+      "file": "implementations/cli/src/commands/spawn-manifest.ts",
+      "find": "console.error(c.red(`✗ manager did not become ready for control - see ${managerLogDisplayPath(space)}`));",
+      "replace": "console.error(c.red(`✗ manager did not become ready for control - see .cotal/manager.log`));",
+      "expectRed": "the manager-readiness refusal derives its logfile guidance",
+      "cell": "the manager-readiness refusal derives its logfile guidance"
+    },
+    {
+      "name": "the up success line goes back to the stale root-scoped manager log",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "- see ${managerLogDisplayPath(m.space)}`));",
+      "replace": "- see .cotal/manager.log`));",
+      "expectRed": "the up success line derives its logfile guidance",
+      "cell": "the up success line derives its logfile guidance"
+    },
+    {
+      "name": "managerLogPath drifts from the workspace-owned logfile template",
+      "file": "implementations/cli/src/lib/manager-proc.ts",
+      "find": "  canonicalLocalProcessPath(MANAGER_LOGFILE, { root, space });",
+      "replace": "  canonicalLocalProcessPath(\"manager.log\", { root, space });",
+      "expectRed": "managerLogPath derives from the workspace-owned MANAGER_LOGFILE template",
+      "cell": "managerLogPath derives from the workspace-owned MANAGER_LOGFILE template"
+    },
+    {
+      "name": "the detached writer bypasses managerLogPath and derives its own filename",
+      "file": "implementations/cli/src/lib/manager-proc.ts",
+      "find": "  const logPath = managerLogPath(space);",
+      "replace": "  const logPath = canonicalLocalProcessPath(\"manager.log\", ctx(space));",
+      "expectRed": "the detached manager writer opens managerLogPath instead of deriving its own filename",
+      "cell": "the detached manager writer opens managerLogPath instead of deriving its own filename"
+    },
+    {
+      "name": "the logfile sink bypasses logPath and opens an independently-derived filename",
+      "file": "implementations/cli/src/lib/manager-proc.ts",
+      "find": "  const fd = openSync(logPath, \"a\", 0o600);",
+      "replace": "  const fd = openSync(canonicalLocalProcessPath(\"manager.log\", ctx(space)), \"a\", 0o600);",
+      "expectRed": "the detached manager opens its logfile descriptor on the managerLogPath value",
+      "cell": "the detached manager opens its logfile descriptor on the managerLogPath value"
+    },
+    {
+      "name": "reachability control makes managerLogPath stop returning its canonical path",
+      "file": "implementations/cli/src/lib/manager-proc.ts",
+      "find": "  canonicalLocalProcessPath(MANAGER_LOGFILE, { root, space });",
+      "replace": "  \"\";",
+      "expectRed": "the operator path is the writer-owned manager logfile relative to the mesh root",
+      "cell": "the operator path is the writer-owned manager logfile relative to the mesh root"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "suite": "packages/lang/smoke/fuzz-journal.smoke.ts",
+  "guard": "The journal refuses what it cannot faithfully hold: an oversized ok result ahead of the settling append (L5006), and a seeded entry whose state or status is outside the vocabulary, which lookup would otherwise misread as a replayable success. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-fuzz-journal",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/journal-guards.json",
+  "mutations": [
+    {
+      "name": "the result bound is measured and never enforced",
+      "file": "packages/lang/src/journal.ts",
+      "find": "      if (bytes > this.resultBytes) throw new EffectResultTooLarge(k, bytes, this.resultBytes);",
+      "replace": "      void bytes;",
+      "expectRed": "an oversized ok result is refused with L5006",
+      "completionMarker": "ok a settled entry with NO status is refused at the seed",
+      "cell": "an oversized ok result is refused with L5006",
+      "note": "The oversized result then settles and persists, so the first L5006 cell reds; the seed-guard cells upstream are untouched by this line and keep the marker green."
+    },
+    {
+      "name": "the status vocabulary guard is disabled at the seed",
+      "file": "packages/lang/src/journal.ts",
+      "find": "      if (e.state === \"settled\" && e.status !== \"ok\" && e.status !== \"failed\" && e.status !== \"cancelled\" && e.status !== \"refused\")",
+      "replace": "      if (false)",
+      "expectRed": "a settled entry with an unknown status is refused at the seed",
+      "completionMarker": "ok recorded history without pins is refused (L5021)",
+      "cell": "a settled entry with an unknown status is refused at the seed",
+      "note": "With the guard gone the corrupted entry falls through every lookup verdict into replay and the resume completes silently, which is the measured pre-guard behavior this cell exists to keep dead."
+    },
+    {
+      "name": "the state vocabulary guard is disabled at the seed",
+      "file": "packages/lang/src/journal.ts",
+      "find": "      if (e.state !== \"pending\" && e.state !== \"settled\")",
+      "replace": "      if (false)",
+      "expectRed": "an entry with an unknown state is refused at the seed",
+      "completionMarker": "ok a settled entry with an unknown status is refused at the seed",
+      "cell": "an entry with an unknown state is refused at the seed",
+      "note": "A state outside the vocabulary with a valid status slips past the status guard (its condition requires state settled), so only its own guard can catch it, and only this cell can see that guard go."
+    }
+  ]
+}

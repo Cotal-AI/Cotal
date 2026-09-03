@@ -33,7 +33,7 @@ export const launchFlags = [
   { name: "opt", type: "string", multiple: true, value: "<k=v>", description: "connector-specific launch option (repeatable); wins per-key over the agent file's launchOptions:" },
   { name: "cwd", type: "string", value: "<dir>", description: "working directory to root the agent at" },
   { name: "prompt", type: "string", value: "<text>", description: "initial prompt auto-submitted at start" },
-  { name: "resume", type: "string", value: "<id>", description: "fork an existing session id into the mesh (claude only; detached: pair with --cwd)" },
+  { name: "resume", type: "string", value: "<id>", description: "fork an existing session id into the mesh (only where the connector declares resume support; detached: pair with --cwd)" },
   { name: "events", type: "boolean", description: "publish the session's AG-UI event plane to its own event channel" },
   { name: "no-events", type: "boolean", description: "explicit default: no event plane" },
   { name: "share-tools", type: "string", value: "<sel>", description: "share named operator MCP servers with the agent" },

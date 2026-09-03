@@ -37,6 +37,7 @@ import {
   Journal,
   JournalAppendRejected,
   RunReleased,
+  RunHeld,
   assertNodeFloor,
   journalEntryKeyString,
   runInWorker,
@@ -140,6 +141,9 @@ function rehydrate(failed: WorkerRunFailed, store: WitnessedStore): Error {
   }
   if (failed.code === "L5012") {
     return new RunReleased(failed.reason ?? failed.message);
+  }
+  if (failed.code === "L5025") {
+    return new RunHeld(failed.step ?? "(step not carried)", failed.reason ?? failed.message);
   }
   // An effect failure carries its domain across whole, because callers branch on `kind` exactly as
   // they do when the walker raises the same class in-process.

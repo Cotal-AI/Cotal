@@ -18,8 +18,8 @@
     {
       "name": "A1 drop the kickoff prompt at the manager command boundary",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    const args = { name, role, agent: opts?.agent, model: opts?.model, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt };",
-      "replace": "    const args = { name, role, agent: opts?.agent, model: opts?.model, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd };",
+      "find": "    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt };",
+      "replace": "    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd };",
       "expectRed": "kickoff prompt forwarded"
     },
     {

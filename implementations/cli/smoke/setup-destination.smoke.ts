@@ -83,7 +83,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 function mesh(space: string, port: number, opts: { seedCotal?: boolean } = {}): string {
   const root = mkdtempSync(join(scratch, `${space}-`));
   if (opts.seedCotal !== false) mkdirSync(join(root, ".cotal"), { recursive: true });
-  recordMesh({ space, server: `nats://127.0.0.1:${port}`, root, mode: "open", origin: "up" });
+  recordMesh({ space, server: `nats://127.0.0.1:${port}`, root, mode: "open", origin: "up", ts: new Date().toISOString() });
   return root;
 }
 

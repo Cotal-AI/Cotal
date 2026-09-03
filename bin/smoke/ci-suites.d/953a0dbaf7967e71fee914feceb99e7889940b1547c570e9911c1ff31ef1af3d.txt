@@ -1,0 +1,4 @@
+# Own-process launch-material census. Sibling of suite-ambient-env: that grades spreads into
+# children, this grades a suite that defaults COTAL_SERVERS then calls configFromEnv() on its own
+# process.env. Issue #995.
+smoke:suite-own-process-material

@@ -35,7 +35,11 @@
  */
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import {
+  canonicalLocalProcessPath, DELIVERY_LOGFILE, DELIVERY_PIDFILE, MANAGER_DELIVERY_AWARE_MARKER,
+  MANAGER_LOGFILE, MANAGER_PIDFILE,
+} from "../src/local-process.js";
 import { createBrokerAuth, createSpaceAccountAuth, type SecretStore } from "@cotal-ai/core";
 import { authDir, saveBrokerAuth, saveSpaceAccountAuth, spaceFromSegment, spaceSegment } from "../src/auth-paths.js";
 import {
@@ -78,8 +82,16 @@ try {
   console.log("1) the segment cannot collide with any child of .cotal/");
   for (const name of RESERVED_COTAL_CHILDREN)
     check(`"${name}" is not a canonical segment`, spaceFromSegment(name) === undefined && !name.startsWith("space."), name);
-  // The nearest miss is a real name, not a hypothetical: it shares the `<prefix>.<spaceKey>` shape.
-  check("auth-service.<spaceKey>.pid is not a canonical segment", spaceFromSegment(`auth-service.${Buffer.from("alpha", "utf8").toString("hex")}.pid`) === undefined);
+  // The nearest misses are real names, not hypotheticals: they share the `<prefix>.<spaceKey>.<suffix>`
+  // shape. The five runtime records joined that shape when the pid/log namespace became per-space, so
+  // they are expanded through the SHIPPED helper here rather than restated as literals.
+  const nearMisses = [
+    `auth-service.${Buffer.from("alpha", "utf8").toString("hex")}.pid`,
+    ...[MANAGER_PIDFILE, MANAGER_LOGFILE, MANAGER_DELIVERY_AWARE_MARKER, DELIVERY_PIDFILE, DELIVERY_LOGFILE]
+      .map((template) => basename(canonicalLocalProcessPath(template, { root: join(tmpdir(), "unused"), space: "alpha" }))),
+  ];
+  for (const name of nearMisses)
+    check(`"${name}" is not a canonical segment`, spaceFromSegment(name) === undefined && !name.startsWith("space."), name);
   // POSITIVE CONTROL: the predicate is not simply always-undefined — it DOES recognise real segments.
   for (const space of ["alpha", "Alpha", "a.b", "☃", "space.616c706861"])
     check(`CONTROL: spaceFromSegment round-trips "${space}"`, spaceFromSegment(spaceSegment(space)) === space, spaceSegment(space));

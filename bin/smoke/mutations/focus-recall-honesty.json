@@ -1,0 +1,50 @@
+{
+  "suite": "extensions/connector-core/smoke/attention.smoke.ts",
+  "guard": "a focus-mode ack-dropped ambient/@mention on a channel recall cannot actually replay (replay=off, or reachable only via a wildcard join) is reported in `droppedChannels`, not silently claimed as an empty-but-complete window",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:attention",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/focus-recall-honesty.json",
+  "why": [
+    "#977: focus-mode ingest ack-drops channel ambient and @mentions on the documented promise that",
+    "they \"stay recallable via cotal_inbox (recallAmbient)\". That promise silently failed in two",
+    "independent places: `recallChannel` returned `dropped: false` for a replay=off channel (an empty",
+    "array read as a complete, empty window), and `recallAmbient` `continue`d past a wildcard-joined",
+    "channel before it ever reached the `droppedChannels` push. Either way `cotal_inbox` told the",
+    "reader nothing was lost when a message -- possibly an @mention with no other delivery path -- was",
+    "gone for good.",
+    "",
+    "TWO SITES, TWO CELLS, GRADED FROM TWO SUITES ON PURPOSE. The fix has no shared code path: one",
+    "mutation reverts `packages/core/src/endpoint.ts`'s `recallChannel` replay gate and is graded by",
+    "`attention.smoke.ts` (its cell already covers the replay=off channel); the other reverts",
+    "`extensions/connector-core/src/agent.ts`'s wildcard skip in `recallAmbient` and is graded by the",
+    "dedicated `focus-recall-wildcard.smoke.ts`, since no existing suite joins a channel only through a",
+    "wildcard while in focus. Each mutation names the suite that actually exercises it.",
+    "",
+    "BUILD FIRST FOR THE CORE MUTATION, REBUILD ON RESTORE. `attention.smoke.ts` resolves",
+    "`@cotal-ai/core` through `dist/`, so mutating `endpoint.ts` under `src` is invisible to it without",
+    "a build; `afterRestore` rebuilds core so the tree is not left compiled from the mutant. The",
+    "`agent.ts` mutation needs no build: connector-core's own smoke suites import `../src/agent.js`",
+    "directly."
+  ],
+  "mutations": [
+    {
+      "name": "recallChannel stops reporting the replay=off gate, so an ack-dropped channel reads as an empty, complete window",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "if (!policy.replay) return { messages: [], dropped: true };",
+      "replace": "if (!policy.replay) return { messages: [], dropped: false };",
+      "expectRed": "recall REPORTS the replay=off channel as dropped, not silently",
+      "cell": "recall REPORTS the replay=off channel as dropped, not silently",
+      "note": "The defect exactly as it shipped: `recallChannel` still correctly returns no messages for a replay=off channel (the gate itself holds -- the sibling cell `recall GATES OUT the replay=off channel` stays green), but claims the window was complete instead of naming the channel in `droppedChannels`.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "recallAmbient goes back to silently skipping a wildcard-joined channel instead of naming it dropped",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      if (!isConcreteChannel(channel)) {\n        droppedChannels.push(channel);\n        continue;\n      }",
+      "replace": "      if (!isConcreteChannel(channel)) continue;",
+      "expectRed": "recall REPORTS the wildcard join as dropped, not silently",
+      "cell": "recall REPORTS the wildcard join as dropped, not silently",
+      "command": "pnpm smoke:focus-recall-wildcard",
+      "note": "The other independent cause of the same silent loss: a channel reached only through a wildcard subscription (`team.>`) is not a concrete channel `recallChannel` can be asked about, so before the fix the loop `continue`d past it with nothing recorded -- the ambient and the @mention it ack-dropped at ingest vanish with no trace in `droppedChannels`."
+    }
+  ]
+}

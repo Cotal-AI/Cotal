@@ -54,10 +54,12 @@ const again = await run(source, {
 `run` performs effects through the `EffectHandler` you pass and records each in the `Journal`;
 hand the same journal and pins back and the same program resumes. `SimHandler` scripts turns, asks,
 checkpoints and events and refuses anything unscripted (L6001), so a simulation cannot silently
-invent an answer. It does advance ONE virtual clock in the order effects are asked, so a `race` under
-it is decided by that order and declaration order rather than by the durations the arms wrote; the
-rule (least recorded clock, ties by declaration order) is what is applied, the clocks are the
-simulator's.
+invent an answer. Time is discrete-event simulated on one virtual clock: timed effects park at
+their wake times and are delivered in wake order, so concurrent branches accumulate their own
+durations and a `race` under simulation is decided by the rule itself (least recorded clock, ties
+by declaration order), not by the order effects were asked. The simulator also enforces the `ask`
+schema shorthand: an unreadable schema is refused (L4022), and non-conforming replies consume
+`attempts` before L4006.
 
 ## Suites
 

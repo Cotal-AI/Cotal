@@ -80,7 +80,7 @@ import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, typ
 import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, endpointPlaneStreamNames } from "./endpoint-binding.js";
 import { epsSubject, epCallerReplyFilter, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE } from "./endpoint-subjects.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
-import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix } from "./lifecycle-state.js";
+import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix, eprepairKey } from "./lifecycle-state.js";
 import { rawDigest } from "./canonical.js";
 import { credsClaims, type Identity } from "./identity.js";
 import {
@@ -100,7 +100,7 @@ export type Profile =
   | "deprovisioner" // ephemeral, TARGET-PINNED teardown of ONE departed agent's id-keyed footprint (#159 B)
   | "retirement-requester" // ephemeral request+reply on the auth-admin rail (#29 piece 3): asks the AUTH plane to retire a lifecycle; holds NO executing right
   | "lifecycle-executor" // ephemeral, LIFECYCLE-PINNED §13.1 state writes for the STATIC manager (Unit B): exactly ONE incarnation's head/uid/gate/cred-row/slot keys
-  | "endpoint-serve-executor" // ephemeral, ENDPOINT-INSTANCE-PINNED §13.1 endpoint-serve writes (P2 item 1, 1a-serve): exactly ONE (endpoint, instanceId)'s epgate + epcred family
+  | "endpoint-serve-executor" // ephemeral, ENDPOINT-INSTANCE-PINNED §13.1 endpoint-serve writes (P2 item 1, 1a-serve): exactly ONE (endpoint, instanceId)'s epgate + epcred family + eprepair cursor
   | "operator"
   | "purger"
   | "backup"
@@ -200,7 +200,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   deprovisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "target-pinned teardown window only" },
   "retirement-requester": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one despawn's retirement request window; request+reply only" },
   "lifecycle-executor": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one static lifecycle operation's 13.1 state-write window (activation / terminal / renewal ledger append)" },
-  "endpoint-serve-executor": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one endpoint registration/serve-mint window (13.1 epgate CAS + epcred stage/revoke for one (endpoint, instanceId))" },
+  "endpoint-serve-executor": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one endpoint registration/serve-mint window (13.1 epgate CAS + epcred stage/revoke + eprepair cursor for one (endpoint, instanceId))" },
   operator: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "send/dm/join/probe-style operator command" },
   purger: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "history purge command" },
   backup: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "offline snapshot phase; exact stream and delivery subject, memory-only" },
@@ -1167,9 +1167,12 @@ export function permissionsFor(
     // JetStream control plane — scoped to this agent's own streams/durables.
     "$JS.API.INFO",
     // STREAM.INFO: CHAT (join watermark, recall drop-marker, channel-list counts — a documented
-    // metadata surface, see SPEC §9) + the world-readable presence/registry KVs. NOT DM/TASK: agents
-    // bind their dm_<id>/svc_<role> by name and never inspect those streams, so granting INFO there
-    // would only leak DM-inbox / task subject metadata across peers for no functional gain.
+    // metadata surface, see SPEC §9) + the world-readable presence/registry KVs. NOT DM/DLV/EPC:
+    // an agent reaches each of those by name — its own pre-created dm_<id>/dlv_<id> durable, or a
+    // subject-scoped DIRECT.GET on EPC — so it never needs a stream-level read, and `subjects_filter`
+    // is a REQUEST-BODY field no ACL can narrow, so INFO there would enumerate DM and delivery
+    // subject metadata across peers (who DMed whom) for no functional gain. TASK's INFO row is
+    // role-gated with the rest of its TASK grants, below.
     `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,
     // Live channel delivery is the agent's own native core subscription (sub.allow over chat.*.<ch>,
     // below) — there is NO per-instance chat live-tail durable to bind. The durable backstop is
@@ -1232,7 +1235,10 @@ export function permissionsFor(
     // TASK consumer: BIND ONLY its own role's pre-created durable (svc_<role>). Like DM, the
     // create-time filter_subject isn't reliably ACL-constrainable, so no create path is
     // allowed — the privileged provisioner pre-creates svc_<role> filtered to svc.<role>.*.
+    // STREAM.INFO rides the SAME role gate as the bind rows: a role-less agent holds no TASK grant
+    // at all, so it can neither read the task stream's state nor enumerate its subjects.
     pubAllow.push(
+      `$JS.API.STREAM.INFO.${TASK}`,
       `$JS.API.CONSUMER.INFO.${TASK}.${svcD}`,
       `$JS.API.CONSUMER.MSG.NEXT.${TASK}.${svcD}`,
       `$JS.ACK.${TASK}.${svcD}.>`,
@@ -1403,6 +1409,7 @@ function remoteManagerPermissions(
   const REC = recordsBucket(space);
   const gateKey = epgateKey("manager", iid);
   const credPrefix = epcredFamilyPrefix("manager", iid);
+  const repairKey = eprepairKey("manager", iid);
   const recordKeys = [
     recordSpecKey(RECORD_KINDS.svc, ["manager", iid]),
     recordStatusKey(RECORD_KINDS.svc, ["manager", iid]),
@@ -1425,6 +1432,7 @@ function remoteManagerPermissions(
         "$JS.FC.>",
         // This instance's manager service registration + credential family only.
         `$KV.${AUTH}.${gateKey}`,
+        `$KV.${AUTH}.${repairKey}`,
         `$KV.${AUTH}.${credPrefix}.>`,
         ...recordKeys.map((key) => `$KV.${REC}.${key}`),
         `${spacePrefix(space)}.epc.*`,
@@ -1981,7 +1989,10 @@ function lifecycleExecutorPermissions(
   // NOT a caller-supplied literal, so a mis-constructed pin can only ever name ONE coherent
   // incarnation's rows (guard the core: the profile enforces the "one incarnation" promise, it
   // does not merely assert it). The builders throw on any non-KV-safe segment.
-  const recordKeys = [lifecycleHeadKey(pin.owner, pin.actor), uidReservationKey(pin.lifecycleUid), staticSlotKey(pin.owner, pin.alias)];
+  const recordKeys = [
+    lifecycleHeadKey(pin.owner, pin.actor), uidReservationKey(pin.lifecycleUid), staticSlotKey(pin.owner, pin.alias),
+    recordSpecKey(RECORD_KINDS.lifecycle, [pin.owner, pin.actor, pin.lifecycleUid]),
+  ];
   return {
     pub: {
       allow: [
@@ -2089,6 +2100,7 @@ function endpointServeExecutorPermissions(
   // DERIVED from (endpoint, instanceId) via the core builders — never a caller literal.
   const gateKey = epgateKey(pin.endpoint, pin.instanceId);
   const credPrefix = epcredFamilyPrefix(pin.endpoint, pin.instanceId);
+  const repairKey = eprepairKey(pin.endpoint, pin.instanceId);
   // The registration writes this ONE instance's spec key plus the endpoint's governance head
   // (`registerServiceInstance` PHASE 1/3b: the slot-take + promote ride the SAME executor), and this
   // instance's own svc STATUS key (P2 item 3: the manager writes its CONVERGED `ready` status so it
@@ -2108,6 +2120,7 @@ function endpointServeExecutorPermissions(
         // two records-store keys (spec CAS + governance slot/promote). The value-publish carries
         // the key on the subject, so each grant names exactly this instance's keys.
         `$KV.${AUTH}.${gateKey}`,
+        `$KV.${AUTH}.${repairKey}`,
         `$KV.${AUTH}.${credPrefix}.>`,
         ...recordKeys.map((k) => `$KV.${REC}.${k}`),
         // §13.7 contract-artifact publication (P2 item 1, 1c): the registration publishes the

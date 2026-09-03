@@ -1,5 +1,73 @@
 # @cotal-ai/workspace
 
+## 0.38.0
+
+### Patch Changes
+
+- 21d9552: The `--resume` spawn flag's help no longer names one connector: resume support is declared per connector and preflighted at spawn. Connector docs now mark pi's fork-resume support and describe Jcode's automatic same-identity session continuation.
+  - @cotal-ai/core@0.38.0
+
+## 0.37.0
+
+### Minor Changes
+
+- 00ac9d9: manager: refuse a manager-role spawn of a persona without the spawn capability. A persona defined over the wire (`cotal_persona`) carries no `capabilities:` line (the write path is content-only by design), and `cotal_spawn` takes a free-form `role`, so a wire-defined persona could be spawned with `role: "manager"` and join presenting as a manager whose credential cannot reach the control plane, silently, until the seat first tried to seat a worker (issue #966). The manager now refuses that spawn at accept, before any provisioning, naming the remediation for both authors: an operator adds `capabilities: [spawn]` to the persona file; a peer-defined persona cannot declare capabilities and must ask an operator. The guard keys on the effective role (a spawn-time role override wins over the file's, mirroring existing precedence) and leaves every non-manager spawn untouched. `cotal_spawn`'s `role` argument documents the requirement. Capabilities remain non-declarable over the wire: the closed `define-persona` input schema is unchanged and still guarded by `smoke:persona-input-closed`.
+- 9021896: Make the runtime pid/log namespace per-space. The manager and delivery daemon now record themselves
+  as `.cotal/manager.<spaceKey>.pid`, `.cotal/manager.<spaceKey>.log`,
+  `.cotal/manager.<spaceKey>.delivery-aware`, `.cotal/delivery.<spaceKey>.pid` and
+  `.cotal/delivery.<spaceKey>.log`, through the same `{space}` expansion `auth-service.<spaceKey>.pid`
+  already used. The five names were root-scoped constants, so one workspace root hosted one manager and
+  one delivery daemon by filename: a second space booting in the same root overwrote the first space's
+  record, and every reader of that file then answered about the wrong process. `status`, `down`, `up`,
+  `clean` and `spawn -f` take the space they are answering about.
+
+  Existing single-space meshes keep working across the upgrade. Reads admit a pre-segmentation
+  root-scoped record while it is the only spelling present, byte-exact, so a `cotal down` still finds
+  and stops a daemon started by the previous build instead of orphaning it. Writes are always the
+  canonical space-keyed name, and each start reclaims a provably dead pre-upgrade record first, so an
+  ordinary upgrade does not leave both spellings behind. A live pre-upgrade daemon is refused rather
+  than overwritten, and both spellings present is reported as ambiguous rather than guessed.
+
+  A folder-wide command reads its space off the runtime records the folder holds. `resolveRuntimeSpace`
+  decodes the space out of the record filenames and prefers a space whose record is running over dead
+  residue; two spaces running under one root throws and names both. The previous read came from the
+  `.cotal/auth` account records, which an open mesh (`broker: { auth: false }`) never writes, so a bare
+  `cotal down` in such a folder answered with the default space and walked past its own manager once the
+  records became space-keyed.
+
+  `MANAGER_PIDFILE` and `MANAGER_DELIVERY_AWARE_MARKER` move from `pid.ts` to `local-process.ts` and
+  are now `{space}` templates; both are still exported from the package index. `RESERVED_COTAL_CHILDREN`
+  no longer lists the five root-scoped runtime names.
+
+### Patch Changes
+
+- e703873: Report connector harness availability at manager boot and expose resolved binary paths in status.
+- c09d750: Stop answering progress with presence. Textual working rows without an outside last-assistant observation render progress unknown, while heartbeat age remains explicitly labelled as liveness. The render-agnostic observation classifier lives in the workstation layer, not protocol core; compact presence-only glyphs make no progress claim. A stale observation overlays stalled Xm on still-fresh presence.
+- Updated dependencies [e5e68ed]
+- Updated dependencies [c31de91]
+- Updated dependencies [d4779db]
+- Updated dependencies [6926b34]
+- Updated dependencies [d2c0fd3]
+- Updated dependencies [7e45495]
+- Updated dependencies [135ddaf]
+- Updated dependencies [e703873]
+- Updated dependencies [6c1cefe]
+- Updated dependencies [00ac9d9]
+- Updated dependencies [b20644b]
+- Updated dependencies [74c9a1b]
+- Updated dependencies [bfd650c]
+- Updated dependencies [e6c6947]
+- Updated dependencies [b36bf50]
+- Updated dependencies [3cc980d]
+- Updated dependencies [d94b617]
+- Updated dependencies [eb3b429]
+- Updated dependencies [17046ac]
+- Updated dependencies [b7b932e]
+- Updated dependencies [8eff985]
+- Updated dependencies [b88edd9]
+- Updated dependencies [063151b]
+  - @cotal-ai/core@0.37.0
+
 ## 0.36.0
 
 ### Minor Changes

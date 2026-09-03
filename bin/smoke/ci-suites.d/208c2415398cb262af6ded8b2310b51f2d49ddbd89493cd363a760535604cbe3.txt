@@ -1,0 +1,3 @@
+# Spawn refusals carry the lifecycle facts the manager already has (blocked op, head
+# state, opId, remedy) instead of collapsing to a connector timeout (#873).
+smoke:spawn-lifecycle-state

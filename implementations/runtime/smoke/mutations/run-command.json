@@ -1,0 +1,28 @@
+{
+  "suite": "implementations/runtime/smoke/run-command.smoke.ts",
+  "guard": "The `cotal run` command holds two identity seams: `answer` presents the checkpoint resume as the ARMING holder read back from the checkpoint record (resume is holder-bound, SPEC 13.10, and the CLI is not the driver), and every drive presents a PER-INVOCATION holder id, because the activation barrier relaxes the exact (token, holder, epoch) tuple as one process picking its own run back up, so a constant id would let concurrent drives co-activate through that relaxation. (COUNTING suite: cells print only on FAIL, so the completion marker is the final summary line, the one string a finished run always prints.)",
+  "command": "pnpm smoke:runtime-run-command",
+  "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/run-command.json",
+  "mutations": [
+    {
+      "name": "the answer presents as a fresh principal instead of the arming holder",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "    { kv: planes.kv, js: planes.js, jsm: planes.jsm, space: planes.space, endpoint, holder: spec.holder },",
+      "replace": "    { kv: planes.kv, js: planes.js, jsm: planes.jsm, space: planes.space, endpoint, holder: { id: \"cli-run\", lifecycleUid: \"u_mutant0000000000000000\" } },",
+      "expectRed": "answer presents as the arming holder and is accepted",
+      "completionMarker": "run-command:",
+      "cell": "answer presents as the arming holder and is accepted",
+      "note": "The wire refuses a presenter that is not the arming holder (permission-denied, SPEC 13.10); the smoke converts that throw into the named cell going red rather than the suite dying. The substituted holder differs from the arming one in BOTH components now that cliHolder mints a fresh id per invocation: the arming id is cli-run-<hex> while the mutant presents the bare literal, and the lifecycleUid never matches, so the refusal is on holder identity, not on one lucky field."
+    },
+    {
+      "name": "a constant holder id lets concurrent drives co-activate through the exact-tuple relaxation",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "  return { id: `cli-run-${uid.slice(0, 8)}`, lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };",
+      "replace": "  return { id: \"cli-run\", lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };",
+      "expectRed": "concurrent drives never co-activate: every activation token is held exactly once",
+      "completionMarker": "run-command:",
+      "cell": "concurrent drives never co-activate: every activation token is held exactly once",
+      "note": "The defect measured at 753e82f8a: two concurrent resumes derive the same fencing token and epoch from one record read, and with the constant id the tuple is exact, so both activate and the journal records two activations sharing a token. The cell asserts the journal invariant across five concurrent pairs rather than which promise lost, because a lost race is a legitimate higher-token takeover while a shared token is impossible by design."
+    }
+  ]
+}

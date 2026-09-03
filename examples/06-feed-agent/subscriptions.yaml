@@ -1,0 +1,29 @@
+# What the pump polls. One entry per feed; the feedkeeper edits this file only for direct requests on #feeds.control.
+#
+#   url      the feed itself (RSS/Atom, or an .ics calendar)
+#   channel  where new items get published
+#   kind     auto (default, sniffs the response), rss, or ical
+#   filter   optional keywords; an item is published only if its title contains one of them
+#   label    optional display name; defaults to the feed's own title, else its host
+
+subscriptions:
+  - url: https://hnrss.org/frontpage
+    channel: feeds.events
+    kind: auto
+    label: HN
+
+  # A Luma calendar. Any public Luma calendar exposes an iCal feed: open the calendar page
+  # (e.g. https://lu.ma/frontiertower), click "Add iCal Subscription" in the sidebar, and copy the
+  # URL it hands your calendar app. It looks like the one below — no scraping, no API key, and it
+  # carries every published event on that calendar. The pump keeps the upcoming ones.
+  # - url: https://api.lu.ma/ics/get?entity=calendar&id=cal-Sl7q1nHTRXQzjP2
+  #   channel: feeds.events
+  #   kind: ical
+  #   label: Frontier Tower
+
+  # Same feed, narrowed to the events worth waking someone for.
+  # - url: https://api.lu.ma/ics/get?entity=calendar&id=cal-Sl7q1nHTRXQzjP2
+  #   channel: feeds.events
+  #   kind: ical
+  #   label: Frontier Tower
+  #   filter: [agent, robotics, hackathon]

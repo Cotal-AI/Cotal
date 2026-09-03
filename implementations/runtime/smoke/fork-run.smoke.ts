@@ -539,8 +539,14 @@ const plan = async (
     entries.every((e) => e.run === "r-parent"), entries.map((e) => e.run));
   c("and the entries keep their recorded identity, so a replay finds them where they were",
     keys(got).join() === "/sleep:one#0,/sleep:two#0", keys(got));
-  c("the lineage is reported as NOT recorded, rather than left for a reader to discover",
-    r.lineageRecorded === false, r);
+  c("the lineage is reported as recorded", r.lineageRecorded === true, r);
+  {
+    const childRec = await readRunRecord(kv, EP, "r-ok");
+    c("and the child's spec names its parent and the cut step, written with the spec itself",
+      childRec?.spec.value.forkedFrom?.run === "r-parent"
+        && childRec?.spec.value.forkedFrom?.step === "/sleep:three#0",
+      childRec?.spec.value);
+  }
 
   // The order. A store that dies mid-copy is the crash this ordering exists for.
   const dying = collector(1);

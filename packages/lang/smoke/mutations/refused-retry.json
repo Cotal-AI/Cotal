@@ -1,0 +1,38 @@
+{
+  "suite": "packages/lang/smoke/interpret.smoke.ts",
+  "guard": "A capability refusal settles the entry `refused` and holds the run uncatchably, and a later activation re-performs the step live: recorded as `failed`, or replayed instead of re-performed, or catchable, the run is broken forever instead of waiting.",
+  "command": "pnpm smoke:lang-interpret",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/refused-retry.json",
+  "mutations": [
+    {
+      "name": "a refusal rides the ordinary failure path and settles the entry failed",
+      "file": "packages/lang/src/perform.ts",
+      "find": "    if (e instanceof EffectRefused) {\n      await host.journal.settle(\n        key,\n        { status: \"refused\", error: { code: e.code, kind: \"refused\", message: e.message } },\n        endedAt,\n      );\n      throw new RunHeld(stepKeyString(key), e.message);\n    }",
+      "replace": "    // mutant: a refusal is an ordinary handler failure",
+      "expectRed": "a held arm inside a race unwinds the run even though a sibling won",
+      "completionMarker": "ok and the refused step is still pending, not recorded as anything it is not",
+      "cell": "a held arm inside a race unwinds the run even though a sibling won",
+      "note": "Under the mutant a refusal settles `failed` as an EffectError and the run rejects with L5016 in place of RunHeld, so the earliest cell that names the distinction is the race-held cell, which fails showing `EffectError L5016` where the contract requires the hold. Measured, not assumed: the uncatchability cell further down is never reached under this mutant (the suite is fail-fast), and the uncatchability law itself is guarded by mutant 3 at the walker."
+    },
+    {
+      "name": "a refused entry is replayed instead of re-performed",
+      "file": "packages/lang/src/journal.ts",
+      "find": "    if (entry.status === \"refused\") return { verdict: \"refused\", entry };",
+      "replace": "    // mutant: refused falls through to replay",
+      "expectRed": "with the spawn settled ok over the refusal, and the finalizer's notify recorded",
+      "completionMarker": "ok the same journal on a capable host performs the step live and completes",
+      "cell": "with the spawn settled ok over the refusal, and the finalizer's notify recorded",
+      "note": "With the verdict arm gone a refused entry falls through to `replay`: the heal run completes anyway (its program never dereferences the replayed handle), so the discriminating fact is durable, not observable in the outcome — the spawn entry is still `refused`, and only the settled-ok cell can see that. The heal cell printing green under this mutant is what makes it the marker."
+    },
+    {
+      "name": "the hold is catchable, so a finalizer runs after it",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "          e instanceof RunHeld ||\n",
+      "replace": "",
+      "expectRed": "and the finalizer performed nothing: no notify was recorded",
+      "completionMarker": "ok the refusal halts the run uncatchably, past try and finally alike",
+      "cell": "and the finalizer performed nothing: no notify was recorded",
+      "note": "With RunHeld out of the walker's uncatchable set the finalizer runs on the way out and records a notify, which is one more effect by a run that was told to stop. The halt cell itself stays green (the class still propagates), so only the finalizer cell can see this."
+    }
+  ]
+}

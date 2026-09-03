@@ -1,5 +1,14 @@
 # @cotal-ai/pi
 
+## 0.38.0
+
+## 0.37.0
+
+### Patch Changes
+
+- e703873: Report connector harness availability at manager boot and expose resolved binary paths in status.
+- c4094cb: Drop inherited `COTAL_LAUNCH_MATERIAL` from suites that default `COTAL_SERVERS` then call `configFromEnv()` on `process.env`, so `pnpm test` no longer trips the one-identity-plane refusal inside a managed seat.
+
 ## 0.36.0
 
 ## 0.35.0

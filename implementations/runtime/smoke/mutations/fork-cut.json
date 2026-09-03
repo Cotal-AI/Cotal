@@ -24,16 +24,16 @@
     {
       "name": "the child is reseeded from its own run id",
       "file": "implementations/runtime/src/fork.ts",
-      "find": "  await createRunSpec(kv, endpoint, plan.child, { pins: plan.pins, createdAt: plan.at });",
-      "replace": "  await createRunSpec(kv, endpoint, plan.child, { pins: { ...plan.pins, seed: plan.child }, createdAt: plan.at });",
+      "find": "  await createRunSpec(kv, endpoint, plan.child, {\n    pins: plan.pins,\n    createdAt: plan.at,\n    forkedFrom: { run: plan.parent, step: plan.fromStep },\n  });",
+      "replace": "  await createRunSpec(kv, endpoint, plan.child, {\n    pins: { ...plan.pins, seed: plan.child },\n    createdAt: plan.at,\n    forkedFrom: { run: plan.parent, step: plan.fromStep },\n  });",
       "expectRed": "it is pinned to the parent's seed, so the copied prefix decides what it decided",
       "cell": "and it is pinned to the parent's seed, so the copied prefix decides what it decided"
     },
     {
       "name": "the record is written FIRST, so a crash leaves a drivable half-fork",
       "file": "implementations/runtime/src/fork.ts",
-      "find": "  for (const entry of plan.cut) {\n    await store.append({ ...entry, run: plan.child });\n  }\n\n  await createRunSpec(kv, endpoint, plan.child, { pins: plan.pins, createdAt: plan.at });",
-      "replace": "  await createRunSpec(kv, endpoint, plan.child, { pins: plan.pins, createdAt: plan.at });\n\n  for (const entry of plan.cut) {\n    await store.append({ ...entry, run: plan.child });\n  }",
+      "find": "  for (const entry of plan.cut) {\n    await store.append({ ...entry, run: plan.child });\n  }\n\n  await createRunSpec(kv, endpoint, plan.child, {\n    pins: plan.pins,\n    createdAt: plan.at,\n    forkedFrom: { run: plan.parent, step: plan.fromStep },\n  });",
+      "replace": "  await createRunSpec(kv, endpoint, plan.child, {\n    pins: plan.pins,\n    createdAt: plan.at,\n    forkedFrom: { run: plan.parent, step: plan.fromStep },\n  });\n\n  for (const entry of plan.cut) {\n    await store.append({ ...entry, run: plan.child });\n  }",
       "expectRed": "leaves NO record behind: the spec is written last",
       "cell": "and leaves NO record behind: the spec is written last"
     },
@@ -84,7 +84,7 @@
       "replace": "    } else if (err instanceof UnwalkableScope) {\n      /* mutated: the refusal is dropped */",
       "expectRed": "a fork past a settled conclave is refused with L5014, not waved through",
       "cell": "a fork past a settled conclave is refused with L5014, not waved through",
-      "note": "Graduated from fork-unasserted.json on 2026-08-16. It SURVIVED there \u2014 nothing watched L5014 \u2014 and is predicted KILLED here now that a cell does."
+      "note": "Graduated from fork-unasserted.json on 2026-08-16. It SURVIVED there — nothing watched L5014 — and is predicted KILLED here now that a cell does."
     },
     {
       "name": "L5018 rides along beside a refusal that already explains the stop",
@@ -101,7 +101,7 @@
       "replace": "  if (false && !reached && recorded && !stoppedForAnotherReason) {",
       "expectRed": "with L5018, because a cut never reached is the whole journal",
       "cell": "with L5018, because a cut never reached is the whole journal",
-      "note": "The twin of the mutation above. One proves the gate FIRES; this proves it does not fire for everything \u2014 a gate that suppressed L5018 outright would pass the first mutation and lose the refusal."
+      "note": "The twin of the mutation above. One proves the gate FIRES; this proves it does not fire for everything — a gate that suppressed L5018 outright would pass the first mutation and lose the refusal."
     },
     {
       "name": "the enclosing scope is copied settled, so the child short-circuits past its own cut",
@@ -208,7 +208,7 @@
     {
       "name": "an activation expecting a NEW run accepts one whose journal has records",
       "file": "packages/core/src/run-journal.ts",
-      "why": "Unkillable FROM HERE, and recorded rather than dropped. This suite imports @cotal-ai/core, whose package exports resolve to `dist`, so a mutation of core's SOURCE cannot reach it without a rebuild \u2014 the harness reported SURVIVED, which was honest: the suite genuinely does not exercise the mutated file in this configuration. The cell that observes this fence is real and lives here; the KILL for the guard belongs to a core suite that imports core from `../src`. Recorded so that a later reader does not re-author this mutation and read SURVIVED as a missing test."
+      "why": "Unkillable FROM HERE, and recorded rather than dropped. This suite imports @cotal-ai/core, whose package exports resolve to `dist`, so a mutation of core's SOURCE cannot reach it without a rebuild — the harness reported SURVIVED, which was honest: the suite genuinely does not exercise the mutated file in this configuration. The cell that observes this fence is real and lives here; the KILL for the guard belongs to a core suite that imports core from `../src`. Recorded so that a later reader does not re-author this mutation and read SURVIVED as a missing test."
     },
     {
       "name": "the `reached` clause of the cut's gate",

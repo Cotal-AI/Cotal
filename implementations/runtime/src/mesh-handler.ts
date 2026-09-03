@@ -45,6 +45,7 @@ import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
 import {
   parseDuration,
+  EffectRefused,
   type WaitRequest,
   type CheckpointRaw,
   type CheckpointRequest,
@@ -375,16 +376,13 @@ export class MeshHandler {
   // using them can be written, validated and dry-run today, and a DURABLE run declines rather than
   // performing an effect it could not recover after a crash.
   //
-  // THE REFUSAL IS TERMINAL FOR THE RUN THAT HITS IT, and the mechanism is worth stating exactly
-  // rather than assumed. The interpreter settles the entry `failed` with the code the handler
-  // raised, so the step is recorded as attempted-and-failed and a resume replays that failure — the
-  // run does not heal the day the durable-action surface lands. It is recorded as L5016 rather than
-  // a generic handler fault so the journal at least says which of the two happened.
-  //
-  // Whether it SHOULD be terminal is a live question and not this file's to settle: an effect a
-  // host cannot perform is closer to a release than to a failure, and leaving the entry pending
-  // would let a later driver perform it. That changes the interpreter's fault contract and a
-  // property other lanes have been told about, so it is referred up rather than taken here.
+  // THE REFUSAL HOLDS THE RUN RATHER THAN ENDING IT. `NotYetDurable` is an `EffectRefused`, so
+  // the interpreter settles the entry `refused` under L5016 — never `failed`, which would replay
+  // a failure forever for work nobody attempted — and unwinds the run with the uncatchable L5025
+  // (spec §9.2). The driver records the run `released`; a resume on a host where the
+  // durable-action surface has landed finds the `refused` verdict (§10.7) and performs the step
+  // live, so a run started today heals the day the substrate arrives. This was referred up as a
+  // live question and is now settled: an effect a host cannot perform is a hold, not a failure.
 
   async spawn(_req: unknown, _ctx: EffectContext): Promise<never> {
     throw new NotYetDurable("spawn(…)", ACTION_MACHINERY);
@@ -681,20 +679,13 @@ function matchesEvent(msg: CotalMessage, from: string | undefined, matcher: RegE
  * rather than performing them on a plane that could not recover them. A run that "succeeded" at an
  * effect nothing can replay would be a lie the journal then carries forever.
  */
-export class NotYetDurable extends Error {
-  /**
-   * L5016, and it is load-bearing rather than decorative.
-   *
-   * The interpreter wraps a handler's fault into an `EffectError` and SETTLES the entry with it, so
-   * the class does not survive the boundary — a caller of `run()` sees an `EffectError`, and the
-   * journal keeps whatever code was on it. Without this the entry would read `L4000 handler-fault`:
-   * "the handler broke", written durably about a step nothing ever attempted. The interpreter
-   * honours an L-code a handler raises, so the recorded fact says what actually happened.
-   */
-  readonly code = "L5016";
-
+export class NotYetDurable extends EffectRefused {
   constructor(readonly effect: string, readonly needs: string) {
     super(
+      // L5016, and it is load-bearing rather than decorative: the interpreter settles the entry
+      // `refused` under the code the refusal carries, so the journal says which thing happened —
+      // "no substrate on this host" rather than "the handler broke".
+      "L5016",
       `${effect} is not durable on this host yet: it rides ${needs}, which has not landed. ` +
         `The simulator performs it, so the program can be tested and dry-run; a durable run refuses ` +
         `rather than performing an effect it could not recover after a crash.`,

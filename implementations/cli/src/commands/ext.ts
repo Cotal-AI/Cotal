@@ -2,8 +2,8 @@ import { spawn } from "node:child_process";
 import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { registry, type Command, type ParsedArgs } from "@cotal-ai/core";
-import { RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheCommand, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, installedExtensionVersion, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, provenance, saveExtensionsManifest, type InstalledExtension, type LocalProcess, type LocalProcessContext } from "@cotal-ai/workspace";
+import { registry, type Command, type Connector, type ParsedArgs } from "@cotal-ai/core";
+import { RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, installedExtensionVersion, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, provenance, saveExtensionsManifest, type InstalledExtension, type LocalProcess, type LocalProcessContext } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { resolveSpace } from "../lib/status.js";
@@ -312,6 +312,7 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
     }
   }
   const commands = contributed.filter((ext): ext is Command => ext.kind === "command");
+  const connectors = contributed.filter((ext): ext is Connector => ext.kind === "connector");
   const localProcesses = contributed.filter((ext): ext is LocalProcess => ext.kind === "local-process");
   const version = pkgMeta.version ?? "0.0.0";
   const entry: InstalledExtension = {
@@ -321,6 +322,7 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
     ...(seeding ? { source: "seeded" as const } : {}),
     provides: contributed.map(cacheExtension),
     commands: commands.map(cacheCommand),
+    connectors: connectors.map(cacheConnector),
     localProcesses: localProcesses.map(cacheLocalProcess),
   };
   try {

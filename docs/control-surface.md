@@ -63,6 +63,7 @@ up, the manager accepts the goal and returns the allocated identity at once:
   "name": "reviewer-2",
   "owner": "u_...", "actor": "reviewer", "uid": "...",
   "goalId": "...", "fingerprint": "...",
+  "readinessDeadlineMs": 30000,
   "executor": { "lifecycleUid": "...", "epoch": 3 }
 }
 ```
@@ -82,6 +83,21 @@ that in fact succeeded mints a duplicate. A committer that supplies no diagnosis
 "the success signal did not arrive within the readiness deadline". The agent's own eventual
 state is then observable on its presence record.
 
+The acceptance carries that exact `readinessDeadlineMs`. A synchronous follower treats its own
+request deadline as a floor and waits through the accepted readiness budget plus delivery margin,
+so a connector-specific slow boot cannot be reported as a caller timeout while the manager is
+still legitimately waiting for its terminal.
+
+A spawn that is **refused** because a lifecycle barrier already holds the actor (a frozen
+issuance gate, a retiring alias, a retired uid) is not a wait-timeout. The manager already
+knows the blocked op (`registration` / `retirement` / `activation` / `takeover`), the head
+state (`active` / `retiring` / `retired`), the `opId` holding it, and the remedy when one
+exists (`retry`, `cotal reconcile-gate`). Those facts ride `error.details[]` as
+`kind = ai.cotal.ep.lifecycle-blocked` and are also appended to the error string, so a
+caller that only prints `error.message` still sees them. A connector that collapses the
+refusal to "startup failed (unknown)" or a SPEC 13.6 wait-timeout is hiding a knowable
+state, not reporting a missing one.
+
 ## Instance routing
 
 A space can run more than one manager. Each manager persists a stable logical instance id
@@ -92,6 +108,13 @@ rides class anycast (any manager may accept, and the acceptance records which on
 foreground spawn has no manager to pin and refuses the flag). There are no ordinal
 aliases and no short forms: wherever a display names an instance you can address, it prints
 the whole id, because `--on` takes nothing else.
+
+The reserved `describe` bootstrap is the one request the resolver may repeat while waiting: it is
+read-only, it is re-published under the same request binding, and every attempt stays inside the
+original deadline. This covers the startup window where Core NATS discards the first request before
+the manager has subscribed. If the connection closes while the resolver waits, the describe fails
+cleanly instead of throwing from the retry timer. The resolved command is never repeated by this
+readiness behavior.
 
 The resolve and the invoke are separate trips through the same anycast queue, so in a
 multi-manager space an unpinned call can land on an instance the caller did not resolve. Every

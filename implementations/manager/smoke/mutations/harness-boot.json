@@ -1,0 +1,40 @@
+{
+  "suite": "implementations/manager/smoke/harness-boot.smoke.ts",
+  "guard": "the manager resolves connector harness binaries during boot, names unavailable connectors before any spawn, keeps unrelated connectors available, and records absolute resolved paths in status",
+  "command": "pnpm smoke:manager-harness-boot",
+  "progressPattern": "✓",
+  "minTicks": 4,
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/harness-boot.json",
+  "why": [
+    "Issue #965 reproduced through the built manager: start() completed silently with claude absent,",
+    "and only the first startAgent call returned the missing-harness error.",
+    "This smoke starts the real manager against an owned broker and asserts the diagnostic before",
+    "any spawn is attempted, so a spawn-only check cannot satisfy it."
+  ],
+  "mutations": [
+    {
+      "name": "manager boot stops inspecting connector harnesses",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    await this.inspectConnectorsAtBoot();",
+      "replace": "    this.connectorStatuses = [];",
+      "expectRed": "manager boot surfaces the missing harness before any spawn is attempted",
+      "cell": "manager boot surfaces the missing harness before any spawn is attempted"
+    },
+    {
+      "name": "boot availability loses the resolved executable path",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        if (path) binaries[bin] = path;",
+      "replace": "        if (path) binaries[bin] = bin;",
+      "expectRed": "boot records the resolved absolute harness path from a relative PATH entry",
+      "cell": "boot records the resolved absolute harness path from a relative PATH entry"
+    },
+    {
+      "name": "managed launches discard the boot-resolved binary map",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        resolvedBinaries: bootStatus?.binaries,",
+      "replace": "        resolvedBinaries: undefined,",
+      "expectRed": "managed spawn uses the exact path resolved at boot",
+      "cell": "managed spawn uses the exact path resolved at boot"
+    }
+  ]
+}

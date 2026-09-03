@@ -70,16 +70,10 @@ export function probeLiveness(pid: number): "alive" | "dead" | "unknown" {
 
 // ---- the manager's own record ------------------------------------------------------------------
 
-/** `.cotal/manager.pid` — the running manager's pid. The NAME lives here, in the tier both the CLI
- *  (which reads it to decide whether to start one) and the manager daemon (which writes it on
- *  start) already depend on, because a file written under one constant and read under another is
- *  the same defect as no record at all. */
-export const MANAGER_PIDFILE = "manager.pid";
-
-/** `.cotal/manager.delivery-aware` — the sibling marker proving the live manager is a build that
- *  does NOT host Plane-3. Written and removed with the pidfile; it carries the pid it was written
- *  for, so a stale marker cannot be paired with a different manager. */
-export const MANAGER_DELIVERY_AWARE_MARKER = "manager.delivery-aware";
+// `MANAGER_PIDFILE` and `MANAGER_DELIVERY_AWARE_MARKER` moved to `local-process.ts`. They became
+// `{space}` TEMPLATES rather than bare names, and a template is a local-process concept (that module
+// owns the expansion, the pre-upgrade spellings and the byte-exact resolution) rather than a
+// pid-parsing one. Both are still exported from the package index, so no importer changed.
 
 // ---- ATTRIBUTION: is the live process behind this record actually ours? -------------------------
 

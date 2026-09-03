@@ -65,7 +65,7 @@ export interface ScanTarget {
  * (see the cases above) and a second independent-ish source costs nothing. It is no longer
  * REQUIRED: its absence is not an error, and a hosted composition never has one.
  */
-function resolveScan(target: ScanTarget, verb: string): { accountId: string } {
+export function validateScanTarget(target: ScanTarget, verb = "delivery startup"): { accountId: string } {
   const live = findCotalRoot();
   if (live !== target.root)
     throw new Error(
@@ -92,6 +92,35 @@ function resolveScan(target: ScanTarget, verb: string): { accountId: string } {
     }
   }
   return { accountId: target.expectedAccount };
+}
+
+/** Startup admission for the scan-backed delivery-admin rail.
+ *
+ * Root stability alone is not a tenancy proof for an injected store: the hosted composition has no
+ * `membership.json`, and the store may return another tenant's structurally valid observer. Read
+ * the pair through the exact source the executors will use, then validate the observer before the
+ * endpoint exists or lease.0 can be acquired. The observer is required because every liveness
+ * verdict needs an account-scoped complete scan. The evictor remains optional for pre-eviction
+ * spaces (their documented posture is deny-new-only), but when present it participates in the
+ * torn-rotation check so a mixed generation cannot be admitted as healthy.
+ */
+export async function validateScanTargetAdmission(target: ScanTarget): Promise<{ accountId: string }> {
+  const scan = validateScanTarget(target);
+  const sys = await loadSysPair(target.source, "both");
+  if (sys.observer === undefined)
+    throw new Error(
+      `delivery startup: the $SYS observer cred is not provisioned here (missing ${MEMBERSHIP_OBSERVER_CREDS_KIND}) - ${
+        repairAdvice(target.source, [MEMBERSHIP_OBSERVER_CREDS_KIND])
+      }. Refusing before endpoint construction and lease admission because this daemon cannot establish which account its scan rail serves`,
+    );
+  const tenancy = observerTenancyProblem(sys.observer, target.expectedAccount);
+  if (tenancy) throw new Error(`delivery startup: ${tenancy}. Refusing before endpoint construction and lease admission`);
+  if (sys.evictor !== undefined) {
+    const torn = tornRotationProblem(sys.observer, sys.evictor, () =>
+      repairAdvice(target.source, [MEMBERSHIP_OBSERVER_CREDS_KIND, CONNECTION_EVICTOR_CREDS_KIND]));
+    if (torn) throw new Error(`delivery startup: ${torn}. Refusing before endpoint construction and lease admission`);
+  }
+  return scan;
 }
 
 /** Read the $SYS material for one verb and run every pre-connect check, or THROW.
@@ -141,7 +170,7 @@ export async function executeEviction(server: string, target: ScanTarget, princi
   const parsed = parsePrincipalKey(principal);
   if (!parsed || !isPrincipalOwnerToken(parsed.owner))
     throw new Error(`evictPrincipal: "${principal}" is not a real owner.actor principal (owner must be \`local\` or a derived \`u_…\` token — the only shapes CONNZ attribution can surface)`);
-  const { accountId } = resolveScan(target, "evictPrincipal");
+  const { accountId } = validateScanTarget(target, "evictPrincipal");
   const sys = await loadCheckedSys(target, "evictPrincipal", "both");
   return evictDeniedPrincipalWithCreds({
     servers: server,
@@ -172,7 +201,7 @@ export async function executePlaneLiveness(server: string, target: ScanTarget, q
       Object.keys(q).some((k) => k !== "ledger" && k !== "records") || // closed top-level shape
       !isPlaneConnTuple(q.ledger) || !isPlaneConnTuple(q.records))
     throw new Error("planeConnLiveness: the query must be exactly { ledger, records } connection tuples ({ serverId, cid, userNkey }); refusing a malformed or wider query");
-  const { accountId } = resolveScan(target, "planeConnLiveness");
+  const { accountId } = validateScanTarget(target, "planeConnLiveness");
   const sys = await loadCheckedSys(target, "planeConnLiveness", "observer");
   return observePlaneLivenessWithCreds({
     servers: server,
@@ -206,7 +235,7 @@ export async function executePrincipalLiveness(server: string, target: ScanTarge
   const parsed = parsePrincipalKey(wanted);
   if (!parsed || !isPrincipalOwnerToken(parsed.owner))
     throw new Error(`principalLiveness: "${wanted}" is not a real owner.actor principal (owner must be \`local\` or a derived \`u_…\` token — the only shapes CONNZ attribution can surface)`);
-  const { accountId } = resolveScan(target, "principalLiveness");
+  const { accountId } = validateScanTarget(target, "principalLiveness");
   const sys = await loadCheckedSys(target, "principalLiveness", "observer");
   return observePrincipalLivenessWithCreds({
     servers: server,

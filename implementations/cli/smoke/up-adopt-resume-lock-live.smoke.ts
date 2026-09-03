@@ -30,7 +30,7 @@
  * Run: pnpm smoke:up-adopt-resume-lock:live
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { join, resolve as resolvePath } from "node:path";
 import { makeScratch, assertScratchHeld } from "../../../bin/smoke/_scratch.js";
@@ -167,10 +167,13 @@ try {
 } finally {
   try { runSync(["down"]); } catch { /* best effort */ }
   await sleep(500);
-  for (const name of ["nats.pid", "manager.pid", "delivery.pid"]) {
-    const p = join(root, ".cotal", name);
-    if (!existsSync(p)) continue;
-    const pid = Number.parseInt(readFileSync(p, "utf8").trim(), 10);
+  // Every runtime record this root holds, whatever space each belongs to. The records are
+  // space-keyed now (`manager.<hex>.pid`), and a teardown running after a failure cannot assume
+  // which spaces got as far as writing one, so it matches the SHAPE rather than a fixed name list.
+  // The pre-segmentation root-scoped spelling matches too, so a root an older build left behind is
+  // still swept.
+  for (const name of readdirSync(join(root, ".cotal")).filter((n) => /^(nats|manager|delivery)\.([^.]+\.)?pid$/.test(n))) {
+    const pid = Number.parseInt(readFileSync(join(root, ".cotal", name), "utf8").trim(), 10);
     if (Number.isInteger(pid) && pid > 0) try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
   }
   rmSync(scratch, { recursive: true, force: true });

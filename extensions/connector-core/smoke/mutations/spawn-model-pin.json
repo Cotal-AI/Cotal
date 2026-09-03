@@ -1,0 +1,39 @@
+{
+  "suite": "extensions/connector-core/smoke/spawn-args.smoke.ts",
+  "guard": "a cotal_spawn model pin that the manager does not record is refused, and a matching inspect is named on the spawn result",
+  "command": "pnpm smoke:spawn-args",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/spawn-model-pin.json",
+  "completionMarker": "SPAWN-ARGS SMOKE",
+  "why": [
+    "The live defect was silence: cotal_spawn accepted model, the seat came up on the harness default,",
+    "and neither the spawn result nor orientation named the pin, so a review panel reported as",
+    "cross-vendor was same-family. Forwarding the argument is not the proof; recording it is.",
+    "",
+    "A1 drops the inspect attestation so a successful spawn with a requested model never checks the",
+    "recorded pin. A2 keeps inspect but reports success even when inspect recorded a different model.",
+    "A3 hides the recorded model from the tool result so a caller can still believe a pin it cannot see."
+  ],
+  "mutations": [
+    {
+      "name": "A1 skip inspect after a requested model, so a dropped pin looks like success",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (!requested) return reply;",
+      "replace": "    if (true) return reply;",
+      "expectRed": "a requested model the manager did not record is refused"
+    },
+    {
+      "name": "A2 treat any recorded model as the requested pin",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (recorded.ok && recorded.model !== requested) {",
+      "replace": "    if (false && recorded.ok && recorded.model !== requested) {",
+      "expectRed": "a requested model that inspect records as a different pin is refused"
+    },
+    {
+      "name": "A3 hide the recorded model from the published spawn result",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "          const pin = d?.model ? ` recorded model ${JSON.stringify(d.model)}` : \"\";\n",
+      "replace": "          const pin = \"\";\n",
+      "expectRed": "cotal_spawn tool names the recorded model on success"
+    }
+  ]
+}

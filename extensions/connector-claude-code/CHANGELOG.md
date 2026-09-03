@@ -1,5 +1,21 @@
 # @cotal-ai/connector-claude-code
 
+## 0.38.0
+
+### Patch Changes
+
+- 7ea4757: Keep Claude personas out of process arguments by writing them to an owner-private file and using Claude Code's prompt-file flag.
+
+## 0.37.0
+
+### Patch Changes
+
+- 31443f1: Make package-filtered test commands run counted assertions instead of succeeding without tests.
+- a9947d6: Reconcile a wake when the Claude channel activates. A focus mention received during channel startup is re-notified before buffered inbox work, while repeated active state remains a no-op.
+- e703873: Report connector harness availability at manager boot and expose resolved binary paths in status.
+- b7b932e: Point status skills rows at `cotal setup --skills`, with harness-native setup declared and implemented by connectors rather than the base CLI.
+- b88edd9: Connectors declare `supportsToolListAnnounce` (default-deny). A connection-changing op against a connector that cannot announce a tool-list change fails loud, without naming harnesses in shared code.
+
 ## 0.36.0
 
 ## 0.35.0

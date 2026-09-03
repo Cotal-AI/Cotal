@@ -24,6 +24,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { canonicalLocalProcessPath, MANAGER_LOGFILE, MANAGER_PIDFILE } from "@cotal-ai/workspace";
 
 interface OrcaTerminal {
   handle: string;
@@ -132,13 +133,16 @@ function readIfPresent(path: string): string {
   }
 }
 
-function recordedPid(file: string): number | undefined {
-  const pid = Number(readIfPresent(join(root, ".cotal", file)).trim());
+/** The manager's record is named per-space, so its reader takes the space and expands the template
+ *  through the shipped helper. `nats.pid` is root-scoped and passes no space. */
+function recordedPid(file: string, space?: string): number | undefined {
+  const path = space === undefined ? join(root, ".cotal", file) : canonicalLocalProcessPath(file, { root, space });
+  const pid = Number(readIfPresent(path).trim());
   return Number.isInteger(pid) && pid > 0 ? pid : undefined;
 }
 
-function killRecorded(file: string): void {
-  const pid = recordedPid(file);
+function killRecorded(file: string, space?: string): void {
+  const pid = recordedPid(file, space);
   if (!pid || !alive(pid)) return;
   try {
     process.kill(pid, "SIGTERM");
@@ -207,11 +211,11 @@ try {
 
   const up = cli(["up", "-f", manifest]);
   ok("manifest starts through the installed Orca runtime", up.status === 0 && new RegExp(`mesh "${SPACE}" up`).test(up.stdout) && /manager \(orca\)/.test(up.stdout), up.stdout + up.stderr);
-  managerPid = recordedPid("manager.pid");
+  managerPid = recordedPid(MANAGER_PIDFILE, SPACE);
   brokerPid = recordedPid("nats.pid");
   ok("broker and manager are recorded and alive", !!managerPid && !!brokerPid && alive(managerPid) && alive(brokerPid), { managerPid, brokerPid });
 
-  const managerLog = join(root, ".cotal", "manager.log");
+  const managerLog = canonicalLocalProcessPath(MANAGER_LOGFILE, { root, space: SPACE });
   let log = "";
   for (let i = 0; i < 90; i++) {
     log = readIfPresent(managerLog);
@@ -254,7 +258,7 @@ try {
   // authoritative signal, so query it rather than parse the appended manager.log.
   const bareUp = cli(["up", "--detach", "--open", "--runtime", "orca", "--space", BARE_SPACE, "--server", SERVER]);
   ok("up --detach --runtime orca (no -f) starts the mesh", bareUp.status === 0, bareUp.stdout + bareUp.stderr);
-  bareManagerPid = recordedPid("manager.pid");
+  bareManagerPid = recordedPid(MANAGER_PIDFILE, BARE_SPACE);
   bareBrokerPid = recordedPid("nats.pid");
   let bareRuntime = false;
   let bareEndpoints = { stdout: "", stderr: "" };
@@ -284,9 +288,11 @@ try {
       orca(["terminal", "close", "--terminal", terminal.handle]);
     }
   } catch { /* Orca may have closed while the test was failing */ }
-  managerPid ??= recordedPid("manager.pid");
+  managerPid ??= recordedPid(MANAGER_PIDFILE, SPACE);
+  bareManagerPid ??= recordedPid(MANAGER_PIDFILE, BARE_SPACE);
   brokerPid ??= recordedPid("nats.pid");
-  killRecorded("manager.pid");
+  killRecorded(MANAGER_PIDFILE, SPACE);
+  killRecorded(MANAGER_PIDFILE, BARE_SPACE);
   killRecorded("nats.pid");
   await sleep(500);
   for (const pid of [managerPid, brokerPid, bareManagerPid, bareBrokerPid]) {

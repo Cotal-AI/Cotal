@@ -8,11 +8,11 @@
     {
       "name": "the refusal carries no code, so the journal records a generic handler fault",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "  readonly code = \"L5016\";",
-      "replace": "  readonly code = undefined as unknown as string;",
-      "expectRed": "spawn refuses with L5016 rather than pretending",
-      "cell": "spawn refuses with L5016 rather than pretending",
-      "cellTemplate": "${name} refuses with L5016 rather than pretending"
+      "find": "      \"L5016\",",
+      "replace": "      undefined as unknown as string,",
+      "expectRed": "spawn carries the code that crosses the run boundary",
+      "cell": "spawn carries the code that crosses the run boundary",
+      "cellTemplate": "${name} carries the code that crosses the run boundary"
     },
     {
       "name": "spawn is not seamed, so it fails as a missing method",

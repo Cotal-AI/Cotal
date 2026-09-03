@@ -153,6 +153,53 @@ export interface ConclaveRequest {
   readonly channel?: string;
 }
 
+// ---- the ask schema shorthand -----------------------------------------------------------------
+
+/**
+ * The reply contract a reference handler enforces on `ask`. The language itself leaves `schema`
+ * opaque (it is hashed and handed over unchanged, §6.5); this shorthand is the handler-side
+ * contract: a record mapping each required top-level field of the reply to one of six kind
+ * names. A reply must be a record; extra fields are allowed; a missing or mistyped declared
+ * field makes the reply non-conforming, which costs one attempt.
+ */
+export type AskFieldKind = "string" | "number" | "boolean" | "array" | "record" | "null";
+
+const ASK_FIELD_KINDS: readonly string[] = ["string", "number", "boolean", "array", "record", "null"];
+
+/**
+ * Read a schema as the shorthand, or return null for one this contract cannot read. A handler
+ * that enforces the shorthand refuses an unreadable schema (L4022) rather than skipping it: a
+ * schema the program wrote and nobody checks is worse than a loud refusal.
+ */
+export function askSchemaShape(schema: unknown): Readonly<Record<string, AskFieldKind>> | null {
+  if (typeof schema !== "object" || schema === null || Array.isArray(schema)) return null;
+  const out: Record<string, AskFieldKind> = {};
+  for (const [field, kind] of Object.entries(schema)) {
+    if (typeof kind !== "string" || !ASK_FIELD_KINDS.includes(kind)) return null;
+    out[field] = kind as AskFieldKind;
+  }
+  return out;
+}
+
+/** Whether a reply conforms: a record carrying every declared field with its declared kind. */
+export function conformsToAskSchema(
+  value: unknown,
+  shape: Readonly<Record<string, AskFieldKind>>,
+): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  for (const [field, kind] of Object.entries(shape)) {
+    const v = record[field];
+    if (kind === "string" && typeof v !== "string") return false;
+    if (kind === "number" && typeof v !== "number") return false;
+    if (kind === "boolean" && typeof v !== "boolean") return false;
+    if (kind === "array" && !Array.isArray(v)) return false;
+    if (kind === "record" && (typeof v !== "object" || v === null || Array.isArray(v))) return false;
+    if (kind === "null" && v !== null) return false;
+  }
+  return true;
+}
+
 // ---- the handler contract ---------------------------------------------------------------------
 
 /** Raised by a handler when an effect fails in a way the program can catch. */
@@ -196,6 +243,52 @@ export class RunReleased extends Error {
   constructor(readonly reason: string) {
     super(`this run was released before its next effect: ${reason}`);
     this.name = "RunReleased";
+  }
+}
+
+/**
+ * A handler's refusal to perform an effect this host has no substrate for.
+ *
+ * Not a failure, and the distinction is durable: nothing was attempted, so settling the entry
+ * `failed` would replay a failure forever for work the world never saw. A handler throws this,
+ * the interpreter settles the entry `refused` — keeping the code the handler raised, L5016 for
+ * the reference handler — and halts the run with {@link RunHeld}. A later resume finds the
+ * `refused` entry and performs the step live, as a fresh attempt, which is how a run started
+ * before a substrate landed heals the day it does.
+ */
+export class EffectRefused extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "EffectRefused";
+  }
+}
+
+/**
+ * The halt a refusal unwinds the run with (L5025).
+ *
+ * It travels like {@link RunReleased}: a workflow's `try` cannot catch it and `finally` does not
+ * run on the way out (§9.2). The program is not at fault and has not failed; the run is exactly
+ * where its journal says it is, holding one `refused` entry, and the repair is a capable host
+ * rather than anything the program could do with one more effect. Like {@link RunReleased}, the
+ * language raises it and never accepts it from outside.
+ */
+export class RunHeld extends Error {
+  readonly code = "L5025";
+
+  constructor(
+    readonly step: string,
+    /** The refusal's own message. Named `reason` so it crosses the worker boundary like {@link RunReleased.reason}. */
+    readonly reason: string,
+  ) {
+    super(
+      `L5025 Effect refused; run held for a capable host\n\n  step  ${step}\n\n${reason}\n\n` +
+        `The step was never attempted: its entry is settled \`refused\`, and a resume on a host ` +
+        `that can perform it picks the run up exactly here.`,
+    );
+    this.name = "RunHeld";
   }
 }
 
