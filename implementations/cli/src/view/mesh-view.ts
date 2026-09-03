@@ -7,7 +7,7 @@
 // See docs/protocol-view.md.
 
 import { EventEmitter } from "node:events";
-import type { CotalEndpoint, CotalMessage, EndpointRef, Presence, PresenceStatus } from "@cotal-ai/core";
+import type { CotalEndpoint, CotalMessage, EndpointRef, MembershipSnapshot, Presence, PresenceStatus } from "@cotal-ai/core";
 import { deliveryOf, chatWildcard, isEventChannel, partsToText } from "@cotal-ai/core";
 
 // ---- the model the surfaces render -----------------------------------------
@@ -82,12 +82,31 @@ export interface MeshSignals {
   dms: DmPeer[]; // per-peer DM roll-up (only populated when DMs are visible)
 }
 
+/** The broker-authoritative membership feed as THIS viewer last saw it. Two facts, kept apart so a
+ *  failed read can never be mistaken for an empty feed: `snapshot` is the last successful read;
+ *  `unreadable` is the reason the most recent read or watch attempt failed (a fact about the
+ *  viewer, cleared by the next successful read). A feed that does not exist (no delivery daemon:
+ *  the bucket is absent, or it was never written) is a snapshot with no `asOf` and no members, which
+ *  renders as traffic-only: a fact about the mesh, and a different one. */
+export interface MembershipView {
+  snapshot?: MembershipSnapshot;
+  unreadable?: string;
+}
+
 export interface MeshSnapshot {
   agents: Presence[]; // card.kind === "agent", status-sorted then by name
   endpoints: Presence[]; // everything else
-  channels: { channel: string; messages: number }[];
+  /** `messages`: the broker's retained count (capped per sender, so it can stop climbing under
+   *  live traffic). `arrivals`: messages this viewer saw ARRIVE on the live tap since it started,
+   *  monotonic, dropped with the channel: the honest base for an unread badge. */
+  channels: { channel: string; messages: number; arrivals: number }[];
   feed: FeedEntry[]; // classified + coalesced + windowed
-  rates: { msgsPerSec: number };
+  /** Broker-authoritative channel membership (the delivery daemon's CONNZ view plus the durable
+   *  registry), as last read; the topology lens overlays it to show silent subscribers. */
+  membership: MembershipView;
+  /** `msgsPerSec`: the rolling 1 s rate. `activity`: a fixed 15-bucket message-volume series over
+   *  the last 60 s (one ~4 s bucket each), oldest→newest, raw counts: the status bar's sparkline. */
+  rates: { msgsPerSec: number; activity: number[] };
   status: { connected: boolean; space: string; dmVisible: boolean; error?: string; warning?: string };
   signals: MeshSignals;
   nameOf: (id: string) => string; // unicast target id → display name
@@ -110,9 +129,22 @@ const CHANNELS_MS = 2000; // listChannels() refresh
 const DEFAULT_WINDOW = 300;
 const HISTORY_LIMIT = 50; // per-channel prefill depth
 const DM_LOG_CAP = 1000; // raw DMs retained for the roll-up
+const MEMBERSHIP_DEBOUNCE_MS = 150; // coalesce the watch's replay burst into one re-read (the web's 150 ms)
+const BUCKET_MS = 4000; // activity series bucket width
+const BUCKET_COUNT = 15; // activity series length → 15×4s = 60s window
 
 function bodyText(msg: CotalMessage): string {
   return partsToText(msg.parts);
+}
+
+/** Does this error say the membership feed's bucket does not exist (no delivery daemon ever
+ *  provisioned it)? The JetStream "stream not found" answer, by API code and by message; anything
+ *  else (a permission refusal, a timeout, a closed connection) is a failed read, not an absent feed. */
+function feedAbsent(e: unknown): boolean {
+  const err = e as { message?: string; code?: number | string; api_error?: { err_code?: number } } | null;
+  if (err?.api_error?.err_code === 10059) return true;
+  if (err?.code === 404 || err?.code === "404") return true;
+  return /stream not found/i.test(err?.message ?? "");
 }
 
 function sortRoster(r: Presence[]): Presence[] {
@@ -151,16 +183,22 @@ export class MeshView extends EventEmitter {
   private roster: Presence[] = [];
   private byId = new Map<string, string>();
   private channelCounts = new Map<string, number>();
+  private arrivals = new Map<string, number>();
   private feed: FeedEntry[] = [];
   private seen = new Set<string>(); // feed ids, for prefill ∪ live dedupe-by-id
   private pending = new Map<string, Burst>();
   private dmLog: RawDm[] = []; // raw unicast for the DM roll-up
   private recentTs: number[] = []; // tap arrivals in the last 1s → msgs/s
   private msgsPerSec = 0;
+  private bucketCounts: number[] = new Array(BUCKET_COUNT).fill(0); // 60s volume series, oldest→newest
+  private bucketEpoch = 0; // floor(now/BUCKET_MS) of the newest (last) bucket; 0 = uninitialized
   private connected = false;
   private error?: string;
   private warning?: string;
   private dirty = true;
+  private membership: MembershipView = {};
+  private membershipWatch?: { stop(): Promise<void> };
+  private membershipTimer?: ReturnType<typeof setTimeout>;
 
   private readonly window: number;
   private readonly tapSubject?: string;
@@ -207,6 +245,7 @@ export class MeshView extends EventEmitter {
     );
     void this.prefill();
     void this.refreshChannels();
+    void this.startMembership();
     this.timers.push(setInterval(() => this.flush(), TICK_MS));
     this.timers.push(setInterval(() => void this.refreshChannels(), CHANNELS_MS));
     this.timers.push(setInterval(() => (this.dirty = true), 1000)); // refresh ages + decay rate
@@ -221,19 +260,57 @@ export class MeshView extends EventEmitter {
     this.ep.off("warning", this.onWarning);
     this.ep.off("roster", this.onRoster);
     this.ep.off("presence", this.onPresence);
+    clearTimeout(this.membershipTimer);
+    await this.membershipWatch?.stop().catch(() => undefined);
     await this.ep.stop();
+  }
+
+  /** Read the broker-authoritative membership feed and follow it. A membership fault is never
+   *  a connection fault: it lands on `membership.unreadable` (with its reason), not on
+   *  `status.error`, because the mesh is fine and only this viewer's read of one feed is not. */
+  private async startMembership(): Promise<void> {
+    await this.loadMembership();
+    try {
+      this.membershipWatch = await this.ep.watchMembership(() => this.scheduleMembership());
+    } catch (e) {
+      // A feed that does not exist cannot be watched, and that is the traffic-only fact the read
+      // above already recorded; any other failure is this viewer's, named as such.
+      if (!feedAbsent(e)) this.membership = { ...this.membership, unreadable: `watch: ${(e as Error).message}` };
+      this.dirty = true;
+    }
+  }
+
+  private scheduleMembership(): void {
+    clearTimeout(this.membershipTimer);
+    this.membershipTimer = setTimeout(() => void this.loadMembership(), MEMBERSHIP_DEBOUNCE_MS);
+  }
+
+  /** One read of the feed. Three outcomes, kept distinct: a snapshot (readable, whatever it holds),
+   *  an absent feed (readable in the sense that the mesh has no daemon writing one: an empty
+   *  snapshot, traffic-only), and a failed read (`unreadable`, reason kept, last snapshot kept so
+   *  the reason is shown against what was last known rather than against nothing). */
+  private async loadMembership(): Promise<void> {
+    try {
+      this.membership = { snapshot: await this.ep.readMembership() };
+    } catch (e) {
+      this.membership = feedAbsent(e)
+        ? { snapshot: { asOf: undefined, members: [] } }
+        : { ...this.membership, unreadable: (e as Error).message };
+    }
+    this.dirty = true;
   }
 
   snapshot(): MeshSnapshot {
     const channels = [...this.channelCounts]
-      .map(([channel, messages]) => ({ channel, messages }))
+      .map(([channel, messages]) => ({ channel, messages, arrivals: this.arrivals.get(channel) ?? 0 }))
       .sort((a, b) => a.channel.localeCompare(b.channel));
     return {
       agents: this.roster.filter((p) => p.card.kind === "agent"),
       endpoints: this.roster.filter((p) => p.card.kind !== "agent"),
       channels,
       feed: this.feed.slice(),
-      rates: { msgsPerSec: this.msgsPerSec },
+      membership: { ...this.membership },
+      rates: { msgsPerSec: this.msgsPerSec, activity: this.bucketCounts.slice() },
       status: {
         connected: this.connected,
         space: this.ep.space,
@@ -261,7 +338,10 @@ export class MeshView extends EventEmitter {
   private ingest(subject: string, msg: CotalMessage): void {
     const kind = deliveryOf(subject);
     if (!kind) return;
-    this.recentTs.push(Date.now());
+    const now = Date.now();
+    this.recentTs.push(now);
+    this.roll(now);
+    this.bucketCounts[BUCKET_COUNT - 1]++; // count into the newest bucket
     if (msg.from?.id && msg.from.name) this.byId.set(msg.from.id, msg.from.name); // sharpen id→name
     if (kind === "unicast") return this.coalesce(msg);
     this.push({
@@ -329,8 +409,12 @@ export class MeshView extends EventEmitter {
     // is not redundant: this one runs on live arrival, so without it an event channel would appear
     // as a tab the moment a frame landed and then vanish at the next `refreshChannels`, which reads
     // as a flickering bug rather than as a filter.
-    if (e.delivery === "multicast" && e.channel && !e.events && !this.channelCounts.has(e.channel))
-      this.channelCounts.set(e.channel, 1);
+    if (e.delivery === "multicast" && e.channel && !e.events) {
+      if (!this.channelCounts.has(e.channel)) this.channelCounts.set(e.channel, 1);
+      // Counted on ARRIVAL, not read back from the broker: the retained count is capped per sender
+      // and stops climbing under live traffic, so a badge derived from it goes quiet at the cap.
+      this.arrivals.set(e.channel, (this.arrivals.get(e.channel) ?? 0) + 1);
+    }
     this.dirty = true;
     this.emit("entry", e);
   }
@@ -425,9 +509,14 @@ export class MeshView extends EventEmitter {
     }
     // Event channels are not chat tabs: one per agent that has ever run would bury the handful of
     // channels a human actually talks on. Same classifier as the prefill, so the tab strip and the
-    // backlog cannot disagree about what a channel is.
+    // backlog cannot disagree about what a channel is. The map is REBUILT, not merged: a channel
+    // the broker no longer lists (deleted, its history purged and its registry entry gone) leaves
+    // the strip on this poll instead of lingering with its last count.
+    const next = new Map<string, number>();
     for (const { channel, messages } of chans)
-      if (!isEventChannel(channel)) this.channelCounts.set(channel, messages);
+      if (!isEventChannel(channel)) next.set(channel, messages);
+    this.channelCounts = next;
+    for (const channel of this.arrivals.keys()) if (!next.has(channel)) this.arrivals.delete(channel);
     this.dirty = true;
   }
 
@@ -488,10 +577,32 @@ export class MeshView extends EventEmitter {
     return [...peers.values()].sort((a, b) => b.lastTs - a.lastTs);
   }
 
+  /** Advance the activity ring to `now`: shift past buckets out the left, fill the gap with zeros,
+   *  so idle time decays the series. The newest (last) bucket is always the current ~4s window. */
+  private roll(now: number): void {
+    const epoch = Math.floor(now / BUCKET_MS);
+    if (this.bucketEpoch === 0) {
+      this.bucketEpoch = epoch;
+      return;
+    }
+    const advance = epoch - this.bucketEpoch;
+    if (advance <= 0) return;
+    if (advance >= BUCKET_COUNT) {
+      this.bucketCounts.fill(0);
+    } else {
+      this.bucketCounts.splice(0, advance);
+      while (this.bucketCounts.length < BUCKET_COUNT) this.bucketCounts.push(0);
+    }
+    this.bucketEpoch = epoch;
+    this.dirty = true;
+  }
+
   /** The single batch point: recompute the rolling rate, then emit one snapshot if dirty. */
   private flush(): void {
-    const cutoff = Date.now() - 1000;
+    const now = Date.now();
+    const cutoff = now - 1000;
     while (this.recentTs.length && this.recentTs[0] < cutoff) this.recentTs.shift();
+    this.roll(now); // decay the activity window even when no message arrived
     if (this.recentTs.length !== this.msgsPerSec) {
       this.msgsPerSec = this.recentTs.length;
       this.dirty = true;

@@ -1,0 +1,36 @@
+{
+  "suite": "implementations/cli/smoke/sparkline.smoke.ts",
+  "guard": "the status bar's activity series counts live arrivals into the newest bucket, decays with idle time, and draws bars scaled to its own max",
+  "command": "pnpm exec tsx implementations/cli/smoke/sparkline.smoke.ts",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/sparkline.json",
+  "why": [
+    "A ring that never rolls shows a minute-old burst as current; a bucket that never counts draws a flat floor under live traffic; bars not scaled to the max flatten a quiet mesh into one glyph.",
+    "Each mutation is compile-clean and unique in the named file, and the suite imports src directly, so no build is involved."
+  ],
+  "mutations": [
+    {
+      "name": "K1 a live message never reaches the newest bucket",
+      "file": "implementations/cli/src/view/mesh-view.ts",
+      "find": "    this.bucketCounts[BUCKET_COUNT - 1]++;",
+      "replace": "    this.bucketCounts[BUCKET_COUNT - 1] += 0;",
+      "expectRed": "three live messages land in the newest bucket",
+      "cell": "three live messages land in the newest bucket"
+    },
+    {
+      "name": "K2 the ring never rolls",
+      "file": "implementations/cli/src/view/mesh-view.ts",
+      "find": "    if (advance <= 0) return;",
+      "replace": "    if (advance >= 0) return;",
+      "expectRed": "an idle 4 s shifts the bucket left and opens an empty newest one",
+      "cell": "an idle 4 s shifts the bucket left and opens an empty newest one"
+    },
+    {
+      "name": "K3 bars drawn from raw counts instead of the series' max",
+      "file": "implementations/cli/src/console/ui/Sparkline.tsx",
+      "find": "Math.min(BARS.length - 1, Math.round((v / max) * (BARS.length - 1)))",
+      "replace": "Math.min(BARS.length - 1, Math.round(v))",
+      "expectRed": "...and a series ten-fold louder draws the same bars",
+      "cell": "...and a series ten-fold louder draws the same bars"
+    }
+  ]
+}

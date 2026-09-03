@@ -1,0 +1,61 @@
+{
+  "suite": "implementations/cli/smoke/console-gaps.smoke.ts",
+  "guard": "unread badges count live arrivals and stay honest at the retention cap, the roster tags the harness, and a deleted channel leaves the strip",
+  "command": "pnpm --filter @cotal-ai/cli build && pnpm --filter @cotal-ai/cli smoke:console-gaps",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/console-gaps.json",
+  "why": [
+    "The suite drives bin/cotal.ts, which imports @cotal-ai/cli from dist: a mutation must be built to be seen, and the tree must be rebuilt after the restore or dist keeps the mutant.",
+    "Each mutation is compile-clean and unique in the named file."
+  ],
+  "mutations": [
+    {
+      "name": "G1 viewing a channel does not pin its watermark",
+      "file": "implementations/cli/src/console/app.tsx",
+      "find": "if (activeChannel !== \"all\" && cur !== undefined && next[activeChannel] !== cur) bump(activeChannel, cur);",
+      "replace": "if (activeChannel === \"all\" && cur !== undefined && next[activeChannel] !== cur) bump(activeChannel, cur);",
+      "expectRed": "viewing pinned the watermark: the next message is +1, not +3",
+      "cell": "viewing pinned the watermark: the next message is +1, not +3",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "note": "Messages the operator has already looked at keep counting as unread."
+    },
+    {
+      "name": "G2 tag the wrong harness",
+      "file": "implementations/cli/src/console/ui/Roster.tsx",
+      "find": "opencode: \"oc\"",
+      "replace": "opencode: \"od\"",
+      "expectRed": "roster shows the harness tag next to the name",
+      "cell": "roster shows the harness tag next to the name",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "G3 merge the channel list instead of rebuilding it",
+      "file": "implementations/cli/src/view/mesh-view.ts",
+      "find": "    const next = new Map<string, number>();\n    for (const { channel, messages } of chans)\n      if (!isEventChannel(channel)) next.set(channel, messages);\n    this.channelCounts = next;",
+      "replace": "    const next = new Map<string, number>(this.channelCounts);\n    for (const { channel, messages } of chans)\n      if (!isEventChannel(channel)) next.set(channel, messages);\n    this.channelCounts = next;",
+      "expectRed": "delchan: the deleted channel's tab is gone on the next poll",
+      "cell": "delchan: the deleted channel's tab is gone on the next poll",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "note": "A deleted channel keeps its last count in the strip forever; seen live on the e2e mesh as `#scratch 2 +2` after :delchan."
+    },
+    {
+      "name": "G4 badge from retained depth instead of arrivals",
+      "file": "implementations/cli/src/console/app.tsx",
+      "find": "    const n = ch.arrivals - (seen[ch.channel] ?? 0);",
+      "replace": "    const n = ch.messages - (seen[ch.channel] ?? 0);",
+      "expectRed": "a live message on a channel at the retention cap still badges +1 (arrivals, not retained depth)",
+      "cell": "a live message on a channel at the retention cap still badges +1 (arrivals, not retained depth)",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "note": "The broker's per-sender cap pins the retained count at 1,000, so a badge built on it never moves under live traffic (console-reviewer's reproduction)."
+    },
+    {
+      "name": "G5 a channel without a watermark is treated as already read",
+      "file": "implementations/cli/src/console/app.tsx",
+      "find": "    const n = ch.arrivals - (seen[ch.channel] ?? 0);",
+      "replace": "    const n = ch.arrivals - (seen[ch.channel] ?? ch.arrivals);",
+      "expectRed": "a channel that first appears after startup badges its first message (+1), no baseline swallows it",
+      "cell": "a channel that first appears after startup badges its first message (+1), no baseline swallows it",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "note": "The empty-mesh defect console-reviewer reproduced: the first live channel's first arrival counted as read."
+    }
+  ]
+}

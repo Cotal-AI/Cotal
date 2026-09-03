@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 305,
-    "honest-text": 32,
+    "total": 317,
+    "honest-text": 33,
     "presence-only-glyph/count": 41,
     "command-ack": 8,
-    "non-render/control": 224
+    "non-render/control": 235
   },
   "renderers": [
     {
@@ -734,13 +734,6 @@
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
-      "anchor": "{mode === \"dm\" ? (\n        <Dm\n          dms={mesh.signals.dms}\n          dmVisible={mesh.status.dmVisible}\n          width={size.cols}\n          height={bodyH}\n          narrow={narrow}\n          blocked={blocked}\n          onFocus={onFocus}\n        />\n      ) : mode === \"topo\" ? (\n        <Topo\n          feed={mesh.feed}\n          agents={mesh.agents}\n          variant={topoVariant}\n          width={size.cols}\n          height={bodyH}\n          blocked={blocked}\n          onFocus={onFocus}\n          onOpenAgent={openAgent}\n          onOpenMessage={openMessage}\n        />\n      ) : (\n        <Box flexDirection={narrow ? \"column\" : \"row\"} height={bodyH}>\n          <Box flexDirection={narrow ? \"column\" : \"row\"} width={bodyW} height={bodyH}>\n            <Roster\n              agents={mesh.agents}\n              endpoints={mesh.endpoints}\n              query={search.query}\n              boxWidth={roster.w}\n              boxHeight={roster.h}\n              wide={!narrow}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openAgent}\n              onKill={canWrite ? handleKill : undefined}\n              onCompose={canWrite ? rosterCompose : undefined}\n            />\n            <Feed\n              entries={mesh.feed}\n              activeChannel={activeChannel}\n              query={search.query}\n              boxWidth={feed.w}\n              boxHeight={feed.h}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openMessage}\n              onCompose={canWrite ? feedCompose : undefined}\n              onReply={canWrite ? feedReply : undefined}\n            />\n          </Box>\n          {railAsColumn ? (\n            <NeedsYou\n              waiting={mesh.signals.waiting}\n              boxWidth={railW}\n              boxHeight={bodyH}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openAgent}\n            />\n          ) : null}\n        </Box>\n      )}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/app.tsx",
-      "kind": "derived-output",
       "anchor": "dms={mesh.signals.dms}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
@@ -777,20 +770,6 @@
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "   <Topo\n          feed={mesh.feed}\n          agents={mesh.",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/app.tsx",
-      "kind": "derived-output",
-      "anchor": "d={mesh.feed}\n          agents={mesh.agents}\n          variant={topo",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/app.tsx",
-      "kind": "derived-output",
-      "anchor": ".feed}\n          agents={mesh.agents}\n          variant={topo",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -854,13 +833,6 @@
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "u\n              waiting={mesh.signals.waiting}\n              boxWidth=",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/app.tsx",
-      "kind": "derived-output",
-      "anchor": "{compose ? (\n        <Prompt\n          label={composeLabel(compose)}\n          value={compose.value}\n          width={size.cols}\n          onChange={(v) => setCompose((c) => (c ? { ...c, value: v } : c))}\n          onSubmit={submitCompose}\n          onCancel={() => setCompose(null)}\n        />\n      ) : palette.active ? (\n        <CommandPalette\n          active={palette.active}\n          query={palette.query}\n          snapshot={mesh}\n          canWrite={!!canWrite}\n          width={size.cols}\n          onChange={(q) => setPalette((p) => ({ ...p, query: q }))}\n          onRun={runPaletteLine}\n          onCancel={() => setPalette({ active: false, query: \"\" })}\n        />\n      ) : searchRow ? (\n        <Search\n          query={search.query}\n          active={search.active}\n          width={size.cols}\n          onChange={(q) => setSearch((s) => ({ ...s, query: q }))}\n          onSubmit={() => setSearch((s) => ({ ...s, active: false }))}\n          onCancel={() => setSearch({ active: false, query: \"\" })}\n        />\n      ) : null}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1054,20 +1026,6 @@
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "derived-output",
-      "anchor": "{(isAgent ? s.dot : \"\u2699\") + \" \" + p.card.name + kind + act + \"  \" + age}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "(isAgent ? s.dot : \"\u2699\") + \" \" + p.card.name + kind + act + \"  \" + age",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
       "anchor": "color={isAgent ? s.color : \"gray\"}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
@@ -1177,20 +1135,6 @@
     {
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
       "kind": "derived-output",
-      "anchor": "{status.space + \" \u00b7 #\" + activeChannel + \" \u00b7 \" + agentCount + \" agents \u00b7 \" +\n            rates.msgsPerSec.toFixed(1) + \" msg/s\"}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/StatusBar.tsx",
-      "kind": "derived-output",
-      "anchor": "status.space + \" \u00b7 #\" + activeChannel + \" \u00b7 \" + agentCount + \" agents \u00b7 \" +\n            rates.msgsPerSec.toFixed(1) + \" msg/s\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/StatusBar.tsx",
-      "kind": "derived-output",
       "anchor": "{status.dmVisible ? null : <Text color=\"yellow\">{\"  chat-only\"}</Text>}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
@@ -1285,13 +1229,6 @@
       "anchor": "\"offline\"",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/topo/Map.tsx",
-      "kind": "indexed-map",
-      "anchor": "n.role : \"\";\n    return STATUS[n.status ?? \"offline\"].dot + \" \" + trunc(n.nam",
-      "class": "presence-only-glyph/count",
-      "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
     },
     {
       "path": "implementations/cli/src/console/ui/topo/Map.tsx",
@@ -2281,6 +2218,157 @@
       "path": "implementations/web/src/web.ts",
       "kind": "derived-output",
       "anchor": "`${caller ? \"~\" : \"!\"} ${req.method ?? \"GET\"} ${requestTargetForLog(req, gate.launchToken)} ${caller ? \"refused\" : \"failed\"}: ${why}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": ".feed}\n          agents={mesh.agents}\n          membership={m",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{compose ? (\n        <Prompt\n          label={composeLabel(compose)}\n          value={compose.value}\n          width={size.cols}\n          onChange={(v) => setCompose((c) => (c ? { ...c, value: v } : c))}\n          onSubmit={submitCompose}\n          onCancel={() => setCompose(null)}\n        />\n      ) : palette.active ? (\n        <CommandPalette\n          active={palette.active}\n          query={palette.query}\n          snapshot={mesh}\n          canWrite={!!canWrite}\n          canControl={!!canControl}\n          width={size.cols}\n          onChange={(q) => setPalette((p) => ({ ...p, query: q }))}\n          onRun={runPaletteLine}\n          onCancel={() => setPalette({ active: false, query: \"\" })}\n        />\n      ) : searchRow ? (\n        <Search\n          query={search.query}\n          active={search.active}\n          width={size.cols}\n          onChange={(q) => setSearch((s) => ({ ...s, query: q }))}\n          onSubmit={() => setSearch((s) => ({ ...s, active: false }))}\n          onCancel={() => setSearch({ active: false, query: \"\" })}\n        />\n      ) : null}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{harness}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{mesh.channels}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{mesh.membership}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{mesh.nameOf}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{mode === \"dm\" ? (\n        <Dm\n          dms={mesh.signals.dms}\n          dmVisible={mesh.status.dmVisible}\n          width={size.cols}\n          height={bodyH}\n          narrow={narrow}\n          blocked={blocked}\n          onFocus={onFocus}\n        />\n      ) : mode === \"topo\" ? (\n        <Topo\n          feed={mesh.feed}\n          agents={mesh.agents}\n          membership={mesh.membership}\n          channels={mesh.channels}\n          nameOf={mesh.nameOf}\n          variant={topoVariant}\n          width={size.cols}\n          height={bodyH}\n          blocked={blocked}\n          onFocus={onFocus}\n          onOpenAgent={openAgent}\n          onOpenMessage={openMessage}\n        />\n      ) : (\n        <Box flexDirection={narrow ? \"column\" : \"row\"} height={bodyH}>\n          <Box flexDirection={narrow ? \"column\" : \"row\"} width={bodyW} height={bodyH}>\n            <Roster\n              agents={mesh.agents}\n              endpoints={mesh.endpoints}\n              query={search.query}\n              boxWidth={roster.w}\n              boxHeight={roster.h}\n              wide={!narrow}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openAgent}\n              onKill={canControl ? handleKill : undefined}\n              onAttach={canControl ? (p) => handleAttach(p.card.name) : undefined}\n              harness={harness}\n              onCompose={canWrite ? rosterCompose : undefined}\n            />\n            <Feed\n              entries={mesh.feed}\n              activeChannel={activeChannel}\n              query={search.query}\n              boxWidth={feed.w}\n              boxHeight={feed.h}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openMessage}\n              onCompose={canWrite ? feedCompose : undefined}\n              onReply={canWrite ? feedReply : undefined}\n            />\n          </Box>\n          {railAsColumn ? (\n            <NeedsYou\n              waiting={mesh.signals.waiting}\n              boxWidth={railW}\n              boxHeight={bodyH}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openAgent}\n            />\n          ) : null}\n        </Box>\n      )}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "channels={mesh.channels}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "d={mesh.feed}\n          agents={mesh.agents}\n          membership={m",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "harness={harness}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "membership={mesh.membership}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "nameOf={mesh.nameOf}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/commands.ts",
+      "kind": "derived-output",
+      "anchor": "`${a.name}${role} \u00b7 ${a.agent} \u00b7 ${a.mode} \u00b7 ${a.status} \u00b7 mesh ${mesh} \u00b7 up ${Math.round(a.uptimeMs / 60000)}m`",
+      "class": "honest-text",
+      "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
+      "proof": {
+        "path": "implementations/cli/smoke/console-status-row.smoke.ts",
+        "anchor": "check(\"a working seat renders `mesh working \u00b7 progress unknown`\", working.includes(\"mesh working \u00b7 progress unknown\"), working);"
+      }
+    },
+    {
+      "path": "implementations/cli/src/console/commands.ts",
+      "kind": "status-token",
+      "anchor": "\"working\"",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/Roster.tsx",
+      "kind": "derived-output",
+      "anchor": "(isAgent ? s.dot : \"\u2699\") + \" \" + p.card.name + (tag ? \" \" + tag : \"\") + kind + act + \"  \" + age",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/Roster.tsx",
+      "kind": "derived-output",
+      "anchor": "{(isAgent ? s.dot : \"\u2699\") + \" \" + p.card.name + (tag ? \" \" + tag : \"\") + kind + act + \"  \" + age}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/StatusBar.tsx",
+      "kind": "derived-output",
+      "anchor": "{status.space + \" \u00b7 #\" + activeChannel + \" \u00b7 \" + agentCount + \" agents \u00b7 \" +\n            rates.msgsPerSec.toFixed(1) + \" msg/s \"}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/StatusBar.tsx",
+      "kind": "derived-output",
+      "anchor": "status.space + \" \u00b7 #\" + activeChannel + \" \u00b7 \" + agentCount + \" agents \u00b7 \" +\n            rates.msgsPerSec.toFixed(1) + \" msg/s \"",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/Map.tsx",
+      "kind": "indexed-map",
+      "anchor": "iber (> / *)\n    return STATUS[n.status ?? \"offline\"].dot + \" \" + trunc(n.nam",
+      "class": "presence-only-glyph/count",
+      "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/Map.tsx",
+      "kind": "status-token",
+      "anchor": "| (agentNode?.status ?? \"offline\") === \"offline\";\n    con",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/Map.tsx",
+      "kind": "status-token",
+      "anchor": "tatus ?? \"offline\") === \"offline\";\n    const row = hubRow",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     }

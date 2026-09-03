@@ -1,0 +1,2 @@
+# The console's operator control path over the endpoint rails (kill/spawn/status/ps/purge). Registered as a fragment (ci-suites.txt frozen since #1052).
+smoke:console-control

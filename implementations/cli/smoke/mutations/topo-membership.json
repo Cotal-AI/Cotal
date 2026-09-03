@@ -1,0 +1,36 @@
+{
+  "suite": "implementations/cli/smoke/topo-membership.smoke.ts",
+  "guard": "the topology lens overlays only a membership feed the viewer actually read, and names a failed read as its own",
+  "command": "pnpm exec tsx implementations/cli/smoke/topo-membership.smoke.ts",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/topo-membership.json",
+  "why": [
+    "A fold that draws a snapshot the viewer could not re-read shows a stale skeleton as live truth; an absent bucket reported as unreadable makes every daemon-less mesh look broken; a pill that checks the snapshot before the failure hides a failed read behind traffic-only.",
+    "Each mutation is compile-clean and unique in the named file, and the suite imports src directly, so no build is involved."
+  ],
+  "mutations": [
+    {
+      "name": "M1 draw the overlay from a feed the viewer could not read",
+      "file": "implementations/cli/src/console/ui/topo/model.ts",
+      "find": "const membership = opts?.membership?.unreadable === undefined ? opts?.membership?.snapshot : undefined;",
+      "replace": "const membership = opts?.membership?.snapshot;",
+      "expectRed": "an unreadable feed draws NO membership links, even with a last snapshot in hand",
+      "cell": "an unreadable feed draws NO membership links, even with a last snapshot in hand"
+    },
+    {
+      "name": "M2 report an absent bucket as a failed read",
+      "file": "implementations/cli/src/view/mesh-view.ts",
+      "find": "? { snapshot: { asOf: undefined, members: [] } }",
+      "replace": "? { ...this.membership, unreadable: (e as Error).message }",
+      "expectRed": "an absent bucket (no daemon) is traffic-only, not unreadable",
+      "cell": "an absent bucket (no daemon) is traffic-only, not unreadable"
+    },
+    {
+      "name": "M3 check the snapshot before the failure",
+      "file": "implementations/cli/src/console/ui/topo/model.ts",
+      "find": "  if (m.unreadable !== undefined) return { label: \"unreadable\", color: \"red\", reason: m.unreadable };\n  const s = m.snapshot;\n  if (!s || (s.asOf === undefined && s.members.length === 0)) return { label: \"traffic-only\" };",
+      "replace": "  const s = m.snapshot;\n  if (!s || (s.asOf === undefined && s.members.length === 0)) return { label: \"traffic-only\" };\n  if (m.unreadable !== undefined) return { label: \"unreadable\", color: \"red\", reason: m.unreadable };",
+      "expectRed": "...and the pill says unreadable",
+      "cell": "...and the pill says unreadable"
+    }
+  ]
+}

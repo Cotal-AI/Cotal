@@ -6,6 +6,7 @@ import { chatWildcard, type ParsedArgs } from "@cotal-ai/core";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { runLog } from "../render.js";
 import { Root, makeObserver, type ObserverAuth } from "../console/root.js";
+import type { ControlCtx } from "../console/control.js";
 
 /**
  * `cotal console` — the live protocol view. A real terminal gets the lazygit-style Ink TUI; a pipe
@@ -41,6 +42,14 @@ export async function console_(args: ParsedArgs): Promise<void> {
     }
   })();
   const canWrite = user ? false : !creds || !!values.creds;
+  // Control (kill / spawn / purge) never rides the observer: each action resolves the mesh
+  // and mints its own one-shot instrument through the CLI's control path (console/control.ts), so
+  // the gate is that path's own precondition and nothing about chat-write. The one shape it refuses
+  // up front is a raw `--creds` file, which carries no ep rows (`askManager` says so); everything
+  // else (open mesh, a registered static mesh, a user-mode bearer) is decided per action, by the
+  // broker and the manager, and a refusal lands on the status line.
+  const canControl = values.creds === undefined;
+  const controlCtx: Omit<ControlCtx, "space"> = { server: values.server };
 
   // No TTY (piped/headless) or --plain → the passive line stream; Ink needs a real terminal, and a
   // stream can't host the picker, so it falls back to the RESOLVED mesh's space (not the cwd's).
@@ -78,7 +87,7 @@ export async function console_(args: ParsedArgs): Promise<void> {
     process.exit(0);
   });
 
-  const { waitUntilExit } = render(createElement(Root, { server, auth: observerAuth, space, canWrite, name: operator }), {
+  const { waitUntilExit } = render(createElement(Root, { server, auth: observerAuth, space, canWrite, canControl, controlCtx, name: operator }), {
     exitOnCtrlC: true,
     maxFps: 30,
     incrementalRendering: true,

@@ -588,7 +588,11 @@
     "smoke:sparse-history-walk": "tsx packages/core/smoke/sparse-history-walk.smoke.ts",
     "smoke:web-graph-boot": "tsx implementations/web/smoke/graph-boot.smoke.ts",
     "smoke:expiry-renewal:auth": "tsx implementations/auth/smoke/expiry-renewal.smoke.ts",
-    "smoke:manager-log-guidance": "tsx bin/smoke/manager-log-guidance.smoke.ts"
+    "smoke:manager-log-guidance": "tsx bin/smoke/manager-log-guidance.smoke.ts",
+    "smoke:console-control": "tsx implementations/cli/smoke/console-control.smoke.ts",
+    "smoke:console-gaps": "tsx implementations/cli/smoke/console-gaps.smoke.ts",
+    "smoke:console-participant": "tsx implementations/cli/smoke/console-participant.smoke.ts",
+    "smoke:console-attach": "tsx implementations/cli/smoke/console-attach.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/auth": "workspace:*",

@@ -16,7 +16,10 @@ presence) lives in the [SPEC](../SPEC.md).
 Every surface is built on one **read-only observer**: a `CotalEndpoint` started with
 `consume: false, registerPresence: false, watchPresence: true`, invisible to peers, binding no
 durables, reading the space through the live tap plus history and presence-watch. No surface opens
-its own NATS connection, and none re-implements the wire semantics.
+its own NATS connection, and none re-implements the wire semantics. On an open mesh the console
+adds a second, presence-only endpoint under the observer's card the moment the operator sends, so
+agents can reply (see [watch a mesh](watch-a-mesh.md)); a pure-watch session stays the invisible
+observer.
 
 ## MeshView data
 
@@ -55,9 +58,10 @@ interface FeedEntry {           // one feed row
 interface MeshSnapshot {
   agents:    Presence[];        // card.kind === "agent", status-sorted (working→waiting→idle→offline) then by name
   endpoints: Presence[];        // everything else
-  channels:  { channel: string; messages: number }[];
+  channels:  { channel: string; messages: number; arrivals: number }[];  // retained count; live arrivals seen by this viewer
   feed:      FeedEntry[];       // classified + coalesced + windowed
-  rates:     { msgsPerSec: number };
+  membership: { snapshot?: MembershipSnapshot; unreadable?: string };  // the feed as last read (below)
+  rates:     { msgsPerSec: number; activity: number[] };  // rolling 1 s rate; 15 x 4 s volume buckets (60 s)
   status:    { connected: boolean; space: string; dmVisible: boolean; error?: string };
   signals:   MeshSignals;       // derived operator signals (below)
   nameOf:    (id: string) => string;   // unicast target id → display name
@@ -74,6 +78,9 @@ interface MeshSnapshot {
 - **History prefill.** A one-shot per-channel backlog (multicast; plus DM backlog when DMs are
   visible), deduped against the live tap by `id`.
 - **Windowing.** The feed is capped (~300 entries) with a rolling `msgs/s` rate.
+- **Activity series.** `rates.activity` is a fixed 15-bucket, 60-second message-volume series (one
+  4-second bucket each, oldest first, raw counts) that decays on the tick even when nothing arrives.
+  The console draws it as a sparkline in the status bar next to `msgs/s`.
 
 ### Derived operator signals
 
@@ -99,30 +106,57 @@ can never be acted on.
 the pairs that actually talked, never the n² cross-product. It is populated only when DMs are
 visible (god-view / open mode); a chat-only observer leaves it empty.
 
+### Membership feed
+
+`membership` carries the feed as this viewer last saw it, as two facts kept apart: `snapshot`, the
+last successful read, and `unreadable`, the reason the most recent read or watch attempt failed.
+The topology lens turns them into one of four pill states, checked in this order:
+
+| Pill | Means |
+|---|---|
+| `unreadable` (reason shown) | the read or the watch itself failed: a fact about this viewer, never shown as an empty mesh; the overlay is withheld |
+| `traffic-only` | no daemon writes a feed here (the bucket is absent, or was never written): the lens is traffic-derived, an honest mesh fact |
+| `live` | a snapshot whose heartbeat (`asOf`) is younger than 45 seconds |
+| `stale` | a snapshot older than that, or one with no heartbeat at all |
+
+A membership fault never lands on `status.error`: the mesh is fine, and only this viewer's read of
+one feed is not.
+
 ## Feature to surface map
 
 | Feature | Model field | console (Ink) | stream | web |
 |---|---|---|---|---|
 | roster (status, activity, age) | `agents` / `endpoints` | ✓ panel | ✓ presence lines | ✓ sidebar |
 | all-activity feed | `feed` | ✓ feed panel | ✓ log | ✓ Monitor view |
-| channels plus counts | `channels` | ✓ tabs (`1`–`9`) |  | ✓ sidebar + Channel view |
+| channels plus counts, unread badges | `channels` (+ client state) | ✓ tabs (`1`–`9`, `+N`) |  | ✓ sidebar + Channel view |
 | golden-signal counts | `signals.counts` | ✓ tiles strip |  | ✓ tiles |
 | needs-you / blocked | `signals.waiting` | ✓ rail (`n`) |  | ✓ NEEDS-YOU rail |
 | direct-message lens | `signals.dms` | ✓ lens (`d`) |  | ✓ DM view |
-| topology (who-talks-to-whom) | `feed` + `agents` (derived) | ✓ lens (`t`, 3 variants) |  |  |
-| message / agent **detail** | `feed` / `agents` | ✓ select → detail |  | ✓ row / thread |
+| topology (membership plus who-talks-to-whom) | `feed` + `agents` + `membership` | ✓ lens (`t`, 3 variants) |  | ✓ graph |
+| message / agent **detail** (incl. harness, model, skills) | `feed` / `agents` | ✓ select → detail |  | ✓ row / thread |
 | search / filter | client | ✓ `/` | (grep) | ✓ mode chips |
-| msgs/s, connected, dmVisible | `rates` / `status` | ✓ status bar |  | ✓ conn pill |
+| msgs/s, activity sparkline, connected, dmVisible | `rates` / `status` | ✓ status bar |  | ✓ conn pill |
 | attention mode (`dnd` / `focus`) | `agents[].attention` |  |  | ✓ roster + detail + graph |
 | per-channel attention (`quiet` / `muted`) | `agents[].channelModes` |  |  | ✓ agent detail |
-| harness, model, variant | `agents[].card.meta` |  |  | ✓ badges + graph |
+| harness, model, variant | `agents[].card.meta` | ✓ roster tag + detail |  | ✓ badges + graph |
 | host (which machine it runs on) | `agents[].card.meta.host` |  |  | ✓ agent detail |
 | channel policy (replay, delivery class) | `/api/channels` (web) |  |  | ✓ sidebar + header chips |
 
-Both interactive surfaces render every model field. The console adds the signals as an always-on
+Each interactive surface renders the fields its column above marks; `rates.activity` is the
+console's alone. The console adds the signals as an always-on
 tiles strip, a NEEDS-YOU rail (`n`), and a DM lens (`d`); the topology lens (`t`) collapses the feed
 plus roster into a who-talks-to-whom graph client-side and renders it three switchable ways
-(`v` / `1`–`3`): swimlane sequence, adjacency heat matrix, and a ring node-link map. The stream is
+(`v` / `1`–`3`): swimlane sequence, adjacency heat matrix, and a ring node-link map. It also
+overlays the **broker-authoritative membership** feed (`readMembership` / `watchMembership`, the
+same source as the web graph): silent subscribers appear as nodes, subscriptions as resting
+spokes (live solid and faint, durable-offline dashed), and wide readers (`>` / `*`) carry a `≫`
+badge. The map draws the full skeleton, the matrix a light `∘` / `◌` marker, the sequence stays a
+traffic timeline. Channel tabs carry a per-channel unread badge (`+N`, viewer-local: messages since
+that channel was last viewed, the same kind of state as the web sidebar's pill; a deleted channel's
+tab leaves the strip on the next channel poll, with no badge on the way out), the roster tags each
+agent with its harness when known (`cc` for Claude Code, `oc` for OpenCode, and so on, from the card's
+`meta.connector` or, for a managed seat whose card carries none, the manager's launch record), and
+the agent detail adds `runs`, `model`, and `skills` from the same sources. The stream is
 line-oriented, so the signals stay out of it.
 
 ## Future work
@@ -137,7 +171,6 @@ on the live surfaces, design intent until the wire grows to support them:
 | approval requests (approve / deny) | a request message kind plus a response path (interactive) |
 | task-failed alerts | a failure signal: a manager lifecycle event or a presence status |
 | unclaimed-anycast / status roll-up | mostly derivable from existing traffic; a `MeshView` signal |
-| per-conversation unread | per-viewer client state, not really protocol |
 
 ## Principles
 

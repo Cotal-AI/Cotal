@@ -148,16 +148,23 @@ function fmtUptime(ms: number): string {
  * scatters"). Rather than widen admin for convenience, the lookup runs as its own privileged
  * instrument and the admin instrument is then minted pinned to the answer.
  */
-type SeatLocation =
+export type SeatLocation =
   | { kind: "pin"; instanceId: string }
   | { kind: "unpinned" } // one instance, or a mode that cannot scatter — no ambiguity to resolve
   | { kind: "absent"; checked: number; unreachable: string[] };
 
-async function locateSeat(v: FlagValues<typeof stopFlags>, name: string): Promise<SeatLocation> {
+/** Exported for the console, which drives the same targeted verbs (`stop`/`attach`) from
+ *  inside a TUI and so needs the THROWING resolve: an unreachable mesh there is a notice on the
+ *  status line, never a `process.exit` that blanks the screen. The CLI commands keep the default. */
+export async function locateSeat(
+  v: Pick<FlagValues<typeof stopFlags>, "space" | "server" | "creds">,
+  name: string,
+  opts: { onRefusal?: "exit" | "throw" } = {},
+): Promise<SeatLocation> {
   // USER mode cannot do this: a ledger-scoped bearer does not hold the freeze rows, so a scatter
   // dies on a permissions violation that reads as "no manager". Left unpinned — `--on` stays the
   // manual escape hatch there, and docs/cli.md says so rather than this failing mysteriously.
-  const probe = await resolveControlTarget(v, "control-caller-privileged");
+  const probe = await resolveControlTarget(v, "control-caller-privileged", undefined, opts);
   if (probe.auth.bearer) return { kind: "unpinned" };
   const scatter = await scatterManager(probe.space, probe.server, "ps", probe.auth, probe.spaceAuth);
   if (!scatter.ok) return { kind: "unpinned" }; // cannot locate ⇒ behave exactly as before, never worse
@@ -177,16 +184,23 @@ async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Prom
   const loc = await locateSeat(v, String(v.name));
   if (loc.kind === "pin") return loc.instanceId;
   if (loc.kind === "unpinned") return undefined;
-  // The honest error #383 asked for: name the search, not just the absence. A registration that
-  // gave no answer within the deadline is NOT told to "retry": a manager whose host died never
-  // deregisters, so its row stays in the registry indefinitely and answers nothing, and a retry
-  // against it loops forever. Say what is known (registered, silent), what it may mean (a live
-  // slow host OR a dead registration), and the two real actions.
-  const missed = loc.unreachable.length
-    ? ` ${loc.unreachable.length} registered manager instance(s) gave no answer within the deadline (${loc.unreachable.join(", ")}). Either that host is alive but slow, or it died and its registration was never removed; if it is dead, deregister it. To address it directly: \`${verb} --on <instance>\` (the whole id, as printed).`
-    : "";
-  console.error(c.red(`✗ no managed agent "${v.name}" on any of the ${loc.checked} reachable manager instance(s) in this space.${missed}`));
+  console.error(c.red(`✗ ${seatNotFoundMessage(loc, String(v.name), verb)}`));
   process.exit(1);
+}
+
+/** The honest error #383 asked for: name the search, not just the absence. A registration that
+ *  gave no answer within the deadline is NOT told to "retry": a manager whose host died never
+ *  deregisters, so its row stays in the registry indefinitely and answers nothing, and a retry
+ *  against it loops forever. Say what is known (registered, silent), what it may mean (a live
+ *  slow host OR a dead registration), and the two real actions. `verb` names the command whose
+ *  `--on` is the remedy; the console has no flag to offer, so it passes none and the sentence
+ *  stops at the fact. */
+export function seatNotFoundMessage(loc: { checked: number; unreachable: string[] }, name: string, verb?: string): string {
+  const remedy = verb ? ` To address it directly: \`${verb} --on <instance>\` (the whole id, as printed).` : "";
+  const missed = loc.unreachable.length
+    ? ` ${loc.unreachable.length} registered manager instance(s) gave no answer within the deadline (${loc.unreachable.join(", ")}). Either that host is alive but slow, or it died and its registration was never removed; if it is dead, deregister it.${remedy}`
+    : "";
+  return `no managed agent "${name}" on any of the ${loc.checked} reachable manager instance(s) in this space.${missed}`;
 }
 
 /**
@@ -510,10 +524,10 @@ export function heldSessionNotice(pending: number, verdict: AttachVerdict["kind"
  * cannot be kept alive by reconnecting, because no grant is ever presented twice.
  */
 async function establishAttachSession(
-  v: FlagValues<typeof attachFlags>,
+  v: AttachTarget,
   on: string | undefined,
   reconnect: boolean,
-  first: boolean,
+  firstAttempt: boolean,
 ): Promise<Established> {
   // A reconnect must never cross a path that can END THE PROCESS. The mesh resolve and its
   // preflight are written to do exactly that ("no mesh running at X - run `cotal up`"), which is
@@ -533,6 +547,11 @@ async function establishAttachSession(
   // Same reach routing as stop: static mesh → any-mode on the `control-caller-admin` instrument;
   // user mesh → the operator's own bearer with owner reach, the manager deciding (own owner-domain
   // passes with "spawn", cross-owner needs ledger "admin").
+  // The console asks for the throwing form on the FIRST attempt as well (`onRefusal` on the
+  // target): inside a TUI a printed sentence and a `process.exit` would blank the operator's screen
+  // mid-session, and the refusal becomes a status-line notice instead. So "first" here means the
+  // first attempt of a command that wants the exit.
+  const first = firstAttempt && (v.onRefusal ?? "exit") === "exit";
   const t = await resolveControlTarget(v, "control-caller-admin", on, first ? {} : { onRefusal: "throw" });
   const reach = t.auth.bearer ? "owner" : "any";
   const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, { instanceId: on });
@@ -685,8 +704,13 @@ function watchDetachKey(byte: number): { pressed: Promise<void>; hit: () => bool
   // not reading. Treating a paste that happens to contain 0x1d as a detach would turn data into a
   // control action on input nobody typed; the reader that was not reading is the defect this
   // watcher's new lifetime fixes, not a matching problem.
+  // Under the console, Ink has called `stdin.setEncoding("utf8")`, and an encoding persists on the
+  // stream after Ink releases raw mode, so data arrives as a STRING there (the standalone command
+  // gets Buffers). Normalize first: a one-character string is not the number 0x1d, and the compare
+  // below would otherwise never match, making the key dead for as long as a reconnect takes.
   const onData = (d: Buffer) => { if (d.length === 1 && d[0] === byte) hit(); };
-  stdin.on("data", onData);
+  const onChunk = (data: Buffer | string) => onData(Buffer.isBuffer(data) ? data : Buffer.from(data, "utf8"));
+  stdin.on("data", onChunk);
   stdin.resume();
   // `pause: false` hands the stream to a session's own reader, which resumes it synchronously right
   // after; pausing there and resuming a line later would be a window where a byte has no owner,
@@ -694,7 +718,7 @@ function watchDetachKey(byte: number): { pressed: Promise<void>; hit: () => bool
   // `hit` as well as `pressed`, because the press has TWO consumers and one of them cannot await:
   // the handoff to a session's reader is synchronous, and it has to know whether the byte it is
   // taking the stream over from has already arrived.
-  return { pressed, hit: () => pressedYet, stop: ({ pause = true } = {}) => { stdin.off("data", onData); if (pause) stdin.pause(); } };
+  return { pressed, hit: () => pressedYet, stop: ({ pause = true } = {}) => { stdin.off("data", onChunk); if (pause) stdin.pause(); } };
 }
 
 /**
@@ -703,7 +727,7 @@ function watchDetachKey(byte: number): { pressed: Promise<void>; hit: () => bool
  * operator walked away from should still be theirs when they come back.
  */
 async function runAttachLoop(
-  vv: FlagValues<typeof attachFlags>,
+  vv: AttachTarget,
   pin: string | undefined,
   reconnect: boolean,
   key: ReturnType<typeof detachKey>,
@@ -943,7 +967,48 @@ async function runAttachLoop(
 
 /** How the attach finished, decided inside the loop and acted on outside it — so the terminal is
  *  always given back before anything prints or exits. */
-type AttachVerdict = { kind: "ended" } | { kind: "gone" } | { kind: "failed"; message: string };
+export type AttachVerdict = { kind: "ended" } | { kind: "gone" } | { kind: "failed"; message: string };
+
+/** What an attach needs to know: the mesh coordinates the control commands take, plus the seat,
+ *  plus what an unresolvable mesh does on the first attempt (`exit`, the command's default, or
+ *  `throw`, which the console needs because an exit inside a TUI blanks the screen). */
+export type AttachTarget = Pick<FlagValues<typeof attachFlags>, "space" | "server" | "creds"> & { name: string; onRefusal?: "exit" | "throw" };
+
+/**
+ * The whole attach, as one call: seat locality, the establish-redeem-drive loop with its reconnect,
+ * end-reason classification and abandoned-session hand-back, and the terminal given back before
+ * the verdict is returned. `cotal attach` and the console's `a` / `:attach` both run THIS, so the
+ * console can never drift into a lesser attach. `onRefusal` chooses what an unresolvable mesh or
+ * an absent seat does: the command prints and exits; the console needs a returned verdict, because
+ * an exit inside a TUI blanks the screen. The pin, when the caller already knows it (`--on`), is
+ * honoured; otherwise the seat is located the way `stop` locates it.
+ */
+export async function attachSeat(
+  v: AttachTarget,
+  opts: { reconnect: boolean; onRefusal: "exit" | "throw"; on?: string },
+): Promise<AttachVerdict> {
+  let on = opts.on;
+  if (on === undefined) {
+    if (opts.onRefusal === "exit") on = await pinForTarget(v as never, "cotal attach");
+    else {
+      const loc = await locateSeat(v, v.name, { onRefusal: "throw" });
+      if (loc.kind === "absent") return { kind: "failed", message: seatNotFoundMessage(loc, v.name) };
+      if (loc.kind === "pin") on = loc.instanceId;
+    }
+  }
+  const detach = detachKey();
+  const hold = holdTerminal();
+  try {
+    return await runAttachLoop({ ...v, onRefusal: opts.onRefusal }, on, opts.reconnect, detach, hold);
+  } catch (e) {
+    if (opts.onRefusal === "exit") throw e;
+    return { kind: "failed", message: (e as Error).message };
+  } finally {
+    // The terminal comes back before anything else happens, whatever ended the attach — including
+    // a throw out of the one-shot path, which is how `--no-reconnect` keeps its old exit.
+    hold.restore();
+  }
+}
 
 export async function attach(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof attachFlags>;
@@ -954,18 +1019,10 @@ export async function attach(args: ParsedArgs): Promise<void> {
   const reconnecting = v["no-reconnect"] !== true;
   // Seat-locality first, exactly as `stop` does it: attaching to a seat means reaching the process,
   // which only its host manager has. Resolved ONCE — the seat does not move between reconnects, and
-  // a manager that stops answering is a transient the loop already retries through.
-  const on = await pinForTarget(v as never, "cotal attach");
-  const detach = detachKey();
-  const hold = holdTerminal();
-  let verdict: AttachVerdict;
-  try {
-    verdict = await runAttachLoop(v, on, reconnecting, detach, hold);
-  } finally {
-    // The terminal comes back before anything else happens, whatever ended the attach — including
-    // a throw out of the one-shot path, which is how `--no-reconnect` keeps its old exit.
-    hold.restore();
-  }
+  // a manager that stops answering is a transient the loop already retries through. An explicit
+  // `--on` skips the lookup (the empty-value refusal lives in `pinForTarget`).
+  const on = v.on !== undefined ? await pinForTarget(v as never, "cotal attach") : undefined;
+  const verdict = await attachSeat({ space: v.space, server: v.server, creds: v.creds, name: v.name }, { reconnect: reconnecting, onRefusal: "exit", on });
   if (verdict.kind === "failed") {
     console.error(c.red(`✗ ${verdict.message}`));
     process.exit(1);

@@ -42,11 +42,57 @@ tiles strip, and toggleable lenses:
 | `1`–`9`, `[` `]` | select a channel tab |
 | `n` | the NEEDS-YOU rail: agents currently blocked or waiting |
 | `d` | the DM lens: per-peer roll-up and threads (god-view only; shows "DMs hidden" under chat-only creds) |
-| `t`, then `v` / `1`–`3` | the topology lens: who-talks-to-whom, as a swimlane, a heat matrix, or a ring map |
+| `t`, then `v` / `1`–`3` | the topology lens: who-talks-to-whom, as a swimlane, a heat matrix, or a ring map, with the broker's own membership overlaid when the delivery daemon serves it (a header pill reads live, stale, traffic-only, or unreadable) |
 | `/` | search / filter the feed |
 | `:` | the command palette |
+| `D` | kill the selected agent (control-gated, below) |
 | arrows / `h` `l` | move focus; select a row for its detail card |
 | `?` · `b` · `q` | help · back to overview · quit |
+
+**Operator control.** Watching stays read-only, but the console can also drive the
+[manager](architecture.md#manager-agent-supervisor). The observer endpoint never carries
+control: each action is one call through the same per-action path `cotal stop`, `cotal ps`, and
+`cotal spawn --detach` take. It resolves the mesh, mints a one-shot instrument (or connects bare
+on an open mesh, or rides your bearer on a user-auth mesh), calls the manager over the endpoint
+rails, and keeps nothing. That gate is `canControl`, decided by whether that path can produce a
+caller at all (a raw `--creds` file cannot), and it is independent of `canWrite`, which gates
+chat. `D` kills the selected agent behind a confirm (`y` graceful stop, `f` force-kill), and the
+`:` palette adds `spawn <persona> [name]` (waits for the join, like `cotal spawn --detach`),
+`status <agent>`, `ps`, `purge` (type the space name to confirm, like the space delete), and
+`delchan <channel>` (type the channel name to confirm): the web dashboard's channel delete, run
+from the console. It is core's `clearChannel` (a filtered history purge plus the registry entry)
+with the dashboard's per-action authority, a one-shot `channel-purger` credential minted from the
+resolved mesh's seed on a static mesh, a `channel-purger` view on a user mesh, a bare connection
+on an open one; no manager is involved. A wildcard is refused, so the one destructive control
+names one channel. A refusal, from the broker or the manager, lands on the status line. On a
+space with several managers, `D`, `:status`, and `a` are pinned to the manager hosting the seat and
+`:ps` merges every manager's rows; `:spawn` and `:purge` ride the class queue, as `cotal spawn
+--detach` and `cotal purge` do without `--on`.
+
+`a` on a roster agent (or `:attach <agent>`) suspends the console and hands the terminal to the
+seat: it is `cotal attach` run in place, the same one-use holder-bound mesh session, the same
+reconnect on a lost link, the same end reasons, with the observer running in the background
+throughout. `Ctrl-]` (or `COTAL_DETACH_KEY`) returns and repaints the console, and the verdict
+lands on the status line: detached, the seat is gone, or why it could not attach. A bad
+`COTAL_DETACH_KEY` is refused before the screen is handed over. Attach is `canControl`-gated and
+needs what `cotal attach` needs: a `pty` seat and the space's local seed to redeem the session
+grant (a static-auth mesh; an open mesh holds no seed, so attach refuses there as it does on the
+command line).
+
+**Operator participant mode.** By default the operator is invisible, and a message it sends is
+one-way: an agent's DM reply has no peer to land on. On an open mesh, the operator's **first send**
+(`:dm`, `:call`, `:ask`, `:msg`, or a compose) puts the operator on the roster: the console starts
+a second, presence-only endpoint carrying the observer's own card (the same id, name, and
+`role: "operator"`, so it is the `from` of everything the observer sends), the status bar says
+`on roster` for the rest of the session, and the god-view tap the console already runs shows the
+replies in the DM lens. The heartbeat survives a broker
+reconnect, and the operator leaves cleanly (an offline record) on exit. This is `canWrite`-gated,
+so a pure-watch session never registers, and a peer the broker refuses stays invisible with the
+refusal on the status line. Under auth the console does not upgrade: the read-only default cannot
+send at all, and an agent-grade `--creds` holds no live read of its own DM inbox (DMs ride its
+lifecycle-keyed durable, which the observer does not consume), so a send there is one-way and the
+status line says so once. An auth participant needs a credential profile that can publish
+presence and chat and read its own inbox; that profile does not exist yet.
 
 The stream is line-oriented, so the signals stay out of it; it is just a timestamped log of
 presence changes and messages, ready for `grep`.
