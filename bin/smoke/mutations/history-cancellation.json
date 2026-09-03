@@ -38,8 +38,8 @@
       "completionMarker": "activity-read-cost smoke:",
       "find": "      const iter = await consumer.consume({ max_messages: Math.min(pending, 32) });",
       "replace": "      const iter = await consumer.fetch({ max_messages: pending });",
-      "expectRed": "7.2 what the broker sends AFTER the reader leaves is one pull batch, not the backlog",
-      "cell": "7.2 what the broker sends AFTER the reader leaves is one pull batch, not the backlog"
+      "expectRed": "7.3 and the whole aborted read moves far less than the backlog it was reading",
+      "cell": "7.3 and the whole aborted read moves far less than the backlog it was reading"
     },
     {
       "name": "the rolling window stops after the first limit messages instead of reaching the window ceiling",

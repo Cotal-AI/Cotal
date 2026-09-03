@@ -590,6 +590,16 @@ try {
   // and the mutation restoring the unbounded pull stopped being caught. Measured here there is no
   // victim to lose: the bytes that keep arriving after the abort ARE the defect.
   //
+  // WHICH OF THE TWO CELLS BELOW ACTUALLY DISCRIMINATES, measured rather than assumed. Restoring the
+  // unbounded pull does NOT change what arrives after the abort: 165B either way, because the whole
+  // page is committed and delivered BEFORE the reader gets to leave. It changes what the aborted
+  // read moves in total, 36,882B against 502,363B, so 7.3 is the cell the mutation fixture names.
+  // 7.2 stays because it is the bound on the other side of the abort and nothing else asserts it.
+  //
+  // Three cells outside this section (1.7b, 3.2, 4.6) also redden on that mutation, through pull and
+  // consumer ratios rather than through the bound. So this section is not the only detector; it is
+  // the only one that measures the property the 32-message batch exists for.
+  //
   // On the field link, so the read is still in flight when the abort lands.
   {
     Object.assign(latency, FIELD);
