@@ -607,12 +607,14 @@ export interface ActivityPage {
   entries: ({ mode: "chat"; channel: string; msg: CotalMessage } | { mode: "unicast"; msg: CotalMessage })[];
   /** True iff at least one source did not answer within the deadline. */
   partial: boolean;
-  /** Sources that answered, out of sources asked (channels + the DM backlog). */
+  /** Sources that answered, out of sources asked. Since #1210 there are two of them: all of chat in
+   *  one stream read, and the DM backlog. */
   read: number;
   of: number;
   /** Every source that did not answer, NAMED. A count alone tells a reader something is missing and
-   *  not what, which on a dashboard is the difference between "one channel is slow" and "the space
-   *  is empty". */
+   *  not what, which on a dashboard is the difference between "the chat half of the feed is late"
+   *  and "the space is empty". The names are those two sources rather than individual channels: one
+   *  read either arrived or it did not, and {@link activityBackfill} says why at its source list. */
   missing: string[];
   deadlineMs: number;
 }
