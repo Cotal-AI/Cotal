@@ -170,7 +170,7 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
 
 {
   // The claim worth holding is the one the catalog makes: a primitive that parses runs. The check
-  // that catches a regression is that no primitive reaches the interpreter's L1000 default.
+  // that catches a regression is that no primitive reaches the interpreter's not-implemented default.
   const { handler, seen } = capturing(new SimHandler({ turns: { h: { status: "done", at: 0 } } }));
   const r = await run(
     'const a = await spawn("a", { name: "a" });\nawait conclave([a], (ch) => turn(a, { name: "h" }), { name: "t", channel: "war-room" });\n',

@@ -231,7 +231,9 @@ export type ConnectionState = "ready" | "degraded" | "connecting" | "disconnecte
 /** An `ask` relayed as a turn: the record the run needs, the attempt it is on, the previous
  *  refusal when there was one, and the command that answers it (`cotal run answer`, the same door
  *  a checkpoint is answered through). Empty when the payload carries no ask. */
-function renderAskRequest(p: { run?: unknown; step?: unknown; ask?: unknown }, seatName: string): string {
+function renderAskRequest(p: { run?: unknown; step?: unknown; ask?: unknown; checkpoint?: unknown }, seatName: string): string {
+  const escalation = renderEscalation(p, seatName);
+  if (escalation !== "") return escalation;
   const ask = p.ask;
   if (ask === null || typeof ask !== "object") return "";
   const a = ask as { schema?: unknown; attempt?: unknown; attempts?: unknown; deadlineAt?: unknown; refused?: unknown };
@@ -242,6 +244,21 @@ function renderAskRequest(p: { run?: unknown; step?: unknown; ask?: unknown }, s
   return `\nThis turn is an ask: the run needs a record from you at step ${String(p.step)} with fields ${fields}`
     + ` (attempt ${String(a.attempt)} of ${String(a.attempts)}${by}).${refused}`
     + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --by ${seatName} --value '<json record>'`;
+}
+
+/** An escalated `checkpoint` relayed as a turn: the question, the record wanted when the pause
+ *  carries a schema, and the same answer command an ask uses. The runtime submitted this shape from
+ *  the day escalations were relayed, and the seat read `ask` alone: the addressee was woken with a
+ *  context block and no question, auto-yielded `done`, and the pause ran to its own expiry. */
+function renderEscalation(p: { run?: unknown; step?: unknown; checkpoint?: unknown }, seatName: string): string {
+  const cp = p.checkpoint;
+  if (cp === null || typeof cp !== "object") return "";
+  const c = cp as { prompt?: unknown; schema?: unknown; deadlineAt?: unknown };
+  const entries = c.schema !== null && typeof c.schema === "object" ? Object.entries(c.schema as Record<string, unknown>) : [];
+  const wanted = entries.length === 0 ? "" : `\nAnswer with a record with fields ${entries.map(([k, v]) => `${k}: ${String(v)}`).join(", ")}.`;
+  const by = typeof c.deadlineAt === "number" ? ` It expires at ${new Date(c.deadlineAt).toISOString()}.` : "";
+  return `\nThis turn is a checkpoint escalated to you at step ${String(p.step)}: ${String(c.prompt)}${by}${wanted}`
+    + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --by ${seatName} --value '<json>'`;
 }
 
 export class MeshAgent extends EventEmitter {
@@ -1461,7 +1478,7 @@ export class MeshAgent extends EventEmitter {
       let context = t.payload;
       let ask = "";
       try {
-        const p = JSON.parse(t.payload) as { run?: unknown; step?: unknown; context?: unknown; ask?: unknown };
+        const p = JSON.parse(t.payload) as { run?: unknown; step?: unknown; context?: unknown; ask?: unknown; checkpoint?: unknown };
         if (typeof p.context === "string" && p.context.length > 0) context = p.context;
         ask = renderAskRequest(p, this.config.name);
       } catch { /* opaque payload — surface it as it came */ }

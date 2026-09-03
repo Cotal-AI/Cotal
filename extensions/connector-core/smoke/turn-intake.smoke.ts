@@ -242,6 +242,33 @@ const row = (goalId: string, context: string, acceptedAt = Date.now()): PendingT
     text.includes("cotal run answer r1 /ask:size#0 --by seat --value"), text.slice(0, 400));
 }
 
+// ── 6b) an escalated checkpoint rides the same relay: the seat is shown the question it was asked ──
+//
+// The runtime submits `{ checkpoint: { token, prompt, schema, deadlineAt, escalatedTo } }` for an
+// escalation. The renderer read `ask` alone, so an addressee was woken with a context block and
+// nothing else: no question, no token, no answer command. It auto-yielded `done` at its turn
+// boundary and the second pause ran to its own expiry over a question nobody had been asked.
+{
+  console.log("6b — an escalated checkpoint is rendered as the question, with the answer command");
+  const { a, state, poll } = rig();
+  const deadlineAt = Date.now() + 60_000;
+  state.pending = [{
+    goalId: "g8", acceptedAt: Date.now(), deadlineAt,
+    payload: JSON.stringify({
+      run: "r1", step: "/checkpoint:approve#0", context: "the run context", noticeIds: [],
+      checkpoint: { token: "g8", prompt: "Ship it?", schema: { approved: "boolean" }, deadlineAt, escalatedTo: "seat" },
+    }),
+  }];
+  await poll();
+  const text = a.peekPendingTurns()?.text ?? "";
+  check("the escalation is rendered after the context: the question, the step, and that it was escalated to this seat",
+    text.includes("the run context") && text.includes("Ship it?") && text.includes("/checkpoint:approve#0") && text.includes("escalated to you"),
+    text.slice(0, 400));
+  check("the schema, when the checkpoint carries one, is shown as the record wanted", text.includes("approved: boolean"), text.slice(0, 400));
+  check("the answer command names the run, the step and this seat",
+    text.includes("cotal run answer r1 /checkpoint:approve#0 --by seat --value"), text.slice(0, 400));
+}
+
 // ── a pull that stops answering is SAID, once ────────────────────────────────────────────────
 //
 // The poll runs every few seconds for the life of the session, so a line per failure would be a
@@ -287,7 +314,7 @@ const row = (goalId: string, context: string, acceptedAt = Date.now()): PendingT
   check("the same reason after a good pull is a new outage and is said", lines.length === 3, lines);
 }
 
-const EXPECTED_CELLS = 34;
+const EXPECTED_CELLS = 37;
 const ran = pass + fail;
 console.log(`\nturn-intake.smoke: ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

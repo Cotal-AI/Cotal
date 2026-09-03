@@ -344,6 +344,21 @@ export class InterpreterDefect extends Error {
   }
 }
 
+/**
+ * The engine cannot run at all here, or was not assembled the way its own contract requires: a
+ * node below the floor its frame plumbing was measured on, a transformed module that does not
+ * evaluate to a factory, a thread started without the bridge its request names, a handler module
+ * with no constructor export. None of these is a condition a PROGRAM can cause, so none takes an
+ * `L` code: the catalog is the language's, and a reader looking a code up there should find one.
+ * The sibling of {@link InterpreterDefect}, which is the validator and the walker disagreeing.
+ */
+export class EngineUnavailable extends Error {
+  constructor(what: string) {
+    super(`the cotal-lang engine cannot run here: ${what}`);
+    this.name = "EngineUnavailable";
+  }
+}
+
 /** The message off anything a foreign body throws, read defensively: other people's code may throw a primitive. */
 export function messageOf(v: unknown): string {
   if (v instanceof Error) return v.message;

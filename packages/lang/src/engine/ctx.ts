@@ -18,7 +18,7 @@
  * identical journals (entry sequences and step keys, not merely output).
  */
 
-import { RuntimeFault } from "../errors.js";
+import { InterpreterDefect, RuntimeFault } from "../errors.js";
 import { Cancelled, EffectError, type EffectHandler } from "../effects.js";
 import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, type Method } from "../library.js";
 import type { Journal } from "../journal.js";
@@ -456,14 +456,13 @@ function buildCtx(run: EngineRun): CtxWithSteps {
    */
   const deferredBody = (name: string, args: unknown[]): (() => Promise<unknown>) => async () => {
     if (name === "parallel" || name === "race") {
-      throw new RuntimeFault("L1000", `\`${name}\` has no deferred argument; asking for one is an engine fault`);
+      throw new EngineFault(new Error(`\`${name}\` has no deferred argument; asking for one is an emitter mistake`));
     }
     const thunk = args[1];
     if (typeof thunk !== "function") {
-      throw new RuntimeFault(
-        "L1000",
+      throw new EngineFault(new Error(
         `\`${name}\` takes its body UNEVALUATED, as a thunk: the walker evaluates it AFTER the scope's entry has begun (measured: an effect in that position journals inside the scope, one in the options bag journals before it), so a body handed over already evaluated has journalled its effects in the wrong place.`,
-      );
+      ));
     }
     return asArm(await (thunk as () => unknown)());
   };
@@ -780,13 +779,12 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       // A continuation without a short-circuit to guard is an emitter mistake: an ordinary call's
       // chain is written natively, because nothing in it depends on a decision only the host made.
       if (chain !== undefined && optional !== true) {
-        throw new RuntimeFault("L1000", "a call continuation belongs to an OPTIONAL call: there is nothing else for it to be skipped by");
+        throw new EngineFault(new Error("a call continuation belongs to an OPTIONAL call: there is nothing else for it to be skipped by"));
       }
       if (optional === true && typeof args !== "function") {
-        throw new RuntimeFault(
-          "L1000",
+        throw new EngineFault(new Error(
           "an optional call must be handed its arguments as a thunk: it may not evaluate them at all, and an array is a list that has already been evaluated",
-        );
+        ));
       }
       // Nothing runs: not the arguments, and not the rest of the chain. Measured on the walker, the
       // short-circuit swallows a deep chain (`o.z?.().x.y`) and a trailing call alike.
@@ -908,7 +906,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
         case ">>>":
           return a >>> b;
         default:
-          throw new RuntimeFault("L1000", `unsupported operator ${op}`);
+          throw new InterpreterDefect(`the operator ${op}`);
       }
     },
 
@@ -942,7 +940,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
           }
           return v;
         default:
-          throw new RuntimeFault("L1000", `unsupported unary operator ${String(op)}`);
+          throw new InterpreterDefect(`the unary operator ${String(op)}`);
       }
     },
 

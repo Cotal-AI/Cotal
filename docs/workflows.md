@@ -254,7 +254,7 @@ by name (**L5023**) with the run left untouched, instead of being replayed by wh
 happens to be present. Records do not cross between versions in either direction; the repair is to
 resume on the recorded version, or to fork.
 
-**The engine needs node 22 or newer** and refuses below it with **L1000**, which is an
-implementation limit and not a language error, so you will not find it in the catalog. It is a floor
-rather than a warning because the engine's frame plumbing rests on `AsyncLocalStorage`, and 22 is
-the lowest node it has been measured on. The walker has no such floor.
+**The engine needs node 22 or newer** and refuses below it as `EngineUnavailable`, which is an
+implementation limit and not a language error: it carries no `L` code, so there is nothing to look
+up in the catalog. It is a floor rather than a warning because the engine's frame plumbing rests on
+`AsyncLocalStorage`, and 22 is the lowest node it has been measured on. The walker has no such floor.

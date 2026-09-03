@@ -67,6 +67,15 @@
       "expectRed": "and saying it again waits for the reason to change: the poll does not become a torrent",
       "cell": "and saying it again waits for the reason to change: the poll does not become a torrent",
       "note": "A failure that persists is one fact, not one per poll interval."
+    },
+    {
+      "name": "an escalated checkpoint is surfaced as a bare turn again",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "  const escalation = renderEscalation(p, seatName);\n  if (escalation !== \"\") return escalation;\n",
+      "replace": "",
+      "expectRed": "the escalation is rendered after the context: the question, the step, and that it was escalated to this seat",
+      "cell": "the escalation is rendered after the context: the question, the step, and that it was escalated to this seat",
+      "note": "The runtime submits `{ checkpoint: { token, prompt, schema, deadlineAt, escalatedTo } }` and the seat read `ask` alone, so an addressee was woken with a context block and no question, auto-yielded done at its boundary, and the second pause ran to its own expiry over a question nobody was asked. The cell that covered the relay asserted what the runtime SUBMITTED; this one asserts what the seat RENDERS."
     }
   ],
   "why": [

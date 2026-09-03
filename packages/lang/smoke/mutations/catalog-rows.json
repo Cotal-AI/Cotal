@@ -32,6 +32,15 @@
       "expectRed": "every code this package THROWS is one the catalog carries",
       "cell": "every code this package THROWS is one the catalog carries",
       "note": "Appendix A and the catalog agree perfectly about a code that is in NEITHER. L1000 was thrown at eight sites and no reader could look it up."
+    },
+    {
+      "name": "an engine site throws a code outside the catalog, one directory down from the walker",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "          throw new InterpreterDefect(`the operator ${op}`);",
+      "replace": "          throw new RuntimeFault(\"L1000\", `unsupported operator ${op}`);",
+      "expectRed": "every code this package THROWS is one the catalog carries",
+      "cell": "every code this package THROWS is one the catalog carries",
+      "note": "The scan read src/*.ts and called the package clean while src/engine/ threw L1000 at eleven sites, seven of them in the multi-line spelling a per-line match could not see either. The scan now walks every file the package ships and matches across lines; this mutant puts the code back at the walker's twin and must red the same cell."
     }
   ]
 }

@@ -541,9 +541,9 @@
       "file": "packages/lang/src/engine/ctx.ts",
       "find": "    if (typeof thunk !== \"function\") {",
       "replace": "    if (false) {",
-      "expectRed": "a scope body handed over already evaluated is refused",
+      "expectRed": "a scope body handed over already evaluated is refused as the emitter breaking the seam's contract",
       "completionMarker": "ok and the ambient frame is what a framed call reads",
-      "cell": "a scope body handed over already evaluated is refused",
+      "cell": "a scope body handed over already evaluated is refused as the emitter breaking the seam's contract",
       "note": "The refusal is what stops a wrong emission from becoming a wrong journal quietly. Without it the seam calls whatever it was handed, and what a reader gets is a host TypeError from inside the scope machinery rather than a sentence saying which argument arrived in the wrong shape."
     },
     {
@@ -756,20 +756,20 @@
       "note": "Refuses with the same code and the same words, so every cell about the refusal stays green - and leaves the key behind. A caught early write would then have initialised the binding from a line that never ran, and the `let` that follows would look like a redeclaration to the cell test rather than the initialisation it is."
     },
     {
-      "name": "the sub-floor refusal carries no language code",
+      "name": "the sub-floor refusal grows a language code again",
       "file": "packages/lang/src/engine/host.ts",
-      "find": "      \"L1000\",",
-      "replace": "      \"L9999\",",
-      "expectRed": "and it carries the language code, not a bare Error",
+      "find": "    throw new EngineUnavailable(\n      `it requires node ${NODE_FLOOR} or newer and this is node ${version}.",
+      "replace": "    throw new RuntimeFault(\n      \"L1000\",\n      `it requires node ${NODE_FLOOR} or newer and this is node ${version}.",
+      "expectRed": "a node below the floor is refused by major version",
       "completionMarker": "ok and it names why a free identifier cannot be the program's fault",
-      "cell": "and it carries the language code, not a bare Error",
-      "note": "A refusal that throws is not yet a refusal a caller can branch on. `instanceof RuntimeFault` stays true under this mutant, which is the point: the cell above it does not notice, and the code is what a host reads."
+      "cell": "a node below the floor is refused by major version",
+      "note": "A node below the floor is nothing a program did. Handing it a code the catalog does not carry sends a reader to Appendix A for a row that is not there, which is the defect the audit removed from the walker and the cold reader then found alive in the engine. RuntimeFault stays imported in host.ts for its real language refusals (L5021, L5011), so the mutant compiles. Fail-fast suite: the FIRST cell this mutant reds is the class check (`instanceof EngineUnavailable`), measured 2026-09-03; the no-code cell two lines later is never reached, so the aim names the one that is."
     },
     {
       "name": "the sub-floor refusal reads as a module-resolution failure",
       "file": "packages/lang/src/engine/host.ts",
-      "find": "`the cotal-lang engine requires node ${NODE_FLOOR} or newer and this is node ${version}.",
-      "replace": "`Cannot find module: the cotal-lang engine requires node ${NODE_FLOOR} or newer and this is node ${version}.",
+      "find": "`it requires node ${NODE_FLOOR} or newer and this is node ${version}.",
+      "replace": "`Cannot find module: it requires node ${NODE_FLOOR} or newer and this is node ${version}.",
       "expectRed": "and it never presents as a module-resolution failure",
       "completionMarker": "ok and it names why a free identifier cannot be the program's fault",
       "cell": "and it never presents as a module-resolution failure",

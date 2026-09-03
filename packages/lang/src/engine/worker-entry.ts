@@ -26,7 +26,7 @@
 import { parentPort, workerData, type MessagePort } from "node:worker_threads";
 import "ses";
 import { Journal, type JournalStore } from "../journal.js";
-import { RuntimeFault } from "../errors.js";
+import { EngineUnavailable } from "../errors.js";
 import { assertCrossable } from "../values.js";
 import { EffectError, type EffectHandler } from "../effects.js";
 import { bridgedSeam } from "./bridge.js";
@@ -71,8 +71,7 @@ const confined = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) 
   const compartment = new Compartment();
   const factory = compartment.evaluate(module) as unknown;
   if (typeof factory !== "function") {
-    throw new RuntimeFault(
-      "L1000",
+    throw new EngineUnavailable(
       `the transformed module must evaluate to a function taking the context, and this one evaluated to ${typeof factory}`,
     );
   }
@@ -90,8 +89,7 @@ const confined = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) 
 async function buildSeam(): Promise<{ handler: EffectHandler; journal?: Journal }> {
   if (request.handler === "bridged") {
     if (bridge === undefined) {
-      throw new RuntimeFault(
-        "L1000",
+      throw new EngineUnavailable(
         `request ${request.runId} names the bridged handler route but the thread was started without a bridge port; runInWorker is the caller that wires one`,
       );
     }
@@ -114,8 +112,7 @@ async function buildHandler(module: string, exportName: string | undefined, conf
   const name = exportName ?? "createHandler";
   const make = mod[name];
   if (typeof make !== "function") {
-    throw new RuntimeFault(
-      "L1000",
+    throw new EngineUnavailable(
       `${module} has no \`${name}\` export that is a function. A handler is not serialisable - it holds sockets, a client and a clock - so the request names a module and the thread builds it: that export takes the config and answers an EffectHandler.`,
     );
   }

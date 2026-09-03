@@ -20,7 +20,7 @@
 import { Journal, RunClock } from "../src/journal.js";
 import { KeyScope, programHashOf, stepKeyString } from "../src/keys.js";
 import { ENGINE_LANGUAGE_VERSION, WALKER_LANGUAGE_VERSION, resolvePins, type RunPins } from "../src/pins.js";
-import { RuntimeFault, RunDivergence } from "../src/errors.js";
+import { EngineUnavailable, InterpreterDefect, RuntimeFault, RunDivergence } from "../src/errors.js";
 import { Cancelled, EffectError, EffectRefused, type EffectContext, type EffectHandler } from "../src/effects.js";
 import type { JournalEntry, JournalStore } from "../src/journal.js";
 import { LangErrors } from "../src/errors.js";
@@ -30,7 +30,7 @@ import { parse } from "acorn";
 import { stripPositions } from "../src/interpret.js";
 import { BUILTINS } from "../src/primitives.js";
 import { Prng, assertNoCode } from "../src/values.js";
-import { createCtx, createEngine, type EngineCtx, type EngineRun, type Site } from "../src/engine/ctx.js";
+import { EngineFault, createCtx, createEngine, type EngineCtx, type EngineRun, type Site } from "../src/engine/ctx.js";
 import { NODE_FLOOR, assertNodeFloor, runOnEngine, resumeOnEngine } from "../src/engine/host.js";
 import * as workerModule from "../src/engine/worker.js";
 import { runInWorker } from "../src/engine/worker.js";
@@ -606,7 +606,11 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
   ok("a function interpolated is L4018 too", codeOf(await caught(() => h.inFrame(() => h.ctx.template(["", ""], [(): number => 1])))) === "L4018");
   ok("a record is not iterable (L4015)", codeOf(await caught(() => h.inFrame(() => h.ctx.iter({})))) === "L4015");
   ok("and neither is null", codeOf(await caught(() => h.inFrame(() => h.ctx.iter(null)))) === "L4015");
-  ok("an unsupported unary operator is L1000, not a silent answer", codeOf(await caught(() => h.inFrame(() => h.ctx.unary("void", 1)))) === "L1000");
+  // The walker's twin raises the same class: a construct the validator admits and neither engine
+  // implements is a defect in the pair, and it does not wear a language code (there is no catalog
+  // row a program could look it up under).
+  ok("an unsupported unary operator is an InterpreterDefect, not a silent answer and not a language code",
+    (await caught(() => h.inFrame(() => h.ctx.unary("void", 1)))) instanceof InterpreterDefect);
 }
 
 {
@@ -908,7 +912,7 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
 {
   const h = harness();
   const e = await caught(() => h.inFrame(() => h.ctx.effect("fanOut", [[], 5, h.ctx.born({ name: "f" })])));
-  ok("a scope body handed over already evaluated is refused", codeOf(e) === "L1000" && (e as Error).message.includes("UNEVALUATED"), String(e));
+  ok("a scope body handed over already evaluated is refused as the emitter breaking the seam's contract", e instanceof EngineFault && (e as Error).message.includes("UNEVALUATED"), String(e));
   ok("and the refusal says what the order costs", (e as Error).message.includes("journalled its effects in the wrong place"), String(e).slice(0, 200));
   // The entry HAS begun by then, and settles failed: the refusal happens inside the scope, which is
   // exactly where the walker evaluates that argument.
@@ -1490,7 +1494,7 @@ await parallel({
   // be a lie, because the arguments ran before the seam was reached.
   ok(
     "an optional call handed an ARRAY refuses, rather than short-circuiting after the fact",
-    codeOf(await caught(() => h.inFrame(() => h.ctx.call(h.ctx.born({ a: 1 }), "m", [], true)))) === "L1000",
+    (await caught(() => h.inFrame(() => h.ctx.call(h.ctx.born({ a: 1 }), "m", [], true)))) instanceof EngineFault,
   );
   ok(
     "and an ordinary call still takes a plain array",
@@ -1543,7 +1547,7 @@ await parallel({
 
   ok(
     "a continuation without the optional flag is refused, not silently run",
-    codeOf(await caught(() => h.inFrame(() => h.ctx.call(h.ctx.born({ m: async () => 1 }), "m", [], false, (v) => v)))) === "L1000",
+    (await caught(() => h.inFrame(() => h.ctx.call(h.ctx.born({ m: async () => 1 }), "m", [], false, (v) => v)))) instanceof EngineFault,
   );
 }
 
@@ -2598,11 +2602,12 @@ let n = 1;
   const floorOf = (range: string | undefined): number => Number(String(range).replace(/[^0-9.]/g, "").split(".")[0]);
   ok(`the repo declares node ${declared.engines?.node}, and the engine refuses below the same major`, floorOf(declared.engines?.node) === NODE_FLOOR, { declared: declared.engines?.node, floor: NODE_FLOOR });
   const below = await caught(() => assertNodeFloor("20.19.0"));
-  ok("a node below the floor is refused by major version", below instanceof RuntimeFault, String(below));
+  ok("a node below the floor is refused by major version", below instanceof EngineUnavailable, String(below));
   ok("and the refusal names both the version it found and the floor", (below as Error).message.includes("20.19.0") && (below as Error).message.includes("node 22"), (below as Error).message.slice(0, 120));
-  // IT IS A LANGUAGE REFUSAL, ASSERTED BY CODE, not merely something that threw: a sub-floor run has
-  // to arrive as one sentence a reader can act on.
-  ok("and it carries the language code, not a bare Error", codeOf(below) === "L1000", codeOf(below));
+  // IT IS NOT A LANGUAGE REFUSAL. A node below the floor is nothing a program did, so it takes no
+  // `L` code a reader would go to the catalog for and fail to find; it is the engine saying it cannot
+  // run here, as its own class, in one sentence a reader can act on.
+  ok("and it carries no language code: the catalog is the program's, and this is the host's", codeOf(below) === undefined && (below as Error).name === "EngineUnavailable", { code: codeOf(below), name: (below as Error).name });
   // AND IT IS NEVER A MODULE-NOT-FOUND. That is the shape this whole change removed: below the floor
   // the answer must be the sentence above, and not node failing to resolve a file that is right
   // there - which is what an unrefused sub-floor run used to produce.
