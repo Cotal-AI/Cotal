@@ -28,8 +28,8 @@
       "file": "packages/core/src/endpoint.ts",
       "find": "      [chatSubject(this.space, \"*\", \"*\", channel)],\n      opts?.limit ?? 100,\n      undefined,\n      opts?.signal,\n    )).map((r) => r.msg);",
       "replace": "      [chatSubject(this.space, \"*\", \"*\", channel)],\n      opts?.limit ?? 100,\n    )).map((r) => r.msg);",
-      "expectRed": "\u2717 FAIL: PUBLIC REPRO: abort settles channelHistory as AbortError instead of leaving it pending",
-      "cell": "\u2717 FAIL: PUBLIC REPRO: abort settles channelHistory as AbortError instead of leaving it pending",
+      "expectRed": "✗ FAIL: PUBLIC REPRO: abort settles channelHistory as AbortError instead of leaving it pending",
+      "cell": "✗ FAIL: PUBLIC REPRO: abort settles channelHistory as AbortError instead of leaving it pending",
       "completionMarker": "HISTORY CANCELLATION:"
     },
     {
@@ -80,12 +80,11 @@
       "file": "packages/core/src/endpoint.ts",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:history-recent",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
-      "completionMarker": "history-recent smoke:",
       "find": "    const rows = pages.flat().sort((a, b) => a.seq - b.seq).slice(-limit);",
       "replace": "    const rows = pages.flat().sort((a, b) => a.msg.ts - b.msg.ts).slice(-limit);",
       "expectRed": "multiChannelHistory merges BATCHES by arrival, not by the highest `ts`",
       "cell": "multiChannelHistory merges BATCHES by arrival, not by the highest `ts`",
-      "note": "Repointed after MEASUREMENT. It first named web cell 8.4, which compares a one-create read against a forced-batch read. That cell SURVIVED this mutation, and the reason is structural rather than incidental: the mutation reorders BOTH arms identically, so an equality between two arms of the same implementation cannot see the key it sorts on. The tie-based reasoning offered for it was wrong. The core suite pins the key against an ORACLE instead: a corpus published frame by frame so that `ts` and arrival disagree, where selecting by `ts` returns the other message. 8.4 is kept, because batch-invariance is worth asserting, but it is not this mutation's detector. RE-AIMED after a WRONG-RED: the first name pointed at the single-batch check, which stays GREEN under this mutation because streamHistory applies the limit inside the one batch, leaving one row for the merge to sort. The multi-batch check is the earliest red and is now asserted first, since this suite stops at the first failure."
+      "note": "Repointed after MEASUREMENT. It first named web cell 8.4, which compares a one-create read against a forced-batch read. That cell SURVIVED this mutation, and the reason is structural rather than incidental: the mutation reorders BOTH arms identically, so an equality between two arms of the same implementation cannot see the key it sorts on. The tie-based reasoning offered for it was wrong. The core suite pins the key against an ORACLE instead: a corpus published frame by frame so that `ts` and arrival disagree, where selecting by `ts` returns the other message. 8.4 is kept, because batch-invariance is worth asserting, but it is not this mutation's detector. RE-AIMED after a WRONG-RED: the first name pointed at the single-batch check, which stays GREEN under this mutation because streamHistory applies the limit inside the one batch, leaving one row for the merge to sort. The multi-batch check is the earliest red and is now asserted first, since this suite stops at the first failure.\n\nNo `completionMarker`: this suite is fail-fast (`check` is `assert.ok`) and its only summary line is a success banner after the last check, so a genuine kill can never print it. Measured: with the marker declared, a red on the named cell graded INCONCLUSIVE at 23 of 26 marks, which is every check before the named one and none after. The mutation above it against this same suite declares none either."
     }
   ]
 }
