@@ -127,6 +127,19 @@ try {
   const dm = s.out.length;
   await s.command("delchan doomed");
   check("delchan: the confirm opens", await s.waitFor("Delete channel", 8_000, dm), clean(s.out.slice(dm)).slice(-300));
+  // Enter is armed by the EXACT name and this deletion is irreversible, so the gate gets a negative
+  // cell before the valid path. Without it every assertion below passes equally on a confirm that
+  // accepts any Enter, which is the failure mode a valid-path-only test cannot see.
+  s.write("doome"); // one character short
+  await wait(300);
+  s.write("\r");
+  check("delchan: a name one character short does not delete", !(await s.waitFor("messages purged", 3_000, dm)), clean(s.out.slice(dm)).slice(-200));
+  check("...and the channel's history survives the wrong name", (await reader.channelHistory("doomed")).length === 2, await reader.channelHistory("doomed"));
+  s.write("\x1b"); // Esc closes the confirm; re-open it rather than editing the typed text
+  await wait(500);
+  const dm2 = s.mark();
+  await s.command("delchan doomed");
+  check("delchan: the confirm re-opens after the cancel", await s.waitFor("Delete channel", 8_000, dm2), clean(s.out.slice(dm2)).slice(-200));
   s.write("doomed");
   await wait(300);
   s.write("\r");

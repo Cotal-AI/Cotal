@@ -209,6 +209,16 @@ try {
   m = s.mark();
   await s.command("purge");
   check("purge: the typed-space-name confirm opens", await s.waitFor(/Purge .* history \(all channels\)/, 8_000, m), clean(s.out.slice(m)).slice(-300));
+  // The negative half of the gate, before the valid one. Purging a space's history cannot be
+  // undone, and a confirm that armed Enter on anything would pass every cell below.
+  await s.keys(space.slice(0, -1), 300); // the space name one character short
+  await s.keys("\r", 500);
+  check("purge: a space name one character short does not purge", !(await s.waitFor(/purged space history/, 3_000, m)), clean(s.out.slice(m)).slice(-200));
+  check("...and the space history survives the wrong text", (await poster.channelHistory("general")).length >= 2, (await poster.channelHistory("general")).length);
+  await s.keys("\x1b", 500); // Esc closes it; re-open rather than editing the typed text
+  m = s.mark();
+  await s.command("purge");
+  check("purge: the confirm re-opens after the cancel", await s.waitFor(/Purge .* history \(all channels\)/, 8_000, m), clean(s.out.slice(m)).slice(-300));
   await s.keys(space, 300);
   await s.keys("\r", 300);
   check("purge: the notice confirms it", await s.waitFor(/purged space history/, 30_000, m), clean(s.out.slice(m)).match(/purg[^│\n]*/g)?.join(" | "));
