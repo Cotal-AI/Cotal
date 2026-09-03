@@ -126,7 +126,7 @@ export function App({
     else if (mode === "topo") focus("topo");
     else focus(normalFocus);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [helpOpen, detail, mode, railOpen, confirm]);
+  }, [helpOpen, detail, mode, railOpen, confirm, attachTarget]);
 
   // One control call against the manager of THIS space (console/control.ts): resolve, mint a
   // one-shot instrument, call, drop. The observer endpoint is never involved.
@@ -377,7 +377,7 @@ export function App({
             : ep.unicast(e.from.id, text, { replyTo: e.id });
         void send.then(ok("↩ " + e.from.name)).catch(fail);
       }
-    });
+    }, fail); // a participant start that throws before its own catch must not drop the message silently
   };
 
   // Run a typed palette line against the live endpoint.
