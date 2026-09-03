@@ -19,8 +19,11 @@
  * that moved the same work to a different private method would still have to send the same bytes
  * past this proxy. Two quantities are counted:
  *
- *   - ROUND TRIPS: client→broker `PUB $JS.API.CONSUMER.…` lines, split by verb. A consumer lifecycle
- *     is a CREATE plus its pulls plus a DELETE, and each is one request the link has to carry.
+ *   - ROUND TRIPS: every client→broker `PUB $JS.API.…` line, since each one is a request the link
+ *     has to carry. The four consumer verbs are split out, because a consumer lifecycle is a CREATE
+ *     plus its pulls plus a DELETE and that lifecycle is what #1210 is about; every other
+ *     `$JS.API.` request, STREAM.INFO for the channel list and so on, lands in `other`. Every trips
+ *     figure published below is the sum of all five counters, so it includes `other`.
  *   - BYTES: every octet in each direction, so the "transfers ~70 times what it displays" claim is
  *     comparable against the size of the page that is actually returned.
  *
@@ -119,8 +122,8 @@ const trips = (c: WireCost): number => c.create + c.info + c.next + c.del + c.ot
  *
  *  COUNTED BY PROTOCOL LINE, NOT BY SUBSTRING. A TCP chunk boundary can split a subject in half and
  *  a message body can contain any text, so the client→broker direction is reassembled into `\r\n`
- *  terminated lines and only a line that BEGINS with `PUB $JS.API.CONSUMER.` is counted. A payload
- *  line cannot begin that way, and a subject split across two chunks is rejoined before it is
+ *  terminated lines and only a line that BEGINS with `PUB $JS.API.` is counted. A payload line
+ *  cannot begin that way, and a subject split across two chunks is rejoined before it is
  *  matched. That holds for the frames this corpus produces, and NOT in general: the split is on
  *  CRLF without honouring the declared payload length, so a payload carrying a CRLF can false-count
  *  a line, and only `PUB` is recognised, so an `HPUB` would go uncounted. Neither occurs here, since
