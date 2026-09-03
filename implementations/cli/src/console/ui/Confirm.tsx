@@ -10,8 +10,8 @@ export type ConfirmTarget =
   | { kind: "delchan"; channel: string };
 
 /** Full-screen red danger overlay. Owns input while shown. Calls onConfirm only when the gate is
- *  satisfied (y/f for kill, exact name typed for deleteSpace/purge); Esc/n cancels. Kill's choice
- *  travels in the callback: `y`/Enter is a graceful stop, `f` a force-kill. */
+ *  satisfied (y/f for kill, exact name typed for deleteSpace/purge); Esc/n/Enter cancels. Kill's
+ *  choice travels in the callback: `y` is a graceful stop, `f` a force-kill. */
 export function Confirm({
   target,
   width,
@@ -32,9 +32,13 @@ export function Confirm({
   useInput((input, key) => {
     if (key.escape) return onCancel();
     if (target.kind === "kill") {
-      if (input === "y" || input === "Y" || key.return) return onConfirm();
+      // Enter CANCELS, and only `y`/`f` arm the stop. Enter is the key a hurried operator hits to
+      // dismiss an overlay, and it cancelled this one until now; making it confirm turns that
+      // reflex into a kill of whatever the roster had selected. The two typed-name confirms below
+      // arm Enter deliberately, but only after the name has been typed out in full.
+      if (input === "y" || input === "Y") return onConfirm();
       if (input === "f" || input === "F") return onConfirm({ force: true });
-      if (input === "n" || input === "N") return onCancel();
+      if (input === "n" || input === "N" || key.return) return onCancel();
       return;
     }
     // deleteSpace / purge / delchan: type the name to arm Enter

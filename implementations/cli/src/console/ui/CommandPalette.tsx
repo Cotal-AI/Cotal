@@ -113,7 +113,14 @@ export function CommandPalette({
               {s.label.slice(m)}
             </Text>
             {s.summary ? <Text dimColor>{"   " + s.summary}</Text> : null}
-            {(s.write && !canWrite) || (s.control && !canControl) ? <Text color="red">{"  read-only"}</Text> : null}
+            {/* Two different refusals, named apart: a raw --creds session CAN publish but cannot
+                drive the manager, so labelling its control commands "read-only" tells the operator
+                the session is something it is not. Same words the refusal itself uses. */}
+            {s.write && !canWrite ? (
+              <Text color="red">{"  read-only"}</Text>
+            ) : s.control && !canControl ? (
+              <Text color="red">{"  no control path"}</Text>
+            ) : null}
           </Text>
         );
       })}

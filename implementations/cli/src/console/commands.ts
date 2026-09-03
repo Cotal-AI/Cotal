@@ -24,8 +24,9 @@ export interface CommandCtx {
   /** One control call against this space's manager (console/control.ts). */
   control: (op: ControlOp, args?: Record<string, unknown>) => Promise<ManagerReply>;
   /** The managed rows of EVERY reachable manager in the space (the `cotal ps` scatter, merged):
-   *  a single class-queue call would answer for one manager and omit the others' seats. */
-  ps: () => Promise<{ ok: true; rows: ManagedRow[] } | { ok: false; error: string }>;
+   *  a single class-queue call would answer for one manager and omit the others' seats. `silent`
+   *  names the instances that did not answer, so a partial list is never shown as a whole one. */
+  ps: () => Promise<{ ok: true; rows: ManagedRow[]; silent: string[] } | { ok: false; error: string }>;
   /** Open the type-the-space-name purge confirm (the palette never purges directly). */
   confirmPurge: () => void;
   /** Open the type-the-channel-name delete confirm for one channel's history and registry entry. */
@@ -157,7 +158,10 @@ export const COMMANDS: ConsoleCommand[] = [
     run: async (ctx) => {
       const r = await ctx.ps();
       if (!r.ok) return ctx.notify("ps: " + r.error);
-      ctx.notify(r.rows.length ? "agents: " + r.rows.map((a) => a.name).join(", ") : "no managed agents");
+      // A silent instance is named, never dropped: without it a merged list short by a whole
+      // manager's seats reads as the complete managed set of the space.
+      const partial = r.silent.length ? ` (${r.silent.length} manager instance(s) gave no answer: ${r.silent.join(", ")})` : "";
+      ctx.notify((r.rows.length ? "agents: " + r.rows.map((a) => a.name).join(", ") : "no managed agents") + partial);
     },
   },
   {

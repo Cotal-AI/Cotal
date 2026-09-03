@@ -137,9 +137,13 @@ export function App({
 
   // Managed state lives in the manager, not in presence: only the manager knows WHICH harness it
   // launched (`agent` = connector, `mode` = runtime) for a seat whose card carries no meta. Poll
-  // the manager's rows at a low rate and merge by the non-forgeable id; fail QUIET and stop
-  // polling when nothing answers (an open mesh without a supervisor must not spin or flash errors
-  // on every tick).
+  // the manager's rows at a low rate and merge by the non-forgeable id; stop polling when nothing
+  // answers, so an open mesh without a supervisor does not spin on every tick.
+  //
+  // Stopping is SAID ONCE rather than swallowed. A refused permission, an expired credential and
+  // a mesh that simply has no manager all end the poll, and they are different facts: without the
+  // notice the harness tags and the detail card's `runs` just stay blank for the rest of the
+  // session with nothing to tell the operator which of the three happened.
   const [managed, setManaged] = useState<Map<string, { agent?: string; mode?: string }>>(new Map());
   const psDead = useRef(false);
   useEffect(() => {
@@ -151,7 +155,8 @@ export function App({
       const r = await controlPs({ ...controlCtx, space: ep.space });
       if (!alive) return;
       if (!r.ok) {
-        psDead.current = true; // no manager on this mesh: stop knocking
+        psDead.current = true; // nothing answered: stop knocking, having said so once
+        setNotice(`no managed-agent rows: ${r.error}`);
         return;
       }
       setManaged((prev) => {
