@@ -41,11 +41,17 @@ try {
   // Jcode was started, so nothing reached the seat's private Jcode log to say why.
   mkdirSync(join(short.socketDir, "home", "logs"), { recursive: true, mode: 0o700 });
   writeFileSync(join(short.socketDir, "home", "servers.json"), "{}", { mode: 0o600 });
-  const afterOrphan = shortSocketHome(pathological);
+  let afterOrphan: ReturnType<typeof shortSocketHome> | undefined;
+  let orphanRefusal: unknown;
+  try {
+    afterOrphan = shortSocketHome(pathological);
+  } catch (error) {
+    orphanRefusal = error;
+  }
   check(
     "an alias a dead lifecycle re-created as a real directory is reclaimed, not refused forever",
-    lstatSync(afterOrphan.jcodeHome).isSymbolicLink() && readlinkSync(afterOrphan.jcodeHome) === pathological,
-    afterOrphan.jcodeHome,
+    afterOrphan !== undefined && lstatSync(afterOrphan.jcodeHome).isSymbolicLink() && readlinkSync(afterOrphan.jcodeHome) === pathological,
+    orphanRefusal instanceof Error ? orphanRefusal.message : afterOrphan?.jcodeHome,
   );
   // The reclaim removes an entry it classified with lstat, so it can never reach through the alias
   // into the seat home that alias names. Everything the seat owns must survive a relaunch.
