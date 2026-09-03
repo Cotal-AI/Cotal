@@ -22,7 +22,7 @@ reason attached to the decision. Section 9 holds what is not settled, addressed 
 | Multi-endpoint lifecycle | The home connection is permanent for the lifecycle; extras are additive and revocable | [3.2](#32-lifecycle) |
 | Private credential storage | The #614 material carrier, written by the manager, read once and discarded | [4.1](#41-storage) |
 | Revocation | Reported to the manager, reaped on the real per-seat teardown path, and bounded by TTL where the home host has no authority to revoke | [4.2](#42-revocation) |
-| Host adapter keeping workspace out of connector-core | Three manager-endpoint commands and DTOs in core; connector-core learns no path | [5](#5-the-host-adapter-boundary) |
+| Host adapter keeping workspace out of connector-core | Four manager-endpoint commands and DTOs in core; connector-core learns no path | [5](#5-the-host-adapter-boundary) |
 | #1207: how a no-pid seat registers | A normal spawn through a `hosted` connector plus a `hosted` runtime | [7.1](#71-registration) |
 | #1207: where the persona limit binds | Three layers, and the network hop makes execute-time enforcement mandatory | [7.2](#72-the-persona-limited-mcp-path) |
 | #1207: liveness without a pid | An attach lease, on the `agentAuthState` pattern, where absence is ambiguous | [7.3](#73-liveness-without-a-pid) |
@@ -166,6 +166,17 @@ them:
    trust position. A seat must not be able to state one, and a DTO that omitted them could not build
    a valid record anyway.
 
+**Decision: the manager stamps `origin: "manual"` on the record, explicitly.** `MeshEntry.origin` is
+optional, and its own documentation states that an omitted value IS `up`, meaning "THIS machine
+started the mesh: it is safe to drop on a liveness verdict or a local teardown"
+(`packages/workspace/src/mesh-registry.ts:62-64`). A record created through this path did not come
+from a local `cotal up`, so inheriting that default would make an agent-created record auto-prunable,
+removable by a teardown of an unrelated root, and claimable by a later `cotal up` for that space,
+with the seat's own `server` and `attachHost` inside it. That is the denial and hijack primitive this
+section refuses, arriving through the absence of a field rather than through a verb. `cotal meshes
+add` already writes `manual` (`implementations/cli/src/commands/meshes.ts:194`), and this path matches
+it. The field is not an argument: a seat cannot ask for `up`.
+
 **Decision: the request runs the same dial policy the CLI runs, and is refused by it identically.**
 `implementations/cli/src/lib/join-target.ts` is the existing authority: a loopback literal, or a
 private-overlay literal with recorded acceptance of its tunnel dependency, or a public name with TLS
@@ -284,11 +295,23 @@ The sequence for `cotal_mesh_connect(mesh: "B")`:
 4. The seat calls `readLaunchMaterial`, constructs the second `MeshAgent`, then calls
    `discardLaunchMaterial` (`:222`) whether the connection succeeded or failed.
 
-**Decision: it MINTS, and never copies.** No credential the seat or the host already holds is
-forwarded toward a registered server. Copying home material toward a server named in a registration
-request would be the message-in, authenticated-connection-out channel section 2.2 exists to close,
-reopened one layer down: the refusal to accept a credential as an argument means nothing if the
-manager will supply one on request.
+**Decision: material is either MINTED from a seed the host holds, or DELIVERED from what the
+operator staged for that exact record. It is never REPURPOSED.** The rule that matters is not
+"never copy a file"; stated that way it contradicts the remote case in section 4.2, where the host
+holds no seed for B and the only usable material is the per-seat credential B's operator staged. The
+rule is that no credential minted for one purpose is forwarded toward another:
+
+- **Local B**, seed reachable under B's staged directory: the manager MINTS a per-lifecycle
+  credential for B. Nothing is copied.
+- **Remote B**: the manager DELIVERS the credential B's operator staged for this seat on this record,
+  through the same carrier. This is a copy of a file, and it is safe for the reason the blanket ban
+  was reaching for: the material was provisioned by B's authority FOR this use, and it travels only
+  to the record it was staged under.
+- **Never**: the seat's home credential, any other mesh's credential, or any material not staged
+  under this record's own directory. Forwarding home material toward a server named in a registration
+  request would be the message-in, authenticated-connection-out channel section 2.2 exists to close,
+  reopened one layer down: the refusal to accept a credential as an argument means nothing if the
+  manager will supply one on request.
 
 **Decision: host-local only.** The carrier is a filesystem path, so it is meaningless across machines.
 A seat whose manager is not on its own host is refused with that reason rather than degraded into a
@@ -323,15 +346,23 @@ path, not reuse of it.
 **Decision: the design says plainly that deleting a file is footprint reduction, not revocation, and
 names who can actually revoke.** Broker-side revocation is `deprovisionBroker` (`manager.ts:2878`),
 which mints a deprovisioner against `this.auth` and calls `deprovisionAgent` with `this.space` and
-`this.servers`. It is pinned to the home mesh by construction, so **the originating host cannot
-revoke a credential on a foreign mesh.** Three consequences, stated rather than glossed:
+`this.servers`. That is the HOME broker in every case, so **it cannot revoke on any second mesh, and
+"second mesh" includes a local one.** A second local mesh is a different space, signed by a different
+seed, reached at a different broker URL, even when its root sits on the same disk. An earlier draft of
+this section said revocation for a local second mesh "follows the home path"; it does not, and the
+function named there would have deleted the seat's home footprint or no-opped against the wrong
+broker. Three consequences, stated rather than glossed:
 
-- For a **local** second mesh whose auth root is on this host, the manager holds the signing seed, so
-  revocation is real and follows the home path.
-- For a **remote** mesh, the home host can delete its copy of the material and stop using it, and
-  that is all. The credential remains valid until it expires or that mesh's own authority revokes it.
-- Therefore an extra-mesh credential is **short-TTL by requirement**, and the TTL is the actual
-  bound on exposure. Section 9 carries the number as an open question rather than a guess.
+- Revoking on mesh B requires a deprovisioner **minted against B's own auth and dialled at B's
+  server**. Nothing in the tree does that today. It is a **required addition**, not reuse, and it is
+  possible only when B's signing seed is reachable, which means a local B whose auth root is under
+  its staged directory.
+- For a **remote** mesh, the home host holds no seed for B and there is nothing to add. It can delete
+  its copy of the material and stop using it, and that is all. The credential remains valid until it
+  expires or that mesh's own authority revokes it.
+- Therefore an extra-mesh credential is **short-TTL by requirement**, and for a remote mesh the TTL is
+  the only bound on exposure the home host controls. Section 9 carries the number as an open question
+  rather than a guess.
 
 This is the #865 credential-revocation gate answered with its real shape. A design that claimed full
 revocation here would be claiming an authority the home host does not have.
@@ -339,8 +370,8 @@ revocation here would be claiming an authority the home host does not have.
 The three points at which material is removed:
 
 - On `cotal_mesh_disconnect`: the endpoint stops, the seat discards its material, and
-  `mesh-disconnect` tells the manager to drop the path from the tracked set and, for a local mesh,
-  deprovision.
+  `mesh-disconnect` tells the manager to drop the path from the tracked set. Whether that is followed
+  by a real broker-side revocation depends on the addition above, and on a remote mesh it never is.
 - On stop or despawn: the per-seat teardown above, with the tracked set iterated.
 - On lifecycle end for any other reason: the same path, for the same reason.
 
@@ -369,7 +400,7 @@ and `define-persona`:
 | `list-meshes` | Return the redacted projection | Yes: add to `REPEAT_SAFE_COMMANDS[manager]` (`endpoint-grants.ts:234`) |
 | `register-mesh` | Create one record from coordinates, refusing an existing name | No: it refuses on conflict, so a retry after a responded-but-unbound split cannot be told from a duplicate create |
 | `mesh-material` | Mint one material file for one target mesh | No: it mints |
-| `mesh-disconnect` | Drop a tracked extra-mesh material path and, for a local mesh, deprovision | No: a second run acts on whatever now holds the path, the `despawn` reasoning in that table's own comment |
+| `mesh-disconnect` | Drop a tracked extra-mesh material path, and deprovision on B only where a B-scoped deprovisioner exists (4.2) | No: a second run acts on whatever now holds the path, the `despawn` reasoning in that table's own comment |
 
 **Decision: a new capability, `mesh`, gates all four.** It is added to the closed set in
 `isKnownCapability` (`implementations/manager/src/launch.ts:126`) and mints a
@@ -386,9 +417,16 @@ manager to mint material on disk. None of that is granted by the mesh's broker, 
 not make it free, and mirroring `canSpawn` would have handed every persona on an open mesh the whole
 family while this document claimed the capability gated it. #865 asks for these tools to be injected
 only for personas declaring the capability, and on an open mesh that is only true if the filter is the
-boundary. Stated plainly: for `spawn` the filter is truthfulness and the broker is the boundary; for
-`mesh` on an open mesh the filter is the boundary, and the manager handler re-checks the declared
-capability so a stale or bypassed advertised list cannot become authority.
+boundary. That leaves the open-mesh case, and the honest answer is a refusal rather than a filter. On an open
+broker the caller tuple on a request subject is not authenticated, which is the whole reason
+`canSpawn` gives up there. A manager-side re-check of the declared capability cannot bind either,
+because the handler has no authenticated principal to check the declaration against, and an earlier
+draft of this section claimed such a re-check as though it could. **Decision: the `mesh` family is
+refused outright on an open home mesh.** No listing, no registration, no material. An open mesh has
+no way to tell one caller from another, and the authority in question reaches the host filesystem, so
+the only safe answer is that nobody gets it. An operator on an open mesh uses the CLI. Stated plainly:
+for `spawn` the filter is truthfulness and the broker is the boundary; for `mesh` the broker is the
+boundary on an authenticated mesh, and on an open one the feature is off.
 
 **Decision: `mesh` is a separate capability from `spawn`, not folded into it.** `spawn` is already
 documented as host-launch authority (`agent-file.ts:85` comment) because `launchOptions` is a raw
@@ -441,23 +479,41 @@ and a second class of stored secret. Section 8 lists it as future work.
 
 **What this does and does not fix, measured against #1207's own list.** The issue says the current
 MCP-attached participant has no spawner, no persona, no lifecycle ownership, and that "its cwd, model,
-and identity are whatever the attaching human had open". A hosted seat fixes the first three
-outright, and fixes **identity** on the mesh: the seat is the persona's name, role, and card, and the
-broker knows it by its own credential. It does **not** fix cwd or model, and cannot: those belong to
-the remote host's own session, which Cotal never launched. The consequence is stated rather than
+and identity are whatever the attaching human had open". Precisely:
+
+| #1207 property | Status |
+|---|---|
+| No persona, so no access contract or capability gating | Fixed. The seat has a persona and is provisioned from it |
+| No lifecycle ownership; the manager cannot list, stop, or re-key it | Fixed. It is a managed agent on the ordinary paths |
+| Identity is whatever the attaching human had | Fixed on the mesh. The seat is the persona's name, role, and card, and the broker knows it by its own credential |
+| No spawner can create one; a human attaches it by hand | **Partly.** A spawner creates the SEAT: the credential, the registration, the bridge. It does not create the hosted SESSION, and a human or an operator automation still points that session at the endpoint |
+| Its cwd and model are whatever the human had | **Not fixed, and not fixable from here.** Both belong to the remote host's own session, which Cotal never launched |
+
+The last two rows are why this section does not claim to close #1207's list outright. The consequence is stated rather than
 left to be discovered, because it bears on how much a hosted seat can be trusted: **a hosted seat's
 model is not attested.** `cotal ps` and the roster render it as declared by the persona, and for a
 hosted seat that is a request the remote side may not have honoured, unlike a local seat whose
 `COTAL_MODEL` the manager set.
 
-**Decision: the listener's exposure is the operator's decision, recorded, defaulting to loopback.**
-This is the same shape `MeshEntry.attachHost` already carries for the manager's own attach face
-(`packages/workspace/src/mesh-registry.ts:39-46`), and for the same stated reason: a bind address is
-a decision, not a derivable fact, so nothing downstream may reconstruct it. Absent means loopback,
-which is what an operator-run tunnel needs. An operator who names a host must also record TLS
-required, and the design refuses a non-loopback bind without it rather than serving an attach token
-over plaintext. Section 9 asks whether a first-party tunnel is wanted so the common case needs no
-operator network work.
+**Decision: the listener's exposure is a per-seat, spawn-time operator decision with its own record.**
+An earlier draft pointed at `MeshEntry.attachHost` for this, which was wrong in kind:
+`attachHost` is ONE mesh-level bind for the manager's own attach face
+(`packages/workspace/src/mesh-registry.ts:39-46`), not a per-seat listener, and N hosted seats need N
+addresses. It supplies the reasoning, not the field: a bind address is a DECISION, not a derivable
+fact, so nothing downstream may reconstruct it.
+
+What the design adds, named rather than implied:
+
+| Artifact | Owner | Default |
+|---|---|---|
+| Bind host and port for one bridge | Spawn-time flag, recorded on the `ManagedAgent` and rendered in `ps` | Loopback on an ephemeral port |
+| TLS certificate and key for a non-loopback bind | Spawn-time flag, paths held by the manager | None, and a non-loopback bind without them is REFUSED at the pre-mint preflight |
+| The one-time attach URL and token | Minted at spawn, emitted once to the operator, never persisted in cleartext | No default; it is the spawn's output |
+
+It is deliberately NOT a persona field. A persona is a shared template that a manifest can spawn on
+any host, and a bind address and a certificate path are host-specific, which is the same reason
+`attachHost` lives in the machine-local registry rather than in an agent file. Section 9 asks whether
+a first-party tunnel is wanted so the common case needs no operator network work.
 
 **This diverges from the sketch in #1207**, which says the launch step does not fork and the manager
 publishes the endpoint itself. The divergence is deliberate and section 9 asks the operator to ratify
@@ -475,10 +531,19 @@ it. Three reasons:
 **The bridge process is not the agent.** Its pid proves the bridge is up. It proves nothing about
 whether the hosted session is attached or working, which is what section 7.3 is for.
 
-**Decision: the persona must declare its verb surface. A `hosted` launch with no declaration is
-refused at `buildLaunch`, before any provisioning side effect.** No default surface is invented for
-it. AGENTS.md forbids silent degradation, and the failure mode of a wrong default here is a hosted
-seat holding more verbs than the operator intended, which is the thing #1207 asks to prevent.
+**Decision: the persona must declare its verb surface, and the refusal is a PRE-MINT preflight.**
+Not a `buildLaunch` throw: `buildLaunch` is called at `implementations/manager/src/manager.ts:3879`,
+after `activateStaticLifecycle` and after credentials are minted and ledgered, so a throw there is
+the mint-then-orphan shape the manager already guards against elsewhere. That file says so itself at
+`:3504-3505`, where the resume preflight sits in the "reject-before-side-effects window" and
+`buildLaunch` is named as the backstop. The `tools:` check goes in that same earlier window, with
+`buildLaunch` as the backstop, matching `supportsResume`.
+
+No default surface is invented for a hosted persona. AGENTS.md forbids silent degradation, and the
+failure mode of a wrong default here is a hosted seat holding more verbs than the operator intended,
+which is the thing #1207 asks to prevent. This is a departure from #1207's own words, which ask for a
+smallest-usable default rather than a refusal, and section 9 puts it up for ratification with the
+other two.
 
 ### 7.2 The persona-limited MCP path
 
@@ -659,6 +724,11 @@ hosted seat, for credential hygiene, reuse of the existing lifecycle machinery, 
 (b) Requirement 3 says the hosted side receives a scoped mesh credential; section 7.2 gives it an
 attach token and keeps the credential on the manager host. I believe (b) is strictly safer, but it is
 a departure from what you asked for in words and you should be the one to accept it.
+(c) Requirement 1 asks for a smallest-usable DEFAULT verb surface; section 7.1 refuses a hosted
+persona that declares no `tools:` instead of defaulting. My reason is that a silent default here
+grants verbs nobody chose, and AGENTS.md forbids silent degradation. The cost is that every hosted
+persona must be written out, and section 7.2's recommended minimum exists so that is a copy rather
+than a design exercise. If you would rather have the default, it is one line to change.
 
 **Q4. The four numeric policies.** Named rather than buried: the additional-connection bound
 (proposed 3, section 3.2); the attach-lease staleness window (proposed 15 minutes, matching
