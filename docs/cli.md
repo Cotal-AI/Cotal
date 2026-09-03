@@ -1309,6 +1309,12 @@ commit timestamp, and `seed/stamp.json`. That writer and timestamp are kept in t
 older CLI refusal can say which executable wrote the generation it will not overwrite and when.
 Legacy generation-only stamps remain readable; their refusal simply has no writer provenance to add.
 
+An older `cotal` refuses a seed store written by a newer version. When it can verify a sufficient
+`cotal` executable on PATH or at the installer's `~/.local/bin/cotal` location, the refusal names
+that absolute path so a reduced service PATH does not select the older binary again. Otherwise it
+keeps the generic newer-version instruction. `--reset` remains the explicit way to rebuild the store
+for the running older version.
+
 The default connector for a bare `cotal spawn` (no `--agent`) is the persona's `agent:` pin if it
 has one, else `claude`; set `COTAL_DEFAULT_AGENT` (e.g. `opencode`) to change the fallback. It is
 a default, so a persona that pins its harness still wins over it. An `--agent` naming a removed

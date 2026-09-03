@@ -18,9 +18,9 @@
  * Run: pnpm smoke:seed
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, posix, win32 } from "node:path";
+import { delimiter, dirname, join, posix, win32 } from "node:path";
 import { defaultAgentType } from "@cotal-ai/workspace";
 import { isPathSpec } from "../src/commands/ext.js";
 
@@ -48,12 +48,24 @@ interface Run {
   stdout: string;
   stderr: string;
 }
+// The harness itself may run inside a supervised seat whose environment carries operational
+// COTAL_* state — COTAL_SKIP_CONNECTOR_SEED in particular suppresses the very auto-seed under
+// test — so the CLI under test always gets a COTAL_*-scrubbed base env. Cells that need a
+// COTAL_* var (the forged-marker cells) inject it deliberately on top.
+const HOST_ENV: Record<string, string | undefined> = Object.fromEntries(
+  Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_")),
+);
 function cotal(cfg: string, args: string[], extraEnv: Record<string, string> = {}): Run {
   const r = spawnSync("node", [BIN, ...args], {
     encoding: "utf8",
-    env: { ...process.env, XDG_CONFIG_HOME: cfg, ...extraEnv },
+    env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg, ...extraEnv },
   });
   return { status: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+}
+function fakeCotal(path: string, version: string): void {
+  mkdirSync(join(path, ".."), { recursive: true });
+  writeFileSync(path, `#!/bin/sh\nprintf '%s\\n' 'cotal-ai ${version}'\n`);
+  chmodSync(path, 0o755);
 }
 const freshCfg = (): string => mkdtempSync(join(tmpdir(), "cotal-seed-smoke-"));
 const seedDir = (cfg: string) => join(cfg, "cotal", "seed");
@@ -134,7 +146,7 @@ check("path spec: a registry name is NOT a path (versioned)", !isPathSpec("conne
   // BEFORE the connect attempt, so the connectors appear regardless of the connect outcome — poll the
   // manifest on disk (not `ext list`, which would itself seed) and kill the daemon once they exist.
   const child = spawn("node", [BIN, "supervise", "--space", "seedsmoke", "--server", "nats://127.0.0.1:59998"], {
-    env: { ...process.env, XDG_CONFIG_HOME: cfg },
+    env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg },
     stdio: "ignore",
   });
   const deadline = Date.now() + 90000;
@@ -394,7 +406,7 @@ check("path spec: a registry name is NOT a path (versioned)", !isPathSpec("conne
   const cfg = track(freshCfg());
   const boot = (): Promise<{ code: number; err: string }> =>
     new Promise((resolve) => {
-      const p = spawn("node", [BIN, "ext", "list"], { env: { ...process.env, XDG_CONFIG_HOME: cfg } });
+      const p = spawn("node", [BIN, "ext", "list"], { env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg } });
       let err = "";
       p.stderr.on("data", (d) => (err += d.toString()));
       p.on("close", (code) => resolve({ code: code ?? -1, err }));
@@ -419,7 +431,7 @@ if (process.platform !== "win32") {
   const linkDir = track(mkdtempSync(join(tmpdir(), "cotal-seed-binlink-")));
   const link = join(linkDir, "cotal");
   symlinkSync(BIN, link);
-  const r = spawnSync("node", [link, "ext", "list"], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: cfg } });
+  const r = spawnSync("node", [link, "ext", "list"], { encoding: "utf8", env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg } });
   const out = r.stdout ?? "";
   const names = ["claude", "opencode", "codex", "hermes", "jcode", "pi"].filter((n) => out.includes(`connector:${n}`));
   if (names.length !== 6) console.log(`[diag] symlinked boot status=${r.status}\n--stdout--\n${out}\n--stderr--\n${r.stderr}`);
@@ -465,6 +477,28 @@ if (process.platform !== "win32") {
   check("downgrade: `ext seed --reset` recovers the store", reset.status === 0, reset.stderr.slice(0, 300));
   check("downgrade: the stamp is this binary's generation again", readJson(stamp).generation === readJson(join(REPO, "bin", "package.json")).version);
   check("downgrade: ordinary commands work after the reset", listNames(cfg).length === 6);
+}
+
+// ── downgrade recovery names a concrete executable only after proving its version ───────────────
+if (process.platform !== "win32") {
+  const cfg = track(freshCfg());
+  cotal(cfg, ["ext", "list"]);
+  const stamp = join(seedDir(cfg), "stamp.json");
+  writeJson(stamp, { generation: "99.0.0" });
+
+  const home = track(freshCfg());
+  const candidate = join(home, ".local", "bin", "cotal");
+  const reducedPath = [dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter);
+  fakeCotal(candidate, "99.0.0");
+  const sufficient = cotal(cfg, ["ext", "list"], { HOME: home, PATH: reducedPath });
+  const sufficientOut = `${sufficient.stdout}${sufficient.stderr}`;
+  check("downgrade hint: finds the installer cotal even when reduced PATH omits ~/.local/bin", sufficientOut.includes(candidate), sufficientOut.slice(0, 400));
+  check("downgrade hint: names the version the executable proved", sufficientOut.includes("cotal-ai 99.0.0"), sufficientOut.slice(0, 400));
+
+  fakeCotal(candidate, "98.0.0");
+  const stale = cotal(cfg, ["ext", "list"], { HOME: home, PATH: reducedPath });
+  const staleOut = `${stale.stdout}${stale.stderr}`;
+  check("downgrade hint: never names a candidate below the store generation", !staleOut.includes(candidate) && /run the newer cotal/.test(staleOut), staleOut.slice(0, 400));
 }
 
 for (const c of cleanup) rmSync(c, { recursive: true, force: true });

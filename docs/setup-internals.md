@@ -188,7 +188,9 @@ resurrects a removal. Before writing the generation stamp, setup verifies that e
 and at the generation version. A version-skewed payload fails loud (`ext seed --repair`) rather than being stamped as current. A cotal
 **older** than the store's stamped generation refuses before writing anything, rather than stamping the
 store back down to its own version while refreshing nothing: run the newer cotal, or `ext seed --reset`
-to rebuild the store for the version you are running. A generation advance records the exact
+to rebuild the store for the version you are running. The refusal names a concrete cotal executable
+only after a bounded `--version` probe proves that executable is at least the store generation;
+otherwise it retains the generic instruction. A generation advance records the exact
 realpath-resolved CLI entry and an ISO timestamp in `seed/stamp.json`, then announces the migration
 after that stamp commits. An older CLI includes those fields in its refusal when present; legacy
 generation-only stamps stay valid and retain the shorter refusal.
