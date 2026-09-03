@@ -61,7 +61,16 @@ const drive = (src: string, filename: string) => {
     markStale: (name: string, entry: unknown) => { marks.push({ name, entry }); },
     Date,
   });
-  runInContext(`${fn}; applyPresenceView({ fresh: false, staleSince: 1 }); applyPresenceView({ fresh: true });`, ctx, { filename });
+  runInContext(
+    `${fn}; ` +
+      `const endpointViews = [` +
+      `{ state: "stale", fresh: false, staleSince: 1 }, ` +
+      `{ state: "current", fresh: true }, ` +
+      `{ state: "unpopulated", fresh: false }]; ` +
+      `for (const view of endpointViews) applyPresenceView(view);`,
+    ctx,
+    { filename },
+  );
   return { marks };
 };
 
@@ -72,12 +81,18 @@ ok("1.1 Monitor: a stale view marks the roster source, not a peer",
   app.marks[0]);
 ok("1.2 Monitor: a fresh view CLEARS that mark (recovery is per source)",
   app.marks[1]?.name === "roster" && app.marks[1]?.entry == null, app.marks[1]);
+ok("1.3 Monitor: the endpoint's unpopulated state marks the roster unknown while its snapshot loads",
+  app.marks[2]?.name === "roster" && /snapshot still loading/.test(app.marks[2]?.entry?.reason ?? ""),
+  app.marks[2]);
 
 const graph = drive(graphJs, "graph.js");
-ok("1.3 Graph: the same stale view marks roster",
+ok("1.4 Graph: the same stale view marks roster",
   graph.marks[0]?.name === "roster" && graph.marks[0]?.entry?.name === "roster", graph.marks[0]);
-ok("1.4 Graph: a fresh view clears it",
+ok("1.5 Graph: a fresh view clears it",
   graph.marks[1]?.name === "roster" && graph.marks[1]?.entry == null, graph.marks[1]);
+ok("1.6 Graph: the endpoint's unpopulated state marks the roster unknown while its snapshot loads",
+  graph.marks[2]?.name === "roster" && /snapshot still loading/.test(graph.marks[2]?.entry?.reason ?? ""),
+  graph.marks[2]);
 
 ok("2.1 both pages listen for the presence-view SSE event",
   /addEventListener\("presence-view"/.test(appJs) && /addEventListener\("presence-view"/.test(graphJs));
