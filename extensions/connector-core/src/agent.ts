@@ -13,6 +13,7 @@ import {
   EpEnvelopeError,
   isPublishPermissionDenied,
   unansweredRequest,
+  renderLifecycleBlocked,
   type EpAttributedReply,
   type EpVerbTarget,
   type ControlReply,
@@ -21,6 +22,7 @@ import {
   type MessageMeta,
   type Presence,
   type PresenceStatus,
+  type TransportState,
   type AttentionMode,
   type ChannelMode,
   type CotalMessage,
@@ -31,11 +33,10 @@ import type { AgentConfig } from "./config.js";
 // re-exported so connector consumers keep importing them from `@cotal-ai/connector-core`.
 export type { AttentionMode, ChannelMode };
 
-/** Client-side request window for the manager's readiness-waiting `start` op (#159 B1): the manager
- *  replies only on a REAL outcome — presence join, process exit, or its ~30s readiness backstop —
- *  so a spawn request must OUTLIVE that window, not the 5s op default. The tier rule forbids
- *  importing the manager's READINESS_TIMEOUT_MS here; the launch-parity smoke enforces the
- *  relation by test. */
+/** Client-side floor for a spawn action's submit + follow. The manager acceptance carries the exact
+ *  connector-selected readiness budget, and core extends the follow through that budget plus
+ *  delivery margin. This floor still outlives the manager's generic 30s default and protects
+ *  older responders whose acceptance predates that field. */
 export const SPAWN_TIMEOUT_MS = 40_000;
 
 /** Grace for a mesh op issued while the link is still coming up. `start()` deliberately returns
@@ -124,6 +125,8 @@ interface Pending {
   ack: () => void;
   /** Receive-time delivery class. Quiet ambient stays pull-only even if the mode later changes. */
   pullOnly: boolean;
+  /** Local receive time. Distinct from `item.ts`, which is the sender's stamp. */
+  receivedAt: number;
 }
 
 /** Where a session's focus-mode recall has been read to: a timestamp plus the id that breaks its ties. */
@@ -199,6 +202,16 @@ function ingestDedupKey(id: string): string | undefined {
  * layer to wake the session now (the Stop→idle flush of held messages); `"error"` (Error) for
  * endpoint faults.
  */
+/**
+ * The five states a caller has to tell apart, derived in one place so every consumer agrees.
+ *
+ * `degraded` is the one that matters and the one a single boolean gets wrong: the endpoint is bound
+ * but the socket underneath it is down, so sends queue or fail while the client reconnects. It is
+ * NOT the same as `disconnected`, and it is not a stopped session either. `stopped` is terminal and
+ * is not a fault at all.
+ */
+export type ConnectionState = "ready" | "degraded" | "connecting" | "disconnected" | "stopped";
+
 export class MeshAgent extends EventEmitter {
   readonly ep: CotalEndpoint;
   readonly config: AgentConfig;
@@ -231,10 +244,16 @@ export class MeshAgent extends EventEmitter {
   private protectedDropIds = new Set<string>();
   private dropUnsafe = false;
   private _connected = false;
+  /** Raw NATS transport liveness, separate from `_connected` (the full Cotal bind/readiness). */
+  private _transportConnected = false;
+  /** Wall-clock time of the latest inbox drain that actually committed at least one delivery.
+   *  This is measured only after the backing acknowledgements succeed, never inferred from a read
+   *  attempt or from an empty inbox. */
+  private _lastInboxDrainedAt?: number;
   /** Latest connection failure, retained until the endpoint binds so a bounded readiness gate can
    * explain why an otherwise healthy host never joined the mesh. */
   private lastConnectionError?: string;
-  private endpointErrorLog = new Map<string, { lastLoggedAt: number; suppressed: number }>();
+  private endpointNoticeLog = new Map<string, { lastLoggedAt: number; suppressed: number }>();
   private _status: PresenceStatus = "idle";
   private _attention: AttentionMode = "open"; // F3: fail-open default; reset to open on SessionStart
   private _recallCursor: RecallMark = { ts: 0, id: "" };
@@ -262,7 +281,7 @@ export class MeshAgent extends EventEmitter {
   private recvKeySeq = 0;
   private focusExcludedIds = new Map<string, string>();
   private focusRecallUnsafeChannels = new Set<string>();
-  private stopping = false;
+  private _stopping = false;
 
   constructor(config: AgentConfig) {
     super();
@@ -305,14 +324,31 @@ export class MeshAgent extends EventEmitter {
     });
     this.ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => this.ingest(m, d, meta));
     this.ep.on("error", (e: Error) => this.handleEndpointError(e));
+    // A warning is a condition the endpoint is already surviving. Log it through the same bounded
+    // operator sink, but never turn it into connectionIssue: readiness is still true.
+    this.ep.on("warning", (e: Error) => this.handleEndpointWarning(e));
+    // Two guards, and the comments sit out here so neither anchors a mutation on prose. An
+    // in-flight initial bind or rebuild can finish after stop() cleared local state, and shutdown is
+    // terminal for this MeshAgent, so a late endpoint edge must not resurrect transport. Separately,
+    // nats.js and clean shutdown can both confirm the same edge; a duplicate carries no state change
+    // and must not wake consumers or let an old confirmation look like a new outage.
+    this.ep.on("transport", (e: TransportState) => {
+      if (this._stopping) return;
+      if (this._transportConnected === e.connected) return;
+      this._transportConnected = e.connected;
+      this.emit("transport", e);
+    });
     // The endpoint's (re)binds are the single source of truth for connectedness: this fires on
     // initial start, manual reconnect, AND the background self-heal — so a recovery the endpoint
     // did on its own can't leave us thinking we're offline (which would skip stop() → leak).
+    // Same stop race as the transport handler above: a late connectAndBind completion is not a new
+    // session. Kept out of the block so the guard can be anchored on code alone.
     this.ep.on("connection", (e: { connected: boolean }) => {
+      if (this._stopping) return;
       this._connected = e.connected;
       if (e.connected) {
         this.lastConnectionError = undefined;
-        this.endpointErrorLog.clear();
+        this.endpointNoticeLog.clear();
       }
       this.emit("connection", e);
     });
@@ -326,9 +362,35 @@ export class MeshAgent extends EventEmitter {
     return this._connected;
   }
 
-  /** The latest safe diagnostic for a connection that has not become live yet. */
+  /** Whether this session's current NATS transport is live, independent of full endpoint readiness. */
+  get transportConnected(): boolean {
+    return this._transportConnected;
+  }
+
+  /** Latest pre-bind failure. A successful bind clears it; stop preserves it for post-mortem diagnosis. */
   get connectionIssue(): string | undefined {
     return this.lastConnectionError;
+  }
+
+  /** The latest successful, non-empty inbox drain in this session. */
+  get lastInboxDrainedAt(): number | undefined {
+    return this._lastInboxDrainedAt;
+  }
+
+  /** Whether {@link stop} has been called. Terminal, and never cleared: a stopped session does not
+   *  serve again. This is the ONLY way to tell a deliberate shutdown from a lost connection, because
+   *  `stop()` clears readiness and transport together, so those two read identically in both cases. */
+  get stopping(): boolean {
+    return this._stopping;
+  }
+
+  /** The three liveness facts combined, in one place. Every combination maps, so a caller never has
+   *  to guess what an unlisted pair means, and a caller that disagrees with this reading can still
+   *  read {@link connected}, {@link transportConnected} and {@link stopping} directly. */
+  get connectionState(): ConnectionState {
+    if (this._stopping) return "stopped";
+    if (this._connected) return this._transportConnected ? "ready" : "degraded";
+    return this._transportConnected ? "connecting" : "disconnected";
   }
 
   /** Wait for the endpoint's real post-bind connection signal. `start()` deliberately stays
@@ -372,7 +434,7 @@ export class MeshAgent extends EventEmitter {
   }
 
   private async connectLoop(retryMs: number): Promise<void> {
-    while (!this.stopping && !this._connected) {
+    while (!this._stopping && !this._connected) {
       try {
         await this.ep.start();
         // _connected is set by the endpoint's "connection" event (fired inside start()), not here.
@@ -381,6 +443,10 @@ export class MeshAgent extends EventEmitter {
         );
       } catch (e) {
         const error = e instanceof Error ? e : new Error(String(e));
+        // stop() can win while the initial endpoint start is still pending. A rejection arriving
+        // after that terminal decision is teardown noise, not a new connectionIssue for the stopped
+        // session, and there is no next retry to explain or sleep toward.
+        if (this._stopping) return;
         this.lastConnectionError = error.message;
         this.log(`mesh unreachable (${error.message}); retrying in ${retryMs}ms`);
         await sleep(retryMs);
@@ -389,7 +455,14 @@ export class MeshAgent extends EventEmitter {
   }
 
   async stop(): Promise<void> {
-    this.stopping = true;
+    this._stopping = true;
+    // stop() is a local terminal fact. Do not wait for an endpoint event that intentionally ignores
+    // its own stopped close, or leave a cleanly stopped session reporting either state as live.
+    this._connected = false;
+    if (this._transportConnected) {
+      this._transportConnected = false;
+      this.emit("transport", { connected: false });
+    }
     // Unconditional: a background self-heal can flip _connected without us, so a `_connected`
     // guard could skip the stop and leak the live connection/heartbeat/supervisor. ep.stop() is
     // idempotent (early-returns once stopped), so calling it when already-down is a noop.
@@ -402,7 +475,7 @@ export class MeshAgent extends EventEmitter {
    *  interruptible. Returns a one-line status for the caller to surface (e.g. the
    *  cotal_reconnect tool → TUI); on failure the endpoint keeps retrying in the background. */
   async reconnect(): Promise<{ ok: boolean; message: string }> {
-    if (this.stopping) {
+    if (this._stopping) {
       return {
         ok: false,
         message: "This session is shutting down, so its Cotal mesh connection cannot be reconnected. Start a new session instead.",
@@ -468,8 +541,10 @@ export class MeshAgent extends EventEmitter {
     //  - `quiet` → buffer ambient as pull-only; an @mention remains automatic. Overrides global
     //    `focus` so "retain this channel, but only surface ambient on explicit pull" stays expressible.
     // Focus (global, only when NOT overridden): channel ambient AND @mentions are acked-and-dropped —
-    // they stay recallable via cotal_inbox (recallAmbient); an @mention still *wakes* (mention-wake),
-    // body pulled (F4=B), never auto-injected (the mention tag is payload-forgeable).
+    // they stay recallable via cotal_inbox (recallAmbient), or if recall itself cannot vouch for the
+    // channel (replay=off, or a wildcard join — #977), that is reported rather than left silent; an
+    // @mention still *wakes* (mention-wake), body pulled (F4=B), never auto-injected (the mention
+    // tag is payload-forgeable).
     if (item.kind === "channel") {
       const cm = this.channelModes.get(item.channel ?? "");
       // chatFrontier() is asynchronous. Channel traffic retained while entering focus must not also
@@ -513,7 +588,7 @@ export class MeshAgent extends EventEmitter {
   }
 
   private buffer(item: InboxItem, ack: () => void, pullOnly: boolean): void {
-    this.inbox.push({ item, ack, pullOnly });
+    this.inbox.push({ item, ack, pullOnly, receivedAt: Date.now() });
     if (this.inbox.length > MAX_INBOX) {
       // Prefer sacrificing pull-only backlog so it cannot crowd out DMs/mentions. Overflow remains
       // bounded local loss: evicted items are acked without being marked handled.
@@ -718,7 +793,9 @@ export class MeshAgent extends EventEmitter {
     // acking only the selected — silent loss by selection. Identity removes exactly what was taken.
     const taken = new Set(selected);
     this.inbox = this.inbox.filter((p) => !taken.has(p));
-    return this.commitPending(selected);
+    const items = this.commitPending(selected);
+    if (items.length) this._lastInboxDrainedAt = Date.now();
+    return items;
   }
 
   /** Ack exact surfaced deliveries without assuming they still form the physical inbox prefix.
@@ -740,6 +817,7 @@ export class MeshAgent extends EventEmitter {
     }
     this.inbox = this.inbox.filter((p) => !present.has(p.item.recvKey));
     const items = this.commitPending(selected);
+    if (items.length) this._lastInboxDrainedAt = Date.now();
     for (const id of requested) {
       // A MINTED key (an id-less delivery) is never handled-authority: its wire id is "", which
       // markHandled already refuses, so skipping it here is the same at-least-once stance rather
@@ -785,6 +863,16 @@ export class MeshAgent extends EventEmitter {
 
   inboxCount(scope: InboxScope = "all"): number {
     return scope === "all" ? this.inbox.length : this.inbox.filter((p) => this.inScope(p, scope)).length;
+  }
+
+  /** Local receive time of the oldest still-buffered automatic delivery, if any. */
+  oldestAutomaticReceivedAt(): number | undefined {
+    let oldest: number | undefined;
+    for (const pending of this.inbox) {
+      if (pending.pullOnly) continue;
+      if (oldest === undefined || pending.receivedAt < oldest) oldest = pending.receivedAt;
+    }
+    return oldest;
   }
 
   /**
@@ -1001,18 +1089,24 @@ export class MeshAgent extends EventEmitter {
 
   /** Focus recall: the channel ambient + @mentions ack-dropped since this agent entered focus,
    *  read back from the chat stream on demand and **replay-gated per channel** (a `replay=off`
-   *  channel yields nothing — recall must not become a history bypass). Items are marked
-   *  `historical` (catch-up framing). `droppedChannels` names channels whose earliest retained
-   *  message postdates the focus-watermark — older ambient may have aged out of the per-channel
-   *  window (never-silent). Empty unless in focus. Wildcard subscriptions (`team.>`) are skipped
-   *  (can't Direct-Get a wildcard). */
+   *  channel yields nothing, and is named in `droppedChannels` — recall must not become a history
+   *  bypass, and it must not claim a suppressed channel's window was empty and complete either).
+   *  Items are marked `historical` (catch-up framing). `droppedChannels` also names channels whose
+   *  earliest retained message postdates the focus-watermark — older ambient may have aged out of
+   *  the per-channel window — and wildcard subscriptions (`team.>`), which recall cannot read back
+   *  per concrete sub-channel (#977: a wildcard join is not itself a channel ingest can consult a
+   *  replay policy for) and so cannot vouch for either (never-silent throughout). Empty unless in
+   *  focus. */
   async recallAmbient(): Promise<{ items: InboxItem[]; droppedChannels: string[] }> {
     if (this._attention !== "focus" || this.focusSince === undefined)
       return { items: [], droppedChannels: [] };
     const items: InboxItem[] = [];
     const droppedChannels: string[] = [];
     for (const channel of this.ep.joinedChannels()) {
-      if (!isConcreteChannel(channel)) continue;
+      if (!isConcreteChannel(channel)) {
+        droppedChannels.push(channel);
+        continue;
+      }
       if (this.focusRecallUnsafeChannels.has(channel)) {
         droppedChannels.push(channel);
         continue;
@@ -1034,6 +1128,27 @@ export class MeshAgent extends EventEmitter {
     const clean = normalizeMentions(mentions);
     if (clean) this.assertKnownMentions(clean);
     return this.ep.multicast(text, { channel, mentions: clean, contextId: this._contextId });
+  }
+
+  /**
+   * What a caller can TELL about a send target BEFORE the publish: whether the name
+   * already existed (joined, registry, or prior traffic) and close matches when it
+   * did not. Does not refuse create. Graded before multicast so the new message cannot
+   * make the name look pre-existing.
+   */
+  async describeSendChannel(channel: string): Promise<string> {
+    if (this.ep.getChannelConfig(channel)) return "existing channel";
+    const known = new Set<string>(this.ep.joinedChannels().filter(isConcreteChannel));
+    try {
+      for (const row of await this.ep.listChannels()) known.add(row.channel);
+    } catch {
+      /* no stream: joined + registry cache still distinguish a typo of a channel we are on */
+    }
+    if (known.has(channel)) return "existing channel";
+    const hints = closeChannelNames(channel, [...known]);
+    if (hints.length)
+      return `new channel - no registry entry and no prior traffic; did you mean ${hints.map((h) => "#" + h).join(", ")}?`;
+    return "new channel - no registry entry and no prior traffic";
   }
 
   /** Throw if any name isn't a peer we've observed. Validates against the FULL roster
@@ -1073,10 +1188,9 @@ export class MeshAgent extends EventEmitter {
 
   // ---- supervision ---------------------------------------------------------
 
-  /** Ask the manager to spawn a new teammate into this space (its `start` op).
-   *  #159 B1: the manager replies to `start` only on a REAL outcome — presence join, process exit,
-   *  or its ~30s readiness backstop — so the request must outlive that window ({@link SPAWN_TIMEOUT_MS}),
-   *  not the 5s op default.
+  /** Ask the manager to spawn a new teammate into this space (its `spawn` action).
+   *  The request uses {@link SPAWN_TIMEOUT_MS} as its floor; after acceptance, core follows through
+   *  the exact connector-selected readiness budget carried by the acceptance.
    *  How it lands — a detached PTY, a tmux window, a cmux tab — is the manager's
    *  runtime; from here it just joins the mesh as a lateral peer. `opts.agent` picks
    *  the harness (default the manager's `COTAL_DEFAULT_AGENT`, else `cotal`/Claude), `opts.model` /
@@ -1088,10 +1202,62 @@ export class MeshAgent extends EventEmitter {
    *  operator-local intent, kept off the peer-facing spawn door — see #159.) */
   async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string }): Promise<ControlReply> {
     await this.requireConnected();
-    const args = { name, role, agent: opts?.agent, model: opts?.model, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt };
+    const raw = opts?.model;
+    if (raw !== undefined && !raw.trim())
+      return { ok: false, error: "model: must not be empty" };
+    const requested = raw?.trim();
+    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt };
     // P2 item 2 (2b): spawn is an ACTION — follow the acceptance to the terminal so cotal_spawn
     // stays synchronous (the MCP reply carries the live outcome, not the pre-launch acceptance).
-    return this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true });
+    const reply = await this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true });
+    if (!requested) return reply;
+    // A requested pin that the manager did not record is the silent-drop failure (#972): the spawn
+    // looks successful, the seat comes up on the harness default, and nothing in the spawn result
+    // names the mismatch. Inspect is the manager's recorded pin (persona file or this override).
+    // A wait-timeout is still a timeout, not evidence the pin landed — annotate it, never upgrade it.
+    const actual = reply.data as { name?: string } | undefined;
+    const seat = actual?.name ?? name;
+    const recorded = await this.inspectModel(seat);
+    const recordedLabel = !recorded.ok
+      ? `could not inspect the recorded pin: ${recorded.error}`
+      : recorded.model === undefined
+        ? "the manager recorded no model pin"
+        : `the manager recorded ${JSON.stringify(recorded.model)}`;
+    if (recorded.ok && recorded.model !== requested) {
+      return {
+        ok: false,
+        error:
+          `requested model ${JSON.stringify(requested)} but ${recordedLabel} for "${seat}" — refusing a spawn whose pin did not land. The seat may already be live; inspect it before retrying, because a retry duplicates the spawn`,
+      };
+    }
+    if (!reply.ok) {
+      return {
+        ok: false,
+        error: `${reply.error ?? "manager refused"} (requested model ${JSON.stringify(requested)}; ${recordedLabel} for "${seat}")`,
+      };
+    }
+    if (!recorded.ok) {
+      return {
+        ok: false,
+        error:
+          `requested model ${JSON.stringify(requested)} for "${seat}" but ${recordedLabel} — refusing to report a pin that cannot be audited`,
+      };
+    }
+    return {
+      ok: true,
+      data: { ...(reply.data as Record<string, unknown> | undefined), model: recorded.model },
+    };
+  }
+
+  /** The manager's recorded model pin for a managed seat (`inspect.model`). Absence is a real
+   *  state: a launch may pin none. Distinct from a failed inspect, which cannot attest. */
+  async inspectModel(name: string): Promise<{ ok: true; model?: string } | { ok: false; error: string }> {
+    const info = await this.managerInvoke("inspect", { name });
+    if (!info.ok) return { ok: false, error: info.error ?? "inspect refused" };
+    const model = (info.data as { model?: unknown } | undefined)?.model;
+    if (model === undefined) return { ok: true };
+    if (typeof model !== "string") return { ok: false, error: `inspect returned a non-string model for "${name}"` };
+    return { ok: true, model };
   }
 
   /** One v0.4 manager-endpoint invoke (P2 item 1, 1c.2b): the generic {@link CotalEndpoint.invokeService}
@@ -1126,11 +1292,19 @@ export class MeshAgent extends EventEmitter {
           ok: false,
           error: unansweredRequest(e)
             ? `${e.message} (no responder answered - a manager may be down, or this credential holds no "${command}" capability and the broker denied the request)`
-            : `${e.code}: ${e.message}`,
+            : renderLifecycleBlocked(`${e.code}: ${e.message}`, e),
+          ...(e.details ? { details: e.details } : {}),
         };
       return { ok: false, error: (e as Error).message };
     }
-    if (r.reply.ok !== true) return { ok: false, error: r.reply.error?.message ?? r.reply.error?.code ?? "error" };
+    if (r.reply.ok !== true) {
+      const raw = r.reply.error?.message ?? r.reply.error?.code ?? "error";
+      return {
+        ok: false,
+        error: renderLifecycleBlocked(raw, r.reply.error),
+        ...(r.reply.error?.details ? { details: r.reply.error.details } : {}),
+      };
+    }
     return { ok: true, ...(r.reply.data !== undefined ? { data: r.reply.data } : {}) };
   }
 
@@ -1262,6 +1436,19 @@ export class MeshAgent extends EventEmitter {
     return reply;
   }
 
+  /** Mesh-side persona catalog list: name, role, model, description, scoped by the same
+   *  ownership rule as `definePersona`. */
+  async listPersonas(): Promise<ControlReply> {
+    await this.requireConnected();
+    return this.managerInvoke("list-personas", undefined);
+  }
+
+  /** Mesh-side persona catalog show of one card. Unauthorized / missing names are not-found. */
+  async showPersona(name: string): Promise<ControlReply> {
+    await this.requireConnected();
+    return this.managerInvoke("show-persona", { name });
+  }
+
   // ---- presence ------------------------------------------------------------
 
   /** The full roster, including ourselves. */
@@ -1309,12 +1496,13 @@ export class MeshAgent extends EventEmitter {
 
   /** A channel's registry config + effective replay policy, from the endpoint's live cache.
    *  Config only — never membership (that view is kept off agents on purpose). */
-  channelInfo(channel: string): { description?: string; instructions?: string; replay: boolean } {
+  channelInfo(channel: string): { description?: string; instructions?: string; replay: boolean; registered: boolean } {
     const cfg = this.ep.getChannelConfig(channel);
     return {
       description: cfg?.description,
       instructions: cfg?.instructions,
       replay: this.ep.channelReplay(channel),
+      registered: cfg !== undefined,
     };
   }
 
@@ -1477,22 +1665,68 @@ export class MeshAgent extends EventEmitter {
    * attached Codex TUI. Consumer names are generated per reset, so normalize them before
    * deduplicating; otherwise every `_71`, `_72`, ... would look like a new fault. */
   private handleEndpointError(error: Error): void {
+    // connectionIssue is the bounded readiness diagnostic documented above: retain failures only
+    // while the endpoint has not bound. Post-bind consumer/permission faults are still logged, but
+    // presenting one as the current connection failure after readiness succeeded is stale and false.
+    if (!this._connected && !this._stopping) this.lastConnectionError = error.message;
+    this.logEndpointNotice("error", error);
+  }
+
+  private handleEndpointWarning(error: Error): void {
+    this.logEndpointNotice("warning", error);
+  }
+
+  private logEndpointNotice(kind: "error" | "warning", error: Error): void {
     const now = Date.now();
-    this.lastConnectionError = error.message;
     const fingerprint = error.message.replace(/oc_[A-Za-z0-9]+_\d+/g, "oc_*");
-    const prior = this.endpointErrorLog.get(fingerprint);
+    const prior = this.endpointNoticeLog.get(fingerprint);
     if (prior && now - prior.lastLoggedAt < ENDPOINT_ERROR_LOG_WINDOW_MS) {
       prior.suppressed++;
       return;
     }
     const suffix = prior?.suppressed ? ` (${prior.suppressed} repeats suppressed)` : "";
-    this.endpointErrorLog.set(fingerprint, { lastLoggedAt: now, suppressed: 0 });
+    this.endpointNoticeLog.set(fingerprint, { lastLoggedAt: now, suppressed: 0 });
     // Bound the map even for a server producing novel error text on every request.
-    if (this.endpointErrorLog.size > 16) this.endpointErrorLog.delete(this.endpointErrorLog.keys().next().value!);
-    this.log(`endpoint error: ${error.message}${suffix}`);
+    if (this.endpointNoticeLog.size > 16) this.endpointNoticeLog.delete(this.endpointNoticeLog.keys().next().value!);
+    this.log(`endpoint ${kind}: ${error.message}${suffix}`);
   }
 
   private log(msg: string): void {
     process.stderr.write(`[cotal-connector] ${msg}\n`);
   }
+}
+
+/** Names already known that differ from `channel` by one insertion, deletion, or substitution. */
+export function closeChannelNames(channel: string, known: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const name of known) {
+    if (name !== channel && editDistanceAtMostOne(channel, name)) out.push(name);
+  }
+  out.sort((a, b) => a.localeCompare(b));
+  return out.slice(0, 3);
+}
+
+function editDistanceAtMostOne(a: string, b: string): boolean {
+  if (a === b) return true;
+  const da = a.length - b.length;
+  if (da > 1 || da < -1) return false;
+  let i = 0;
+  let j = 0;
+  let skipped = false;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) {
+      i++;
+      j++;
+      continue;
+    }
+    if (skipped) return false;
+    skipped = true;
+    if (a.length > b.length) i++;
+    else if (b.length > a.length) j++;
+    else {
+      i++;
+      j++;
+    }
+  }
+  return true;
 }

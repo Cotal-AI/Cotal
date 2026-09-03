@@ -16,8 +16,11 @@
 import {
   Journal,
   run as runProgram,
+  resolvePins,
   SimHandler,
+  WALKER_LANGUAGE_VERSION,
   type EffectHandler,
+  type RunPins,
 } from "@cotal-ai/lang";
 import { MeshHandler, NotYetDurable } from "../src/index.js";
 
@@ -61,11 +64,12 @@ const SCRIPT = {
   asks: { size: { estimate: 3 } },
 };
 
-const drive = async (source: string, handler: EffectHandler) =>
+const drive = async (source: string, handler: EffectHandler, journal?: Journal, pins?: RunPins) =>
   await runProgram(source, {
     runId: "r-seam",
     handler,
-    journal: new Journal({ run: "r-seam" }),
+    journal: journal ?? new Journal({ run: "r-seam" }),
+    ...(pins !== undefined ? { pins } : {}),
   }).then(() => null, (e: unknown) => e as Error);
 
 // ── 1) what a DURABLE PROGRAM can actually reach ───────────────────────────────────────────────
@@ -77,23 +81,40 @@ const drive = async (source: string, handler: EffectHandler) =>
 // called at the handler where they can be reached at all.
 {
   for (const name of ["spawn", "conclave"] as const) {
-    const e = await drive(PROGRAMS[name] as string, mesh as unknown as EffectHandler);
-    // BY CODE, not by class. The interpreter wraps a handler's fault into an `EffectError` before it
-    // reaches a caller, so `instanceof NotYetDurable` holds at the handler boundary and not at the
-    // run boundary — and the run boundary is where a driver stands. The code is what crosses, which
-    // is why the class carries one.
-    c(`${name} refuses with L5016 rather than pretending`, (e as { code?: string })?.code === "L5016",
+    // Pinned up front: a held run has no result to take pins from, and the heal below has to be
+    // the SAME run resuming over the refusal.
+    const pins = resolvePins({ runId: "r-seam" }, 0, WALKER_LANGUAGE_VERSION);
+    const journal = new Journal({ run: "r-seam" });
+    const e = await drive(PROGRAMS[name] as string, mesh as unknown as EffectHandler, journal, pins);
+    // THE RUN IS HELD, NOT FAILED. The interpreter settles the entry `refused` under the code the
+    // refusal carried and unwinds with the uncatchable L5025 — so the run boundary, where a driver
+    // stands, sees a hold it grades as `released`, and the journal keeps the refusal for a reader.
+    c(`${name} holds the run rather than pretending or failing`,
+      e?.name === "RunHeld" && (e as { code?: string })?.code === "L5025",
       { name: e?.name, code: (e as { code?: string })?.code });
-    c(`${name} names itself in the refusal`, e?.message.startsWith(`${name}(`) === true, e?.message?.slice(0, 90));
+    c(`${name} names itself in the refusal the hold carries`,
+      (e as unknown as { reason?: string })?.reason?.startsWith(`${name}(`) === true,
+      (e as unknown as { reason?: string })?.reason?.slice(0, 90));
     c(`${name} gives ONE reason: the machinery an agent handle comes from`,
-      e?.message.includes("an agent handle comes from") === true, e?.message?.slice(0, 140));
+      (e as unknown as { reason?: string })?.reason?.includes("an agent handle comes from") === true,
+      (e as unknown as { reason?: string })?.reason?.slice(0, 140));
+    const entry = journal.entries().find((j) => j.state === "settled");
+    c(`${name} carries the code that crosses the run boundary`,
+      entry?.status === "refused" && entry?.error?.code === "L5016",
+      { status: entry?.status, code: entry?.error?.code });
+    // THE HEAL, which is the whole point of `refused` over `failed`: the same journal on a capable
+    // host re-performs the refused step live and the run completes.
+    const healed = await drive(PROGRAMS[name] as string, new SimHandler(SCRIPT as never) as unknown as EffectHandler, journal, pins);
+    c(`${name} heals on a capable host: the refused step is performed live and the run completes`,
+      healed === null, `${healed?.name}: ${healed?.message?.slice(0, 100)}`);
   }
 
   // A program using `turn` refuses at the spawn above it, which is the reach gap stated as a cell
   // rather than left for a reader to infer from three suspiciously similar greens.
   const viaTurn = await drive(PROGRAMS.turn as string, mesh as unknown as EffectHandler);
   c("a program using `turn` never reaches it: the spawn above it refuses first",
-    viaTurn?.message.startsWith("spawn(") === true, viaTurn?.message?.slice(0, 60));
+    (viaTurn as unknown as { reason?: string })?.reason?.startsWith("spawn(") === true,
+    (viaTurn as unknown as { reason?: string })?.reason?.slice(0, 60));
 }
 
 // ── 1b) the other three, at the handler, where they can be reached ─────────────────────────────
@@ -152,8 +173,11 @@ const drive = async (source: string, handler: EffectHandler) =>
   // Without this the suite would pass against a handler that refused everything, which is a
   // different system: the seam is a statement about five effects, not about the host.
   const e = await drive(`await sleep("1s", { name: "nap" });`, mesh as unknown as EffectHandler);
+  // Neither the recorded refusal NOR the hold: a refusal now surfaces as RunHeld (L5025) rather
+  // than an L5016 failure, so checking the code alone went blind to a seam that swallowed sleep.
   c("sleep is not refused by the seam: it reaches the plane and fails there instead",
-    (e as { code?: string })?.code !== "L5016", `${(e as { code?: string })?.code}: ${e?.message?.slice(0, 80)}`);
+    (e as { code?: string })?.code !== "L5016" && e?.name !== "RunHeld",
+    `${e?.name} ${(e as { code?: string })?.code}: ${e?.message?.slice(0, 80)}`);
 }
 
 console.log(`mesh-seam.smoke: ${ok} passed, ${fail} failed`);

@@ -1,0 +1,4 @@
+# Directed DM still reaches the recipient when the Harness is busy without a Cotal-owned drive()
+# (TUI-owned working) or when session_status pulses idle during a still-open Cotal-owned run.
+# Presence activity must name a growing automatic inbound queue. Mutation-proofed.
+smoke:jcode-inbound-wedge

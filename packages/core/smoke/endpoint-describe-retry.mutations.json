@@ -1,0 +1,48 @@
+{
+  "suite": "packages/core/smoke/endpoint-invoke.smoke.ts + implementations/cli/smoke/ep-rail-failure.smoke.ts",
+  "guard": "reserved describe retries inside the original deadline, retry publication failure settles cleanly including poisoned formatters, and resolved commands remain exactly one-shot",
+  "command": "pnpm smoke:ep-invoke && pnpm --filter @cotal-ai/core build && pnpm smoke:ep-rail-failure",
+  "completionMarker": "ENDPOINT-INVOKE BINDING SMOKE",
+  "mutations": [
+    {
+      "name": "describe returns to a one-shot publish, so a responder registering after it misses the whole request",
+      "file": "packages/core/src/endpoint-invoke.ts",
+      "find": "      retryTimer = setInterval(() => {\n        try { nc.publish(subject, request); }\n        catch (e) {\n          reject(new EpEnvelopeError(\"unavailable\", `the describe retry for ${endpoint} could not publish: ${caughtText(e, \"unknown publish failure\")}`));\n        }\n      }, DESCRIBE_RETRY_MS);",
+      "replace": "      retryTimer = undefined;",
+      "expectRed": "an unanswered describe is re-published within its original deadline when the responder registers after the first request",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "describe retry publication failure escapes its timer and becomes an uncaught exception",
+      "file": "packages/core/src/endpoint-invoke.ts",
+      "find": "      retryTimer = setInterval(() => {\n        try { nc.publish(subject, request); }\n        catch (e) {\n          reject(new EpEnvelopeError(\"unavailable\", `the describe retry for ${endpoint} could not publish: ${caughtText(e, \"unknown publish failure\")}`));\n        }\n      }, DESCRIBE_RETRY_MS);",
+      "replace": "      retryTimer = setInterval(() => nc.publish(subject, request), DESCRIBE_RETRY_MS);",
+      "expectRed": "a retry publish failure rejects the pending describe as unavailable and never escapes the timer",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "retry widens beyond reserved describe and re-publishes a caller-supplied resolved command",
+      "file": "packages/core/src/endpoint-verbs.ts",
+      "find": "    nc.publish(req.subject, req.body, { reply: noRespReplyTo });",
+      "replace": "    nc.publish(req.subject, req.body, { reply: noRespReplyTo });\n    setTimeout(() => nc.publish(req.subject, req.body, { reply: noRespReplyTo }), 250);",
+      "expectRed": "a resolved command is published exactly ONCE; describe readiness retry never widens to caller-supplied commands",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "poisoned Error.message on retry publish escapes because formatting reads e.message unguarded",
+      "file": "packages/core/src/endpoint-invoke.ts",
+      "find": "function caughtText(e: unknown, fallback: string): string {\n  try {\n    return e instanceof Error ? e.message : String(e);\n  } catch {\n    return fallback;\n  }\n}",
+      "replace": "function caughtText(e: unknown, fallback: string): string {\n  return e instanceof Error ? e.message : \"safe-non-error\";\n}",
+      "expectRed": "a poisoned Error.message getter on retry publish still rejects as unavailable and never escapes the timer",
+      "command": "pnpm smoke:ep-invoke"
+    },
+    {
+      "name": "poisoned non-Error toString on retry publish escapes because formatting calls String(e) unguarded",
+      "file": "packages/core/src/endpoint-invoke.ts",
+      "find": "function caughtText(e: unknown, fallback: string): string {\n  try {\n    return e instanceof Error ? e.message : String(e);\n  } catch {\n    return fallback;\n  }\n}",
+      "replace": "function caughtText(e: unknown, fallback: string): string {\n  return e instanceof Error ? \"safe-error\" : String(e);\n}",
+      "expectRed": "a poisoned non-Error toString on retry publish still rejects as unavailable and never escapes the timer",
+      "command": "pnpm smoke:ep-invoke"
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "suite": "extensions/connector-claude-code/smoke/persona-file.smoke.ts",
+  "guard": "Claude carries a persona only through an owner-private file and never puts its body in argv",
+  "command": "pnpm smoke:claude-persona-file",
+  "completionMarker": "CLAUDE PERSONA FILE:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/persona-file.json",
+  "why": [
+    "The smoke imports the built public Claude connector package. Its command rebuilds the dependency",
+    "closure first, so each source mutation reaches the artifact buildLaunch actually loads. The two",
+    "mutations separately grade the externally visible leak and the owner-private at-rest boundary."
+  ],
+  "mutations": [
+    {
+      "name": "Claude falls back to publishing the persona body in argv",
+      "file": "extensions/connector-claude-code/src/extension.ts",
+      "find": "        args.push(\"--append-system-prompt-file\", personaFile);",
+      "replace": "        args.push(\"--append-system-prompt\", def.persona);",
+      "expectRed": "the persona body is absent from every Claude argv token",
+      "cell": "the persona body is absent from every Claude argv token"
+    },
+    {
+      "name": "Claude reopens the private persona file to group and other readers",
+      "file": "extensions/connector-claude-code/src/extension.ts",
+      "find": "        writeSecretFile(personaFile, def.persona);",
+      "replace": "        writeSecretFile(personaFile, def.persona); process.getBuiltinModule(\"node:fs\").chmodSync(personaFile, 0o644);",
+      "expectRed": "the persona carrier is owner-private",
+      "cell": "the persona carrier is owner-private"
+    }
+  ]
+}

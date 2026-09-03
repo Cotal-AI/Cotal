@@ -1,5 +1,16 @@
 # @cotal-ai/connector-codex
 
+## 0.38.0
+
+## 0.37.0
+
+### Patch Changes
+
+- 31443f1: Make package-filtered test commands run counted assertions instead of succeeding without tests.
+- e703873: Report connector harness availability at manager boot and expose resolved binary paths in status.
+- c4094cb: Drop inherited `COTAL_LAUNCH_MATERIAL` from suites that default `COTAL_SERVERS` then call `configFromEnv()` on `process.env`, so `pnpm test` no longer trips the one-identity-plane refusal inside a managed seat.
+- b88edd9: Connectors declare `supportsToolListAnnounce` (default-deny). A connection-changing op against a connector that cannot announce a tool-list change fails loud, without naming harnesses in shared code.
+
 ## 0.36.0
 
 ## 0.35.0

@@ -8,17 +8,22 @@ on:
 
 # A new push to a PR supersedes the run already going; a merge to main does not.
 #
-# The group expression is unchanged — only what happens to the run holding it. Without
-# `cancel-in-progress` the superseded run keeps the group and its replacement is created with
-# ZERO JOBS and sits pending, which reads as "queued and about to start" rather than "starved".
-#
 # Deliberately not unconditional: a main commit's CI result is the record for that commit, not a
-# preview of the next, and a cancelled run leaves a merge ungradable — neither red nor green.
+# preview of the next, and a cancelled run leaves a merge ungradable, neither red nor green.
 # Superseding is only right where the earlier answer has stopped being interesting, which is true
 # of a PR revision and false of a merge.
+#
+# `cancel-in-progress: false` on its own does not deliver that, which is what #976 measured. A
+# group holds one pending run by default, so when a third push arrives the queued run is evicted
+# rather than made to wait: it is cancelled with zero jobs, and that commit ends up with no CI
+# result of any kind. It happened to 13 of 29 consecutive main runs. `queue: max` is the part that
+# actually makes them wait, FIFO, up to 100 deep.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-r2
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # `queue: max` with `cancel-in-progress: true` is a validation error, so this tracks the line
+  # above: a PR keeps the default single slot and supersedes, main queues instead of evicting.
+  queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}
 
 # Same coverage as before, fanned across parallel jobs so wall-clock is the slowest job, not the sum:
 #   • unit  — typecheck + build + unit tests + the broker-free view/pack checks (fast).
@@ -215,11 +220,36 @@ jobs:
         run: pnpm smoke:opencode-coop
 
   ci-ok:
-    # Single required status: green only if unit + every smoke shard + live all passed.
+    # Single required status. It owns the explicit live diagnosis too: adding a separate dependent
+    # job was measured on PR #1043 and left a superseded run queued through TWO later runner jobs,
+    # which held the replacement run behind it. One existing aggregate is the minimal queue shape.
+    name: ci-ok (live outcome classified)
     if: always()
     needs: [unit, smoke, live]
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
     steps:
+      - uses: actions/checkout@v6
+      - name: Classify a cancelled live job
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LIVE_RESULT: ${{ needs.live.result }}
+          PR_NUMBER: ${{ github.event.pull_request.number || 0 }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: >-
+          node scripts/live-job-conclusion.mjs
+          --result "$LIVE_RESULT"
+          --repo "$GITHUB_REPOSITORY"
+          --run-id "$GITHUB_RUN_ID"
+          --attempt "$GITHUB_RUN_ATTEMPT"
+          --workflow ci.yml
+          --job live
+          --timeout-seconds 1500
+          --event "$GITHUB_EVENT_NAME"
+          --pr-number "$PR_NUMBER"
+          --head-ref "$HEAD_REF"
       - name: Gate
         run: |
           echo "unit=${{ needs.unit.result }} smoke=${{ needs.smoke.result }} live=${{ needs.live.result }}"

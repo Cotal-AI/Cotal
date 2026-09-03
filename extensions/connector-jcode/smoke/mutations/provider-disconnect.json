@@ -1,32 +1,60 @@
 {
   "suite": "extensions/connector-jcode/smoke/jcode-provider-disconnect.smoke.ts",
-  "guard": "a provider-induced Harness API close during a delivered mesh turn leaves the seat alive, reconnects one private client to the exact existing session, and resumes mesh work; failure to replace that client is terminal rather than a loop",
+  "guard": "a provider-induced Harness API close during a delivered mesh turn leaves the seat alive after a transient replacement failure only when that failed tree is proven stopped; unproven teardown is terminal before another launch, and a second disconnect remains terminal",
   "command": "pnpm smoke:jcode-provider-disconnect",
   "progressPattern": "✓",
-  "minTicks": 2,
+  "minTicks": 6,
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/provider-disconnect.json",
-  "_note": "The first failure is deliberately after a real mesh delivery and real Unix-socket close. It passes only after the host replaces and reattaches the private Harness client.",
+  "_note": "The first failure is deliberately after a real mesh delivery and real Unix-socket close. The replacement then loses one synthetic attach race before the same bounded recovery window succeeds. The final close proves the design did not become an unbounded relaunch loop.",
   "mutations": [
     {
       "name": "M1 restore the shipped defect: close exits the seat without recovery",
       "file": "extensions/connector-jcode/src/host.ts",
       "find": "    connected.on(\"close\", () => void recoverBridge(connected));",
       "replace": "    connected.on(\"close\", () => void shutdown(1));",
-      "expectRed": "provider disconnect does not exit the mesh seat (#781)"
+      "expectRed": "synthetic transient recovery attach failure",
+      "cell": "the recovery attempt deterministically loses its first attach race (#971)"
     },
     {
       "name": "M2 replace a disconnected client but forget the owned session",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "      await replacement.attachSession(sessionId);",
-      "replace": "      /* mutant: replacement never attaches the owned session */",
-      "expectRed": "recovered Harness client reattaches the existing private session (#781)"
+      "find": "              replacement.attachSession(sessionId),",
+      "replace": "              new Promise(() => {}),",
+      "expectRed": "synthetic transient recovery attach failure",
+      "cell": "the recovery attempt deterministically loses its first attach race (#971)"
     },
     {
       "name": "M3 attach the replacement but leave the broken client active",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "      client = replacement;",
-      "replace": "      /* mutant: replacement is never made active */",
-      "expectRed": "unacknowledged stalled turn redelivery"
+      "find": "          client = replacement;",
+      "replace": "          /* mutant: replacement is never made active */",
+      "expectRed": "unacknowledged stalled turn redelivery",
+      "cell": "recovered seat redrives the unacknowledged stalled turn (#781)"
+    },
+    {
+      "name": "M4 restore the shipped losing-race exit: one transient replacement failure kills the seat",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "          writeJcodeDiagnostic(\n            `[cotal-jcode] private Harness replacement not ready yet; retrying inside its one recovery window: ${(error as Error).message}\\n`,\n          );\n          await sleep(Math.min(BRIDGE_RECOVERY_RETRY_MS, remaining));",
+      "replace": "          throw error;",
+      "expectRed": "provider disconnect survives a transient replacement loss inside the bounded recovery window (#971)",
+      "cell": "provider disconnect survives a transient replacement loss inside the bounded recovery window (#971)"
+    },
+    {
+      "name": "M5 retry without proving the failed replacement tree stopped",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "          await replacement?.close().catch(() => {});\n          await stopPrivateJcode();\n          if (stopping) return;",
+      "replace": "          await replacement?.close().catch(() => {});\n          if (stopping) return;",
+      "expectRed": "the failed transient replacement is stopped before the successful retry",
+      "cell": "the failed transient replacement is stopped before the successful retry"
+    },
+    {
+      "name": "M6 swallow terminal replacement teardown refusal",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "      await shutdown(1);\n    } finally {\n      reconnecting = false;",
+      "replace": "      /* mutant: terminal recovery failure is swallowed */\n    } finally {\n      reconnecting = false;",
+      "command": "pnpm smoke:jcode-provider-permanent-refusal",
+      "expectRed": "persistent invalid_request replacement refusal is terminal before another launch",
+      "cell": "a persistent invalid_request replacement refusal is terminal before another launch"
     }
   ]
 }

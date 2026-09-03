@@ -28,9 +28,11 @@
  *   disagreement with the head topology can be caught and refused; DO NOT PASS IT from a
  *   gate. Hardcoding it at the call site restores the coincidence-coupling this tool exists
  *   to remove and permanently silences the mismatch abort below.
- * Run from inside a worktree of the repo. Exits 1 if any pre-existing suite changes shard.
+ * Run from inside a worktree of the repo. Exits 1 if any pre-existing suite changes shard,
+ * and likewise when a NEW entry's comment claims "Appended" while the entry sits before a
+ * pre-existing suite: the claim sentence is validated against position instead of trusted (#1011).
  *
- * CONTROLS BUILT IN, because a bare zero is not evidence. All sixteen run on every invocation:
+ * CONTROLS BUILT IN, because a bare zero is not evidence. All nineteen run on every invocation:
  *   - a forced mid-file insert must report non-zero (the instrument responds at all)
  *   - identity (base vs base) must report 0
  *   - an unchanged 20-item registry under 4 -> 5 shards must move 16 items
@@ -47,6 +49,9 @@
  *   - duplicate step IDs declared after another step key must be refused
  *   - duplicate step IDs declared as the first step key must also be refused
  *   - the complete head workflow must parse under the next shard count and still refuse both duplicates
+ *   - a NEW entry claiming "Appended" while inserted mid-file must be named as a violation
+ *   - the same claim on a true tail append must report nothing
+ *   - "Appended" claims on PRE-EXISTING entries must be ignored (history is not re-graded)
  * Any failed control ABORTS with exit 2 rather than emitting a verdict.
  *
  * A third line once sat here claiming "the known production re-shard 7837b64c->d1aeafc3
@@ -63,6 +68,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { changedSuiteIndices } from "./shard-stability.mjs";
 
 // FIRST LINE OF OUTPUT, BEFORE ANY WORK: a gate can grep for this to prove the detector
 // actually ran. `npx tsx <missing-file>` exits 1, which is indistinguishable from
@@ -285,7 +291,7 @@ const verifierMatches = (sha: string): boolean => {
       stdio: ["ignore", "pipe", "pipe"],
     });
     const actual = createHash("sha256").update(source).digest("hex");
-    return actual === "5ca0cd091a3eef8630f452e7b52ca1f4edc521a4f789533592cdcd6d14433761";
+    return actual === "117791a37fdaf0e0bb453546621ae3a2051fc85114ace53c3f28f7384ec5292f";
   } catch {
     return false;
   }
@@ -311,20 +317,25 @@ if (headCount !== declaredHeadCount) {
 }
 console.log(`shard counts ${baseCount} -> ${headCount}, read from ci.yml at ${base.slice(0, 8)} and ${head.slice(0, 8)}`);
 
-const read = (sha: string): string[] => {
+const readBlob = (sha: string, path: string): string => {
   // EXIT 2, NOT 1, when the input cannot be read. Exit 1 means "re-shard detected";
   // a bad sha must not be indistinguishable from a real defect, or a CI job wiring
   // this in reports a typo as a production finding. The bogus-sha control once returned
   // exit 1 where the README promised 2.
-  let raw: string;
   try {
-    raw = execFileSync("git", ["--no-replace-objects", "show", `${sha}:bin/smoke/ci-suites.txt`], {
+    return execFileSync("git", ["--no-replace-objects", "show", `${sha}:${path}`], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch {
-    verdict("ABORT", `cannot read bin/smoke/ci-suites.txt at '${sha}' (bad sha, or not a worktree of this repo)`, 2);
+    verdict("ABORT", `cannot read ${path} at '${sha}' (bad sha, or not a worktree of this repo)`, 2);
   }
+};
+
+const readRaw = (sha: string): string => readBlob(sha, "bin/smoke/ci-suites.txt");
+
+const read = (sha: string): string[] => {
+  const raw = readRaw(sha);
   const list = raw
     .split("\n")
     .map((l) => l.trim())
@@ -334,6 +345,27 @@ const read = (sha: string): string[] => {
   }
   return list;
 };
+
+const fragmentPaths = (sha: string): string[] => {
+  try {
+    return execFileSync(
+      "git",
+      ["--no-replace-objects", "ls-tree", "-r", "--name-only", sha, "--", "bin/smoke/ci-suites.d"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    ).split("\n").map((line) => line.trim()).filter((line) => line.endsWith(".txt")).sort();
+  } catch {
+    verdict("ABORT", `cannot enumerate bin/smoke/ci-suites.d at '${sha}'`, 2);
+  }
+};
+
+const fragments = (sha: string): string[] => fragmentPaths(sha).map((path) => {
+  const list = readBlob(sha, path).split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("#"));
+  if (list.length !== 1)
+    verdict("ABORT", `${path} at '${sha}' must contain exactly one suite, got ${list.length}`, 2);
+  return list[0];
+});
 
 const shardOf = (list: string[], count: number) => {
   const m = new Map<string, number>();
@@ -346,6 +378,47 @@ const moved = (a: string[], b: string[], aCount: number, bCount: number): string
   return [...sa.keys()].filter((suite) => sb.has(suite) && sa.get(suite) !== sb.get(suite));
 };
 
+const fragmentShard = (suite: string, count: number): number =>
+  createHash("sha256").update(suite).digest().readUInt32BE(0) % count;
+
+const assignment = (legacy: string[], fragmentSuites: string[], count: number): Map<string, number> => {
+  const out = shardOf(legacy, count);
+  for (const suite of fragmentSuites) if (!out.has(suite)) out.set(suite, fragmentShard(suite, count));
+  return out;
+};
+
+const movedRegistry = (
+  aLegacy: string[], aFragments: string[], bLegacy: string[], bFragments: string[], aCount: number, bCount: number,
+): string[] => {
+  const a = assignment(aLegacy, aFragments, aCount), b = assignment(bLegacy, bFragments, bCount);
+  return [...a.keys()].filter((suite) => b.has(suite) && a.get(suite) !== b.get(suite));
+};
+
+// #1011: every ci-suites.txt entry ends its comment with the same sentence, "Appended;
+// shard assignments unchanged." That sentence is both the rule and the claim, and nothing
+// checked the claim against the entry's POSITION: a new entry inserted mid-file carried it
+// verbatim while re-sharding a third of the file. Validate the sentence instead of trusting
+// it. A NEW entry (absent at base) whose comment block claims "Appended" must sit after
+// every pre-existing suite. Claims on pre-existing entries are history and are not re-graded.
+const appendedClaimViolations = (baseList: string[], headRaw: string): string[] => {
+  const baseSet = new Set(baseList);
+  const entries: Array<{ name: string; line: number; comment: string }> = [];
+  let pending: string[] = [];
+  headRaw.split("\n").forEach((line, index) => {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("#")) { pending.push(trimmed); return; }
+    if (trimmed.length === 0) { pending = []; return; }
+    entries.push({ name: trimmed, line: index + 1, comment: pending.join("\n") });
+    pending = [];
+  });
+  let lastPre = -1;
+  entries.forEach((entry, position) => { if (baseSet.has(entry.name)) lastPre = position; });
+  return entries
+    .filter((entry, position) =>
+      !baseSet.has(entry.name) && position < lastPre && /\bAppended\b/i.test(entry.comment))
+    .map((entry) => `${entry.name} (line ${entry.line})`);
+};
+
 const replaceRefRuntimeControl = (): boolean => {
   const root = mkdtempSync(join(tmpdir(), "shard-replace-control-"));
   const env = { ...process.env };
@@ -356,7 +429,7 @@ const replaceRefRuntimeControl = (): boolean => {
     delete env[name];
   }
   try {
-    mkdirSync(join(root, "bin/smoke"), { recursive: true });
+    mkdirSync(join(root, "bin/smoke/ci-suites.d"), { recursive: true });
     const verifier = execFileSync(
       "git",
       ["--no-replace-objects", "show", `${head}:bin/smoke/verify-shard-inputs.sh`],
@@ -364,6 +437,7 @@ const replaceRefRuntimeControl = (): boolean => {
     );
     const inputs = new Map([
       ["bin/smoke/ci-suites.txt", "smoke:first\nsmoke:second\n"],
+      ["bin/smoke/ci-suites.d/control.txt", "smoke:fragment\n"],
       ["bin/smoke/ci-suites.mjs", "export {};\n"],
       ["bin/smoke/shard.mjs", "export {};\n"],
       ["bin/smoke/reap-smoke-brokers.mjs", "export {};\n"],
@@ -388,11 +462,12 @@ const replaceRefRuntimeControl = (): boolean => {
     const original = git(["rev-parse", "HEAD"]);
 
     writeFileSync(join(root, "bin/smoke/ci-suites.txt"), "smoke:first\n");
+    writeFileSync(join(root, "bin/smoke/ci-suites.d/control.txt"), "smoke:changed-fragment\n");
     writeFileSync(
       join(root, "bin/smoke/verify-shard-inputs.sh"),
       "#!/usr/bin/env bash\nexit 0\n",
     );
-    git(["add", "bin/smoke/ci-suites.txt", "bin/smoke/verify-shard-inputs.sh"]);
+    git(["add", "bin/smoke/ci-suites.txt", "bin/smoke/ci-suites.d/control.txt", "bin/smoke/verify-shard-inputs.sh"]);
     const tree = git(["write-tree"]);
     const replacement = git(["commit-tree", tree, "-p", original, "-m", "control: replacement tree"]);
     git(["replace", original, replacement]);
@@ -412,9 +487,7 @@ const replaceRefRuntimeControl = (): boolean => {
       ],
       { cwd: root, env, encoding: "utf8" },
     );
-    return result.status === 2 && result.stderr.includes(
-      "tracked shard input changed after checkout: bin/smoke/ci-suites.txt",
-    );
+    return result.status === 2 && /tracked shard (?:input|fragment inventory) changed after checkout/.test(result.stderr);
   } catch {
     return false;
   } finally {
@@ -423,12 +496,19 @@ const replaceRefRuntimeControl = (): boolean => {
 };
 
 const A = read(base), B = read(head);
-const changed = moved(A, B, baseCount, headCount);
+const AF = fragments(base), BF = fragments(head);
+const changed = movedRegistry(A, AF, B, BF, baseCount, headCount);
+const indices = changedSuiteIndices(A, B) as { changed: string[]; examined: number };
 
 // --- controls, printed before the verdict ---
 const forced = moved(A, [...A.slice(0, 10), "smoke:FORCED-CONTROL", ...A.slice(10)], baseCount, baseCount);
 const identity = moved(A, A, baseCount, baseCount);
 const topologyProbe = Array.from({ length: 20 }, (_, index) => `smoke:TOPOLOGY-CONTROL-${index}`);
+const indexRotation = changedSuiteIndices(
+  topologyProbe,
+  [...topologyProbe.slice(4), ...topologyProbe.slice(0, 4)],
+) as { changed: string[]; examined: number };
+const indexIdentity = changedSuiteIndices(topologyProbe, topologyProbe) as { changed: string[]; examined: number };
 const countIncrease = moved(topologyProbe, topologyProbe, 4, 5);
 const countDecrease = moved(topologyProbe, topologyProbe, 5, 4);
 const commentShadowCount = shardCountFromWorkflow(`jobs:
@@ -613,8 +693,18 @@ const completeTopologyDuplicatesRefused =
   completeTopologyMappedId.injected && completeTopologyMappedId.count === null &&
   completeTopologyLeadingId.injected && completeTopologyLeadingId.count === null;
 const replaceRefRefused = replaceRefRuntimeControl();
+const claimControlBase = ["smoke:a", "smoke:b", "smoke:c"];
+const claimSentence = "# Appended; shard assignments unchanged.";
+const claimMidFile = appendedClaimViolations(claimControlBase,
+  `smoke:a\n\n${claimSentence}\nsmoke:NEW-CONTROL\n\nsmoke:b\nsmoke:c\n`);
+const claimTail = appendedClaimViolations(claimControlBase,
+  `smoke:a\nsmoke:b\nsmoke:c\n\n${claimSentence}\nsmoke:NEW-CONTROL\n`);
+const claimHistorical = appendedClaimViolations(claimControlBase,
+  `${claimSentence}\nsmoke:a\n${claimSentence}\nsmoke:b\n${claimSentence}\nsmoke:c\n`);
 console.log(`CONTROL forced mid-file insert -> ${forced.length} moved  (must be > 0)`);
 console.log(`CONTROL identity               -> ${identity.length} moved  (must be 0)`);
+console.log(`CONTROL same-shard reindex     -> ${indexRotation.changed.length} of ${indexRotation.examined} examined  (must be 20 of 20)`);
+console.log(`CONTROL index identity         -> ${indexIdentity.changed.length} of ${indexIdentity.examined} examined  (must be 0 of 20)`);
 console.log(`CONTROL shard count 4 -> 5     -> ${countIncrease.length} moved  (must be 16)`);
 console.log(`CONTROL shard count 5 -> 4     -> ${countDecrease.length} moved  (must be 16)`);
 console.log(`CONTROL matrix comment shadow  -> ${commentShadowCount ?? "unreadable"} shards (must be 4)`);
@@ -629,28 +719,49 @@ console.log(`CONTROL Git replacement ref     -> ${replaceRefRefused ? "refused" 
 console.log(`CONTROL duplicate mapped step id -> ${duplicateMappedIdControl.injected ? duplicateMappedIdControl.count ?? "refused" : "unreadable"}       (must be refused)`);
 console.log(`CONTROL duplicate leading step id -> ${duplicateLeadingIdControl.injected ? duplicateLeadingIdControl.count ?? "refused" : "unreadable"}       (must be refused)`);
 console.log(`CONTROL complete workflow ${headCount} -> ${headCount + 1} -> ${completeTopologyCount ?? "unreadable"} shards, duplicate ids ${completeTopologyDuplicatesRefused ? "refused" : "accepted"}       (must be ${headCount + 1}, refused)`);
+console.log(`CONTROL mid-file "Appended" claim -> ${claimMidFile.length} named  (must be 1)`);
+console.log(`CONTROL tail "Appended" claim     -> ${claimTail.length} named  (must be 0)`);
+console.log(`CONTROL historical claims         -> ${claimHistorical.length} named  (must be 0)`);
 if (
-  forced.length === 0 || identity.length !== 0 || countIncrease.length !== 16 ||
+  forced.length === 0 || identity.length !== 0 ||
+  indexRotation.changed.length !== 20 || indexRotation.examined !== 20 ||
+  indexIdentity.changed.length !== 0 || indexIdentity.examined !== 20 || countIncrease.length !== 16 ||
   countDecrease.length !== 16 || commentShadowCount !== 4 ||
   commandMismatchCount !== null || duplicateMatrixCount !== null || emptyMatrixCount !== null || excludedMatrixCount !== null ||
   conditionalJobCount !== null || conditionalStepCount !== null || unguardedRunnerCount !== null || !replaceRefRefused ||
   !duplicateMappedIdControl.injected || duplicateMappedIdControl.count !== null ||
   !duplicateLeadingIdControl.injected || duplicateLeadingIdControl.count !== null ||
-  completeTopologyCount !== headCount + 1 || !completeTopologyDuplicatesRefused
+  completeTopologyCount !== headCount + 1 || !completeTopologyDuplicatesRefused ||
+  claimMidFile.length !== 1 || claimTail.length !== 0 || claimHistorical.length !== 0
 ) {
   verdict("ABORT", "controls failed, this run cannot be trusted", 2);
 }
 
-const added = B.filter((suite) => !A.includes(suite));
-const removed = A.filter((suite) => !B.includes(suite));
+const allA = [...A, ...AF], allB = [...B, ...BF];
+const added = allB.filter((suite) => !allA.includes(suite));
+const removed = allA.filter((suite) => !allB.includes(suite));
+const claimViolations = appendedClaimViolations(A, readRaw(head));
 console.log(`\n${base.slice(0, 8)} -> ${head.slice(0, 8)}  @${baseCount}->${headCount} shards`);
-console.log(`  suites: ${A.length} -> ${B.length} · added ${added.length} · removed ${removed.length}`);
-console.log(`  pre-existing suites CHANGING SHARD: ${changed.length} of ${A.length}`);
+console.log(`  suites: ${allA.length} -> ${allB.length} · added ${added.length} · removed ${removed.length}`);
+console.log(`  frozen legacy suites CHANGING INDEX: ${indices.changed.length} of ${indices.examined} examined`);
+if (indices.changed.length > 0) console.log(`  first few reindexed: ${indices.changed.slice(0, 5).join(", ")}`);
+console.log(`  pre-existing suites CHANGING SHARD: ${changed.length} of ${allA.length}`);
 if (changed.length > 0) {
   console.log(`  first few: ${changed.slice(0, 5).join(", ")}`);
-  const remedy = baseCount === headCount
-    ? "Append new suites at the END of ci-suites.txt."
-    : `The shard matrix changed ${baseCount} -> ${headCount}; review every reassignment as deliberate.`;
-  verdict("RESHARD", `RE-SHARD DETECTED. ${remedy}`, 1);
 }
-verdict("STABLE", "STABLE - no pre-existing suite changes runner.", 0);
+if (claimViolations.length > 0) {
+  console.log(`  NEW entries claiming "Appended" while mid-file: ${claimViolations.join(", ")}`);
+}
+if (indices.changed.length > 0 || removed.length > 0 || changed.length > 0 || claimViolations.length > 0) {
+  const remedy = baseCount === headCount
+    ? "Keep ci-suites.txt frozen; add new suites as one-file fragments under ci-suites.d."
+    : `The shard matrix changed ${baseCount} -> ${headCount}; review every reassignment as deliberate.`;
+  const claimNote = claimViolations.length > 0
+    ? ` FALSE "Appended" CLAIM on ${claimViolations.join(", ")}: the sentence is validated against position (#1011); a new entry carrying it must sit after every pre-existing suite.`
+    : "";
+  const headline = indices.changed.length > 0 || removed.length > 0 || changed.length > 0
+    ? `RE-SHARD DETECTED. ${remedy}`
+    : "NO pre-existing suite moved, but the registry lies about how it grew.";
+  verdict("RESHARD", `${headline}${claimNote}`, 1);
+}
+verdict("STABLE", "STABLE - every frozen legacy suite keeps its index, every pre-existing suite keeps its runner, no false append claims.", 0);

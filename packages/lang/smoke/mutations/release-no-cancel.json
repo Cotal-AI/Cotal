@@ -1,0 +1,38 @@
+{
+  "suite": "packages/lang/smoke/interpret.smoke.ts",
+  "guard": "A host release inside a scope cancels no sibling: cancelling would settle in-flight sibling entries `cancelled`, and a later resume replays that cancellation into a healthy run, permanently. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-interpret",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/release-no-cancel.json",
+  "mutations": [
+    {
+      "name": "a release inside parallel is treated as a branch failure and cancels siblings",
+      "file": "packages/lang/src/perform.ts",
+      "find": "        if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected) {\n          await Promise.allSettled(running);\n          throw e;\n        }",
+      "replace": "        // mutant: a release rides the branch-failure path and cancels siblings",
+      "expectRed": "so a healthy driver resumes past a parallel it was stopped inside",
+      "completionMarker": "ok a host stop inside parallel releases the run rather than failing it",
+      "cell": "so a healthy driver resumes past a parallel it was stopped inside",
+      "note": "The scope still stays pending under the mutant (the performScope ladder rethrows the release), so the release cell and the pending cell stay green; what the mutant durably breaks is the sibling's in-flight entry, settled `cancelled`, which only the RESUME cell can see."
+    },
+    {
+      "name": "a release inside fanOut is treated as a branch failure and cancels siblings",
+      "file": "packages/lang/src/perform.ts",
+      "find": "      if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected) {\n        await Promise.allSettled(launched);\n        throw e;\n      }",
+      "replace": "      // mutant: a release rides the branch-failure path and cancels siblings",
+      "expectRed": "so a healthy driver resumes past a fanOut it was stopped inside",
+      "completionMarker": "ok so a healthy driver resumes past a parallel it was stopped inside",
+      "cell": "so a healthy driver resumes past a fanOut it was stopped inside",
+      "note": "Same shape as the parallel mutant, on the fanOut copy of the guard; the parallel iteration runs first and stays green, so the marker proves the run reached the fanOut half before dying."
+    },
+    {
+      "name": "a released race arm counts as a candidate and wins by failing",
+      "file": "packages/lang/src/perform.ts",
+      "find": "        (e: unknown) =>\n          onSettle(\n            i,\n            e instanceof Cancelled || e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected,\n          ),",
+      "replace": "        (e: unknown) => onSettle(i, e instanceof Cancelled),",
+      "expectRed": "a race whose sibling was released still lets in-flight work win, and the run completes",
+      "completionMarker": "ok so a healthy driver resumes past a fanOut it was stopped inside",
+      "cell": "a race whose sibling was released still lets in-flight work win, and the run completes",
+      "note": "Under the mutant the released arm settles the race as a candidate, cancels the arm whose sleep was already in flight, and the winner scan finds no candidate, so the run releases instead of completing and the sibling's entry is durably cancelled."
+    }
+  ]
+}

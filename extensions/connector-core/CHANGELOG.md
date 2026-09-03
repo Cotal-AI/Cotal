@@ -1,5 +1,108 @@
 # @cotal-ai/connector-core
 
+## 0.38.0
+
+### Minor Changes
+
+- 1a330c7: Managed Jcode seats launch on macOS and the BSDs again. Credential mirroring pins each parent
+  directory so an ancestor swapped mid-walk cannot redirect a copy, mkdir, or unlink outside the
+  private home, and the only pin the connector had was `/dev/fd/<fd>/<name>`, which needs Linux
+  procfs traversal, so #1170 bounded managed seats to Linux to keep that guarantee.
+
+  The pin now has a second mechanism with the same contract. macOS and the BSDs pin the parent as the
+  process working directory: after `chdir`, a single-component name resolves from that directory's
+  inode and no ancestor is walked again, which is the same guarantee `/dev/fd/<fd>/<name>` provides on
+  Linux. `chdir` takes a path, so entry is verified rather than trusted: the entered directory's
+  inode must equal the inode of the descriptor opened a moment before, which closes the window between
+  the two. The previous working directory is restored on every exit, including the refusing ones.
+
+  The Linux path is unchanged. The suite's TOCTOU battery previously stood down to eighteen
+  unfailable `check(name, true)` cells off Linux; it now drives all of them on any POSIX platform,
+  including the three controls that show the unpinned pattern still deletes and leaks outside the
+  home. Two cells cover the working-directory pin's own failure modes.
+
+  Windows is unchanged and still refused before launch: Jcode's released Harness API bridge is a
+  Unix-socket surface.
+
+## 0.37.0
+
+### Minor Changes
+
+- e5e68ed: Add a mesh-side persona catalog read (`cotal_personas` / manager `list-personas` + `show-persona`) so a spawn-capable agent can enumerate names and show a card it owns without shelling out.
+- 4e80261: Add `cotal_connection_status`, a read-only MCP tool reporting this session's mesh connection as one
+  of five distinct states: ready, degraded (bound while the transport underneath is down), connecting
+  (transport live, bind unfinished), disconnected, and stopped (shut down deliberately, which is not a
+  fault). It also reports the raw facts the state is derived from, the buffered inbox count, and the
+  measured last successful inbox drain. A retained failure is reported as the current reason only while
+  it is one, and as a post-mortem on a stopped session.
+
+  `MeshAgent` gains `stopping` and `connectionState`. Without `stopping` a deliberate shutdown and a
+  lost connection are indistinguishable, because `stop()` clears readiness and transport together.
+
+- 00ac9d9: manager: refuse a manager-role spawn of a persona without the spawn capability. A persona defined over the wire (`cotal_persona`) carries no `capabilities:` line (the write path is content-only by design), and `cotal_spawn` takes a free-form `role`, so a wire-defined persona could be spawned with `role: "manager"` and join presenting as a manager whose credential cannot reach the control plane, silently, until the seat first tried to seat a worker (issue #966). The manager now refuses that spawn at accept, before any provisioning, naming the remediation for both authors: an operator adds `capabilities: [spawn]` to the persona file; a peer-defined persona cannot declare capabilities and must ask an operator. The guard keys on the effective role (a spawn-time role override wins over the file's, mirroring existing precedence) and leaves every non-manager spawn untouched. `cotal_spawn`'s `role` argument documents the requirement. Capabilities remain non-declarable over the wire: the closed `define-persona` input schema is unchanged and still guarded by `smoke:persona-input-closed`.
+- 4feb60d: Jcode credential mirroring pins copy, mkdir, and unlink through one Linux `/dev/fd` parent walk, and names a refusal when that traversal is missing. A managed Jcode seat now launches on Linux only, so a macOS user loses managed seats.
+- 9021896: Make the runtime pid/log namespace per-space. The manager and delivery daemon now record themselves
+  as `.cotal/manager.<spaceKey>.pid`, `.cotal/manager.<spaceKey>.log`,
+  `.cotal/manager.<spaceKey>.delivery-aware`, `.cotal/delivery.<spaceKey>.pid` and
+  `.cotal/delivery.<spaceKey>.log`, through the same `{space}` expansion `auth-service.<spaceKey>.pid`
+  already used. The five names were root-scoped constants, so one workspace root hosted one manager and
+  one delivery daemon by filename: a second space booting in the same root overwrote the first space's
+  record, and every reader of that file then answered about the wrong process. `status`, `down`, `up`,
+  `clean` and `spawn -f` take the space they are answering about.
+
+  Existing single-space meshes keep working across the upgrade. Reads admit a pre-segmentation
+  root-scoped record while it is the only spelling present, byte-exact, so a `cotal down` still finds
+  and stops a daemon started by the previous build instead of orphaning it. Writes are always the
+  canonical space-keyed name, and each start reclaims a provably dead pre-upgrade record first, so an
+  ordinary upgrade does not leave both spellings behind. A live pre-upgrade daemon is refused rather
+  than overwritten, and both spellings present is reported as ambiguous rather than guessed.
+
+  A folder-wide command reads its space off the runtime records the folder holds. `resolveRuntimeSpace`
+  decodes the space out of the record filenames and prefers a space whose record is running over dead
+  residue; two spaces running under one root throws and names both. The previous read came from the
+  `.cotal/auth` account records, which an open mesh (`broker: { auth: false }`) never writes, so a bare
+  `cotal down` in such a folder answered with the default space and walked past its own manager once the
+  records became space-keyed.
+
+  `MANAGER_PIDFILE` and `MANAGER_DELIVERY_AWARE_MARKER` move from `pid.ts` to `local-process.ts` and
+  are now `{space}` templates; both are still exported from the package index. `RESERVED_COTAL_CHILDREN`
+  no longer lists the five root-scoped runtime names.
+
+- 063151b: Expose raw NATS transport liveness separately from full endpoint readiness. Connector sessions now
+  track transient disconnect and reconnect edges without flapping readiness, ignore stale events from
+  replaced connection epochs, and clear both states on stop. Connection issues remain scoped to pre-bind
+  readiness failures, clear on a successful bind, and survive stop for post-mortem diagnosis.
+
+  An endpoint stopped while its bind is still in flight also no longer announces that connection.
+  The bind's own teardown already discarded it, but the readiness event was emitted first, so any
+  listener on the endpoint was left holding a connected edge that nothing ever corrected.
+
+  The same applies to the transport seed, which reaches further back. It fires as soon as the dial
+  returns, well before the bind completes, so a stop arriving while the dial was still pending had a
+  stopped endpoint announce a live transport it never had. Both edges are now guarded.
+
+### Patch Changes
+
+- 283de1c: Identify the running CLI artifact in `cotal status` and show the compared versions for stale Claude skills.
+- 31443f1: Make package-filtered test commands run counted assertions instead of succeeding without tests.
+- 1cd9e6b: Remove stale Jcode credential mirror files when their allowlisted sources disappear.
+- 959b596: Validate workstation and injected scan credentials against the delivery daemon's account before endpoint construction or singleton lease admission.
+- 6926b34: Report a focus-mode recall as incomplete (`droppedChannels`) instead of silently claiming an empty, complete window when the channel has `replay: false` or was joined only through a wildcard subscription. Previously an ack-dropped ambient message or `@mention` on such a channel was unrecoverable and `cotal_inbox` reported no loss.
+- 11be292: Deliver directed peer messages into an active Jcode turn through the recipient session's soft-interrupt queue, committing them only after the containing turn succeeds.
+- 7e45495: Make every shipped endpoint consumer explicitly surface or ignore recoverable warnings so retry and renewal failures no longer disappear silently.
+- 0660504: Steer directed Jcode inbound while the Harness session is busy even without a Cotal-owned drive, and publish automatic queue depth and age on presence activity.
+- e703873: Report connector harness availability at manager boot and expose resolved binary paths in status.
+- c4094cb: Drop inherited `COTAL_LAUNCH_MATERIAL` from suites that default `COTAL_SERVERS` then call `configFromEnv()` on `process.env`, so `pnpm test` no longer trips the one-identity-plane refusal inside a managed seat.
+- c09d750: Stop answering progress with presence. Textual working rows without an outside last-assistant observation render progress unknown, while heartbeat age remains explicitly labelled as liveness. The render-agnostic observation classifier lives in the workstation layer, not protocol core; compact presence-only glyphs make no progress claim. A stale observation overlays stalled Xm on still-fresh presence.
+- 42af545: cotal_send still creates an unregistered channel, but the success receipt says when the name is new and names close matches, so a typo is not identical to a send into a known room.
+- d94b617: Keep synchronous spawn callers waiting through the connector-selected readiness budget instead of timing out early on slow healthy launches.
+- 17046ac: Spawn failures return the lifecycle facts the manager already had (blocked op, head state, opId, remedy) instead of a connector timeout or opaque string.
+- d8b6e63: Refuse a `cotal_spawn` model pin the manager did not record, and name the recorded pin on the spawn result and orientation card so a dropped override cannot look like cross-vendor confirmation.
+
+  A Jcode variant-tier refusal now names the requested model pin rather than the session default RuntimeInfo still reports after setModel.
+
+- b7b932e: Point status skills rows at `cotal setup --skills`, with harness-native setup declared and implemented by connectors rather than the base CLI.
+
 ## 0.36.0
 
 ## 0.35.0

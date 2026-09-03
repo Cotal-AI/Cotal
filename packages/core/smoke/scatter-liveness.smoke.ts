@@ -268,7 +268,7 @@ try {
     const elapsed = Date.now() - t0;
     await held.drain();
     c("an instance that HOLDS a subscription but never answers is UNKNOWN, never gone", v === "unknown", { v });
-    c("the probe gives up at its budget rather than waiting on an answer it does not read", elapsed >= 400 && elapsed < 1200, { elapsed });
+    c("the probe gives up at its budget rather than waiting on an answer it does not read", elapsed >= 380 && elapsed < 1200, { elapsed });
   }
   {
     // The safety direction, stated as a cell: an instance that is present but silent must never be

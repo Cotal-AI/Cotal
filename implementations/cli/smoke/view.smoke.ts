@@ -74,7 +74,10 @@ class MockEndpoint extends EventEmitter {
 
 const mock = new MockEndpoint();
 const view = new MeshView(mock as unknown as CotalEndpoint);
+const warnings: string[] = [];
+view.on("warning", (e: Error) => warnings.push(e.message));
 await view.start();
+mock.emit("warning", new Error("creds refresh failed - retrying"));
 
 const tap = mock.tapHandler!;
 // multicast + anycast pass through immediately; the unicast burst (same sender+text, 3
@@ -112,6 +115,10 @@ const aliceDm = s.signals.dms.find((p) => p.name === "alice");
 check("DM roll-up: alice has 2 conversations (bob, carol)", aliceDm?.conversations.length === 2);
 check("DM roll-up: 3 peers total (alice, bob, carol)", s.signals.dms.length === 3);
 check("status bar: dmVisible true (open tap)", s.status.dmVisible === true && s.status.space === space);
+check(
+  "MeshView's own warning listener reaches the model and stream event",
+  s.status.warning === "creds refresh failed - retrying" && warnings[0] === "creds refresh failed - retrying",
+);
 
 await view.stop();
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");

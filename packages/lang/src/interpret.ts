@@ -46,6 +46,7 @@ import {
 import {
   Cancelled,
   RunReleased,
+  RunHeld,
   EffectError,
   applyCheckpointPolicy,
   type AgentHandleValue,
@@ -1241,6 +1242,7 @@ class Interpreter {
           e instanceof Cancelled ||
           e instanceof JournalAppendRejected ||
           e instanceof RunReleased ||
+          e instanceof RunHeld ||
           e instanceof RunDivergence ||
           e instanceof ScopeBranchMissing ||
           e instanceof UnwalkableScope;

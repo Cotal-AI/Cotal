@@ -1,0 +1,4 @@
+# The slow-link serialization probe was isolated out of the web smoke into its own script but never
+# gated, so gate-inventory flags it as a suite nothing runs. Appended so every existing shard
+# assignment remains unchanged.
+smoke:web-proxy-order

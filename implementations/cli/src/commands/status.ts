@@ -16,13 +16,13 @@ import {
   type ParsedArgs,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, accountInventory, authDir, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, localProcessVisible, parsePid, preflightTarget, probeLiveness, readProcessCommand, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, type LocalProcess, type LocalProcessContext, type MeshTarget, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, accountInventory, authDir, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, localProcessVisible, parsePid, DELIVERY_PIDFILE, MANAGER_PIDFILE, preflightTarget, probeLiveness, readProcessCommand, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, type LocalProcess, type LocalProcessContext, type MeshTarget, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { connect } from "@nats-io/transport-node";
 import { localProcessSurface } from "../ext-loader.js";
-import { cliVersion, extensionVersions } from "../lib/version.js";
+import { cliVersion, cliProvenance, extensionVersions } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
-import { machineStatus, resolveSpace, webUp, WEB_URL, type MachineStatus } from "../lib/status.js";
+import { machineStatus, resolveRuntimeSpace, webUp, WEB_URL, type MachineStatus } from "../lib/status.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { c, statusBadge } from "../ui.js";
@@ -71,8 +71,8 @@ function printExtensions(): void {
 
 /** Cotal's authored skills reach non-Claude harnesses through the cross-vendor `~/.agents/skills`
  *  directory (Codex, Cursor, OpenCode, Gemini CLI, Windsurf). Those harnesses have no remote update, so
- *  surface a stale/missing/retired drop here and point at the fix (`cotal setup` reconciles it). A corrupt
- *  skills bundle throws (fail-loud); we render that as a red integrity error rather than "none shipped". */
+ *  surface a stale/missing/retired drop here and point at the skills-only write (`cotal setup --skills`).
+ *  A corrupt skills bundle throws (fail-loud); we render that as a red integrity error rather than "none shipped". */
 function skillsSkewRow(): string {
   let skew;
   try {
@@ -82,25 +82,31 @@ function skillsSkewRow(): string {
   }
   const behind = skew.filter((s) => s.state !== "current");
   if (!behind.length) return c.green(`current (${skew.length})`);
-  if (behind.every((s) => s.state === "missing")) return c.dim(`not installed · ${displayCmd()} setup`);
+  if (behind.every((s) => s.state === "missing")) return c.dim(`not installed · ${displayCmd()} setup --skills`);
   const retired = behind.filter((s) => s.state === "retired").length;
   const label = retired ? `${behind.length} to reconcile (${retired} retired)` : `${behind.length}/${skew.length} out of date`;
-  return c.yellow(`${label} · ${displayCmd()} setup`);
+  return c.yellow(`${label} · ${displayCmd()} setup --skills`);
+}
+
+function cliProvenanceLabel(): string {
+  const provenance = cliProvenance();
+  const kind = provenance.kind === "source" ? "source checkout" : provenance.kind;
+  return `(${kind}: ${provenance.root})`;
 }
 
 /** The `cotal-skills` Claude Code plugin (user scope) vs this CLI release: stale means an update didn't
  *  take, missing means it isn't installed, broken means it is installed but failed to load; all point at
- *  `cotal setup` to fix. */
-function claudeSkillsLabel(state: MachineStatus["claudeSkills"]): string {
-  switch (state) {
+ *  `cotal setup --skills` so a read-path status user is not routed into unscoped setup writes. */
+function claudeSkillsLabel(skills: MachineStatus["claudeSkills"]): string {
+  switch (skills.state) {
     case "current":
       return c.green("current");
     case "stale":
-      return c.yellow(`stale · ${displayCmd()} setup`);
+      return c.yellow(`${skills.version ? `v${skills.version} ≠ v${cliVersion()} · ` : ""}stale · ${displayCmd()} setup --skills`);
     case "broken":
-      return c.red(`load error · ${displayCmd()} setup`);
+      return c.red(`load error · ${displayCmd()} setup --skills`);
     case "missing":
-      return c.dim(`not installed · ${displayCmd()} setup`);
+      return c.dim(`not installed · ${displayCmd()} setup --skills`);
     default:
       return c.dim("unknown");
   }
@@ -111,7 +117,7 @@ async function printMachine(): Promise<void> {
   const web = await webUp();
   const webExt = webInstalled();
   section("Machine");
-  row("cotal-ai", c.green(`v${cliVersion()}`));
+  row("cotal-ai", `${c.green(`v${cliVersion()}`)} ${c.dim(cliProvenanceLabel())}`);
   row("NATS", m.nats === "missing" ? c.red("missing") : c.green(m.nats));
   row("Claude plugin", m.claudePlugin ? c.green("installed") : c.dim("not installed"));
   row("Claude skills", claudeSkillsLabel(m.claudeSkills));
@@ -173,7 +179,20 @@ function printProject(root: string, cmd: string): void {
     return;
   }
   const userDisk = auth && hasUserAuthState(root, auth.space);
-  const context: LocalProcessContext = { root, space: auth?.space ?? resolveSpace(root), userAuth: Boolean(userDisk) };
+  // An open mesh has no account record to name its space, so the folder's space is read off its
+  // runtime records - and a root whose records show two spaces RUNNING has no single answer, the
+  // same shape as the multi-account case above. The process rows below are keyed by one space, so
+  // report that state and stop rather than crashing in the recovery command that names it.
+  let space: string;
+  try {
+    space = auth?.space ?? resolveRuntimeSpace(root);
+  } catch (e) {
+    row("auth", c.dim("none (open/local only)"));
+    row("hint", (e as Error).message);
+    row("personas", personaSummary(root));
+    return;
+  }
+  const context: LocalProcessContext = { root, space, userAuth: Boolean(userDisk) };
   row("auth", auth ? c.green(`space ${auth.space}${userDisk ? " · user-auth" : ""}`) : c.dim("none (open/local only)"));
   row("personas", personaSummary(root));
   let nats: Proc | undefined;
@@ -181,7 +200,7 @@ function printProject(root: string, cmd: string): void {
     const state = proc(localProcessPath(component.pidFile, context));
     if (component.name === "nats") nats = state;
     const detail = component.name === "manager" && state.live
-      ? c.dim(managerHasDeliveryMarker() ? " · delivery-aware" : " · old/unknown build")
+      ? c.dim(managerHasDeliveryMarker(context.space) ? " · delivery-aware" : " · old/unknown build")
       : "";
     row(component.name, `${formatProc(state)}${detail}`);
   }
@@ -353,6 +372,10 @@ async function userLiveSnapshot(target: ReturnType<typeof resolveMeshTarget>, st
 
 async function renderSnapshot(ep: CotalEndpoint, watchBrokerState: boolean): Promise<void> {
   ep.on("error", () => {});
+  // This endpoint is a one-shot read. Awaited reads and their per-row unavailable results own the
+  // verdict, so a recoverable side channel is deliberately quiet rather than duplicated.
+  const ignoreSnapshotWarning = () => {};
+  ep.on("warning", ignoreSnapshotWarning);
   await ep.start();
   try {
     const roster = watchBrokerState ? ep.getRoster() : [];
@@ -483,6 +506,9 @@ async function componentEp(target: MeshTarget): Promise<{ ep: CotalEndpoint; clo
     card: { id: id.id, name: "status-components", kind: "endpoint" },
   });
   ep.on("error", () => {});
+  // Same one-shot policy as renderSnapshot: the command grades the awaited service reply itself.
+  const ignoreComponentWarning = () => {};
+  ep.on("warning", ignoreComponentWarning);
   await ep.start();
   return { ep, close: () => ep.stop().catch(() => {}) };
 }
@@ -511,7 +537,7 @@ async function managerServiceHealth(
 }
 
 async function managerHealth(target: MeshTarget, context: LocalProcessContext): Promise<ComponentHealth> {
-  const record = processRecord(localProcessPath("manager.pid", context));
+  const record = processRecord(localProcessPath(MANAGER_PIDFILE, context));
   const facts = pidFacts(record);
   // A corrupt or kernel-unreadable LOCAL record is neither evidence that the manager is absent nor
   // permission to replace it with a network answer.  Name that failed local control surface first.
@@ -568,7 +594,7 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext): 
  * adoption report is the renewal record it writes through the manager-owned renewal pass.  The
  * latter is intentionally not inferred from credential mtime or process output. */
 async function deliveryHealth(target: MeshTarget, context: LocalProcessContext): Promise<ComponentHealth> {
-  const record = processRecord(localProcessPath("delivery.pid", context));
+  const record = processRecord(localProcessPath(DELIVERY_PIDFILE, context));
   const facts = pidFacts(record);
   const stopped = processVerdict(record);
   const renewalPath = join(context.root, ".cotal", "renewal.json");

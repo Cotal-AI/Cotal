@@ -187,6 +187,68 @@ export function replyRefusedBeforeEffect(e: EpError | undefined): boolean {
   return e?.outcome === "not-executed";
 }
 
+/**
+ * `details[].kind` for a refusal raised because a lifecycle barrier already holds the actor
+ * (or the manager instance) being spawned. The manager already knows the blocked op, the
+ * head/gate state, the `opId`, and often the remedy; without this marker those facts die at
+ * the ControlReply string boundary and the caller sees a connector timeout or "unknown"
+ * (#873). The fields are the facts, not a second copy of the message.
+ */
+export const EP_LIFECYCLE_BLOCKED = "ai.cotal.ep.lifecycle-blocked";
+
+export type LifecycleBlockedOp = "registration" | "retirement" | "activation" | "takeover";
+export type LifecycleHeadState = "active" | "retiring" | "retired";
+
+export interface LifecycleBlockedFacts {
+  blockedOp: LifecycleBlockedOp;
+  headState: LifecycleHeadState;
+  opId?: string;
+  remedy?: string;
+}
+
+export interface EpLifecycleBlockedDetail extends EpErrorDetail, LifecycleBlockedFacts {
+  kind: typeof EP_LIFECYCLE_BLOCKED;
+}
+
+export function lifecycleBlockedDetail(facts: LifecycleBlockedFacts): EpLifecycleBlockedDetail {
+  return { kind: EP_LIFECYCLE_BLOCKED, blockedOp: facts.blockedOp, headState: facts.headState,
+    ...(facts.opId !== undefined ? { opId: facts.opId } : {}),
+    ...(facts.remedy !== undefined ? { remedy: facts.remedy } : {}) };
+}
+
+/** Throw-site constructor: the catalog code plus the lifecycle-blocked marker as `details[0]`. */
+export function lifecycleBlocked(
+  code: EpErrorCode,
+  message: string,
+  facts: LifecycleBlockedFacts,
+  outcome?: EpEffectOutcome,
+): EpEnvelopeError {
+  return new EpEnvelopeError(code, message, [lifecycleBlockedDetail(facts)], outcome);
+}
+
+function detailsOf(source: unknown): EpErrorDetail[] | undefined {
+  if (source instanceof EpEnvelopeError) return source.details;
+  if (source && typeof source === "object" && Array.isArray((source as { details?: unknown }).details))
+    return (source as { details: EpErrorDetail[] }).details;
+  return undefined;
+}
+
+/** The lifecycle-blocked marker on a thrown envelope, an `EpError`, or a ControlReply-shaped object. */
+export function lifecycleBlockedFrom(source: unknown): EpLifecycleBlockedDetail | undefined {
+  return detailsOf(source)?.find((d): d is EpLifecycleBlockedDetail => d.kind === EP_LIFECYCLE_BLOCKED);
+}
+
+/** Append a stable `[lifecycle …]` suffix so a string-only caller still carries the facts. */
+export function renderLifecycleBlocked(message: string, source: unknown): string {
+  const d = lifecycleBlockedFrom(source);
+  if (!d) return message;
+  const parts = [`blockedOp=${d.blockedOp}`, `headState=${d.headState}`];
+  if (typeof d.opId === "string" && d.opId.length > 0) parts.push(`opId=${d.opId}`);
+  if (typeof d.remedy === "string" && d.remedy.length > 0) parts.push(`remedy=${d.remedy}`);
+  const suffix = `[lifecycle ${parts.join(" ")}]`;
+  return message.includes(suffix) ? message : `${message} ${suffix}`;
+}
+
 /** §13.3 **Effect outcome**: whether the command's effect occurred. Emitted by the RESPONDER,
  *  which is the only party that knows. An omitted `outcome` MUST be read as `unknown`, so absence
  *  is never evidence of non-execution. */

@@ -14,6 +14,7 @@ import { createConnection } from "node:net";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { canonicalLocalProcessPath, MANAGER_PIDFILE } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 const PORT = 14321;
@@ -138,7 +139,7 @@ try {
 
   // 5a) Control-plane no-responder (DETERMINISTIC): kill the manager but leave the broker UP, so
   //     down -f connects but `ps` has no responder. The catch must flow to partial retention.
-  const mgrPid = Number(readFileSync(join(root, ".cotal", "manager.pid"), "utf8").trim());
+  const mgrPid = Number(readFileSync(canonicalLocalProcessPath(MANAGER_PIDFILE, { root, space: SPACE }), "utf8").trim());
   try { process.kill(mgrPid, "SIGTERM"); } catch { /* already gone */ }
   let mgrDown = false;
   for (let i = 0; i < 20 && !mgrDown; i++) { await sleep(300); try { process.kill(mgrPid, 0); } catch { mgrDown = true; } }

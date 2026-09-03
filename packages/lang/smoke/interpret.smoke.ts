@@ -15,7 +15,7 @@ import { requestId } from "../src/keys.js";
 import { WALKER_LANGUAGE_VERSION, resolvePins, type RunPins } from "../src/pins.js";
 import { SimHandler } from "../src/sim.js";
 import { Journal, type JournalEntry } from "../src/journal.js";
-import { EffectError, RunReleased } from "../src/effects.js";
+import { EffectError, EffectRefused, RunReleased, type EffectContext } from "../src/effects.js";
 
 /** Collect what a program logged. A program has no return value: its outcome is what it did. */
 const logged: unknown[][] = [];
@@ -1087,6 +1087,209 @@ let c = await sleep("1s")
     })()) === 2, "the two effects that were NOT recorded");
 }
 
+// ── and a release inside a CONCURRENCY SCOPE is not an outcome either ────────────────────────
+//
+// The cell above is the sequential seam. This is the same stop landing while the walker is inside a
+// scope, and it is the case that was wrong (#862): the release fell past the scope's ladder of
+// classes that must not be recorded, settled as an `L4000` scope-fault carrying the release's own
+// text, and a resume with a HEALTHY host then replayed that entry and threw. A plain host stop
+// permanently ended any run that happened to be inside a scope, while the identical stop one
+// statement earlier resumed cleanly.
+//
+// Both scopes that launch thunks are covered, because they share the path. The resume is the point:
+// settling nothing leaves the scope pending, a pending scope re-enters, and settling is idempotent,
+// so the run finishes where it stopped rather than carrying a durable failure.
+for (const [label, scopeName, P] of [
+  ["parallel", "both", `
+await parallel({
+  a: async () => { await sleep("1m"); return 1; },
+  b: async () => { await sleep("2m"); return 2; },
+}, { name: "both" });
+`],
+  ["fanOut", "each", `
+await fanOut([1, 2], async (n) => { await sleep("1m"); return n; }, { name: "each", key: (n) => "k" + n });
+`],
+] as const) {
+  const runId = `r-stop-${label}`;
+  const journal = new Journal({ run: runId });
+  const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+  let effects = 0;
+  let released: unknown;
+  try {
+    await run(P, {
+      runId,
+      handler: new SimHandler({}),
+      journal,
+      pins,
+      shouldStop: () => (effects++ === 1 ? "host stop" : undefined),
+    });
+  } catch (e) { released = e; }
+  ok(`a host stop inside ${label} releases the run rather than failing it`,
+    released instanceof RunReleased, `${(released as Error)?.name}`);
+
+  // The defect was here, and this reads the JOURNAL'S OWN SHAPE rather than an error message. A
+  // message match would go quietly green the day the release text is reworded, while the bug it
+  // guards returned; the durable claim is that this scope settles NOTHING. Under the reverted fix
+  // the same entry is `settled` with `status: "failed"` and `error.code: "L4000"`, so each of the
+  // three conditions below is one the defect actually breaks.
+  const entries = journal.entries();
+  const scope = entries.find((e) => e.kind === label && e.name === scopeName);
+  ok(`and the ${label} scope entry stays PENDING rather than recording the release as its outcome`,
+    scope !== undefined
+      && scope.state === "pending"
+      && (scope as { status?: string }).status === undefined
+      && (scope as { error?: unknown }).error === undefined,
+    scope === undefined
+      ? "no scope entry at all"
+      : {
+          state: scope.state,
+          status: (scope as { status?: string }).status,
+          error: (scope as { error?: { code?: string } }).error?.code,
+        });
+
+  // And the consequence that made it critical rather than cosmetic. NOT resuming without throwing:
+  // that alone passes for an implementation that settles the scope `ok` with an invented value and
+  // then releases, which finishes the resume while silently skipping the arm that never ran. So the
+  // claim is what the journal HOLDS afterwards: the scope settled, and BOTH arms performed, one of
+  // which had not run when the host stopped. Measured on the correct implementation: three entries,
+  // all settled, two of them the branch effects.
+  let resumeErr: unknown;
+  let after: readonly JournalEntry[] = [];
+  try {
+    const r = await resume(P, new Journal({ run: runId, entries }), { runId, pins, handler: new SimHandler({}) });
+    after = r.journal.entries();
+  } catch (e) { resumeErr = e; }
+  ok(`so a healthy driver resumes past a ${label} it was stopped inside`,
+    resumeErr === undefined, `${(resumeErr as Error)?.name}: ${(resumeErr as Error)?.message}`);
+  ok(`and the ${label} arm that had not run when the host stopped is performed on that resume`,
+    after.length === 3
+      && after.every((e) => e.state === "settled")
+      && after.filter((e) => e.kind === "sleep").length === 2,
+    after.map((e) => `${e.kind}:${e.name}/${e.state}`));
+}
+
+// A release inside a RACE is not a candidate and cancels nothing: work already in flight can
+// still win. Arm `a` parks its sleep before the driver stops, arm `b`'s boundary releases, and
+// every later boundary would release too. The sleep already issued is the handler's to finish,
+// it lands, `a` wins, the scope settles, and nothing is left to perform, so the run completes
+// with no entry anywhere recording a cancellation nobody chose. A released rejection that
+// counted as a candidate would instead "win by failing" with the earliest clock, cancel the
+// arm that could still win, and durably poison its in-flight entry.
+{
+  const runId = "r-stop-race";
+  const journal = new Journal({ run: runId });
+  const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+  let stops = 0;
+  let outcome: unknown;
+  const P = `
+const r = await race({
+  a: async () => { await sleep("1m"); return "won"; },
+  b: async () => { await sleep("2m"); return "lost"; },
+}, { name: "either" });
+log(r.index, r.value);
+`;
+  const logged: unknown[][] = [];
+  try {
+    await run(P, {
+      runId,
+      handler: new SimHandler({}),
+      journal,
+      pins,
+      shouldStop: () => (stops++ >= 1 ? "host stop" : undefined),
+      onLog: (l) => logged.push([...l.values]),
+    });
+  } catch (e) {
+    outcome = e;
+  }
+  ok("a race whose sibling was released still lets in-flight work win, and the run completes",
+    outcome === undefined, `${(outcome as Error)?.name}: ${(outcome as Error)?.message?.slice(0, 60)}`);
+  ok("with the surviving arm as the winner", logged[0]?.[0] === "a" && logged[0]?.[1] === "won", logged);
+  ok("and no entry anywhere records a cancellation nobody chose",
+    journal.entries().every((e) => e.status !== "cancelled")
+      && journal.entries().find((e) => e.kind === "race")?.status === "ok",
+    journal.entries().map((e) => `${e.kind}:${e.name}/${e.status}`));
+
+  const replayLog: unknown[][] = [];
+  await resume(P, new Journal({ run: runId, entries: journal.entries() }), {
+    runId, pins, handler: new SimHandler({}), onLog: (l) => replayLog.push([...l.values]),
+  });
+  ok("and a resume replays the same winner from the record", replayLog[0]?.[0] === "a", replayLog);
+}
+
+// A REFUSED APPEND inside a race outranks any winner. The journal refused to record the ask arm's
+// outcome (here the L5006 result bound, ahead of the settling append), so completing the race
+// would settle a scope over an entry the run can no longer record, and a resume would
+// short-circuit the settled scope past the step forever. The unwind must fire even though the
+// sleep arm won: a candidate winner is a decision, a refused append is the journal saying the run
+// can no longer keep decisions.
+{
+  const runId = "r-race-refused-append";
+  const journal = new Journal({ run: runId, resultBytes: 200 });
+  const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+  const P = `
+const a = await spawn("w", { name: "a" });
+const r = await race({
+  big: async () => { const v = await ask(a, { name: "q", schema: {} }); return v; },
+  other: async () => { await sleep("2m"); return "other"; },
+}, { name: "either" });
+log("winner", r.index, r.value);
+`;
+  let outcome: unknown;
+  try {
+    await run(P, { runId, pins, journal, handler: new SimHandler({ asks: { q: { blob: "x".repeat(400) } } }) });
+  } catch (e) { outcome = e; }
+  const o = outcome as { name?: string; code?: string } | undefined;
+  ok("a refused append inside a race unwinds the run even though a sibling won",
+    o?.name === "EffectResultTooLarge" && o?.code === "L5006", `${o?.name} ${o?.code}`);
+  ok("and the race entry settles nothing over it",
+    journal.entries().find((e) => e.kind === "race")?.state === "pending",
+    journal.entries().map((e) => `${e.kind}:${e.name}/${e.state}`));
+  ok("and the refused step is still pending, not recorded as anything it is not",
+    journal.entries().find((e) => e.kind === "ask")?.state === "pending",
+    journal.entries().find((e) => e.kind === "ask")?.status);
+}
+
+// A HELD arm inside a race rides the same rule. The ask is refused (L5016), its entry settles
+// `refused`, and the heal law says a resume that REACHES it performs it live — but a resume
+// short-circuits a settled scope. So if the sleeping sibling's win settled the race over the held
+// arm, the heal would be buried forever inside a scope no walk re-enters. The unwind must fire
+// despite the winner, and the same journal on a capable host must then complete.
+{
+  class RefusingAsk extends SimHandler {
+    override async ask(): Promise<never> {
+      throw new EffectRefused("L5016", "ask(…) rides machinery that has not landed on this host");
+    }
+  }
+  const runId = "r-race-held";
+  const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+  const journal = new Journal({ run: runId });
+  const P = `
+const a = await spawn("w", { name: "a" });
+const r = await race({
+  big: async () => { const v = await ask(a, { name: "q", schema: {} }); return v; },
+  other: async () => { await sleep("2m"); return "other"; },
+}, { name: "either" });
+log("winner", r.index);
+`;
+  let held: unknown;
+  try {
+    await run(P, { runId, pins, journal, handler: new RefusingAsk({}) });
+  } catch (e) { held = e; }
+  const h = held as { name?: string; code?: string } | undefined;
+  ok("a held arm inside a race unwinds the run even though a sibling won",
+    h?.name === "RunHeld" && h?.code === "L5025", `${h?.name} ${h?.code}`);
+  ok("with the step settled refused, not buried under the winner",
+    journal.entries().find((e) => e.kind === "ask")?.status === "refused",
+    journal.entries().map((e) => `${e.kind}:${e.name}/${e.status ?? e.state}`));
+  let healed: unknown;
+  try {
+    await run(P, { runId, pins, journal, handler: new SimHandler({ asks: { q: { ok: true } } }) });
+  } catch (e) { healed = e; }
+  ok("and the same journal on a capable host performs the refused arm live and completes the race",
+    healed === undefined && journal.entries().find((e) => e.kind === "race")?.status === "ok",
+    `${(healed as Error)?.name}: ${(healed as Error)?.message?.slice(0, 60)}`);
+}
+
 // ── a program cannot catch its host leaving ──────────────────────────────────────────────────
 //
 // `try` is the workflow's own handling of the world going wrong, and a driver's shutdown is not the
@@ -1142,18 +1345,19 @@ fact.outcome = "flipped";`;
 
   // The notify arm freezes its fact on its own, so the cell above cannot see the BLANKET freeze at
   // the boundary. The options bag can: no per-primitive arm touches it, so a schema that stays
-  // writable after an `ask` means the share-time freeze is gone (the measured pre-fix defect).
-  const asked = `const a = await spawn("w", { name: "a" });
-const sch = { deep: { x: 1 } };
-await ask(a, { name: "q", schema: sch });
+  // writable after a `checkpoint` means the share-time freeze is gone (the measured pre-fix
+  // defect). The deep record rides a checkpoint here because the reference handler now enforces
+  // the ask schema shorthand (L4022), which admits no nested values.
+  const asked = `const sch = { deep: { x: 1 } };
+await checkpoint("q", "ok?", { schema: sch });
 sch.deep.x = 2;`;
   let bagCaught: unknown;
   try {
-    await run(asked, { runId: "r-frz3", handler: new SimHandler({ asks: { q: { okay: true } } }) });
+    await run(asked, { runId: "r-frz3", handler: new SimHandler({ checkpoints: { q: { status: "resolved", by: "sim" } } }) });
   } catch (e) {
     bagCaught = e;
   }
-  ok("the options bag crosses like any input: an ask's schema is frozen at the share (L2031)",
+  ok("the options bag crosses like any input: a checkpoint's schema is frozen at the share (L2031)",
     String((bagCaught as Error)?.message).startsWith("L2031"), String(bagCaught).slice(0, 60));
 
   const SRC = `const a = await spawn("w", { name: "a" });
@@ -1170,6 +1374,104 @@ a.agent = "changed";`;
   }
   ok("a replayed result out of a SERIALIZED journal is frozen again: writing it is L2031",
     String((replayCaught as Error)?.message).startsWith("L2031"), String(replayCaught).slice(0, 60));
+}
+
+// ---- 19) a capability refusal holds the run, and a capable host heals it ------------------------
+//
+// `refused` over `failed` is the difference between a run that waits and a run that is broken
+// forever. A handler that cannot perform an effect attempted nothing, so nothing about the run is
+// decided: the halt is uncatchable like a release, the entry keeps the refusal under the handler's
+// code, and the same journal under a capable handler performs the step live and completes.
+{
+  class RefusingSpawn extends SimHandler {
+    override async spawn(): Promise<never> {
+      throw new EffectRefused("L5016", "spawn(…) rides machinery that has not landed on this host");
+    }
+  }
+  const P = `
+try {
+  const a = await spawn("w", { name: "a" });
+  await sleep("1s", { name: "after" });
+} finally {
+  await notify(["ops"], { decision: "cleanup", outcome: "ran" })
+}
+`;
+  // Pinned up front, like the host-stop cells: a run that halts has no result to take pins from,
+  // and the heal below has to be the SAME run.
+  const heldPins = resolvePins({ runId: "r-held" }, 0, WALKER_LANGUAGE_VERSION);
+  const journal = new Journal({ run: "r-held" });
+  let held: unknown;
+  try {
+    await run(P, { runId: "r-held", handler: new RefusingSpawn({}), journal, pins: heldPins });
+  } catch (e) {
+    held = e;
+  }
+  ok("the refusal halts the run uncatchably, past try and finally alike",
+    (held as Error)?.name === "RunHeld" && (held as { code?: string })?.code === "L5025",
+    `${(held as Error)?.name}`);
+  ok("and the finalizer performed nothing: no notify was recorded",
+    journal.entries().every((e) => e.kind !== "notify"), journal.entries().map((e) => e.kind));
+  const entry = journal.entries().find((e) => e.kind === "spawn");
+  ok("the entry records the refusal, never a failure",
+    entry?.state === "settled" && entry?.status === "refused" && entry?.error?.code === "L5016",
+    { status: entry?.status, code: entry?.error?.code });
+
+  let healed: unknown = null;
+  try {
+    await run(P, { runId: "r-held", handler: new SimHandler({}), journal, pins: heldPins });
+  } catch (e) {
+    healed = e;
+  }
+  ok("the same journal on a capable host performs the step live and completes",
+    healed === null, `${(healed as Error)?.name}: ${(healed as Error)?.message?.slice(0, 80)}`);
+  ok("with the spawn settled ok over the refusal, and the finalizer's notify recorded",
+    journal.entries().find((e) => e.kind === "spawn")?.status === "ok"
+      && journal.entries().some((e) => e.kind === "notify"),
+    journal.entries().map((e) => `${e.kind}/${e.status ?? e.state}`));
+}
+
+// ---- 20) one agent, one turn at a time ----------------------------------------------------------
+//
+// Two branches turning the same handle used to dispatch concurrently, with nothing anywhere
+// serializing them. The queue lives at the seam both engines share, so the probe is the handler
+// itself: its high-water mark of concurrently open turns is the whole claim.
+{
+  class ProbeHandler extends SimHandler {
+    active = 0;
+    peak = 0;
+    override async turn(req: Parameters<SimHandler["turn"]>[0], ctx: EffectContext) {
+      this.active += 1;
+      this.peak = Math.max(this.peak, this.active);
+      try {
+        return await super.turn(req, ctx);
+      } finally {
+        this.active -= 1;
+      }
+    }
+  }
+  const TURNS = { turns: { t1: { status: "done" as const, at: 1 }, t2: { status: "done" as const, at: 2 } } };
+  const same = new ProbeHandler(TURNS);
+  await run(`
+const a = await spawn("w", { name: "a" });
+await parallel({
+  one: async () => { await turn(a, { name: "t1" }) },
+  two: async () => { await turn(a, { name: "t2" }) },
+})
+`, { runId: "r-turnq", handler: same });
+  ok("two concurrent turns on ONE handle never overlap: the dispatch serializes them",
+    same.peak === 1, same.peak);
+
+  const different = new ProbeHandler(TURNS);
+  await run(`
+const a = await spawn("w", { name: "a" });
+const b = await spawn("w2", { name: "b" });
+await parallel({
+  one: async () => { await turn(a, { name: "t1" }) },
+  two: async () => { await turn(b, { name: "t2" }) },
+})
+`, { runId: "r-turnq2", handler: different });
+  ok("while turns on two DIFFERENT handles still overlap: the queue is per agent, not global",
+    different.peak === 2, different.peak);
 }
 
 console.log(`interpret.smoke: ${pass} checks passed`);

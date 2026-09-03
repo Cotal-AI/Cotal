@@ -13,8 +13,8 @@
     {
       "name": "retirement no longer drains the renewal accepted before its latch",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    const acceptedRenewal = a.staticCredentialRenewal;\n    if (acceptedRenewal) await acceptedRenewal.catch(() => {});",
-      "replace": "    void a.staticCredentialRenewal;",
+      "find": "    if (acceptedRenewal) await acceptedRenewal.catch(() => {});",
+      "replace": "    void acceptedRenewal;",
       "expectRed": "the durable terminal does not pass an accepted renewal still in flight",
       "cell": "the durable terminal does not pass an accepted renewal still in flight"
     },
@@ -53,8 +53,8 @@
     {
       "name": "the active static terminal no longer revokes its recorded credential rows",
       "file": "implementations/manager/src/static-lifecycle.ts",
-      "find": "  if (headNow.mapping.state !== \"retired\")\n    await headBeginRetirement(t, { owner: args.owner, actor: args.actor, lifecycleUid: args.lifecycleUid, opId: args.opId });\n  await revokeStaticCredentialRows(t, args.lifecycleUid, slot.row.credentialIds, hooks.log);\n  await hooks.cleanup();",
-      "replace": "  if (headNow.mapping.state !== \"retired\")\n    await headBeginRetirement(t, { owner: args.owner, actor: args.actor, lifecycleUid: args.lifecycleUid, opId: args.opId });\n  await hooks.cleanup();",
+      "find": "  const holders = await revokeStaticCredentialRows(t, args.lifecycleUid, slot.row.credentialIds, hooks.log);",
+      "replace": "  const holders: string[] = [];",
       "expectRed": "no credential row remains active after retirement",
       "cell": "no credential row remains active after retirement"
     },

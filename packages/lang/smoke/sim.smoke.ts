@@ -253,7 +253,7 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
 {
   const sim = new SimHandler({
     turns: { build: { status: "done", at: 0 } },
-    asks: { q: 3 },
+    asks: { q: { n: 3 } },
     checkpoints: {
       gate: [{ status: "resolved", value: true, by: "sim" }, { status: "resolved", value: true, by: "sim" }],
       lapsed: { status: "expired" },
@@ -347,7 +347,7 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
   ) => {
     const sim = new SimHandler({
       turns: { build: { status: "done", at: 0 } },
-      asks: { q: 3 },
+      asks: { q: { n: 3 } },
       checkpoints,
     });
     const s = new KeyScope();
@@ -411,7 +411,7 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
   ) => {
     const sim = new SimHandler({
       turns: { build: { status: "done", at: 0 } },
-      asks: { q: 3 },
+      asks: { q: { n: 3 } },
       checkpoints,
     });
     const s = new KeyScope();
@@ -459,6 +459,89 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
   // Usually a renamed step. A script that silently stops matching is a test that silently stops
   // testing, which is the failure this reports.
   ok("script entries the run never reached are named", unused.length === 1 && unused[0] === "turns.verify-it", unused);
+}
+
+// ---- 10) the event queue: parked effects deliver in wake order, each stamping its own clock ----
+
+{
+  const sim = new SimHandler({ clock: { start: 0 } });
+  const s = new KeyScope();
+  const order: string[] = [];
+  const slow = sim
+    .sleep({ duration: "5m" }, ctxFor(s.nextEffect("sleep", "slow")))
+    .then(() => order.push(`slow@${sim.now()}`));
+  const fast = sim
+    .sleep({ duration: "1m" }, ctxFor(s.nextEffect("sleep", "fast")))
+    .then(() => order.push(`fast@${sim.now()}`));
+  await Promise.all([slow, fast]);
+  // The whole simulator-fidelity fix in one cell: the 1m sleep asked SECOND is delivered FIRST,
+  // at its own wake, and the 5m sleep lands after it at its own. Under the old shared serial
+  // clock both landed at 360000 in ask order.
+  ok("two parked sleeps deliver in wake order, not ask order, each at its own wake",
+    order[0] === "fast@60000" && order[1] === "slow@300000", order);
+}
+
+{
+  const sim = new SimHandler({ clock: { start: 0 } });
+  const s = new KeyScope();
+  const listeners: ((r: string) => void)[] = [];
+  const ctx: EffectContext = {
+    ...ctxFor(s.nextEffect("sleep", "doomed")),
+    signal: { cancelled: false, onCancel: (fn) => listeners.push(fn) },
+  };
+  const parked = sim.sleep({ duration: "1h" }, ctx);
+  for (const fn of listeners) fn("test cancel");
+  let err: unknown;
+  try {
+    await parked;
+  } catch (e) {
+    err = e;
+  }
+  ok("a cancelled parked sleep rejects with Cancelled rather than delivering", (err as Error)?.name === "Cancelled", err);
+  ok("and the clock never advances to a wake nobody reached", sim.now() === 0, sim.now());
+}
+
+// ---- 11) the ask reply contract ----------------------------------------------------------------
+
+{
+  const agent = { agent: "a", persona: "p" };
+  const sim = new SimHandler({ asks: { q: [{ steps: "not-an-array" }, { steps: ["a", "b"] }] } });
+  const s = new KeyScope();
+  const v = await sim.ask({ agent, schema: { steps: "array" }, attempts: 2 }, ctxFor(s.nextEffect("ask", "q")));
+  ok("a non-conforming reply costs an attempt and the next one is checked",
+    Array.isArray((v as { steps: unknown }).steps), v);
+  ok("and each checked reply consumed one scripted occurrence",
+    sim.performed().filter((c) => c.table === "asks").length === 2, sim.performed());
+
+  const exhausted = new SimHandler({ asks: { q: { steps: "still-not" } } });
+  let err: unknown;
+  try {
+    await exhausted.ask({ agent, schema: { steps: "array" }, attempts: 2 }, ctxFor(new KeyScope().nextEffect("ask", "q")));
+  } catch (e) {
+    err = e;
+  }
+  ok("exhausted attempts report L4006", (err as { code?: string })?.code === "L4006", err);
+  ok("with the kind a program can branch on", (err as { kind?: string })?.kind === "ask-nonconforming", err);
+
+  const unreadable = new SimHandler({ asks: { q: { steps: [] } } });
+  let err2: unknown;
+  try {
+    await unreadable.ask({ agent, schema: { steps: { type: "array" } } }, ctxFor(new KeyScope().nextEffect("ask", "q")));
+  } catch (e) {
+    err2 = e;
+  }
+  ok("a schema the handler cannot read is refused (L4022), never silently skipped",
+    (err2 as { code?: string })?.code === "L4022", err2);
+
+  const bare = new SimHandler({ asks: { q: 3 } });
+  let err3: unknown;
+  try {
+    await bare.ask({ agent, schema: {} }, ctxFor(new KeyScope().nextEffect("ask", "q")));
+  } catch (e) {
+    err3 = e;
+  }
+  ok("a reply that is not a record does not conform, even against {}",
+    (err3 as { code?: string })?.code === "L4006", err3);
 }
 
 console.log(`sim.smoke: ${pass} checks passed`);

@@ -25,7 +25,9 @@ You are a builder on a shared mesh of peer agents…   ← the body is the perso
 **Frontmatter is identity** (an A2A-style `AgentCard`,
 [SPEC §6](../SPEC.md#6-presence-and-discovery)); **the body is the persona**, appended to
 the session's system prompt at launch: the one field that *must* be applied at launch,
-because a session cannot change its system prompt afterward.
+because a session cannot change its system prompt afterward. Connectors that use an external
+prompt file write an owner-private temporary copy and pass only its path, so the persona body is not
+published in the agent process argv.
 
 ## Fields
 
@@ -94,7 +96,11 @@ writes the same file; a later `cotal_spawn(name, role?, agent?, model?, variant?
 it online, so a peer can mint a teammate with no hand-written file
 ([tool catalog](mcp-tools.md)). The write path takes **content only** (`model` /
 `persona`); `role`, `allowPublish`, `capabilities`, and `owner` are policy and have no
-slot, so a peer cannot grant itself a capability by redefining a file.
+slot, so a peer cannot grant itself a capability by redefining a file. A persona with no
+`capabilities:` line (every wire-defined one) therefore spawns **without** `spawn`, and a
+spawn whose effective role is `manager` is **refused at spawn time** rather than joining as
+a labelled manager that silently cannot seat workers: either put `capabilities: [spawn]` on
+the file (an operator edit) or spawn it under another role.
 
 **Defining is silent.** Nothing goes out on the mesh unless you pass `announce: <channel>`,
 and then it goes to that channel only. A peer that did not ask for the persona has no way
@@ -102,8 +108,9 @@ to judge whether spawning it is wanted, and a broadcast soliciting spawns from a
 unfamiliar principal is a thing a peer should be suspicious of, so announcing belongs on
 the channel your team is working on rather than `general`. The old announcement carried limited discovery. Peers already listening saw the bare name, but
 no prompt, model, or role. Peers joining later saw nothing. No path a peer can
-deliberately consult is affected: `cotal personas list` reads the catalog within a
-workspace, and `cotal_spawn` on a name that does not exist fails loud.
+deliberately consult is affected: `cotal_personas` lists and shows the catalog over the
+wire (spawn-capability, same ownership as the write), `cotal personas list` reads the
+catalog within a workspace, and `cotal_spawn` on a name that does not exist fails loud.
 
 The operator-side counterpart is `cotal personas` (list / show / edit / new / rm); it
 reads and writes the same files directly, offline, no mesh ([CLI](cli.md)).

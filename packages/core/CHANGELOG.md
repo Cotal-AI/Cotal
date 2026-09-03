@@ -1,5 +1,67 @@
 # @cotal-ai/core
 
+## 0.38.0
+
+## 0.37.0
+
+### Minor Changes
+
+- e5e68ed: Add a mesh-side persona catalog read (`cotal_personas` / manager `list-personas` + `show-persona`) so a spawn-capable agent can enumerate names and show a card it owns without shelling out.
+- 00ac9d9: manager: refuse a manager-role spawn of a persona without the spawn capability. A persona defined over the wire (`cotal_persona`) carries no `capabilities:` line (the write path is content-only by design), and `cotal_spawn` takes a free-form `role`, so a wire-defined persona could be spawned with `role: "manager"` and join presenting as a manager whose credential cannot reach the control plane, silently, until the seat first tried to seat a worker (issue #966). The manager now refuses that spawn at accept, before any provisioning, naming the remediation for both authors: an operator adds `capabilities: [spawn]` to the persona file; a peer-defined persona cannot declare capabilities and must ask an operator. The guard keys on the effective role (a spawn-time role override wins over the file's, mirroring existing precedence) and leaves every non-manager spawn untouched. `cotal_spawn`'s `role` argument documents the requirement. Capabilities remain non-declarable over the wire: the closed `define-persona` input schema is unchanged and still guarded by `smoke:persona-input-closed`.
+- 063151b: Expose raw NATS transport liveness separately from full endpoint readiness. Connector sessions now
+  track transient disconnect and reconnect edges without flapping readiness, ignore stale events from
+  replaced connection epochs, and clear both states on stop. Connection issues remain scoped to pre-bind
+  readiness failures, clear on a successful bind, and survive stop for post-mortem diagnosis.
+
+  An endpoint stopped while its bind is still in flight also no longer announces that connection.
+  The bind's own teardown already discarded it, but the readiness event was emitted first, so any
+  listener on the endpoint was left holding a connected edge that nothing ever corrected.
+
+  The same applies to the transport seed, which reaches further back. It fires as soon as the dial
+  returns, well before the bind completes, so a stop arriving while the dial was still pending had a
+  stopped endpoint announce a live transport it never had. Both edges are now guarded.
+
+### Patch Changes
+
+- c31de91: Describe retry formats an arbitrary caught value without throwing, so a poisoned `message` getter or `toString` cannot escape the timer. The pending describe still settles as unavailable.
+- d4779db: Treat a CONSUMER.DELETE timeout during membership-watch disarm as best-effort cleanup: catch it, emit an endpoint error, and continue. A live observer over a slow link must not die because cleanup did not answer in time.
+- 6926b34: Report a focus-mode recall as incomplete (`droppedChannels`) instead of silently claiming an empty, complete window when the channel has `replay: false` or was joined only through a wildcard subscription. Previously an ack-dropped ambient message or `@mention` on such a channel was unrecoverable and `cotal_inbox` reported no loss.
+- d2c0fd3: Stop the presence and channel-registry KV watches on endpoint teardown. Each watch binds an
+  ordered JetStream push consumer whose idle-heartbeat monitor runs on its own timer, independent
+  of the connection; without an explicit `.stop()` before drain, that monitor keeps trying to reset
+  the consumer against a draining or closed connection, throwing an uncaught `DrainingConnectionError`
+  every 30 seconds until the process exits by some other means.
+- 7e45495: Make every shipped endpoint consumer explicitly surface or ignore recoverable warnings so retry and renewal failures no longer disappear silently.
+- 135ddaf: Reject endpoint reads when JetStream denies required metadata instead of returning successful incomplete results.
+- e703873: Report connector harness availability at manager boot and expose resolved binary paths in status.
+- 6c1cefe: A stalled presence-KV watch no longer sweeps every peer offline. Whole-bucket silence past TTL marks the observer view stale (last-known roster kept); the dashboard surfaces that on the existing stale pill and debounces the recovery replay so the online sidebar does not empty.
+- b20644b: Cancel unfinished history pulls at dashboard deadlines so abandoned reads cannot starve later requests.
+- 74c9a1b: Refuse to dial NATS with cached credentials after their JWT expiry when standing renewal is failing.
+- bfd650c: Retry the read-only endpoint describe bootstrap within its original deadline so a responder that registers just after the first request is still discovered.
+- e6c6947: Prevent two broker owners during manager succession. Normal shutdown now requires authoritative seat exit proof before releasing manager authority, and crash recovery verify-evicts an orphaned static seat's broker principal before retiring its lifecycle and freeing the alias.
+- b36bf50: Emit recoverable endpoint retry notices on `warning` instead of `error`, so a consumer with no error listener is not killed by a condition the endpoint is already surviving.
+- 3cc980d: Resume an interrupted frozen endpoint-gate repair without repeating holder evictions that were
+  already verified. Progress is durably bound to the registration operation, frozen-gate revision,
+  and sorted holder set, while every retry still rechecks freeze-holder liveness. A mismatch restarts
+  from zero, each completion is persisted before the next verification, and the gate reopens only
+  after every current holder verifies. The endpoint executor can write only its exact repair key, and
+  post-reopen cleanup failure cannot authorize a later freeze.
+- d94b617: Keep synchronous spawn callers waiting through the connector-selected readiness budget instead of timing out early on slow healthy launches.
+- eb3b429: Sparse channelHistory stops at the subject's first matching sequence instead of walking the stream to sequence 1. The page was already correct; the walk is now the channel's own span.
+- 17046ac: Spawn failures return the lifecycle facts the manager already had (blocked op, head state, opId, remedy) instead of a connector timeout or opaque string.
+- b7b932e: Point status skills rows at `cotal setup --skills`, with harness-native setup declared and implemented by connectors rather than the base CLI.
+- 8eff985: `provisionAgent`'s agent-profile grant template emitted the JetStream consumer-create deny triple
+  on the DM, TASK, and DLV streams while granting `$JS.API.STREAM.INFO` on none of them. Every
+  JetStream API call is a NATS publish, so a role-carrying actor was refused stream-level state reads
+  (message counts, first/last seq) on the task stream it binds its `svc_<role>` consumer to.
+  `STREAM.INFO` on TASK now sits inside the same `if (role)` gate as the rest of that stream's
+  grants, so it tracks the role like every other TASK row and a role-less agent still holds nothing
+  on TASK. DM, DLV, and the EPC contract store get no such grant: `subjects_filter` is a
+  request-body field no ACL can narrow to counts alone, so INFO there would enumerate DM and delivery
+  subject metadata across peers, and no agent-side caller reads those streams at stream level. The
+  consumer-create deny triple is untouched.
+- b88edd9: Connectors declare `supportsToolListAnnounce` (default-deny). A connection-changing op against a connector that cannot announce a tool-list change fails loud, without naming harnesses in shared code.
+
 ## 0.36.0
 
 ### Patch Changes

@@ -1,0 +1,18 @@
+{
+  "suite": "packages/lang/smoke/engine.smoke.ts",
+  "guard": "A capability refusal crosses the effect bridge as its class: flattened to a plain host error, the worker's interpreter settles the entry `failed` under the refusal's own code and the run is broken forever instead of held.",
+  "command": "pnpm smoke:lang-engine",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/bridge-refused.json",
+  "mutations": [
+    {
+      "name": "the bridge flattens a refusal into a plain host error",
+      "file": "packages/lang/src/engine/bridge.ts",
+      "find": "  if (e instanceof EffectRefused) {\n    return { domain: \"host\", name: e.name, message: e.message, code: e.code, refused: true };\n  }",
+      "replace": "  // mutant: a refusal crosses as an anonymous host error",
+      "expectRed": "a capability refusal crosses both boundaries as the hold, matching the walker's own raise",
+      "completionMarker": "ok a handler's EffectError crosses the bridge and the thread with its code and kind intact, matching the walker's own raise",
+      "cell": "a capability refusal crosses both boundaries as the hold, matching the walker's own raise",
+      "note": "Without the marker the thread rehydrates a plain Error carrying code L5016, the interpreter settles the entry `failed` under that code, and the run comes back as a failure rather than L5025, so the bridged half of the parity cell reds while the walker half stays green."
+    }
+  ]
+}

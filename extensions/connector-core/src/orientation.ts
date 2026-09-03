@@ -18,7 +18,7 @@ import { DOCS_VERSION } from "./docs.js";
  *  connector's system prompt / MCP instructions so every agent — Claude Code, OpenCode, Hermes — is
  *  told to orient first, from a single source of truth. */
 export const ORIENTATION_BOOTSTRAP =
-  "Start with cotal_orientation — it shows your identity, the channels you can read and post to, " +
+  "Start with cotal_orientation — it shows your identity, the recorded model pin if one was set, the channels you can read and post to, " +
   "your capabilities, the tools available to you, and who's present.";
 
 /** Mesh-first steer, folded in alongside {@link ORIENTATION_BOOTSTRAP} for every connector. Keeps
@@ -30,6 +30,15 @@ export const MESH_FIRST_STEER =
   "any built-in parallel-agent feature, do it through Cotal instead: spawn or delegate to a real peer " +
   "(cotal_spawn if you have it, otherwise cotal_dm or cotal_anycast to reach one) so the work stays " +
   "visible to the user and addressable by peers rather than hidden inside a private subagent.";
+
+/** Workflow-run steer, folded in beside {@link MESH_FIRST_STEER} for every connector. Points agents
+ *  at durable cotal-lang runs for coordination that must outlive their own session, so the reflex is
+ *  a journalled `cotal run` rather than an improvised loop held in one agent's context. */
+export const WORKFLOW_STEER =
+  "Coordination that must survive restarts (multi-step plans, human checkpoints, timed waits, " +
+  "fan-out over agents) belongs in a durable workflow run: a cotal-lang program driven with " +
+  "`cotal run start`, resumable on any host from its step journal. Read the `workflows` page via " +
+  "cotal_docs before improvising such a loop in your own context.";
 
 /** A tool the agent can actually call (already gated), as it appears in the card. */
 export interface OrientationTool {
@@ -43,7 +52,7 @@ export interface Orientation {
   /** Snapshot stamp. The live fields below (peers / status / attention / unread) are as of this time;
    *  the identity/access/capabilities/tools fields are static for the session. */
   generatedAt: number;
-  identity: { name: string; role?: string; space: string; id: string; cotalVersion: string };
+  identity: { name: string; role?: string; space: string; id: string; cotalVersion: string; model?: string };
   access: {
     /** auth mode → these grants are broker-enforced; open mode → advisory (host-trusted) only. */
     authMode: boolean;
@@ -77,6 +86,9 @@ const CORE_TOOLS = new Set([
   "cotal_status",
 ]);
 
+const honestStatus = (status: PresenceStatus): string =>
+  status === "working" ? "working · progress unknown" : status;
+
 /** Assemble the card. `visibleTools` is the already-gated tool list the connector exposes (pass the
  *  result of `cotalToolSpecs(config)` mapped to name/title) — the orientation tool itself is dropped.
  *  Pure: `generatedAt` is supplied by the caller so it's testable and deterministic. */
@@ -96,7 +108,7 @@ export function buildOrientation(
   const peers = agent.roster().filter((p) => p.card.id !== agent.id);
   const shown = peers
     .slice(0, 8)
-    .map((p) => `${p.card.role ? `${p.card.name}/${p.card.role}` : p.card.name} (${p.status})`);
+    .map((p) => `${p.card.role ? `${p.card.name}/${p.card.role}` : p.card.name} (${honestStatus(p.status)})`);
   const summary = peers.length
     ? shown.join(", ") + (peers.length > shown.length ? `, +${peers.length - shown.length} more` : "")
     : "no other peers present";
@@ -104,7 +116,7 @@ export function buildOrientation(
   return {
     v: 1,
     generatedAt,
-    identity: { name: config.name, role: config.role, space: config.space, id: agent.id, cotalVersion: DOCS_VERSION },
+    identity: { name: config.name, role: config.role, space: config.space, id: agent.id, cotalVersion: DOCS_VERSION, ...(config.model ? { model: config.model } : {}) },
     access: {
       // AUTHENTICATED, not "has static creds": a user-auth mesh has no static creds and its grants
       // are broker-enforced, so `!!config.creds` told every agent on one that its grants were
@@ -141,6 +153,9 @@ export function renderOrientation(o: Orientation): string {
     `You are ${who} in space "${o.identity.space}" (id ${o.identity.id.slice(0, 8)}…).`,
     `Cotal v${o.identity.cotalVersion} — call cotal_docs for the version-exact spec, schema, and guides. ` +
       "Consult it before answering about Cotal or writing code against it; don't rely on training memory.",
+    o.identity.model
+      ? `Model pin: ${o.identity.model} (from COTAL_MODEL / the agent file; the harness default is not knowable from here when this line is absent).`
+      : "Model pin: none recorded (COTAL_MODEL / agent-file model: were unset; the harness default is not knowable from here).",
     "",
     `Access — ${o.access.authMode ? "auth mode (grants are broker-enforced)" : "open mode (grants advisory, host-trusted)"}:`,
     `  • read: ${fmt(o.access.read)}`,
@@ -154,7 +169,7 @@ export function renderOrientation(o: Orientation): string {
     `Tools — more: ${o.tools.more.map((t) => t.name).join(", ") || "—"}`,
     "",
     `Right now (snapshot @ ${new Date(o.generatedAt).toISOString()}):`,
-    `  • status: ${o.status} · attention: ${o.attention}`,
+    `  • status: ${honestStatus(o.status)} · attention: ${o.attention}`,
     `  • peers present: ${o.peers.present} — ${o.peers.summary}`,
     `  • unread: ${o.unread.total}`,
     "",

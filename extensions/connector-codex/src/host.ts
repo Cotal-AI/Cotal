@@ -55,6 +55,7 @@ import {
   startControlServer,
   ORIENTATION_BOOTSTRAP,
   MESH_FIRST_STEER,
+  WORKFLOW_STEER,
   AguiEmitter,
   AguiEmitterHolder,
   EventWal,
@@ -139,6 +140,7 @@ function developerInstructions(config: ReturnType<typeof configFromEnv>, persona
     `${ORIENTATION_BOOTSTRAP} ` +
     feedbackLine(config) +
     `${MESH_FIRST_STEER} ` +
+    `${WORKFLOW_STEER} ` +
     `Peer messages are delivered into your turns as blocks marked 📨. Reply with cotal_dm ` +
     `(privately, to the sender), cotal_send (to a channel), or cotal_anycast (to a role); ` +
     `use cotal_roster to see who is present and cotal_status to report what you are doing. ` +
@@ -351,7 +353,7 @@ export async function runCodexHost(): Promise<void> {
   const agent = new MeshAgent(config);
 
   const codexHome = prepareCodexHome(config.space, config.name);
-  const codexBin = process.env.COTAL_CODEX_BIN?.trim() || undefined;
+  const codexBin = process.env.COTAL_CODEX_BIN?.trim() || process.env.COTAL_CODEX_RESOLVED_BIN?.trim() || undefined;
   // Validate the operator's launch config BEFORE anything is listening, so a bad launch throws
   // with nothing left behind to reap.
   const baseOverrides = configOverrides(model, variant);
@@ -1171,7 +1173,7 @@ export async function runCodexHost(): Promise<void> {
   // PATH preflight (parity with the manager's `requires` check, for a foreground `--live-only`
   // launch that bypasses it): fail with a clear message naming the binary rather than a raw
   // ENOENT from the spawn. An absolute COTAL_CODEX_BIN override (tests) skips the PATH scan.
-  const bin = process.env.COTAL_CODEX_BIN?.trim() || "codex";
+  const bin = process.env.COTAL_CODEX_BIN?.trim() || process.env.COTAL_CODEX_RESOLVED_BIN?.trim() || "codex";
   if (!bin.includes(sep) && !onPath(bin)) {
     await mcp.close();
     throw new Error(`the codex connector needs \`${bin}\` on PATH — install the Codex CLI and authenticate it`);

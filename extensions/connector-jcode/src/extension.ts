@@ -113,6 +113,7 @@ export const jcodeConnector: Connector = {
   // per provider AND per model, and the Harness API publishes no ladder to check against — so the
   // tier is carried verbatim and validated at launch by Jcode itself, which owns that catalog.
   supportsModelVariant: true,
+  supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
   listModels: listJcodeModels,
   launchHint: "starting Jcode and joining the mesh (first boot can take several minutes)",
 
@@ -136,6 +137,7 @@ export const jcodeConnector: Connector = {
       COTAL_CONTROL_SOCKET: control.path,
       COTAL_JCODE_HOME: opts.workspaceRoot ?? process.cwd(),
     };
+    if (opts.resolvedBinaries?.jcode) env.COTAL_JCODE_BIN = opts.resolvedBinaries.jcode;
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;

@@ -1,0 +1,52 @@
+{
+  "suite": "packages/core/smoke/tool-list-announce.smoke.ts",
+  "guard": "a connection-changing op branches on supportsToolListAnnounce, never on a connector name; undeclared is refuse, not a no-op; the refusal names no connector",
+  "command": "tsx packages/core/smoke/tool-list-announce.smoke.ts",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/tool-list-announce.json",
+  "why": [
+    "Issue #1004. The advertised tool list depends on the connection. Some hosts can announce",
+    "a change; some cannot. A consumer that special-cases today's names, or that treats an",
+    "undeclared flag as a silent no-op, is the defect wearing the fix's clothes.",
+    "",
+    "N1 restores silent-downgrade: undeclared returns instead of throwing. It must redden the",
+    "default-deny cell.",
+    "",
+    "N2 restores name-special-casing: the helper throws for a hardcoded announcer name even when",
+    "that connector declared the flag. The declared-true cell goes red.",
+    "",
+    "N3 puts a shipped harness name into the refusal. The cell that requires the message contain",
+    "NO connector name at all must redden. That is the ruling's own cell.",
+    "",
+    "NO BUILD STEP: the suite imports ../src, so the mutated source is the source it runs.",
+    "The command calls tsx directly so pnpm does not try to install in this worktree."
+  ],
+  "mutations": [
+    {
+      "name": "N1 undeclared becomes a silent no-op",
+      "file": "packages/core/src/connector.ts",
+      "find": "  if (connector.supportsToolListAnnounce === true) return;\n  throw new Error(\n    \"this connector cannot announce a tool-list change, so a connection change is refused rather than leaving a stale advertised surface\",\n  );",
+      "replace": "  if (connector.supportsToolListAnnounce === true) return;\n  return;",
+      "expectRed": "undeclared is refused (default-deny, not a no-op)",
+      "cell": "undeclared is refused (default-deny, not a no-op)",
+      "note": "The standing default-deny ruling: an undeclared capability must fail loud, never quietly become a no-op."
+    },
+    {
+      "name": "N2 the helper special-cases a name instead of the declaration",
+      "file": "packages/core/src/connector.ts",
+      "find": "  if (connector.supportsToolListAnnounce === true) return;",
+      "replace": "  if (\"name\" in connector && connector.name === \"smoke-announce-unknown\") { throw new Error(\"this connector cannot announce a tool-list change, so a connection change is refused rather than leaving a stale advertised surface\"); }\n  if (connector.supportsToolListAnnounce === true) return;",
+      "expectRed": "declared-true is allowed",
+      "cell": "declared-true is allowed",
+      "note": "Name-special-casing is the ruling's forbidden shape. Forcing a throw on the unknown announcer's name proves a consumer that branched on a string would break a connector the CLI has never heard of."
+    },
+    {
+      "name": "N3 the refusal names a shipped harness",
+      "file": "packages/core/src/connector.ts",
+      "find": "    \"this connector cannot announce a tool-list change, so a connection change is refused rather than leaving a stale advertised surface\",",
+      "replace": "    \"claude connector cannot announce a tool-list change, so a connection change is refused rather than leaving a stale advertised surface\",",
+      "expectRed": "the refusal message contains no connector name at all",
+      "cell": "the refusal message contains no connector name at all",
+      "note": "David's ruling as a cell: the refusal must name no harness. Putting claude in the message is the favoritism the flag exists to forbid."
+    }
+  ]
+}

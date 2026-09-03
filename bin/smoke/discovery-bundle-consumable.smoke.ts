@@ -68,6 +68,7 @@ if (SUBCOMMAND === "auth-service") {
 type ChildProcess = import("node:child_process").ChildProcess;
 
 const { spawn } = await import("node:child_process");
+const { SMOKE_BROKER_TOKEN, teardownOnSignal } = await import("@cotal-ai/smoke-kit");
 const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
 const { createRequire } = await import("node:module");
 const { tmpdir } = await import("node:os");
@@ -156,6 +157,7 @@ const dir = userAuthStateDir(root, SPACE);
 const store = workspaceSecretStore(root);
 
 let broker: ChildProcess | undefined;
+let releaseBroker: (() => void) | undefined;
 let authChild: ChildProcess | undefined;
 let jsDir: string | undefined;
 const idpSrv = createServer((req, res) => handler!(req, res));
@@ -190,12 +192,13 @@ try {
   const expectedCallout = await loadCalloutAuth(store, SPACE);
   if (!expectedCallout) throw new Error("prepared callout material was not persisted");
 
-  jsDir = mkdtempSync(join(tmpdir(), "cotal-dbc-js-"));
+  jsDir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}dbc-js-`));
   writeFileSync(
     join(root, "server.conf"),
     serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: jsDir, extraAccounts: prepared.extraAccounts }),
   );
   broker = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
+  releaseBroker = teardownOnSignal(broker, jsDir);
   let up = false;
   for (let i = 0; i < 50 && !up; i++) { up = await isReachable(SERVER); if (!up) await wait(200); }
   check("user-auth broker is reachable", up);
@@ -305,6 +308,7 @@ try {
 } finally {
   await stopOwned(authChild, true);
   await stopOwned(broker);
+  releaseBroker?.();
   if (idpSrv.listening) await new Promise<void>((resolveClose) => idpSrv.close(() => resolveClose()));
   if (jsDir) rmSync(jsDir, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });

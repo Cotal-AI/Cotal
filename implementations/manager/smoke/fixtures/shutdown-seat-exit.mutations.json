@@ -1,0 +1,20 @@
+{
+  "suite": "implementations/manager/smoke/start-model-preflight.smoke.ts",
+  "guard": "normal Manager.stop does not release manager authority until every managed AgentHandle has authoritatively exited",
+  "command": "pnpm smoke:start-model",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/fixtures/shutdown-seat-exit.mutations.json",
+  "why": [
+    "The deterministic shutdown cell gives both target seats a runtime exit witness and asserts stop proves both exits before returning.",
+    "A second cell makes one runtime stop throw and its wait report still-running; shutdown must fail loud rather than release authority into an orphan window."
+  ],
+  "mutations": [
+    {
+      "name": "release manager authority immediately after requesting seat stops",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    await Promise.all(managed.map(async (a) => {\n      try {\n        await this.awaitHandleExit(a.handle);\n      } catch (e) {\n        failures.push(`${a.name}: ${(e as Error).message}`);\n      }\n    }));",
+      "replace": "    void failures;",
+      "expectRed": "shutdown: stop() proves every managed child exited before releasing manager authority",
+      "cell": "shutdown: stop() proves every managed child exited before releasing manager authority"
+    }
+  ]
+}
