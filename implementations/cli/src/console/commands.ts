@@ -49,6 +49,20 @@ export interface ConsoleCommand {
 /** The reply's error, or a generic word: the status line has one row. */
 const why = (r: ManagerReply): string => r.error ?? "failed";
 
+/** One managed-agent row as `:status` prints it. Two facts, printed as two facts, the way
+ *  `cotal ps` prints them: `status` is the PROCESS the manager runs and `mesh` is that seat's
+ *  presence, and they disagree in the common failure (running for days, offline on the mesh).
+ *
+ *  Presence `working` is the one word that needs qualifying. It records that the seat said it was
+ *  working, never that anyone observed progress, so it reaches the reader as `working · progress
+ *  unknown` here exactly as it does from `cotal ps`, the roster, and the connector's orientation.
+ *  A bare `working` would claim an observation the manager never made. */
+export function formatManagedRow(a: ManagedRow): string {
+  const mesh = a.mesh === "working" ? "working · progress unknown" : a.mesh;
+  const role = a.role ? ` (${a.role})` : "";
+  return `${a.name}${role} · ${a.agent} · ${a.mode} · ${a.status} · mesh ${mesh} · up ${Math.round(a.uptimeMs / 60000)}m`;
+}
+
 /** Resolve an agent/endpoint name (with or without a leading @) to its instance id. Fail-loud:
  *  an exact id or a unique name resolves; a same-name collision throws `AmbiguousPeerError`
  *  (the caller renders {@link ambiguityNote}). */
@@ -170,10 +184,7 @@ export const COMMANDS: ConsoleCommand[] = [
       if (!name) return ctx.notify("usage: status <agent>");
       const r = await ctx.control("status", { name });
       if (!r.ok) return ctx.notify("status: " + why(r));
-      const a = r.data as ManagedRow;
-      ctx.notify(
-        `${a.name}${a.role ? " (" + a.role + ")" : ""} · ${a.agent} · ${a.mode} · ${a.status} · mesh ${a.mesh} · up ${Math.round(a.uptimeMs / 60000)}m`,
-      );
+      ctx.notify(formatManagedRow(r.data as ManagedRow));
     },
   },
   {
