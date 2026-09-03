@@ -121,7 +121,11 @@ const trips = (c: WireCost): number => c.create + c.info + c.next + c.del + c.ot
  *  a message body can contain any text, so the client→broker direction is reassembled into `\r\n`
  *  terminated lines and only a line that BEGINS with `PUB $JS.API.CONSUMER.` is counted. A payload
  *  line cannot begin that way, and a subject split across two chunks is rejoined before it is
- *  matched, so neither over- nor under-counts.
+ *  matched. That holds for the frames this corpus produces, and NOT in general: the split is on
+ *  CRLF without honouring the declared payload length, so a payload carrying a CRLF can false-count
+ *  a line, and only `PUB` is recognised, so an `HPUB` would go uncounted. Neither occurs here, since
+ *  the seeded bodies are `x` repeated and the client publishes no headers on this path. Treat the
+ *  count as exact for this corpus rather than as a general NATS framing parser.
  *
  *  `latency` is a mutable object read at each push, so one proxy on one port serves both the
  *  no-cost arms (where round trips and bytes are the measurement) and the modelled-link arm (where
@@ -516,8 +520,10 @@ try {
   // `544a974b7` at limit 500 against a 2500-message backlog: 1,995,854 to 1,995,859 bytes moved
   // across four runs to return a 346,001-byte page, 257 requests every time, and ALONE on this link
   // 8161ms to 8753ms, so ALL FOUR missed the 8000ms deadline on this host with nothing else on the
-  // connection. A deployment whose backlog is larger sits further past it every time, which is the
-  // reported refusal, with no contention in it at all.
+  // connection, which is the reported refusal with no contention in it at all. The cost does not
+  // keep climbing with the backlog: the old span was `max(limit * 4, 64)`, so at limit 500 it is
+  // 2000 messages and any backlog of 2000 or more drains that same window. What sets the cost is
+  // the window, and four pages to return one already misses the deadline here.
   {
     Object.assign(latency, FIELD);
     /** The DM read's OWN elapsed time and wire cost, not the time until everything settles. */

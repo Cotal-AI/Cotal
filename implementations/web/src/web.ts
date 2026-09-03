@@ -627,9 +627,9 @@ export interface ActivityPage {
  * a 160ms link, the first produced `500 {"error":"timeout"}` after 15.94s and the second produced a
  * 34-second success. Neither is an answer a dashboard can render.
  *
- * Now every source - each channel AND the DM backlog, which used to be serialized after them - races
- * one shared deadline. Sources that answered are merged; sources that refused or ran late are NAMED
- * in the page. The page is never a 500 and never silently short.
+ * Now every source races one shared deadline, and since #1210 there are two of them: all of chat in
+ * one stream read, and the DM backlog, which used to be serialized after the per-channel reads.
+ * Sources that answered are merged; sources that refused or ran late are NAMED in the page. The page is never a 500 and never silently short.
  *
  * Extracted from the route so the filter above is reachable by a test that can see WHICH channels
  * were asked for, which is the only evidence that separates filtering before the fetch from

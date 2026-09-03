@@ -2675,7 +2675,11 @@ export class CotalEndpoint extends EventEmitter {
       // at limit 500 against a 2500-message backlog: 1,995,854 to 1,995,859 bytes moved across
       // four runs to return a 346,001-byte page, and 8161ms to 8753ms on that link, so all four
       // missed the dashboard's 8000ms deadline with nothing else on the connection (Cotal #1210).
-      // A deployment whose backlog is larger sits further past it every time. One page wide makes the
+      // That cost does not keep growing with the backlog, and saying it did was wrong: the old first
+      // span was `max(limit * 4, 64)`, so at limit 500 it is 2000 messages, and ANY backlog of 2000
+      // or more drains the same 2000-message window. The point is that the window, not the backlog,
+      // sets the cost, and four pages to return one is already past the deadline on this link for
+      // every such deployment. One page wide makes the
       // SUCCESSFUL drain
       // obey the same bound the failed ones already promised: it moves at most one page. A sparse
       // subject pays one more widening step for that, which is four round trips against a transfer
@@ -2876,7 +2880,9 @@ export class CotalEndpoint extends EventEmitter {
     } finally {
       // DELETE THE EPHEMERAL CONSUMER. The pinned client gives an ordered consumer a 5-minute
       // inactive threshold, so leaving them behind is not free: the widening search below can make
-      // up to eight per call, the dashboard makes one call per channel, and a reload repeats it.
+      // up to eight per call, and a reload repeats every call the page makes. The dashboard used to
+      // make one per channel; since #1210 its activity feed makes one for all of chat and one for
+      // DMs, and the single-channel routes still make one each.
       // Left alone that accumulates consumers on the broker until the thresholds expire, and the
       // resulting resource exhaustion would land in streamHistory's catch and read as empty history.
       try { await consumer.delete(); }
