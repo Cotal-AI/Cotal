@@ -547,6 +547,28 @@ export interface ShortSocketHome {
 }
 
 /**
+ * Clear whatever occupies the alias path so this launch can claim it.
+ *
+ * The alias is derived from the seat home, so one seat NAME reuses one path for the life of the
+ * machine. That made a refusal here permanent: a launch hands the path back through `dispose()`,
+ * and a Jcode server the previous lifecycle left running re-creates it as a real directory under
+ * its own `JCODE_HOME`, after which every later launch of that name died before Jcode ever started
+ * (#1211). The connector is the only writer of this path and it is never the seat home, so an entry
+ * of any kind is stale and gets reclaimed. It is classified with `lstat` and removed through the
+ * owner-verified 0700 parent above, so the removal cannot follow a link out of that directory.
+ */
+function reclaimSocketAlias(alias: string): void {
+  let stats: ReturnType<typeof lstatSync>;
+  try {
+    stats = lstatSync(alias);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return;
+  }
+  rmSync(alias, { force: true, recursive: stats.isDirectory() });
+}
+
+/**
  * The current SDK derives `run/jcode-api.sock` beneath `jcodeHome` and has no socket-path launch
  * option. Keep managed state at its normal workspace location and pass it through a short private
  * alias instead. The SDK's resulting API pathname is bounded before it reaches AF_UNIX.
@@ -556,13 +578,7 @@ export function shortSocketHome(home: string): ShortSocketHome {
   const socketDir = join("/tmp", `jc-${id}`);
   privateDirectory(socketDir, { requireOwner: true, pin: false });
   const alias = join(socketDir, "home");
-  try {
-    const stats = lstatSync(alias);
-    if (!stats.isSymbolicLink()) throw new Error(`Jcode short socket alias is not a symlink: ${alias}`);
-    rmSync(alias, { force: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
+  reclaimSocketAlias(alias);
   // `home` was made and checked as an owner-only real directory before this call. The alias is
   // inside our 0700 directory and exists only to shrink the SDK's fixed `run/jcode-api.sock` path.
   // A failure here has no long-path fallback: that would reintroduce the SUN_LEN startup failure.

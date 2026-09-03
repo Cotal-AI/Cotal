@@ -6,8 +6,8 @@ import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HarnessError, JcodeClient, launchInstance, type ApiEvent, type LaunchedInstance } from "@1jehuang/jcode-sdk";
 import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
-import { mirrorJcodeCredentials, shortSocketHome } from "./private-state.js";
-import { captureProcessIdentity, launchIdentityEnv, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
+import { mirrorJcodeCredentials, shortSocketHome, type ShortSocketHome } from "./private-state.js";
+import { captureProcessIdentity, launchIdentityEnv, recordLaunch, stopOrphanedTree, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
 import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
 import { bareModelId, describeRoute } from "./route-identity.js";
 import {
@@ -261,11 +261,31 @@ export async function runJcodeHost(): Promise<void> {
   assertNoProjectMcpConfig(cwd);
   const home = privateAgentHome(config.space, config.name);
   installJcodeDiagnosticLog(home);
+  // A lifecycle killed without its teardown leaves its Jcode server holding this seat's runtime
+  // dir for five more minutes. Adopt and stop it before claiming the home; a tree whose connector
+  // is still alive is a live seat and is left to Jcode's own runtime-dir lock (#1211).
+  try {
+    const stopped = await stopOrphanedTree({ home });
+    if (stopped.length)
+      writeJcodeDiagnostic(`[cotal-jcode] stopped ${stopped.length} Jcode process(es) left running by a previous lifecycle of this seat\n`);
+  } catch (error) {
+    // Connector-owned text naming only PIDs. Launch anyway: Jcode's own lock refuses next, and it
+    // names the runtime directory it is refusing on in the seat's private log.
+    writeJcodeDiagnostic(`[cotal-jcode] ${(error as Error).message}\n`);
+  }
   // SDK 1.1.0 has no socket-path launch option: it derives `run/jcode-api.sock` below jcodeHome.
   // The managed home stays in the workspace, but this private short alias keeps that fixed API
   // path below AF_UNIX's platform limit. Failure is fatal; a long-path fallback is the reported bug.
-  mirrorJcodeCredentials(home);
-  const socketHome = shortSocketHome(home);
+  let socketHome: ShortSocketHome;
+  try {
+    mirrorJcodeCredentials(home);
+    socketHome = shortSocketHome(home);
+  } catch (error) {
+    // These refusals name local paths, which the public startup diagnostic never renders, so
+    // without their own code they all reported as `(unknown)` and an operator could not tell a
+    // wedged seat from a broken connector (#1211).
+    throw new JcodeConnectorError("private_state", "jcode connector: the seat's private Jcode state could not be prepared", { cause: error });
+  }
   const relay = relayEndpoint(config.space, config.name);
 
   // The endpoint is the sole reader of Cotal material. Once it has parsed config/control, neither
@@ -321,6 +341,9 @@ export async function runJcodeHost(): Promise<void> {
     const exitListenersBefore = new Set(process.listeners("exit"));
     const launchBound = launchIdentityEnv();
     launchIdentityValue = launchBound.value;
+    // Written before the tree exists so a launch that dies mid-spawn still names what it may have
+    // created. The next launch of this home reads it to tell an orphan from a live seat (#1211).
+    recordLaunch(home, { identity: launchBound.value, host: captureProcessIdentity(process.pid) });
     instance = await launchInstance({
       binary,
       jcodeHome: socketHome.jcodeHome,

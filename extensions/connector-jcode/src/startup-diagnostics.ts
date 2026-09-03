@@ -3,7 +3,7 @@ import { constants, lstatSync, mkdirSync, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { hardenPrivate } from "@cotal-ai/core";
 
-export type JcodeConnectorFailureCode = "model_prefix_rejected" | "model_refused" | "model_mismatch";
+export type JcodeConnectorFailureCode = "model_prefix_rejected" | "model_refused" | "model_mismatch" | "private_state";
 
 /** A bounded connector-owned startup refusal. Only its allow-listed code is rendered publicly. */
 export class JcodeConnectorError extends Error {
