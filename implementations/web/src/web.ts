@@ -980,13 +980,15 @@ export async function web(args: ParsedArgs): Promise<void> {
       //
       // ONE READ FOR ALL OF CHAT (#1210). This used to fetch a full page PER CHANNEL and merge, and
       // said so: it moved (channels + 1) times what it displays, and each of those reads was itself
-      // a widening probe loop. Measured on a 69-channel space: 2474 broker requests and 7.6 MB to
-      // return a 143 KB page, and on the reporting deployment's 82ms link a median of 2 of 69
-      // channels answered inside the deadline while `/api/dms` never once did.
+      // a widening probe loop. On the reporting deployment's 82ms link a median of 2 of 69 channels
+      // answered inside the deadline while `/api/dms` never once did.
       //
       // The CHAT stream already interleaves every channel into one sequence space, so the globally
       // newest N is the tail of that ONE stream, filtered to the chat channels and merged here
-      // rather than in seventy separate reads. Same page, 33 requests and 0.6 MB.
+      // rather than in seventy separate reads. Counted on the wire over a seeded 69-channel corpus
+      // at limit 200, the same 143,401-byte page costs 2524 broker requests and 8.0 MB before
+      // against 143 requests and 0.91 MB after. `pnpm smoke:web-activity-read-cost` is that
+      // measurement, both arms and both columns.
       //
       // WHAT SELECTS THE PAGE, precisely, because the old shape had two orderings and this has one.
       // The newest `limit` chat messages in the broker's own arrival order are merged with the

@@ -2473,8 +2473,10 @@ export class CotalEndpoint extends EventEmitter {
    * consumer takes a SET of filter subjects. The dashboard's activity feed used to answer this by
    * calling {@link channelHistory} once per channel and merging: each of those is a widening probe
    * loop, so the cost carried two multipliers (a probe loop per channel, and a fan-out across every
-   * channel). Measured on a 69-channel space with 24 event channels: 2474 broker requests and 7.6 MB
-   * transferred to return a 143 KB page, against 33 requests and 0.6 MB here (Cotal #1210).
+   * channel). Counted on the wire over a seeded corpus of 69 chat channels and 24 event channels at
+   * limit 200: 2524 broker requests and 8.0 MB transferred to return a 143,401-byte page, against
+   * 143 requests and 0.91 MB here. `pnpm smoke:web-activity-read-cost` is that measurement (Cotal
+   * #1210).
    *
    * **The broker does the filtering, so the wire carries only what is asked for.** A channel left
    * out of `channels` costs nothing: its messages are never delivered, so a space whose volume is
@@ -2661,8 +2663,10 @@ export class CotalEndpoint extends EventEmitter {
       // window succeeds on the first attempt and drains four pages to keep one, because
       // `drainWindow` delivers everything in the window and keeps the tail. Measured on `/api/dms`
       // at limit 500 against a 2500-message backlog: 1,995,856 bytes moved to return a 346,001-byte
-      // page, 8852ms across an 82ms/554 KB/s link, which is past the dashboard's 8000ms deadline
-      // with nothing else on the connection (Cotal #1210). One page wide makes the SUCCESSFUL drain
+      // page, and 8852ms and 7857ms across two runs on an 82ms/554 KB/s link, straddling the
+      // dashboard's 8000ms deadline with nothing else on the connection (Cotal #1210). A deployment
+      // whose backlog is larger sits on the wrong side of it every time. One page wide makes the
+      // SUCCESSFUL drain
       // obey the same bound the failed ones already promised: it moves at most one page. A sparse
       // subject pays one more widening step for that, which is four round trips against a transfer
       // several times the size of the answer.

@@ -527,8 +527,9 @@ try {
 
     ok("5.1 the DM read finishes inside the deadline ALONE on the field link", solo.ms < AGGREGATION_DEADLINE_MS && solo.dms === 500,
       { ms: solo.ms, dms: solo.dms });
-    // THE NAMED CELL for the window change. A four-page window moves 5.8x the page here and takes
-    // 8852ms, so restoring it turns this red on the ratio and 5.1 red on the clock.
+    // THE NAMED CELL for the window change: the ratio is what reliably reds when the four-page
+    // window is restored, because it moves 5.8x the page here whatever the link is doing. 5.1 reds
+    // with it only on the runs that land past 8000ms, which is why the clock is not the cell.
     ok("5.2 and moves less than twice the page it returns", solo.bytes < 700_000, solo.bytes);
     ok("5.3 it still finishes with the activity read beside it", after.ms < AGGREGATION_DEADLINE_MS, after.ms);
     ok("5.4 and the activity page beside it is whole", after.page !== undefined && !after.page.partial, after.page?.missing);
