@@ -536,6 +536,37 @@ try {
     // fixing a ratio here would be measuring this machine's scheduler.
     console.log(`    contention: fan-out beside it costs ${(beforeShape.ms / solo.ms).toFixed(2)}x, the single read ${(after.ms / solo.ms).toFixed(2)}x`);
   }
+  // ── 6. WHAT ONE CHANNEL'S READ COSTS ──────────────────────────────────────────────────────────
+  // The routes above are not the only callers of the read this change touches. `/api/channels/<name>
+  // /history`, the mediated `readHistory`, the console and the agent history tools all read ONE
+  // channel, and the narrower first window makes that path slightly WORSE: a single channel is a
+  // small fraction of its own stream, which is the case the four-page window was chosen for.
+  //
+  // MEASURED HERE RATHER THAN ASSERTED, and measured here rather than in a throwaway, because a
+  // number in a pull request that cannot be regenerated from the tree is not a measurement. Run this
+  // file on a checkout of `544a974b7` for the other column, the same way the sections above get
+  // theirs. The cells assert only the shape; the regression itself is a printed number, because
+  // fixing a threshold to it would be measuring this corpus.
+  {
+    const ep = await mkEp(SPACE, "one-channel");
+    await wait(250);
+    for (const [label, channel, expect] of [
+      ["busiest channel", seeded.events[0], 200],
+      ["typical chat channel", seeded.chat[0], CORPUS.chatDepth],
+    ] as const) {
+      cost = zero();
+      const page = await ep.channelHistory(channel, { limit: LIMIT });
+      const mine = { ...cost };
+      const answer = Buffer.byteLength(JSON.stringify(page));
+      console.log(row(label, mine, `returned=${page.length} answer=${answer}B`));
+      ok(`6.${label === "busiest channel" ? 1 : 3} the ${label} read returns its whole page`, page.length === expect,
+        { got: page.length, want: expect });
+      ok(`6.${label === "busiest channel" ? 2 : 4} and it is still ONE channel's read: a handful of consumer lifecycles`,
+        mine.create <= 8 && mine.del <= 8, { create: mine.create, del: mine.del });
+    }
+    await ep.stop();
+    await wait(400);
+  }
 } finally {
   link?.close();
   releaseBroker();
