@@ -1,5 +1,28 @@
 # @cotal-ai/cli
 
+## 0.40.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.40.0
+- @cotal-ai/workspace@0.40.0
+
+## 0.39.1
+
+### Patch Changes
+
+- 3f10a7b: Name a verified newer Cotal executable when an older binary refuses a newer seed store.
+  - @cotal-ai/core@0.39.1
+  - @cotal-ai/workspace@0.39.1
+
+## 0.39.0
+
+### Patch Changes
+
+- Updated dependencies [2277e28]
+  - @cotal-ai/core@0.39.0
+  - @cotal-ai/workspace@0.39.0
+
 ## 0.38.0
 
 ### Patch Changes

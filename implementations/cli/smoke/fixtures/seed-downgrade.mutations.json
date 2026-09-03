@@ -1,18 +1,25 @@
 {
   "suite": "implementations/cli/smoke/seed.smoke.ts",
-  "guard": "an older cotal refuses a seed store stamped at a newer generation, and writes nothing",
+  "guard": "an older cotal refuses a newer seed store without writing, names only a proven sufficient executable, and keeps the generic fallback otherwise",
   "command": "pnpm smoke:seed",
+  "completionMarker": "seed smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/fixtures/seed-downgrade.mutations.json",
   "why": [
-    "ONE MUTATION, AND IT IS THE GUARD ITSELF. Disabling the version comparison restores exactly the",
-    "behaviour this change removes: the older binary falls through, refreshes nothing, and writes its",
-    "own older generation over the stamp at the commit. So the mutation does not merely make a cell",
-    "fail, it reinstates the defect, which is the only mutation worth having here.",
+    "FOUR MUTATIONS, ONE FOR EACH INDEPENDENT PROMISE. Extending the downgrade predicate with the",
+    "deterministic runtime-false `process.pid < 0` keeps TypeScript's store-generation narrowing while",
+    "disabling the refusal at runtime. Replacing the verified recovery selection with",
+    "the generic sentence removes sufficient-path hinting while leaving the refusal intact. Making the",
+    "sufficiency predicate accept every verified executable admits a candidate below the store generation.",
+    "Removing the ephemeral-npx PATH guard admits a transient cache shim while the same executable",
+    "at a durable path remains verified. That mutation runs smoke:install, whose single discriminating",
+    "cell covers both halves and prints its completion line on green and red runs.",
+    "Each mutation is compile-clean and names the exact assertion for the promise it breaks.",
     "",
-    "The anchor is CODE-ONLY and two lines wide. The single line `isStrictlyNewer(storeGeneration,",
-    "generation)` would have been unique too, but the guard's meaning lives in the pair: the validity",
-    "check is what keeps a corrupt stamp out of the comparison, and an anchor that spans both cannot",
-    "be half-disarmed by someone rewriting one of them.",
+    "Every anchor is code-only and unique. The refusal mutation keeps both semver predicates intact,",
+    "so it remains compile-clean and changes only whether the guarded refusal is reachable.",
+    "The three seed-source mutations rebuild @cotal-ai/cli after source restoration because smoke:seed",
+    "compiles the mutant before running the public CLI. Restoring source without rebuilding leaves dist",
+    "compiled from the mutant even though git reports a clean tree.",
     "",
     "WHAT THIS DOES NOT PROVE, stated because the fix has a real limit. The guard ships in this",
     "version and later. A binary RELEASED BEFORE it does not carry it and never will, so an old",
@@ -24,12 +31,41 @@
   ],
   "mutations": [
     {
-      "name": "the downgrade comparison is disabled, so an older binary writes its generation over a newer store",
+      "name": "the downgrade predicate is deterministically false at runtime, so the older binary is not refused",
       "file": "implementations/cli/src/seed/reconcile.ts",
       "find": "    isValidSemver(storeGeneration) &&\n    isStrictlyNewer(storeGeneration, generation)",
-      "replace": "    isValidSemver(storeGeneration) &&\n    false",
+      "replace": "    isValidSemver(storeGeneration) &&\n    isStrictlyNewer(storeGeneration, generation) &&\n    process.pid < 0",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
       "expectRed": "✗ FAIL: downgrade: an older binary REFUSES a store stamped newer",
       "cell": "✗ FAIL: downgrade: an older binary REFUSES a store stamped newer"
+    },
+    {
+      "name": "the sufficient executable recovery is replaced by the generic instruction",
+      "file": "implementations/cli/src/seed/reconcile.ts",
+      "find": "    const newerExecutable = verifiedCotalExecutables().find(\n      (candidate) => compareSemver(candidate.version, storeGeneration) >= 0,\n    );\n    const recovery = newerExecutable\n      ? `run the cotal-ai ${newerExecutable.version} executable at ${JSON.stringify(newerExecutable.path)}`\n      : \"run the newer cotal\";",
+      "replace": "    const recovery = \"run the newer cotal\";",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "expectRed": "✗ FAIL: downgrade hint: finds the installer cotal even when reduced PATH omits ~/.local/bin",
+      "cell": "✗ FAIL: downgrade hint: finds the installer cotal even when reduced PATH omits ~/.local/bin"
+    },
+    {
+      "name": "every verified executable is treated as sufficient, including one below the store generation",
+      "file": "implementations/cli/src/seed/reconcile.ts",
+      "find": "      (candidate) => compareSemver(candidate.version, storeGeneration) >= 0,",
+      "replace": "      (candidate) => compareSemver(candidate.version, storeGeneration) >= 0 || compareSemver(candidate.version, storeGeneration) < 0,",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "expectRed": "✗ FAIL: downgrade hint: never names a candidate below the store generation",
+      "cell": "✗ FAIL: downgrade hint: never names a candidate below the store generation"
+    },
+    {
+      "name": "the recovery probe admits an ephemeral npx cache shim as a durable executable",
+      "file": "implementations/cli/src/lib/self-exec.ts",
+      "find": "    if (isEphemeralNpxBin(dir)) continue;\n    const hit = resolveOnPath(join(dir, \"cotal\"), env);",
+      "replace": "    const hit = resolveOnPath(join(dir, \"cotal\"), env);",
+      "command": "pnpm smoke:install",
+      "completionMarker": "install smoke:",
+      "expectRed": "✗ recovery probe: ignores an ephemeral npx executable but verifies the same executable at a durable path",
+      "cell": "✗ recovery probe: ignores an ephemeral npx executable but verifies the same executable at a durable path"
     }
   ]
 }

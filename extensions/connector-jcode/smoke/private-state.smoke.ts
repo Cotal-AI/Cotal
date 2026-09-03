@@ -34,6 +34,35 @@ try {
   check("short API socket home aliases the managed home", lstatSync(short.jcodeHome).isSymbolicLink() && readlinkSync(short.jcodeHome) === pathological, short.jcodeHome);
   short.dispose();
 
+  // #1211. The alias path is derived from the seat home, so one seat NAME reuses one path forever.
+  // A launch hands that path back through dispose(), and a Jcode server the dead lifecycle left
+  // running then re-creates it as a real directory under its own JCODE_HOME. Refusing a
+  // non-symlink there retired the NAME permanently: every later launch threw at this call, before
+  // Jcode was started, so nothing reached the seat's private Jcode log to say why.
+  mkdirSync(join(short.socketDir, "home", "logs"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(short.socketDir, "home", "servers.json"), "{}", { mode: 0o600 });
+  let afterOrphan: ReturnType<typeof shortSocketHome> | undefined;
+  let orphanRefusal: unknown;
+  try {
+    afterOrphan = shortSocketHome(pathological);
+  } catch (error) {
+    orphanRefusal = error;
+  }
+  check(
+    "an alias a dead lifecycle re-created as a real directory is reclaimed, not refused forever",
+    afterOrphan !== undefined && lstatSync(afterOrphan.jcodeHome).isSymbolicLink() && readlinkSync(afterOrphan.jcodeHome) === pathological,
+    orphanRefusal instanceof Error ? orphanRefusal.message : afterOrphan?.jcodeHome,
+  );
+  // The reclaim removes an entry it classified with lstat, so it can never reach through the alias
+  // into the seat home that alias names. Everything the seat owns must survive a relaunch.
+  writeFileSync(join(pathological, "seat-state"), "keep", { mode: 0o600 });
+  const afterRelink = shortSocketHome(pathological);
+  check(
+    "reclaiming a symlinked alias leaves the seat home it points at intact",
+    readFileSync(join(pathological, "seat-state"), "utf8") === "keep" && readlinkSync(afterRelink.jcodeHome) === pathological,
+  );
+  afterRelink.dispose();
+
   if (process.platform !== "win32") {
   const sources = {
     jcodeHome: join(root, "source-jcode"),

@@ -11,7 +11,7 @@ import {
   type InstalledExtension,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
-import { selfArgv } from "../lib/self-exec.js";
+import { selfArgv, verifiedCotalExecutables } from "../lib/self-exec.js";
 import { claimExtensionMutation } from "../lib/ext-mutation.js";
 import { entryScript, SEED_BUILTINS, seedGeneration, stampPath } from "./paths.js";
 import {
@@ -221,10 +221,16 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
     isValidSemver(storeGeneration) &&
     isStrictlyNewer(storeGeneration, generation)
   ) {
+    const newerExecutable = verifiedCotalExecutables().find(
+      (candidate) => compareSemver(candidate.version, storeGeneration) >= 0,
+    );
+    const recovery = newerExecutable
+      ? `run the cotal-ai ${newerExecutable.version} executable at ${JSON.stringify(newerExecutable.path)}`
+      : "run the newer cotal";
     const stampProvenance = describeStampProvenance(readStamp());
     throw new Error(
       `this cotal ${generation} is older than the seed store's generation ${storeGeneration}${stampProvenance} - ` +
-        "run the newer cotal, or `cotal ext seed --reset` to rebuild the store for this version",
+        `${recovery}, or \`cotal ext seed --reset\` to rebuild the store for this version`,
     );
   }
 
