@@ -2730,12 +2730,6 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
-  /** The newest stream sequence matching `subject`, or 0 when the subject has no messages.
-   *
-   *  One ordered consumer at `DeliverPolicy.Last` with this subject's filter: its `num_pending`
-   *  (available from the create, before anything is delivered) is 0 for an empty subject, and
-   *  otherwise one message carries the sequence. Same CREATE/INFO/NEXT/DELETE surface `drainWindow`
-   *  already uses, so no broker authority is added. */
   /** The oldest stream sequence matching `subject`, or 0 when the subject has no messages.
    *  Mirror of {@link lastMatchingSeq}: same CREATE/INFO/NEXT/DELETE surface, `DeliverPolicy.All`
    *  instead of `Last`, first delivered seq instead of last. Read credentials already hold this. */
