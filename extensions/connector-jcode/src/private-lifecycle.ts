@@ -271,18 +271,25 @@ export interface StopOrphanedTreeOptions {
  * `COTAL_NAME`, so neither the manager's signal nor a name-keyed reap reaches it, and it holds the
  * seat home's runtime dir until its own five-minute idle timer (#1211).
  *
- * The recorded host PID is what keeps this from stopping a seat that is still serving. While the
- * connector that wrote the record is alive under its captured start token, the tree it owns is not
- * an orphan and nothing is signalled; the launch then meets Jcode's own runtime-dir lock, which is
- * the correct refusal for a name a live seat holds. Only once that host is provably gone is the
- * record's launch nonce used to find survivors, and one nonce is inherited by one launch's
- * descendants alone.
+ * The recorded host PID is what keeps this from stopping a seat that is still serving, and it only
+ * releases the nonce once that host is provably GONE. A PID that is still alive at the recorded
+ * slot is ambiguous: it is either the connector that owns this home, or an unrelated process that
+ * reused the number, and nothing on a live PID distinguishes them reliably. This mechanism's whole
+ * claim is that it never signals a live seat's tree, so the ambiguous case resolves toward doing
+ * nothing. Pairing liveness with the captured start token instead would resolve it toward killing:
+ * a live host whose recorded token does not match would have its tree signalled while the host
+ * itself was left running, which is the two-seats-under-one-name failure this exists to avoid.
+ *
+ * The conservative branch costs one missed reap, after which Jcode's own runtime-dir lock gives its
+ * honest refusal and the next launch tries again. The permissive branch costs a seat that is still
+ * serving. Only a PID that is gone releases the record's launch nonce, and one nonce is inherited
+ * by one launch's descendants alone.
  */
 export async function stopOrphanedTree(options: StopOrphanedTreeOptions): Promise<number[]> {
   const { home, gracefulWaitMs = 3_000, killWaitMs = 2_000 } = options;
   const record = readLaunchRecord(home);
   if (!record) return [];
-  if (alive(record.host.pid) && processMatches(record.host)) return [];
+  if (alive(record.host.pid)) return [];
   const targets = captureLaunchProcesses(record.identity)
     .filter((identity) => identity.pid !== process.pid && processMatches(identity) && alive(identity.pid))
     .map((identity) => identity.pid);

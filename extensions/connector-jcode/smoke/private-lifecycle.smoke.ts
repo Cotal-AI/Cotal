@@ -67,6 +67,16 @@ if (process.platform !== "win32") {
     assert.deepEqual(whileHostLives, [], "a tree whose connector host is still alive is a live seat and must not be signalled");
     assert.ok(!(await gone(server.pid!, 0)), "the live seat's Jcode process must still be running");
 
+    // The ambiguous record: the host PID is alive but its recorded start token does not match, as a
+    // reused PID or a corrupted record would look. Pairing liveness with the token resolved this
+    // toward killing, so a live connector kept running while every process carrying its nonce was
+    // signalled: two seats under one name, inverted. A live PID at the recorded slot signals nothing.
+    recordLaunch(root, { identity, host: { pid: host.pid!, start: "not-the-recorded-token" } });
+    const ambiguous = await stopOrphanedTree({ home: root });
+    assert.deepEqual(ambiguous, [], "a live PID at the recorded host slot must signal nothing, whatever its start token says");
+    assert.ok(!(await gone(server.pid!, 0)), "the tree of a live-PID record must survive the ambiguous case");
+    recordLaunch(root, { identity, host: captureProcessIdentity(host.pid!) });
+
     process.kill(host.pid!, "SIGKILL");
     assert.ok(await gone(host.pid!, 5_000), "the smoke's stand-in connector host must exit before the orphan case");
 
