@@ -146,6 +146,7 @@ export function App({
   // session with nothing to tell the operator which of the three happened.
   const [managed, setManaged] = useState<Map<string, { agent?: string; mode?: string }>>(new Map());
   const psDead = useRef(false);
+  const psPartial = useRef(false); // a partial scatter is announced once, not on every tick
   useEffect(() => {
     if (!canControl || !controlCtx) return;
     psDead.current = false;
@@ -159,8 +160,21 @@ export function App({
         setNotice(`no managed-agent rows: ${r.error}`);
         return;
       }
+      // A scatter some instance did not answer is `ok:true` with those ids in `silent`, so this
+      // poll has to read that field the way `:ps` does. Rebuilding the map from a known-partial
+      // row list would DELETE the rows of a manager that was answering and has just gone quiet,
+      // which is worse than never having had them: the harness tags and the detail card's `runs`
+      // would empty out on the tick after a manager went silent, with the seats still on the
+      // roster. A partial answer therefore merges over what is already known and says so once;
+      // only a complete one may drop ids, which is what retires a seat that really is gone.
+      if (r.silent.length && !psPartial.current) {
+        psPartial.current = true;
+        setNotice(`managed rows are partial: ${r.silent.length} manager instance(s) gave no answer: ${r.silent.join(", ")}`);
+      }
+      if (!r.silent.length) psPartial.current = false;
       setManaged((prev) => {
-        const next = new Map(r.rows.map((a) => [a.id, { agent: a.agent, mode: a.mode }]));
+        const next = r.silent.length ? new Map(prev) : new Map<string, { agent?: string; mode?: string }>();
+        for (const a of r.rows) next.set(a.id, { agent: a.agent, mode: a.mode });
         const same =
           next.size === prev.size &&
           [...next].every(([id, m]) => {
@@ -343,6 +357,18 @@ export function App({
     activatedRef.current = true;
     if (!makeParticipant) return setNotice("sent one-way: under this credential replies cannot land in the console");
     const peer = makeParticipant();
+    // The status bar's "on roster" is a claim about a live presence peer, so it is withdrawn when
+    // that peer faults. The factory installs an empty error handler to keep a stray `error` from
+    // throwing; that is the right guard for the observer, which never claimed to be on the roster,
+    // but here it would leave the operator reading a roster line for a peer that is gone. A later
+    // send re-arms activation and starts a fresh peer.
+    peer.on("error", (e: Error) => {
+      if (participant.current !== peer) return;
+      participant.current = null;
+      activatedRef.current = false;
+      setOnRoster(false);
+      setNotice("participant: " + e.message);
+    });
     try {
       await peer.start();
       participant.current = peer;
