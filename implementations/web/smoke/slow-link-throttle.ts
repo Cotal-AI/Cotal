@@ -22,6 +22,12 @@ export function throttledWriter(
     },
     cancel: (handle) => clearTimeout(handle as NodeJS.Timeout),
   },
+  /** Called with each chunk once its write to the receiving socket has COMPLETED, never when it is
+   *  queued and never merely when the write is issued. A counter that increments on arrival instead reports what reached the proxy rather
+   *  than what crossed the link, and the two differ exactly when an arm is truncated with chunks
+   *  still queued: those were counted and never delivered. Measured on this suite's field-link
+   *  fan-out arm, which is cut at the deadline by design, so the difference is not hypothetical. */
+  onDeliver?: (chunk: Buffer) => void,
 ): { push(chunk: Buffer): void; close(): void } {
   let clear = 0;
   let timer: unknown;
@@ -36,7 +42,7 @@ export function throttledWriter(
       if (to.destroyed) return;
       queued.shift();
       writing = true;
-      to.write(next.chunk, () => { writing = false; pump(); });
+      to.write(next.chunk, () => { writing = false; onDeliver?.(next.chunk); pump(); });
     }, delay);
   };
   return {

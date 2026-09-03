@@ -144,10 +144,14 @@ function countingLink(opts: {
     const upstream = net.connect(opts.target, "127.0.0.1");
     sockets.add(client);
     sockets.add(upstream);
-    const toBroker = throttledWriter(upstream, opts.latency);
-    const toClient = throttledWriter(client, opts.latency);
+    // COUNTED AT DELIVERY, NOT AT ARRIVAL. Both counters run from the writer's `onDeliver`, which
+    // fires as the chunk is written to the receiving socket. Counting in the `data` handler instead
+    // records what reached the proxy, and an arm truncated at the deadline leaves chunks queued that
+    // were counted and never crossed the link. That arm is section 4's fan-out, which is cut by the
+    // deadline on purpose, so its published requests and bytes were arrival counts until this
+    // change. Cell 4.6 holds this property and a fixture mutation moves the increment back.
     let pending = "";
-    client.on("data", (chunk: Buffer) => {
+    const onUp = (chunk: Buffer) => {
       const c = opts.cost();
       c.bytesUp += chunk.length;
       pending += chunk.toString("latin1");
@@ -162,9 +166,12 @@ function countingLink(opts: {
         else if (verb.startsWith("CONSUMER.DELETE")) c.del++;
         else c.other++;
       }
-      toBroker.push(chunk);
-    });
-    upstream.on("data", (chunk: Buffer) => { opts.cost().bytesDown += chunk.length; toClient.push(chunk); });
+    };
+    const toBroker = throttledWriter(upstream, opts.latency, undefined, onUp);
+    const toClient = throttledWriter(client, opts.latency, undefined,
+      (chunk: Buffer) => { opts.cost().bytesDown += chunk.length; });
+    client.on("data", (chunk: Buffer) => { toBroker.push(chunk); });
+    upstream.on("data", (chunk: Buffer) => { toClient.push(chunk); });
     const bye = () => { toBroker.close(); toClient.close(); client.destroy(); upstream.destroy(); };
     client.on("error", bye);
     client.on("close", bye);
@@ -514,6 +521,50 @@ try {
     ok("4.6 and what it spends is pulls, not consumer lifecycles",
       latencyOnly.cost.next > (latencyOnly.cost.create + latencyOnly.cost.del) * 5,
       { next: latencyOnly.cost.next, lifecycles: latencyOnly.cost.create + latencyOnly.cost.del });
+
+    // WHAT THE COUNTER ACTUALLY COUNTS, which every figure in this section depends on and no cell
+    // held until now. The counters run from the writer's `onDeliver`, which fires once a chunk's
+    // write to the receiving socket has COMPLETED. Increment on arrival instead and a truncated arm
+    // reports chunks that were queued at the proxy and never crossed the link. Section 4's fan-out
+    // is exactly that arm: it is cut at the deadline by design, so the error is not hypothetical and
+    // it inflates the shape this change argues against, which is the direction that flatters the
+    // change. A reviewer found it; it was not caught here.
+    //
+    // The truncation is real rather than simulated: 64 KB is pushed across a 20 KB/s link and the
+    // link is destroyed after 600ms, so most of it is still queued and can never be delivered.
+    // Counting on write COMPLETION rather than on write issue is what makes `counted <= received` a
+    // safe invariant instead of a race against one in-flight chunk.
+    {
+      const SINK = PROXY + 101;
+      const EDGE = PROXY + 102;
+      let received = 0;
+      const sink = net.createServer((sock) => { sock.on("data", (b: Buffer) => { received += b.length; }); });
+      await new Promise<void>((r) => { sink.listen(SINK, "127.0.0.1", () => r()); });
+      const local = zero();
+      const edge = countingLink({
+        listen: EDGE, target: SINK, latency: { oneWayMs: 5, bytesPerSec: 20_000 }, cost: () => local,
+      });
+      const c = net.connect(EDGE, "127.0.0.1");
+      await new Promise<void>((r) => { c.once("connect", () => r()); });
+      const CHUNK = 8_000;
+      const PUSHED = CHUNK * 8;
+      for (let i = 0; i < 8; i++) c.write(Buffer.alloc(CHUNK, 0x61));
+      // WAIT FOR DELIVERY TO START rather than truncating at a fixed delay. TCP coalesces these
+      // writes into a few large chunks, so the first delivery lands when a whole coalesced chunk has
+      // been paced across the link, not after one CHUNK's worth. A fixed 600ms cut measured a window
+      // where nothing had been delivered at all, which made the cell vacuous rather than red.
+      for (let i = 0; i < 60 && received === 0; i++) await wait(100);
+      await wait(100);
+      edge.close();
+      c.destroy();
+      await wait(400);
+      sink.close();
+      ok("4.7 the link counter reports what CROSSED the link, not what queued at the proxy",
+        local.bytesUp <= received && local.bytesUp < PUSHED && received > 0,
+        { counted: local.bytesUp, received, pushed: PUSHED });
+      ok("4.8 CONTROL: the truncation really did strand bytes, so 4.7 could have failed",
+        received < PUSHED, { received, pushed: PUSHED });
+    }
   }
   // ── 5. `/api/dms` ON THE FIELD LINK ───────────────────────────────────────────────────────────
   // The field log has 47 `/api/dms` attempts and 0 successes, and the first hypothesis was
