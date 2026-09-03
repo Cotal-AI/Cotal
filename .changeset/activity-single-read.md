@@ -17,8 +17,10 @@ Measured on the wire by a proxy between the endpoint and the broker that counts 
 lines and bytes per direction, over a seeded corpus of 69 chat channels plus 24 event channels at
 limit 200. The before column is the committed suite run against the pre-change tree: 2524 broker
 requests and 8,015,723 bytes to return a 143,401-byte page. After: 143 requests and 908,420 bytes
-for the same 200 entries in the same order, and consumer creates fall from 347 to 6. Request counts
-are deterministic across runs; byte totals move by a few hundred. Across an 82ms RTT / 554 KB/s link
+for the same 200 entries in the same order, and consumer creates fall from 347 to 6. On these
+completed no-link arms the request counts are deterministic across runs and the byte totals move by
+a few hundred; the field-link arms below are truncated by the deadline, so their counts vary with
+the clock. Across an 82ms RTT / 554 KB/s link
 with the shipped 8000ms deadline, the fan-out answered 16 of 70 sources and timed out, and the
 single read answers whole in 4503ms. `pnpm smoke:web-activity-read-cost` is that measurement. It
 also carries a frozen copy of the old fan-out shape as a scale-invariance control, which costs 2863
