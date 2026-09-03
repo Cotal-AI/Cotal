@@ -15,8 +15,9 @@
  *
  * WHAT IS DRIVEN, AND WHAT IS NOT.
  *   - Block 1 drives the real `parseSubject` / `chatSubject` from `@cotal-ai/core`.
- *   - Block 2 EXTRACTS the shipped decision statements — the server's derivation and all four
- *     browser ingresses — out of the files that ship them, and EXECUTES them. It does not match
+ *   - Block 2 EXTRACTS the shipped decision statements — the server's derivation, the read's own
+ *     subject-to-channel derivation in `@cotal-ai/core`, and all four browser ingresses — out of the
+ *     files that ship them, and EXECUTES them. It does not match
  *     their text. A substring check proves a line was TYPED; it goes red on a harmless reformat and
  *     stays green on a statement that no longer does what its name says. Neither page can be
  *     evaluated whole (both drive the DOM at load), so the statement is extracted rather than the
@@ -168,20 +169,70 @@ check("web.ts declares the forward in one extractable statement", Boolean(forwar
   check("and it still carries the verified sender token", ctx.out?.senderId === "local.SENDER", { got: ctx.out?.senderId });
 }
 
-// The backfill mapper. Extracted and executed with a stub `ch`, so the cell measures which channel
-// the entry ends up tagged with. `as const` is a type-only annotation and is stripped to run it;
-// that is the one transform applied, and it cannot change the value produced.
-const mapper = /\.map\(\(msg\) => \(\{[\s\S]*?\}\)\)/.exec(webTs)?.[0];
+// The backfill mapper. Extracted and executed, so the cell measures which channel the entry ends up
+// tagged with. `as const` is a type-only annotation and is stripped to run it; that is the one
+// transform applied, and it cannot change the value produced.
+//
+// WHERE THE TAG COMES FROM MOVED, AND THE CHAIN GREW A LINK. The backfill used to read one channel
+// at a time, so the tag was the channel the server had ASKED for, server-owned by construction. It
+// now reads every chat channel in one consumer, so the tag is whatever the READ hands back per
+// message, and the read derives that from the subject the broker delivered on. The web mapper below
+// is therefore only half the claim; the other half is the derivation inside `multiChannelHistory`,
+// extracted and driven the same way further down. Checking only the mapper would leave the actual
+// trust decision unmeasured.
+const mapper = /\.map\(\(\{ channel, msg \}\) => \(\{[\s\S]*?\}\)\)/.exec(webTs)?.[0];
 check("web.ts declares the backfill mapper in one extractable expression", Boolean(mapper), { mapper });
 {
   const expr = mapper!.replace(/^\.map\(/, "").replace(/\)$/, "").replace(/ as const/g, "");
-  const ctx: { ch: { channel: string }; out?: Record<string, unknown> } = { ch: { channel: "requested-by-server" } };
-  runInContext(`out = (${expr})({ channel: "attacker-claimed", id: "m1" });`, createContext(ctx),
-    { filename: "web.ts (backfill mapper)" });
-  check("a backfilled entry is tagged with the channel the SERVER requested, not the payload's",
-    ctx.out?.channel === "requested-by-server", { got: ctx.out?.channel });
+  const ctx: { out?: Record<string, unknown> } = {};
+  runInContext(
+    `out = (${expr})({ channel: "derived-by-read", msg: { channel: "attacker-claimed", id: "m1" } });`,
+    createContext(ctx), { filename: "web.ts (backfill mapper)" });
+  check("a backfilled entry is tagged with the channel the READ derived, not the payload's",
+    ctx.out?.channel === "derived-by-read", { got: ctx.out?.channel });
   check("and the untouched payload travels alongside it for the client to overwrite at ingress",
     (ctx.out?.msg as { channel?: string })?.channel === "attacker-claimed", { got: ctx.out?.msg });
+}
+
+// The other half: the read's own derivation. `multiChannelHistory` maps the delivered subject to a
+// channel, and this is the statement that decides whether the dashboard's backfill is keyed on the
+// broker's routing or on a payload field. Extracted from the shipped core source and executed
+// against the real `parseSubject`, with a payload whose claim DISAGREES with its subject.
+const endpointTs = read("../../../packages/core/src/endpoint.ts");
+const readMapper = /return rows\.map\(\(\{ subject, msg \}\) => \{[\s\S]*?\n {4}\}\);/.exec(endpointTs)?.[0];
+check("endpoint.ts declares the read's channel derivation in one extractable statement", Boolean(readMapper), { readMapper });
+{
+  const expr = readMapper!.replace(/^return /, "").replace(/;$/, "");
+  const ctx: { rows: unknown[]; parseSubject: typeof parseSubject; out?: { channel: string; msg: { channel?: string } }[] } =
+    { rows: [], parseSubject };
+  const run = (rows: unknown[]) => {
+    ctx.rows = rows;
+    runInContext(`out = ${expr};`, createContext(ctx), { filename: "endpoint.ts (read derivation)" });
+  };
+  run([{ subject: chatSubject(SPACE, OWNER, ACTOR, "policed-channel"), msg: { channel: "attacker-claimed", id: "m1" } }]);
+  check("the read tags a message with the channel in the SUBJECT the broker delivered it on",
+    ctx.out?.[0]?.channel === "policed-channel", { got: ctx.out?.[0]?.channel });
+  check("and it does not overwrite the payload, which the client still resolves at its own ingress",
+    ctx.out?.[0]?.msg.channel === "attacker-claimed", { got: ctx.out?.[0]?.msg });
+  check("a dotted channel survives the derivation whole, where a naive token index would truncate it",
+    (run([{ subject: chatSubject(SPACE, OWNER, ACTOR, "team.backend"), msg: {} }]), ctx.out?.[0]?.channel === "team.backend"),
+    { got: ctx.out?.[0]?.channel });
+
+  // THE KIND GATE, DRIVEN. `.rest` is the RECIPIENT on `inst` and the ROUTE on `svc`, so a
+  // derivation that skipped the kind check would label a DM's recipient as a channel on the one
+  // path that reads across channels. It must refuse, not guess.
+  // Matched on the MESSAGE, not on `instanceof Error`: the statement runs in its own vm realm, so
+  // the error it constructs is not this realm's `Error` and an identity check would read a correct
+  // refusal as a pass-through.
+  let threw: unknown;
+  try { run([{ subject: `${spacePrefix(SPACE)}.inst.${OWNER}.${ACTOR}.${OWNER}.${ACTOR}`, msg: {} }]); }
+  catch (e) { threw = e; }
+  check("a non-chat subject RAISES rather than becoming a channel",
+    /not a chat subject/.test(String((threw as { message?: string })?.message)), { threw: String(threw) });
+  threw = undefined;
+  try { run([{ subject: "garbage", msg: {} }]); } catch (e) { threw = e; }
+  check("and so does an unparseable one",
+    /not a chat subject/.test(String((threw as { message?: string })?.message)), { threw: String(threw) });
 }
 
 // All four browser ingresses. Each shipped statement is executed against a payload whose claim
