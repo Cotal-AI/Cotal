@@ -99,7 +99,7 @@ export const PRIMITIVES: Readonly<Record<string, PrimitiveSpec>> = Object.freeze
     hashesSubject: true,
     opensScope: false,
     signature: "ask(agent, { name, schema, deadline?, attempts? }) -> record",
-    doc: "The narrow case where the program itself needs a value. The agent publishes a record and the program awaits it. `schema` rides to the handler opaque and unchecked in this revision; do not rely on a shape being enforced.",
+    doc: "The narrow case where the program itself needs a value. The agent publishes a record and the program awaits it. `schema` rides to the handler opaque; the reference simulator enforces the shorthand, refusing one it cannot read with L4022 and reporting L4006 once `attempts` non-conforming replies are exhausted.",
     example:
       'const est = await ask(planner, { name: "estimate", schema: { days: "number" } })',
   },

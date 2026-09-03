@@ -29,10 +29,13 @@ Durations are a whole number and one unit: `"30s"`, `"10m"`, `"4h"`, `"2d"`.
 ## Results you branch on
 
 A `turn` yields the agent's status. An `ask` yields the record the agent published. `schema` is
-opaque to the language and its meaning is the handler's; no handler in the reference
-implementation interprets it in this revision, so a program MUST NOT rely on a shape being
-enforced. Where a handler does check, `attempts` bounds the non-conforming replies tolerated
-before it fails with L4006. A `checkpoint` is a durable pause raced against a durable timer:
+opaque to the language and its meaning is the handler's: on `ask` the shorthand maps each
+required top-level field of the reply to one of `"string"`, `"number"`, `"boolean"`, `"array"`,
+`"record"`, `"null"`. The reference simulator enforces it, refusing a schema it cannot read with
+L4022, and `attempts` bounds the non-conforming replies tolerated before it fails with L4006.
+Another handler may not check at all, so a program written against one MUST NOT rely on a shape
+being enforced. A `checkpoint`'s `schema` stays uninterpreted in this revision. A `checkpoint`
+is a durable pause raced against a durable timer:
 
 - resolved: `{ status: "resolved", value?, by?, at, artifact? }`
 - expired with `onExpiry: "proceed"`, or after an `"escalate"` hop expires too: `{ status: "expired", at }`
