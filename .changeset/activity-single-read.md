@@ -25,7 +25,7 @@ the sweep goes from 43ms, 246ms, 5345ms and a timeout, to 54ms, 343ms, 1163ms an
 are single runs on one host and are shaped by it rather than being bounds; a re-run on another box
 landed outside the last of them, as the paragraph below says of every span here. A space
 with the 69 chat channels this work was aimed at is one batch, so the request counts and byte totals
-above are unchanged at that size. The walls are not claimed to be, for the reason just given.
+are unchanged at that size. The walls are not claimed to be, for the reason just given.
 Merging on stream sequence rather than the payload's `ts` is asserted in
 `packages/core/smoke/history-recent.smoke.ts` against a corpus whose arrival order and `ts` order are
 opposite.
@@ -37,11 +37,9 @@ numbers were taken on that corpus, so no comparative claim is made about it. Sep
 list big enough to exceed the connection's `max_payload` is refused by the client before anything
 is sent, rather than by the broker and rather than timing out: the client compares the request
 against the limit the broker advertised at connect and throws, so no bytes leave and the broker's
-own logs show nothing. On this corpus's subject shape the filter list alone serializes to 1,480,032
-bytes, already past an advertised 1,048,576 before the rest of the request is counted, so a list
-that long cannot be sent whatever the envelope adds. That threshold moves with both the advertised
-limit and the length of the subjects, so the count is an observation on one shape rather than a
-bound.
+own logs show nothing. A list of 40,000 filters on this corpus's subject shape is refused that way.
+Where the limit falls moves with both the advertised `max_payload` and the length of the subjects,
+so 40,000 is a length that was tried and not a threshold.
 
 Measured on the wire by a proxy between the endpoint and the broker that counts `$JS.API` request
 lines and bytes per direction, over a seeded corpus of 69 chat channels plus 24 event channels at
