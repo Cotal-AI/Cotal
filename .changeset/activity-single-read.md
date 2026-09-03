@@ -37,8 +37,9 @@ everything in the window and keeps the tail, so a four-page window moved four pa
 whenever the subject was most of its stream. `/api/dms` at limit 500 against a 2500-message backlog
 moved 1,995,856 and 1,995,859 bytes across two runs to return a 346,001-byte page, and took 8852ms
 and 7857ms alone on that link, straddling the deadline with nothing else on the connection. It now
-moves 502,359 bytes and takes 2835ms and 2857ms. The first of each byte pair is the run against
-`544a974b7`. A sparse subject pays one more widening step for that.
+moves 502,359 bytes and takes 2835ms and 2857ms. Both of those byte figures are the before column,
+two runs against `544a974b7` three bytes apart; 502,359 is this head. A sparse subject pays one more
+widening step for that.
 
 `ActivitySource` (the seam `activityBackfill` reads through) replaces `channelHistory` with
 `multiChannelHistory`. The aggregation now has two sources, chat and DMs, so a partial page names
