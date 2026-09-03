@@ -1007,7 +1007,9 @@ export async function web(args: ParsedArgs): Promise<void> {
       const limit = historyLimit(query, 200);
       const page = await activityBackfill(ep, limit);
       // A partial page is worth SAYING on the server too: the operator watching this log is the one
-      // who can tell a slow link from a broken channel, and the browser's marker never reaches them.
+      // who can tell a slow link from a half of the feed that refused, and the browser's marker
+      // never reaches them. What `missing` names is a source, `chat` or `direct messages`, so this
+      // line reports which half went unanswered and never an individual channel.
       if (page.partial)
         console.error(c.yellow(`~ ${req.method ?? "GET"} ${path} partial: ${page.read}/${page.of} sources within ${page.deadlineMs}ms, missing ${page.missing.join(", ")}`));
       return json(res, page);

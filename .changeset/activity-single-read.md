@@ -74,3 +74,17 @@ rows and never reached it; the public method and its exact-filter promise did.
 `ActivitySource` (the seam `activityBackfill` reads through) replaces `channelHistory` with
 `multiChannelHistory`. The aggregation now has two sources, chat and DMs, so a partial page names
 which half is missing rather than naming individual channels.
+
+**The activity feed selects different messages under clock skew, and an operator can see it.** The
+page is the newest `limit` chat messages by broker arrival, unioned with the newest `limit` DMs,
+ordered by `ts`. The shape it replaces took the newest `limit` per channel and then the newest
+`limit` of that union by `ts`. With two channels and `limit=2`, channel A holding a1 (seq 1, ts 100)
+and a2 (seq 2, ts 200) and channel B holding b1 (seq 3, ts 50) and b2 (seq 4, ts 60), the old rule
+returns a1 and a2 and the new rule returns b1 and b2. They disagree whenever a sender's clock
+disagrees with arrival order by more than the spread between the `limit`-th and `limit+1`-th message.
+The display order is unchanged, since the page is still sorted by `ts`; what changed is which
+messages reach it. Arrival is the broker's own record and `ts` is a sender claim, so the new key is
+the narrower one. Per-channel selection cannot be had from a single read at any window short of one
+that has seen `limit` messages from every requested channel, since a quiet channel's newest can sit
+arbitrarily far back in an interleaved stream. That is a property of the mechanism rather than a
+measurement, and it is why the old selection was not kept.

@@ -88,8 +88,11 @@ function slowLink(opts: { listen: number; target: number; oneWayMs: number; byte
 const SETTLE_MS = 15_000;
 const LATE = Symbol("late");
 
-/** The source set `activityBackfill` builds, as reads that resolve to a count. Rebuilt here rather
- *  than imported so a baseline stays fixed while the implementation changes. */
+/** The source set `activityBackfill` built BEFORE #1210, as reads that resolve to a count: one
+ *  `channelHistory` per listed channel plus the DM backlog. Rebuilt here rather than imported so a
+ *  baseline stays fixed while the implementation changes. The shipped function now builds two
+ *  sources, which is what 3.2 below asserts; this helper is the thing that assertion is measured
+ *  against, not a description of it. */
 const sourcesOf = async (ep: CotalEndpoint): Promise<(() => Promise<number>)[]> => {
   const chans = await ep.listChannels();
   return [
@@ -575,8 +578,9 @@ try {
       nStatus === 200 && nBody?.partial !== undefined,
       { nStatus, body: nBody?.error ?? `partial=${nBody?.partial} read=${nBody?.read}` });
 
-    // The operator watching the server log is the one who can tell a slow link from a broken channel,
-    // and the browser's marker never reaches them.
+    // The operator watching the server log is the one who can tell a slow link from a half of the
+    // feed that refused, and the browser's marker never reaches them. Since #1210 the names in that
+    // line are the two sources, never an individual channel.
     ok("6.10 the server SAYS in its own log that the page was short, and what it left out",
       /partial: \d+\/\d+ sources within \d+ms, missing /.test(log), log.split("\n").filter((l) => l.includes("partial")).slice(0, 2));
   }

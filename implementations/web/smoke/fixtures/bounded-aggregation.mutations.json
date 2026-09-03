@@ -16,7 +16,7 @@
       "expectRed": "2.3 the answer says it is PARTIAL rather than looking complete"
     },
     {
-      "name": "B3 the missing sources stop being NAMED, leaving a count that tells a reader something is gone and not what, which on this dashboard is the difference between one slow channel and an empty space",
+      "name": "B3 the missing sources stop being NAMED, leaving a count that tells a reader something is gone and not what, which on this dashboard is the difference between one half of the feed being late and an empty space",
       "file": "implementations/web/src/web.ts",
       "find": "      if (r === LATE) missing.push(sources[i].name);\n",
       "replace": "      if (r === LATE) missing.push(\"a source\");\n",
@@ -51,7 +51,7 @@
       "expectRed": "5.5 the never-ending refusal names the deadline it exceeded"
     },
     {
-      "name": "B8 the server stops saying a page was short in its own log, so the operator who can tell a slow link from a broken channel is the one person never told",
+      "name": "B8 the server stops saying a page was short in its own log, so the operator who can tell a slow link from a half of the feed that refused is the one person never told",
       "file": "implementations/web/src/web.ts",
       "find": "      if (page.partial)\n        console.error(c.yellow(`~ ${req.method ?? \"GET\"} ${path} partial: ${page.read}/${page.of} sources within ${page.deadlineMs}ms, missing ${page.missing.join(\", \")}`));\n",
       "replace": "",
