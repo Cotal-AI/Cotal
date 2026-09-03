@@ -166,6 +166,18 @@ try {
   m = s.mark();
   await s.keys("D", 800);
   check("D opens the kill confirm", await s.waitFor(/y = stop \(graceful\)/, 5_000, m), clean(s.out.slice(m)).slice(-300));
+  // The overlay opening is not the same claim as the overlay GATING. Enter is the key an operator
+  // hits to dismiss a dialog, so it must cancel here: a kill armed on Enter fires on a keystroke
+  // nobody aimed at the selected seat. Assert the seat survives the reflex key before using the
+  // real one, or every cell below would pass equally on a confirm that accepts anything.
+  await s.keys("\r", 1_200);
+  // The seat NAME is required in the pattern: the overlay's own help line reads "f = force-kill",
+  // so a bare verb matches the confirm that is still open and the cell would pass on any behaviour.
+  check("Enter on the kill confirm does not stop the seat", !(await s.waitFor(/(force-killed|stopped|stopping) w2/, 3_000, m)), clean(s.out.slice(m)).slice(-200));
+  check("...and w2 is still on the roster after Enter", !!live("w2"), watcher.getRoster().map((p) => `${p.card.name}:${p.status}`));
+  m = s.mark();
+  await s.keys("D", 800);
+  check("D re-opens the kill confirm after the cancel", await s.waitFor(/y = stop \(graceful\)/, 5_000, m), clean(s.out.slice(m)).slice(-300));
   await s.keys("f", 300);
   check("f: the notice reports the force-kill", await s.waitFor(/force-killed w2/, 60_000, m), clean(s.out.slice(m)).match(/(force-killing|force-killed|stopped|stop:)[^│\n]*/g)?.join(" | "));
   check("...and w2 leaves the roster", !!(await until(() => (live("w2") ? undefined : true), 15_000)), watcher.getRoster().map((p) => `${p.card.name}:${p.status}`));
