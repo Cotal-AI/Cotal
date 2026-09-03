@@ -53,6 +53,60 @@
       "expectRed": "and a yield in the same window is refused rather than answered not-found",
       "cell": "and a yield in the same window is refused rather than answered not-found",
       "note": "Measured 2026-09-03: KILLED. MANAGER RECONCILE STARTUP SMOKE FAILED  (5 passed, 1 failed) Named cell red: and a yield in the same window is refused rather than answered not-found"
+    },
+    {
+      "name": "the boot sweep stamps every adopted turn's seat dead",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    this.pendingTurns.set(p.goalId, p);\n",
+      "replace": "    this.pendingTurns.set(p.goalId, p);\n    if (this.agents.get(p.seat.name)?.lifecycleUid !== p.seat.uid) this.failSeatTurns(p.seat.name, p.seat.uid);\n",
+      "expectRed": "and NOT marked as addressing a dead seat",
+      "cell": "and NOT marked as addressing a dead seat: an empty agents map at boot is not evidence of death",
+      "note": "The agents map is EMPTY during reconcile: seats re-register later, so 'not in the map' meant 'not yet re-registered' and every adopted turn's deadline terminal carried `agentDownAt`, raising L4002 where the reference says L4003."
+    },
+    {
+      "name": "an adopted turn is stamped with the boot instant",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      acceptedAt: spec.value.acceptedAt,",
+      "replace": "      acceptedAt: Date.now(),",
+      "expectRed": "stamped with the acceptance time its goal RECORDS, never the instant the manager booted",
+      "cell": "stamped with the acceptance time its goal RECORDS, never the instant the manager booted",
+      "note": "`acceptedAt` orders a seat's queue. A turn stamped at boot sorts behind every turn accepted since: a predecessor's oldest turn served last, by a queue whose whole job is oldest-first."
+    },
+    {
+      "name": "an elapsed turn is still the head of its seat's queue",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      .filter((p) => now < p.deadlineAt)\n      .sort((x, y) => x.acceptedAt - y.acceptedAt)",
+      "replace": "      .sort((x, y) => x.acceptedAt - y.acceptedAt)",
+      "expectRed": "an ELAPSED turn is not served and does not dam the seat's queue",
+      "cell": "an ELAPSED turn is not served and does not dam the seat's queue: the live one behind it surfaces",
+      "note": "Only the oldest unsettled turn is served, so an expired one at the head buys the seat work whose yield is refused and hides every turn behind it."
+    },
+    {
+      "name": "a retried yield hears not-found for work that committed",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      const settled = this.turnAcceptances.get(goalId);\n      if (settled?.settled !== undefined) {",
+      "replace": "      const settled = this.turnAcceptances.get(goalId);\n      if (false && settled?.settled !== undefined) {",
+      "expectRed": "a retried yield is served the answer the lost reply carried, never `not-found`",
+      "cell": "a retried yield is served the answer the lost reply carried, never `not-found`",
+      "note": "The commit deletes the pending turn, so a retry after a lost reply found nothing and the seat read `not-found` as 'drop it': failure reported for work the run already has."
+    },
+    {
+      "name": "a settled answer is served to anyone who asks",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        if (a.owner !== c.owner || a.actor !== c.actor || a.uid !== c.uid)\n          throw new EpEnvelopeError(\"permission-denied\", `turn \"${goalId}\" was addressed to",
+      "replace": "        if (false)\n          throw new EpEnvelopeError(\"permission-denied\", `turn \"${goalId}\" was addressed to",
+      "expectRed": "and only to the addressee it was addressed to",
+      "cell": "and only to the addressee it was addressed to",
+      "note": "A yield is the addressee's own, and so is the answer a retry of it is served."
+    },
+    {
+      "name": "settled answers are kept for the process lifetime",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (e.settled !== undefined && now - e.settled.at >= TURN_ANSWER_RETENTION_MS) this.turnAcceptances.delete(goalId);",
+      "replace": "      void e; void goalId;",
+      "expectRed": "the sweep drops a settled answer once its retry window has passed",
+      "cell": "the sweep drops a settled answer once its retry window has passed, and keeps a fresh one",
+      "note": "The map had no eviction at all: one entry per turn for the life of the process."
     }
   ]
 }

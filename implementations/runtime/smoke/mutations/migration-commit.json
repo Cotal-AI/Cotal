@@ -53,6 +53,15 @@
       "expectRed": "and the missing branch is reported, not consumed",
       "cell": "and the missing branch is reported, not consumed",
       "note": "The half a lang-side cell cannot see. The THROW is asserted in migrate.smoke; what nothing watched was this file TRANSLATING it into `unwalkable`, and an untranslated one falls through to the rethrow and reaches the caller as a raw exception instead of a report. The seat's earlier finding on this suite was exactly a translation branch nothing watched."
+    },
+    {
+      "name": "consumedThrough mixes the raw append log with the folded orphan count",
+      "file": "implementations/runtime/src/migrate.ts",
+      "find": "    consumedThrough: journal.entries().length - orphans.length,",
+      "replace": "    consumedThrough: req.entries.length - orphans.length,",
+      "expectRed": "the SAME decision off the raw append log counts the same steps and files the same id",
+      "cell": "the SAME decision off the raw append log counts the same steps and files the same id",
+      "note": "req.entries is the replayed APPEND LOG, where a completed step is a pending row and then its settle; orphans() reads the folded keyed view. The difference is neither count, and it is filed in a durable record and in that record's content-derived id, so one decision replayed at a different shape files twice."
     }
   ],
   "why": [

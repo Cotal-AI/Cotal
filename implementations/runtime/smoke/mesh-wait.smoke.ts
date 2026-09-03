@@ -820,7 +820,58 @@ log("released", r.index);
     outcome);
 }
 
-const EXPECTED_CELLS = 60;
+// ---- 13) a pause that cannot be CLAIMED says so ------------------------------------------------
+//
+// The claim on a sibling deadline is best-effort by design: the caller already has its answer, and
+// a timer left armed only fires, settles expired, and is read by nobody. The catch that made that
+// tolerable swallowed EVERY failure, so a broker refusing looked exactly like the ordinary "it
+// settled underneath us" — and the operator was told nothing about a run leaving live timers behind
+// it. A settled race stays quiet; a broker that refused is loud, and neither replaces the answer.
+{
+  console.log("• 13 — a cancellation the broker refuses is reported, and the answer still stands");
+  const id = tok("loudcancel");
+  const outerTok = createHash("sha256").update(`${id}:wait-timeout`, "utf8").digest("base64url").slice(0, 43);
+  // ONLY the OUTER pause's settle fact. The arm path publishes on the timer rail (`ept…`) and the
+  // idle window settles under its own token, so a blanket fault would prove this notices SOMETHING
+  // rather than notices the sibling claim.
+  const brokenJs = new Proxy(js, {
+    get(target, prop, recv) {
+      if (prop !== "publish") return Reflect.get(target, prop, recv);
+      const pub = Reflect.get(target, prop, recv) as typeof js.publish;
+      return async (subject: string, ...rest: unknown[]) => {
+        if (subject.endsWith(`.cp.${outerTok}`))
+          throw Object.assign(new Error("nats: no responders available"), { code: 503 });
+        return await (pub as unknown as (...a: unknown[]) => Promise<unknown>).call(target, subject, ...rest);
+      };
+    },
+  }) as typeof js;
+  const loudHandler = new MeshHandler(
+    nc, kv, brokenJs, jsm,
+    { space: SPACE, endpoint: EP, runId: "r-loudcancel", caller: CALLER, instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
+    new EpfSettleWatcher(js, jsm, SPACE, 3_000),
+    now,
+  );
+  const said: string[] = [];
+  const realErr = console.error;
+  console.error = (...a: unknown[]) => { said.push(a.map(String).join(" ")); };
+  let got: { channel?: string } | null = null;
+  try {
+    const awaited = loudHandler.wait({ event: { event: "idle", channel: CHANNEL, duration: "2s" }, timeout: "1h" }, ctx(id).ctx);
+    await wait(400);
+    await armPending();
+    await pastDue(id);
+    got = (await withDeadline(awaited, 25_000, "the wait whose sibling claim is refused")) as { channel?: string };
+  } finally {
+    console.error = realErr;
+  }
+  c("the wait still answers on its own window when the sibling claim is refused",
+    got?.channel === CHANNEL, JSON.stringify(got));
+  c("and the refused claim is REPORTED, naming the pause and what it will do unread",
+    said.some((l) => l.includes(outerTok) && l.includes("could not be claimed") && l.includes("no responders")),
+    said.join(" | ").slice(0, 200));
+}
+
+const EXPECTED_CELLS = 62;
 const ran = ok + fail;
 console.log(`mesh-wait.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

@@ -18,7 +18,8 @@
       "replace": "      if (false)\n        throw new RuntimeFault(",
       "expectRed": "a spawn record with no persona is refused as L3041, never spawned as the persona \"undefined\"",
       "cell": "a spawn record with no persona is refused as L3041, never spawned as the persona \"undefined\"",
-      "note": "Measured 2026-09-03: KILLED. Thrown red: `Error: FAIL: a spawn record with no persona is refused as L3041, never spawned as the persona \"undefined\" - {\"code\":\"L4000\",\"kind\":\"handler-fault\"}` — without the refusal the persona \"undefined\" reaches the handler and faults there instead, which is the whole point."
+      "note": "Measured 2026-09-03: KILLED. Thrown red: `Error: FAIL: a spawn record with no persona is refused as L3041, never spawned as the persona \"undefined\" - {\"code\":\"L4000\",\"kind\":\"handler-fault\"}` \u2014 without the refusal the persona \"undefined\" reaches the handler and faults there instead, which is the whole point. Its completion is named on an EARLY printed line rather than the suite summary: options.smoke's `ok` THROWS on the first failure, so a killed mutant never reaches `options.smoke:` and a summary marker would grade every kill here as inconclusive.",
+      "completionMarker": "ok the object form forwards the model"
     }
   ]
 }

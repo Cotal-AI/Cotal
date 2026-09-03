@@ -29,6 +29,24 @@
       "expectRed": "no notices states the fact IN WORDS, so the addressee reads `nobody told you anything`",
       "cell": "no notices states the fact IN WORDS, so the addressee reads `nobody told you anything`",
       "note": "Measured 2026-09-03: KILLED. mesh-notify.smoke: 44 passed, 2 failed Named cell red: no notices states the fact IN WORDS, so the addressee reads `nobody told you anything`"
+    },
+    {
+      "name": "the discharge walks past a cancelled branch's notices",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      if (e.kind === \"notify\") {\n        await this.dischargeNotify(e);\n        continue;\n      }",
+      "replace": "      if (e.kind === \"notify\") {\n        continue;\n      }",
+      "expectRed": "the discharge withdraws it: the notice will not be delivered again",
+      "cell": "the discharge withdraws it: the notice will not be delivered again",
+      "note": "A notice is world state exactly as a live seat or an armed timer is; the discharge released those three and walked past this one, so a decision the run cancelled still reached its addressee."
+    },
+    {
+      "name": "the withdrawal is filed as if a turn had carried it",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "          n.spec.addressee, n.noticeId, `discharge:${step}`, this.now(),",
+      "replace": "          n.spec.addressee, n.noticeId, \"turn\", this.now(),",
+      "expectRed": "and says which cancelled step withdrew it, rather than naming a turn that never carried it",
+      "cell": "and says which cancelled step withdrew it, rather than naming a turn that never carried it",
+      "note": "`by` is what a reader traces a notice through. A withdrawal that names a turn claims a delivery that never happened."
     }
   ]
 }

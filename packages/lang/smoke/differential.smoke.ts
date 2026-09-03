@@ -1008,11 +1008,16 @@ const SURVIVED: readonly (readonly [string, string])[] = [
     const entry = CORPUS.find(([n]) => n === row);
     ok(`the survival check names a corpus row that still exists, so the two cannot drift apart: ${name}`, entry !== undefined, { names: row });
     const source = entry === undefined ? "" : entry[1];
-    const run = spawnSync(process.execPath, ["--import", "tsx", child, source], { encoding: "utf8" });
+    // BOUNDED, because the failure this section guards is a program that NEVER SETTLES. The child
+    // is what keeps such a program from hanging the suite, and a child awaited without a deadline
+    // moves the hang one process out rather than removing it: the parent blocks in spawnSync and
+    // the gate reads as running forever instead of red.
+    const run = spawnSync(process.execPath, ["--import", "tsx", child, source],
+      { encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL" });
     const out = `${run.stdout}${run.stderr}`;
     ok(`the oracle's own process survives it, and hands the refusal back to its caller: ${name}`,
-      run.status === 0 && out.includes("REFUSED L4021"),
-      { status: run.status, out: out.slice(0, 160) });
+      run.status === 0 && run.signal === null && out.includes("REFUSED L4021"),
+      { status: run.status, signal: run.signal, out: out.slice(0, 160) });
   }
   console.log(`  (${SURVIVED.length} program(s) the oracle used to die on, checked in a child because a regression HANGS this suite rather than reding it)`);
 }

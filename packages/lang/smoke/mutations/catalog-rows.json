@@ -23,6 +23,15 @@
       "completionMarker": "ok every js block in docs/workflows.md validates as written",
       "cell": "Appendix A lists exactly the catalog's codes, 99 of them, each once",
       "note": "The other direction, and the one a title comparison alone would miss: the document keeps a row whose code no longer exists. L5021 is chosen because no cell in this suite raises or names it, so the mutant reaches the set comparison rather than reding something upstream. The set cell runs BEFORE the title cell, so under this mutant it is the first red and the title cell never runs."
+    },
+    {
+      "name": "a code outside the catalog is thrown again",
+      "file": "packages/lang/src/perform.ts",
+      "find": "      throw new InterpreterDefect(`the primitive ${name}`);",
+      "replace": "      throw new RuntimeFault(\"L1000\", `${name} is not implemented in this interpreter`);",
+      "expectRed": "every code this package THROWS is one the catalog carries",
+      "cell": "every code this package THROWS is one the catalog carries",
+      "note": "Appendix A and the catalog agree perfectly about a code that is in NEITHER. L1000 was thrown at eight sites and no reader could look it up."
     }
   ]
 }

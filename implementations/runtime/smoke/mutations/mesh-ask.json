@@ -156,6 +156,42 @@
       "expectRed": "a resume whose relay never landed re-tells the seat WITH the refusal the entry recorded",
       "cell": "a resume whose relay never landed re-tells the seat WITH the refusal the entry recorded",
       "note": "Measured 2026-09-03: KILLED. mesh-ask.smoke: 34 passed, 1 failed Named cell red: a resume whose relay never landed re-tells the seat WITH the refusal the entry recorded"
+    },
+    {
+      "name": "an escalation addressed to a seat is not relayed to it",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (ctx.attempt > 0 && req.to !== undefined) await this.relayEscalation(req, ctx, ref.token, deadline);",
+      "replace": "    if (false) await this.relayEscalation(req, ctx, ref.token, deadline);",
+      "expectRed": "the escalation reaches the seat as a turn under the pause's own token",
+      "cell": "the escalation reaches the seat as a turn under the pause's own token",
+      "note": "The reference says `escalate` mints one further checkpoint ADDRESSED TO `to`, and the addressing was a word in the record with no delivery."
+    },
+    {
+      "name": "the relayed escalation carries no prompt",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      checkpoint: { token, prompt: req.prompt, schema: req.schema ?? null, deadlineAt, escalatedTo: to },",
+      "replace": "      checkpoint: { token, schema: req.schema ?? null, deadlineAt, escalatedTo: to },",
+      "expectRed": "carrying the question, the addressee and the step to answer at",
+      "cell": "carrying the question, the addressee and the step to answer at",
+      "note": "Everything durable held the input HASH, so a seat handed a token and no question cannot answer it."
+    },
+    {
+      "name": "a checkpoint binds nothing, so nothing records what it asks",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (ctx.resume?.asks === undefined)\n      await ctx.bind({ asks: req.prompt, ...(req.to !== undefined ? { addressee: req.to } : {}) });",
+      "replace": "    if (false)\n      await ctx.bind({ asks: req.prompt, ...(req.to !== undefined ? { addressee: req.to } : {}) });",
+      "expectRed": "and the entry itself records what it asks, so the operator surface can show it",
+      "cell": "and the entry itself records what it asks, so the operator surface can show it",
+      "note": "The entry is what `cotal run journal` reads to print the question under the step key an answer is addressed by."
+    },
+    {
+      "name": "an escalation relays to whatever `to` names, seat or not",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    const seated = entry !== undefined && entry.owner !== undefined && entry.actor !== undefined;\n    if (!seated) return;",
+      "replace": "    const seated = entry !== undefined && entry.owner !== undefined && entry.actor !== undefined;\n    if (!seated) { /* relay anyway */ }",
+      "expectRed": "an escalation addressed to someone who is not a seat relays to nobody and still records who it names",
+      "cell": "an escalation addressed to someone who is not a seat relays to nobody and still records who it names",
+      "note": "`to` is a NAME, not a handle: the reference lets a program escalate to a person, and a relay addressed at a seat nobody spawned is a submission to nowhere."
     }
   ]
 }

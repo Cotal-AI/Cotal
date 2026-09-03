@@ -372,6 +372,24 @@
       "expectRed": "identical on both engines: a per-iteration head binding an array pattern",
       "cell": "identical on both engines: a per-iteration head binding an array pattern",
       "note": "Measured 2026-09-03: KILLED. Three reds: both pattern-head rows diverge (walker runs, engine refuses) and the completion audit names them. The differential prints its cells as \"identical on both engines: <case>\", which is what expectRed now names."
+    },
+    {
+      "name": "a free string builtin coerces its argument again, so one operation answers two ways by spelling",
+      "file": "packages/lang/src/library.ts",
+      "find": "  if (typeof v !== \"string\")\n    throw new RuntimeFault(\"L4016\", `${name}: this argument must be a string (there are no regular expressions here)`);\n  return v;",
+      "replace": "  return String(v);",
+      "expectRed": "every corpus program completes, or refuses the code it declares",
+      "cell": "every corpus program completes, or refuses the code it declares",
+      "note": "The method table has always said `str`, so `\"a5b\".split(5)` is L4016; the free spellings cast, so `split(\"a5b\", 5)` silently separated on \"5\". Both arms of the differential share this module, so the shape cell agrees either way \u2014 what notices is the corpus row's DECLARED code."
+    },
+    {
+      "name": "sort's total order takes a stand-in for a value with no canonical form",
+      "file": "packages/lang/src/library.ts",
+      "find": "  } catch (e) {\n    throw new RuntimeFault(\"L4016\", `sort: a value in this list has no canonical form (${(e as Error).message}), so the total order cannot place it`);\n  }",
+      "replace": "  } catch {\n    return `\\uFFFF${String(v)}`;\n  }",
+      "expectRed": "every corpus program completes, or refuses the code it declares",
+      "cell": "every corpus program completes, or refuses the code it declares",
+      "note": "SPEC 5.3: sort never answers \"equal\" for two distinct values. The stand-in is `\\uFFFF[object Object]` for every cyclic record, so two DISTINCT ones compared equal and the order the reference promises stopped existing. Both differential arms share this module, so the shape cell agrees either way; the declared code is what notices."
     }
   ],
   "completionMarker": "differential.smoke:",

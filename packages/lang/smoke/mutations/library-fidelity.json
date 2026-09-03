@@ -12,7 +12,7 @@
       "expectRed": "a callback that appends does not grow the walk: the length is captured first",
       "completionMarker": "ok a program that logs a literal",
       "cell": "a callback that appends does not grow the walk: the length is captured first",
-      "note": "With the live read restored, a push inside the callback grows the walk and the result — node visits only the captured length."
+      "note": "With the live read restored, a push inside the callback grows the walk and the result \u2014 node visits only the captured length."
     },
     {
       "name": "replacement strings are literal again, the shipped defect",
@@ -22,7 +22,17 @@
       "expectRed": "replacement strings mean what JavaScript says: $-patterns, first vs all",
       "completionMarker": "ok a program that logs a literal",
       "cell": "replacement strings mean what JavaScript says: $-patterns, first vs all",
-      "note": "The function form makes every `$` literal, so `$&` stops naming the match — a meaning JavaScript gives neither replace nor replaceAll."
+      "note": "The function form makes every `$` literal, so `$&` stops naming the match \u2014 a meaning JavaScript gives neither replace nor replaceAll."
+    },
+    {
+      "name": "the free replace is split/join again, so $-patterns are literal",
+      "file": "packages/lang/src/library.ts",
+      "find": "    [\"replace\", fn(\"replace\", (_f, a) => strArg(\"replace\", a[0]).replaceAll(strArg(\"replace\", a[1]), strArg(\"replace\", a[2])))],",
+      "replace": "    [\"replace\", fn(\"replace\", (_f, a) => strArg(\"replace\", a[0]).split(strArg(\"replace\", a[1])).join(strArg(\"replace\", a[2])))],",
+      "expectRed": "the free string builtins ARE the methods, spelled free: substitution included",
+      "completionMarker": "ok a program that logs a literal",
+      "cell": "the free string builtins ARE the methods, spelled free: substitution included",
+      "note": "The reference says replace(s, a, b) replaces every occurrence where s.replace(a, b) replaces the first, IN EACH CASE EXACTLY AS JAVASCRIPT SPELLS THE METHOD, and the method honours $$ , $& , $` and $'. split/join takes them literally."
     }
   ]
 }

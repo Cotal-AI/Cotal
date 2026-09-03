@@ -40,6 +40,33 @@
       "expectRed": "a failed presence write does not swallow the boundary",
       "cell": "a failed presence write does not swallow the boundary",
       "note": "Measured 2026-09-03: KILLED. turn-intake.smoke: 26 passed, 1 failed Named cell red: a failed presence write does not swallow the boundary"
+    },
+    {
+      "name": "the seat discards every pull refusal in silence",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      if (!r.ok) { this.notePullTrouble(r.error ?? \"refused with no message\"); return; }",
+      "replace": "      if (!r.ok) return;",
+      "expectRed": "a refusal that is neither is said, with the reason",
+      "cell": "a refusal that is neither is said, with the reason",
+      "note": "The poll runs for the life of the session and reported nothing at all, so a seat whose relay had gone quiet looked exactly like a seat that never had one."
+    },
+    {
+      "name": "every pull refusal is reported, including the ordinary ones",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (/no responder answered|still reconciling/i.test(reason)) return;",
+      "replace": "    if (false) return;",
+      "expectRed": "the no-relay shape stays silent: most joined sessions have no manager to pull from",
+      "cell": "the no-relay shape stays silent: most joined sessions have no manager to pull from",
+      "note": "Most joined sessions genuinely have no manager to pull from, and a line every few seconds for that is a torrent that buries the reports worth reading."
+    },
+    {
+      "name": "the same reason is reported on every poll",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (this.pullTrouble === reason) return;",
+      "replace": "    if (false) return;",
+      "expectRed": "and saying it again waits for the reason to change: the poll does not become a torrent",
+      "cell": "and saying it again waits for the reason to change: the poll does not become a torrent",
+      "note": "A failure that persists is one fact, not one per poll interval."
     }
   ],
   "why": [

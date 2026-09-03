@@ -74,6 +74,33 @@
       "expectRed": "...with the matched message still unacked, which is what makes it recoverable at all",
       "cell": "...with the matched message still unacked, which is what makes it recoverable at all",
       "note": "The claim the handler's own comment makes and that nothing tested: in the other order the match is simply lost. With the ack first, the position survives the refused bind and is already past the message the run needs -- the same loss wearing a healthier shape, which is why the cell asserts the ack state and not merely that the consumer exists."
+    },
+    {
+      "name": "an idle wait's outer deadline is left armed when the window closes",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "        if (idleFor !== undefined && (await this.expired(primary)) !== undefined) {\n          if (outer !== undefined) await this.cancelTimer(outer);",
+      "replace": "        if (idleFor !== undefined && (await this.expired(primary)) !== undefined) {",
+      "expectRed": "the outer deadline is CLAIMED by the ending, not left armed for an hour",
+      "cell": "the outer deadline is CLAIMED by the ending, not left armed for an hour",
+      "note": "The shipped state before the repair: each expiry claimed only the deadline it read, so the sibling fired into a run that had moved on and sat unclaimed until the run's own discharge."
+    },
+    {
+      "name": "every fire-read failure is read as 'the timer has not fired yet'",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "        if ((e as { code?: unknown })?.code === 10037) return null;\n        throw e;",
+      "replace": "        void e;\n        return null;",
+      "expectRed": "the broker's refusal reaches the caller instead of reading as an unfired timer",
+      "cell": "the broker's refusal reaches the caller instead of reading as an unfired timer",
+      "note": "10037 is the stream saying there is no message on that subject, which IS 'not yet'. Every other error is the broker, and reading those as 'not yet' is how a wait with a timeout outlives its own durable deadline in silence."
+    },
+    {
+      "name": "a refused cancellation is swallowed as if it had settled underneath",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      const settledAlready = e instanceof EpEnvelopeError\n        && (e.code === \"conflict\" || e.code === \"failed-precondition\");",
+      "replace": "      const settledAlready = true\n        || (e instanceof EpEnvelopeError && (e.code === \"conflict\" || e.code === \"failed-precondition\"));",
+      "expectRed": "and the refused claim is REPORTED, naming the pause and what it will do unread",
+      "cell": "and the refused claim is REPORTED, naming the pause and what it will do unread",
+      "note": "Measured 2026-09-03: KILLED, one cell, 61 ok 1 failed. The claim on a sibling deadline is best-effort and must never replace the caller's answer, so the failure can only be reported. Swallowed, a broker that refused looks exactly like the ordinary settled race and the operator is never told the run left live timers behind it."
     }
   ]
 }
