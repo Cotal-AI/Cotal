@@ -782,8 +782,3 @@ smoke:persona-root
 # a `default` that cannot launch is a capability claim the operator has no way to check.
 # Appended at the end: no ordering dependency, and appending keeps two branches from conflicting.
 smoke:status-persona-root
-
-# The #1210 read-cost measurement: what `/api/activity` and `/api/dms` spend on the wire,
-# counted by a proxy between the endpoint and the broker, against the fan-out shape they replaced.
-# Appended so every existing shard assignment remains unchanged.
-smoke:web-activity-read-cost
