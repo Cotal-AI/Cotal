@@ -10,12 +10,12 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, isReachable, setupSpaceStreams } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let cells = 0;
 let failed = 0;
@@ -157,7 +157,15 @@ try {
   console.log("  fixture: cleanup starting");
   await observer?.stop().catch(() => {});
   await Promise.all(peers.slice(1).map((peer) => peer.stop().catch(() => {})));
-  await releaseBroker();
+  // WAIT for the broker to be gone rather than only asking. SIGTERM makes nats-server flush
+  // JetStream on its way out, and removing the tree on the next line can walk into what it is
+  // still writing.
+  await killAndAwaitExit(broker, "SIGTERM");
+  rmSync(dir, { recursive: true, force: true });
+  // LAST, deliberately. `teardownOnSignal` returns a function that only DROPS OWNERSHIP; it never
+  // kills anything. Calling it before the lines above would hand the broker back while cleanup
+  // could still throw, which is the exact case ownership exists to catch.
+  releaseBroker();
   console.log("  fixture: cleanup complete");
 }
 
