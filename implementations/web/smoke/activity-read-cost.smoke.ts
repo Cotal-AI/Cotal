@@ -268,6 +268,10 @@ const CORPUS = { chat: 69, chatDepth: 60, events: 24, eventDepth: 200, dms: 2500
  *  the harder direction for the single read (a narrower filter set is sparser inside the stream), so
  *  a flat line there is not an artefact of a friendlier corpus. */
 const NARROW = 20;
+/** Above the measured create ceiling: 10,000 unbatched filters did not answer (timeout after
+ *  5,023ms) while 5,000 answered in 5,345ms, both on an isolated broker with one message per
+ *  channel. Section 8 asserts this count still produces MESSAGES. */
+const WIDE = 10_000;
 const LIMIT = 200;
 const BODY = "x".repeat(400);
 /** The field link: 82ms RTT, 554 KB/s, both directions. */
@@ -648,6 +652,91 @@ try {
       after < ABANDONED_CEILING, { after, ceiling: ABANDONED_CEILING });
     ok("7.3 and the whole aborted read moves far less than the backlog it was reading",
       settled.bytesDown < ABANDONED_CEILING * 4, { moved: settled.bytesDown });
+  }
+
+  // ── 8. a channel count above the measured create ceiling still ANSWERS ─────────────────────────
+  // One create names every requested channel, so the request grows with the count and the CLIENT's
+  // request timeout is what gives way: the broker never refuses, it just does not answer in time.
+  // Measured on this shape before the filter list was batched: 5,000 filters answered in 5,345ms,
+  // and 10,000 did not answer at all, failing `timeout` after 5,023ms. The route then served a
+  // correctly-marked partial page with `chat` named missing and NO chat entries at all, where the
+  // per-channel fan-out it replaced had still returned thousands of messages on the same corpus.
+  //
+  // THE ASSERTION IS THAT ENTRIES ARE NON-EMPTY, not that the page is marked partial. An empty page
+  // that says it is partial is honest and still useless, and it is what this suite would have
+  // called correct: 6.3 and 6.4 in the sibling suite assert the marker and the named source, and
+  // both of them PASS while the feed shows nothing. A cell that accepts the marker cannot tell the
+  // fix from the defect it replaced, which is why this one looks at the messages.
+  {
+    const wideSpace = "actcost-wide";
+    const chans = Array.from({ length: WIDE }, (_, i) => `w${String(i).padStart(5, "0")}`);
+    await setupSpaceStreams({ servers: SERVER, space: wideSpace });
+    const seeder = new CotalEndpoint({
+      space: wideSpace, servers: SERVER, channels: chans, consume: false, registerPresence: false,
+      card: { id: newIdentity().id, name: "wide-seeder", kind: "endpoint" },
+    });
+    seeder.on("error", () => {});
+    await seeder.start();
+    for (const c of chans) await seeder.multicast("w", { channel: c });
+    await seeder.stop();
+
+    const ep = new CotalEndpoint({
+      space: wideSpace, servers: SERVER, channels: [], consume: false, registerPresence: false,
+      watchPresence: false, card: { name: "wide-reader", kind: "endpoint" },
+    });
+    ep.on("error", () => {});
+    await ep.start();
+    try {
+      // CAPTURED, NOT AWAITED BARE. Above the ceiling this read REJECTS, and a throw here would
+      // leave 8.0 unprinted and take the suite down as a crash instead of as a failed assertion.
+      // A mutation that removes the batching has to make a named cell go red, not make the run
+      // disappear, or the proof cannot say which claim it broke.
+      const t = Date.now();
+      let rows: { channel: string; msg: CotalMessage }[] = [];
+      let readErr: Error | undefined;
+      try { rows = await ep.multiChannelHistory(chans, { limit: LIMIT }); }
+      catch (e) { readErr = e as Error; }
+      const ms = Date.now() - t;
+      console.log(`  ${WIDE} channel filters answered in ${ms}ms with ${rows.length} messages`);
+      ok(`8.0 ${WIDE} channel filters ANSWER at all, where one unbatched create timed out`,
+        rows.length > 0, { rows: rows.length, ms, err: readErr?.message });
+      ok("8.1 and the page is the newest LIMIT, not a truncated remnant",
+        rows.length === Math.min(LIMIT, WIDE), { rows: rows.length, limit: LIMIT });
+      // The route, not just the method: a kill on the method alone would not show the feed recovers.
+      const page = await activityBackfill(ep as unknown as ActivitySource, LIMIT);
+      ok("8.2 the activity feed itself carries chat entries at this channel count",
+        page.entries.length > 0, { entries: page.entries.length, partial: page.partial, missing: page.missing });
+      ok("8.3 and does not name chat missing", !page.missing.includes("chat"), page.missing);
+
+      // ── 8.4 THE BATCHED READ SELECTS WHAT THE SINGLE CREATE SELECTED ──────────────────────────
+      // Batching is only safe if re-cutting the union by stream sequence reproduces the single
+      // create's answer. That is a CLAIM, so it is asserted rather than argued: the same corpus is
+      // read twice, once as one create and once forced into many small batches, and the two pages
+      // must agree message for message AND in order.
+      //
+      // WHAT THIS CELL DOES NOT CATCH, measured rather than assumed: it does not pin the key the
+      // union is re-cut ON. A mutation that merges by the payload's `ts` instead of by stream
+      // sequence reorders BOTH arms identically, so they still agree with each other and this cell
+      // stays green. That mutation was run against this cell and SURVIVED. An equality between two
+      // arms of one implementation can only see what makes the arms differ, and the sort key is not
+      // that. The key is pinned in `history-recent` against a corpus published so that `ts` and
+      // arrival disagree, which is an oracle outside the implementation rather than a second view
+      // of it.
+      let one: { channel: string; msg: CotalMessage }[] = [];
+      let many: { channel: string; msg: CotalMessage }[] = [];
+      try {
+        one = await ep.multiChannelHistory(chans.slice(0, 300), { limit: LIMIT });
+        many = await ep.multiChannelHistory(chans.slice(0, 300), { limit: LIMIT, batch: 7 });
+      } catch { /* 8.4 reports it as a mismatch below rather than crashing the run */ }
+      const idOf = (r: { channel: string; msg: CotalMessage }) => `${r.channel}/${r.msg.id}`;
+      ok("8.4 one create and 43 batches return the SAME messages in the SAME order",
+        one.length > 0 && one.length === many.length && one.every((r, i) => idOf(r) === idOf(many[i])),
+        { one: one.map(idOf).slice(0, 4), many: many.map(idOf).slice(0, 4), n: [one.length, many.length] });
+      ok("8.5 CONTROL: forcing the small batch really did take many creates, so 8.4 compared two shapes",
+        Math.ceil(300 / 7) > 1 && one.length > 0, { batches: Math.ceil(300 / 7), rows: one.length });
+    } finally {
+      await ep.stop();
+    }
   }
 } finally {
   link?.close();

@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { connect } from "@nats-io/transport-node";
-import { CotalEndpoint, isReachable, newIdentity, setupSpaceStreams } from "../src/index.js";
+import { CotalEndpoint, chatSubject, isReachable, newIdentity, setupSpaceStreams } from "../src/index.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
 
@@ -237,6 +237,60 @@ try {
   await wait(300);
   const after = await consumers();
   check(`history reclaims every consumer it creates (before ${before}, after ${after})`, after <= before, { before, after });
+
+  // ── multiChannelHistory selects by ARRIVAL, never by the payload's `ts` ───────────────────────
+  // The read batches its filter list and re-cuts the union, so it has to choose a key to re-cut ON.
+  // Stream sequence is the broker's own record of when it took the message; `ts` is a number the
+  // SENDER wrote and nothing validates. They agree on any corpus published by one clock, which is
+  // why an equality between two arms of this same read cannot tell them apart: a merge that sorted
+  // by `ts` would reorder BOTH arms identically and both would still agree with each other.
+  //
+  // So the corpus is built to make them DISAGREE, by publishing the message frames directly with a
+  // chosen `ts` rather than letting `multicast` stamp `Date.now()`. `early` arrives LAST and claims
+  // the OLDEST `ts`; `late` arrives FIRST and claims a `ts` far in the future. Selecting the newest
+  // one by arrival must return `early`. Selecting it by `ts` returns `late`, and that is the whole
+  // difference between the two keys.
+  {
+    const raw = await connect({ servers: SERVER });
+    const skewCh = ["skew-a", "skew-b"];
+    const frame = (channel: string, id: string, ts: number) => ({
+      id, ts, space: SPACE, from: { id: "local.skew", name: "skew" },
+      channel, parts: [{ kind: "text", text: id }],
+    });
+    // `late` first, carrying a ts an hour ahead; `early` second, carrying a ts an hour behind.
+    raw.publish(chatSubject(SPACE, "local", "skew", skewCh[0]),
+      JSON.stringify(frame(skewCh[0], "late", Date.now() + 3_600_000)));
+    raw.publish(chatSubject(SPACE, "local", "skew", skewCh[1]),
+      JSON.stringify(frame(skewCh[1], "early", Date.now() - 3_600_000)));
+    await raw.flush();
+    await raw.close();
+    await wait(200);
+
+    // THE MULTI-BATCH CASE IS THE DISCRIMINATING ONE, and it is asserted FIRST because this suite
+    // stops at the first failure. Measured: a single-batch read CANNOT see the merge key at all.
+    // `streamHistory` has already applied the limit inside that one batch, so `pages.flat()` holds
+    // exactly one row and re-sorting one row cannot reorder anything. Forcing one batch per channel
+    // is what makes the union bigger than the limit, and only then does the key it is re-cut on
+    // decide the answer. A mutation merging by `ts` leaves the single-batch check GREEN and reddens
+    // this one, which is why this one carries the name the fixture points at.
+    const split = await ep.multiChannelHistory(skewCh, { limit: 1, batch: 1 });
+    check("multiChannelHistory merges BATCHES by arrival, not by the highest `ts`",
+      split.length === 1 && split[0].msg.id === "early",
+      { got: split.map((r) => r.msg.id), expected: ["early"] });
+
+    const newest = await ep.multiChannelHistory(skewCh, { limit: 1 });
+    check("and a single unbatched read agrees with the batched one",
+      newest.length === 1 && newest[0].msg.id === "early",
+      { got: newest.map((r) => r.msg.id), expected: ["early"] });
+
+    // CONTROL: the corpus really does disagree, so the two checks above could have gone the other
+    // way. Without this, a corpus whose `ts` happened to match arrival would pass them for free.
+    const both = await ep.multiChannelHistory(skewCh, { limit: 2 });
+    const byTs = [...both].sort((a, b) => a.msg.ts - b.msg.ts).map((r) => r.msg.id);
+    check("CONTROL: `ts` order and arrival order really are opposite on this corpus",
+      byTs.join(",") === "early,late" && both.map((r) => r.msg.id).join(",") === "late,early",
+      { byTs, byArrival: both.map((r) => r.msg.id) });
+  }
 
   await ep.stop();
   console.log(`\nhistory-recent smoke: ${pass} checks passed`);

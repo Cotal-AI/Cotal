@@ -151,6 +151,28 @@ interface Plane3DeliveryFrame {
 /** Space joined when none is given on the CLI (the `cotal-<space>` cmux tab, etc.). */
 export const DEFAULT_SPACE = "main";
 
+/** How many channel filters one multi-filter consumer create may carry.
+ *
+ *  A create names every requested channel in one request, so the request grows with the channel
+ *  count and the CLIENT's request timeout is what gives way, not the broker: the create is never
+ *  refused, it just does not answer. Measured on an isolated broker, one message per channel,
+ *  `limit=5`: 70 filters answer in 43ms, 1,000 in 246ms, 5,000 in 5,345ms, and 10,000 does not
+ *  answer at all, failing `timeout` after 5,023ms. Note 5,000 SUCCEEDED while taking longer than
+ *  10,000 took to fail, which is what says the ceiling is on the create request rather than on the
+ *  read: past roughly 5s the create itself is what times out.
+ *
+ *  1,000 is chosen from that sweep rather than from the failure point: it is a fifth of the largest
+ *  count that still answered, and it answers in a quarter second, so a batch stays far away from
+ *  both the timeout and the response-deadline budget the dashboard has to share with its DM read.
+ *  A space with the 69 chat channels this was built for is still ONE read, so the round-trip claim
+ *  in #1210 is unchanged at that size. */
+export const MULTI_FILTER_BATCH = 1_000;
+
+/** How many filter batches may be in flight at once. Bounded because the point of #1210 was to stop
+ *  issuing one read per channel: a space large enough to need batches must not get the fan-out back
+ *  under another name. */
+export const MULTI_FILTER_READ_CONCURRENCY = 4;
+
 export interface EndpointOptions {
   /** The collaboration to join. */
   space: string;
@@ -2502,7 +2524,7 @@ export class CotalEndpoint extends EventEmitter {
    */
   async multiChannelHistory(
     channels: readonly string[],
-    opts?: { limit?: number; signal?: AbortSignal },
+    opts?: { limit?: number; signal?: AbortSignal; batch?: number },
   ): Promise<{ channel: string; msg: CotalMessage }[]> {
     const subjects = [...new Set(channels.map((channel) => {
       if (!isConcreteChannel(channel))
@@ -2520,13 +2542,46 @@ export class CotalEndpoint extends EventEmitter {
     // No channels is not an empty stream, but it IS an empty answer, and asking the broker for a
     // consumer with no filter would read the WHOLE stream instead of none of it.
     if (subjects.length === 0) return [];
-    const rows = await this.streamHistory(
-      chatStream(this.space),
-      subjects,
-      opts?.limit ?? 100,
-      undefined,
-      opts?.signal,
+    const limit = opts?.limit ?? 100;
+    // ONE CREATE CANNOT CARRY AN UNBOUNDED FILTER LIST. The create names every subject in one
+    // request and the client's request timeout is what gives way, so past roughly 5,000 filters the
+    // read does not answer at all and the route loses the whole chat source: measured on an
+    // isolated broker, 10,000 channels failed `timeout` after 5,023ms while the fan-out this
+    // replaced still returned 2,739 messages on the same corpus. Reading in batches keeps the
+    // single-read cost at the sizes this was built for (69 channels is one batch, so #1210's
+    // round-trip numbers are unchanged) and degrades to a few reads instead of none above that.
+    // `batch` is a knob rather than a constant so the batched path can be compared against the
+    // single-create path on ONE corpus: forcing a small batch makes a space that would otherwise be
+    // one read take many, which is the only way to assert the two select the same messages.
+    const size = Math.max(1, Math.trunc(opts?.batch ?? MULTI_FILTER_BATCH));
+    const batches: string[][] = [];
+    for (let i = 0; i < subjects.length; i += size)
+      batches.push(subjects.slice(i, i + size));
+    const pages: { seq: number; subject: string; msg: CotalMessage }[][] = new Array(batches.length);
+    let next = 0;
+    const readBatch = async (): Promise<void> => {
+      for (;;) {
+        const i = next++;
+        if (i >= batches.length) return;
+        pages[i] = await this.streamHistory(
+          chatStream(this.space), batches[i], limit, undefined, opts?.signal,
+        );
+      }
+    };
+    // A BATCH THAT FAILS FAILS THE READ. Returning the batches that answered would be the newest
+    // `limit` across SOME of the channels asked for while looking like the newest across all of
+    // them, which is a wrong page presented as a right one. Throwing keeps the caller's existing
+    // envelope: the dashboard marks `chat` missing and says the page is partial, which is what it
+    // already did when this method was one read.
+    await Promise.all(
+      Array.from({ length: Math.min(MULTI_FILTER_READ_CONCURRENCY, batches.length) }, readBatch),
     );
+    // MERGE ON ARRIVAL, NOT ON `ts`. Each batch returns the newest `limit` within its own subjects,
+    // and the newest `limit` overall is a subset of their union, so re-selecting by stream sequence
+    // reproduces exactly what one create over the whole list would have selected. Sorting by the
+    // payload's `ts` here instead would change which messages the page holds, which is the
+    // selection question this pull request already had to answer once.
+    const rows = pages.flat().sort((a, b) => a.seq - b.seq).slice(-limit);
     return rows.map(({ subject, msg }) => {
       const p = parseSubject(subject);
       // The filter set is built from chat subjects, so this cannot fire against a healthy broker.
@@ -2620,7 +2675,7 @@ export class CotalEndpoint extends EventEmitter {
     limit: number,
     before?: number,
     signal?: AbortSignal,
-  ): Promise<{ subject: string; msg: CotalMessage }[]> {
+  ): Promise<{ seq: number; subject: string; msg: CotalMessage }[]> {
     if (!this.nc) throw new Error("endpoint not started");
     signal?.throwIfAborted();
     // A LIMIT THAT IS NOT A FINITE NUMBER HAS NO ANSWER, AND THE SEARCH BELOW CANNOT REFUSE IT.
@@ -2823,9 +2878,9 @@ export class CotalEndpoint extends EventEmitter {
     ceiling: number,
     limit: number,
     signal?: AbortSignal,
-  ): Promise<{ subject: string; msg: CotalMessage }[]> {
+  ): Promise<{ seq: number; subject: string; msg: CotalMessage }[]> {
     signal?.throwIfAborted();
-    const out: { subject: string; msg: CotalMessage }[] = [];
+    const out: { seq: number; subject: string; msg: CotalMessage }[] = [];
     const consumer = await js.consumers.get(stream, { filter_subjects: subjects, opt_start_seq: start });
     try {
       // A freshly created consumer already carries its ConsumerInfo, so read the CACHED copy: the
@@ -2853,13 +2908,13 @@ export class CotalEndpoint extends EventEmitter {
           delivered++;
           if (m.seq >= ceiling) { // reached the page's upper bound
             if (m.seq === ceiling) {
-              try { out.push({ subject: m.subject, msg: m.json<CotalMessage>() }); } catch { /* skip undecodable */ }
+              try { out.push({ seq: m.seq, subject: m.subject, msg: m.json<CotalMessage>() }); } catch { /* skip undecodable */ }
             }
             complete = true;
             break;
           }
           try {
-            out.push({ subject: m.subject, msg: m.json<CotalMessage>() });
+            out.push({ seq: m.seq, subject: m.subject, msg: m.json<CotalMessage>() });
             if (out.length > limit) out.shift();
           } catch { /* skip undecodable */ }
           if (delivered >= pending) { complete = true; break; }
