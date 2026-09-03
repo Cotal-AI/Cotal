@@ -159,19 +159,31 @@ per-run grants) is in `@cotal-ai/core`, and the run driver, journal store, migra
 the manager's spawn action submitted under the step's own identity: the goal binds under the step's
 request id, so a resumed run re-attaches to the same seat instead of allocating a second one, a
 failed or refused spawn is catchable as L4002 with the manager's recorded reason, and a spawn on a
-race branch that loses is despawned by the run's own cancellation sweep. `conclave` joins its
+race branch that loses is despawned by the run's own cancellation sweep. `permits` are the budgets
+this host meters: `turns`, how many turns the run may dispatch to the agent, and `wallClock`, a
+duration from the spawn after which no turn is admitted. The turn that would exceed one is the
+catchable L4001 (kind `permit-turns` or `permit-wall-clock`; a deadline the remaining wall clock
+cannot hold counts as exceeding it), an adopted run counts the turns its journal recorded, and a
+budget the host has no meter for, such as `tokens` or `spend`, is refused at the spawn rather than
+accepted and ignored. `conclave` joins its
 members to a real channel as durable membership rows: the channel derives from the step's own
 request id when the program names none (a program-named channel is borrowed, never torn down, and
 a membership that predates the conclave survives its close), each member handle resolves to its
 principal through the seat's own presence row (an absent member is catchable as L4002), and a
 conclave cancelled on a losing branch is released by the same cancellation sweep. `ask` parks one
-checkpoint-plane pause per attempt, answered through `cotal run answer` as a checkpoint is:
+checkpoint-plane pause per attempt, answered through `cotal run answer` as a checkpoint is, and
+tells the agent through the same relay `turn` uses: one relay per attempt under the attempt's own
+token, carrying the schema, the attempt count, the deadline and the previous refusal, which the
+seat's connector renders as the record wanted and the command that answers it. An ask addresses
+an agent the run spawned (anything else refuses before an attempt opens), a resumed attempt tells
+the seat nothing twice, and a seat gone at the relay is L4002. On the pause itself:
 the shorthand of the language reference §6.5 is enforced (an unreadable schema is L4022), a
 non-conforming answer costs one attempt and its refusal reason is recorded on the entry for the
 answerer to read, exhausted attempts (default one) are the catchable L4006, and so is the one
 absolute deadline for the whole ask passing with no conforming record (its kind is `ask-deadline`). `monitor` registers interest in an agent, and the
-registration is the journal entry itself: monitoring an agent that is already dead succeeds, and
-the death is the wait's to observe. `wait(down(...))` reads that death off presence liveness, the
+registration is the journal entry itself, carrying the handle it registered: monitoring an agent
+that is already dead succeeds, and the death is the wait's to observe. `wait(down(...))` observes
+a monitored agent, and refuses one the run never performed `monitor` on. It reads the death off presence liveness, the
 same witness a conclave join resolves members through: the value carries the handle, the reason
 (`lapsed` when nothing live holds the name any more, `superseded` when a live row holds it under
 a different incarnation) and the time of observation, a wait that begins after the death resolves

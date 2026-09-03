@@ -535,6 +535,30 @@ let holder: { agent: string; persona: string } | undefined;
     JSON.stringify(refused));
 }
 
+// ── 8b) a spawn the journal shows FAILED holds nothing: the reservation is not immortal ───────
+{
+  console.log("• 8b — an adopted run frees the tree of a spawn that ended without an agent");
+  // The real list is an append log: the failed spawn is in it as a pending record AND a settled
+  // one. Reading the pending record on its own left a reservation nothing could ever release,
+  // because the release runs on the live path and this run is a recovery.
+  const fresh = mk("wt-8b");
+  const ext = { goalId: token("q"), name: "gone", owner: "local", actor: "gone", uid: `y${"0".repeat(25)}`, worktree: "wt-z" };
+  await fresh.adopted([
+    {
+      v: 1, seq: 1, run: "wt-8b", scope: "", kind: "spawn", name: "seat", occurrence: 0,
+      inputHash: "sha256:0", requestId: token("q"), state: "pending", external: ext,
+    },
+    {
+      v: 1, seq: 2, run: "wt-8b", scope: "", kind: "spawn", name: "seat", occurrence: 0,
+      inputHash: "sha256:0", requestId: token("q"), state: "settled", status: "failed",
+      error: { code: "L4000", kind: "spawn", message: "no persona" }, external: ext,
+    },
+  ] as unknown as JournalEntry[]);
+  const next = await spawnInto(fresh, "r", "wt-z", "builder");
+  c("the tree is free after adoption: a spawn that never produced an agent holds no reservation",
+    isHandle(next) && next.worktree === "wt-z", JSON.stringify(next));
+}
+
 // ── 9) the liveness read is bounded: a scan that never completes is raised, not parked on ─────
 {
   console.log("• 9 — an incomplete presence scan is retried a bounded number of times, then raised");
@@ -602,7 +626,7 @@ await parallel({
 await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
 await nc.close();
-const EXPECTED_CELLS = 19;
+const EXPECTED_CELLS = 20;
 const ran = ok + fail;
 console.log(`mesh-worktree.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

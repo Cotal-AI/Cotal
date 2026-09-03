@@ -228,6 +228,22 @@ function ingestDedupKey(id: string): string | undefined {
  */
 export type ConnectionState = "ready" | "degraded" | "connecting" | "disconnected" | "stopped";
 
+/** An `ask` relayed as a turn: the record the run needs, the attempt it is on, the previous
+ *  refusal when there was one, and the command that answers it (`cotal run answer`, the same door
+ *  a checkpoint is answered through). Empty when the payload carries no ask. */
+function renderAskRequest(p: { run?: unknown; step?: unknown; ask?: unknown }, seatName: string): string {
+  const ask = p.ask;
+  if (ask === null || typeof ask !== "object") return "";
+  const a = ask as { schema?: unknown; attempt?: unknown; attempts?: unknown; deadlineAt?: unknown; refused?: unknown };
+  const entries = a.schema !== null && typeof a.schema === "object" ? Object.entries(a.schema as Record<string, unknown>) : [];
+  const fields = entries.length === 0 ? "any record" : entries.map(([k, v]) => `${k}: ${String(v)}`).join(", ");
+  const by = typeof a.deadlineAt === "number" ? `, by ${new Date(a.deadlineAt).toISOString()}` : "";
+  const refused = typeof a.refused === "string" ? `\nYour last answer was refused: ${a.refused}` : "";
+  return `\nThis turn is an ask: the run needs a record from you at step ${String(p.step)} with fields ${fields}`
+    + ` (attempt ${String(a.attempt)} of ${String(a.attempts)}${by}).${refused}`
+    + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --by ${seatName} --value '<json record>'`;
+}
+
 export class MeshAgent extends EventEmitter {
   readonly ep: CotalEndpoint;
   readonly config: AgentConfig;
@@ -1419,11 +1435,13 @@ export class MeshAgent extends EventEmitter {
     if (!waiting.length) return undefined;
     const blocks = waiting.map((t) => {
       let context = t.payload;
+      let ask = "";
       try {
-        const p = JSON.parse(t.payload) as { context?: unknown };
+        const p = JSON.parse(t.payload) as { run?: unknown; step?: unknown; context?: unknown; ask?: unknown };
         if (typeof p.context === "string" && p.context.length > 0) context = p.context;
+        ask = renderAskRequest(p, this.config.name);
       } catch { /* opaque payload — surface it as it came */ }
-      return `— turn ${t.goalId} (deadline ${new Date(t.deadlineAt).toISOString()}):\n${context}`;
+      return `— turn ${t.goalId} (deadline ${new Date(t.deadlineAt).toISOString()}):\n${context}${ask}`;
     });
     const text =
       `🎯 Cotal — a run handed you ${waiting.length === 1 ? "its turn" : `${waiting.length} turns`}:\n` +
@@ -1586,14 +1604,43 @@ export class MeshAgent extends EventEmitter {
   async setStatus(status: PresenceStatus, activity?: string): Promise<void> {
     await this.requireConnected();
     const prev = this._status;
-    this._status = status;
+    try {
+      await this.publishStatus(status, activity);
+    } finally {
+      // The transition is a fact about the SEAT, not about whether its presence row was written:
+      // assigning before the writes meant one failed publish (which every adapter swallows) left
+      // `_status` idle with no boundary run, and the next real turn end saw no transition at all.
+      this._status = status;
+      // The turn relay's boundary: an adapter funnels its turn-end through this transition (Stop
+      // hooks set idle), so the automatic `done` yield and the immediate re-poll live here once
+      // instead of per connector. `waiting` is not a boundary — a seat blocked on a permission has
+      // not finished, and its deadline is what bounds a stuck one.
+      if (prev === "working" && status === "idle") this.onTurnBoundary();
+    }
+  }
+
+  /**
+   * Publish presence for something that is NOT a turn ending.
+   *
+   * The boundary above reads working→idle as "the seat finished its turn", and that reading holds
+   * only at a real turn terminal. A session (re)start writes idle too: Claude Code fires
+   * `SessionStart` on compact, clear and resume, and an auto-compaction lands in the MIDDLE of a
+   * long turn. Routed through `setStatus` it yielded `done` for work the model had not finished,
+   * and the run moved on. An adapter uses this for every idle that is a lifecycle event rather
+   * than an ending.
+   */
+  async resetStatus(status: PresenceStatus, activity?: string): Promise<void> {
+    await this.requireConnected();
+    try {
+      await this.publishStatus(status, activity);
+    } finally {
+      this._status = status;
+    }
+  }
+
+  private async publishStatus(status: PresenceStatus, activity?: string): Promise<void> {
     if (activity !== undefined) await this.ep.setActivity(activity);
     await this.ep.setStatus(status);
-    // The turn relay's boundary: EVERY adapter funnels its turn-end through this transition
-    // (Stop hooks set idle), so the automatic `done` yield and the immediate re-poll live here
-    // once instead of per connector. `waiting` is not a boundary — a seat blocked on a permission
-    // has not finished, and its deadline is what bounds a stuck one.
-    if (prev === "working" && status === "idle") this.onTurnBoundary();
   }
 
   /** The working→idle boundary: yield `done` for every SURFACED turn (its payload was in the

@@ -13,7 +13,8 @@
     "latest-wins selection (R4), the mediated timeout's arm (R5) and the claim on resolution (R6),",
     "and the registry the observation rides: fed by `turn` at submission (R7) and reseeded from",
     "the journal at adoption (R8). All eight mutate mesh-handler.ts, which the suite imports",
-    "through a relative `../src` path — no build sits between the mutation and the run."
+    "through a relative `../src` path — no build sits between the mutation and the run.",
+    "Batch B2 (2026-09-03) folds the adopted append log to the journal's keyed view before seeding: one record per step, so a turn is charged once, a failed spawn holds no worktree, and a cancelled turn is not re-registered."
   ],
   "mutations": [
     {
@@ -82,8 +83,8 @@
     {
       "name": "adoption reseeds nothing, so a resumed run cannot re-observe",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "      const x = e.external as { name?: unknown; uid?: unknown; goalId?: unknown } | undefined;\n      if (typeof x?.name === \"string\" && typeof x?.uid === \"string\" && typeof x?.goalId === \"string\" && (e.state === \"pending\" || e.status === \"ok\"))\n        this.recordTurnGoal(`${x.name}#${x.uid}`, x.goalId);",
-      "replace": "      const x = e.external as { name?: unknown; uid?: unknown; goalId?: unknown } | undefined;\n      if (false)\n        this.recordTurnGoal(`${String(x?.name)}#${String(x?.uid)}`, String(x?.goalId));",
+      "find": "      if (typeof x?.name === \"string\" && typeof x?.uid === \"string\" && typeof x?.goalId === \"string\" && (e.state === \"pending\" || e.status === \"ok\"))\n        this.recordTurnGoal(`${x.name}#${x.uid}`, x.goalId);",
+      "replace": "      if (false)\n        this.recordTurnGoal(`${String(x?.name)}#${String(x?.uid)}`, String(x?.goalId));",
       "expectRed": "the adopted handler re-observes the recorded reply at once",
       "cell": "the adopted handler re-observes the recorded reply at once",
       "note": "The registry is deterministic from the journal alone; unseeded, an adopted run parks on a reply its own journal records. Measured 2026-09-02: three reds — the bounded deadline and both adoption cells; 13 passed, 3 failed."
@@ -114,6 +115,15 @@
       "expectRed": "the discharged turn is not a reply: the wait rides its timeout to null",
       "cell": "the discharged turn is not a reply: the wait rides its timeout to null",
       "note": "The adoption discharge ends a race-lost turn; left in the rebuilt registry, its later yield reads as a reply. Measured 2026-09-03: exactly one named red; 21 passed, 1 failed."
+    },
+    {
+      "name": "adoption seeds from the raw append log, counting every step twice",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "  const first = entries[0];\n  if (first === undefined) return entries;\n  return new Journal({ run: first.run, entries, readOnly: true }).entries();",
+      "replace": "  return entries;",
+      "expectRed": "a turn the journal records as CANCELLED is not re-registered, so its terminal is not read as a reply",
+      "cell": "a turn the journal records as CANCELLED is not re-registered, so its terminal is not read as a reply",
+      "note": "Measured 2026-09-03: KILLED. mesh-replied.smoke: 22 passed, 1 failed Named cell red: a turn the journal records as CANCELLED is not re-registered, so its terminal is not read as a reply"
     }
   ]
 }

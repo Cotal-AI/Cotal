@@ -1,0 +1,34 @@
+{
+  "suite": "implementations/runtime/smoke/mesh-notify.smoke.ts",
+  "guard": "`notify` reaches an agent as DATA and reaching it twice is safe: one create-only notice per addressee keyed by a derived id, an instant bound with the step so a retry rewrites the same bytes, a render that refuses a value it cannot put in one row, and an explicit sentence when there is nothing to render",
+  "command": "pnpm smoke:runtime-mesh-notify",
+  "completionMarker": "mesh-notify.smoke:",
+  "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/mesh-notify.json   # --config resolves against the repo root, never the cwd",
+  "why": [
+    "Batch B2 (2026-09-03), from a full-code audit and two live seats. Two defects the existing",
+    "suite could not see: the notify instant was read from the clock on every pass (the suite's",
+    "handler has a FROZEN clock, so its retry cell wrote identical bytes by accident of the",
+    "fixture and a real retry refused with `conflict` forever), and an empty notice set rendered",
+    "as a bare column header that two independent seats read as a payload that failed to arrive."
+  ],
+  "mutations": [
+    {
+      "name": "the notify instant is read from the clock again on the retry",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    const recorded = ctx.resume?.at;\n    const at = typeof recorded === \"number\" ? recorded : this.now();\n    if (typeof recorded !== \"number\") await ctx.bind({ at });",
+      "replace": "    const at = this.now();",
+      "expectRed": "the instant every notice carries is BOUND with the step, not left to the next clock read",
+      "cell": "the instant every notice carries is BOUND with the step, not left to the next clock read",
+      "note": "Measured 2026-09-03: KILLED. mesh-notify.smoke: 44 passed, 2 failed Named cell red: the instant every notice carries is BOUND with the step, not left to the next clock read"
+    },
+    {
+      "name": "an empty notice set renders the bare column header again",
+      "file": "implementations/runtime/src/run-context.ts",
+      "find": "  const body = rows.length === 0 ? [NO_NOTICES] : tableLines(rows);",
+      "replace": "  const body = tableLines(rows);",
+      "expectRed": "no notices states the fact IN WORDS, so the addressee reads `nobody told you anything`",
+      "cell": "no notices states the fact IN WORDS, so the addressee reads `nobody told you anything`",
+      "note": "Measured 2026-09-03: KILLED. mesh-notify.smoke: 44 passed, 2 failed Named cell red: no notices states the fact IN WORDS, so the addressee reads `nobody told you anything`"
+    }
+  ]
+}

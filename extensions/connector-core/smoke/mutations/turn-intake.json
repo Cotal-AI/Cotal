@@ -1,6 +1,6 @@
 {
   "suite": "extensions/connector-core/smoke/turn-intake.smoke.ts",
-  "guard": "The seat side of the turn relay: a turn is yielded only once its payload was surfaced into the host session, whether the yield names the turn or takes the oldest surfaced one.",
+  "guard": "The seat side of the turn relay: a turn is yielded only once its payload was surfaced into the host session, whether the yield names the turn or takes the oldest surfaced one.; an ask relayed as a turn is rendered with the record wanted, the attempt, the previous refusal and the answer command",
   "command": "pnpm smoke:turn-intake",
   "completionMarker": "turn-intake.smoke:",
   "proveWith": "pnpm mutation-proof --config extensions/connector-core/smoke/mutations/turn-intake.json   # --config resolves against the repo root, never the cwd",
@@ -13,6 +13,39 @@
       "expectRed": "an explicit id yields nothing the session has not been shown yet",
       "cell": "an explicit id yields nothing the session has not been shown yet",
       "note": "Ungated, a yield for a turn the session never saw is sent as if the work were done. Measured 2026-09-03: two reds, the unsurfaced-id refusal and the explicit-id handoff cell behind it (the early yield spent the turn the later explicit yield addresses); 18 passed, 2 failed."
+    },
+    {
+      "name": "an ask payload is surfaced as a bare turn",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        ask = renderAskRequest(p, this.config.name);\n",
+      "replace": "",
+      "expectRed": "the ask is rendered after the context: the step, every field with its kind, and the attempt count",
+      "cell": "the ask is rendered after the context: the step, every field with its kind, and the attempt count",
+      "note": "Measured 2026-09-03: KILLED. turn-intake.smoke: 24 passed, 3 failed Named cell red: the ask is rendered after the context: the step, every field with its kind, and the attempt count"
+    },
+    {
+      "name": "a lifecycle idle is routed through the turn boundary",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "  async resetStatus(status: PresenceStatus, activity?: string): Promise<void> {\n    await this.requireConnected();\n    try {\n      await this.publishStatus(status, activity);\n    } finally {\n      this._status = status;\n    }\n  }",
+      "replace": "  async resetStatus(status: PresenceStatus, activity?: string): Promise<void> {\n    await this.setStatus(status, activity);\n  }",
+      "expectRed": "a lifecycle idle mid-turn yields nothing: a compaction is not a turn ending",
+      "cell": "a lifecycle idle mid-turn yields nothing: a compaction is not a turn ending",
+      "note": "Measured 2026-09-03: KILLED. turn-intake.smoke: 26 passed, 1 failed Named cell red: a lifecycle idle mid-turn yields nothing: a compaction is not a turn ending"
+    },
+    {
+      "name": "the status is assigned before its presence write, so a failed write swallows the boundary",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    const prev = this._status;\n    try {\n      await this.publishStatus(status, activity);\n    } finally {",
+      "replace": "    const prev = this._status;\n    this._status = status;\n    await this.publishStatus(status, activity);\n    if (prev === \"working\" && status === \"idle\") this.onTurnBoundary();\n    if (false) {",
+      "expectRed": "a failed presence write does not swallow the boundary",
+      "cell": "a failed presence write does not swallow the boundary",
+      "note": "Measured 2026-09-03: KILLED. turn-intake.smoke: 26 passed, 1 failed Named cell red: a failed presence write does not swallow the boundary"
     }
+  ],
+  "why": [
+    "Batch B1 (2026-09-03): the ask render has its own mutant.",
+    "Batch B2 (2026-09-03): a session (re)start is not a turn ending. Claude Code fires",
+    "SessionStart on compact, clear and resume, and an auto-compaction lands mid-turn: routed",
+    "through the boundary the seat published `done` for work the model had not finished."
   ]
 }

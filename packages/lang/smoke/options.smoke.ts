@@ -224,6 +224,17 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
   const ha = a.journal.entries()[0]?.inputHash;
   const hb = b.journal.entries()[0]?.inputHash;
   ok("and swapping the model changes the input hash", ha !== hb, { ha, hb });
+
+  // The record form with no `persona` used to resolve to the literal string "undefined", which
+  // then rode into the input hash, the step name and the handler's request. A missing persona is
+  // `undefined` crossing an effect boundary, which is what L3041 names.
+  const missing = await run(`await spawn({ model: "m1" }, { name: "worker" });\n`, { runId: "o-nopersona", handler: new SimHandler({}) })
+    .then(() => undefined, (e: unknown) => e as { code?: string; message?: string });
+  ok("a spawn record with no persona is refused as L3041, never spawned as the persona \"undefined\"",
+    missing?.code === "L3041" && String(missing?.message).includes("names no persona"), missing);
+  const numeric = await run(`await spawn(42, { name: "worker" });\n`, { runId: "o-numpersona", handler: new SimHandler({}) })
+    .then(() => undefined, (e: unknown) => e as { code?: string });
+  ok("and so is a persona that is not a string at all", numeric?.code === "L3041", numeric);
 }
 
 // ---- 5) the hash table is a claim, not a comment ------------------------------------------------

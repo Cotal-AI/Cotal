@@ -47,10 +47,12 @@ const rig = () => {
     pending: [] as PendingTurnRow[],
     yieldReply: { ok: true as boolean, error: undefined as string | undefined },
     yields: [] as Record<string, unknown>[],
+    /** Every adapter swallows a presence-write failure, so the suite has to be able to cause one. */
+    failStatusWrite: false,
   };
   (a as unknown as { ep: unknown }).ep = {
     principal: { owner: "local", actor: "seat" },
-    setStatus: async () => {},
+    setStatus: async () => { if (state.failStatusWrite) throw new Error("presence write failed"); },
     setActivity: async () => {},
     invokeService: async (_ep: string, command: string, args: unknown, opts: unknown) => {
       invokes.push({ command, args, opts });
@@ -135,6 +137,42 @@ const row = (goalId: string, context: string, acceptedAt = Date.now()): PendingT
     await tick();
     return !state.yields.some((y) => y.goalId === "g3b");
   })(), JSON.stringify(state.yields));
+
+  // A SESSION RESTART IS NOT AN ENDING. Claude Code fires `SessionStart` on compact, clear and
+  // resume, and an auto-compaction lands in the middle of a long turn: routed through `setStatus`
+  // the seat published `done` for work the model was still doing, and the run moved on.
+  check("a lifecycle idle mid-turn yields nothing: a compaction is not a turn ending", await (async () => {
+    state.pending = [row("g3c", "long work")];
+    await poll();
+    a.commitSurfacedTurns(["g3c"]);
+    await a.setStatus("working");
+    await a.resetStatus("idle");
+    await tick();
+    return !state.yields.some((y) => y.goalId === "g3c");
+  })(), JSON.stringify(state.yields));
+  check("and it still moved presence, so the row is not stale", a.status === "idle", a.status);
+  // The real ending after it still yields, so the lifecycle path did not disarm the boundary.
+  await a.setStatus("working");
+  await a.setStatus("idle");
+  await tick();
+  check("the real ending after a compaction still yields done",
+    state.yields.some((y) => y.goalId === "g3c" && y.status === "done"), JSON.stringify(state.yields));
+
+  // The presence WRITE can fail; the transition still happened. Every adapter swallows that write,
+  // so assigning the status before it left `_status` idle with no boundary run, and the next real
+  // ending saw no transition at all.
+  check("a failed presence write does not swallow the boundary", await (async () => {
+    const r = rig();
+    r.state.pending = [row("g3d", "work")];
+    await r.poll();
+    r.a.commitSurfacedTurns(["g3d"]);
+    await r.a.setStatus("working");
+    r.state.failStatusWrite = true;
+    await r.a.setStatus("idle").catch(() => undefined);
+    r.state.failStatusWrite = false;
+    await tick();
+    return r.state.yields.some((y) => y.goalId === "g3d" && y.status === "done");
+  })(), "the yield after a failed presence write");
 }
 
 // ── 4) an unseen payload is never "done" ──────────────────────────────────────────────────────
@@ -176,7 +214,30 @@ const row = (goalId: string, context: string, acceptedAt = Date.now()): PendingT
     JSON.stringify(state.yields.at(-1)));
 }
 
-const EXPECTED_CELLS = 20;
+// ── 6) an ask rides the relay: the surface says what record the run needs and how to answer ──
+{
+  console.log("6 — an ask payload is rendered as the request for a record, with the answer command");
+  const { a, state, poll } = rig();
+  const deadlineAt = Date.now() + 60_000;
+  state.pending = [{
+    goalId: "g7", acceptedAt: Date.now(), deadlineAt,
+    payload: JSON.stringify({
+      run: "r1", step: "/ask:size#0", context: "the run context", noticeIds: [],
+      ask: { token: "g7", schema: { estimate: "number", tags: "array" }, attempt: 2, attempts: 3, deadlineAt, refused: '"estimate" wants number' },
+    }),
+  }];
+  await poll();
+  const peek = a.peekPendingTurns();
+  const text = peek?.text ?? "";
+  check("the ask is rendered after the context: the step, every field with its kind, and the attempt count",
+    text.includes("the run context") && text.includes("at step /ask:size#0") && text.includes("estimate: number, tags: array") && text.includes("attempt 2 of 3"),
+    text.slice(0, 400));
+  check("the previous refusal is shown, so the seat knows what to fix", text.includes('refused: "estimate" wants number'), text.slice(0, 400));
+  check("the answer command names the run, the step and this seat",
+    text.includes("cotal run answer r1 /ask:size#0 --by seat --value"), text.slice(0, 400));
+}
+
+const EXPECTED_CELLS = 27;
 const ran = pass + fail;
 console.log(`\nturn-intake.smoke: ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

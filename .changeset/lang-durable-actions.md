@@ -16,9 +16,14 @@
 Every cotal-lang effect now performs on the mesh: the durable-action group is built end to end and
 the not-yet-durable seam is gone.
 
-`spawn` submits a real manager goal and returns the allocated seat's handle; `conclave` opens a
-scoped sub-team as durable membership rows; `ask` parks schema-checked pauses answered through
-`cotal run answer`; `monitor` and `wait(down)` read an incarnation's death off presence liveness.
+`spawn` submits a real manager goal and returns the allocated seat's handle, and meters the
+agent's `permits` (`turns`, `wallClock`; the turn that would exceed one is L4001, and a budget the
+host cannot meter is refused at spawn); `conclave` opens a scoped sub-team as durable membership
+rows; `ask` parks schema-checked pauses answered through `cotal run answer` and tells the agent
+over the turn relay, one relay per attempt carrying the schema, the attempt and the previous
+refusal, which every connector's intake renders with the answer command; `monitor` registers the
+handle on its journal entry and `wait(down)` reads a monitored incarnation's death off presence
+liveness, refusing an agent nobody monitored.
 `turn` rides a new pull-shaped manager relay: the manager serves `turn` (targeted, the
 despawn/input reach) plus `turn-pending` and `turn-yield` (self reach, manager contract revision
 10), holds the payload on the goal-index note, pins the goal to the seat's incarnation, and denies

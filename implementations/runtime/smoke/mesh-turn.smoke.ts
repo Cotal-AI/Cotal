@@ -288,6 +288,10 @@ type TurnEnding =
   | { state: "deadline"; delayMs?: number; agentDownAt?: number };
 const turnEndings: TurnEnding[] = [];
 const turnAccepts = new Map<string, Record<string, unknown>>();
+/** Scripted faults for the NEXT turn invokes, one per invoke, in order. `entry` throws before the
+ *  goal plane is touched (the shape a serve boundary refusing a dead target produces); `afterGoal`
+ *  throws once the goal record exists, which is the lost-reply shape the client re-submits over. */
+const turnFaults: Array<{ where: "entry"; err: Error } | { where: "hang" }> = [];
 const turnInvokes: Array<{ goalId: string; payload: string; deadlineMs: number; handoffFrom?: string; target: { owner: string; actor: string; lifecycleUid: string } }> = [];
 
 const turnHandler = async (ctx: EpServeContext): Promise<unknown> => {
@@ -299,6 +303,8 @@ const turnHandler = async (ctx: EpServeContext): Promise<unknown> => {
     ...(args.handoffFrom !== undefined ? { handoffFrom: String(args.handoffFrom) } : {}),
     target: { owner: t.owner, actor: t.actor, lifecycleUid: t.lifecycleUid },
   });
+  const fault = turnFaults.shift();
+  if (fault?.where === "entry") throw fault.err;
   const { fingerprint } = submissionFingerprint(ctx.request as unknown, ctx.subject);
   const prior = turnAccepts.get(goalId);
   if (prior !== undefined) {
@@ -320,6 +326,11 @@ const turnHandler = async (ctx: EpServeContext): Promise<unknown> => {
     acceptedEpoch: EXEC_EPOCH, requestId: goalId, sourceSeq: 0, acceptedAt: Date.now(), readinessDeadlineMs: deadlineMs,
     target: { owner: t.owner, actor: t.actor, lifecycleUid: t.lifecycleUid, mappingRevision: 1 },
   });
+  // The lost reply: the goal record is written and the caller is not answered until after its own
+  // accept deadline (TURN_ACCEPT_DEADLINE_MS, 30s), which is the one shape that sends the client
+  // back for its own acceptance. Bounded rather than forever, because this endpoint serves one
+  // request at a time and the re-read has to be served after it.
+  if (fault?.where === "hang") await wait(33_000);
   const acceptance = {
     name, owner: t.owner, actor: t.actor, uid: t.lifecycleUid, goalId, fingerprint,
     deadlineAt: heldAt + deadlineMs, executor: { lifecycleUid: MGR_IID, epoch: EXEC_EPOCH },
@@ -778,6 +789,139 @@ const isTurnResult = (v: unknown): v is { status: string; to?: { agent: string }
     JSON.stringify(turnInvokes.find((i) => i.goalId === T)));
 }
 
+// ── 16) permits.turns: the budget is spent at the turn that would exceed it ───────────────────
+{
+  console.log("• 16 — a turns permit: the turn past the budget is L4001, before any wire work, and an adopted run counts recorded turns");
+  const handler = mk("tn-16");
+  const b = await withDeadline(safe(handler.spawn({ persona: "builder", permits: { turns: 1 } }, stepCtx(token("Q")).ctx)), 20_000, "the permitted spawn") as { agent: string; persona: string } | undefined;
+  turnEndings.push({ state: "succeeded", status: "done", delayMs: 200 });
+  const first = await withDeadline(safe(handler.turn({ agent: b!, deadline: "5m" }, stepCtx(token("R")).ctx)), 20_000, "the first permitted turn");
+  c("the first turn is within the budget", isTurnResult(first) && first.status === "done", JSON.stringify(first));
+  const before = turnInvokes.length;
+  const second = await withDeadline(safe(handler.turn({ agent: b!, deadline: "5m" }, stepCtx(token("S")).ctx)), 10_000, "the over-budget turn");
+  c("the second is the catchable L4001 (kind permit-turns), naming the budget, and reaches no endpoint",
+    (second as { code?: string })?.code === "L4001" && (second as { kind?: string })?.kind === "permit-turns"
+      && String((second as { message?: string })?.message).includes("permit of 1") && turnInvokes.length === before,
+    JSON.stringify(second));
+  // The budget is spent by turns the journal recorded, whatever they came to: a recovering run
+  // reads them from its entries, never from a counter the dead process held.
+  const alloc = allocations.find((a) => `${a.name}#${a.uid}` === b?.agent);
+  const fresh = mk("tn-16");
+  await fresh.adopted([
+    {
+      v: 1, seq: 1, run: "tn-16", scope: "", kind: "spawn", name: "builder", occurrence: 0,
+      inputHash: "sha256:0", requestId: token("Q"), state: "settled", status: "ok", result: b,
+      external: { goalId: token("Q"), name: alloc?.name, owner: alloc?.owner, actor: alloc?.actor, uid: alloc?.uid, permits: { turns: 1 }, spawnedAt: Date.now() - 1_000 },
+    },
+    {
+      v: 1, seq: 2, run: "tn-16", scope: "", kind: "turn", name: "", occurrence: 0,
+      inputHash: "sha256:0", requestId: token("R"), state: "settled", status: "failed", error: { code: "L4003", kind: "turn-deadline", message: "elapsed" },
+      external: { goalId: token("R"), name: alloc?.name, owner: alloc?.owner, actor: alloc?.actor, uid: alloc?.uid, deadlineAt: 1, noticeIds: [] },
+    },
+  ] as unknown as JournalEntry[]);
+  const adopted = await withDeadline(safe(fresh.turn({ agent: b!, deadline: "5m" }, stepCtx(token("T")).ctx)), 10_000, "the adopted over-budget turn");
+  c("an adopted run reads the spent budget off its journal: a recorded turn counts even when it ended on a deadline",
+    (adopted as { code?: string })?.code === "L4001" && (adopted as { kind?: string })?.kind === "permit-turns", JSON.stringify(adopted));
+
+  // THE REAL CALLER HANDS OVER AN APPEND LOG, and a completed step is in it TWICE. The driver seeds
+  // from `RunJournalAppender.steps()`, which replays every record in order: the pending one and the
+  // settled one. Counting rows rather than steps charged one turn to the budget twice, so an agent
+  // with two turns was refused its second the moment its run recovered. `fork.ts` carries the same
+  // warning about the same list. The cell below is the shape a driver actually passes.
+  const two = await withDeadline(safe(handler.spawn({ persona: "builder", permits: { turns: 2 } }, stepCtx(token("Q2")).ctx)), 20_000, "the two-turn spawn") as { agent: string; persona: string } | undefined;
+  const alloc2 = allocations.find((a) => `${a.name}#${a.uid}` === two?.agent);
+  const log = mk("tn-16");
+  const turnExt = { goalId: token("R2"), name: alloc2?.name, owner: alloc2?.owner, actor: alloc2?.actor, uid: alloc2?.uid, deadlineAt: 1, noticeIds: [] };
+  await log.adopted([
+    {
+      v: 1, seq: 1, run: "tn-16", scope: "", kind: "spawn", name: "builder", occurrence: 0,
+      inputHash: "sha256:0", requestId: token("Q2"), state: "pending",
+      external: { goalId: token("Q2"), name: alloc2?.name, owner: alloc2?.owner, actor: alloc2?.actor, uid: alloc2?.uid, permits: { turns: 2 }, spawnedAt: Date.now() - 1_000 },
+    },
+    {
+      v: 1, seq: 2, run: "tn-16", scope: "", kind: "spawn", name: "builder", occurrence: 0,
+      inputHash: "sha256:0", requestId: token("Q2"), state: "settled", status: "ok", result: two,
+      external: { goalId: token("Q2"), name: alloc2?.name, owner: alloc2?.owner, actor: alloc2?.actor, uid: alloc2?.uid, permits: { turns: 2 }, spawnedAt: Date.now() - 1_000 },
+    },
+    {
+      v: 1, seq: 3, run: "tn-16", scope: "", kind: "turn", name: "one", occurrence: 0,
+      inputHash: "sha256:0", requestId: token("R2"), state: "pending", external: turnExt,
+    },
+    {
+      v: 1, seq: 4, run: "tn-16", scope: "", kind: "turn", name: "one", occurrence: 0,
+      inputHash: "sha256:0", requestId: token("R2"), state: "settled", status: "ok",
+      result: { status: "done", at: 1 }, external: turnExt,
+    },
+  ] as unknown as JournalEntry[]);
+  turnEndings.push({ state: "succeeded", status: "done", delayMs: 200 });
+  const secondOfTwo = await withDeadline(safe(log.turn({ agent: two!, deadline: "5m" }, stepCtx(token("S2")).ctx)), 20_000, "the second of two permitted turns");
+  c("ONE recorded turn costs ONE turn, though the append log holds it twice: the second of two proceeds",
+    isTurnResult(secondOfTwo) && secondOfTwo.status === "done", JSON.stringify(secondOfTwo));
+  const thirdOfTwo = await withDeadline(safe(log.turn({ agent: two!, deadline: "5m" }, stepCtx(token("T2")).ctx)), 10_000, "the third of two permitted turns");
+  c("and the third is still refused, so the fold did not lose the count",
+    (thirdOfTwo as { code?: string })?.code === "L4001" && (thirdOfTwo as { kind?: string })?.kind === "permit-turns", JSON.stringify(thirdOfTwo));
+}
+
+// ── 16b) a turn the endpoint refused took no turn, and a lost reply over a dead seat is L4002 ─
+{
+  console.log("• 16b — a refused turn spends no permit, and the acceptance re-read classes a gone seat as L4002");
+  const handler = mk("tn-16b");
+  const b = await withDeadline(safe(handler.spawn({ persona: "builder", permits: { turns: 1 } }, stepCtx(token("Qb")).ctx)), 20_000, "the one-turn spawn") as { agent: string; persona: string } | undefined;
+  // A permit is a budget for turns the AGENT TAKES. A turn the endpoint refused never reached it,
+  // and nothing durable records it, so a recovering run would read a different count than a live
+  // one that had already spent it.
+  turnFaults.push({ where: "entry", err: new EpEnvelopeError("unavailable", "the manager is not serving turns") });
+  const refused = await withDeadline(safe(handler.turn({ agent: b!, deadline: "5m" }, stepCtx(token("Rb")).ctx)), 20_000, "the refused turn");
+  c("the endpoint's refusal reaches the program as the refusal it is",
+    String((refused as { message?: string })?.message).includes("was refused by"), JSON.stringify(refused));
+  turnEndings.push({ state: "succeeded", status: "done", delayMs: 200 });
+  const after = await withDeadline(safe(handler.turn({ agent: b!, deadline: "5m" }, stepCtx(token("Sb")).ctx)), 20_000, "the turn after the refusal");
+  c("the agent's one permitted turn is still there: a refused turn spent nothing",
+    isTurnResult(after) && after.status === "done", JSON.stringify(after));
+
+  // The lost reply: the invoke did not come back but the goal record exists, so the acceptance is
+  // asked for again. If the seat died in between, that re-read carries the SAME `expired`, and
+  // classing it as an ordinary refusal turned a catchable L4002 into an uncatchable fault.
+  const h2 = mk("tn-16b");
+  const b2 = await withDeadline(safe(h2.spawn({ persona: "builder" }, stepCtx(token("Tb")).ctx)), 20_000, "the second spawn") as { agent: string; persona: string } | undefined;
+  turnFaults.push({ where: "hang" });
+  turnFaults.push({ where: "entry", err: new EpEnvelopeError("expired", "target is not a live managed agent") });
+  const gone = await withDeadline(safe(h2.turn({ agent: b2!, deadline: "5m" }, stepCtx(token("Ub")).ctx)), 90_000, "the turn whose re-read found the seat gone");
+  c("a seat that died between the submit and the acceptance re-read is the catchable L4002",
+    (gone as { code?: string })?.code === "L4002" && (gone as { kind?: string })?.kind === "turn", JSON.stringify(gone));
+}
+
+// ── 17) permits.wallClock: a deadline the agent's remaining wall clock cannot hold is refused ─
+{
+  console.log("• 17 — a wall-clock permit: a turn that would run past it is L4001, one that fits proceeds");
+  const handler = mk("tn-17");
+  const b = await withDeadline(safe(handler.spawn({ persona: "builder", permits: { wallClock: "30s" } }, stepCtx(token("U")).ctx)), 20_000, "the clocked spawn") as { agent: string; persona: string } | undefined;
+  const before = turnInvokes.length;
+  const over = await withDeadline(safe(handler.turn({ agent: b!, deadline: "5m" }, stepCtx(token("V")).ctx)), 10_000, "the over-clock turn");
+  c("a deadline past the remaining wall clock is L4001 (kind permit-wall-clock), naming both, and reaches no endpoint",
+    (over as { code?: string })?.code === "L4001" && (over as { kind?: string })?.kind === "permit-wall-clock"
+      && String((over as { message?: string })?.message).includes("runs past") && turnInvokes.length === before,
+    JSON.stringify(over));
+  turnEndings.push({ state: "succeeded", status: "done", delayMs: 200 });
+  const within = await withDeadline(safe(handler.turn({ agent: b!, deadline: "5s" }, stepCtx(token("W")).ctx)), 20_000, "the within-clock turn");
+  c("a deadline the remaining wall clock holds proceeds", isTurnResult(within) && within.status === "done", JSON.stringify(within));
+}
+
+// ── 18) a budget this host cannot meter is refused at spawn, before anything is submitted ─────
+{
+  console.log("• 18 — permits this host has no meter for are refused loudly at spawn");
+  const handler = mk("tn-18");
+  const before = spawnAccepts.size;
+  const tokens = await withDeadline(safe(handler.spawn({ persona: "builder", permits: { tokens: 5_000 } }, stepCtx(token("X")).ctx)), 10_000, "the unmeterable spawn");
+  c("permits.tokens is refused naming the meter this host lacks, and no spawn was submitted",
+    (tokens as { threw?: boolean })?.threw === true && String((tokens as { message?: string })?.message).includes("no meter") && spawnAccepts.size === before,
+    JSON.stringify(tokens));
+  const zero = await withDeadline(safe(handler.spawn({ persona: "builder", permits: { turns: 0 } }, stepCtx(token("Y")).ctx)), 10_000, "the zero-turn spawn");
+  c("a turns budget that is not a positive integer is refused as malformed",
+    (zero as { threw?: boolean })?.threw === true && String((zero as { message?: string })?.message).includes("positive integer") && spawnAccepts.size === before,
+    JSON.stringify(zero));
+}
+
 async function readGoalResultData(goalId: string): Promise<Record<string, unknown> | undefined> {
   const { readGoalResult } = await import("@cotal-ai/core");
   const fact = await readGoalResult(goalCtx, { endpoint: EP, caller: CALLER, goalId });
@@ -787,7 +931,7 @@ async function readGoalResultData(goalId: string): Promise<Record<string, unknow
 await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
 await nc.close();
-const EXPECTED_CELLS = 35;
+const EXPECTED_CELLS = 47;
 const ran = ok + fail;
 console.log(`mesh-turn.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

@@ -12,7 +12,8 @@
     "guard able to refuse at all (W3), the adoption reseed that keeps a resumed run enforcing what",
     "its journal shows (W4), and the handle spread that carries the worktree into the journal and",
     "the turn client's L4004 (W5). All five mutate mesh-handler.ts, which the suite imports through",
-    "a relative `../src` path — no build sits between the mutation and the run."
+    "a relative `../src` path — no build sits between the mutation and the run.",
+    "Batch B2 (2026-09-03) folds the adopted append log to the journal's keyed view before seeding: one record per step, so a turn is charged once, a failed spawn holds no worktree, and a cancelled turn is not re-registered."
   ],
   "mutations": [
     {
@@ -122,6 +123,15 @@
       "expectRed": "the bound external state carries the worktree (for adoption's reservation) and the onFork policy (for a fork)",
       "cell": "the bound external state carries the worktree (for adoption's reservation) and the onFork policy (for a fork)",
       "note": "Without them, adoption cannot re-take the reservation and a fork cannot read the policy. Measured 2026-09-03: exactly one named red; 18 passed, 1 failed."
+    },
+    {
+      "name": "adoption seeds from the raw append log, counting every step twice",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "  const first = entries[0];\n  if (first === undefined) return entries;\n  return new Journal({ run: first.run, entries, readOnly: true }).entries();",
+      "replace": "  return entries;",
+      "expectRed": "the tree is free after adoption: a spawn that never produced an agent holds no reservation",
+      "cell": "the tree is free after adoption: a spawn that never produced an agent holds no reservation",
+      "note": "Measured 2026-09-03: KILLED. mesh-worktree.smoke: 19 passed, 1 failed Named cell red: the tree is free after adoption: a spawn that never produced an agent holds no reservation"
     }
   ]
 }

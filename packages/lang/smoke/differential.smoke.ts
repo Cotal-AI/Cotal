@@ -321,6 +321,10 @@ log("rounds", rounds, r.status);`,
   ],
   ["sleep and the run clock", 'await sleep("1m", { name: "s" }); log(now() > 0);', {}],
   ["closures over a for-loop counter", "const fs = []; for (let i = 0; i < 3; i = i + 1) { fs.push(() => i); } let s = 0; for (const f of fs) { s = s + await f(); } log(s);", {}],
+  // A per-iteration head can bind a PATTERN. The validator and the walker both accept it; the
+  // compiled engine used to throw a raw uncoded Error out of the transform instead of running it.
+  ["a per-iteration head binding an array pattern", "const fs = []; for (let [i, j] = [0, 10]; i < 3; i = i + 1) { fs.push(() => i + j); } let s = 0; for (const f of fs) { s = s + await f(); } log(s);", {}],
+  ["a per-iteration head binding an object pattern", "let out = []; for (let { a } = { a: 0 }; a < 3; a = a + 1) { out.push(a); } log(out);", {}],
   ["a builtin read as a value", "const f = map; log(f([1, 2], (x) => x), map === map, json === json);", {}],
   ["refusals: a non-function callee", "const f = 1; log(f());", {}, "L4011"],
   // STEP KEYS ARE (scope path, kind, name, occurrence), and the corpus has to reach each component

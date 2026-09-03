@@ -217,6 +217,30 @@ try {
     directSpawn,
   );
 
+  // THE SEAT'S TURN RELAY HAS THE SAME BOOT WINDOW, and its empty answer is worse than a refusal:
+  // a seat reads `{turns: []}` as "you hold nothing" and a `not-found` yield as "drop it", while it
+  // reads a refusal as "keep what you hold". Between registration and `reconcileGoalIndex` the
+  // pending-turn index holds nothing a predecessor accepted, so both doors have to refuse.
+  {
+    const booting = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
+    const doors = booting as unknown as {
+      turnPendingFor: (c: { owner: string; actor: string; uid: string }) => unknown;
+      serveTurnYield: (c: { owner: string; actor: string; uid: string }, raw: Record<string, unknown>) => Promise<unknown>;
+    };
+    const seat = { owner: "local", actor: "seat", uid: "u1" };
+    const pull = ((): { code?: string; message?: string } | "served" => {
+      try { doors.turnPendingFor(seat); return "served"; } catch (e) { return e as { code?: string; message?: string }; }
+    })();
+    check("a seat pulling turns before the goal index is rebuilt is REFUSED, never told it holds none",
+      pull !== "served" && (pull as { code?: string }).code === "unavailable"
+        && /still reconciling/i.test((pull as { message?: string }).message ?? ""), pull);
+    const yielded = await doors.serveTurnYield(seat, { goalId: "g", status: "done" })
+      .then(() => "served" as const, (e: unknown) => e as { code?: string; message?: string });
+    check("and a yield in the same window is refused rather than answered not-found",
+      yielded !== "served" && (yielded as { code?: string }).code === "unavailable"
+        && /still reconciling/i.test((yielded as { message?: string }).message ?? ""), yielded);
+  }
+
   await starting;
   const sweepSettled = await until(async () => (await phase(`orphan-${ORPHANS - 1}`)) === "retired", 20_000);
   check("startup sweep completes after the manager has served", sweepSettled, { phase: await phase(`orphan-${ORPHANS - 1}`) });

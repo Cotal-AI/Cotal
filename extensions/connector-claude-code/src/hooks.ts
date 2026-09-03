@@ -266,7 +266,10 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // operator didn't pin one. A mid-session /model switch fires no hook, so this holds until the
           // next (re)start — acceptable for a display-only discovery field. setModel keeps the pin wins.
           if (typeof ev.model === "string") await agent.setModel(ev.model).catch(() => {});
-          await safeStatus(agent, "idle");
+          // NOT a turn ending. `SessionStart` fires on compact, clear and resume, and a compaction
+          // lands mid-turn: routed through the boundary this published `done` for a run turn the
+          // model was still working on.
+          try { await agent.resetStatus("idle"); } catch { /* best-effort */ }
           // Reset to fail-open on every (re)start — a crashed/restarted agent must not stay silently
           // deaf. Advisory: the local default is already "open", so a failed write changes nothing.
           try {

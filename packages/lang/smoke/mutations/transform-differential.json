@@ -363,7 +363,20 @@
       "expectRed": "the sweep covers the bound field and not only",
       "cell": "and the corpus binds, so the sweep covers the bound field and not only the effect's own values",
       "note": "The realistic way this sweep stops watching the thing it is most needed for. `external` reaches an entry through `ctx.bind` with NO crossing rule in front of it - measured, a handler binding a Date, a -0, a NaN and an absent field puts all four into an entry alive on both arms - and this sweep only sees it because entries are swept whole. Normalise them on the way in and the zero above is unchanged, green, and blind to the one path the boundary does not cover. Aimed at the cell that counts the bound entries rather than at the zero, because the zero is exactly what does NOT move."
+    },
+    {
+      "name": "a per-iteration head binding a pattern is refused by the transform",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "      if (id.type === \"Identifier\") {\n        head += `${(carriers[taken] as { carrier: string }).carrier} = ${value};\\n`;\n      } else {",
+      "replace": "      if (id.type === \"Identifier\") {\n        head += `${(carriers[taken] as { carrier: string }).carrier} = ${value};\\n`;\n      } else if (((): boolean => { throw new Error(\"transform: a per-iteration `for (let ...)` head takes a name, not a pattern\"); })()) {",
+      "expectRed": "identical on both engines: a per-iteration head binding an array pattern",
+      "cell": "identical on both engines: a per-iteration head binding an array pattern",
+      "note": "Measured 2026-09-03: KILLED. Three reds: both pattern-head rows diverge (walker runs, engine refuses) and the completion audit names them. The differential prints its cells as \"identical on both engines: <case>\", which is what expectRed now names."
     }
   ],
-  "completionMarker": "differential.smoke:"
+  "completionMarker": "differential.smoke:",
+  "why": [
+    "Batch B2 (2026-09-03): the v2 transform threw a raw uncoded Error for a `for (let [i] = ...)`",
+    "head the validator and the walker both accept."
+  ]
 }

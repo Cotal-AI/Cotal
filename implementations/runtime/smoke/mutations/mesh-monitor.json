@@ -1,6 +1,6 @@
 {
   "suite": "implementations/runtime/smoke/mesh-monitor.smoke.ts",
-  "guard": "the mesh handler's liveness pair is real: `down` is the death of ONE incarnation read off presence (name AND lifecycle uid), the reason distinguishes a lapsed name from a superseded one, the timeout is one absolute deadline that arms, expires, is attached to on re-entry, and is claimed on every ending, and `monitor` validates the registration it journals",
+  "guard": "the mesh handler's liveness pair is real: `down` is the death of ONE incarnation read off presence (name AND lifecycle uid), the reason distinguishes a lapsed name from a superseded one, the timeout is one absolute deadline that arms, expires, is attached to on re-entry, and is claimed on every ending, and `monitor` validates the registration it journals, and `monitor` is the prerequisite: the registration binds the handle, `wait(down)` refuses an agent nobody monitored, and an adopted run rebuilds the registry from settled monitor entries",
   "command": "pnpm smoke:runtime-mesh-monitor",
   "completionMarker": "mesh-monitor.smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/mesh-monitor.json",
@@ -13,7 +13,9 @@
     "routing that sends a down descriptor to this machinery instead of the channel path (MM8).",
     "",
     "All eight mutate mesh-handler.ts, which the suite imports through a relative `../src` path —",
-    "no build sits between the mutation and the run."
+    "no build sits between the mutation and the run.",
+    "Batch B1 (2026-09-03) makes monitor the prerequisite the reference states (6.5): the",
+    "registry, the wait's gate on it, and its adoption-time seed each have a mutant."
   ],
   "mutations": [
     {
@@ -73,11 +75,11 @@
     {
       "name": "monitor registers whatever it is handed",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? \"cancelled\");\n    parseAgentHandle(req.agent.agent);\n    return null;\n  }",
-      "replace": "    if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? \"cancelled\");\n    void req;\n    return null;\n  }",
+      "find": "  async monitor(req: MonitorRequest, ctx: EffectContext): Promise<null> {\n    if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? \"cancelled\");\n    const { name, uid } = parseAgentHandle(req.agent.agent);\n",
+      "replace": "  async monitor(req: MonitorRequest, ctx: EffectContext): Promise<null> {\n    if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? \"cancelled\");\n    const { name, uid } = { name: String(req.agent.agent).split(\"#\")[0] ?? \"\", uid: String(req.agent.agent).split(\"#\")[1] ?? \"\" };\n",
       "expectRed": "monitor of a value that is not an agent handle refuses loudly, naming the form",
       "cell": "monitor of a value that is not an agent handle refuses loudly, naming the form",
-      "note": "The registration's one obligation: a wait parked on a malformed handle would poll for a death nothing can report. Measured 2026-09-02: exactly one red; 22 passed. The seam suite stays green (24/24), so this is the pair's own guard, not the seam's."
+      "note": "Measured 2026-09-03: KILLED. mesh-monitor.smoke: 24 passed, 1 failed Named cell red: monitor of a value that is not an agent handle refuses loudly, naming the form"
     },
     {
       "name": "a down descriptor is routed to the channel machinery",
@@ -87,6 +89,33 @@
       "expectRed": "the run completes",
       "cell": "the run completes",
       "note": "The branch gone, a down descriptor falls into the channel path and dies reading a channel it does not have. Measured 2026-09-02 (after hardening every direct wait call with the graded `safe` wrapper — the bare-call trap): sixteen reds across every block; 7 passed, 16 failed, the suite reaching its own exit."
+    },
+    {
+      "name": "monitor registers nothing",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    await ctx.bind({ agent: `${name}#${uid}` });\n    this.monitored.add(`${name}#${uid}`);\n",
+      "replace": "    await ctx.bind({ agent: `${name}#${uid}` });\n",
+      "expectRed": "an already-dead incarnation resolves without waiting for anything",
+      "cell": "an already-dead incarnation resolves without waiting for anything",
+      "note": "Measured 2026-09-03: KILLED. mesh-monitor.smoke: 10 passed, 15 failed Named cell red: an already-dead incarnation resolves without waiting for anything"
+    },
+    {
+      "name": "wait(down) observes an agent nobody monitored",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (!this.monitored.has(`${name}#${uid}`))\n      throw new Error(`wait(down(${name}#${uid})) observes a monitored agent",
+      "replace": "    if (false)\n      throw new Error(`wait(down(${name}#${uid})) observes a monitored agent",
+      "expectRed": "wait(down) on an agent this run never monitored refuses, naming the registration it owes (cotal-lang 6.5)",
+      "cell": "wait(down) on an agent this run never monitored refuses, naming the registration it owes (cotal-lang 6.5)",
+      "note": "Measured 2026-09-03: KILLED. mesh-monitor.smoke: 24 passed, 1 failed Named cell red: wait(down) on an agent this run never monitored refuses, naming the registration it owes (cotal-lang 6.5)"
+    },
+    {
+      "name": "adoption rebuilds no registry from the journal's monitor entries",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      if (e.kind === \"monitor\" && e.state === \"settled\" && e.status === \"ok\") {",
+      "replace": "      if (false) {",
+      "expectRed": "a re-entered down-wait attaches to the recorded pause rather than re-minting",
+      "cell": "a re-entered down-wait attaches to the recorded pause rather than re-minting",
+      "note": "Measured 2026-09-03: KILLED. mesh-monitor.smoke: 24 passed, 1 failed Named cell red: a re-entered down-wait attaches to the recorded pause rather than re-minting"
     }
   ]
 }

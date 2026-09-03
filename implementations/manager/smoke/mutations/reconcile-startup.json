@@ -12,7 +12,10 @@
     "",
     "The second cell invokes spawn for a later planned alias. It must reach the manager service and",
     "be refused by the alias fence before lifecycle provisioning. That catches both moving the fence",
-    "behind an await and dropping the startAgent guard."
+    "behind an await and dropping the startAgent guard.",
+    "Batch B2 (2026-09-03): the seat's turn relay had the same boot window as spawn-as-action, and",
+    "an empty answer is worse than a refusal: the seat reads `{turns: []}` as `you hold nothing` and",
+    "a not-found yield as `drop it`, while a refusal means `keep what you hold`."
   ],
   "mutations": [
     {
@@ -32,6 +35,24 @@
       "expectRed": "spawn for an alias still reconciling is refused by its reconcile gate before lifecycle provisioning",
       "cell": "spawn for an alias still reconciling is refused by its reconcile gate before lifecycle provisioning",
       "afterRestore": "pnpm --filter @cotal-ai/manager... build"
+    },
+    {
+      "name": "the seat's turn pull answers during the boot window",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      throw new EpEnvelopeError(\"unavailable\", \"the manager is still reconciling accepted goals at boot; the pending-turn index is not rebuilt yet, retry (SPEC 13.6)\");",
+      "replace": "      void 0;",
+      "expectRed": "a seat pulling turns before the goal index is rebuilt is REFUSED, never told it holds none",
+      "cell": "a seat pulling turns before the goal index is rebuilt is REFUSED, never told it holds none",
+      "note": "Measured 2026-09-03: KILLED. MANAGER RECONCILE STARTUP SMOKE FAILED  (5 passed, 1 failed) Named cell red: a seat pulling turns before the goal index is rebuilt is REFUSED, never told it holds none"
+    },
+    {
+      "name": "the seat's yield answers not-found during the boot window",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      throw new EpEnvelopeError(\"unavailable\", \"the manager is still reconciling accepted goals at boot; this yield's turn may not be indexed yet, retry (SPEC 13.6)\");",
+      "replace": "      void 0;",
+      "expectRed": "and a yield in the same window is refused rather than answered not-found",
+      "cell": "and a yield in the same window is refused rather than answered not-found",
+      "note": "Measured 2026-09-03: KILLED. MANAGER RECONCILE STARTUP SMOKE FAILED  (5 passed, 1 failed) Named cell red: and a yield in the same window is refused rather than answered not-found"
     }
   ]
 }

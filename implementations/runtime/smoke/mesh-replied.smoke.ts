@@ -493,6 +493,28 @@ const adoptedPending = (runId: string, d: { agent: string; persona: string }, sp
   await armPending(2);
   const got4 = await withDeadline(p4, 30_000, "the adopted wait over the denied goal");
   c("an adopted registry still holding the denied goal reads it the same way: not a reply, the timeout resolves null", got4 === null, JSON.stringify(got4));
+
+  // A CANCELLED turn is not a reply either, and adoption must not put one back in the registry.
+  // The seat can have yielded before the cancel landed, so the goal's own terminal says succeeded;
+  // only the journal knows the run took the turn away. Seeding from the append log matched the
+  // cancelled turn's PENDING record and re-registered it, and the wait then read that terminal as
+  // a reply to a turn the run had abandoned.
+  turnEndings.push({ state: "succeeded", status: "done", note: "yielded before the cancel", delayMs: 100 });
+  const T5 = token("i5");
+  await withDeadline(safe(h.turn({ agent: { agent: d!.agent, persona: d!.persona }, deadline: "5m" } as never, stepCtx(T5, { key: { scope: [], kind: "turn", name: "c5", occurrence: 0 } }).ctx)), 30_000, "the turn the run then cancels");
+  const fresh5 = mk("rp-5");
+  const seeded = adoptedPending("rp-5", d!, token("h5"), T5);
+  seeded.push({
+    ...(seeded[1] as JournalEntry), seq: 3, state: "settled", status: "cancelled",
+  } as unknown as JournalEntry);
+  await fresh5.adopted(seeded);
+  const W5 = token("j5");
+  const p5 = safe(fresh5.wait({ event: { event: "replied", agent: d!.agent }, timeout: "2s" } as never, stepCtx(W5).ctx));
+  await armPending(6);
+  await armPending(2);
+  const got5 = await withDeadline(p5, 30_000, "the adopted wait over the cancelled turn");
+  c("a turn the journal records as CANCELLED is not re-registered, so its terminal is not read as a reply",
+    got5 === null, JSON.stringify(got5));
 }
 
 // ── 5) a handle the run never spawned or turned refuses on the roster ──────────────────────────
@@ -641,7 +663,7 @@ const adoptedPending = (runId: string, d: { agent: string; persona: string }, sp
 await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
 await nc.close();
-const EXPECTED_CELLS = 22;
+const EXPECTED_CELLS = 23;
 const ran = ok + fail;
 console.log(`mesh-replied.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

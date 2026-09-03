@@ -8,7 +8,8 @@
  * 1. **The record.** One notice per addressee, create-only, idempotent under the retry a crash
  *    forces, keyed by a DERIVED addressee id because an agent name is dotted and a dot is the key
  *    separator. Consumption is a separate fact, written once, which is what the migrate rule reads.
- * 2. **The render.** A fixed key→value table. The load-bearing cell is the last one: a record
+ * 2. **The render.** A fixed key→value table, or one fixed sentence when there is nothing to put
+ *    in it. The load-bearing cell is the last one: a record
  *    carrying a line break in a detail value — which the effect boundary excludes, and which a
  *    foreign or corrupted writer could still file — makes the renderer REFUSE rather than emit a
  *    row that could forge a row, a closing tag, or a line of prose below the table. A length bound
@@ -154,6 +155,43 @@ const filed = async (agent: string) => await listRunNotices(kv, EP, RUN, agent);
   c("and it is the same record, not a rewrite", again[0]?.noticeId === p[0]?.noticeId, again[0]?.noticeId);
 }
 
+// ── 2b) the retry writes the SAME BYTES, on a clock that moved ────────────────────────────────
+{
+  // The cell above cannot see this: its handler's clock is frozen, so both passes wrote the same
+  // `at` by accident of the fixture. On a real clock the second pass carried a different instant,
+  // `writeRunNotice` compares canonical bytes and refused with `conflict`, and every retry after
+  // that refused identically. A crash between the notice write and the settling append is ordinary,
+  // so the one effect whose whole design is "re-running is safe" wedged the run permanently.
+  const moving = new MeshHandler(
+    nc, kv, js, jsm,
+    { space: SPACE, endpoint: EP, runId: RUN, caller: CALLER, instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
+    new EpfSettleWatcher(js, jsm, SPACE, 3_000),
+    () => Date.now(),
+  );
+  const req = {
+    agents: [{ agent: PLANNER, persona: "planner" }],
+    fact: { decision: "ship", outcome: "approved" },
+  };
+  const bound: Record<string, unknown> = {};
+  const capturing = (resume?: Record<string, unknown>) =>
+    ({
+      requestId: tok("clock"), attempt: 0,
+      key: { scope: [], kind: "notify", name: "moved", occurrence: 0 },
+      bind: async (v: Record<string, unknown>) => { Object.assign(bound, v); },
+      ...(resume !== undefined ? { resume } : {}),
+    }) as never;
+
+  await moving.notify(req as never, capturing());
+  c("the instant every notice carries is BOUND with the step, not left to the next clock read",
+    typeof bound.at === "number", JSON.stringify(bound));
+  const retried = await moving.notify(req as never, capturing({ ...bound }))
+    .then(() => "ok" as const, (e: unknown) => (e as Error).message);
+  c("so the resumed pass rewrites the same bytes and the create-only store returns its own record",
+    retried === "ok", retried);
+  const one = (await filed(PLANNER)).filter((n) => n.spec.step === "/notify:moved#0");
+  c("and there is still exactly one notice for that step", one.length === 1, one.length);
+}
+
 // ── 3) a notice is create-only: one identity carries one decision ──────────────────────────────
 {
   const id = runNoticeId(tok("once"), PLANNER);
@@ -252,8 +290,14 @@ const filed = async (agent: string) => await listRunNotices(kv, EP, RUN, agent);
   c("and it closes", lines[4] === "</run-context>", lines[4]);
 
   const empty = renderRunContext({ run: RUN, step: "/turn:x#0", notices: [] });
-  c("no notices renders an EMPTY TABLE, not nothing: `nobody told you anything` is a fact too",
-    empty.split("\n").length === 3 && empty.includes("decision"), JSON.stringify(empty));
+  c("no notices states the fact IN WORDS, so the addressee reads `nobody told you anything`",
+    empty.split("\n").length === 3
+      && empty.split("\n")[1] === "no decisions have been recorded for you in this run",
+    JSON.stringify(empty));
+  // Live finding: a bare header row with nothing under it was read by two independent seats as a
+  // payload that had failed to arrive, and one of them yielded `blocked` over it.
+  c("and it carries no column header, which an agent reads as a table whose rows went missing",
+    !empty.includes("outcome") && !empty.includes("detail"), JSON.stringify(empty));
 }
 
 // ── 7) a value that could end a line is REFUSED, not escaped ───────────────────────────────────

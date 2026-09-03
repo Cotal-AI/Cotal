@@ -77,6 +77,7 @@ import {
   parseDuration,
   Cancelled,
   EffectError,
+  Journal,
   EffectRefused,
   askSchemaShape,
   conformsToAskSchema,
@@ -264,7 +265,11 @@ export class MeshHandler {
    *  and the owner/actor address a `turn` targets (absent when the spawn's acceptance floor was
    *  never served; a `turn` on such an agent refuses loudly rather than guessing an address).
    *  Seeded live by `spawn`, rebuilt at adoption from the journal's settled spawn entries. */
-  private readonly roster = new Map<string, { handle: AgentHandleValue; owner?: string; actor?: string; uid: string }>();
+  private readonly roster = new Map<string, { handle: AgentHandleValue; owner?: string; actor?: string; uid: string; permits?: AgentPermits; spawnedAt?: number }>();
+  /** Turns this run has dispatched per handle composite, live and seeded — what a `turns` permit is spent against. */
+  private readonly turnsTaken = new Map<string, number>();
+  /** Handle composites a `monitor` registered, live and seeded — what makes `down(agent)` observable. */
+  private readonly monitored = new Set<string>();
 
   /** The most recent unhonored handoff yield per SCOPE (lang §5.3): the goal-chain linkage memo.
    *  `"ambiguous"` when two pending handoffs in one scope named the same agent — ambiguity records
@@ -295,11 +300,12 @@ export class MeshHandler {
    * cannot advance it.
    */
   async adopted(entries: readonly JournalEntry[]): Promise<string[]> {
-    this.seedRunMemos(entries);
+    const folded = foldEntries(entries);
+    this.seedRunMemos(folded);
     return await rearmOutstandingPauses(
       { kv: this.kv, js: this.js, jsm: this.jsm },
       this.binding,
-      entries,
+      folded,
     );
   }
 
@@ -324,18 +330,28 @@ export class MeshHandler {
         const handle = e.result as AgentHandleValue;
         if (typeof handle.agent !== "string") continue; // a garbled result seeds nothing; the turn that needs it refuses loudly
         const { name, uid } = parseAgentHandle(handle.agent);
-        const ext = e.external as { owner?: unknown; actor?: unknown } | undefined;
+        const ext = e.external as { owner?: unknown; actor?: unknown; permits?: unknown; spawnedAt?: unknown } | undefined;
         this.roster.set(name, {
           handle,
           uid,
           ...(typeof ext?.owner === "string" ? { owner: ext.owner } : {}),
           ...(typeof ext?.actor === "string" ? { actor: ext.actor } : {}),
+          ...(ext?.permits !== undefined ? { permits: readPermits(ext.permits, handle.persona) } : {}),
+          ...(typeof ext?.spawnedAt === "number" ? { spawnedAt: ext.spawnedAt } : {}),
         });
         if (typeof handle.worktree === "string") this.worktreeHolders.set(handle.worktree, { name, uid });
         continue;
       }
+      if (e.kind === "monitor" && e.state === "settled" && e.status === "ok") {
+        const m = e.external as { agent?: unknown } | undefined;
+        if (typeof m?.agent === "string") this.monitored.add(m.agent);
+        continue;
+      }
       if (e.kind !== "turn") continue;
       const x = e.external as { name?: unknown; uid?: unknown; goalId?: unknown } | undefined;
+      // Every relayed turn spent one of its agent's turns, whatever it came to.
+      if (typeof x?.name === "string" && typeof x?.uid === "string")
+        this.turnsTaken.set(`${x.name}#${x.uid}`, (this.turnsTaken.get(`${x.name}#${x.uid}`) ?? 0) + 1);
       if (typeof x?.name === "string" && typeof x?.uid === "string" && typeof x?.goalId === "string" && (e.state === "pending" || e.status === "ok"))
         this.recordTurnGoal(`${x.name}#${x.uid}`, x.goalId);
       this.handoffMemos.delete(e.scope); // its begin spent whatever was pending, honored or not
@@ -743,6 +759,10 @@ export class MeshHandler {
     ctx: EffectContext,
   ): Promise<unknown | null> {
     const { name, uid } = parseAgentHandle(ev.agent);
+    // `down(agent)` is an event AFTER `monitor` registered interest (cotal-lang 6.5); a wait on an
+    // agent nobody monitored would be a registration this run never recorded.
+    if (!this.monitored.has(`${name}#${uid}`))
+      throw new Error(`wait(down(${name}#${uid})) observes a monitored agent, and this run never performed monitor() on that handle; register interest first (cotal-lang 6.5)`);
     const primary = req.timeout === undefined
       ? undefined
       : { endpoint: this.binding.endpoint, token: ctx.requestId };
@@ -858,13 +878,22 @@ export class MeshHandler {
    * **One call to N agents is N records, and a retry lands on its own.** The id is derived from the
    * step's request id and the addressee, so a crash between the second and third write is repaired
    * by re-running the call: the first two creates find their own bytes and return, the third
-   * happens. Nothing is written twice and nothing needs a memo of how far it got.
+   * happens. Nothing is written twice and nothing needs a memo of how far it got. That holds only
+   * because the instant every notice carries is bound with the step rather than read from the
+   * clock again, which is the one field a second pass could otherwise change.
    *
    * The fact's bound is the language's and is enforced BEFORE this is reached (L3043 at the effect
    * boundary), so a fact that could not be rendered as one table row cannot arrive here.
    */
   async notify(req: NotifyRequest, ctx: EffectContext): Promise<null> {
-    const at = this.now();
+    // THE INSTANT IS BOUND, never re-read. `writeRunNotice` is create-only and compares canonical
+    // bytes, so a second pass carrying a fresh clock reading hits `conflict` on the notice the
+    // first pass already wrote, and every retry after that hits it identically: the run wedges on
+    // the one effect whose whole design is that re-running it is safe. A crash between the write
+    // and the settling append is ordinary, so the retry has to rewrite the same bytes.
+    const recorded = ctx.resume?.at;
+    const at = typeof recorded === "number" ? recorded : this.now();
+    if (typeof recorded !== "number") await ctx.bind({ at });
     const step = stepKeyString(ctx.key);
     for (const agent of req.agents) {
       const noticeId = runNoticeId(ctx.requestId, agent.agent);
@@ -908,6 +937,9 @@ export class MeshHandler {
     // identity was bound before the crash. Go straight back to the terminal.
     let ext: Readonly<Record<string, unknown>> | undefined =
       ctx.resume?.goalId === goalId ? (ctx.resume as Readonly<Record<string, unknown>>) : undefined;
+    // A budget this host cannot meter is refused before anything is submitted: accepting it and
+    // enforcing nothing would be the silent no-op the effect table exists to prevent.
+    const permits = req.permits !== undefined ? readPermits(req.permits, req.persona) : undefined;
     if (ext === undefined && req.worktree !== undefined) await this.claimWorktree(req.worktree, req.persona, goalId);
     try {
       if (ext === undefined) {
@@ -948,6 +980,8 @@ export class MeshHandler {
           ...(floor !== undefined ? pickAcceptanceFloor(floor) : {}),
           ...(req.worktree !== undefined ? { worktree: req.worktree } : {}),
           ...(req.onFork !== undefined ? { onFork: req.onFork } : {}),
+          ...(req.permits !== undefined ? { permits: req.permits } : {}),
+          spawnedAt: this.now(),
         };
         await ctx.bind(ext);
       }
@@ -962,6 +996,8 @@ export class MeshHandler {
         handle,
         uid: parseAgentHandle(handle.agent).uid,
         ...(address !== undefined ? { owner: address.owner, actor: address.actor } : {}),
+        ...(permits !== undefined ? { permits } : {}),
+        ...(typeof ext.spawnedAt === "number" ? { spawnedAt: ext.spawnedAt } : {}),
       });
       if (typeof handle.worktree === "string")
         this.worktreeHolders.set(handle.worktree, { name: parseAgentHandle(handle.agent).name, uid: parseAgentHandle(handle.agent).uid });
@@ -1049,6 +1085,20 @@ export class MeshHandler {
         .filter((n) => n.consumed === undefined);
       const context = renderRunContext({ run: this.binding.runId, step, notices });
       const deadlineMs = parseDuration(req.deadline ?? this.binding.defaultCheckpointTimeout);
+      // The agent's permits are budgets this run spends at the call that would exceed them
+      // (cotal-lang 6.5, L4001): one turn per `turns`, and a turn whose deadline runs past the
+      // agent's remaining wall clock is already over it. Counted on the fresh path only: a resume
+      // re-enters a turn the seed already counted from its journal entry.
+      const taken = this.turnsTaken.get(`${name}#${uid}`) ?? 0;
+      if (entry.permits?.turns !== undefined && taken >= entry.permits.turns)
+        throw new EffectError("L4001", "permit-turns", `turn(${name}#${uid}) would be that agent's turn ${taken + 1}, past its permit of ${entry.permits.turns}`);
+      if (entry.permits?.wallClockMs !== undefined && entry.spawnedAt !== undefined) {
+        const remaining = entry.spawnedAt + entry.permits.wallClockMs - this.now();
+        if (remaining <= 0)
+          throw new EffectError("L4001", "permit-wall-clock", `turn(${name}#${uid}): the agent's wall-clock permit (${entry.permits.wallClockMs}ms from its spawn) is spent`);
+        if (deadlineMs > remaining)
+          throw new EffectError("L4001", "permit-wall-clock", `turn(${name}#${uid}): a ${deadlineMs}ms deadline runs past the agent's remaining wall clock (${remaining}ms of its ${entry.permits.wallClockMs}ms permit)`);
+      }
       const payload = JSON.stringify({ run: this.binding.runId, step, context, noticeIds: notices.map((n) => n.noticeId) });
       const submit = async (): Promise<EpAttributedReply> =>
         invokeCommand(this.nc, this.binding.space, await this.manager(), "turn",
@@ -1065,19 +1115,24 @@ export class MeshHandler {
         // The invoke did not come back — the goal record is the arbiter, exactly as in `spawn`.
         if ((await readGoalStatus(await this.actionCtx(), ref)) === undefined) throw err;
       }
-      if (reply !== undefined && reply.reply.ok === false) {
-        const err = reply.reply.error;
+      // ONE reading of a refused acceptance, for both submits: a seat that dies between the first
+      // submit and the re-read is the same dead seat, and the resubmit path classing it as an
+      // ordinary refusal made an L4002 the program can catch arrive as an uncatchable L4000.
+      const refusal = (r: EpAttributedReply, resubmitted: boolean): Error => {
+        const err = r.reply.error;
         // `expired` is the serve boundary's "target is not a live managed agent": the seat is gone.
         if (err?.code === "expired")
-          throw new EffectError("L4002", "turn", `turn(${name}#${uid}) found the agent down before the relay began: ${err.message}`);
-        throw new Error(`turn(${name}#${uid}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? "refused with no message"}`);
-      }
+          return new EffectError("L4002", "turn", `turn(${name}#${uid}) found the agent down before the relay began: ${err.message}`);
+        return new Error(resubmitted
+          ? `turn(${name}#${uid}) landed but its acceptance could not be re-read: ${err?.message ?? "refused with no message"}`
+          : `turn(${name}#${uid}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? "refused with no message"}`);
+      };
+      if (reply !== undefined && reply.reply.ok === false) throw refusal(reply, false);
       if (reply === undefined) {
         // The acceptance carries the deadline authority, so a lost reply is asked for again: the
         // same goalId under the same fingerprint is served from the manager's acceptance cache.
         reply = await submit();
-        if (reply.reply.ok === false)
-          throw new Error(`turn(${name}#${uid}) landed but its acceptance could not be re-read: ${reply.reply.error?.message ?? "refused with no message"}`);
+        if (reply.reply.ok === false) throw refusal(reply, true);
       }
       const floor = reply.reply.data as { deadlineAt?: unknown } | undefined;
       if (typeof floor?.deadlineAt !== "number")
@@ -1093,6 +1148,11 @@ export class MeshHandler {
         ...(handoffFrom !== undefined ? { handoffFrom } : {}),
       };
       await ctx.bind(ext);
+      // Spent once the turn is RECORDED, which is the same event the adoption seed counts. Spending
+      // it before the submit charged a permit for a turn the seat never saw (a dead seat's L4002,
+      // an endpoint refusal), and a recovering run would then read a different number off the
+      // journal than the live one held.
+      this.turnsTaken.set(`${name}#${uid}`, taken + 1);
     }
     this.recordTurnGoal(`${name}#${uid}`, goalId);
     const deadlineAt = ext.deadlineAt;
@@ -1231,8 +1291,9 @@ export class MeshHandler {
    *
    * **One absolute deadline for the whole ask**, computed once and bound with the first attempt: a
    * re-ask does not restart the clock, or a stream of non-conforming answers could stretch the
-   * pause forever. The deadline elapsing with no conforming answer is L4003, the deadline-elapsed
-   * class of the agent-addressed effects.
+   * pause forever. The deadline elapsing with no conforming answer is the ask's own L4006, the
+   * same outcome exhausted attempts name: the budget it ran out of is the ask's, and L4003 belongs
+   * to a `turn` whose own deadline elapsed.
    *
    * **Attempt N's token derives from the step's request id** (attempt 1 IS the request id), and
    * the CURRENT attempt's token is bound as `askToken` before its pause is armed — so a resume
@@ -1251,13 +1312,16 @@ export class MeshHandler {
       );
     }
     const attempts = req.attempts ?? 1;
+    // The seat the ask is told to, resolved before anything binds: an ask addresses an agent this
+    // run spawned, and one it cannot tell opens no attempt.
+    const seat = this.askSeat(req, ctx);
     const resume = askResume(ctx.resume);
     const deadlineAt = resume?.deadlineAt
       ?? this.now() + parseDuration(req.deadline ?? this.binding.defaultCheckpointTimeout);
     let attempt = resume?.attempt ?? 1;
     // The resumed attempt is already bound; every attempt this call opens binds before it arms.
     let bindOwed = resume === undefined;
-    let refused: string | undefined;
+    let refused: string | undefined = resume?.refused;
     for (;;) {
       const token = askAttemptToken(ctx.requestId, attempt);
       if (bindOwed) {
@@ -1269,6 +1333,11 @@ export class MeshHandler {
         });
       }
       bindOwed = true;
+      // The addressed agent is TOLD: the attempt rides the turn relay under the attempt's own
+      // token, carrying the token, the schema, the attempt count, the deadline and the previous
+      // refusal, so the seat can answer through `cotal run answer`. Idempotent by goal id: a
+      // re-entry finds the relay already accepted and submits nothing.
+      await this.relayAsk(seat, ctx, token, { attempt, attempts, deadlineAt, ...(refused !== undefined ? { refused } : {}) });
       const ref: CheckpointRef = { endpoint: this.binding.endpoint, token };
       await this.arm(ref, deadlineAt);
       const settled = await this.settle(ref, ctx.signal);
@@ -1300,6 +1369,62 @@ export class MeshHandler {
   }
 
   /**
+   * One ask attempt's relay to the addressed seat: a `turn` goal under the attempt's token whose
+   * payload carries the ask (token, schema, attempt, deadline, the previous refusal), rendered by
+   * the seat's connector as the request to answer. The goal is the seat's to yield when it has
+   * answered; the ask itself settles on the checkpoint plane, so the relay's terminal is never
+   * read here, and it is never a reply `wait(replied)` observes. A seat the serve boundary reports
+   * gone is the agent-down failure (L4002).
+   */
+  private askSeat(req: AskRequest, ctx: EffectContext): AskSeat {
+    const { name, uid } = parseAgentHandle(req.agent.agent);
+    const step = stepKeyString(ctx.key);
+    const entry = this.roster.get(name);
+    if (entry === undefined || entry.uid !== uid)
+      throw new Error(`ask(${step}) addresses ${name}#${uid}, which is not in this run's roster; an ask is relayed to an agent this run spawned`);
+    if (entry.owner === undefined || entry.actor === undefined)
+      throw new Error(`ask(${step}) has no address for ${name}#${uid}: the spawn's acceptance floor was never served, so the seat's owner/actor coordinates are unknown`);
+    return { name, uid, owner: entry.owner, actor: entry.actor, schema: req.schema };
+  }
+
+  private async relayAsk(
+    seat: AskSeat,
+    ctx: EffectContext,
+    token: string,
+    ask: { attempt: number; attempts: number; deadlineAt: number; refused?: string },
+  ): Promise<void> {
+    const { name, uid } = seat;
+    const ref: GoalRef = { endpoint: this.binding.endpoint, caller: this.binding.caller, goalId: token };
+    const actx = await this.actionCtx();
+    if ((await readGoalStatus(actx, ref)) !== undefined) return;
+    const step = stepKeyString(ctx.key);
+    const context = renderRunContext({ run: this.binding.runId, step, notices: [] });
+    const payload = JSON.stringify({
+      run: this.binding.runId, step, context, noticeIds: [],
+      ask: { token, schema: seat.schema, attempt: ask.attempt, attempts: ask.attempts, deadlineAt: ask.deadlineAt, ...(ask.refused !== undefined ? { refused: ask.refused } : {}) },
+    });
+    let reply: EpAttributedReply;
+    try {
+      reply = await invokeCommand(this.nc, this.binding.space, await this.manager(), "turn",
+        { payload, deadlineMs: Math.max(1_000, ask.deadlineAt - this.now()) }, {
+          id: token,
+          deadlineMs: TURN_ACCEPT_DEADLINE_MS,
+          target: { mode: "owner", owner: seat.owner, actor: seat.actor, lifecycleUid: uid },
+        });
+    } catch (err) {
+      // The invoke did not come back — the goal record is the arbiter, exactly as in `turn`.
+      if ((await readGoalStatus(actx, ref)) === undefined) throw err;
+      return;
+    }
+    if (reply.reply.ok === false) {
+      const err = reply.reply.error;
+      if (err?.code === "expired")
+        throw new EffectError("L4002", "ask", `ask(${step}) found ${name}#${uid} down before its relay began: ${err.message}`);
+      throw new Error(`ask(${step}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? "refused with no message"}`);
+    }
+  }
+
+  /**
    * `monitor` registers interest: after it, `down(agent)` is an event a branch can await (§5.9).
    *
    * THE REGISTRATION IS THE JOURNAL ENTRY, and that is the whole mechanism. Death is a STATE on
@@ -1317,7 +1442,10 @@ export class MeshHandler {
    */
   async monitor(req: MonitorRequest, ctx: EffectContext): Promise<null> {
     if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
-    parseAgentHandle(req.agent.agent);
+    const { name, uid } = parseAgentHandle(req.agent.agent);
+    // The entry carries the handle it registered, so an adopted run rebuilds the same registry.
+    await ctx.bind({ agent: `${name}#${uid}` });
+    this.monitored.add(`${name}#${uid}`);
     return null;
   }
 
@@ -1758,9 +1886,59 @@ export function waitConsumerConfig(space: string, requestId: string, channel: st
 /** How long one poll of a wait's consumer blocks. The deadline itself is durable; this is only how
  *  late its observation can be, and a shorter poll buys latency at the cost of fetch traffic. */
 const WAIT_POLL_MS = 2_000;
+/** The budgets this host meters for an agent, read from the spawn's `permits` record. */
+type AgentPermits = { turns?: number; wallClockMs?: number };
+/** The seat an ask is told to: its roster identity, its address, and the schema it must meet. */
+type AskSeat = { name: string; uid: string; owner: string; actor: string; schema: unknown };
+
+/**
+ * Read a spawn's `permits` as the budgets this host can enforce: `turns`, a positive integer of
+ * turns the run may dispatch to the agent, and `wallClock`, a duration from the spawn after which
+ * no turn is admitted. Anything else (tokens, spend) is a budget this host has no meter for, and a
+ * budget it cannot enforce is refused loudly rather than accepted as a silent no-op.
+ */
+function readPermits(raw: unknown, persona: string): AgentPermits {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+    throw new Error(`spawn(${persona}): permits must be a record of budgets, got ${JSON.stringify(raw)}`);
+  const out: AgentPermits = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (key === "turns") {
+      if (typeof value !== "number" || !Number.isInteger(value) || value < 1)
+        throw new Error(`spawn(${persona}): permits.turns must be a positive integer, got ${JSON.stringify(value)}`);
+      out.turns = value;
+    } else if (key === "wallClock") {
+      if (typeof value !== "string")
+        throw new Error(`spawn(${persona}): permits.wallClock must be a duration string, got ${JSON.stringify(value)}`);
+      out.wallClockMs = parseDuration(value);
+    } else {
+      throw new Error(`spawn(${persona}): permits.${key} is a budget this host has no meter for; it meters turns and wallClock, and a budget it cannot enforce is refused rather than ignored`);
+    }
+  }
+  return out;
+}
+
 /** A worktree's holder: the live seat spawned into it, or the spawn goal still bringing one up. */
 type WorktreeHolder = { name: string; uid: string } | { pending: string };
 /** How many incomplete presence scans the worktree guard tolerates before it fails loudly. */
+/**
+ * The keyed view of an append log: the last record written for each step, in the order the run
+ * first reached it.
+ *
+ * A DRIVER HANDS OVER AN APPEND LOG, never a keyed journal. Settling appends a second record rather
+ * than editing the first, so every completed step is in the list twice and a retried one is in it
+ * more times still. Seeding from the raw list charged one turn to `permits.turns` once per RECORD,
+ * so an agent with two turns was refused its second the moment its run recovered; it also left a
+ * failed spawn holding a worktree reservation forever, and re-registered turn goals for turns the
+ * run had cancelled. `fork.ts` carries the same warning about the same list, from the same defect.
+ *
+ * The fold is the journal's own, so "the state of this step" has one definition here and there.
+ */
+function foldEntries(entries: readonly JournalEntry[]): readonly JournalEntry[] {
+  const first = entries[0];
+  if (first === undefined) return entries;
+  return new Journal({ run: first.run, entries, readOnly: true }).entries();
+}
+
 const WORKTREE_SCAN_ATTEMPTS = 5;
 
 /** How often an action's durable terminal fact is looked for. Same argument as `WAIT_POLL_MS`. */
@@ -1934,11 +2112,17 @@ function askAttemptToken(requestId: string, attempt: number): string {
 
 /** The recorded ask progress a resume re-enters at, or undefined for a fresh first attempt. The
  *  external is bytes from an earlier process, so the shape is checked rather than trusted. */
-function askResume(v: Readonly<Record<string, unknown>> | undefined): { attempt: number; deadlineAt: number } | undefined {
+function askResume(v: Readonly<Record<string, unknown>> | undefined):
+  { attempt: number; deadlineAt: number; refused?: string } | undefined {
   if (v === undefined) return undefined;
-  return typeof v.attempt === "number" && v.attempt >= 1 && typeof v.deadlineAt === "number"
-    ? { attempt: v.attempt, deadlineAt: v.deadlineAt }
-    : undefined;
+  if (!(typeof v.attempt === "number" && v.attempt >= 1 && typeof v.deadlineAt === "number")) return undefined;
+  // The refusal is bound with the attempt it belongs to. A resume that dropped it would re-ask the
+  // seat with no reason its last answer failed, which is the one thing the re-ask exists to say.
+  return {
+    attempt: v.attempt,
+    deadlineAt: v.deadlineAt,
+    ...(typeof v.refused === "string" ? { refused: v.refused } : {}),
+  };
 }
 
 /** WHY a reply does not conform, per declared field — the refusal an answerer reads off the entry
@@ -2039,10 +2223,10 @@ export async function rearmOutstandingPauses(
  * later record wins — a step that settled has a settled entry after its pending one, and reading
  * only the first would re-arm timers for pauses that are already over.
  *
- * THE KINDS ARE THE FOUR THAT ARM A TIMER, and `wait` and `ask` are two of them. Neither mints a
- * pause that looks like its own, but a wait's idle window and timeout, and an ask attempt's
- * deadline, are mediated deadlines exactly as `sleep`'s is, and one adopted at a new epoch would
- * otherwise wait on a deadline no live epoch fires.
+ * THE KINDS ARE THE FIVE THAT ARM A TIMER, and `wait`, `ask` and `turn` are three of them. None of
+ * the three mints a pause that looks like its own, but a wait's idle window and timeout, an ask
+ * attempt's deadline, and a turn's deadline authority are mediated deadlines exactly as `sleep`'s
+ * is, and one adopted at a new epoch would otherwise wait on a deadline no live epoch fires.
  *
  * An idle wait with a timeout arms TWO, and the second is DERIVED rather than recorded, so it is
  * re-derived here for the same reason the live path derives it: a resume that had to remember it
@@ -2051,7 +2235,10 @@ export async function rearmOutstandingPauses(
  * nothing when there is none — and the alternative, reading the request shape back out of the
  * entry to decide, would make the repair depend on a field a replay is not guaranteed to carry.
  * An ask's armed pause is its CURRENT attempt's, whose token is bound as `askToken`; before the
- * first bind it is attempt 1, which is the request id itself.
+ * first bind it is attempt 1, which is the request id itself. A `turn`'s is under its goal id,
+ * which is the request id: that pause is the client-side L4003 authority the run keeps for a
+ * manager that dies, so leaving it armed at the predecessor's coordinates would go dark in exactly
+ * the window recovery opens.
  */
 export function outstandingPauseTokens(entries: readonly JournalEntry[]): string[] {
   const last = new Map<string, JournalEntry>();
@@ -2059,7 +2246,8 @@ export function outstandingPauseTokens(entries: readonly JournalEntry[]): string
   const tokens: string[] = [];
   for (const e of last.values()) {
     if (e.state !== "pending" || e.requestId === undefined) continue;
-    if (e.kind === "sleep" || e.kind === "checkpoint") tokens.push(e.requestId);
+    // `turn` arms its client-side deadline authority under the step's request id (the goal id).
+    if (e.kind === "sleep" || e.kind === "checkpoint" || e.kind === "turn") tokens.push(e.requestId);
     else if (e.kind === "ask") tokens.push(typeof e.external?.askToken === "string" ? e.external.askToken : e.requestId);
     else if (e.kind === "wait") tokens.push(e.requestId, derivedToken(e.requestId, "wait-timeout"));
   }

@@ -23,6 +23,8 @@
  *      seat's own side (`turn-pending` / `turn-yield` under the seat's self reach), and the yield
  *      resumes the run; an unanswered turn is caught in-program as L4003 while the manager's own
  *      hold-expiry deny converges the goal on the plane.
+ *   5e ask flow-through: an ask is told to the REAL seat over the same relay, the seat pulls the
+ *      attempt with its schema, and the answer through the run's own door completes the run.
  *
  * Throwaway everything: own open nats-server on a free port, scratch COTAL_HOME + workspace root.
  * Needs nats-server + node on PATH. Run: pnpm smoke:lang-spawn-live
@@ -56,7 +58,7 @@ type EpCallerT = import("@cotal-ai/core").EpCaller;
 interface JournalEntryT { kind: string; state: string; status?: string; result?: unknown; closed?: boolean; external?: Record<string, unknown>; error?: { code?: string; kind?: string }; requestId?: string }
 const { recordMesh } = await import("@cotal-ai/workspace");
 const { Manager } = await import("@cotal-ai/manager");
-const { MeshHandler, EpfSettleWatcher, startRun } = await import("@cotal-ai/runtime");
+const { MeshHandler, EpfSettleWatcher, startRun, resolveCheckpoint } = await import("@cotal-ai/runtime");
 const { launchEnv } = await import("@cotal-ai/connector-core"); // the OS env allow-list a real connector supplies
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -470,10 +472,68 @@ try {
       JSON.stringify({ run: (out4 as { status?: string } | undefined)?.status, error: refused4?.error }));
   }
 
+  // ── 5e) an ask rides the REAL relay: the seat is told, and answers through the run's door ──
+  {
+    console.log("• 5e — a real ask is relayed to the seat as a turn; the answer through cotal run answer's door completes the run");
+    const drv5 = startRun(js, jsm, {
+      space: SPACE, endpoint: "manager", kv, runId: "ls-5e", lease: lease(),
+      source: `const d = await spawn("wf5");
+const v = await ask(d, { name: "size", schema: { estimate: "number" }, deadline: "2m" });
+log("got", v.estimate);`,
+      handler: mk("ls-5e"),
+    }).catch((e: unknown) => ({ status: "threw" as const, error: String((e as Error)?.message).slice(0, 140) }));
+    let askEntry: JournalEntryT | undefined;
+    {
+      const until = Date.now() + 30_000;
+      while (askEntry === undefined && Date.now() < until) {
+        askEntry = (await entriesOf("ls-5e", "ask")).find((e) => e.state === "pending" && typeof e.external?.askToken === "string");
+        if (askEntry === undefined) await wait(400);
+      }
+    }
+    c("the run parks on the ask once its attempt is bound", typeof askEntry?.external?.askToken === "string", JSON.stringify(askEntry?.external));
+    const floor5 = (await entriesOf("ls-5e", "spawn")).find((e) => e.external !== undefined)?.external as
+      { owner?: string; actor?: string; uid?: string } | undefined;
+    const seat5: EpCallerT = { owner: String(floor5?.owner), actor: String(floor5?.actor), uid: String(floor5?.uid) };
+    const svc5 = await resolveService(nc, SPACE, "manager", seat5);
+    let pulled5: { goalId?: string; payload?: string } | undefined;
+    {
+      const until = Date.now() + 20_000;
+      while (pulled5 === undefined && Date.now() < until) {
+        const r = await invokeCommand(nc, SPACE, svc5, "turn-pending", undefined, { target: { mode: "self" }, deadlineMs: 10_000 });
+        const turns = ((r.reply.data as { turns?: unknown[] } | undefined)?.turns ?? []) as Array<{ goalId?: string; payload?: string }>;
+        if (turns.length > 0) pulled5 = turns[0];
+        else await wait(500);
+      }
+    }
+    const payload5 = pulled5?.payload !== undefined
+      ? JSON.parse(pulled5.payload) as { run?: unknown; step?: unknown; ask?: { token?: unknown; schema?: unknown; attempt?: unknown } } : undefined;
+    c("the seat pulls the ask over the REAL relay, under the attempt's own token, carrying the schema it must meet",
+      pulled5?.goalId === askEntry?.external?.askToken && payload5?.ask?.token === pulled5?.goalId
+        && JSON.stringify(payload5?.ask?.schema) === JSON.stringify({ estimate: "number" }) && payload5?.ask?.attempt === 1,
+      JSON.stringify(payload5)?.slice(0, 200));
+    // The seat answers through the run's own door, at the step the relay named.
+    let answered = false;
+    for (let i = 0; i < 40 && !answered; i += 1) {
+      try {
+        await resolveCheckpoint({ kv, js, jsm, space: SPACE, endpoint: "manager" }, { runId: "ls-5e", stepKey: String(payload5?.step), by: "wf5", value: { estimate: 4 }, now: Date.now() });
+        answered = true;
+      } catch { await wait(250); }
+    }
+    const out5 = await Promise.race([drv5, wait(45_000).then(() => undefined)]);
+    const askV = (await entriesOf("ls-5e", "ask")).find((e) => e.state === "settled");
+    c("the answer through cotal run answer's door completes the run with the record",
+      answered && (out5 as { status?: string } | undefined)?.status === "completed" && askV?.status === "ok" && (askV?.result as { estimate?: unknown } | undefined)?.estimate === 4,
+      JSON.stringify({ answered, out: out5, result: askV?.result }));
+    const y5 = await invokeCommand(nc, SPACE, svc5, "turn-yield",
+      { goalId: pulled5?.goalId ?? "", status: "done" }, { target: { mode: "self" }, deadlineMs: 20_000 });
+    c("the relay is the seat's to end: the REAL manager accepts its yield after the ask has settled",
+      y5.reply.ok === true && (y5.reply.data as { state?: unknown } | undefined)?.state === "succeeded", JSON.stringify(y5.reply).slice(0, 160));
+  }
+
   pumpState.over = true;
   await pump;
   await nc.drain().catch(() => undefined);
-  const EXPECTED_CELLS = 33;
+  const EXPECTED_CELLS = 37;
   if (pass + fail !== EXPECTED_CELLS) {
     console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
     fail += 1;

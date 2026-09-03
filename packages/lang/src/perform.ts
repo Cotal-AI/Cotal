@@ -344,8 +344,16 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
       // handler was never told which model to run. This was missed by an audit that exercised
       // only the string form, which is the same defect one level up.
       const spawnSubject = args[0];
-      const persona =
-        typeof spawnSubject === "string" ? spawnSubject : String(option(spawnSubject, "persona"));
+      const named = typeof spawnSubject === "string" ? spawnSubject : option(spawnSubject, "persona");
+      // `String(undefined)` is the literal persona "undefined", and it was reaching the input hash,
+      // the step name and the handler. A missing persona is `undefined` crossing an effect
+      // boundary, which is what L3041 names.
+      if (typeof named !== "string" || named === "")
+        throw new RuntimeFault(
+          "L3041",
+          `spawn names no persona: its first argument is ${JSON.stringify(spawnSubject) ?? "undefined"}, and a spawn takes a persona name or a record carrying one`,
+        );
+      const persona = named;
       const model = typeof spawnSubject === "string" ? undefined : (option(spawnSubject, "model") as string | undefined);
       const variant = typeof spawnSubject === "string" ? undefined : (option(spawnSubject, "variant") as string | undefined);
       // Every accepted option is forwarded, including the three that are policy rather than

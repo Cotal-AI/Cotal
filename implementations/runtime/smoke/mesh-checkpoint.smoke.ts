@@ -435,6 +435,17 @@ const a = await checkpoint("approve", "Ship it?", { timeout: "2s", onExpiry: "pr
       outstandingPauseTokens(settledWait).length === 0, outstandingPauseTokens(settledWait).join(","));
     c("and the other kinds are unchanged by the addition",
       open.includes("tok-sleep") && open.includes("tok-cp"), open.join(","));
+    // A pending `turn` arms one too, under its goal id, and that pause is the run's OWN L4003
+    // authority for a manager that dies. Omitting it left the authority dark from the takeover
+    // until the replay reached the turn again, which is the window a takeover exists to cover.
+    const turnTok = "req-turn-token-7";
+    const pendingTurn = [{
+      v: 1, seq: 0, run: "cp-7w", scope: "", kind: "turn", name: "drive", occurrence: 0, inputHash: "h",
+      requestId: turnTok, state: "pending", startedAt: 0,
+      external: { goalId: turnTok, name: "b", uid: "u", deadlineAt: 1 },
+    }] as never;
+    c("a pending `turn` is an outstanding pause too: its deadline authority is re-armed",
+      outstandingPauseTokens(pendingTurn).join() === turnTok, outstandingPauseTokens(pendingTurn).join(","));
   }
 
   await resolveCheckpoint(deps, { runId: "cp-7", stepKey: STEP, by: "david", value: "done", now: NOW + 1_000 });

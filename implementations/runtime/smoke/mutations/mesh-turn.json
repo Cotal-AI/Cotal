@@ -1,6 +1,6 @@
 {
   "suite": "implementations/runtime/smoke/mesh-turn.smoke.ts",
-  "guard": "The mesh handler's turn client is real: the submission rides the run roster and carries the rendered context, the bound external is what a resume re-enters, the client's own pause is the L4003 authority and its presence watch the L4002 authority, a deny's turn-deadline reason maps to L4003, notices are consumed by the carrying goal, and handoff honoring (memo spend, L4005/L4004 validation, the handoffFrom link, adoption seeding) actually happens",
+  "guard": "The mesh handler's turn client is real: the submission rides the run roster and carries the rendered context, the bound external is what a resume re-enters, the client's own pause is the L4003 authority and its presence watch the L4002 authority, a deny's turn-deadline reason maps to L4003, notices are consumed by the carrying goal, and handoff honoring (memo spend, L4005/L4004 validation, the handoffFrom link, adoption seeding) actually happens, and the agent's permits are metered at the turn (turns spent per dispatch and read back from the journal at adoption, wall clock against the turn's deadline, unmeterable budgets refused at spawn)",
   "command": "pnpm smoke:runtime-mesh-turn",
   "completionMarker": "mesh-turn.smoke:",
   "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/mesh-turn.json   # --config resolves against the repo root, never the cwd",
@@ -14,7 +14,13 @@
     "executor-currency rule (TM6), the pause claimed on a terminal (TM10), notice consumption by",
     "the carrying goal (TM5), and the handoff machinery: the memo riding the submission (TM1),",
     "its immediate-only spend (TM2), the L4005/L4004 yield validation (TM3/TM4), the",
-    "adoption-time seeding (TM11), the marked seat death on a deny (L4002, not L4003) and the acceptance's own deadline instant."
+    "adoption-time seeding (TM11), the marked seat death on a deny (L4002, not L4003) and the acceptance's own deadline instant.",
+    "Batch B1 (2026-09-03) adds the permits meter: the turns gate, the wall-clock gate, the",
+    "per-dispatch spend, the adoption-time count from recorded turn entries, and the refusal of",
+    "a budget this host has no meter for.",
+    "Batch B2 (2026-09-03) folds the adopted append log to the journal's keyed view before seeding: one record per step, so a turn is charged once, a failed spawn holds no worktree, and a cancelled turn is not re-registered.",
+    "Batch B2 (2026-09-03): the permit is spent by a turn that BOUND (the same event the",
+    "adoption seed counts), and one classifier reads a refused acceptance on both submits."
   ],
   "mutations": [
     {
@@ -92,7 +98,7 @@
     {
       "name": "spawn never registers the roster entry turn addresses",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "      this.roster.set(parseAgentHandle(handle.agent).name, {\n        handle,\n        uid: parseAgentHandle(handle.agent).uid,\n        ...(address !== undefined ? { owner: address.owner, actor: address.actor } : {}),\n      });",
+      "find": "      this.roster.set(parseAgentHandle(handle.agent).name, {\n        handle,\n        uid: parseAgentHandle(handle.agent).uid,\n        ...(address !== undefined ? { owner: address.owner, actor: address.actor } : {}),\n        ...(permits !== undefined ? { permits } : {}),\n        ...(typeof ext.spawnedAt === \"number\" ? { spawnedAt: ext.spawnedAt } : {}),\n      });",
       "replace": "      void address;",
       "expectRed": "the run completes through the real relay accept and the real terminal",
       "cell": "the run completes through the real relay accept and the real terminal",
@@ -110,8 +116,8 @@
     {
       "name": "adoption seeds nothing, so a resumed run cannot keep turning",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    this.seedRunMemos(entries);",
-      "replace": "    void entries;",
+      "find": "    const folded = foldEntries(entries);\n    this.seedRunMemos(folded);",
+      "replace": "    const folded = foldEntries(entries);",
       "expectRed": "the adopted handler turns the recorded roster's agent",
       "cell": "the adopted handler turns the recorded roster's agent",
       "note": "The roster and memos are deterministic from the journal alone; unseeded, an adopted run refuses its own recorded seats. Measured 2026-09-02: three reds — the adopted-roster turn, the adoption-seeded handoff link, and block 11's L4004 cell (an empty roster reads as L4005 first); 31 passed, 3 failed."
@@ -142,6 +148,78 @@
       "expectRed": "the bound deadline is the acceptance's own instant (the manager's hold), not a second clock read before the round-trip",
       "cell": "the bound deadline is the acceptance's own instant (the manager's hold), not a second clock read before the round-trip",
       "note": "A second clock read after the accept round-trip fires later than the manager's hold by the round-trip plus skew, and disagrees with it on every resume. The suite's fake reads its hold instant before the goal-plane writes and holds the reply 10ms, so a client clock cannot coincide with it. Measured 2026-09-03: exactly one named red (bound 12ms after the served instant); 34 passed, 1 failed."
+    },
+    {
+      "name": "the turns permit is never checked",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      if (entry.permits?.turns !== undefined && taken >= entry.permits.turns)\n        throw new EffectError(\"L4001\", \"permit-turns\",",
+      "replace": "      if (false)\n        throw new EffectError(\"L4001\", \"permit-turns\",",
+      "expectRed": "the second is the catchable L4001 (kind permit-turns), naming the budget, and reaches no endpoint",
+      "cell": "the second is the catchable L4001 (kind permit-turns), naming the budget, and reaches no endpoint",
+      "note": "Measured 2026-09-03: KILLED. SUITE INCOMPLETE — ran 50 of 47 cells; a partial run is not a pass Named cell red: the second is the catchable L4001 (kind permit-turns), naming the budget, and reaches no endpoint"
+    },
+    {
+      "name": "a turn never spends the turns budget",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      this.turnsTaken.set(`${name}#${uid}`, taken + 1);\n",
+      "replace": "",
+      "expectRed": "the second is the catchable L4001 (kind permit-turns), naming the budget, and reaches no endpoint",
+      "cell": "the second is the catchable L4001 (kind permit-turns), naming the budget, and reaches no endpoint",
+      "note": "Measured 2026-09-03: KILLED. SUITE INCOMPLETE — ran 49 of 47 cells; a partial run is not a pass Named cell red: the second is the catchable L4001 (kind permit-turns), naming the budget, and reaches no endpoint"
+    },
+    {
+      "name": "adoption counts no recorded turn against the budget",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      if (typeof x?.name === \"string\" && typeof x?.uid === \"string\")\n        this.turnsTaken.set(`${x.name}#${x.uid}`, (this.turnsTaken.get(`${x.name}#${x.uid}`) ?? 0) + 1);\n",
+      "replace": "",
+      "expectRed": "an adopted run reads the spent budget off its journal: a recorded turn counts even when it ended on a deadline",
+      "cell": "an adopted run reads the spent budget off its journal: a recorded turn counts even when it ended on a deadline",
+      "note": "Measured 2026-09-03: KILLED. SUITE INCOMPLETE — ran 49 of 47 cells; a partial run is not a pass Named cell red: an adopted run reads the spent budget off its journal: a recorded turn counts even when it ended on a deadline"
+    },
+    {
+      "name": "the wall-clock permit admits a deadline past it",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "        if (deadlineMs > remaining)\n          throw new EffectError(\"L4001\", \"permit-wall-clock\",",
+      "replace": "        if (false)\n          throw new EffectError(\"L4001\", \"permit-wall-clock\",",
+      "expectRed": "a deadline past the remaining wall clock is L4001 (kind permit-wall-clock), naming both, and reaches no endpoint",
+      "cell": "a deadline past the remaining wall clock is L4001 (kind permit-wall-clock), naming both, and reaches no endpoint",
+      "note": "Measured 2026-09-03: KILLED. SUITE INCOMPLETE — ran 48 of 47 cells; a partial run is not a pass Named cell red: a deadline past the remaining wall clock is L4001 (kind permit-wall-clock), naming both, and reaches no endpoi"
+    },
+    {
+      "name": "an unmeterable budget is accepted as a silent no-op",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      throw new Error(`spawn(${persona}): permits.${key} is a budget this host has no meter for; it meters turns and wallClock, and a budget it cannot enforce is refused rather than ignored`);",
+      "replace": "      void key;",
+      "expectRed": "permits.tokens is refused naming the meter this host lacks, and no spawn was submitted",
+      "cell": "permits.tokens is refused naming the meter this host lacks, and no spawn was submitted",
+      "note": "Measured 2026-09-03: KILLED. mesh-turn.smoke: 45 passed, 2 failed Named cell red: permits.tokens is refused naming the meter this host lacks, and no spawn was submitted"
+    },
+    {
+      "name": "adoption seeds from the raw append log, counting every step twice",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "  const first = entries[0];\n  if (first === undefined) return entries;\n  return new Journal({ run: first.run, entries, readOnly: true }).entries();",
+      "replace": "  return entries;",
+      "expectRed": "ONE recorded turn costs ONE turn, though the append log holds it twice: the second of two proceeds",
+      "cell": "ONE recorded turn costs ONE turn, though the append log holds it twice: the second of two proceeds",
+      "note": "Measured 2026-09-03: KILLED. mesh-turn.smoke: 46 passed, 1 failed Named cell red: ONE recorded turn costs ONE turn, though the append log holds it twice: the second of two proceeds"
+    },
+    {
+      "name": "a refused turn still spends the agent's permit",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      const payload = JSON.stringify({ run: this.binding.runId, step, context, noticeIds: notices.map((n) => n.noticeId) });",
+      "replace": "      this.turnsTaken.set(`${name}#${uid}`, taken + 1);\n      const payload = JSON.stringify({ run: this.binding.runId, step, context, noticeIds: notices.map((n) => n.noticeId) });",
+      "expectRed": "the agent's one permitted turn is still there: a refused turn spent nothing",
+      "cell": "the agent's one permitted turn is still there: a refused turn spent nothing",
+      "note": "Measured 2026-09-03: KILLED. mesh-turn.smoke: 46 passed, 1 failed Named cell red: the agent's one permitted turn is still there: a refused turn spent nothing"
+    },
+    {
+      "name": "the acceptance re-read classes a gone seat as an ordinary refusal",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "        if (err?.code === \"expired\")\n          return new EffectError(\"L4002\", \"turn\", `turn(${name}#${uid}) found the agent down before the relay began: ${err.message}`);",
+      "replace": "        if (false)\n          return new EffectError(\"L4002\", \"turn\", `turn(${name}#${uid}) found the agent down before the relay began: ${err?.message}`);",
+      "expectRed": "a seat that died between the submit and the acceptance re-read is the catchable L4002",
+      "cell": "a seat that died between the submit and the acceptance re-read is the catchable L4002",
+      "note": "Measured 2026-09-03: KILLED. mesh-turn.smoke: 46 passed, 1 failed Named cell red: a seat that died between the submit and the acceptance re-read is the catchable L4002"
     }
   ]
 }

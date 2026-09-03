@@ -6006,6 +6006,13 @@ export class Manager {
   /** The seat's pull: every pending turn addressed to the CALLER's incarnation, oldest first.
    *  The uid is part of the address — a successor seat never receives a predecessor's turn. */
   private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt: number }[] } {
+    // AN EMPTY LIST IS AN ANSWER, so it must not be given before the index is rebuilt. Between
+    // registration and `reconcileGoalIndex`, `pendingTurns` holds nothing a predecessor accepted,
+    // and a seat that pulls in that window is told authoritatively that it has no turn. The seat
+    // treats a refusal as "keep what you hold" and an empty list as "you hold nothing", so the
+    // window has to refuse, the same way `serveTurnGoal` does.
+    if (!this.goalReconcileDone)
+      throw new EpEnvelopeError("unavailable", "the manager is still reconciling accepted goals at boot; the pending-turn index is not rebuilt yet, retry (SPEC 13.6)");
     // Two turns on one seat are serialized at the dispatch (cotal-lang 6.5): only the oldest
     // unsettled one is served, and the next surfaces once it yields or its deadline denies, so a
     // seat is never shown two turns at once.
@@ -6021,6 +6028,11 @@ export class Manager {
    *  `succeeded` carrying the TurnResult. A yield AFTER the deadline drives the deadline terminal
    *  instead and refuses — the expiry outcome stands, never a late success over it. */
   private async serveTurnYield(c: { owner: string; actor: string; uid: string }, raw: Record<string, unknown>): Promise<{ goalId: string; state: string }> {
+    // Same boot window as the pull, and checked first because it is the earlier boot phase: before
+    // the index is rebuilt a predecessor's accepted turn is not in `pendingTurns`, and `not-found`
+    // would tell the seat to drop work it is holding.
+    if (!this.goalReconcileDone)
+      throw new EpEnvelopeError("unavailable", "the manager is still reconciling accepted goals at boot; this yield's turn may not be indexed yet, retry (SPEC 13.6)");
     const gw = this.goalWriter;
     if (!gw) throw new EpEnvelopeError("unavailable", "the manager goal-writer connection is not standing (SPEC 13.6)");
     const goalId = String(raw.goalId);

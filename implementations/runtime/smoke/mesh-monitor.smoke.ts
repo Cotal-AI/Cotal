@@ -131,16 +131,31 @@ const stepCtx = (requestId: string) => {
     cancelled: false, reason: undefined as string | undefined,
     onCancel(fn: (reason: string) => void) { listeners.push(fn); },
   };
+  const bound: Record<string, unknown> = {};
   const ctx = {
     key: { scope: [], kind: "wait", name: "vigil", occurrence: 0 },
     requestId, attempt: 0, signal,
-    bind: async () => { /* a down-wait binds nothing; a bind here would be a defect */ },
+    // A down-wait binds nothing; a monitor binds the handle it registered.
+    bind: async (facts: Record<string, unknown>) => { Object.assign(bound, facts); },
   };
   return {
     ctx: ctx as never,
+    bound,
     cancel(reason: string) { signal.cancelled = true; signal.reason = reason; for (const fn of listeners) fn(reason); },
   };
 };
+/** Register interest the way a program does before it waits: `monitor`, on the handler under test. */
+const watch = async (h: MeshHandler, s: { handle: string }, tag: string): Promise<Record<string, unknown>> => {
+  const ctx = stepCtx(token(tag));
+  await h.monitor({ agent: { agent: s.handle, persona: "dev" } } as never, ctx.ctx);
+  return ctx.bound;
+};
+/** The settled monitor entry a recovering run reads: what `adopted` seeds its registry from. */
+const monitorEntry = (runId: string, s: { handle: string }, tag: string): JournalEntry => ({
+  v: 1, seq: 1, run: runId, scope: "", kind: "monitor", name: "watch", occurrence: 0,
+  inputHash: "sha256:0", requestId: token(tag), state: "settled", status: "ok", result: null,
+  external: { agent: s.handle },
+} as unknown as JournalEntry);
 const token = (tag: string) => (tag.repeat(43)).slice(0, 43);
 /** A direct handler call graded rather than fatal: a mutant that makes a wait REJECT must red
  *  cells, never kill the process before the suite's own exit line (the bare-call trap). */
@@ -217,6 +232,8 @@ const pendingEntry = async (runId: string, kind: string, ms = 15_000): Promise<J
   console.log("• 2 — the immediate down: no presence row was ever there");
   const ghost = seat("ghost", "seat2", uid("c"));
   const h = mk("mo-2");
+  const bound = await watch(h, ghost, "d2");
+  c("monitor binds the handle it registered, so an adopted run rebuilds the same registry", bound.agent === ghost.handle, JSON.stringify(bound));
   const T = token("d");
   const s = stepCtx(T);
   const got = await withDeadline(
@@ -237,6 +254,7 @@ const pendingEntry = async (runId: string, kind: string, ms = 15_000): Promise<J
   const successor = seat("alias", "seat3b", uid("f"));
   await putPresence(successor);
   const h = mk("mo-3");
+  await watch(h, dead, "e3");
   const got = await withDeadline(
     safe(h.wait({ event: { event: "down", agent: dead.handle } } as never, stepCtx(token("e")).ctx) as Promise<unknown>),
     8_000, "the superseded down-wait",
@@ -251,6 +269,7 @@ const pendingEntry = async (runId: string, kind: string, ms = 15_000): Promise<J
   const alive = seat("steady", "seat4", uid("g"));
   await putPresence(alive);
   const h = mk("mo-4");
+  await watch(h, alive, "f4");
   const T = token("f");
   const p = safe(h.wait({ event: { event: "down", agent: alive.handle }, timeout: "2s" } as never, stepCtx(T).ctx) as Promise<unknown>);
   await wait(400);           // the mint's schedule request must be queued before the pump looks
@@ -269,7 +288,9 @@ const pendingEntry = async (runId: string, kind: string, ms = 15_000): Promise<J
   const alive = seat("patient", "seat5", uid("h"));
   await putPresence(alive);
   const T = token("g");
-  const first = safe(mk("mo-5").wait(
+  const h5 = mk("mo-5");
+  await watch(h5, alive, "g5");
+  const first = safe(h5.wait(
     { event: { event: "down", agent: alive.handle }, timeout: "4s" } as never, stepCtx(T).ctx,
   ) as Promise<unknown>);
   await wait(400);
@@ -278,7 +299,11 @@ const pendingEntry = async (runId: string, kind: string, ms = 15_000): Promise<J
   // which is all a resume is here, because a down-wait binds nothing.
   await wait(1_000);
   const t0 = Date.now();
-  const second = safe(mk("mo-5").wait(
+  // The rebuilt handler reads its registry from the journal's settled monitor entry, as a
+  // recovering run does; nothing else makes this agent's death an event it may await.
+  const h5b = mk("mo-5");
+  await h5b.adopted([monitorEntry("mo-5", alive, "g5")]);
+  const second = safe(h5b.wait(
     { event: { event: "down", agent: alive.handle }, timeout: "4s" } as never, stepCtx(T).ctx,
   ) as Promise<unknown>);
   await armPending(2); // an attach re-emits no second schedule, but an idempotent re-mint may
@@ -298,6 +323,7 @@ const pendingEntry = async (runId: string, kind: string, ms = 15_000): Promise<J
   const T = token("h");
   const s = stepCtx(T);
   const h = mk("mo-6");
+  await watch(h, alive, "h6");
   const p = (h.wait({ event: { event: "down", agent: alive.handle }, timeout: "1h" } as never, s.ctx) as Promise<unknown>)
     .then((v) => ({ v }), (e: unknown) => ({ e: e as Error }));
   await wait(400);
@@ -335,6 +361,14 @@ const pendingEntry = async (runId: string, kind: string, ms = 15_000): Promise<J
   c("wait(down) on a value that is not an agent handle refuses the same way",
     badWait !== null && (badWait as Error).message.includes("not an agent handle"),
     (badWait as Error)?.message?.slice(0, 120));
+  const unwatched = seat("unwatched", "seat7", uid("n"));
+  const noMonitor = await (h.wait(
+    { event: { event: "down", agent: unwatched.handle } } as never,
+    stepCtx(token("m")).ctx,
+  ) as Promise<unknown>).then(() => null, (e: unknown) => e as Error);
+  c("wait(down) on an agent this run never monitored refuses, naming the registration it owes (cotal-lang 6.5)",
+    noMonitor !== null && (noMonitor as Error).message.includes("monitor()"),
+    (noMonitor as Error)?.message?.slice(0, 140));
 }
 
 // ── 8) the driven timeout: null crosses the boundary and `??` is otherwise ─────────────────────
@@ -362,7 +396,7 @@ const pendingEntry = async (runId: string, kind: string, ms = 15_000): Promise<J
     JSON.stringify({ status: settled?.status, result: settled?.result }));
 }
 
-const EXPECTED_CELLS = 23;
+const EXPECTED_CELLS = 25;
 const ran = ok + fail;
 console.log(`mesh-monitor.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

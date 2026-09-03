@@ -1,6 +1,6 @@
 {
   "suite": "implementations/runtime/smoke/mesh-ask.smoke.ts",
-  "guard": "the mesh handler's durable ask enforces the §6.5 contract and recovers by derivation: the shorthand is enforced (L4022), a non-conforming answer costs one attempt with its refusal bound for the answerer, attempts default to ONE and exhaust as the catchable L4006, the run driver's answer door reaches the CURRENT attempt's pause, and the discharge and adoption re-arm address the attempt actually armed",
+  "guard": "the mesh handler's durable ask enforces the §6.5 contract and recovers by derivation: the shorthand is enforced (L4022), a non-conforming answer costs one attempt with its refusal bound for the answerer, attempts default to ONE and exhaust as the catchable L4006, the run driver's answer door reaches the CURRENT attempt's pause, and the discharge and adoption re-arm address the attempt actually armed, and the agent is told: each attempt is relayed to the seat as a turn under its own token (idempotent by goal id, carrying the schema and the previous refusal), an ask outside the roster refuses before an attempt opens, and a seat gone at the relay is L4002",
   "command": "pnpm smoke:runtime-mesh-ask",
   "completionMarker": "mesh-ask.smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/mesh-ask.json",
@@ -14,7 +14,12 @@
     "armed (MA8), and the adoption re-arm inventory reading it the same way (MA9).",
     "",
     "MA6 and MA7 mutate resolve-checkpoint.ts; the rest mutate mesh-handler.ts. Both are imported",
-    "by the suite through relative source paths — no build sits between the mutation and the run."
+    "by the suite through relative source paths — no build sits between the mutation and the run.",
+    "Batch B1 (2026-09-03) adds the relay: the seat is told over the same turn relay `turn` uses.",
+    "Each obligation has a mutant: the relay itself, its idempotency on re-entry, the roster gate,",
+    "the refusal carried on a re-ask, and the gone-seat classing.",
+    "Batch B2 (2026-09-03): the refusal is bound with its attempt, so a resume that re-relays",
+    "carries it; dropping it re-asked the seat with no reason its last answer failed."
   ],
   "mutations": [
     {
@@ -97,6 +102,60 @@
       "expectRed": "a bound entry re-arms the CURRENT attempt's derived token",
       "cell": "a bound entry re-arms the CURRENT attempt's derived token",
       "note": "An adopted run re-arms a settled attempt's deadline and leaves the open attempt's unfired at the dead epoch. Measured 2026-09-02: exactly one red; 23 passed."
+    },
+    {
+      "name": "the agent is never told: no relay is submitted",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      await this.relayAsk(seat, ctx, token, { attempt, attempts, deadlineAt, ...(refused !== undefined ? { refused } : {}) });\n",
+      "replace": "",
+      "expectRed": "the agent was TOLD: the attempt rode the turn relay under its own token, pinned to the spawned seat's incarnation",
+      "cell": "the agent was TOLD: the attempt rode the turn relay under its own token, pinned to the spawned seat's incarnation",
+      "note": "Measured 2026-09-03: KILLED. SUITE INCOMPLETE — ran 36 of 35 cells; a partial run is not a pass Named cell red: the agent was TOLD: the attempt rode the turn relay under its own token, pinned to the spawned seat's incarnat"
+    },
+    {
+      "name": "a re-entered attempt relays again instead of finding its goal",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if ((await readGoalStatus(actx, ref)) !== undefined) return;\n    const step = stepKeyString(ctx.key);\n    const context = renderRunContext",
+      "replace": "    const step = stepKeyString(ctx.key);\n    const context = renderRunContext",
+      "expectRed": "the resume re-told the seat nothing: the relay is idempotent by the attempt's own goal id",
+      "cell": "the resume re-told the seat nothing: the relay is idempotent by the attempt's own goal id",
+      "note": "Measured 2026-09-03: KILLED, then the suite hung. The named cell went red first — \"the resume re-told the seat nothing: the relay is idempotent by the attempt's own goal id\" observed 2 relays where the claim is 1 — along with the resumed-ask and re-judge cells. The run then never finished inside 600s: the second relay leaves a goal a later block waits on, which is the mutant's own wreckage rather than anything the fix owns."
+    },
+    {
+      "name": "an ask outside the roster is not refused up front",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (entry === undefined || entry.uid !== uid)\n      throw new Error(`ask(${step}) addresses ${name}#${uid}, which is not in this run's roster",
+      "replace": "    if (false)\n      throw new Error(`ask(${step}) addresses ${name}#${uid}, which is not in this run's roster",
+      "expectRed": "the refusal names the roster and reaches no endpoint",
+      "cell": "the refusal names the roster and reaches no endpoint",
+      "note": "Measured 2026-09-03: KILLED. mesh-ask.smoke: 34 passed, 1 failed Named cell red: the refusal names the roster and reaches no endpoint"
+    },
+    {
+      "name": "a re-ask tells the seat nothing about the refusal",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      ask: { token, schema: seat.schema, attempt: ask.attempt, attempts: ask.attempts, deadlineAt: ask.deadlineAt, ...(ask.refused !== undefined ? { refused: ask.refused } : {}) },",
+      "replace": "      ask: { token, schema: seat.schema, attempt: ask.attempt, attempts: ask.attempts, deadlineAt: ask.deadlineAt },",
+      "expectRed": "attempt 2 is relayed under its derived token, and the seat is told why its last answer was refused",
+      "cell": "attempt 2 is relayed under its derived token, and the seat is told why its last answer was refused",
+      "note": "Measured 2026-09-03: KILLED. mesh-ask.smoke: 33 passed, 2 failed Named cell red: attempt 2 is relayed under its derived token, and the seat is told why its last answer was refused"
+    },
+    {
+      "name": "a gone seat at the relay is classed like any refusal",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      if (err?.code === \"expired\")\n        throw new EffectError(\"L4002\", \"ask\",",
+      "replace": "      if (false)\n        throw new EffectError(\"L4002\", \"ask\",",
+      "expectRed": "the ask fails as the catchable agent-down L4002, carrying the endpoint's reason",
+      "cell": "the ask fails as the catchable agent-down L4002, carrying the endpoint's reason",
+      "note": "Measured 2026-09-03: KILLED. mesh-ask.smoke: 34 passed, 1 failed Named cell red: the ask fails as the catchable agent-down L4002, carrying the endpoint's reason"
+    },
+    {
+      "name": "a resume drops the refusal the entry recorded",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    ...(typeof v.refused === \"string\" ? { refused: v.refused } : {}),\n  };",
+      "replace": "  };",
+      "expectRed": "a resume whose relay never landed re-tells the seat WITH the refusal the entry recorded",
+      "cell": "a resume whose relay never landed re-tells the seat WITH the refusal the entry recorded",
+      "note": "Measured 2026-09-03: KILLED. mesh-ask.smoke: 34 passed, 1 failed Named cell red: a resume whose relay never landed re-tells the seat WITH the refusal the entry recorded"
     }
   ]
 }
