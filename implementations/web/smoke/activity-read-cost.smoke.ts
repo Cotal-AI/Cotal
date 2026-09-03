@@ -553,6 +553,11 @@ try {
       // writes into a few large chunks, so the first delivery lands when a whole coalesced chunk has
       // been paced across the link, not after one CHUNK's worth. A fixed 600ms cut measured a window
       // where nothing had been delivered at all, which made the cell vacuous rather than red.
+      //
+      // The polling below is the FIXTURE, not the assertion. What makes 4.7 able to fail is the
+      // `received > 0` clause: with nothing delivered, counted and received are both zero and the
+      // counted-versus-received comparison passes for free. That clause is what caught the empty
+      // window, and 4.8 is what proves the truncation stranded bytes rather than draining.
       for (let i = 0; i < 60 && received === 0; i++) await wait(100);
       await wait(100);
       edge.close();
