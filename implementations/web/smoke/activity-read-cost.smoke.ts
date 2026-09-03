@@ -36,12 +36,18 @@
  * `544a974b7`. Both are worth having and they are not interchangeable. Measured, same corpus,
  * `/api/activity` with no link cost:
  *
- *     544a974b7, the code that shipped        2524 requests   8,015,332 to 8,016,039 B
- *     this file's frozen fan-out arm          2863 requests   7,743,783 to 7,744,228 B
- *     the single read                          143 requests      908,415 to   908,422 B
+ *     544a974b7, the code that shipped        2524 requests   8,015,332 to 8,016,039 B   4 runs
+ *     this file's frozen fan-out arm          2863 requests   7,743,782 to 7,744,228 B   8 runs
+ *     the single read                          143 requests      908,410 to   908,422 B   8 runs
  *
  * The request counts and the consumer creates held in every run of each arm. The byte totals did
- * not, so each is the span its runs covered rather than one run's figure.
+ * not, so each is the span those runs covered.
+ *
+ * A SPAN HERE IS NOT A BOUND. It is what the stated number of runs happened to cover on one host,
+ * and a further run can fall outside it: a reviewer's four fresh runs landed below the low end of
+ * both arms above, which is how the current figures got their present low ends. Do not read these
+ * as an envelope the command must reproduce, and do not treat a run a few bytes outside one as a
+ * regression. The counts are the reproducible part.
  *
  * The gap between the first two rows is the per-channel cost of the narrower window, which the pull
  * request states separately. To reproduce the first row, copy this file and its `package.json`
@@ -259,9 +265,9 @@ const FIELD = { oneWayMs: 41, bytesPerSec: 554 * 1024 };
 /** What an aborted read may still leave committed to the connection, in bytes.
  *
  *  One pull batch is 32 messages and this corpus runs about 1,005 wire bytes a message (§3: 500 DMs
- *  for 502,354 to 502,359B), so a batch is roughly 32KB and this is two of them. Measured, an aborted read
- *  leaves 165B; a read that asked the broker for the whole 2500-message backlog would leave close to
- *  2MB. The ceiling sits between those by two orders of magnitude in both directions rather than
+ *  for 502,354 to 502,359B across eight no-link runs), so a batch is roughly 32KB and this is two
+ *  of them. Measured, an aborted read leaves 165B in every run; a read that asked the broker for the
+ *  whole 2500-message backlog would leave close to 2MB. The ceiling sits between those by two orders of magnitude in both directions rather than
  *  hugging either, so it is not fixed to this host. */
 const ABANDONED_CEILING = 64_000;
 const NO_COST = { oneWayMs: 0, bytesPerSec: 1024 * 1024 * 1024 };
