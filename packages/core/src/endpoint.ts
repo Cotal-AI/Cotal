@@ -2507,6 +2507,14 @@ export class CotalEndpoint extends EventEmitter {
     const subjects = [...new Set(channels.map((channel) => {
       if (!isConcreteChannel(channel))
         throw new Error(`multiChannelHistory: "${channel}" is a wildcard channel - one consumer's filter subjects may not overlap, so name the concrete channels`);
+      // `chatSubject` builds the filter through `token()`, which REWRITES rather than refuses: it
+      // maps a character a subject may not carry to `_`, trims each segment, and drops empty ones.
+      // So "foo/bar" would filter on `foo_bar`, ".lead" on `lead`, and "team..b" on `team.b` - the
+      // caller names one channel and the broker returns another, which is the exact promise this
+      // method makes ("a channel left out of the list never crosses the link") inverted. This is the
+      // same aliasing `assertValidChannel` was written for on the policy path; the read path needs
+      // it too, and it fails loud rather than serving a channel nobody asked for.
+      assertValidChannel(channel);
       return chatSubject(this.space, "*", "*", channel);
     }))];
     // No channels is not an empty stream, but it IS an empty answer, and asking the broker for a

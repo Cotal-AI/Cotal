@@ -37,7 +37,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
 import ts from "typescript";
-import { chatSubject, parseSubject, spacePrefix } from "@cotal-ai/core";
+import { assertValidChannel, chatSubject, parseSubject, spacePrefix } from "@cotal-ai/core";
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -955,6 +955,38 @@ check("extractBackfill returns undefined when the loop is absent (negative contr
 for (const [label, file] of [["app.js", "../src/web/app.js"], ["graph.js", "../src/web/graph.js"]] as const) {
   check(`${label} — exactly ONE backfill loop is identified in the shipped file (positive control)`,
     findBackfillLoops(read(file), label).length === 1, { n: findBackfillLoops(read(file), label).length });
+}
+
+// THE FILTER LIST IS THE PROMISE, so a channel name the wire layer would REWRITE has to be refused
+// rather than rewritten. `chatSubject` builds each filter through `token()`, which maps an unusable
+// character to `_`, trims each segment and drops empty ones. So "foo/bar" would filter on `foo_bar`
+// and ".lead" on `lead`: the caller names one channel, the broker returns another, and the read's
+// own guarantee that an unlisted channel never crosses the link is inverted. `isConcreteChannel`
+// does not catch it, because none of these carry a wildcard. Found by an ordering-and-filtering
+// review against a live broker, which returned a message on `foo_bar` for a read of `foo/bar`.
+{
+  const build = /const subjects = \[\.\.\.new Set\(channels\.map\(\(channel\) => \{[\s\S]*?\}\)\)\];/.exec(endpointTs)?.[0];
+  check("endpoint.ts declares the filter-subject construction in one extractable statement", Boolean(build), { build });
+  // `indexOf` returns -1 for an ABSENT guard, and -1 is less than any real index, so an ordering
+  // comparison alone passes on a build with no guard at all. Measured: removing the call left this
+  // cell green. Presence is asserted first, and the ordering only after both are real indices.
+  const guardAt = build ? build.indexOf("assertValidChannel(channel)") : -1;
+  const buildAt = build ? build.indexOf("return chatSubject(") : -1;
+  check("multiChannelHistory calls assertValidChannel on each requested channel", guardAt >= 0, { build });
+  check("and it does so BEFORE building that channel's filter subject",
+    guardAt >= 0 && buildAt >= 0 && guardAt < buildAt, { guardAt, buildAt });
+  // And the guard is not decorative: it refuses every shape that would alias, and still admits the
+  // names the dashboard actually passes, so this cell cannot pass by refusing everything.
+  for (const bad of ["foo/bar", "team..b", ".lead"]) {
+    let refused = false;
+    try { assertValidChannel(bad); } catch { refused = true; }
+    check(`assertValidChannel refuses ${JSON.stringify(bad)}, which would have filtered on ${JSON.stringify(parseSubject(chatSubject("sp", "*", "*", bad))?.rest)}`, refused);
+  }
+  for (const good of ["general", "team.backend", "ok-chan"]) {
+    let accepted = true;
+    try { assertValidChannel(good); } catch { accepted = false; }
+    check(`assertValidChannel still admits ${JSON.stringify(good)} (the refusal is not swallowing everything)`, accepted);
+  }
 }
 
 console.log(`\nweb channel-authority smoke: ${pass} checks passed`);
