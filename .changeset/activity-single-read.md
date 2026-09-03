@@ -13,6 +13,26 @@ decides the read's filter set instead of deciding which of seventy reads to issu
 authority: a multi-filter create rides the bare `$JS.API.CONSUMER.CREATE.<CHAT>` row the observer
 and admin profiles already hold.
 
+The multi-filter read batches its filter list. One consumer create naming every subject is a single
+request, but a large enough request stops being answerable: on a seeded sweep the create succeeded
+at 70, 1,000 and 5,000 channels and failed at 10,000, and what gives way is the client's request
+timeout rather than the broker. `MULTI_FILTER_BATCH` is 1,000 and `MULTI_FILTER_READ_CONCURRENCY` is
+4, so the list is split and at most four batches are in flight, and the pages are merged by stream
+sequence before the newest N are taken. The size comes from the sweep rather than from the failure
+point: a fifth of the largest count that still answered, answering in about a quarter of a second, so
+a batch stays far from both the create timeout and the 8000ms response deadline. On the same corpus
+the sweep goes from 43ms, 246ms, 5345ms and a timeout, to 54ms, 343ms, 1163ms and 942ms. A space
+with the 69 chat channels this work was aimed at is one batch, so every figure above is unchanged at
+that size. Merging on stream sequence rather than the payload's `ts` is asserted in
+`packages/core/smoke/history-recent.smoke.ts` against a corpus whose arrival order and `ts` order are
+opposite.
+
+Two limits remain and are stated rather than buried. On a 20,000 channel and 20,000 message corpus
+the batched read still fails at 5,000 filters and above, because batching removes the create size
+ceiling and not the cost of a batch matching a small fraction of a long stream; no unbatched numbers
+were taken on that corpus, so no comparative claim is made about it. Separately, a filter list around
+40,000 exceeds `max_payload` and is refused by the broker rather than timing out.
+
 Measured on the wire by a proxy between the endpoint and the broker that counts `$JS.API` request
 lines and bytes per direction, over a seeded corpus of 69 chat channels plus 24 event channels at
 limit 200. The before column is that same committed suite file, with its `package.json` script,
