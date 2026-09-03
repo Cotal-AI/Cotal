@@ -40,8 +40,9 @@
  *     this file's frozen fan-out arm          2863 requests   7,743,782 to 7,744,228 B   8 runs
  *     the single read                          143 requests      908,410 to   908,422 B   8 runs
  *
- * The request counts and the consumer creates held in every run of each arm. The byte totals did
- * not, so each is the span those runs covered.
+ * The request counts and the consumer creates held in every run of each arm above. All three are
+ * completed no-link arms; the field-link arms in §4 are truncated by the deadline and their counts
+ * vary with it. The byte totals did not hold, so each is the span those runs covered.
  *
  * A SPAN HERE IS NOT A BOUND. It is what the stated number of runs happened to cover on one host,
  * and a further run can fall outside it: a reviewer's four fresh runs landed below the low end of

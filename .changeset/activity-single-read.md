@@ -35,8 +35,11 @@ Every span here is what its runs covered on one host. None of them is a bound. A
 suite four more times while this was under review and landed outside eight of the spans as they then
 stood, by a byte or two on the totals and by tens of milliseconds on the walls, and the spans below
 have been widened to include those runs. Expect the next run to do it again. What does not move, in
-any run by anyone so far, is the request counts, the consumer creates and the page sizes, and the
-argument rests on those.
+any run by anyone so far, is the request counts, the consumer creates and the page sizes of the
+completed no-link arms, plus the number of sources the field-link arms reach, 16 of 70 capped and 24
+of 70 uncapped. The field-link request and create counts are not in that set: they are truncated by
+the deadline and vary with it, as the paragraph above says. The argument rests on the figures that
+do not move.
 
 `pnpm smoke:web-activity-read-cost` reproduces the after column, and beside it a frozen copy of the
 old fan-out shape as a scale-invariance control, which costs 2863 requests and 7,743,782 to
