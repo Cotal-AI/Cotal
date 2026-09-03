@@ -531,10 +531,10 @@
       "file": "packages/lang/src/engine/ctx.ts",
       "find": "    if (name !== \"parallel\" && name !== \"race\") return first;",
       "replace": "    return first;",
-      "expectRed": "parallel: the journals are IDENTICAL, entry for entry",
-      "completionMarker": "ok and its journal is the first run's, entry for entry",
-      "cell": "parallel: the journals are IDENTICAL, entry for entry",
-      "note": "The scope machinery calls an arm `(frame, args)`; the program's arms are its own closures. Unadapted, an arm still RUNS - it ignores the arguments it was handed - but it runs outside its branch frame, so every effect inside it is keyed under the scope's parent instead of under the branch. The value is right and the journal is a different run's."
+      "expectRed": "a race loser parked inside the HOST handler hears its cancellation cross the bridge, between its enter and its return",
+      "completionMarker": "ok and its log lines reached the host",
+      "cell": "a race loser parked inside the HOST handler hears its cancellation cross the bridge, between its enter and its return",
+      "note": "The scope machinery calls an arm `(frame, args)`; the program's arms are its own closures. Unadapted, an arm still RUNS - it ignores the arguments it was handed - but it runs outside its branch frame, so every effect inside it is keyed under the scope's parent instead of under the branch. Re-aimed 2026-09-03: this suite is fail-fast, and the FIRST cell the mutant reds is the bridged race's in-flight cancellation (an arm outside its frame is never a branch the cut can cancel: the loser returns on its own and the order is enter/enter/return/return). The journal-parity cell it used to name sits later and is never reached, so that aim graded WRONG-RED over a mutant that is killed every time. The marker is a line printed well before this cell, which every run reaches."
     },
     {
       "name": "a scope body handed over already evaluated is accepted",
