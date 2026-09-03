@@ -39,9 +39,29 @@ interface ProviderEnvFixture {
   hostSessionMarkers: string[];
 }
 
-const fixture = JSON.parse(
+const parsedFixture: unknown = JSON.parse(
   readFileSync(new URL("./fixtures/claude-provider-env.json", import.meta.url), "utf8"),
-) as ProviderEnvFixture;
+);
+const EXPECTED_HOST_MARKERS = ["CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_ENTRYPOINT"] as const;
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((entry) => typeof entry === "string");
+const fixtureShapeValid =
+  typeof parsedFixture === "object" &&
+  parsedFixture !== null &&
+  isStringArray((parsedFixture as Partial<ProviderEnvFixture>).providerKeys) &&
+  typeof (parsedFixture as Partial<ProviderEnvFixture>).providerCredentialKeys === "object" &&
+  (parsedFixture as Partial<ProviderEnvFixture>).providerCredentialKeys !== null &&
+  Object.values((parsedFixture as Partial<ProviderEnvFixture>).providerCredentialKeys ?? {}).every(isStringArray) &&
+  isStringArray((parsedFixture as Partial<ProviderEnvFixture>).hostSessionMarkers);
+check("the external provider fixture has the required shape", fixtureShapeValid);
+if (!fixtureShapeValid) throw new Error("invalid Claude provider environment fixture");
+const fixture = parsedFixture as ProviderEnvFixture;
+const markerSet = new Set(fixture.hostSessionMarkers);
+check(
+  "the external fixture pins all three and only the excluded Claude host-session markers",
+  markerSet.size === EXPECTED_HOST_MARKERS.length && EXPECTED_HOST_MARKERS.every((marker) => markerSet.has(marker)),
+  fixture.hostSessionMarkers,
+);
 const HOST_MARKERS = fixture.hostSessionMarkers;
 const UNRELATED = ["GH_TOKEN", "P3_OPERATOR_SECRET", "SOME_UNRELATED_SECRET"] as const;
 

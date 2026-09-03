@@ -32,6 +32,15 @@
       "expectRed": "CLAUDE_PROVIDER_KEYS matches the external documented-key fixture in both directions",
       "cell": "CLAUDE_PROVIDER_KEYS matches the external documented-key fixture in both directions",
       "note": "The external fixture is independent of the implementation, so deleting one Bedrock credential from CLAUDE_PROVIDER_KEYS must expose the omitted key."
+    },
+    {
+      "name": "empty the fixture host marker list so exclusion coverage would become vacuous",
+      "file": "extensions/connector-claude-code/smoke/fixtures/claude-provider-env.json",
+      "find": "  \"hostSessionMarkers\": [\n    \"CLAUDECODE\",\n    \"CLAUDE_CODE_CHILD_SESSION\",\n    \"CLAUDE_CODE_ENTRYPOINT\"\n  ],",
+      "replace": "  \"hostSessionMarkers\": [],",
+      "expectRed": "the external fixture pins all three and only the excluded Claude host-session markers",
+      "cell": "the external fixture pins all three and only the excluded Claude host-session markers",
+      "note": "The fixture cannot delete the sentinel population and leave the host-marker exclusion cell green."
     }
   ]
 }
