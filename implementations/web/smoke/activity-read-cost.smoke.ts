@@ -253,6 +253,14 @@ const LIMIT = 200;
 const BODY = "x".repeat(400);
 /** The field link: 82ms RTT, 554 KB/s, both directions. */
 const FIELD = { oneWayMs: 41, bytesPerSec: 554 * 1024 };
+/** What an aborted read may still leave committed to the connection, in bytes.
+ *
+ *  One pull batch is 32 messages and this corpus runs about 1,005 wire bytes a message (§3: 500 DMs
+ *  for 502,359B), so a batch is roughly 32KB and this is two of them. Measured, an aborted read
+ *  leaves 165B; a read that asked the broker for the whole 2500-message backlog would leave close to
+ *  2MB. The ceiling sits between those by two orders of magnitude in both directions rather than
+ *  hugging either, so it is not fixed to this host. */
+const ABANDONED_CEILING = 64_000;
 const NO_COST = { oneWayMs: 0, bytesPerSec: 1024 * 1024 * 1024 };
 
 const SPACE = "actcost";
@@ -567,6 +575,47 @@ try {
     }
     await ep.stop();
     await wait(400);
+  }
+
+  // ── 7. what an ABORTED read leaves committed to the connection ────────────────────────────────
+  // THE BOUND THE ROLLING PULL EXISTS FOR, measured on the wire instead of through a victim.
+  // `drainWindow` asks the broker for at most 32 messages at a time, so a read abandoned mid-window
+  // can only ever have that much in flight. Ask for the whole pending backlog in one pull and the
+  // broker is committed to sending all of it down a connection whose reader has already left.
+  //
+  // THIS USED TO BE MEASURED BY ITS SYMPTOM and no longer can be. `bounded-aggregation` cell 6.9
+  // watches the request AFTER a cancelled `/api/dms` and asserts it is not starved by the abandoned
+  // work. That worked while the follow-up was a seventy-way fan-out. #1210 made it one read, cheap
+  // enough to answer whatever the previous response left behind, so the symptom stopped appearing
+  // and the mutation restoring the unbounded pull stopped being caught. Measured here there is no
+  // victim to lose: the bytes that keep arriving after the abort ARE the defect.
+  //
+  // On the field link, so the read is still in flight when the abort lands.
+  {
+    Object.assign(latency, FIELD);
+    const ep = await mkEp(SPACE, "aborted");
+    await wait(250);
+    const ac = new AbortController();
+    cost = zero();
+    const read = ep.dmHistory({ limit: 500, signal: ac.signal }).then(() => "settled" as const, () => "aborted" as const);
+    await wait(600);
+    const atAbort = { ...cost };
+    ac.abort();
+    const outcome = await read;
+    // Keep the connection open and keep counting. Bytes the broker was already committed to send
+    // arrive after the reader is gone, which is the whole cost this bound exists to prevent.
+    await wait(3000);
+    const settled = { ...cost };
+    Object.assign(latency, NO_COST);
+    await ep.stop();
+    await wait(400);
+    const after = settled.bytesDown - atAbort.bytesDown;
+    console.log(row("aborted DM read", settled, `outcome=${outcome} atAbort=${atAbort.bytesDown}B after=${after}B`));
+    ok("7.1 the read ends as an abort rather than settling", outcome === "aborted", outcome);
+    ok("7.2 what the broker sends AFTER the reader leaves is one pull batch, not the backlog",
+      after < ABANDONED_CEILING, { after, ceiling: ABANDONED_CEILING });
+    ok("7.3 and the whole aborted read moves far less than the backlog it was reading",
+      settled.bytesDown < ABANDONED_CEILING * 4, { moved: settled.bytesDown });
   }
 } finally {
   link?.close();

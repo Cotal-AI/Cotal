@@ -9,8 +9,9 @@
     "M1 removes the public AbortSignal. The real constrained-link call stays pending and retains its",
     "ephemeral consumer.",
     "",
-    "M2 restores one whole-pending pull. The shipped HTTP follow-up is starved after the cancelled DM",
-    "read and cell 6.9 turns red.",
+    "M2 restores one whole-pending pull. An aborted read then leaves the broker committed to sending",
+    "the entire backlog down a connection whose reader has left, and the wire counter in section 7 of",
+    "the read-cost suite sees those bytes arrive after the abort.",
     "",
     "M3 disables the rolling tail eviction. A widened history window then returns its oldest limit",
     "messages instead of the newest N.",
@@ -32,13 +33,13 @@
     {
       "name": "an aborted history window asks the broker for its entire pending backlog in one pull",
       "file": "packages/core/src/endpoint.ts",
-      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:web-bounded-aggregation",
+      "command": "pnpm smoke:web-activity-read-cost",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
-      "completionMarker": "web bounded-aggregation smoke:",
+      "completionMarker": "activity-read-cost smoke:",
       "find": "      const iter = await consumer.consume({ max_messages: Math.min(pending, 32) });",
       "replace": "      const iter = await consumer.fetch({ max_messages: pending });",
-      "expectRed": "6.9 the request following a cancelled read answers instead of being starved by abandoned work",
-      "cell": "6.9 the request following a cancelled read answers instead of being starved by abandoned work"
+      "expectRed": "7.2 what the broker sends AFTER the reader leaves is one pull batch, not the backlog",
+      "cell": "7.2 what the broker sends AFTER the reader leaves is one pull batch, not the backlog"
     },
     {
       "name": "the rolling window stops after the first limit messages instead of reaching the window ceiling",
