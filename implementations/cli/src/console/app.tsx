@@ -339,7 +339,7 @@ export function App({
   // never be shown here. A send there is one-way, and the status line says exactly that once.
   const participant = useRef<CotalEndpoint | null>(null);
   const activatedRef = useRef(false);
-  const [onRoster, setOnRoster] = useState(false); // the status bar says so for the rest of the session
+  const [onRoster, setOnRoster] = useState(false);
   const ensureParticipant = useCallback(async () => {
     if (activatedRef.current || !canWrite) return;
     activatedRef.current = true;
