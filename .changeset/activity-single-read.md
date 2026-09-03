@@ -32,14 +32,16 @@ opposite.
 
 Two limits remain and are stated rather than buried. On a 20,000 channel and 20,000 message corpus
 the batched read still fails at 5,000 filters and above, because batching removes the create size
-ceiling and not the cost of a batch matching a small fraction of a long stream; no unbatched numbers
-were taken on that corpus, so no comparative claim is made about it. Separately, a filter list
-big enough to exceed the connection's `max_payload` is refused by the client before anything is
-sent, rather than by the broker and rather than timing out: the client compares the request against
-the limit the broker advertised at connect and throws, so no bytes leave and the broker's own logs
-show nothing. On this corpus's subject shape 40,000 filters serialize to 1,480,032 bytes against an
-advertised 1,048,576. That threshold moves with both the advertised limit and the length of the
-subjects, so the count is an observation on one shape rather than a bound.
+ceiling and not the cost of a batch matching a small fraction of a long stream; no unbatched
+numbers were taken on that corpus, so no comparative claim is made about it. Separately, a filter
+list big enough to exceed the connection's `max_payload` is refused by the client before anything
+is sent, rather than by the broker and rather than timing out: the client compares the request
+against the limit the broker advertised at connect and throws, so no bytes leave and the broker's
+own logs show nothing. On this corpus's subject shape the filter list alone serializes to 1,480,032
+bytes, already past an advertised 1,048,576 before the rest of the request is counted, so a list
+that long cannot be sent whatever the envelope adds. That threshold moves with both the advertised
+limit and the length of the subjects, so the count is an observation on one shape rather than a
+bound.
 
 Measured on the wire by a proxy between the endpoint and the broker that counts `$JS.API` request
 lines and bytes per direction, over a seeded corpus of 69 chat channels plus 24 event channels at
