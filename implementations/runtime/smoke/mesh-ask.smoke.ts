@@ -676,7 +676,12 @@ const relayOf = (tok: unknown): { invoke?: (typeof turnInvokes)[number]; ask?: R
   const v3 = await withDeadline(rerelayed.then((v) => v, () => undefined), 20_000, "the re-relayed ask");
   c("and it completes on that attempt's conforming answer",
     (v3 as { estimate?: unknown } | undefined)?.estimate === 31, JSON.stringify(v3));
-  await parked.then(() => undefined, () => undefined);
+  // BOUNDED, and the bound is load-bearing for the GATE. Green, the re-judge's conforming answer
+  // lands on the same derived token the live path armed, so this settles within a poll. Under a
+  // broken re-judge nothing ever answers that pause and its deadline is the un-pumped mediated
+  // hour, so a bare await here parked the whole suite behind the mutant's own wreckage: red cells
+  // printed, then no summary line, and the proof graded an unfinished run as unknown.
+  await withDeadline(parked.then(() => undefined, () => undefined), 15_000, "the live ask settling on the re-judge's shared answer");
 }
 
 // ── 7) a cancelled ask's CURRENT attempt is the pause the discharge ends ───────────────────────
@@ -786,9 +791,14 @@ const relayOf = (tok: unknown): { invoke?: (typeof turnInvokes)[number]; ask?: R
   const parked2 = h.checkpoint({ prompt: "Sign off?", timeout: "1h", onExpiry: "proceed", to: "david" } as never, k2.ctx)
     .then(() => "settled", (e: unknown) => `threw: ${(e as Error).message}`);
   await wait(1_000);
-  c("an escalation addressed to someone who is not a seat relays to nobody and still records who it names",
-    turnInvokes.length === before2 && k2.bound.asks === "Sign off?" && k2.bound.addressee === "david",
-    JSON.stringify({ relays: turnInvokes.length - before2, bound: k2.bound }));
+  // STILL PARKED is half the claim. Skipping the relay by throwing on the missing coordinates also
+  // leaves `turnInvokes` untouched — but it ends the pause as a crash instead of leaving it the
+  // durable, answerable-from-anywhere checkpoint it is, so the cell reads the promise's state at
+  // the one-second mark too: an escalation to a person parks; it does not throw.
+  const early = await Promise.race([parked2, Promise.resolve("parked")]);
+  c("an escalation addressed to someone who is not a seat relays to nobody, stays parked, and still records who it names",
+    early === "parked" && turnInvokes.length === before2 && k2.bound.asks === "Sign off?" && k2.bound.addressee === "david",
+    JSON.stringify({ early, relays: turnInvokes.length - before2, bound: k2.bound }));
   k2.cancel("the cell has what it came for");
   await withDeadline(parked2, 15_000, "the unaddressed pause");
 }

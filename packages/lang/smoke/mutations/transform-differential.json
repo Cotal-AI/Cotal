@@ -371,7 +371,7 @@
       "replace": "      if (id.type === \"Identifier\") {\n        head += `${(carriers[taken] as { carrier: string }).carrier} = ${value};\\n`;\n      } else if (((): boolean => { throw new Error(\"transform: a per-iteration `for (let ...)` head takes a name, not a pattern\"); })()) {",
       "expectRed": "identical on both engines: a per-iteration head binding an array pattern",
       "cell": "identical on both engines: a per-iteration head binding an array pattern",
-      "note": "Measured 2026-09-03: KILLED. Three reds: both pattern-head rows diverge (walker runs, engine refuses) and the completion audit names them. The differential prints its cells as \"identical on both engines: <case>\", which is what expectRed now names."
+      "note": "Measured 2026-09-03: KILLED, 208/212, four reds with the named cell among them and the suite completing to its summary line. Earlier this graded INCONCLUSIVE under the completion marker: the free-identifier audit called transform() bare over every program the gate runs, so the mutant's refusal killed the process between the corpus cells and the marker. That audit loop now reports a program that did not transform as a row in its own cell instead of dying."
     },
     {
       "name": "a free string builtin coerces its argument again, so one operation answers two ways by spelling",
@@ -389,7 +389,7 @@
       "replace": "  } catch {\n    return `\\uFFFF${String(v)}`;\n  }",
       "expectRed": "every corpus program completes, or refuses the code it declares",
       "cell": "every corpus program completes, or refuses the code it declares",
-      "note": "SPEC 5.3: sort never answers \"equal\" for two distinct values. The stand-in is `\\uFFFF[object Object]` for every cyclic record, so two DISTINCT ones compared equal and the order the reference promises stopped existing. Both differential arms share this module, so the shape cell agrees either way; the declared code is what notices."
+      "note": "SPEC 5.3: sort never answers \"equal\" for two distinct values. The stand-in is `\\uFFFF[object Object]` for every cyclic record, so two DISTINCT ones compared equal and the order the reference promises stopped existing. Both differential arms share this module, so the shape cell agrees either way; the declared code is what notices. Measured 2026-09-03: KILLED, 211/212 with the declared-code cell red (\"declared L4016, got null / null\") and the suite completing. The first measurement died as WRONG-RED because the comparator's JSON.stringify threw on the cyclic value the mutant let through; `j` now falls back to a cycle-safe rendering only after the plain spelling throws."
     }
   ],
   "completionMarker": "differential.smoke:",

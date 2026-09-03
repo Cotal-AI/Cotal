@@ -97,10 +97,24 @@ function assertCleanTree(cwd, allowDirty) {
 
 /** Run a command, capture combined output, never let a pipe eat the status. */
 function run(command, cwd, timeoutMs) {
-  const r = spawnSync(command, { cwd, shell: true, encoding: "utf8", timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 });
+  // THE TIMEOUT MUST REACH THE WHOLE TREE, not the shell at its root. `spawnSync` with `shell: true`
+  // runs `/bin/sh -c <command>`, and every suite here is a `pnpm` script that forks `node`, which
+  // forks `tsx`, which forks the suite. On timeout Node signals the shell alone; the grandchildren
+  // keep running AND keep the inherited stdout pipe open, and `spawnSync` blocks until that pipe
+  // closes. Measured: a mutant that hung its suite sat for three hours behind a 15-minute budget,
+  // one mutation into a sweep, with the tree mutated the whole time. Detach the shell into its own
+  // process group and kill the GROUP, so a hang costs its budget and nothing more.
+  const r = spawnSync(command, {
+    cwd, shell: true, encoding: "utf8", timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024,
+    detached: process.platform !== "win32",
+    killSignal: "SIGKILL",
+  });
+  if (r.error?.code === "ETIMEDOUT" && r.pid !== undefined && process.platform !== "win32") {
+    try { process.kill(-r.pid, "SIGKILL"); } catch { /* the group is already gone */ }
+  }
   const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   // A timeout kills the child and leaves status null; that is not a red, it is an unknown.
-  return { status: r.status, timedOut: r.error?.code === "ETIMEDOUT" || r.signal === "SIGTERM", output };
+  return { status: r.status, timedOut: r.error?.code === "ETIMEDOUT" || r.signal === "SIGKILL" || r.signal === "SIGTERM", output };
 }
 
 /**

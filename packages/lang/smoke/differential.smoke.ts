@@ -129,7 +129,28 @@ const arm = async (kind: "walker" | "engine", source: string, script: object): P
   }
 };
 
-const j = (v: unknown) => JSON.stringify(v);
+// CYCLE-SAFE, because the grader must outlive the graded. No value a CORRECT run produces is
+// cyclic (sort refuses one with L4016 before it reaches a log), so the plain spelling serves every
+// green comparison byte-for-byte — but the one time a cycle DOES arrive is under a mutant that
+// broke that refusal, and a comparator that throws right there kills the suite before the cell
+// that would have named the defect. The fallback runs only when the plain spelling has already
+// thrown, so an acyclic value that merely SHARES a reference is never mislabelled, and two
+// distinct cycles rendering alike costs nothing: a run carrying any cycle has already failed its
+// declared code.
+const j = (v: unknown): string => {
+  try {
+    return JSON.stringify(v);
+  } catch {
+    const seen = new WeakSet<object>();
+    return JSON.stringify(v, (_k, x: unknown) => {
+      if (typeof x === "object" && x !== null) {
+        if (seen.has(x)) return "[Circular]";
+        seen.add(x);
+      }
+      return x;
+    });
+  }
+};
 
 /** Which language each engine speaks: the pin every cross-engine refusal below is named for. */
 const versionOf = { walker: WALKER_LANGUAGE_VERSION, engine: ENGINE_LANGUAGE_VERSION };
@@ -1579,8 +1600,15 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   ];
   const open: string[] = [];
   for (const [name, source] of RAN) {
-    const free = unbound(parseModule(transform(source).module));
-    if (free.length > 0) open.push(`${name}: ${free.join(",")}`);
+    // A program the transform REFUSES emits no module at all. Every row here transforms cleanly
+    // when the emitter is right, so a refusal is a defect in the emitter — and it must land in
+    // this cell as a row, not kill the suite between the corpus cells and their summary line.
+    try {
+      const free = unbound(parseModule(transform(source).module));
+      if (free.length > 0) open.push(`${name}: ${free.join(",")}`);
+    } catch (e) {
+      open.push(`${name}: did not transform (${(e as Error).message.slice(0, 80)})`);
+    }
   }
   ok("every program the gate runs emits a module with no free identifier, which is what the compartment cannot catch", open.length === 0, open);
   console.log(`  (${RAN.length} emitted modules resolved across the corpus, the divergences, the holds and the crossings, ${open.length} with a free identifier)`);

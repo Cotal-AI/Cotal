@@ -119,7 +119,7 @@
       "replace": "    const actx = await this.actionCtx();\n    let reply: EpAttributedReply;",
       "expectRed": "the resume re-told the seat nothing: the relay is idempotent by the attempt's own goal id",
       "cell": "the resume re-told the seat nothing: the relay is idempotent by the attempt's own goal id",
-      "note": "Measured 2026-09-03: KILLED, then the suite hung. The named cell went red first \u2014 \"the resume re-told the seat nothing: the relay is idempotent by the attempt's own goal id\" observed 2 relays where the claim is 1 \u2014 along with the resumed-ask and re-judge cells. The run then never finished inside 600s: the second relay leaves a goal a later block waits on, which is the mutant's own wreckage rather than anything the fix owns."
+      "note": "Measured 2026-09-03: KILLED, 35/39, five reds with the named cell among them and the suite completing to its summary line. The earlier note recorded a kill followed by a HANG: the named cell went red and the run then never finished. That hang was the suite's, not the mutant's \u2014 block 6 ended on a bare `await parked` whose pause only the re-judge's answer settles, so a broken re-judge left it waiting on a mediated hour nobody pumps. It is bounded now, and the proof grades this as a finished red rather than an unknown."
     },
     {
       "name": "an ask outside the roster is not refused up front",
@@ -189,9 +189,9 @@
       "file": "implementations/runtime/src/mesh-handler.ts",
       "find": "    const seated = entry !== undefined && entry.owner !== undefined && entry.actor !== undefined;\n    if (!seated) return;",
       "replace": "    const seated = entry !== undefined && entry.owner !== undefined && entry.actor !== undefined;\n    if (!seated) { /* relay anyway */ }",
-      "expectRed": "an escalation addressed to someone who is not a seat relays to nobody and still records who it names",
-      "cell": "an escalation addressed to someone who is not a seat relays to nobody and still records who it names",
-      "note": "`to` is a NAME, not a handle: the reference lets a program escalate to a person, and a relay addressed at a seat nobody spawned is a submission to nowhere."
+      "expectRed": "an escalation addressed to someone who is not a seat relays to nobody, stays parked, and still records who it names",
+      "cell": "an escalation addressed to someone who is not a seat relays to nobody, stays parked, and still records who it names",
+      "note": "`to` is a NAME, not a handle: the reference lets a program escalate to a person. With the guard gone the relay path reads coordinates off a roster entry that does not exist and THROWS, which also submits nothing \u2014 so the cell reads the pause's state at the one-second mark as well: the first spelling checked only the relay count and this mutant survived it, because a crash and a clean no-relay leave the same count."
     }
   ]
 }
