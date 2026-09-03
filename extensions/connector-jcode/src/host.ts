@@ -6,7 +6,7 @@ import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HarnessError, JcodeClient, launchInstance, type ApiEvent, type LaunchedInstance } from "@1jehuang/jcode-sdk";
 import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
-import { mirrorJcodeCredentials, shortSocketHome } from "./private-state.js";
+import { mirrorJcodeCredentials, shortSocketHome, type ShortSocketHome } from "./private-state.js";
 import { captureProcessIdentity, launchIdentityEnv, recordLaunch, stopOrphanedTree, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
 import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
 import { bareModelId, describeRoute } from "./route-identity.js";
@@ -276,8 +276,16 @@ export async function runJcodeHost(): Promise<void> {
   // SDK 1.1.0 has no socket-path launch option: it derives `run/jcode-api.sock` below jcodeHome.
   // The managed home stays in the workspace, but this private short alias keeps that fixed API
   // path below AF_UNIX's platform limit. Failure is fatal; a long-path fallback is the reported bug.
-  mirrorJcodeCredentials(home);
-  const socketHome = shortSocketHome(home);
+  let socketHome: ShortSocketHome;
+  try {
+    mirrorJcodeCredentials(home);
+    socketHome = shortSocketHome(home);
+  } catch (error) {
+    // These refusals name local paths, which the public startup diagnostic never renders, so
+    // without their own code they all reported as `(unknown)` and an operator could not tell a
+    // wedged seat from a broken connector (#1211).
+    throw new JcodeConnectorError("private_state", "jcode connector: the seat's private Jcode state could not be prepared", { cause: error });
+  }
   const relay = relayEndpoint(config.space, config.name);
 
   // The endpoint is the sole reader of Cotal material. Once it has parsed config/control, neither
