@@ -2663,7 +2663,7 @@ export class CotalEndpoint extends EventEmitter {
       // that IS most of its stream, and the second case is the one a whole-backlog read takes: the
       // window succeeds on the first attempt and drains four pages to keep one, because
       // `drainWindow` delivers everything in the window and keeps the tail. Measured on `/api/dms`
-      // at limit 500 against a 2500-message backlog: 1,995,856 bytes moved to return a 346,001-byte
+      // at limit 500 against a 2500-message backlog: 1,995,859 bytes moved to return a 346,001-byte
       // page, and 8852ms and 7857ms across two runs on an 82ms/554 KB/s link, straddling the
       // dashboard's 8000ms deadline with nothing else on the connection (Cotal #1210). A deployment
       // whose backlog is larger sits on the wrong side of it every time. One page wide makes the
