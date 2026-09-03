@@ -8,7 +8,7 @@
  * calls it directly. ONE function over ONE table: a second copy of a projection would be a
  * divergence the differential suite could only find program-by-program.
  */
-import { RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope, messageOf } from "./errors.js";
+import { InterpreterDefect, RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope, messageOf } from "./errors.js";
 import { digest, requestId, stepKeyString, type KeyScope, type ScopeKind, type StepKey } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock, type EntryError } from "./journal.js";
 import { NotCrossable, assertCrossable, assertScopeValueCrossable, deepFreeze } from "./values.js";
@@ -607,7 +607,7 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
       );
     }
     default:
-      throw new RuntimeFault("L1000", `${name} is not implemented in this interpreter`);
+      throw new InterpreterDefect(`the primitive ${name}`);
   }
 }
 
@@ -1433,5 +1433,5 @@ export async function runScope(
     return { branches: [branchKey], value, closed: true };
   }
 
-  throw new RuntimeFault("L1000", `${name} is not implemented in this interpreter`);
+  throw new InterpreterDefect(`the primitive ${name}`);
 }

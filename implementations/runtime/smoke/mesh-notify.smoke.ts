@@ -330,6 +330,48 @@ const filed = async (agent: string) => await listRunNotices(kv, EP, RUN, agent);
     attr instanceof Error ? attr.name : String(attr).slice(0, 60));
 }
 
+// ── 8) a cancelled branch's notice is withdrawn, not delivered later ──────────────────────────
+//
+// A notice is world state exactly as a live seat or an armed timer is: it sits on the run waiting
+// to be rendered ahead of its addressee's next turn. The discharge released seats, memberships and
+// timers and walked past this one kind, so a decision the run CANCELLED still arrived at an agent
+// afterwards — and the addressee had no way to tell it from a decision that stood.
+{
+  const AGENT = "ghost#" + "g".repeat(26);
+  await handler.notify(
+    { agents: [{ agent: AGENT, persona: "ghost" }], fact: { decision: "ship", outcome: "approved" } } as never,
+    ctx(tok("cx"), "withdrawn"),
+  );
+  const before = await filed(AGENT);
+  c("the cancelled branch's notify filed its notice, undelivered", before.length === 1 && before[0]?.consumed === undefined,
+    JSON.stringify({ n: before.length, consumed: before[0]?.consumed }));
+  c("and it renders to that agent, which is the delivery about to happen",
+    renderRunContext({ run: RUN, step: "/turn:x#0", notices: before }).includes("ship"),
+    renderRunContext({ run: RUN, step: "/turn:x#0", notices: before }));
+
+  await handler.discharge([{
+    v: 1, seq: 0, run: RUN, scope: "", kind: "notify", name: "withdrawn", occurrence: 0,
+    inputHash: "h", requestId: tok("cx"), state: "settled", status: "ok",
+  }] as never);
+
+  const after = await filed(AGENT);
+  c("the discharge withdraws it: the notice will not be delivered again",
+    after.length === 1 && after[0]?.consumed !== undefined, JSON.stringify(after[0]?.consumed));
+  c("and says which cancelled step withdrew it, rather than naming a turn that never carried it",
+    after[0]?.consumed?.by === "discharge:/notify:withdrawn#0", after[0]?.consumed?.by);
+
+  // A SECOND PASS IS A NO-OP, because a discharge is retried after a crash exactly as every other
+  // half of it is: the create-only status is the arbiter and it has already spoken.
+  const stamp = after[0]?.consumed?.consumedAt;
+  await handler.discharge([{
+    v: 1, seq: 0, run: RUN, scope: "", kind: "notify", name: "withdrawn", occurrence: 0,
+    inputHash: "h", requestId: tok("cx"), state: "settled", status: "ok",
+  }] as never);
+  const twice = await filed(AGENT);
+  c("a second discharge pass leaves the withdrawal exactly as it was", twice[0]?.consumed?.consumedAt === stamp,
+    JSON.stringify({ was: stamp, now: twice[0]?.consumed?.consumedAt }));
+}
+
 console.log(`mesh-notify.smoke: ${ok} passed, ${fail} failed`);
 done();
 process.exit(fail === 0 ? 0 : 1);

@@ -55,6 +55,7 @@ import {
   resolveService,
   listRunNotices,
   markRunNoticeConsumed,
+  listRunNoticesForRun,
   readRunRecord,
   writeRunStatus,
   EpEnvelopeError,
@@ -450,6 +451,10 @@ export class MeshHandler {
         await this.dischargeConclave(e);
         continue;
       }
+      if (e.kind === "notify") {
+        await this.dischargeNotify(e);
+        continue;
+      }
       if (e.kind === "turn") {
         // A cancelled turn is never a reply, whatever the seat yields to the relay later.
         const x = e.external as { name?: unknown; uid?: unknown; goalId?: unknown } | undefined;
@@ -468,6 +473,45 @@ export class MeshHandler {
         try {
           await this.jsm.consumers.delete(chatStream(this.binding.space), waitConsumerName(e.requestId));
         } catch { /* never created, or already deleted — nothing is held either way */ }
+      }
+    }
+  }
+
+  /**
+   * Withdraw a cancelled `notify`'s undelivered notices.
+   *
+   * A notice is world state exactly as a live seat or an armed timer is: it sits on the run
+   * waiting to be rendered ahead of its addressee's next turn. A branch the run cancelled decided
+   * nothing, and a decision the run withdrew must not arrive at an agent afterwards — which is
+   * what happened, because the discharge released seats, memberships and timers and walked past
+   * this one kind.
+   *
+   * Withdrawn is spelled as CONSUMED, by the discharge rather than by a turn. The notice's status
+   * is a closed record with one meaning — this notice will not be delivered again — and that is
+   * the fact being recorded; `by` says which cancelled step withdrew it, so a reader tracing a
+   * notice finds the withdrawal instead of a delivery that never happened. It also puts the
+   * migration verdict where it belongs: an orphaned `notify` is rejected only while its notice is
+   * still owed to somebody, and this one is not owed to anybody any more.
+   *
+   * IDEMPOTENT BY THE PLANE, like the rest of the discharge: the consumption write is create-only,
+   * so a notice a turn already carried, or that an earlier discharge pass already withdrew, is
+   * left exactly as it is.
+   */
+  private async dischargeNotify(e: JournalEntry): Promise<void> {
+    const step = journalEntryKeyString(e);
+    const notices = await listRunNoticesForRun(this.kv, this.binding.endpoint, this.binding.runId);
+    for (const n of notices) {
+      if (n.spec.step !== step || n.consumed !== undefined) continue;
+      try {
+        await markRunNoticeConsumed(
+          this.kv, this.binding.endpoint, this.binding.runId,
+          n.spec.addressee, n.noticeId, `discharge:${step}`, this.now(),
+        );
+      } catch (err) {
+        // A turn carried it between the read and the write: the create-only status is the arbiter
+        // and it has spoken. Anything else is the store, and a discharge that could not finish
+        // must not be flipped to `issued`.
+        if (!(err instanceof EpEnvelopeError && err.code === "conflict")) throw err;
       }
     }
   }
@@ -656,7 +700,14 @@ export class MeshHandler {
     // rather than looking again: the consumer has already acked it, so looking again would wait for
     // a second event the program never asked for.
     const bound = ctx.resume?.chatSeq;
-    if (typeof bound === "number") return await this.messageAt(bound);
+    if (typeof bound === "number") {
+      // The match is recorded, so this wait is over — and the deadlines the PREVIOUS attempt armed
+      // are still live, because the crash came before it could claim them. Claim them here for the
+      // same reason the live match path does: this is the ending, it just happened last time.
+      await this.cancelTimer({ endpoint: this.binding.endpoint, token: ctx.requestId });
+      await this.cancelTimer({ endpoint: this.binding.endpoint, token: derivedToken(ctx.requestId, "wait-timeout") });
+      return await this.messageAt(bound);
+    }
 
     const timeoutAt = req.timeout === undefined ? undefined : this.now() + parseDuration(req.timeout);
     const idleFor = ev.event === "idle" ? parseDuration(ev.duration) : undefined;
@@ -701,9 +752,18 @@ export class MeshHandler {
         // The deadline is durable and authoritative — a checkpoint's settle fact — and this is only
         // the OBSERVATION of it, so the cost of polling is lateness bounded by one poll rather than
         // a wait that outlives its deadline.
+        // A WAIT THAT IS OVER CLAIMS BOTH OF ITS DEADLINES, on every path that ends it. An idle
+        // wait with a timeout arms two, and each expiry used to claim only the one it read: the
+        // sibling stayed armed, fired into a run that had moved on, and sat there as an unclaimed
+        // settle until the run's own discharge swept it. The match path below already did this.
         const ended = await this.expired(outer ?? (idleFor === undefined ? primary : undefined));
-        if (ended !== undefined) { over = true; return null; }
+        if (ended !== undefined) {
+          if (outer !== undefined && primary !== undefined) await this.cancelTimer(primary);
+          over = true;
+          return null;
+        }
         if (idleFor !== undefined && (await this.expired(primary)) !== undefined) {
+          if (outer !== undefined) await this.cancelTimer(outer);
           over = true;
           return { channel: ev.channel, at: this.now() };
         }
@@ -1861,9 +1921,17 @@ export class MeshHandler {
         presenter: spec.holder,
         now: this.now(),
       });
-    } catch {
-      // It settled underneath us — the deadline won a race it was already allowed to win. The
-      // caller has its answer either way, and a cancelled timer is not a fact anyone reads.
+    } catch (e) {
+      // IT SETTLED UNDERNEATH US is one outcome, and it is the expected one: the deadline won a
+      // race it was always allowed to win, the caller has its answer either way, and a claimed
+      // timer is not a fact anyone reads. A BROKER THAT REFUSED OR WENT AWAY is a different thing
+      // wearing the same silence, and this catch used to swallow both. It still must not replace
+      // the caller's answer — a timer left armed fires, settles expired, and nobody reads that
+      // token — so the second one is loud on the way past instead.
+      const settledAlready = e instanceof EpEnvelopeError
+        && (e.code === "conflict" || e.code === "failed-precondition");
+      if (!settledAlready)
+        console.error(`run ${this.binding.runId}: the pause ${ref.token} could not be claimed (${(e as Error).message}); it will fire and settle expired with nobody reading it`);
     }
   }
 

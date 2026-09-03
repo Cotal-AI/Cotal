@@ -234,7 +234,10 @@ is the catchable L4000 (L4001 when the refusal is the endpoint's seat capacity),
 seat never came up is L4002. A turn handoff across worktrees is the L4004 described above. Recovery keeps these honest: a resumed run
 reseeds its roster, holders and handoff memos from its own journal, and the driver re-issues any
 recorded-but-undischarged cancellation at adoption, before the engine performs a new step, so a
-loser a crash left alive does not keep its seat or its tree while the resumed run works on.
+loser a crash left alive does not keep its seat or its tree while the resumed run works on. The
+same sweep withdraws a cancelled branch's undelivered notices: a notice waits on the run for its
+addressee's next turn, so a decision the run cancelled would otherwise arrive at an agent with
+nothing to distinguish it from one that stood.
 
 Every effect the language defines performs on the mesh handler; nothing is refused as
 not-yet-durable any more. The operator surface over the driver is `cotal run`; the section above has the verbs.

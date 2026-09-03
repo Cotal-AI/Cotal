@@ -21,6 +21,7 @@
  * Run: pnpm smoke:runtime-mesh-wait   (needs nats-server on PATH)
  */
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -400,6 +401,31 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
   console.log("• 7 — the idle window was pushed out by traffic and is now past due");
   const got = (await withDeadline(awaited, 25_000, "the idle wait")) as { channel?: string };
   c("and when the traffic stops, the idle window closes and the wait resolves", got?.channel === CHANNEL, JSON.stringify(got));
+}
+
+// ── 7b) a wait that is over claims BOTH of its deadlines ──────────────────────────────────────
+//
+// An idle wait with a timeout arms two pauses: the idle window under the step's own id, and the
+// outer timeout under a derived one. Each ENDING used to claim only the deadline it read, so the
+// sibling stayed armed, fired into a run that had already moved on, and sat as an unclaimed settle
+// until the run's own discharge swept it up (an hour later, for the `1h` here). The match path
+// always claimed both; the two expiry paths did not.
+{
+  const id = tok("both");
+  const outerTok = createHash("sha256").update(`${id}:wait-timeout`, "utf8").digest("base64url").slice(0, 43);
+  const { ctx: k } = ctx(id);
+  const awaited = handler.wait({ event: { event: "idle", channel: CHANNEL, duration: "2s" }, timeout: "1h" }, k);
+  await wait(400);
+  await armPending();
+  const outerArmed = await readCheckpointStatus(kv, { endpoint: EP, token: outerTok });
+  c("an idle wait with a timeout arms two deadlines: the window and the outer bound",
+    outerArmed?.value.state === "waiting", JSON.stringify(outerArmed?.value.state));
+  c("the idle window closes on its own with no traffic", await pastDue(id));
+  const got = (await withDeadline(awaited, 25_000, "the two-deadline idle wait")) as { channel?: string };
+  c("and the wait resolves on the window, not the hour-away bound", got?.channel === CHANNEL, JSON.stringify(got));
+  const outerAfter = await readCheckpointStatus(kv, { endpoint: EP, token: outerTok });
+  c("the outer deadline is CLAIMED by the ending, not left armed for an hour",
+    outerAfter?.value.state !== "waiting", JSON.stringify(outerAfter?.value.state));
 }
 
 // ── 8) the agent-addressed event kinds: `replied` still refuses, `down` now performs ──────────
@@ -794,7 +820,7 @@ log("released", r.index);
     outcome);
 }
 
-const EXPECTED_CELLS = 56;
+const EXPECTED_CELLS = 60;
 const ran = ok + fail;
 console.log(`mesh-wait.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {
