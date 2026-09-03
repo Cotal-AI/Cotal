@@ -9,27 +9,29 @@ const check = (name: string, condition: boolean, detail?: unknown): void => {
 };
 
 const signals: AbortSignal[] = [];
-const stalled = (signal?: AbortSignal): Promise<CotalMessage[]> => {
+const stalled = <T>(signal?: AbortSignal): Promise<T[]> => {
   if (!signal) return Promise.reject(new Error("source received no cancellation signal"));
   signals.push(signal);
   return new Promise((resolve) => signal.addEventListener("abort", () => resolve([]), { once: true }));
 };
+// TWO SOURCES since #1210: all of chat in one read, plus the DM backlog. Both must receive the
+// deadline's signal, which is the claim this file makes.
 const src: ActivitySource = {
   listChannels: async () => [
     { channel: "slow-a", messages: 1 },
     { channel: "slow-b", messages: 1 },
   ],
-  channelHistory: async (_channel, opts) => stalled(opts.signal),
-  dmHistory: async (opts) => stalled(opts.signal),
+  multiChannelHistory: async (_channels, opts) => stalled<{ channel: string; msg: CotalMessage }>(opts.signal),
+  dmHistory: async (opts) => stalled<CotalMessage>(opts.signal),
 };
 
 // Production unrefs its deadline so a dashboard poll never holds the server open. This standalone
 // smoke has no server handle, so keep the process alive only until that real deadline completes.
 const keepAlive = setInterval(() => {}, 1_000);
 const page = await activityBackfill(src, 10, 100, 3).finally(() => clearInterval(keepAlive));
-check("every started history source receives the shared cancellation signal", signals.length === 3, signals.length);
+check("every started history source receives the shared cancellation signal", signals.length === 2, signals.length);
 check("the response deadline aborts every abandoned source", signals.every((signal) => signal.aborted), signals.map((signal) => signal.aborted));
-check("cancellation preserves the named partial response", page.partial && page.read === 0 && page.missing.length === 3, page);
+check("cancellation preserves the named partial response", page.partial && page.read === 0 && page.missing.length === 2, page);
 
 console.log(`WEB HISTORY CANCELLATION: ${pass}/${pass + fail}`);
 process.exit(fail ? 1 : 0);

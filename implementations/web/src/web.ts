@@ -309,7 +309,10 @@ export const PAGE: Record<string, { path: string; type: string }> = {
  *  is measured through, and a mock satisfying six methods it never calls would prove less. */
 export interface ActivitySource {
   listChannels(): Promise<{ channel: string; messages: number; config?: unknown }[]>;
-  channelHistory(channel: string, opts: { limit: number; signal?: AbortSignal }): Promise<CotalMessage[]>;
+  multiChannelHistory(
+    channels: readonly string[],
+    opts: { limit: number; signal?: AbortSignal },
+  ): Promise<{ channel: string; msg: CotalMessage }[]>;
   dmHistory(opts: { limit: number; signal?: AbortSignal }): Promise<CotalMessage[]>;
 }
 
@@ -319,15 +322,17 @@ export interface ActivitySource {
  * retained concrete subject and the chat stream caps per subject rather than by age, so the list
  * grows by one row per agent that has ever run and those rows never age out. Unfiltered, the channel
  * sidebar is buried under machine streams, the graph page grows a hub node for each, and
- * `/api/activity` issues one `channelHistory` round trip per event channel and then merges the
- * results into a global top-N that a human reading chat did not ask for. That is a cost that scales
- * with the number of agents ever run, which is the wrong axis entirely.
+ * `/api/activity` merges every event channel into a global top-N that a human reading chat did not
+ * ask for, and pays to move those messages across the link first. That is a cost that scales with
+ * the number of agents ever run, which is the wrong axis entirely.
  *
  * FILTERED BEFORE THE FETCH, NOT AFTER, AND THE ORDER IS THE CLAIM. Filtering the merged output
- * would still pay every round trip and then discard the bytes. The console applies the identical
- * rule at the identical point (`mesh-view.ts` filters `listChannels()` before `channelHistory`), and
- * the two surfaces share this classifier rather than each spelling the convention, so they cannot
- * disagree about what a channel is.
+ * would still move every byte and then discard it. The activity backfill now reads all of chat in
+ * ONE stream read, and this classifier decides that read's FILTER SET, so an event channel is
+ * dropped by the broker and never crosses the link at all. The console applies the identical rule at
+ * the identical point (`mesh-view.ts` filters `listChannels()` before `channelHistory`), and the two
+ * surfaces share this classifier rather than each spelling the convention, so they cannot disagree
+ * about what a channel is.
  *
  * WHAT IS NOT FILTERED, DELIBERATELY, IN TWO PLACES. The live SSE tap still carries frames, marked
  * rather than dropped: dropping them would delete the only traffic this release taught the surface
@@ -340,17 +345,22 @@ export function chatOnly<T extends { channel: string }>(rows: readonly T[]): T[]
 
 /** How long one aggregating request may take before it answers with what it has.
  *
- *  WHY A DEADLINE AT ALL, with the measurement that set it. `/api/activity` fans out one history
- *  read per channel, and the cost of a read is the link, not the broker. Against a local broker
- *  behind a 160ms-RTT, 128 KiB/s link with 40 channels and 12000 messages: the same aggregation
+ *  WHY A DEADLINE AT ALL, with the measurement that set it. The cost of a history read is the link,
+ *  not the broker. Against a local broker behind a 160ms-RTT, 128 KiB/s link with 40 channels and
+ *  12000 messages, back when `/api/activity` fanned out one read per channel: the same aggregation
  *  finished in 125ms for a reader ON the broker host and returned 500 `timeout` after 15.94s for the
  *  reader across the link; at a less constrained 256 KiB/s it SUCCEEDED after 34491ms, which is the
  *  same defect with a different ending. An unbounded aggregation has no answer for either case.
  *
- *  WHY THIS NUMBER. It is longer than a healthy remote read of this shape (the measured
- *  `/api/channels` + a page per channel) and far shorter than a reader will sit in front of a blank
- *  panel. It is not tuned to any one link: what makes the surface honest is that it always answers
- *  and always says what it left out, not that the bound is optimal. */
+ *  WHY IT SURVIVES #1210, which removed that fan-out. A bound is not a repair for a read that is too
+ *  expensive, and it was never held out as one; it is what makes the surface answer at all when a
+ *  link cannot serve a request in a useful time. Any read across any link can still be too slow, and
+ *  a page that says what it is missing beats one that never arrives.
+ *
+ *  WHY THIS NUMBER. It is longer than a healthy remote read of this shape and far shorter than a
+ *  reader will sit in front of a blank panel. It is not tuned to any one link: what makes the surface
+ *  honest is that it always answers and always says what it left out, not that the bound is
+ *  optimal. */
 export const AGGREGATION_DEADLINE_MS = 8_000;
 
 /** How many per-source reads are in flight at once.
@@ -359,9 +369,10 @@ export const AGGREGATION_DEADLINE_MS = 8_000;
  *  the link is saturated extra concurrency buys no throughput: it spreads the same bytes over more
  *  unfinished reads, and a read that is 90% done when the deadline fires contributes nothing.
  *
- *  THE NUMBER IS MEASURED, NOT PREFERRED, and the measurement includes what it costs. Same corpus
- *  (40 channels, 12000 chat messages, 2000 DMs), 160ms RTT, sources answered inside the 8000ms
- *  deadline, three strategies, each arm on an idle link:
+ *  THE NUMBER IS MEASURED, NOT PREFERRED, and the measurement includes what it costs. Corpus of 40
+ *  channels, 12000 chat messages and 2000 DMs at 160ms RTT, sources answered inside the 8000ms
+ *  deadline, three strategies, each arm on an idle link, taken when the aggregation had one source
+ *  per channel:
  *
  *      link          fan out all 41   pool of 8   pool of 1 widening on each completion
  *      1024 KiB/s          1             16                        3
@@ -369,18 +380,18 @@ export const AGGREGATION_DEADLINE_MS = 8_000;
  *       256 KiB/s          1              0                        3
  *       128 KiB/s          1              0                        1
  *
- *  The fan-out is the shape that shipped and it is the worst column at every speed: reading the whole
- *  set at once is why the panel was empty rather than short. A pool that starts at one and widens on
- *  each completed read was built and measured too, on the reasoning that it would adapt to a link it
- *  cannot know; it does not pay, because at a healthy link a single source is round-trip bound rather
- *  than throughput bound, so the first completion arrives too late to be useful evidence and the ramp
- *  costs more than the adaptation returns.
+ *  The fan-out is the worst column at every speed: reading the whole set at once is why the panel was
+ *  empty rather than short. A pool that starts at one and widens on each completed read was built and
+ *  measured too, on the reasoning that it would adapt to a link it cannot know; it does not pay,
+ *  because at a healthy link a single source is round-trip bound rather than throughput bound, so the
+ *  first completion arrives too late to be useful evidence and the ramp costs more than the
+ *  adaptation returns.
  *
- *  WHAT THIS BOUND DECLINES, stated rather than left to be discovered. Below roughly 500 KiB/s at
- *  this RTT and this corpus, no source completes inside the deadline, the page reports `0 of 41`, and
- *  the browser keeps what it already had and marks it stale. The fan-out returned ONE source there,
- *  so this trades a single channel's history for a response that is bounded and that says what it
- *  left out. On a link that cannot serve the request, saying so is the answer. */
+ *  IT NO LONGER BINDS, AND IT IS KEPT ANYWAY. Since #1210 the aggregation has two sources, chat and
+ *  DMs, so the pool never fills and this number chooses nothing today. It stays because the bound is
+ *  on the SHAPE (a cursor the workers pull from) rather than on a source count, and a surface that
+ *  grows a third or a tenth source should find the pool already there rather than rediscover why the
+ *  fan-out was the worst column above. */
 export const AGGREGATION_CONCURRENCY = 8;
 
 /** The sentinel a source resolves to when the deadline beat it. */
@@ -653,15 +664,25 @@ export async function activityBackfill(
       throw new Error(`the channel list did not arrive within ${deadlineMs}ms`);
     const chans = chatOnly(listed);
 
+    // TWO SOURCES, NOT ONE PER CHANNEL. The chat half is ONE read of the CHAT stream filtered to
+    // every chat channel at once (see `multiChannelHistory`), so the number of channels no longer
+    // multiplies anything: it only lengthens the filter list the broker matches against, next to the
+    // data. Each message is tagged with the channel the BROKER delivered it on, so the backfill path
+    // still does not depend on the payload's own `channel` claim.
+    //
+    // WHAT THIS COSTS THE PARTIAL ENVELOPE, STATED RATHER THAN LEFT TO BE FOUND. `read`/`of` and
+    // `missing` used to name individual channels, because individual channels were what could
+    // separately fail. They cannot any more: one read either arrived or it did not. Naming
+    // fifty-three channels when a single read ran late would be a fiction, so the two sources name
+    // themselves and a reader is told which HALF of the feed is missing.
     type Src = { name: string; read: (signal: AbortSignal) => Promise<ActivityPage["entries"]> };
     const sources: Src[] = [
-      ...chans.map((ch) => ({
-        name: `#${ch.channel}`,
-        // Each message is tagged with the channel this server REQUESTED, so the backfill path does
-        // not depend on the payload claim either.
+      {
+        name: "chat",
         read: async (signal: AbortSignal) =>
-          (await ep.channelHistory(ch.channel, { limit, signal })).map((msg) => ({ mode: "chat" as const, channel: ch.channel, msg })),
-      })),
+          (await ep.multiChannelHistory(chans.map((ch) => ch.channel), { limit, signal }))
+            .map(({ channel, msg }) => ({ mode: "chat" as const, channel, msg })),
+      },
       {
         name: "direct messages",
         read: async (signal: AbortSignal) => (await ep.dmHistory({ limit, signal })).map((msg) => ({ mode: "unicast" as const, msg })),
@@ -957,18 +978,23 @@ export async function web(args: ParsedArgs): Promise<void> {
       // SSE tap only carries messages from after a client connects). Entries are mode-tagged
       // ({mode, msg}) to match the live feed so DMs render as DMs.
       //
-      // NOT OPTIMISED, DELIBERATELY. An earlier version fetched an even share per channel and
-      // topped up only channels that saturated their share, to avoid moving (channels + 1) times
-      // what it displays. That is WRONG for a global top-N: saturation counts messages, not
-      // recency. With ten channels, limit 200 and a share of 40, if every channel holds at least 40
-      // messages the top-up never fires, so a channel owning the globally newest 200 contributes
-      // only its newest 40 and 160 genuinely-newer messages are dropped for 160 older ones.
+      // ONE READ FOR ALL OF CHAT (#1210). This used to fetch a full page PER CHANNEL and merge, and
+      // said so: it moved (channels + 1) times what it displays, and each of those reads was itself
+      // a widening probe loop. Measured on a 69-channel space: 2474 broker requests and 7.6 MB to
+      // return a 143 KB page, and on the reporting deployment's 82ms link a median of 2 of 69
+      // channels answered inside the deadline while `/api/dms` never once did.
       //
-      // A correct cheap version needs an iterative timestamp-aware top-up: compute the provisional
-      // cutoff (the ts of the limit-th newest in the union) and re-fetch only channels whose oldest
-      // fetched message is still at or above it, until none can extend above the cutoff. That is
-      // worth doing, with a test encoding the counterexample above, and it is not this change.
-      // Correctness first: fetch a full page per channel and merge.
+      // The CHAT stream already interleaves every channel into one sequence space, so the globally
+      // newest N is the tail of that ONE stream, filtered to the chat channels and merged here
+      // rather than in seventy separate reads. Same page, 33 requests and 0.6 MB.
+      //
+      // WHAT SELECTS THE PAGE, precisely, because the old shape had two orderings and this has one.
+      // The newest `limit` chat messages in the broker's own arrival order are merged with the
+      // newest `limit` DMs, ordered by `ts`, and the newest `limit` of that union is the page. The
+      // old shape unioned each channel's newest `limit` by arrival and then took the newest `limit`
+      // by `ts`, so where a sender's clock disagreed with arrival order it could surface an
+      // older-arriving message with a newer claimed `ts`. `ts` is a payload claim and the sequence
+      // is the broker's own record, so selecting on arrival is the narrower of the two.
       const limit = historyLimit(query, 200);
       const page = await activityBackfill(ep, limit);
       // A partial page is worth SAYING on the server too: the operator watching this log is the one
