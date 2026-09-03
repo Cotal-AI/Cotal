@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { captureProcessIdentity, processHasLaunchIdentityForTest, readLaunchRecord, recordLaunch, stopOrphanedTree } from "../src/private-lifecycle.js";
@@ -62,6 +62,12 @@ if (process.platform !== "win32") {
     recordLaunch(root, { identity, host: captureProcessIdentity(host.pid!) });
 
     assert.deepEqual(readLaunchRecord(root)?.identity, identity, "the launch record must name the identity its tree carries");
+
+    // `mode` on writeFileSync applies only to a CREATE, so a record loosened once would stay
+    // loosened for the life of the seat home unless every write restates it.
+    chmodSync(join(root, "cotal-launch.json"), 0o666);
+    recordLaunch(root, { identity, host: captureProcessIdentity(host.pid!) });
+    assert.equal(statSync(join(root, "cotal-launch.json")).mode & 0o777, 0o600, "rewriting the launch record must restore owner-only permissions");
 
     const whileHostLives = await stopOrphanedTree({ home: root });
     assert.deepEqual(whileHostLives, [], "a tree whose connector host is still alive is a live seat and must not be signalled");

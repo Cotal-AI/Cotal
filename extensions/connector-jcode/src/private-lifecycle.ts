@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 
@@ -240,7 +240,12 @@ export interface LaunchRecord {
 /** Name this launch's tree in the seat home, so the seat's NEXT launch can tell a tree an already
  * dead lifecycle left behind from one a live seat still legitimately holds. */
 export function recordLaunch(home: string, record: LaunchRecord): void {
-  writeFileSync(join(home, LAUNCH_RECORD_FILE), `${JSON.stringify(record)}\n`, { mode: 0o600 });
+  const path = join(home, LAUNCH_RECORD_FILE);
+  // `mode` applies only when the write CREATES the file, so a record that already exists keeps
+  // whatever permissions it has. Restate them on every write, or one loosened file stays loosened
+  // for the life of the seat home.
+  writeFileSync(path, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+  chmodSync(path, 0o600);
 }
 
 export function readLaunchRecord(home: string): LaunchRecord | undefined {
