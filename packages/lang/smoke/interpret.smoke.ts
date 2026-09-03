@@ -1340,6 +1340,28 @@ fact.outcome = "flipped";`;
   } catch (e) {
     caught = e;
   }
+  {
+    // ALREADY FROZEN IS NOT ALREADY DEEP-FROZEN. A handler that returns a SHALLOWLY frozen record
+    // stopped the walk at its first node, so the nested container came back writable and the
+    // program mutated a recorded value with no L2031.
+    class ShallowHandler extends SimHandler {
+      override async turn(req: Parameters<SimHandler["turn"]>[0], ctx: EffectContext) {
+        void req; void ctx;
+        return Object.freeze({ status: "done" as const, at: 1, inner: { touched: false } }) as never;
+      }
+    }
+    let verdict = "no throw";
+    try {
+      await run(`
+const a = await spawn("w", { name: "a" });
+const r = await turn(a, { name: "t" });
+r.inner.touched = true;
+`, { runId: "r-shallow", handler: new ShallowHandler({}) });
+    } catch (e) { verdict = (e as { code?: string }).code ?? (e as Error).message; }
+    ok("a result frozen only at its top level is still frozen THROUGH: the nested write is L2031",
+      verdict === "L2031", verdict);
+  }
+
   ok("an effect's input is frozen AT the share: mutating it afterwards is L2031",
     String((caught as Error)?.message).startsWith("L2031"), String(caught).slice(0, 60));
 
@@ -1460,6 +1482,35 @@ await parallel({
 `, { runId: "r-turnq", handler: same });
   ok("two concurrent turns on ONE handle never overlap: the dispatch serializes them",
     same.peak === 1, same.peak);
+
+  // AN ASK OCCUPIES THE SEAT TOO. A host relays an ask to the agent as a turn, so an ask beside a
+  // turn on one handle is the same two-turns-at-once this queue exists to prevent; the ask was
+  // dispatched outside it and the invariant held only for programs that never ask.
+  class MixedProbe extends SimHandler {
+    active = 0;
+    peak = 0;
+    private async guard<T>(f: () => Promise<T>): Promise<T> {
+      this.active += 1;
+      this.peak = Math.max(this.peak, this.active);
+      try { return await f(); } finally { this.active -= 1; }
+    }
+    override async turn(req: Parameters<SimHandler["turn"]>[0], ctx: EffectContext) {
+      return await this.guard(async () => await super.turn(req, ctx));
+    }
+    override async ask(req: Parameters<SimHandler["ask"]>[0], ctx: EffectContext) {
+      return await this.guard(async () => await super.ask(req, ctx));
+    }
+  }
+  const mixed = new MixedProbe({ turns: { t1: { status: "done" as const, at: 1 } }, asks: { q1: { estimate: 3 } } });
+  await run(`
+const a = await spawn("w", { name: "a" });
+await parallel({
+  one: async () => { await turn(a, { name: "t1" }) },
+  two: async () => { await ask(a, { name: "q1", schema: { estimate: "number" } }) },
+})
+`, { runId: "r-askq", handler: mixed });
+  ok("an ask and a turn on ONE handle never overlap either: one queue covers both dispatch sites",
+    mixed.peak === 1, mixed.peak);
 
   const different = new ProbeHandler(TURNS);
   await run(`

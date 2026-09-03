@@ -145,30 +145,30 @@ let P = "";
   c("and the held start completes", outcome === "completed" && captured().includes(`run ${cid}: completed`), outcome);
 }
 
-// ── 6b) answer: an open ASK attempt rides the same verb, current attempt's token and all ──────
+// ── 6b) an ask addressed outside the run's roster is refused, with the reason, through the command
+//
+// The fixture used to hand the program a HAND-BUILT handle (`{ agent: "dev#u", persona: "dev" }`)
+// so the ask could open a pause with no manager standing. That is a forged identity: a relay is
+// submitted to a seat this run never spawned, exactly the class `parallel`/`race` name forgery
+// belongs to. The handler now refuses it before any wire work, and this is the command layer's
+// half of that: the refusal reaches an operator as the run's recorded failure and its sentence.
+//
+// The ANSWER verb reaching an open ask attempt is proven where an ask can actually open: over the
+// real relay in `bin/smoke/lang-spawn-live.smoke.ts` (a spawned seat, a real manager, the attempt's
+// own token), and against the door itself in `implementations/runtime/smoke/mesh-ask.smoke.ts`.
 {
   reset();
-  const driven = wf(["start"], { file: ASKING });
-  let A: string | undefined;
-  for (let i = 0; i < 100 && A === undefined; i += 1) { await wait(50); A = startedId(); }
-  const aid = A ?? "";
-  let open = false;
-  for (let i = 0; i < 100 && !open; i += 1) {
-    await wait(200);
-    const back = await replayRunJournal(js, jsm, SPACE, aid, `t${(takeovers += 1)}`).catch(() => undefined);
-    for (const r of back?.records ?? []) {
-      if (r.record.kind !== "step") continue;
-      const e = r.record.entry as JournalEntry;
-      if (e.kind === "ask" && e.state === "pending") open = true;
-    }
-  }
-  c("the ask opens durably", open);
-  const answered = await wf(["answer", aid, "/ask:size#0"], { by: "smoke", value: '{"estimate": 3}' })
-    .then(() => true, (e: Error) => e);
-  c("the answer verb reaches an ask attempt exactly as it reaches a checkpoint", answered === true, answered);
-  const outcome = await Promise.race([driven.then(() => "completed"), wait(15_000).then(() => "still-paused")]);
-  c("and the asking start completes on the conforming record",
-    outcome === "completed" && captured().includes(`run ${aid}: completed`), outcome);
+  // A failing program leaves `start` REJECTING, which is how the verb reports it: the dispatcher
+  // above prints what comes out. Caught here so the sentence is the thing under assertion.
+  const refused = await wf(["start"], { file: ASKING }).then(() => undefined, (e: Error) => e);
+  const aid = startedId() ?? "";
+  c("the asking run starts and is named", aid !== "", captured());
+  const rec = await readRunRecord(kv, EP, aid);
+  c("a program asking an agent it never spawned fails the run rather than relaying to a forged seat",
+    rec?.status?.value.state === "failed", rec?.status?.value.state);
+  c("and the reason names the handle and the rule, so an operator knows what to write instead",
+    refused !== undefined && refused.message.includes("is not in this run's roster") && refused.message.includes("dev#u"),
+    refused?.message?.slice(0, 200));
 }
 
 // ── 6b) a parked run survives its driver dying: a fresh holder's resume attaches and completes ─

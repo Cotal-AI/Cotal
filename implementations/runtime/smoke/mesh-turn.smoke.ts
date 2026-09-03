@@ -920,6 +920,13 @@ const isTurnResult = (v: unknown): v is { status: string; to?: { agent: string }
   c("a turns budget that is not a positive integer is refused as malformed",
     (zero as { threw?: boolean })?.threw === true && String((zero as { message?: string })?.message).includes("positive integer") && spawnAccepts.size === before,
     JSON.stringify(zero));
+  // THE OTHER POLICY OPTION, THE SAME RULE. `supervise` is "a declarative restart policy" in the
+  // reference and nothing more: no keys, no restart semantics, no code. It was accepted and
+  // silently enforced by nothing, so a program that asked for a restart got none and no refusal.
+  const sup = await withDeadline(safe(handler.spawn({ persona: "builder", supervise: { restart: "always" } }, stepCtx(token("Z")).ctx)), 10_000, "the supervised spawn");
+  c("a supervise policy this host does not implement is refused, never accepted and ignored",
+    (sup as { threw?: boolean })?.threw === true && String((sup as { message?: string })?.message).includes("supervise is a restart policy") && spawnAccepts.size === before,
+    JSON.stringify(sup));
 }
 
 async function readGoalResultData(goalId: string): Promise<Record<string, unknown> | undefined> {
@@ -931,7 +938,7 @@ async function readGoalResultData(goalId: string): Promise<Record<string, unknow
 await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
 await nc.close();
-const EXPECTED_CELLS = 47;
+const EXPECTED_CELLS = 48;
 const ran = ok + fail;
 console.log(`mesh-turn.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

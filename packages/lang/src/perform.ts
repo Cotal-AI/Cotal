@@ -63,10 +63,14 @@ export function option(bag: unknown, key: string): unknown {
  * A WeakMap off the host rather than a field on it, so neither engine's host construction
  * changes. The map holds only a settled-swallowed tail per agent; each caller still observes its
  * own dispatch's outcome, and a failed turn does not dam the queue behind it.
+ *
+ * BOTH DISPATCH SITES SHARE IT. `ask` is relayed to the seat as a turn, so an ask queued
+ * separately from `turn` would still be a second concurrent turn on the same agent.
  */
 const TURN_QUEUES = new WeakMap<EffectHost, Map<string, Promise<unknown>>>();
 
-/** Serialize live `turn` dispatches per agent handle: the next begins when the previous settled. */
+/** Serialize live `turn` and `ask` dispatches per agent handle: the next begins when the previous
+ *  settled. */
 function serializeTurn(host: EffectHost, agent: string, dispatch: () => Promise<unknown>): Promise<unknown> {
   let queues = TURN_QUEUES.get(host);
   if (queues === undefined) {
@@ -426,15 +430,19 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
         stepName as string,
         { agent: agent.agent, schema: schema ?? null, deadline: deadline ?? null, attempts: attempts ?? null },
         (ctx) =>
-          handler.ask(
-            {
-              agent,
-              schema,
-              ...(deadline !== undefined ? { deadline } : {}),
-              ...(attempts !== undefined ? { attempts } : {}),
-            },
-            ctx,
-          ),
+          // THE SAME QUEUE AS `turn`. A host relays an ask to the seat as a turn, so an unqueued
+          // ask beside a queued turn on one handle hands that agent two turns at once, which 6.5
+          // forbids by name. One queue per agent covers both dispatch sites.
+          serializeTurn(host, agent.agent, () =>
+            handler.ask(
+              {
+                agent,
+                schema,
+                ...(deadline !== undefined ? { deadline } : {}),
+                ...(attempts !== undefined ? { attempts } : {}),
+              },
+              ctx,
+            )),
         frame,
       );
     }

@@ -940,6 +940,12 @@ export class MeshHandler {
     // A budget this host cannot meter is refused before anything is submitted: accepting it and
     // enforcing nothing would be the silent no-op the effect table exists to prevent.
     const permits = req.permits !== undefined ? readPermits(req.permits, req.persona) : undefined;
+    // Same rule, for the other policy option. `supervise` is "a declarative restart policy" in the
+    // reference and nothing more: it names no keys, no restart semantics and no code, so there is
+    // nothing here to enforce and no way to invent it without writing language semantics into a
+    // host. Accepting it and restarting nothing is the silent no-op `readPermits` refuses by name.
+    if (req.supervise !== undefined)
+      throw new Error(`spawn(${req.persona}): supervise is a restart policy this host does not implement, and a policy it cannot enforce is refused rather than ignored`);
     if (ext === undefined && req.worktree !== undefined) await this.claimWorktree(req.worktree, req.persona, goalId);
     try {
       if (ext === undefined) {
@@ -1732,7 +1738,14 @@ export class MeshHandler {
     );
     const fired = await this.jsm.streams
       .getMessage(eptStreamName(this.binding.space), { last_by_subj: subject })
-      .catch(() => null);
+      .catch((e: unknown) => {
+        // 10037 is the stream saying there is no message on that subject, which IS the ordinary
+        // "the timer has not fired yet" answer. Every other error is the broker refusing or
+        // unreachable, and reading those as "not yet" is how a `wait` with a timeout outlives its
+        // own durable deadline in silence, which is the failure this method exists to prevent.
+        if ((e as { code?: unknown })?.code === 10037) return null;
+        throw e;
+      });
     if (fired === null || fired === undefined) return false;
     const verdict = await handleCheckpointFire(this.kv, this.js, this.jsm, this.binding.space, {
       ref,

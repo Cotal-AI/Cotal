@@ -111,6 +111,15 @@ const gateArgs = (name: string, args: readonly unknown[], takes: Takes): void =>
   });
 };
 
+/** A string argument to a free builtin IS a string. The METHOD table has always said so (`str` in
+ *  {@link stringMethods}); the free spellings cast instead, so `split(s, 5)` coerced the separator
+ *  to "5" where `s.split(5)` is L4016, and one operation answered two ways depending on spelling. */
+function strArg(name: string, v: unknown): string {
+  if (typeof v !== "string")
+    throw new RuntimeFault("L4016", `${name}: this argument must be a string (there are no regular expressions here)`);
+  return v;
+}
+
 /** Wrap a method-shaped impl with the argument gate. */
 const gate = <R,>(
   k: string,
@@ -161,15 +170,19 @@ function compareTotal(a: unknown, b: unknown): number {
   return ca < cb ? -1 : ca > cb ? 1 : 0;
 }
 
-/** The canonical form where one exists; a stable, deterministic stand-in where it does not. */
+/** The canonical form, or a refusal: this order has no place for a value that has none. */
 function safeCanonical(v: unknown): string {
+  // NO STAND-IN. `\uFFFF${String(v)}` made two distinct cyclic records compare EQUAL, and the
+  // total order's whole claim is that it never answers "equal" for two distinct values. A value
+  // with no canonical form is a value this order cannot place, and saying so is the honest answer.
+  let c: unknown;
   try {
-    const c = canonicalize(v) as unknown;
-    if (typeof c === "string") return c;
-  } catch {
-    // fall through
+    c = canonicalize(v) as unknown;
+  } catch (e) {
+    throw new RuntimeFault("L4016", `sort: a value in this list has no canonical form (${(e as Error).message}), so the total order cannot place it`);
   }
-  return `\uFFFF${String(v)}`;
+  if (typeof c === "string") return c;
+  throw new RuntimeFault("L4016", "sort: a value in this list canonicalizes to something that is not a string, so the total order cannot place it");
 }
 
 // ---- methods ---------------------------------------------------------------------------------------
@@ -508,14 +521,18 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
       return (a[0] as number[]).reduce((x, y) => x + y, 0);
     }, { any: [0] })],
     // strings
-    ["split", fn("split", (frame, a) => born((a[0] as string).split(a[1] as string), frame.depth))],
+    ["split", fn("split", (frame, a) => born(strArg("split", a[0]).split(strArg("split", a[1])), frame.depth))],
     ["trim", fn("trim", (_f, a) => (a[0] as string).trim())],
     ["lower", fn("lower", (_f, a) => (a[0] as string).toLowerCase())],
     ["upper", fn("upper", (_f, a) => (a[0] as string).toUpperCase())],
-    ["startsWith", fn("startsWith", (_f, a) => (a[0] as string).startsWith(a[1] as string))],
-    ["endsWith", fn("endsWith", (_f, a) => (a[0] as string).endsWith(a[1] as string))],
-    ["contains", fn("contains", (_f, a) => (a[0] as string).includes(a[1] as string))],
-    ["replace", fn("replace", (_f, a) => (a[0] as string).split(a[1] as string).join(a[2] as string))],
+    ["startsWith", fn("startsWith", (_f, a) => strArg("startsWith", a[0]).startsWith(strArg("startsWith", a[1])))],
+    ["endsWith", fn("endsWith", (_f, a) => strArg("endsWith", a[0]).endsWith(strArg("endsWith", a[1])))],
+    ["contains", fn("contains", (_f, a) => strArg("contains", a[0]).includes(strArg("contains", a[1])))],
+    // `replaceAll`, not split/join: the reference says the free builtin replaces every occurrence
+    // where the method replaces the first, IN EACH CASE EXACTLY AS JAVASCRIPT SPELLS THE METHOD, and
+    // JavaScript's spelling honours `$$`, `$&`, `` $` `` and `$'` in the replacement. split/join
+    // took those literally, so the free spelling and the method spelling disagreed on the same call.
+    ["replace", fn("replace", (_f, a) => strArg("replace", a[0]).replaceAll(strArg("replace", a[1]), strArg("replace", a[2])))],
     // numbers
     ["min", fn("min", (_f, a) => Math.min(...(a as number[])))],
     ["max", fn("max", (_f, a) => Math.max(...(a as number[])))],

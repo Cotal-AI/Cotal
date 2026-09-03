@@ -6016,8 +6016,13 @@ export class Manager {
     // Two turns on one seat are serialized at the dispatch (cotal-lang 6.5): only the oldest
     // unsettled one is served, and the next surfaces once it yields or its deadline denies, so a
     // seat is never shown two turns at once.
+    // An ELAPSED turn is not servable: its hold is expirable and its run has already thrown from
+    // its own pause, so handing it to the seat buys work whose yield is refused. It also cannot be
+    // allowed to stay the head, or one expired turn dams every later turn for that seat.
+    const now = Date.now();
     const turns = [...this.pendingTurns.values()]
       .filter((p) => p.seat.owner === c.owner && p.seat.actor === c.actor && p.seat.uid === c.uid)
+      .filter((p) => now < p.deadlineAt)
       .sort((x, y) => x.acceptedAt - y.acceptedAt)
       .slice(0, 1)
       .map((p) => ({ goalId: p.goalId, payload: p.payload, acceptedAt: p.acceptedAt, deadlineAt: p.deadlineAt }));
@@ -6187,7 +6192,12 @@ export class Manager {
       ...(parsed.handoffFrom !== undefined ? { handoffFrom: parsed.handoffFrom } : {}),
     };
     this.pendingTurns.set(p.goalId, p);
-    if (this.agents.get(p.seat.name)?.lifecycleUid !== p.seat.uid) this.failSeatTurns(p.seat.name, p.seat.uid);
+    // NO LIVENESS VERDICT AT BOOT. The agents map is empty here: seats are re-registered later,
+    // by the resume path, so `not in the map` at this moment means "not yet re-registered", never
+    // "dead". Stamping death from it marked EVERY adopted turn as a dead seat, and its deadline
+    // terminal then carried `agentDownAt`, so the run raised L4002 for a seat that was alive the
+    // whole time where the reference says L4003. The reap hook is the only honest writer of that
+    // fact: it fires when a managed seat actually dies.
     console.error(`turn reconcile ${p.goalId}: pending relay to ${p.seat.name}/${p.seat.uid} adopted (deadline ${p.deadlineAt})`);
     this.ensureTurnSweep();
   }

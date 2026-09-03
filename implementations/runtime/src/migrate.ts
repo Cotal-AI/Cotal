@@ -234,7 +234,13 @@ export async function migrateRun(req: MigrateRequest): Promise<MigrateReport> {
     toHash: programHashOf(req.source),
     ...(req.fromHash !== undefined ? { fromHash: req.fromHash } : {}),
     admissible,
-    consumedThrough: req.entries.length - orphans.length,
+    // BOTH COUNTS FROM THE SAME VIEW. `req.entries` is the raw replayed APPEND LOG, where a
+    // completed step appears at least twice (a pending row, then its settle), while `orphans()`
+    // reads the folded, keyed view. Subtracting one from the other counted something that is
+    // neither, and it lands in a durable migration record AND in that record's content-derived
+    // id, so the same decision computed from a differently-shaped replay filed under a different
+    // migration.
+    consumedThrough: journal.entries().length - orphans.length,
     orphans: table,
     ...(divergence !== undefined ? { divergence } : {}),
     ...(unwalkable !== undefined ? { unwalkable } : {}),

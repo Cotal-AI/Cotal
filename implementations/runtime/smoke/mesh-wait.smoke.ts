@@ -751,7 +751,50 @@ log("released", r.index);
   void first; // superseded mid-park — released or parked forever; its ending is not this block's claim
 }
 
-const EXPECTED_CELLS = 55;
+// ---- 12) a broker error is not "the timer has not fired" ----------------------------------------
+//
+// `takeFire` swallowed EVERY error from the fire read as "no fire yet". A broker refusing or
+// unreachable then read exactly like a deadline that has not passed, so a `wait` with a timeout
+// polled past its own durable deadline in silence: the one failure the poll exists to prevent.
+// Only 10037 ("no message on that subject") is that answer; everything else is the broker.
+{
+  console.log("• 12 — a fire read that fails is a failure, not a quiet 'not yet'");
+  // ONLY the fire stream, and only the read: the settle fact lives in a different stream, so a
+  // blanket fault would prove the poll notices SOMETHING rather than notices THIS.
+  const brokenJsm = new Proxy(jsm, {
+    get(target, prop, recv) {
+      if (prop !== "streams") return Reflect.get(target, prop, recv);
+      const streams = Reflect.get(target, prop, recv) as typeof jsm.streams;
+      return new Proxy(streams, {
+        get(st, p, r) {
+          if (p !== "getMessage") return Reflect.get(st, p, r);
+          return async (stream: string, opts: Parameters<typeof jsm.streams.getMessage>[1]) => {
+            const bySubj = (opts as { last_by_subj?: unknown })?.last_by_subj;
+            if (typeof bySubj === "string" && bySubj.endsWith(".fire"))
+              throw Object.assign(new Error("nats: connection closed"), { code: 503 });
+            return await (Reflect.get(st, p, r) as typeof jsm.streams.getMessage).call(st, stream, opts);
+          };
+        },
+      });
+    },
+  }) as typeof jsm;
+  const brokenHandler = new MeshHandler(
+    nc, kv, js, brokenJsm,
+    { space: SPACE, endpoint: EP, runId: "r-firefail", caller: CALLER, instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
+    new EpfSettleWatcher(js, jsm, SPACE, 3_000),
+    now,
+  );
+  const k = ctx(tok("firefail"));
+  const outcome = await withDeadline(
+    brokenHandler.wait({ event: { event: "message", channel: "wf-nobody" }, timeout: "2s" }, k.ctx)
+      .then(() => "returned quietly", (e: unknown) => `threw: ${(e as Error).message}`),
+    25_000, "the wait whose fire read fails");
+  c("the broker's refusal reaches the caller instead of reading as an unfired timer",
+    String(outcome).startsWith("threw:") && String(outcome).includes("connection closed"),
+    outcome);
+}
+
+const EXPECTED_CELLS = 56;
 const ran = ok + fail;
 console.log(`mesh-wait.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

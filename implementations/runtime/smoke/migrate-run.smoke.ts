@@ -127,6 +127,17 @@ const checkOrThrew = async (...args: Parameters<typeof check>) =>
   c("consumedThrough counts what the walk accounted for", r.consumedThrough === entries.length - 1,
     { consumedThrough: r.consumedThrough, entries: entries.length });
   c("nothing was committed, because the check does not commit", r.actor === "david" && r.overrides.length === 0, r);
+
+  // THE REQUEST TAKES THE JOURNAL "AS THE BARRIER REPLAYED IT", and what the barrier replays is
+  // the APPEND LOG: a completed step is a pending row and then its settle, so every step is in
+  // there at least twice. `orphans()` reads the folded, keyed view, so a count that subtracted
+  // one from the other was neither — and it is filed in a durable migration record and in that
+  // record's content-derived id, so one decision replayed at a different shape filed twice.
+  const asAppended = entries.flatMap((e) => [{ ...e, state: "pending" as const, status: undefined, result: undefined }, e]);
+  const rawShaped = await check(RUN, asAppended, `await sleep("1s", { name: "one" });`);
+  c("the SAME decision off the raw append log counts the same steps and files the same id",
+    rawShaped.consumedThrough === r.consumedThrough && asAppended.length === entries.length * 2,
+    { folded: r.consumedThrough, raw: rawShaped.consumedThrough, rows: asAppended.length });
 }
 
 // ── 2) a decision a person actually made ───────────────────────────────────────────────────────

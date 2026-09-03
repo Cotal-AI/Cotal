@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { isReachable, createEndpointStreams, activateRun, replayRunJournal, openRecordsBucket, readRunRecord, createRunSpec, RunJournalTailTruncated } from "@cotal-ai/core";
+import { isReachable, createEndpointStreams, activateRun, replayRunJournal, openRecordsBucket, readRunRecord, createRunSpec, writeRunStatus, RunJournalTailTruncated } from "@cotal-ai/core";
 import { ENGINE_LANGUAGE_VERSION, Journal, PIN_DEFAULTS, SimHandler, WALKER_LANGUAGE_VERSION, resolvePins, run as walkProgram, type EffectHandler, type JournalEntry } from "@cotal-ai/lang";
 import { startRun, driveRun, RunJournalStore, PauseToken } from "../src/index.js";
 import { runOnHostedEngine } from "../src/engine-host.js";
@@ -887,6 +887,100 @@ await sleep("1h", { name: "first" });
 //
 // EXACTLY ONCE, not merely present: a sentence matching two executed cells leaves the row ambiguous
 // about which cell carries it, and this file already has one name it uses twice.
+// ── the status record's revision, and who is entitled to move it ─────────────────────────────
+//
+// Every status write after the activation is a CAS against a revision this driver read. WHERE it
+// reads that revision decides whether a legitimate takeover survives: read before the fence and
+// the loser is still free to move it (a driver discovering it lost writes its own `released` on
+// the way out), and the taker-over's first CAS then failed — as a raw throw, out of a function
+// whose whole contract is that losing a run is an ANSWER.
+{
+  // Re-writes the SAME status with a later `at`: nothing about the run changes, only the revision.
+  const bump = async (runId: string): Promise<void> => {
+    const rec = await readRunRecord(kv, EP, runId);
+    const st = rec?.status?.value;
+    if (st === undefined) throw new Error(`bump: run ${runId} has no status to move`);
+    await writeRunStatus(kv, EP, runId, {
+      observedSpecRevision: st.observedSpecRevision, state: st.state, holder: st.holder,
+      epoch: st.epoch, fencingToken: st.fencingToken, journalHigh: st.journalHigh, at: st.at + 1,
+    }, rec!.status!.revision);
+  };
+
+  const seeded = await attempt(startRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-cas", source: PROGRAM, lease: lease("m1", 1, 1),
+    handler: new CountingHandler(),
+  }));
+  c("the CAS block's run is seeded and complete", seeded.status === "completed", why(seeded));
+
+  // The bump lands in `adopted()`, which is called AFTER the activation and BEFORE the first
+  // status write: exactly the window a revision read on the near side of the fence cannot see.
+  class BumpsOnAdopt extends CountingHandler {
+    // SimHandler declares no `adopted`, so this is the hook's whole implementation here: the
+    // driver calls it because the method exists, which is the contract `adoptionOf` reads.
+    async adopted(_entries: readonly JournalEntry[]): Promise<string[]> {
+      await bump("d-cas");
+      return [];
+    }
+  }
+  const taken = await attempt(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-cas", source: PROGRAM, lease: lease("m2", 2, 2),
+    handler: new BumpsOnAdopt(),
+  }));
+  c("a takeover whose status revision moved before its first write still resumes: the revision is read on the far side of the fence",
+    taken.status === "completed", why(taken));
+
+  // The other half: a status write AFTER the engine has answered must not replace that answer. By
+  // then the journal holds the outcome and the record is a projection of it, so a lost CAS on the
+  // projection is loud and passed over rather than raised over a completion that really happened.
+  const seeded2 = await attempt(startRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-cas2", source: PROGRAM, lease: lease("m1", 1, 1),
+    handler: new CountingHandler(),
+  }));
+  c("the terminal-write block's run is seeded", seeded2.status === "completed", why(seeded2));
+  class BumpsMidRun extends CountingHandler {
+    private moved = false;
+    override async sleep(req: Parameters<SimHandler["sleep"]>[0], ctx: Parameters<SimHandler["sleep"]>[1]) {
+      if (!this.moved) { this.moved = true; await bump("d-cas2"); }
+      return await super.sleep(req, ctx);
+    }
+  }
+  const finished = await attempt(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-cas2", source: `${PROGRAM}\nawait sleep("3h", { name: "third" });`,
+    lease: lease("m2", 2, 2), handler: new BumpsMidRun(),
+  }));
+  c("a completion whose status write lost its CAS is still reported as the completion it was",
+    finished.status === "completed", why(finished));
+}
+
+// ── a run that was activated and never pinned ────────────────────────────────────────────────
+//
+// A fresh run is activated BEFORE its spec is written, deliberately: a driver that pinned first
+// would pin a run for whoever wins the race. A crash in that window leaves a journal holding an
+// activation and no step, and no record anywhere. The old refusal said the journal "has been
+// retired or lost", which sent an operator hunting for a journal sitting right in front of them.
+{
+  await activateRun(js, jsm, {
+    space: SPACE, runId: "d-unpinned", holder: "m1", fencingToken: 1, epoch: 1,
+    takeoverId: `t${(takeovers += 1)}`, at: Date.now(), expect: "new",
+  });
+  const resumed = await attempt(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-unpinned", source: PROGRAM, lease: lease("m2", 2, 2),
+    handler: new CountingHandler(),
+  }));
+  const why1 = resumed.status === "released" ? String(resumed.reason?.message) : why(resumed);
+  c("a run activated but never pinned is released, naming the window it died in rather than a lost journal",
+    resumed.status === "released" && why1.includes("activated and then never pinned")
+      && why1.includes("new run id") && !why1.includes("retired or lost"), why1?.slice(0, 160));
+
+  const never = await attempt(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-never", source: PROGRAM, lease: lease("m2", 2, 3),
+    handler: new CountingHandler(),
+  }));
+  const why2 = never.status === "released" ? String(never.reason?.message) : why(never);
+  c("while a run id with no journal at all still reads as the journal being gone, and names the subject it looked on",
+    never.status === "released" && why2.includes("holds no records") && why2.includes("d-never"), why2?.slice(0, 160));
+}
+
 const seam = JSON.parse(readFileSync(new URL("./indexed-cells.json", import.meta.url), "utf8")) as {
   suite: string;
   cells: string[];
@@ -898,7 +992,7 @@ c("every cell the language package's matrix cites from this file is one THIS RUN
   unrun.length === 0, unrun.map(({ s, hits }) => `${hits} execution(s): ${s}`));
 console.log(`  (${seam.cells.length} cited cells checked against ${EXECUTED.length} executed)`);
 
-const EXPECTED_CELLS = 79;
+const EXPECTED_CELLS = 85;
 console.log(`run-driver.smoke: ${ok} passed, ${fail} failed`);
 if (ok + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${ok + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);

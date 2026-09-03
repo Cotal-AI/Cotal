@@ -239,6 +239,27 @@ try {
     check("and a yield in the same window is refused rather than answered not-found",
       yielded !== "served" && (yielded as { code?: string }).code === "unavailable"
         && /still reconciling/i.test((yielded as { message?: string }).message ?? ""), yielded);
+
+    // ONCE THE INDEX IS REBUILT, an ELAPSED turn is still not servable. Only the oldest unsettled
+    // turn per seat is handed over, so an expired one at the head dammed every later turn for that
+    // seat: its own run has already thrown from its pause and its hold is expirable, so the seat
+    // would be sent work whose yield is refused, and the live turn behind it would never surface.
+    const seeded = booting as unknown as {
+      goalReconcileDone: boolean;
+      pendingTurns: Map<string, Record<string, unknown>>;
+    };
+    seeded.goalReconcileDone = true;
+    const turnRow = (goalId: string, acceptedAt: number, deadlineAt: number) => ({
+      ref: { endpoint: "m", caller: { owner: seat.owner, actor: seat.actor, uid: seat.uid }, goalId },
+      goalId, seat: { name: "s", ...seat }, payload: goalId, acceptedAt, deadlineAt,
+      holdToken: goalId.padEnd(20, "0"), holdEpoch: 0,
+    });
+    const t0 = Date.now();
+    seeded.pendingTurns.set("stale", turnRow("stale", t0 - 60_000, t0 - 1_000));
+    seeded.pendingTurns.set("live", turnRow("live", t0 - 30_000, t0 + 60_000));
+    const served = doors.turnPendingFor(seat) as { turns: { goalId: string }[] };
+    check("an ELAPSED turn is not served and does not dam the seat's queue: the live one behind it surfaces",
+      served.turns.length === 1 && served.turns[0]?.goalId === "live", served);
   }
 
   await starting;

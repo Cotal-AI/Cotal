@@ -588,6 +588,16 @@ log("rounds", rounds, r.status);`,
   ["len of a free builtin", "log(len(map), len(len));", {}, "L4016"],
   ["len of a program function", "log(len((x) => x));", {}, "L4016"],
   ["len of a hoisted function declaration", "function f(a, b) { return a; } log(len(f));", {}, "L4016"],
+  // THE SAME LEAK, IN THE OTHER DIRECTION. The free string spellings cast their arguments where
+  // the method table gates them, so `split(s, 5)` coerced the separator to "5" while `s.split(5)`
+  // was L4016: one operation, two answers, decided by spelling.
+  ["a free string builtin's separator is a string, not a coerced one", 'log(split("a5b", 5));', {}, "L4016"],
+  ["a free string builtin's pattern is a string too", 'log(startsWith("abc", 5));', {}, "L4016"],
+  ["and its receiver is a string", "log(upper(5));", {}, "L4016"],
+  // §5.3: `sort` never answers "equal" for two distinct values. A value with no canonical form
+  // used to fall to a stand-in built from `String(v)`, which is "[object Object]" for every
+  // record, so two distinct cyclic records compared EQUAL and the order stopped being one.
+  ["sort refuses a value the total order cannot place", 'const a = { n: 1 }; a.self = a;\nconst b = { n: 2 }; b.self = b;\nlog(sort([a, b]));', {}, "L4016"],
   [
     "the event constructors",
     'const a = await spawn("one"); const c = channel("t"); log(message(c), idle(a), down(a), replied(a));',
