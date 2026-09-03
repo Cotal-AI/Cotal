@@ -38,7 +38,8 @@ log("outcome", outcome.index)
 
 Read it as the flowchart it is. `spawn` brings agents in; `ask` is the narrow case where the
 program itself needs a value (`schema` is a record the program hands the handler unchanged; the
-language hashes it and gives it no meaning, and no handler in this repository enforces one yet);
+language hashes it and gives it no meaning, and the reference simulator enforces the shorthand
+contract on it);
 `checkpoint` is a durable pause a human resolves from anywhere, raced against a durable timer; `turn`
 wakes an agent for one turn and returns how it yielded; `race` runs two branches and keeps the one
 whose recorded clock is earliest. Agents talk to each other in channels as they always do; the

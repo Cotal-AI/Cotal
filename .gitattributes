@@ -2,3 +2,7 @@
 # Future suites live one-per-file under ci-suites.d, so independent PRs add independent paths and
 # GitHub's server-side merge needs no custom driver or manual tail ordering.
 bin/smoke/ci-suites.txt !merge
+
+# The conformance corpus is a shipped artifact whose bytes the suite holds identical to a fresh
+# build; a CRLF checkout would rewrite it and fail that gate on Windows for nothing.
+packages/lang/conformance/corpus.json text eol=lf

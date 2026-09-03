@@ -86,6 +86,7 @@ const groups = [
       'docs/channels-and-permissions.md',
       'docs/config.md',
       'docs/mesh-view.md',
+      'docs/lang-card.md',
       'docs/glossary.md',
     ],
   },
