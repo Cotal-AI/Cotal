@@ -5,9 +5,9 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { loadMeshes, targetFlags } from "@cotal-ai/workspace";
+import { loadMeshes, resolveMeshTarget, targetFlags } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
-import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
+import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { openTransient } from "../lib/transient.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
 import { mentionsIn } from "../lib/mentions.js";
@@ -122,13 +122,31 @@ export function sendComplete(argv: string[]): CompletionResult {
   const [mode, ...rest] = positionals;
   if (mode === "msg" && rest.length <= 1)
     return {
-      items: listDeclaredChannels().map((value) => ({ value, description: "declared channel" })),
+      items: declaredFrom(argv, listDeclaredChannels).map((value) => ({ value, description: "declared channel" })),
       directive: "nofiles",
     };
   if (mode === "ask" && rest.length <= 1)
     return {
-      items: listDeclaredRoles().map((value) => ({ value, description: "declared role" })),
+      items: declaredFrom(argv, listDeclaredRoles).map((value) => ({ value, description: "declared role" })),
       directive: "nofiles",
     };
   return { items: [], directive: "nofiles" };
+}
+
+/** Channels/roles declared by the TARGET mesh's personas — `cotal send` acts on the mesh
+ *  `--space`/`--server` resolve to, so its completions must come from that mesh's catalog and not
+ *  from whatever project the operator happens to be standing in. Offline (no probe: a <TAB> never
+ *  opens the network) and FAIL CLOSED — with no single resolvable target, or a malformed persona
+ *  file (see `declaredValues`), offer nothing rather than throw into the operator's shell. */
+function declaredFrom(argv: string[], list: (root: string) => string[]): string[] {
+  try {
+    return list(
+      resolveMeshTarget(process.cwd(), {
+        space: completedFlagValue(argv, targetFlags, "space"),
+        server: completedFlagValue(argv, targetFlags, "server"),
+      }).root,
+    );
+  } catch {
+    return [];
+  }
 }

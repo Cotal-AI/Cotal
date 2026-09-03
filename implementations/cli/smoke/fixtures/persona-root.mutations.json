@@ -1,0 +1,69 @@
+{
+  "suite": "implementations/cli/smoke/persona-root.smoke.ts",
+  "guard": "persona catalog readers answer for the resolved mesh root rather than the cwd",
+  "command": "pnpm --filter @cotal-ai/cli typecheck && pnpm smoke:persona-root",
+  "progressPattern": "✓",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/fixtures/persona-root.mutations.json",
+  "why": [
+    "FIVE MUTATIONS cover the catalog, mint's shipped persona read, the B2 refusal, signing source,",
+    "and default credential storage. Making personasDir ignore its required root",
+    "sends every shared reader back to process.cwd(): personas list and the completers describe the",
+    "folder the operator stands in while spawn still launches from the selected mesh's catalog.",
+    "",
+    "The mutation is compile-clean and the smoke drives the real personas command before comparing",
+    "its printed answer with spawn's product reader. It must redden `catalog: personas list prints the",
+    "MESH's personas`; a general non-zero or a different failing cell is not accepted as proof.",
+    "",
+    "The mint mutations all alter SHIPPED mint.ts. One restores the cwd persona read, one disables the",
+    "cross-root authority refusal, one restores cwd signing authority while retaining target ACLs, and",
+    "one restores cwd default storage. Each has a distinct named cell. Together they prove the command",
+    "does not merely resolve the right root at a seam: ACL, signing, refusal and storage use it end to end."
+  ],
+  "mutations": [
+    {
+      "name": "the persona catalog ignores the resolved root and reads from the cwd",
+      "file": "implementations/cli/src/lib/personas.ts",
+      "find": "  return join(root, \".cotal\", \"agents\");",
+      "replace": "  return join(process.cwd(), \".cotal\", \"agents\");",
+      "expectRed": "catalog: personas list prints the MESH's personas",
+      "cell": "catalog: personas list prints the MESH's personas",
+      "note": "This exact substitution keeps TypeScript green while restoring the silent cwd fallback the required root argument removed."
+    },
+    {
+      "name": "mint reads the persona ACL from the cwd after resolving the target mesh",
+      "file": "implementations/cli/src/commands/mint.ts",
+      "find": "    const f = agentFilePath(root, name);",
+      "replace": "    const f = agentFilePath(cwdRoot, name);",
+      "expectRed": "mint: the credential carries the MESH card's channel, not the cwd card's",
+      "cell": "mint: the credential carries the MESH card's channel, not the cwd card's",
+      "note": "This changes the shipped mint call site, not resolveMintTarget or a test-only restatement, and remains type-correct."
+    },
+    {
+      "name": "mint ignores conflicting cwd trust instead of refusing the incoherent authority",
+      "file": "implementations/cli/src/commands/mint.ts",
+      "find": "  if (cwdAuth && (!auth || cwdAuth.space !== resolvedTarget.space || cwdAuth.account.pub !== auth.account.pub)) {",
+      "replace": "  if (cwdAuth && (!auth || cwdAuth.space !== resolvedTarget.space || cwdAuth.account.pub !== auth.account.pub) && process.pid < 0) {",
+      "expectRed": "mint: a cwd trust root that differs from the selected mesh authority is REFUSED",
+      "cell": "mint: a cwd trust root that differs from the selected mesh authority is REFUSED",
+      "note": "This compile-clean mutation reverts only the new B2 refusal guard and lets the exact conflicting-root input proceed."
+    },
+    {
+      "name": "mint signs from cwd trust while reading ACLs from the selected mesh root",
+      "file": "implementations/cli/src/commands/mint.ts",
+      "find": "  const store = workspaceSecretStore(root);",
+      "replace": "  const store = cwdStore;",
+      "expectRed": "mint: a cwd trust root that differs from the selected mesh authority is REFUSED",
+      "cell": "mint: a cwd trust root that differs from the selected mesh authority is REFUSED",
+      "note": "This is the B2 mixed-authority defect itself: selected-root persona ACLs plus cwd signing material."
+    },
+    {
+      "name": "mint stores the default credential under cwd instead of the selected mesh root",
+      "file": "implementations/cli/src/commands/mint.ts",
+      "find": "    const secrets = workspaceSecretStore(root);",
+      "replace": "    const secrets = cwdStore;",
+      "expectRed": "mint: default credential storage does NOT use the cwd root",
+      "cell": "mint: default credential storage does NOT use the cwd root",
+      "note": "The target-root output is still materialized, but the source-of-truth store also writes the cwd copy, which the named cell detects."
+    }
+  ]
+}

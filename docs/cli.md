@@ -94,6 +94,11 @@ narrated flow; later runs print a status card. By default it seeds one `default`
 out-of-date `.agents` skills at `cotal setup --skills`, not unscoped `setup`. See [Getting started](getting-started.md) and, for
 maintainers, [setup internals](setup-internals.md).
 
+When a mesh resolves, setup seeds that mesh's recorded `.cotal/agents` catalog, the same catalog a
+following `cotal spawn` reads. It prints the absolute destination. On a fresh machine with no mesh it
+uses this folder and says why; when several meshes are available and none is selected, it refuses
+rather than choosing a catalog.
+
 ## update
 
 ```bash
@@ -490,6 +495,10 @@ membership feed). Stale Claude skills and out-of-date `.agents` skills recommend
 not unscoped `cotal setup`. `status` takes `--space` / `--server` to pick the mesh to inspect; it starts
 nothing.
 
+Persona rows name the catalog they describe. If this folder and the selected mesh use different
+catalogs, status names both and marks which one spawn launches from. A green `default` means the file
+passes the same agent-file loader spawn uses; a present but invalid file is reported as invalid.
+
 `cotal status --components` adds a fail-loud per-component health pass. It reads **each
 component's own control surface**, rather than treating a PID, a lease, or a successful probe of a
 sibling as proof that the component serves. It prints one of `serving`, `absent`, `not-serving`, or
@@ -851,8 +860,10 @@ cotal personas rm <name> --force
 | `--running` | off | `list`: mark personas live on the mesh |
 | `--force` | none | `rm`: required, delete without prompting |
 
-Personas are the local agent files under `.cotal/agents/` that `cotal spawn` launches. See
-[Agent files](agent-files.md) for the file format.
+Personas are the local agent files under the resolved mesh root's `.cotal/agents/`, the same catalog
+`cotal spawn` launches from. `--space` and `--server` therefore move every list, read, write, delete
+and completion operation to the selected mesh. An unresolved target refuses rather than falling back
+to the current directory. See [Agent files](agent-files.md) for the file format.
 
 ## supervise
 
@@ -1137,13 +1148,18 @@ cotal mint <name> --provision [--role <role>] [--space <s>] [--server <url>]
 | `--allow-publish <a,b>` | the agent file's, else deny | Post-ACL override, **agent profile only** |
 | `--role <role>` | the agent file's | Agent profile: the anycast task queue the identity pulls (`svc_<role>`) |
 | `--provision` | off | Agent profile: also pre-create the identity's bind-only DM/deliver durables (and its role's task queue) on the live mesh, so the credential can consume |
-| `--space <s>`, `--server <url>` | the resolved mesh | With `--provision`: which mesh to provision on |
+| `--space <s>`, `--server <url>` | the resolved mesh | Which root supplies the agent file, static trust and default credential storage; with `--provision`, also which live mesh receives the durables |
 
 Mints a NATS creds file for a space in **static** auth mode, scoped to a profile and (optionally)
 explicit read/post ACLs. `--signer` emits an account-signing file for delegating minting to another
 host. A per-user-auth space refuses `mint`: agents there join under a logged-in user
 ([`login`](#login) + [`actor grant`](#actor)), never via a handed-out creds file. See
 [Identity and auth](identity-and-auth.md).
+
+For an agent profile, the resolved mesh root supplies the persona ACL, the signing material and the
+default credential destination as one authority. If the current folder also holds trust for a
+different space or account, mint refuses before writing and names both roots. It never combines a
+persona from one root with credentials signed or stored under another.
 
 A plain mint is creds only: the identity can publish within its post ACL at once, but on an authed
 mesh its DM inbox and task queue are provisioner-pre-created and bind-only, so a **consuming**
@@ -1152,8 +1168,8 @@ provisioner cred is minted from the space's trust material, used, and dropped), 
 client you start yourself can receive DMs and role anycasts like a spawned seat. The command prints
 the identity's principal (its wire id) and lifecycle uid; a consuming client passes that uid as its
 `lifecycleUid`. Agent profile only; an open mesh needs none of this (peers self-create there). The
-mesh it provisions on must be the one this folder's auth is for - same space and same account key -
-so `--provision` can never quietly mint under another root's trust material.
+The same resolved authority is used for both the credential and `--provision`, so the broker
+footprint cannot be created under a different root's trust material.
 
 ## Login
 
