@@ -23,8 +23,8 @@
     {
       "name": "channelHistory drops the caller signal before either JetStream pull stage",
       "file": "packages/core/src/endpoint.ts",
-      "find": "      chatSubject(this.space, \"*\", \"*\", channel),\n      opts?.limit ?? 100,\n      undefined,\n      opts?.signal,\n    );",
-      "replace": "      chatSubject(this.space, \"*\", \"*\", channel),\n      opts?.limit ?? 100,\n    );",
+      "find": "      [chatSubject(this.space, \"*\", \"*\", channel)],\n      opts?.limit ?? 100,\n      undefined,\n      opts?.signal,\n    )).map((r) => r.msg);",
+      "replace": "      [chatSubject(this.space, \"*\", \"*\", channel)],\n      opts?.limit ?? 100,\n    )).map((r) => r.msg);",
       "expectRed": "✗ FAIL: PUBLIC REPRO: abort settles channelHistory as AbortError instead of leaving it pending",
       "cell": "✗ FAIL: PUBLIC REPRO: abort settles channelHistory as AbortError instead of leaving it pending",
       "completionMarker": "HISTORY CANCELLATION:"
@@ -55,8 +55,8 @@
       "file": "implementations/web/src/web.ts",
       "command": "pnpm smoke:history-cancellation && pnpm smoke:web-history-cancellation",
       "completionMarker": "WEB HISTORY CANCELLATION:",
-      "find": "          (await ep.channelHistory(ch.channel, { limit, signal })).map((msg) => ({ mode: \"chat\" as const, channel: ch.channel, msg })),",
-      "replace": "          (await ep.channelHistory(ch.channel, { limit })).map((msg) => ({ mode: \"chat\" as const, channel: ch.channel, msg })),",
+      "find": "          (await ep.multiChannelHistory(chans.map((ch) => ch.channel), { limit, signal }))",
+      "replace": "          (await ep.multiChannelHistory(chans.map((ch) => ch.channel), { limit }))",
       "expectRed": "every started history source receives the shared cancellation signal",
       "cell": "every started history source receives the shared cancellation signal"
     }
