@@ -78,6 +78,17 @@
       "replace": "    if (writing || queued.length === 0 || to.destroyed) return;",
       "expectRed": "slow-link serialization arms only one chunk callback at a time",
       "command": "pnpm smoke:web-proxy-order"
+    },
+    {
+      "name": "B13 the link counter goes back to incrementing on ARRIVAL at the proxy, so a truncated arm reports chunks that were queued and never crossed the modelled link, inflating the very shape this change argues against",
+      "file": "implementations/web/smoke/activity-read-cost.smoke.ts",
+      "find": "    const toBroker = throttledWriter(upstream, opts.latency, undefined, onUp);\n    const toClient = throttledWriter(client, opts.latency, undefined,\n      (chunk: Buffer) => { opts.cost().bytesDown += chunk.length; });\n    client.on(\"data\", (chunk: Buffer) => { toBroker.push(chunk); });\n    upstream.on(\"data\", (chunk: Buffer) => { toClient.push(chunk); });",
+      "replace": "    const toBroker = throttledWriter(upstream, opts.latency);\n    const toClient = throttledWriter(client, opts.latency);\n    client.on(\"data\", (chunk: Buffer) => { onUp(chunk); toBroker.push(chunk); });\n    upstream.on(\"data\", (chunk: Buffer) => { opts.cost().bytesDown += chunk.length; toClient.push(chunk); });",
+      "expectRed": "4.7 the link counter reports what CROSSED the link, not what queued at the proxy",
+      "cell": "4.7",
+      "command": "pnpm smoke:web-activity-read-cost",
+      "completionMarker": "activity-read-cost smoke:",
+      "note": "Restores the pre-fix shape exactly: counting in the `data` handlers, before the throttled push. 4.7 truncates an arm mid-queue and requires the counter not to exceed what the receiving socket observed; under arrival counting it reports the full pushed total while the socket saw a fraction, so the comparison fails. 4.8 is the control that the truncation stranded bytes at all, so 4.7 cannot pass on an empty window."
     }
   ]
 }
