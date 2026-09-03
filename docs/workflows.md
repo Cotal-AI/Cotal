@@ -123,7 +123,8 @@ program (handing an edited one is a migration decision, and the resume stops on 
 A run whose step was refused (L5016) exits with code 2 and stays held; `resume` on a host that can
 perform the step performs it live and continues from there. `answer` resolves an open checkpoint,
 or an open `ask` attempt, through the run driver, presenting as the arming holder, with the
-answerer's name on the record.
+answerer's name on the record. `journal` prints what an open pause asks beneath its step key, which
+is the address `answer` takes back.
 Checkpoint expiry rides the mediated timer writer, which the delivery daemon pumps on a live mesh;
 on a bare broker a pause still resolves, it just cannot expire.
 
@@ -180,7 +181,14 @@ the seat nothing twice, and a seat gone at the relay is L4002. On the pause itse
 the shorthand of the language reference §6.5 is enforced (an unreadable schema is L4022), a
 non-conforming answer costs one attempt and its refusal reason is recorded on the entry for the
 answerer to read, exhausted attempts (default one) are the catchable L4006, and so is the one
-absolute deadline for the whole ask passing with no conforming record (its kind is `ask-deadline`). `monitor` registers interest in an agent, and the
+absolute deadline for the whole ask passing with no conforming record (its kind is `ask-deadline`).
+`checkpoint` binds what it asks on its own entry, so `cotal run journal` prints the question under
+the step key an answer is addressed by while the pause is open: the address alone left whoever was
+asked reading the source to find out what "approve" meant. An `escalate` addressed to an agent this
+run spawned is relayed to that seat through the same turn relay an `ask` uses, carrying the prompt
+and the token to answer under; a `to` naming anyone else is a person, and their pause stays the
+one anybody can answer, with the addressee recorded and rendered beside the question.
+`monitor` registers interest in an agent, and the
 registration is the journal entry itself, carrying the handle it registered: monitoring an agent
 that is already dead succeeds, and the death is the wait's to observe. `wait(down(...))` observes
 a monitored agent, and refuses one the run never performed `monitor` on. It reads the death off presence liveness, the

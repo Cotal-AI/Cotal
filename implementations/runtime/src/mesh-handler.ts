@@ -582,6 +582,13 @@ export class MeshHandler {
    * It returns the RAW outcome and never the program's result. Whether an expiry throws or returns
    * is `onExpiry`, which is computed from today's source on the live path and the replay path
    * alike; deciding it here would bake one answer into the journal.
+   *
+   * WHAT IT ASKS IS BOUND ON THE ENTRY, and that is not decoration. A pause the reference calls
+   * "a durable pause a human or an agent resolves from anywhere" is answered by address (`run`
+   * plus step key), and the prompt lived only in the source: everything durable held the input
+   * HASH, so whoever was asked saw a token and had to go find the program to learn the question.
+   * `to` rides with it for the same reason — an escalation names an addressee, and an addressee
+   * nothing records is an addressee nobody can be shown.
    */
   async checkpoint(req: CheckpointRequest, ctx: EffectContext): Promise<CheckpointRaw> {
     if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
@@ -589,7 +596,19 @@ export class MeshHandler {
     const now = this.now();
     const deadline = now + parseDuration(req.timeout ?? this.binding.defaultCheckpointTimeout);
 
+    // Once per attempt, before the pause exists: a crash between the bind and the mint leaves a
+    // pending entry that says what it was going to ask, which is the harmless direction.
+    if (ctx.resume?.asks === undefined)
+      await ctx.bind({ asks: req.prompt, ...(req.to !== undefined ? { addressee: req.to } : {}) });
+
     await this.arm(ref, deadline);
+
+    // AN ESCALATION IS ADDRESSED, so where the addressee is an agent of this run it is TOLD.
+    // Attempt 0 has no addressee (the reference allows `to` only with `onExpiry: "escalate"`,
+    // and the escalation is the second mint), and a `to` that names no agent of this run is a
+    // person: nothing to relay to, and the pause is answerable from anywhere by design. Both
+    // are visible at the operator surface, which is what the bind above is for.
+    if (ctx.attempt > 0 && req.to !== undefined) await this.relayEscalation(req, ctx, ref.token, deadline);
 
     const settled = await this.settle(ref, ctx.signal);
     if (settled.settle === "expired") return { outcome: "expired", at: settled.ts };
@@ -1399,21 +1418,74 @@ export class MeshHandler {
     token: string,
     ask: { attempt: number; attempts: number; deadlineAt: number; refused?: string },
   ): Promise<void> {
-    const { name, uid } = seat;
-    const ref: GoalRef = { endpoint: this.binding.endpoint, caller: this.binding.caller, goalId: token };
-    const actx = await this.actionCtx();
-    if ((await readGoalStatus(actx, ref)) !== undefined) return;
     const step = stepKeyString(ctx.key);
     const context = renderRunContext({ run: this.binding.runId, step, notices: [] });
     const payload = JSON.stringify({
       run: this.binding.runId, step, context, noticeIds: [],
       ask: { token, schema: seat.schema, attempt: ask.attempt, attempts: ask.attempts, deadlineAt: ask.deadlineAt, ...(ask.refused !== undefined ? { refused: ask.refused } : {}) },
     });
+    await this.relayToSeat(seat, token, payload, ask.deadlineAt, "ask", step);
+  }
+
+  /**
+   * An escalated checkpoint, delivered to the agent it names.
+   *
+   * `to` is legal only with `onExpiry: "escalate"` and the escalation is the SECOND mint, so this
+   * runs once per chain at most. The addressee is resolved through the run's own roster: a name
+   * this run spawned is a seat and is told, and anything else is a person — the pause is
+   * answerable from anywhere by design, its addressee is on the entry, and refusing a program
+   * that escalates to a human would be this host narrowing an option the reference leaves open.
+   *
+   * The relay is the ask's, because the two are the same act: one turn on the seat, carrying what
+   * is asked and the token to answer under, settling on the checkpoint plane rather than on the
+   * relay's own terminal.
+   */
+  private async relayEscalation(req: CheckpointRequest, ctx: EffectContext, token: string, deadlineAt: number): Promise<void> {
+    const to = req.to as string;
+    const step = stepKeyString(ctx.key);
+    const entry = this.roster.get(to);
+    // A seat is a roster entry whose acceptance floor was served: that is what carries the
+    // owner/actor coordinates a relay is addressed by. Anything else — a name this run never
+    // spawned, or one whose floor never landed — is not a seat, and the escalation stays the
+    // durable pause it already is, addressed on its entry and answerable from anywhere.
+    const seated = entry !== undefined && entry.owner !== undefined && entry.actor !== undefined;
+    if (!seated) return;
+    const context = renderRunContext({ run: this.binding.runId, step, notices: [] });
+    const payload = JSON.stringify({
+      run: this.binding.runId, step, context, noticeIds: [],
+      checkpoint: { token, prompt: req.prompt, schema: req.schema ?? null, deadlineAt, escalatedTo: to },
+    });
+    await this.relayToSeat(
+      { name: to, uid: entry!.uid, owner: entry!.owner!, actor: entry!.actor! },
+      token, payload, deadlineAt, "checkpoint", step,
+    );
+  }
+
+  /**
+   * Submit one relay to a seat as a `turn` goal, and read its acceptance.
+   *
+   * IDEMPOTENT BY THE GOAL RECORD, which is also the arbiter when the invoke does not come back:
+   * a relay that landed and lost its reply is a relay that landed, and re-submitting it would put
+   * a second turn on the seat for one request. A seat the serve boundary reports gone is the
+   * agent-down failure (L4002); every other refusal is this endpoint's and is uncatchable.
+   */
+  private async relayToSeat(
+    seat: { name: string; uid: string; owner: string; actor: string },
+    goalId: string,
+    payload: string,
+    deadlineAt: number,
+    kind: "ask" | "checkpoint",
+    step: string,
+  ): Promise<void> {
+    const { name, uid } = seat;
+    const ref: GoalRef = { endpoint: this.binding.endpoint, caller: this.binding.caller, goalId };
+    const actx = await this.actionCtx();
+    if ((await readGoalStatus(actx, ref)) !== undefined) return;
     let reply: EpAttributedReply;
     try {
       reply = await invokeCommand(this.nc, this.binding.space, await this.manager(), "turn",
-        { payload, deadlineMs: Math.max(1_000, ask.deadlineAt - this.now()) }, {
-          id: token,
+        { payload, deadlineMs: Math.max(1_000, deadlineAt - this.now()) }, {
+          id: goalId,
           deadlineMs: TURN_ACCEPT_DEADLINE_MS,
           target: { mode: "owner", owner: seat.owner, actor: seat.actor, lifecycleUid: uid },
         });
@@ -1425,8 +1497,8 @@ export class MeshHandler {
     if (reply.reply.ok === false) {
       const err = reply.reply.error;
       if (err?.code === "expired")
-        throw new EffectError("L4002", "ask", `ask(${step}) found ${name}#${uid} down before its relay began: ${err.message}`);
-      throw new Error(`ask(${step}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? "refused with no message"}`);
+        throw new EffectError("L4002", kind, `${kind}(${step}) found ${name}#${uid} down before its relay began: ${err.message}`);
+      throw new Error(`${kind}(${step}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? "refused with no message"}`);
     }
   }
 

@@ -472,7 +472,7 @@ const a = await checkpoint("approve", "Ship it?", { timeout: "2s", onExpiry: "pr
   const h2 = new MeshHandler(nc, kv, js, jsm, successor, new EpfSettleWatcher(js, jsm, SPACE, 3_000), () => NOW);
   // The rejection shim is part of the cell: an attach that REFUSES (the pre-repair behaviour)
   // must fail the cell that names it, never kill the suite as an unhandled rejection.
-  const attached = h2.checkpoint({ prompt: "Ship it?", timeout: "1h" } as never, { requestId: token, signal: { cancelled: false, onCancel() { /* never fires here */ } } } as never)
+  const attached = h2.checkpoint({ prompt: "Ship it?", timeout: "1h" } as never, { requestId: token, attempt: 0, bind: async () => { /* the successor's own bind; nothing here reads it back */ }, signal: { cancelled: false, onCancel() { /* never fires here */ } } } as never)
     .then((v) => ({ v: v as { outcome?: string; by?: string } }), (e: unknown) => ({ e: e as Error }));
   await wait(300);
   const spec = await readCheckpointSpec(kv, { endpoint: EP, token });

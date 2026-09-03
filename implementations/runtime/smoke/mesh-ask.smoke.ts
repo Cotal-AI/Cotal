@@ -326,7 +326,7 @@ const mk = (runId: string): MeshHandler => new MeshHandler(
   new EpfSettleWatcher(js, jsm, SPACE, 3_000),
   () => Date.now(),
 );
-const stepCtx = (requestId: string, resume?: Record<string, unknown>) => {
+const stepCtx = (requestId: string, resume?: Record<string, unknown>, attempt = 0, kind = "ask") => {
   const listeners: ((reason: string) => void)[] = [];
   const signal = {
     cancelled: false, reason: undefined as string | undefined,
@@ -334,8 +334,8 @@ const stepCtx = (requestId: string, resume?: Record<string, unknown>) => {
   };
   const bound: Record<string, unknown> = {};
   const ctx = {
-    key: { scope: [], kind: "ask", name: "size", occurrence: 0 },
-    requestId, attempt: 0, signal,
+    key: { scope: [], kind, name: "size", occurrence: 0 },
+    requestId, attempt, signal,
     ...(resume !== undefined ? { resume } : {}),
     bind: async (facts: Record<string, unknown>) => {
       for (const k of Object.keys(bound)) delete bound[k];
@@ -744,9 +744,58 @@ const relayOf = (tok: unknown): { invoke?: (typeof turnInvokes)[number]; ask?: R
     JSON.stringify(got));
 }
 
+// ── 11) an escalated checkpoint is addressed, and an addressee that is a seat is TOLD ─────────
+//
+// The reference says `escalate` "mints exactly one further checkpoint addressed to `to`". The
+// handler dropped `to` and `prompt` on the floor: the second mint was a pause identical to the
+// first, the addressee learned nothing, and everything durable held the input HASH, so whoever
+// was expected to answer had a token and no question. The relay is the ask's, because it is the
+// same act — one turn on the seat, carrying what is asked and the token to answer under.
+{
+  console.log("• 11 — an escalation addressed to a seat is relayed with its question");
+  const h = mk("ak-11");
+  const seat11 = await spawnSeat(h, "11");
+  const name11 = seat11.agent.split("#")[0] as string;
+  const before = turnInvokes.length;
+  const k = stepCtx(token("i"), undefined, 1, "checkpoint");
+  const parked = h.checkpoint({ prompt: "Ship it?", timeout: "1h", onExpiry: "proceed", to: name11 } as never, k.ctx)
+    .then(() => "settled", (e: unknown) => `threw: ${(e as Error).message}`);
+  let relayed: { goalId: string; payload: string } | undefined;
+  for (let i = 0; i < 100 && relayed === undefined; i += 1) {
+    relayed = turnInvokes.slice(before)[0];
+    if (relayed === undefined) await wait(100);
+  }
+  const body = relayed === undefined ? undefined : JSON.parse(relayed.payload) as {
+    step?: string; checkpoint?: { token?: string; prompt?: string; escalatedTo?: string; deadlineAt?: number };
+  };
+  c("the escalation reaches the seat as a turn under the pause's own token",
+    relayed?.goalId === token("i") && body?.checkpoint?.token === token("i"), JSON.stringify(body)?.slice(0, 200));
+  c("carrying the question, the addressee and the step to answer at",
+    body?.checkpoint?.prompt === "Ship it?" && body?.checkpoint?.escalatedTo === name11
+      && body?.step === "/checkpoint:size#0", JSON.stringify(body)?.slice(0, 200));
+  c("and the entry itself records what it asks, so the operator surface can show it",
+    k.bound.asks === "Ship it?" && k.bound.addressee === name11, JSON.stringify(k.bound));
+  k.cancel("the cell has what it came for");
+  await withDeadline(parked, 15_000, "the escalated pause");
+
+  // A `to` that is not a seat of this run is a PERSON. The reference allows it (`to` is a name,
+  // not a handle), the pause is answerable from anywhere by design, and its addressee is on the
+  // entry: what must not happen is a relay to a seat nobody spawned.
+  const before2 = turnInvokes.length;
+  const k2 = stepCtx(token("j"), undefined, 1, "checkpoint");
+  const parked2 = h.checkpoint({ prompt: "Sign off?", timeout: "1h", onExpiry: "proceed", to: "david" } as never, k2.ctx)
+    .then(() => "settled", (e: unknown) => `threw: ${(e as Error).message}`);
+  await wait(1_000);
+  c("an escalation addressed to someone who is not a seat relays to nobody and still records who it names",
+    turnInvokes.length === before2 && k2.bound.asks === "Sign off?" && k2.bound.addressee === "david",
+    JSON.stringify({ relays: turnInvokes.length - before2, bound: k2.bound }));
+  k2.cancel("the cell has what it came for");
+  await withDeadline(parked2, 15_000, "the unaddressed pause");
+}
+
 await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
-const EXPECTED_CELLS = 35;
+const EXPECTED_CELLS = 39;
 const ran = ok + fail;
 console.log(`mesh-ask.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

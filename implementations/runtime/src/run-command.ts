@@ -287,6 +287,16 @@ async function journal(planes: Planes, runId: string | undefined): Promise<void>
     const step = journalEntryKeyString(e);
     const outcome = e.state === "pending" ? "pending" : `${e.status}${e.error?.code ? ` (${e.error.code})` : ""}`;
     console.log(`#${record.n}  step        ${step}  ${outcome}`);
+    // WHAT AN OPEN PAUSE ASKS, under the step an answer is addressed by. `answer <run> <stepKey>`
+    // is the whole interface to a checkpoint, and without this the operator on the other end of it
+    // had the address and not the question: everything durable held the input HASH, so learning
+    // what "approve" meant took a trip back to the source. Only while it is open, because a
+    // settled pause is answered and the render is a worklist rather than a transcript.
+    const asks = e.state === "pending" ? (e.external as { asks?: unknown } | undefined)?.asks : undefined;
+    if (typeof asks === "string") {
+      const addressee = (e.external as { addressee?: unknown } | undefined)?.addressee;
+      console.log(`            asks        ${asks}${typeof addressee === "string" ? `  (escalates to ${addressee})` : ""}`);
+    }
   }
 }
 

@@ -133,6 +133,14 @@ let P = "";
     }
   }
   c("the checkpoint opens durably", open);
+  // WHAT IT ASKS, at the surface an operator answers from. `answer <run> <stepKey>` is the whole
+  // interface to a checkpoint, and the render used to give the address without the question:
+  // everything durable held the input HASH, so learning what "approve" meant took a trip back to
+  // the source. Read while the pause is OPEN, because that is when the question is a worklist.
+  await wf(["journal", cid]);
+  c("the journal render shows an open pause's question under the step an answer is addressed by",
+    captured().includes("/checkpoint:approve#0  pending") && captured().includes("asks        Ship it?"),
+    captured().split("\n").filter((l) => l.includes("checkpoint") || l.includes("asks")).join(" | "));
   // A THROW here must fail the cell rather than kill the suite: the holder-bound presenter is the
   // load-bearing part of `answer`, and a suite that dies names no claim.
   const answered = await wf(["answer", cid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' })
@@ -247,7 +255,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 22;
+const DECLARED = 23;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);
