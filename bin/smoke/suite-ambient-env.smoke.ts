@@ -117,7 +117,6 @@ const FROZEN: readonly string[] = [
   "implementations/cli/smoke/ext-seed-help.smoke.ts",
   "implementations/cli/smoke/join-creds-pairing.smoke.ts",
   "implementations/cli/smoke/manager-singleton-live.smoke.ts",
-  "implementations/cli/smoke/seed.smoke.ts",
   "implementations/cli/smoke/spawn-manifest-live.smoke.ts",
   "implementations/cli/smoke/sys-rotation-e2e.smoke.ts",
   "implementations/cli/smoke/up-manifest-live.smoke.ts",
