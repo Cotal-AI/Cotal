@@ -12,6 +12,10 @@
     "CLAUDE_CODE_USE_FOUNDRY",
     "CLAUDE_CODE_USE_ANTHROPIC_AWS",
     "CLAUDE_CODE_USE_MANTLE",
+    "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+    "CLAUDE_CODE_SKIP_VERTEX_AUTH",
+    "CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
+    "CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH",
     "CLAUDE_CODE_SKIP_MANTLE_AUTH",
     "CLAUDE_CODE_SKIP_AWS_CRED_CACHE",
     "CLAUDE_CODE_AWS_CHAIN_RESOLVE_TIMEOUT_MS",
@@ -76,7 +80,8 @@
       "AWS_DEFAULT_REGION",
       "AWS_SHARED_CREDENTIALS_FILE",
       "AWS_CONFIG_FILE",
-      "AWS_BEARER_TOKEN_BEDROCK"
+      "AWS_BEARER_TOKEN_BEDROCK",
+      "CLAUDE_CODE_SKIP_BEDROCK_AUTH"
     ],
     "CLAUDE_CODE_USE_MANTLE": [
       "AWS_ACCESS_KEY_ID",
@@ -96,7 +101,21 @@
       "ANTHROPIC_VERTEX_PROJECT_ID",
       "GCLOUD_PROJECT",
       "GOOGLE_CLOUD_PROJECT",
-      "CLOUD_ML_REGION"
+      "CLOUD_ML_REGION",
+      "CLAUDE_CODE_SKIP_VERTEX_AUTH"
+    ],
+    "CLAUDE_CODE_USE_FOUNDRY": [
+      "ANTHROPIC_FOUNDRY_API_KEY",
+      "ANTHROPIC_FOUNDRY_AUTH_TOKEN",
+      "ANTHROPIC_FOUNDRY_BASE_URL",
+      "ANTHROPIC_FOUNDRY_RESOURCE",
+      "CLAUDE_CODE_SKIP_FOUNDRY_AUTH"
+    ],
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS": [
+      "ANTHROPIC_AWS_API_KEY",
+      "ANTHROPIC_AWS_BASE_URL",
+      "ANTHROPIC_AWS_WORKSPACE_ID",
+      "CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH"
     ]
   },
   "hostSessionMarkers": [
@@ -108,5 +127,6 @@
     "amazonBedrock": "https://code.claude.com/docs/en/amazon-bedrock",
     "googleVertexAi": "https://code.claude.com/docs/en/google-vertex-ai",
     "vertexRegionVariableList": "https://code.claude.com/docs/en/env-vars"
-  }
+  },
+  "scope": "Provider authentication and request-routing variables inherited by a managed Claude seat. General model selection variables such as ANTHROPIC_MODEL are outside this fixture unless a provider page names a provider-specific routing role."
 }

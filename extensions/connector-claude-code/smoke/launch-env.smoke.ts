@@ -37,6 +37,7 @@ interface ProviderEnvFixture {
   providerKeys: string[];
   providerCredentialKeys: Record<string, string[]>;
   hostSessionMarkers: string[];
+  scope: string;
 }
 
 const parsedFixture: unknown = JSON.parse(
@@ -52,7 +53,9 @@ const fixtureShapeValid =
   typeof (parsedFixture as Partial<ProviderEnvFixture>).providerCredentialKeys === "object" &&
   (parsedFixture as Partial<ProviderEnvFixture>).providerCredentialKeys !== null &&
   Object.values((parsedFixture as Partial<ProviderEnvFixture>).providerCredentialKeys ?? {}).every(isStringArray) &&
-  isStringArray((parsedFixture as Partial<ProviderEnvFixture>).hostSessionMarkers);
+  isStringArray((parsedFixture as Partial<ProviderEnvFixture>).hostSessionMarkers) &&
+  typeof (parsedFixture as Partial<ProviderEnvFixture>).scope === "string" &&
+  ((parsedFixture as Partial<ProviderEnvFixture>).scope?.length ?? 0) > 0;
 check("the external provider fixture has the required shape", fixtureShapeValid);
 if (!fixtureShapeValid) throw new Error("invalid Claude provider environment fixture");
 const fixture = parsedFixture as ProviderEnvFixture;
