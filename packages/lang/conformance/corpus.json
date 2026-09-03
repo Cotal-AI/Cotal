@@ -1,0 +1,56 @@
+{
+  "source": "spec/cotal-lang.md",
+  "adjudication": "a refused verdict names one code the validator's answer must include, and the answer may carry more; an accepted verdict means the validator answers no codes",
+  "cases": [
+    {
+      "index": 1,
+      "heading": "2.2 The syntax table",
+      "source": "// refused: L1001\nclass Plan { constructor(days) { this.days = days } }\n",
+      "verdict": {
+        "refused": "L1001"
+      }
+    },
+    {
+      "index": 2,
+      "heading": "2.2 The syntax table",
+      "source": "// refused: L1025\nconst same = 0 == \"\"\n",
+      "verdict": {
+        "refused": "L1025"
+      }
+    },
+    {
+      "index": 3,
+      "heading": "2.3 Static rules beyond syntax",
+      "source": "// refused: L2013\nasync function work(n) { return await sleep(\"1m\") }\nconst pa = work(1)\nconst pb = work(2)\n",
+      "verdict": {
+        "refused": "L2013"
+      }
+    },
+    {
+      "index": 4,
+      "heading": "6.8 The `notify` bound",
+      "source": "const planner = await spawn(\"planner\")\nconst builder = await spawn(\"builder\", { worktree: \"wt-1\" })\nconst r = await turn(builder, { name: \"build\", deadline: \"30m\" })\nif (r.status === \"blocked\") {\n  await notify([planner], { decision: \"build\", outcome: \"blocked\", detail: { note: r.note ?? \"\" } })\n  await turn(planner, { name: \"unblock\" })\n}\n",
+      "verdict": "accepted"
+    },
+    {
+      "index": 5,
+      "heading": "7.3 `race`",
+      "source": "const builder = await spawn(\"builder\")\nconst outcome = await race({\n  reply: () => wait(replied(builder), { timeout: \"20m\" }),\n  giveUp: () => sleep(\"1h\"),\n}, { name: \"await-or-move-on\" })\nif (outcome.index === \"giveUp\") {\n  await notify([builder], { decision: \"await-reply\", outcome: \"gave-up\" })\n}\n",
+      "verdict": "accepted"
+    },
+    {
+      "index": 6,
+      "heading": "7.7 Writes across branches",
+      "source": "// refused: L2032\nlet winner = null\nconst a = await spawn(\"a\")\nconst b = await spawn(\"b\")\nawait parallel({\n  first: async () => { const r = await turn(a, { name: \"go\" }); winner = r },\n  second: async () => { const r = await turn(b, { name: \"go\" }); winner = r },\n})\n",
+      "verdict": {
+        "refused": "L2032"
+      }
+    },
+    {
+      "index": 7,
+      "heading": "9.1 What a program can catch",
+      "source": "const builder = await spawn(\"builder\")\ntry {\n  await turn(builder, { name: \"build\", deadline: \"10m\" })\n} catch (e) {\n  if (e.code === \"L4003\") {\n    await notify([builder], { decision: \"build\", outcome: \"timed-out\" })\n  } else {\n    throw e\n  }\n}\n",
+      "verdict": "accepted"
+    }
+  ]
+}
