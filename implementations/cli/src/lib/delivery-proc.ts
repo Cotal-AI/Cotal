@@ -7,7 +7,7 @@ import {
   newIdentity,
   waitForDeliveryLease,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, deliveryCredsKey, findCotalRoot, getSoleSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, reclaimDeadPreUpgradeRecord, segmentedKey, type LivenessProbe, type LocalProcessContext, workspaceSecretStore, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, deliveryCredsKey, findCotalRoot, getSoleSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, reclaimDeadPreUpgradeRecord, segmentedKey, type LivenessProbe, type LocalProcessContext, workspaceSecretStore, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin } from "@cotal-ai/workspace";
 import { selfArgv } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
@@ -287,7 +287,8 @@ export async function stopDelivery(
   // fronts the recorded process before anything is signalled.
   const identity = verifyIdentityPin(p);
   if (identity.kind === "mismatch") throw identityRefusal("the delivery daemon", p, identity.record, identity.liveToken);
-  if (identity.kind !== "match" && identity.kind !== "gone") throw identityUncertaintyRefusal("the delivery daemon", p, identity);
+  if (identity.kind === "legacy") console.error(identityLegacyWarning("the delivery daemon", p));
+  else if (identity.kind !== "match" && identity.kind !== "gone") throw identityUncertaintyRefusal("the delivery daemon", p, identity);
   try {
     send(pid, "SIGTERM");
   } catch (e) {

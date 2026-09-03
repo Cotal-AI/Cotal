@@ -10,7 +10,7 @@ import {
   readProcessCommand, reclaimDeadPreUpgradeRecord,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE,
   type CommandReader, type LivenessProbe, type LocalProcessContext,
-  identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin,
+  identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin,
 } from "@cotal-ai/workspace";
 
 /** The space whose manager this folder's commands mean. Every helper below defaults to it, and the
@@ -354,12 +354,12 @@ export async function stopManager(
   // #969 OPEN-VERIFY-TERMINATE: establish target identity BEFORE any signal. A pinned record whose
   // live process carries a DIFFERENT start means the pid was reused and fronts an unrelated process
   // (attribution above cannot catch a reused pid that happens to run a supervisor-shaped command);
-  // a legacy (unpinned) live record or a torn pin cannot prove identity either. Only a MATCH may be
-  // signalled - the ESRCH-dead case already cleared above, and a `gone` verdict is unreachable past
-  // the `dead` branch, but is admitted harmlessly for races.
+  // a torn or unreadable pin cannot prove identity either. A legacy record warns and proceeds so an
+  // upgraded CLI can stop a manager launched before pins existed. A MATCH is fully verified.
   const identity = verifyIdentityPin(p);
   if (identity.kind === "mismatch") throw identityRefusal("the manager", p, identity.record, identity.liveToken);
-  if (identity.kind !== "match" && identity.kind !== "gone") throw identityUncertaintyRefusal("the manager", p, identity);
+  if (identity.kind === "legacy") console.error(identityLegacyWarning("the manager", p));
+  else if (identity.kind !== "match" && identity.kind !== "gone") throw identityUncertaintyRefusal("the manager", p, identity);
   try {
     send(pid, "SIGTERM");
   } catch (e) {

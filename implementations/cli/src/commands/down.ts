@@ -55,7 +55,7 @@ import {
 import { extensionNames, localProcessSurface } from "../ext-loader.js";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
-import { parsePid, probeLiveness, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin } from "@cotal-ai/workspace";
+import { parsePid, probeLiveness, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin } from "@cotal-ai/workspace";
 import { resolveRuntimeSpace } from "../lib/status.js";
 import { downManifest } from "./down-manifest.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
@@ -318,7 +318,8 @@ export async function stopLocalProcess(component: LocalProcess, context: LocalPr
     // every extension component, so all four teardown surfaces share one identity rule.
     const identity = verifyIdentityPin(pidPath);
     if (identity.kind === "mismatch") throw identityRefusal(component.label, pidPath, identity.record, identity.liveToken);
-    if (identity.kind !== "match" && identity.kind !== "gone") throw identityUncertaintyRefusal(component.label, pidPath, identity);
+    if (identity.kind === "legacy") console.error(identityLegacyWarning(component.label, pidPath));
+    else if (identity.kind !== "match" && identity.kind !== "gone") throw identityUncertaintyRefusal(component.label, pidPath, identity);
     try {
       process.kill(pid, "SIGTERM");
     } catch (e) {

@@ -140,10 +140,10 @@ selects only that descriptor. Installed extensions cache their contributed regis
 base CLI does not hardcode optional package pidfiles.
 
 Each recorded pidfile also carries a sibling `<pidfile>.identity` pin (pid plus the process's
-start, where the OS reports one). Teardown never signals a bare pid: PIDs are recycled, so the
-pin is what proves the live process is still the recorded one. A reused pid, a legacy record with
-no pin, and a torn pin are all refused loudly and preserved; only a proven death (or a matching
-pin) is signalled, and the record clears once death is confirmed.
+start, where the OS reports one). The pin proves that the live process is still the recorded one.
+A reused pid and a torn or unreadable pin are refused and preserved. A pre-pin record warns and is
+signalled so an upgraded CLI can stop a stack launched by the previous version; the next launch
+writes a pin. A record clears only once death is confirmed.
 
 All re-execs resolve this CLI via `selfArgv()` / `selfCotal()`
 ([`lib/self-exec.ts`](../implementations/cli/src/lib/self-exec.ts)) = `[node, ...loaderFlags,

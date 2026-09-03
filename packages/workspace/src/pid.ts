@@ -188,7 +188,7 @@ export function formatRecord(record: ProcessIdentityRecord): string {
  * `undefined`, because no cheap STABLE token exists there (see the Windows note in
  * `advisory-lock.ts`'s `processStartToken` for why a `ps` on PATH is worse than none). A pid whose
  * token is `undefined` can still be recorded — the record then carries no start pin, and teardown
- * falls back to the loud-refusal direction, never a silent one.
+ * warns that it is proceeding without the identity check.
  */
 export type ProcessStartTokenReader = (pid: number) => string | undefined;
 
@@ -210,8 +210,9 @@ export { defaultStartToken };
 
 /** The verdict of {@link assertRecordIdentity}: does the live process behind `pid` still carry the
  *  start this record pinned? `unreadable` is deliberately NOT a variant: the reader signature
- *  returns `undefined` for "cannot look" and that folds into `unpinned` (refuse), because a
- *  platform that cannot pin must refuse rather than pass. */
+ *  returns `undefined` for "cannot look" and that folds into `unpinned` (refuse). This differs from
+ *  a legacy record with no pin at all: legacy records warn and proceed for upgrade compatibility,
+ *  while a pin that exists but cannot be checked is preserved rather than silently weakened. */
 export type IdentityVerdict =
   | { kind: "match" }
   | { kind: "mismatch"; liveToken: string }
@@ -248,8 +249,15 @@ export function assertRecordIdentity(record: ProcessIdentityRecord, tokenAt: Pro
 export function identityRefusal(label: string, path: string, record: ProcessIdentityRecord, live: string): Error {
   return new Error(
     `refusing to stop ${label} (pid ${record.pid}) at ${path}: the pid has been reused (recorded start ${record.token}, the live process started ${live}). Signalling it would kill an unrelated process. The record is preserved.\n` +
-    `NEXT: verify with \`ps -p ${record.pid}\`; the recorded process is gone, so remove the file by hand once you have confirmed nothing of yours is behind that pid.`,
+    `NEXT: inspect pid ${record.pid} with \`ps -p ${record.pid}\`. If that process should be stopped, stop it, then rerun this command; once the pid is dead the stale record clears automatically.`,
   );
+}
+
+/** Warning for the one deliberately reduced-guarantee path: a live pre-pin record. Upgrades must be
+ * able to stop the stack that was launched by the previous version. The next launch writes a pin,
+ * after which mismatch and torn-pin protection applies in full. */
+export function identityLegacyWarning(label: string, pidfilePath: string): string {
+  return `! ${label} at ${pidfilePath} predates process identity pinning; signalling it without an identity check. A relaunch will pin the process identity.`;
 }
 
 // ---- THE SIBLING IDENTITY PIN: launch writes it, teardown verifies it (#969) ---------------------
@@ -257,7 +265,7 @@ export function identityRefusal(label: string, path: string, record: ProcessIden
 /**
  * The pidfile format stays a BARE PID. Every reader of `.cotal/*.pid` across the tree - status,
  * clean, meshes, the web dashboard, smoke suites, and any operator script - keeps working, and a
- * bare-pid pidfile remains a LEGACY record this change must handle loudly, not break. The creation
+ * bare-pid pidfile remains a LEGACY record this change must handle with a loud warning, not break. The creation
  * identity therefore lives in a SIBLING file `<pidfile>.identity` (the `manager.delivery-aware`
  * marker pattern), holding the {@link formatRecord} two-field pin. Missing sibling = legacy record;
  * present-but-garbled = torn write, refuse; pid mismatch inside the sibling = torn pairing, refuse.
@@ -268,7 +276,7 @@ export function identityPinPath(pidfilePath: string): string {
 
 /** Write the sibling pin for a pid this launch just spawned. Called AFTER the pidfile write, with
  *  the same pid, so a reader that sees a pidfile with no pin yet is reading either a legacy record
- *  or a launch mid-pairing - both handled loud below, never silently. `undefined` token (Windows,
+ *  or a launch mid-pairing - both are visible below, never silent. `undefined` token (Windows,
  *  ps-less host) writes NO pin, which is the honest legacy shape for that platform rather than a
  *  pin that cannot be checked. */
 export function writeIdentityPin(pidfilePath: string, pid: number, tokenAt: ProcessStartTokenReader = defaultStartToken): void {
@@ -290,7 +298,7 @@ export type PinVerdict =
 /**
  * THE open-verify step every teardown runs BEFORE signalling (#969). Read the pidfile's bare pid,
  * then the sibling pin, and adjudicate the pairing:
- *   - legacy              -> the caller's loud legacy path (refuse-with-guidance on a live pid)
+ *   - legacy              -> the caller warns and signals for upgrade compatibility
  *   - match               -> safe to signal; the process behind the pid is the recorded one
  *   - gone                -> ESRCH-proven dead; the caller may clear the record
  *   - mismatch            -> PID REUSE: the pid now fronts a DIFFERENT start; NEVER signal
@@ -312,10 +320,9 @@ export function verifyIdentityPin(pidfilePath: string, tokenAt: ProcessStartToke
   try {
     rawPin = readFileSync(identityPinPath(pidfilePath), "utf8");
   } catch {
-    // No pin: a LEGACY record. But legacy is only a refusal question for a pid that is LIVE or of
-    // unknown liveness - a pid that is ESRCH-dead needs no identity proof (nothing can be
-    // signalled), so it reports `gone` and the caller clears the stale record exactly as before
-    // #969. kill(pid, 0) only: this probe signals nothing.
+    // No pin: a LEGACY record. A live one warns and is signalable for upgrade compatibility; a pid
+    // that is ESRCH-dead needs no identity proof, so it reports `gone` and the caller clears the
+    // stale record. kill(pid, 0) only: this probe signals nothing.
     return probeLiveness(pidRead) === "dead" ? { kind: "gone" } : { kind: "legacy" };
   }
   // The TORN shapes below refuse when the pid is live or unknown - identity cannot be proven.
@@ -338,29 +345,28 @@ export function removeIdentityPin(pidfilePath: string): void {
   rmSync(identityPinPath(pidfilePath), { force: true });
 }
 
-/** The loud legacy/torn/unpinned refusal, in the same shape as {@link identityRefusal}: name the
- *  component, the file, what was found, and the operator's next step. One constructor so all four
- *  teardown paths (broker, manager, delivery, auth) refuse in the same words - #969's acceptance
- *  that they use ONE identity rule. */
+/** The loud torn/unpinned refusal, in the same shape as {@link identityRefusal}: name the component,
+ *  the file, what was found, and the operator's next step. Legacy records do not reach this helper:
+ *  callers emit {@link identityLegacyWarning} and proceed. */
 export function identityUncertaintyRefusal(label: string, pidfilePath: string, verdict: PinVerdict): Error {
   const pin = identityPinPath(pidfilePath);
   if (verdict.kind === "torn-pin")
     return new Error(
       `refusing to stop ${label} at ${pidfilePath}: its identity pin ${pin} holds unattributable content ${JSON.stringify(verdict.raw)} - a torn or tampered write. The record is preserved.\n` +
-      `NEXT: confirm the process is gone (\`ps\`), then remove the pidfile and its pin by hand.`,
+      `NEXT: inspect the recorded process with \`ps\`. If it should be stopped, stop it, then rerun this command; once the pid is dead the stale record clears automatically.`,
     );
   if (verdict.kind === "torn-pairing")
     return new Error(
-      `refusing to stop ${label} at ${pidfilePath}: its identity pin ${pin} names pid ${verdict.pinPid}, not the pidfile's pid - the pair was torn by a crash between writes. The record is preserved.\n` +
-      `NEXT: confirm which process is really running (\`ps\`), then remove the pidfile and its pin by hand.`,
+      `refusing to stop ${label} at ${pidfilePath}: its identity pin ${pin} names pid ${verdict.pinPid}, not the pidfile's pid. The record is preserved.\n` +
+      `NEXT: inspect the recorded process with \`ps\`. If it should be stopped, stop it, then rerun this command; once the pid is dead the stale record clears automatically.`,
     );
   if (verdict.kind === "unpinned")
     return new Error(
       `refusing to stop ${label} at ${pidfilePath}: its process is live but no creation identity could be established for it, so target identity cannot be proven. The record is preserved.\n` +
-      `NEXT: stop the process yourself, then remove the pidfile and its pin by hand.`,
+      `NEXT: stop the process, then rerun this command; once the pid is dead the stale record clears automatically.`,
     );
   return new Error(
-    `refusing to stop ${label} at ${pidfilePath}: the pidfile carries no creation identity (a legacy or pre-identity record, or a platform that cannot pin), so target identity cannot be proven. The record is preserved.\n` +
-    `NEXT: stop the process yourself (it is live), then remove the pidfile by hand; a fresh \`cotal up\` will record one.`,
+    `refusing to stop ${label} at ${pidfilePath}: the identity state is unsupported (${verdict.kind}). The record is preserved.\n` +
+    `NEXT: stop the process, then rerun this command; once the pid is dead the stale record clears automatically.`,
   );
 }

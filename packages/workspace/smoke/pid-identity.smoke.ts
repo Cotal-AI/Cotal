@@ -12,7 +12,8 @@
  * THE DESIGN: the launch writes a sibling identity pin `<pidfile>.identity` holding `pid token`
  * (the process-start token the advisory lock already uses on Linux/macOS), and every teardown runs
  * ONE shared open-verify-terminate rule: mismatch (pid reuse) refuses and preserves; legacy (no
- * pin) live records refuse loud with guidance; only an ESRCH-proven death clears a record.
+ * pin) live records warn and proceed for upgrade compatibility; torn pins refuse; only an
+ * ESRCH-proven death clears a record.
  *
  * WHAT IS AND IS NOT PROVEN HERE. Every cell drives the REAL stop entry points with REAL child
  * processes and REAL pins; the pid-reuse state itself is built by pinning a start token that
@@ -186,7 +187,7 @@ try {
     check("D1 a pinned record whose pid is ESRCH-dead is cleared with NO signal", sent === 0 && !existsSync(join(root, ".cotal", "delivery.pid")));
   }
 
-  // ── E. LEGACY and TORN records refuse loud on a LIVE pid (never silently proceed) ─────────
+  // ── E. LEGACY records warn + proceed; TORN records still refuse on a LIVE pid ─────────────
   {
     const { stopDelivery } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
     const foreign = spawnForeign();
@@ -194,19 +195,26 @@ try {
     await wait(150);
     writeFileSync(join(root, ".cotal", "delivery.pid"), String(foreign.pid)); // legacy: no pin
     let sent = 0;
-    let legacyRefused: string | undefined;
-    try { await stopDelivery(() => "alive", (pid) => { sent++; process.kill(pid, "SIGTERM"); }); }
-    catch (e) { legacyRefused = (e as Error).message; }
-    check("E1 a LEGACY (unpinned) live record is refused loud, never signalled", sent === 0 && legacyRefused !== undefined && /no creation identity/.test(legacyRefused ?? ""), legacyRefused?.split("\n")[0]);
-    check("E2 the legacy record is preserved", existsSync(join(root, ".cotal", "delivery.pid")));
+    let warning = "";
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => { warning += `${args.join(" ")}\n`; };
+    try { await stopDelivery(undefined, (pid) => { sent++; process.kill(pid, "SIGTERM"); }); }
+    finally { console.error = originalError; }
+    await wait(200);
+    check("E1 a LEGACY (unpinned) live record is signalled with a loud reduced-guarantee warning", sent === 1 && foreign.child.exitCode === 9 && /predates process identity pinning/.test(warning) && /without an identity check/.test(warning) && /relaunch will pin/.test(warning), { sent, exitCode: foreign.child.exitCode, warning });
+    check("E2 the legacy record auto-clears after confirmed death", !existsSync(join(root, ".cotal", "delivery.pid")));
+    const torn = spawnForeign();
+    strays.push(torn.child);
+    await wait(150);
+    writeFileSync(join(root, ".cotal", "delivery.pid"), String(torn.pid));
     // Torn pairing: the pin names a DIFFERENT pid than the pidfile holds.
     writeFileSync(join(root, ".cotal", "delivery.pid.identity"), "999999 1");
     let tornRefused: string | undefined;
     try { await stopDelivery(() => "alive", (pid) => { process.kill(pid, "SIGTERM"); }); }
     catch (e) { tornRefused = (e as Error).message; }
-    check("E3 a TORN pairing (pin names another pid) is refused loud", tornRefused !== undefined && /names pid/.test(tornRefused ?? ""), tornRefused?.split("\n")[0]);
+    check("E3 a TORN pairing is refused as an observation, without claiming a crash caused it", tornRefused !== undefined && /names pid/.test(tornRefused) && !/crash between writes/.test(tornRefused) && /stop it, then rerun/.test(tornRefused), tornRefused?.split("\n")[0]);
     check("E4 the torn pair is preserved", existsSync(join(root, ".cotal", "delivery.pid")) && existsSync(join(root, ".cotal", "delivery.pid.identity")));
-    reap(foreign.child);
+    reap(torn.child);
   }
 } finally {
   for (const s of strays) reap(s);
@@ -219,7 +227,7 @@ console.log(
   "  COVERAGE, precisely: every cell drives a REAL stop entry point against REAL child processes.\n" +
   "  What this suite does NOT prove: the native Windows surface - CreateProcess handle lifetime,\n" +
   "  DETACHED_PROCESS parent exit, and the fact that win32 has no stable start token (a pin cannot\n" +
-  "  be written there, so every record is the legacy shape and refuses loud). That is named as the\n" +
+  "  be written there, so every record is the reduced-guarantee legacy shape and warns). That is named as the\n" +
   "  gap in the PR; the Windows-native launcher (PR #880) must integrate with this seam there.",
 );
 process.exit(0);

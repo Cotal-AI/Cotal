@@ -12,7 +12,7 @@ import { closeSync, existsSync, ftruncateSync, linkSync, openSync, readdirSync, 
 import { basename, dirname } from "node:path";
 import { type AuthPrepared } from "@cotal-ai/core";
 import { spaceKey } from "@cotal-ai/workspace";
-import { parsePid, probeLiveness, type LivenessProbe, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin } from "@cotal-ai/workspace";
+import { parsePid, probeLiveness, type LivenessProbe, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin } from "@cotal-ai/workspace";
 import type { SignalFn } from "./manager-proc.js";
 
 import { selfArgv } from "./self-exec.js";
@@ -226,11 +226,12 @@ export async function stopAuthService(space: string, probe: LivenessProbe = prob
       `auth-service pidfile ${p} holds unattributable content ${JSON.stringify(trimmed)} - refusing to remove a record for a process it cannot identify or signal; inspect or remove it manually`,
     );
   // #969 OPEN-VERIFY-TERMINATE: identity before signal, the same rule as the manager and delivery
-  // helpers. A reused pid fronts an unrelated process; a legacy or torn record cannot prove
-  // identity; only a pin MATCH may be signalled, and only ESRCH (below) or a `gone` verdict clears.
+  // helpers. A reused pid fronts an unrelated process; torn or unreadable identity evidence refuses.
+  // A legacy record warns and proceeds so the first teardown after an upgrade remains possible.
   const identity = verifyIdentityPin(p);
   if (identity.kind === "mismatch") throw identityRefusal("the user-auth service", p, identity.record, identity.liveToken);
-  if (identity.kind !== "match" && identity.kind !== "gone") throw identityUncertaintyRefusal("the user-auth service", p, identity);
+  if (identity.kind === "legacy") console.error(identityLegacyWarning("the user-auth service", p));
+  else if (identity.kind !== "match" && identity.kind !== "gone") throw identityUncertaintyRefusal("the user-auth service", p, identity);
   try {
     send(pid, "SIGTERM");
   } catch (e) {
