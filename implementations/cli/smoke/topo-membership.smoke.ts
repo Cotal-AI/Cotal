@@ -82,6 +82,19 @@ check("an empty, never-written feed reads traffic-only", fresh({ snapshot: { asO
 check("no read yet reads traffic-only", fresh({}).label === "traffic-only");
 const un = fresh({ snapshot, unreadable: "permissions violation" });
 check("a failing read reads unreadable WITH its reason, even over a live snapshot", un.label === "unreadable" && un.reason === "permissions violation", un);
+// The two cases that pin the ORDER rather than just the labels: an unreadable feed whose snapshot
+// is empty or missing satisfies the traffic-only test too, so only checking `unreadable` FIRST
+// keeps "we could not read it" from being reported as "the mesh has no daemon writing one".
+check(
+  "a failing read over an empty snapshot reads unreadable, not traffic-only",
+  fresh({ snapshot: { asOf: undefined, members: [] }, unreadable: "permissions violation" }).label === "unreadable",
+  fresh({ snapshot: { asOf: undefined, members: [] }, unreadable: "permissions violation" }),
+);
+check(
+  "a failing read with no snapshot at all reads unreadable, not traffic-only",
+  fresh({ unreadable: "permissions violation" }).label === "unreadable",
+  fresh({ unreadable: "permissions violation" }),
+);
 
 console.log("4. MeshView classifies what its endpoint answers (the error path driven for real)");
 /** The smallest endpoint MeshView.start() touches, with the two membership calls scripted. */
