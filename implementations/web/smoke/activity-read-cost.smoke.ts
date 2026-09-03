@@ -60,9 +60,10 @@
  * the reason a broken counter fails this suite instead of flattering it.
  *
  * WHAT IT DOES NOT CLAIM. It claims nothing about wall-clock on any particular machine except in
- * §4, where the link is modelled at the field's own parameters and the assertion is only the shape
- * (the shipped arm answers whole; the fan-out does not). Round trips and bytes are properties of the
- * protocol and the corpus, not of the host, which is why the cells that gate the fix are those.
+ * §4 and §5, where the link is modelled at the field's own parameters and the assertion is only the
+ * shape (the shipped arm answers whole and the DM read finishes inside the deadline; the fan-out
+ * does neither). Round trips and bytes are properties of the protocol and the corpus, not of the
+ * host, which is why the cells that gate the fix are those.
  *
  * Needs nats-server on PATH. Run: pnpm smoke:web-activity-read-cost
  */
@@ -602,7 +603,7 @@ try {
   // WHICH OF THE TWO CELLS BELOW ACTUALLY DISCRIMINATES, measured rather than assumed. Restoring the
   // unbounded pull does NOT change what arrives after the abort: 165B either way, because the whole
   // page is committed and delivered BEFORE the reader gets to leave. It changes what the aborted
-  // read moves in total, 36,878 to 36,882B unmutated across five runs against about 502,363B on the
+  // read moves in total, 36,877 to 36,882B unmutated across nine runs against about 502,363B on the
   // one mutated run, so 7.3 is the cell the mutation fixture names.
   // 7.2 stays because it is the bound on the other side of the abort and nothing else asserts it.
   //

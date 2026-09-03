@@ -18,7 +18,7 @@ lines and bytes per direction, over a seeded corpus of 69 chat channels plus 24 
 limit 200. The before column is that same committed suite file, with its `package.json` script,
 copied onto a `544a974b7` checkout and run there, so it measures the old code with the new
 instrumentation: 2524 broker requests and 8,015,332 to 8,016,039 bytes across four runs to return a
-143,401-byte page. After: 143 requests and 908,415 to 908,422 bytes across six runs, for the same
+143,401-byte page. After: 143 requests and 908,410 to 908,422 bytes across eight runs, for the same
 200 entries in the same order, and consumer creates fall from 347 to 6.
 
 The counts are the stable claim and the walls are illustrative, and the two halves of that sentence
