@@ -7,7 +7,7 @@
 import { resolvePeer, AmbiguousPeerError, type CotalEndpoint } from "@cotal-ai/core";
 import type { MeshSnapshot } from "../view/mesh-view.js";
 import type { ManagerReply } from "../lib/control.js";
-import type { ControlOp, ManagedRow } from "./control.js";
+import type { ControlOp, ManagedRow, PsReply } from "./control.js";
 import { mentionsIn } from "../lib/mentions.js";
 
 export interface CommandCtx {
@@ -26,7 +26,7 @@ export interface CommandCtx {
   /** The managed rows of EVERY reachable manager in the space (the `cotal ps` scatter, merged):
    *  a single class-queue call would answer for one manager and omit the others' seats. `silent`
    *  names the instances that did not answer, so a partial list is never shown as a whole one. */
-  ps: () => Promise<{ ok: true; rows: ManagedRow[]; silent: string[] } | { ok: false; error: string }>;
+  ps: () => Promise<PsReply>;
   /** Open the type-the-space-name purge confirm (the palette never purges directly). */
   confirmPurge: () => void;
   /** Open the type-the-channel-name delete confirm for one channel's history and registry entry. */

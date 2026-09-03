@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useFocusManager, useInput, useStdout } from "ink";
 import type { CotalEndpoint, Presence } from "@cotal-ai/core";
 import { useMesh } from "./mesh.js";
-import { control, controlPs, deleteChannel, type ControlCtx, type ControlOp } from "./control.js";
+import { control, controlPs, deleteChannel, type ControlCtx, type ControlOp, type ManagedRow } from "./control.js";
 import { attachSeat } from "../commands/agents.js";
 import { detachKey } from "../lib/attach-client.js";
 import { Tabs } from "./ui/Tabs.js";
@@ -147,9 +147,12 @@ export function App({
   const [managed, setManaged] = useState<Map<string, { agent?: string; mode?: string }>>(new Map());
   const psDead = useRef(false);
   const psPartial = useRef(false); // a partial scatter is announced once, not on every tick
+  const psByInstance = useRef(new Map<string, ManagedRow[]>()); // rows kept per manager, so a partial answer replaces only what spoke
   useEffect(() => {
     if (!canControl || !controlCtx) return;
     psDead.current = false;
+    psPartial.current = false;
+    psByInstance.current = new Map(); // a new space or credential starts with no manager's rows carried over
     let alive = true;
     const poll = async () => {
       if (!alive || psDead.current) return;
@@ -161,20 +164,27 @@ export function App({
         return;
       }
       // A scatter some instance did not answer is `ok:true` with those ids in `silent`, so this
-      // poll has to read that field the way `:ps` does. Rebuilding the map from a known-partial
-      // row list would DELETE the rows of a manager that was answering and has just gone quiet,
-      // which is worse than never having had them: the harness tags and the detail card's `runs`
-      // would empty out on the tick after a manager went silent, with the seats still on the
-      // roster. A partial answer therefore merges over what is already known and says so once;
-      // only a complete one may drop ids, which is what retires a seat that really is gone.
+      // poll reads the attribution rather than the merged list. State is kept PER MANAGER
+      // INSTANCE and each answering instance's rows are replaced wholesale, so a seat despawned
+      // on a manager that spoke is dropped on that same tick, while a silent instance keeps only
+      // what it last said. A flat merge cannot do this: it can add and overwrite but never
+      // delete, so a seat that was despawned while any other instance was quiet would be shown
+      // forever, and a registration whose host is gone stays silent indefinitely. Rebuilding
+      // flat is the opposite error, emptying a quiet manager's seats off the roster.
+      // An instance that is neither answering nor silent has left the registry: its rows go.
       if (r.silent.length && !psPartial.current) {
         psPartial.current = true;
         setNotice(`managed rows are partial: ${r.silent.length} manager instance(s) gave no answer: ${r.silent.join(", ")}`);
       }
       if (!r.silent.length) psPartial.current = false;
+      const byInstance = psByInstance.current;
+      for (const id of [...byInstance.keys()])
+        if (!r.answered.some((a) => a.instanceId === id) && !r.silent.includes(id)) byInstance.delete(id);
+      for (const a of r.answered) byInstance.set(a.instanceId, a.rows);
       setManaged((prev) => {
-        const next = r.silent.length ? new Map(prev) : new Map<string, { agent?: string; mode?: string }>();
-        for (const a of r.rows) next.set(a.id, { agent: a.agent, mode: a.mode });
+        const next = new Map<string, { agent?: string; mode?: string }>();
+        for (const rows of byInstance.values())
+          for (const a of rows) next.set(a.id, { agent: a.agent, mode: a.mode });
         const same =
           next.size === prev.size &&
           [...next].every(([id, m]) => {
@@ -357,32 +367,47 @@ export function App({
     activatedRef.current = true;
     if (!makeParticipant) return setNotice("sent one-way: under this credential replies cannot land in the console");
     const peer = makeParticipant();
-    // The status bar's "on roster" is a claim about a live presence peer, so it is withdrawn when
-    // that peer faults. The factory installs an empty error handler to keep a stray `error` from
-    // throwing; that is the right guard for the observer, which never claimed to be on the roster,
-    // but here it would leave the operator reading a roster line for a peer that is gone. A later
-    // send re-arms activation and starts a fresh peer.
+    // The status bar's "on roster" is a claim about a LIVE presence peer, so it follows the peer's
+    // own connection state rather than being set once and left. `error` only says something went
+    // wrong; `connection` says whether the operator is actually on the roster right now, and the
+    // endpoint re-establishes itself after a terminal close, so a fault is usually followed by a
+    // recovery that must put the claim back. The peer is deliberately RETAINED across a fault:
+    // dropping the reference would leave a live endpoint that still republishes presence, that
+    // the console no longer stops on exit, and that a later send would duplicate under the same
+    // principal.
+    peer.on("connection", ({ connected }: { connected: boolean }) => {
+      if (participant.current === peer) setOnRoster(connected);
+    });
     peer.on("error", (e: Error) => {
-      if (participant.current !== peer) return;
-      participant.current = null;
-      activatedRef.current = false;
-      setOnRoster(false);
-      setNotice("participant: " + e.message);
+      if (participant.current === peer) setNotice("participant: " + e.message);
     });
     try {
       await peer.start();
       participant.current = peer;
       setOnRoster(true);
     } catch (e) {
+      // A peer that never started is dropped, so it must not keep this component's handlers or a
+      // half-open connection behind it. The next send builds a fresh one.
+      peer.removeAllListeners("connection");
+      peer.removeAllListeners("error");
+      peer.on("error", () => {});
+      void peer.stop().catch(() => undefined);
       activatedRef.current = false; // let the next send retry
       setNotice("participant: " + (e as Error).message);
     }
   }, [canWrite, makeParticipant]);
   // The peer leaves with the console (an offline record, like the observer's own stop in useMesh).
+  // Its handlers go first: `stop()` closes the connection, which is itself a disconnect, and a
+  // setState from a component being torn down is a warning at best and a wrong repaint at worst.
   useEffect(
     () => () => {
-      void participant.current?.stop();
+      const peer = participant.current;
       participant.current = null;
+      if (!peer) return;
+      peer.removeAllListeners("connection");
+      peer.removeAllListeners("error");
+      peer.on("error", () => {}); // the factory's guard, restored: a stray error must not throw
+      void peer.stop();
     },
     [],
   );

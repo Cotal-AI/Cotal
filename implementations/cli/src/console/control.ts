@@ -93,30 +93,40 @@ export async function control(ctx: ControlCtx, op: ControlOp, args?: Record<stri
   }
 }
 
-/** The managed rows of every reachable manager in the space: the `cotal ps` read, merged. A static
- *  or open mesh scatters across the registered instances; a user mesh asks the one manager its
- *  bearer reaches.
+/** The single manager a user-mesh bearer reaches, which has no scatter and therefore no instance
+ *  id of its own. A caller keeping rows per instance needs one key for it. */
+const BEARER_INSTANCE = "owner";
+
+/** The managed rows of every reachable manager in the space: the `cotal ps` read.
  *
- *  A scatter that some instance did not answer returns its rows AND the ids that stayed silent.
+ *  `rows` is the merged list, `silent` the instances that did not answer, and `answered` the rows
+ *  attributed to the instance that served them. The attribution is what makes a partial answer
+ *  usable: a caller holding state across polls can replace exactly the instances that spoke and
+ *  keep only what a silent one last said, which neither a merged list nor a flat rebuild allows.
  *  `cotal ps` prints a silent instance rather than dropping it, and the console must not be the
- *  one surface that quietly answers a narrower question than the one asked: a merged list missing
- *  a whole manager's seats, presented as the space's managed set, is wrong rather than partial. */
-export async function controlPs(
-  ctx: ControlCtx,
-): Promise<{ ok: true; rows: ManagedRow[]; silent: string[] } | { ok: false; error: string }> {
+ *  one surface that quietly answers a narrower question than the one asked. */
+export type PsReply =
+  | { ok: true; rows: ManagedRow[]; silent: string[]; answered: { instanceId: string; rows: ManagedRow[] }[] }
+  | { ok: false; error: string };
+export async function controlPs(ctx: ControlCtx): Promise<PsReply> {
   try {
     const t = await resolveControlTarget(ctx, "control-caller-privileged", undefined, { onRefusal: "throw" });
     if (t.auth.bearer) {
       const r = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, {});
-      return r.ok ? { ok: true, rows: (r.data as ManagedRow[]) ?? [], silent: [] } : { ok: false, error: r.error ?? "error" };
+      if (!r.ok) return { ok: false, error: r.error ?? "error" };
+      const rows = (r.data as ManagedRow[]) ?? [];
+      return { ok: true, rows, silent: [], answered: [{ instanceId: BEARER_INSTANCE, rows }] };
     }
     const s = await scatterManager(t.space, t.server, "ps", t.auth, t.spaceAuth);
     if (!s.ok) return s;
-    const answered = s.instances.filter((i) => i.reachable && !i.error);
+    const answered = s.instances
+      .filter((i) => i.reachable && !i.error)
+      .map((i) => ({ instanceId: i.instanceId, rows: ((i.data as ManagedRow[]) ?? []) }));
     return {
       ok: true,
-      rows: answered.flatMap((i) => (i.data as ManagedRow[]) ?? []),
+      rows: answered.flatMap((i) => i.rows),
       silent: s.instances.filter((i) => !(i.reachable && !i.error)).map((i) => i.instanceId),
+      answered,
     };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
