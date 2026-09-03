@@ -31,7 +31,11 @@ if (process.platform !== "win32") {
   const started: ChildProcess[] = [];
   // Its own process group, as the real daemon has, so the group signal path is the one exercised.
   const sleeper = (carriesIdentity: boolean): ChildProcess => {
+    // Whatever runs this suite may itself be a managed agent session, so the ambient copy can carry
+    // a live broker URL and credential. These children need neither: they exist to be found by
+    // their launch nonce and signalled.
     const env = { ...process.env };
+    for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
     if (carriesIdentity) env.JCODE_COTAL_LAUNCH_IDENTITY = identity;
     else delete env.JCODE_COTAL_LAUNCH_IDENTITY;
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], { env, stdio: "ignore", detached: true });
