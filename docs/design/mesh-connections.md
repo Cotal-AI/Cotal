@@ -260,11 +260,31 @@ set.
   operator chose the expiry, this host cannot shorten a credential it did not sign, and that expiry
   may fall after the seat that used it is gone. The bound is the credential's own TTL.
 
-The one lever the home host holds over the delivered path is a **refusal, not a shortening**: the
-manager can read the staged credential's `exp` before handing it over (`credsClaims`,
-`packages/core/src/identity.ts:142`) and refuse material that is already expired or whose remaining
-validity exceeds a configured ceiling. That is what turns "short-TTL by requirement" into something
-enforced at this end rather than requested of the other. The ceiling is Q4's to choose.
+The one lever the home host holds over the delivered path is an **admission check, and it is
+diagnosis rather than enforcement**. That distinction is the whole of it, so it is stated before the
+mechanism: `credsClaims` (`packages/core/src/identity.ts:142`) returns the user JWT's **UNVERIFIED**
+claims, and its own contract says so, because "the broker is the enforcement boundary; local readers
+only need the claims to schedule and diagnose". A local read of an unverified claim cannot bound
+anything. B's broker is the only thing that can, and B's operator chose the lifetime. An earlier draft
+of this paragraph said reading `exp` turns short-TTL "into something enforced at this end"; it does
+not, and that sentence claimed a boundary out of a parse.
+
+What the check does buy is a **named refusal at staging time instead of a silent acceptance**, which
+is the same thing the existing account-scope pre-check buys against a bare broker authorization
+violation. The manager refuses to deliver staged material unless all three hold:
+
+1. `exp` is **present and a number**. `credsClaims` types it `exp?: number`, so a credential that
+   never expires parses cleanly and carries no expiry at all. That is the worst case, not an edge
+   case, and it passes the other two tests by having nothing to test. The precedent is already in
+   this file: `credsRenewalDelayMs` (`identity.ts:158`) throws on exactly this, because an unbounded
+   cred "signals a matrix/caller mismatch, not a cred to keep silently forever".
+2. It has not already passed.
+3. Its remaining validity does not exceed the configured ceiling.
+
+All three, because any one alone admits what the others would have caught. The ceiling is Q4's to
+choose; the requirement that an expiry exist is not a policy knob. And none of it changes who holds
+the bound: on a remote mesh that is still B, and this host's check only decides what it is willing to
+hand its own seat.
 
 Either way the material's path is recorded on the seat's tracked secret set so the per-seat teardown
 reaches it, and deleting that copy is footprint reduction rather than revocation (4.2).
@@ -379,8 +399,10 @@ broker. Three consequences, stated rather than glossed:
   expires or that mesh's own authority revokes it.
 - Therefore an extra-mesh credential is **short-TTL by requirement**, and for a remote mesh its TTL is
   the whole of the exposure. The home host does not control that TTL; what it controls is whether to
-  accept it, by reading `exp` and refusing material beyond a ceiling (3.2). Section 9 carries the
-  ceiling as an open question rather than a guess.
+  hand to its own seat: an admission check over unverified claims that requires a present, numeric,
+  unexpired `exp` within a ceiling and refuses anything failing any of those (3.2). That is a named
+  refusal, not a bound; the bound stays with B. Section 9 carries the ceiling as an open question
+  rather than a guess; the requirement that an expiry exist at all is not open.
 
 This is the #865 credential-revocation gate answered with its real shape. A design that claimed full
 revocation here would be claiming an authority the home host does not have.
@@ -756,7 +778,8 @@ than a design exercise. If you would rather have the default, it is one line to 
 minutes, deliberately longer than staleness so a slow cloud session is not terminalized for being
 slow); and the ceiling on an accepted extra-mesh credential's remaining validity, which sections 3.2
 and 4.2 make load-bearing because on a remote mesh that credential's TTL is the whole of the exposure
-and a refusal is the only lever this host has over it. I have not proposed a number for that last one,
+and a refusal is the only lever this host has over it. Only the ceiling's VALUE is open: that a staged
+credential must carry a numeric expiry at all is settled in 3.2 and is not yours to trade away. I have not proposed a number for that last one,
 because it trades directly against how often a seat has to re-request material and I do not know your
 tolerance.
 
