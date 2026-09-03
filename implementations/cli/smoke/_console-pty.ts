@@ -77,15 +77,42 @@ export class ConsoleSession {
    *  into the global keys instead of the palette would toggle lenses or, worse, reach `D`. */
   async command(line: string): Promise<void> {
     for (let attempt = 0; attempt < 3; attempt++) {
-      const from = this.out.length;
+      let from = this.out.length;
       this.write(":");
-      if (await this.waitFor("Enter runs", 3_000, from)) break; // the palette's hint, with or without suggestions
-      if (attempt === 2) throw new Error(`the : palette did not open for ${JSON.stringify(line)}`);
+      if (!(await this.waitFor("Enter runs", 3_000, from))) {
+        if (attempt === 2) throw new Error(`the : palette did not open for ${JSON.stringify(line)}`);
+        await wait(300);
+        continue;
+      }
+      // The input mounts a frame after the hint paints, and the typed value reaches its state a
+      // frame after that. Both used to be fixed waits, and when either frame was late the Enter
+      // was spent on an input that had not taken the line: the palette stayed open with the line
+      // sitting in it and the command never ran. Wait for the line to actually PAINT instead.
+      from = this.out.length;
+      this.write(line);
+      if (!(await this.waitFor(line, 3_000, from))) {
+        this.write("\x1b");
+        await wait(300);
+        continue;
+      }
+      this.write("\r");
+      await wait(300);
+      if (!(await this.paletteRepaintedOpen())) return;
+      this.write("\x1b"); // drop the line that did not run, so the retry starts from a known state
+      await wait(300);
     }
-    await wait(300); // the palette's input mounts a frame after its hint paints
-    this.write(line);
-    await wait(200);
-    this.write("\r");
+    throw new Error(`the : palette did not run ${JSON.stringify(line)}`);
+  }
+
+  /** True only when a FRESH paint still shows the palette's hint, which is the one signal that
+   *  Enter was not taken. The cumulative buffer keeps every past paint, so an open palette cannot
+   *  be read out of it, and silence cannot either: a console that simply stopped repainting would
+   *  look identical to one whose palette closed. Absence of evidence is deliberately treated as
+   *  closed, because the cost of guessing wrong the other way is running a command twice. */
+  private async paletteRepaintedOpen(): Promise<boolean> {
+    const from = this.out.length;
+    await wait(600);
+    return clean(this.out.slice(from)).includes("Enter runs");
   }
   /** `q`, then wait for the exit; true iff the console exited 0. */
   async quit(): Promise<boolean> {
