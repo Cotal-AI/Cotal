@@ -1,0 +1,50 @@
+{
+  "suite": "packages/workspace/smoke/pid-identity.smoke.ts",
+  "guard": "pinned teardown refuses reused pids and torn pins, while a legacy live record warns and remains signalable for upgrade compatibility",
+  "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/pid-identity.json",
+  "why": [
+    "TWO INDEPENDENT HALVES OF ONE RULE. M1 breaks the shared verdict (the mismatch comparison in",
+    "verifyIdentityPin) and must redden the DELIVERY cell A1, whose sent===0 signal count is the",
+    "direct measurement of the pre-fix defect. M2 deletes the gate at the delivery call site",
+    "entirely and must redden A1. Mismatch protection is the guarded property; legacy no-pin",
+    "records deliberately warn and proceed for upgrade compatibility.",
+    "",
+    "M1 IS THE ONE COMPARISON THE DESIGN TURNS ON, in the workspace seam all four teardown paths",
+    "share (stopManager, stopDelivery, stopAuthService, and down's stopLocalProcess for the broker",
+    "and web). Folding it to match makes every pinned record pass verification, which is precisely",
+    "the bare-pid behaviour the issue forbids. B1/B3/B5 redden too, but A1 is named because its",
+    "signal count is the exact shape the live repro killed a foreign process through.",
+    "",
+    "M2 RESTORES THE PRE-FIX CALL SITE VERBATIM (no gate at all) at one real path, proving the",
+    "delivery teardown actually routes through the seam rather than the cells merely depending on",
+    "the shared module in some other way.",
+    "",
+    "BOTH RUN THE CLI-LIB-BACKED SUITE, so they build first (implementations/cli resolves to dist/)",
+    "and rebuild in afterRestore - git cannot recover a gitignored dist compiled from the mutant."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the shared verdict stops reporting mismatch (verifyIdentityPin folded to match)",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "  return live === record.token ? { kind: \"match\" } : { kind: \"mismatch\", liveToken: live };",
+      "replace": "  return { kind: \"match\" };",
+      "expectRed": "A1 a REUSED pid (pin mismatch) is REFUSED by stopDelivery, never signalled",
+      "cell": "A1 a REUSED pid (pin mismatch) is REFUSED by stopDelivery, never signalled",
+      "note": "The one comparison the whole design turns on. Folding it to match makes every pinned record pass verification, which is precisely the bare-pid behaviour the issue forbids; A1's sent===0 count goes red the moment the signal is sent.",
+      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M2 identity gate deleted at the delivery call site (the pre-fix shape verbatim)",
+      "file": "implementations/cli/src/lib/delivery-proc.ts",
+      "find": "  const identity = verifyIdentityPin(p);\n  if (identity.kind === \"mismatch\") throw identityRefusal(\"the delivery daemon\", p, identity.record, identity.liveToken);\n  if (identity.kind === \"legacy\") console.error(identityLegacyWarning(\"the delivery daemon\", p));\n  else if (identity.kind !== \"match\" && identity.kind !== \"gone\") throw identityUncertaintyRefusal(\"the delivery daemon\", p, identity);",
+      "replace": "  void verifyIdentityPin; void identityLegacyWarning; void identityRefusal; void identityUncertaintyRefusal;",
+      "expectRed": "A1 a REUSED pid (pin mismatch) is REFUSED by stopDelivery, never signalled",
+      "cell": "A1 a REUSED pid (pin mismatch) is REFUSED by stopDelivery, never signalled",
+      "note": "Removes the gate entirely at one real call site. A1 reddens when the mismatch record is signalled; M2's distinct value over M1 proves the call site routes through the seam, not only that the shared verdict compares tokens.",
+      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm build > /dev/null"
+    }
+  ]
+}

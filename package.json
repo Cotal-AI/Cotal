@@ -250,6 +250,7 @@
     "smoke:core-boundary": "tsx packages/core/smoke/core-boundary.smoke.ts",
     "smoke:preflight": "tsx packages/workspace/smoke/preflight.smoke.ts",
     "smoke:pid-contract": "tsx packages/workspace/smoke/pid.smoke.ts",
+    "smoke:pid-identity": "tsx packages/workspace/smoke/pid-identity.smoke.ts",
     "smoke:inst-route-grant": "tsx packages/core/smoke/inst-route-grant.smoke.ts",
     "smoke:manager-lease-grant": "tsx packages/core/smoke/manager-lease-grant.smoke.ts",
     "smoke:manager-lease-probe": "tsx packages/core/smoke/manager-lease-probe.smoke.ts",

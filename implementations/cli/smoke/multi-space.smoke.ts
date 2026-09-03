@@ -666,8 +666,13 @@ try {
   } finally {
     (process as unknown as { kill: typeof process.kill }).kill = realKill;
   }
+  // #969: this fixture pid does not exist, so no real start token exists to pin it with; the
+  // creation-identity gate therefore refuses FIRST (live-but-unpinnable / legacy), which is also
+  // a fail-loud preserve. Both refusals grade the property this cell exists for - never a clean
+  // stop under uncertainty - so either message passes; a pinned REAL unknown-liveness pid still
+  // grades `could not signal` through the signal branch.
   check("down/stopLocalProcess on an UNKNOWN probe (EIO) THROWS + PRESERVES (unknown is not dead, no orphan-under-clean-stop)",
-    unkMsg.includes("could not signal") && existsSync(dpPid), unkMsg);
+    /could not signal|no creation identity|could not be established/.test(unkMsg) && existsSync(dpPid), unkMsg);
   rmSync(dpPid, { force: true });
 
   writeFileSync(dpPid, ""); // empty husk: safe to clear
