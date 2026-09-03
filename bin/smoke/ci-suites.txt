@@ -753,3 +753,8 @@ smoke:manager-two-root-renewal
 # deliberate-despawn control showing identical terminal observables.
 # Appended so every existing shard assignment remains unchanged.
 smoke:manager-stop-reap
+
+# The #1210 read-cost measurement: what `/api/activity` and `/api/dms` spend on the wire,
+# counted by a proxy between the endpoint and the broker, against the fan-out shape they replaced.
+# Appended so every existing shard assignment remains unchanged.
+smoke:web-activity-read-cost
