@@ -35,6 +35,13 @@ is where discovery lives (our equivalent of `.well-known`), not a place to descr
 Details: [SPEC §6](../SPEC.md#6-presence-and-discovery). The dashboard surfaces a stale view
 on the same header mark it uses for a refused poll ([watch a mesh](watch-a-mesh.md)).
 
+`CotalEndpoint.presenceView()` reports whether its local roster can support an absence verdict.
+`current` is usable, `unpopulated` means the current watch has not completed its initial snapshot,
+and `stale` means the watch has been silent past its liveness window. Both unsafe states carry
+`fresh: false`, so an older consumer degrades instead of treating a partial reconnect refill as a
+complete roster. `waitForPresenceSnapshot()` returns `snapshot` or `timeout`; a timeout is a bounded
+give-up, not proof that the snapshot completed.
+
 ## Three delivery modes
 
 Every delivery message is addressed one of three ways

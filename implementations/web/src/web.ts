@@ -9,6 +9,7 @@ import {
   deliveryOf,
   isEventChannel,
   parseSubject,
+  type PresenceView,
   spacePrefix,
   mintCreds,
   newIdentity,
@@ -831,7 +832,7 @@ export async function web(args: ParsedArgs): Promise<void> {
   // per key would empty-to-fill the online-only sidebar once per key. Settle first.
   const pushRoster = debounce(() => broadcast("roster", rosterSnapshot()), 150);
   ep.on("presence", () => pushRoster());
-  ep.on("presence-view", (view: { fresh: boolean; staleSince?: number }) =>
+  ep.on("presence-view", (view: PresenceView) =>
     broadcast("presence-view", view),
   );
 

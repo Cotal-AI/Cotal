@@ -244,6 +244,14 @@ export interface ChannelMember {
   live: boolean;
 }
 
+/** Trust state of this endpoint's local presence roster. `fresh` remains for older consumers:
+ * unpopulated is deliberately false so they fail toward unknown rather than treating a partial
+ * reconnect snapshot as an authoritative absence verdict. */
+export type PresenceView =
+  | { state: "current"; fresh: true }
+  | { state: "unpopulated"; fresh: false }
+  | { state: "stale"; fresh: false; staleSince: number };
+
 /** Raw NATS transport liveness for the endpoint's CURRENT connection epoch. This is deliberately
  *  separate from the `connection` event, which means the full Cotal bind is ready. */
 export interface TransportState {
@@ -460,6 +468,8 @@ export class CotalEndpoint extends EventEmitter {
   private readonly roster = new Map<string, Presence>();
   /** Resolves when the current presence watch has consumed its complete initial KV snapshot. */
   private presenceSnapshot = Promise.resolve();
+  /** False from connection reset until the watch marks the last entry in its initial replay. */
+  private presenceSnapshotPopulated = false;
   /**
    * Observer-local age of the last presence-KV delivery (any key, including DEL/PURGE). Distinct
    * from each peer's `ts`: that is the publisher's heartbeat. Whole-bucket silence past TTL is
@@ -467,8 +477,8 @@ export class CotalEndpoint extends EventEmitter {
    * latter (#1045).
    */
   private lastPresenceWatchAt = 0;
-  /** Last emitted presence-view freshness. Suppresses duplicate `presence-view` events. */
-  private presenceViewFresh = true;
+  /** Last emitted presence-view state. Suppresses duplicate `presence-view` events. */
+  private presenceViewState: PresenceView["state"] = "unpopulated";
   private status: PresenceStatus = "idle";
   private activity?: string;
   /** Mirror of the connector's authoritative attention state, published in presence (advisory). The
@@ -1126,7 +1136,8 @@ export class CotalEndpoint extends EventEmitter {
     this.confirmingChatSubs.clear();
     this.roster.clear();
     this.lastPresenceWatchAt = 0;
-    this.presenceViewFresh = true;
+    this.presenceSnapshotPopulated = false;
+    this.emitPresenceViewIfChanged();
     this.joinSeq.clear();
     this.channelConfigs.clear();
     this.channelDefaults = {};
@@ -1971,27 +1982,29 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /**
-   * Freshness of THIS observer's presence watch, not of any peer. `fresh: false` means the
-   * whole bucket has been silent past the liveness window — the view is stale as of
-   * `staleSince`, and {@link getRoster} is last-known rather than a current offline verdict.
-   * A watch that has not yet delivered anything is not stale (there is no T to name).
+   * Trust state of THIS observer's presence watch, not of any peer. `unpopulated` means the
+   * current watch has not completed its initial snapshot, so {@link getRoster} may be partial and
+   * cannot support an absence verdict. `stale` means the whole bucket has been silent past the
+   * liveness window, so the roster is last-known as of `staleSince`. `fresh` is false for both
+   * unsafe states so consumers written before `state` was added degrade in the safe direction.
    */
-  presenceView(): { fresh: boolean; staleSince?: number } {
-    if (!this.doWatch) return { fresh: true };
-    if (this.lastPresenceWatchAt === 0) return { fresh: true };
+  presenceView(): PresenceView {
+    if (!this.doWatch) return { state: "current", fresh: true };
+    if (!this.presenceSnapshotPopulated) return { state: "unpopulated", fresh: false };
     const staleSince = this.lastPresenceWatchAt + this.ttlMs;
-    if (Date.now() < staleSince) return { fresh: true };
-    return { fresh: false, staleSince };
+    if (Date.now() < staleSince) return { state: "current", fresh: true };
+    return { state: "stale", fresh: false, staleSince };
   }
 
   /** Wait until the current presence watch has consumed its initial KV snapshot. An empty bucket
-   * emits no watch entry, so the timeout keeps a genuinely empty mesh bounded. */
-  async waitForPresenceSnapshot(timeoutMs = 1_000): Promise<void> {
+   * emits no watch entry, so the timeout keeps a genuinely empty mesh bounded and is reported
+   * distinctly from snapshot completion. */
+  async waitForPresenceSnapshot(timeoutMs = 1_000): Promise<"snapshot" | "timeout"> {
     let timer: NodeJS.Timeout | undefined;
     try {
-      await Promise.race([
-        this.presenceSnapshot,
-        new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); }),
+      return await Promise.race([
+        this.presenceSnapshot.then(() => "snapshot" as const),
+        new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), timeoutMs); }),
       ]);
     } finally {
       if (timer) clearTimeout(timer);
@@ -4596,7 +4609,9 @@ export class CotalEndpoint extends EventEmitter {
         // @nats-io/kv marks the final initial replay entry isUpdate=true. Later updates stay true.
         if (!ready && e.isUpdate) {
           ready = true;
+          this.presenceSnapshotPopulated = true;
           hydrated();
+          this.emitPresenceViewIfChanged();
         }
       }
       hydrated();
@@ -4673,7 +4688,7 @@ export class CotalEndpoint extends EventEmitter {
       this.emit("roster", this.getRoster());
       return;
     }
-    this.setPresenceViewFresh(true);
+    if (this.presenceSnapshotPopulated) this.emitPresenceViewIfChanged();
     // Any offline materialization (a stale snapshot OR a graceful-leave record) drops the advisory
     // attention fields — an offline peer must not carry a stale `[focus]`/`locally muted` hint.
     const p: Presence =
@@ -4736,10 +4751,11 @@ export class CotalEndpoint extends EventEmitter {
     this.emit("roster", this.getRoster());
   }
 
-  private setPresenceViewFresh(fresh: boolean): void {
-    if (fresh === this.presenceViewFresh) return;
-    this.presenceViewFresh = fresh;
-    this.emit("presence-view", this.presenceView());
+  private emitPresenceViewIfChanged(): void {
+    const view = this.presenceView();
+    if (view.state === this.presenceViewState) return;
+    this.presenceViewState = view.state;
+    this.emit("presence-view", view);
   }
 
   private sweep(): void {
@@ -4749,7 +4765,7 @@ export class CotalEndpoint extends EventEmitter {
     // sidebar with nothing saying the window went blind (#1045). Gate the per-peer age-out on
     // watch freshness; surface the view as stale instead.
     if (this.lastPresenceWatchAt !== 0 && now - this.lastPresenceWatchAt > this.ttlMs) {
-      this.setPresenceViewFresh(false);
+      this.emitPresenceViewIfChanged();
       return;
     }
     let changed = false;
