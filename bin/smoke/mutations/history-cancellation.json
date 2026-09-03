@@ -9,8 +9,11 @@
     "M1 removes the public AbortSignal. The real constrained-link call stays pending and retains its",
     "ephemeral consumer.",
     "",
-    "M2 restores one whole-pending pull. The shipped HTTP follow-up is starved after the cancelled DM",
-    "read and cell 6.9 turns red.",
+    "M2 restores one whole-pending pull. An aborted read then leaves the broker committed to sending",
+    "the entire backlog down a connection whose reader has left. What that costs is measured in TOTAL",
+    "bytes moved, not in bytes arriving after the abort: the page is committed and delivered before the",
+    "reader gets to leave, so 165B arrives after the abort either way. Cell 7.3 discriminates on the",
+    "total, which is why the mutation names it.",
     "",
     "M3 disables the rolling tail eviction. A widened history window then returns its oldest limit",
     "messages instead of the newest N.",
@@ -23,8 +26,8 @@
     {
       "name": "channelHistory drops the caller signal before either JetStream pull stage",
       "file": "packages/core/src/endpoint.ts",
-      "find": "      chatSubject(this.space, \"*\", \"*\", channel),\n      opts?.limit ?? 100,\n      undefined,\n      opts?.signal,\n    );",
-      "replace": "      chatSubject(this.space, \"*\", \"*\", channel),\n      opts?.limit ?? 100,\n    );",
+      "find": "      [chatSubject(this.space, \"*\", \"*\", channel)],\n      opts?.limit ?? 100,\n      undefined,\n      opts?.signal,\n    )).map((r) => r.msg);",
+      "replace": "      [chatSubject(this.space, \"*\", \"*\", channel)],\n      opts?.limit ?? 100,\n    )).map((r) => r.msg);",
       "expectRed": "✗ FAIL: PUBLIC REPRO: abort settles channelHistory as AbortError instead of leaving it pending",
       "cell": "✗ FAIL: PUBLIC REPRO: abort settles channelHistory as AbortError instead of leaving it pending",
       "completionMarker": "HISTORY CANCELLATION:"
@@ -32,13 +35,13 @@
     {
       "name": "an aborted history window asks the broker for its entire pending backlog in one pull",
       "file": "packages/core/src/endpoint.ts",
-      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:web-bounded-aggregation",
+      "command": "pnpm smoke:web-activity-read-cost",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
-      "completionMarker": "web bounded-aggregation smoke:",
+      "completionMarker": "activity-read-cost smoke:",
       "find": "      const iter = await consumer.consume({ max_messages: Math.min(pending, 32) });",
       "replace": "      const iter = await consumer.fetch({ max_messages: pending });",
-      "expectRed": "6.9 the request following a cancelled read answers instead of being starved by abandoned work",
-      "cell": "6.9 the request following a cancelled read answers instead of being starved by abandoned work"
+      "expectRed": "7.3 and the whole aborted read moves far less than the backlog it was reading",
+      "cell": "7.3 and the whole aborted read moves far less than the backlog it was reading"
     },
     {
       "name": "the rolling window stops after the first limit messages instead of reaching the window ceiling",
@@ -55,10 +58,33 @@
       "file": "implementations/web/src/web.ts",
       "command": "pnpm smoke:history-cancellation && pnpm smoke:web-history-cancellation",
       "completionMarker": "WEB HISTORY CANCELLATION:",
-      "find": "          (await ep.channelHistory(ch.channel, { limit, signal })).map((msg) => ({ mode: \"chat\" as const, channel: ch.channel, msg })),",
-      "replace": "          (await ep.channelHistory(ch.channel, { limit })).map((msg) => ({ mode: \"chat\" as const, channel: ch.channel, msg })),",
+      "find": "          (await ep.multiChannelHistory(chans.map((ch) => ch.channel), { limit, signal }))",
+      "replace": "          (await ep.multiChannelHistory(chans.map((ch) => ch.channel), { limit }))",
       "expectRed": "every started history source receives the shared cancellation signal",
       "cell": "every started history source receives the shared cancellation signal"
+    },
+    {
+      "name": "the multi-filter read stops batching, so one create carries every channel again and a large space gets the timeout that returned no chat at all",
+      "file": "packages/core/src/endpoint.ts",
+      "command": "pnpm smoke:web-activity-read-cost",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "completionMarker": "activity-read-cost smoke:",
+      "find": "    const size = Math.max(1, Math.trunc(opts?.batch ?? MULTI_FILTER_BATCH));",
+      "replace": "    const size = Number.MAX_SAFE_INTEGER;",
+      "expectRed": "8.0 10000 channel filters ANSWER at all, where one unbatched create timed out",
+      "cell": "8.0 10000 channel filters ANSWER at all, where one unbatched create timed out",
+      "note": "One batch holding every subject IS the unbatched create. Measured before the fix on an isolated broker, 10,000 filters failed `timeout` after 5,023ms while 5,000 answered in 5,345ms, and the route then served a page marked partial with `chat` missing and no chat entries. 8.0 asserts messages rather than the partial marker, so it is the cell this mutation reaches first: everything above section 8 reads 69 channels, which is one batch either way."
+    },
+    {
+      "name": "the batched pages are merged by the payload's ts instead of by stream sequence, so which messages the page holds depends on sender clocks again",
+      "file": "packages/core/src/endpoint.ts",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:history-recent",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "find": "    const rows = pages.flat().sort((a, b) => a.seq - b.seq).slice(-limit);",
+      "replace": "    const rows = pages.flat().sort((a, b) => a.msg.ts - b.msg.ts).slice(-limit);",
+      "expectRed": "multiChannelHistory merges BATCHES by arrival, not by the highest `ts`",
+      "cell": "multiChannelHistory merges BATCHES by arrival, not by the highest `ts`",
+      "note": "Repointed after MEASUREMENT. It first named web cell 8.4, which compares a one-create read against a forced-batch read. That cell SURVIVED this mutation, and the reason is structural rather than incidental: the mutation reorders BOTH arms identically, so an equality between two arms of the same implementation cannot see the key it sorts on. The tie-based reasoning offered for it was wrong. The core suite pins the key against an ORACLE instead: a corpus published frame by frame so that `ts` and arrival disagree, where selecting by `ts` returns the other message. 8.4 is kept, because batch-invariance is worth asserting, but it is not this mutation's detector. RE-AIMED after a WRONG-RED: the first name pointed at the single-batch check, which stays GREEN under this mutation because streamHistory applies the limit inside the one batch, leaving one row for the merge to sort. The multi-batch check is the earliest red and is now asserted first, since this suite stops at the first failure.\n\nNo `completionMarker`: this suite is fail-fast (`check` is `assert.ok`) and its only summary line is a success banner after the last check, so a genuine kill can never print it. Measured: with the marker declared, a red on the named cell graded INCONCLUSIVE at 23 of 26 marks, which is every check before the named one and none after. The mutation above it against this same suite declares none either."
     }
   ]
 }

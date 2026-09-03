@@ -1,0 +1,3 @@
+# The #1210 read-cost measurement: what `/api/activity` and `/api/dms` spend on the wire,
+# counted by a proxy between the endpoint and the broker, against the fan-out shape they replaced.
+smoke:web-activity-read-cost

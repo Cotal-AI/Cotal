@@ -151,6 +151,28 @@ interface Plane3DeliveryFrame {
 /** Space joined when none is given on the CLI (the `cotal-<space>` cmux tab, etc.). */
 export const DEFAULT_SPACE = "main";
 
+/** How many channel filters one multi-filter consumer create may carry.
+ *
+ *  A create names every requested channel in one request, so the request grows with the channel
+ *  count and the CLIENT's request timeout is what gives way, not the broker: the create is never
+ *  refused, it just does not answer. Measured on an isolated broker, one message per channel,
+ *  `limit=5`: 70 filters answer in 43ms, 1,000 in 246ms, 5,000 in 5,345ms, and 10,000 does not
+ *  answer at all, failing `timeout` after 5,023ms. Note 5,000 SUCCEEDED while taking longer than
+ *  10,000 took to fail, which is what says the ceiling is on the create request rather than on the
+ *  read: past roughly 5s the create itself is what times out.
+ *
+ *  1,000 is chosen from that sweep rather than from the failure point: it is a fifth of the largest
+ *  count that still answered, and it answers in a quarter second, so a batch stays far away from
+ *  both the timeout and the response-deadline budget the dashboard has to share with its DM read.
+ *  A space with the 69 chat channels this was built for is still ONE read, so the round-trip claim
+ *  in #1210 is unchanged at that size. */
+export const MULTI_FILTER_BATCH = 1_000;
+
+/** How many filter batches may be in flight at once. Bounded because the point of #1210 was to stop
+ *  issuing one read per channel: a space large enough to need batches must not get the fan-out back
+ *  under another name. */
+export const MULTI_FILTER_READ_CONCURRENCY = 4;
+
 export interface EndpointOptions {
   /** The collaboration to join. */
   space: string;
@@ -2468,13 +2490,119 @@ export class CotalEndpoint extends EventEmitter {
     opts?: { limit?: number; signal?: AbortSignal },
   ): Promise<CotalMessage[]> {
     // history from any sender
-    return this.streamHistory(
+    return (await this.streamHistory(
       chatStream(this.space),
-      chatSubject(this.space, "*", "*", channel),
+      [chatSubject(this.space, "*", "*", channel)],
       opts?.limit ?? 100,
       undefined,
       opts?.signal,
+    )).map((r) => r.msg);
+  }
+
+  /**
+   * The newest `limit` chat messages across MANY channels at once, oldest-first within the page,
+   * each tagged with the channel the BROKER delivered it on.
+   *
+   * **One read, not one per channel.** The CHAT stream already interleaves every channel into one
+   * sequence space, so "the newest N across these channels" is the tail of ONE stream, and a
+   * consumer takes a SET of filter subjects. The dashboard's activity feed used to answer this by
+   * calling {@link channelHistory} once per channel and merging: each of those is a widening probe
+   * loop, so the cost carried two multipliers (a probe loop per channel, and a fan-out across every
+   * channel). Counted on the wire over a seeded corpus of 69 chat channels and 24 event channels at
+   * limit 200: 2524 broker requests and about 8.0 MB transferred to return a 143,401-byte page,
+   * against 143 requests and about 0.91 MB here. With no link cost the counts and the page size
+   * repeat exactly across runs; the byte totals move by tens of bytes. `pnpm smoke:web-activity-read-cost` reproduces the
+   * second column and a frozen copy of the fan-out shape; the first is that same suite run against
+   * `544a974b7` (Cotal #1210).
+   *
+   * **The broker does the filtering, so the wire carries only what is asked for.** A channel left
+   * out of `channels` costs nothing: its messages are never delivered, so a space whose volume is
+   * dominated by channels the caller does not want stays cheap. That is the same "filter before the
+   * fetch" property the per-channel fan-out had, kept rather than traded away.
+   *
+   * **The channel comes from the SUBJECT, never from the payload.** A message claims a `channel`
+   * field, and this method ignores it: the tag is derived from the subject the broker routed the
+   * message on, the same derivation {@link listChannels} uses to name a channel in the first place.
+   *
+   * **Concrete channels only.** Filter subjects on one consumer may not overlap, and a wildcard
+   * channel subsumes its own subtree, so a wildcard here is refused rather than silently dropped or
+   * silently double-counted.
+   *
+   * **Observer/admin credentials only, and the broker is what says so.** A multi-filter create
+   * cannot encode its filter in the API subject, so it rides the bare
+   * `$JS.API.CONSUMER.CREATE.<CHAT>` row that only the read-only dashboard profiles hold. An agent
+   * credential pins the filter into the subject per channel and is denied here by the broker, which
+   * is the correct answer: this method reads across channels, and an agent's read ACL is per
+   * channel.
+   */
+  async multiChannelHistory(
+    channels: readonly string[],
+    opts?: { limit?: number; signal?: AbortSignal; batch?: number },
+  ): Promise<{ channel: string; msg: CotalMessage }[]> {
+    const subjects = [...new Set(channels.map((channel) => {
+      if (!isConcreteChannel(channel))
+        throw new Error(`multiChannelHistory: "${channel}" is a wildcard channel - one consumer's filter subjects may not overlap, so name the concrete channels`);
+      // `chatSubject` builds the filter through `token()`, which REWRITES rather than refuses: it
+      // maps a character a subject may not carry to `_`, trims each segment, and drops empty ones.
+      // So "foo/bar" would filter on `foo_bar`, ".lead" on `lead`, and "team..b" on `team.b` - the
+      // caller names one channel and the broker returns another, which is the exact promise this
+      // method makes ("a channel left out of the list never crosses the link") inverted. This is the
+      // same aliasing `assertValidChannel` was written for on the policy path; the read path needs
+      // it too, and it fails loud rather than serving a channel nobody asked for.
+      assertValidChannel(channel);
+      return chatSubject(this.space, "*", "*", channel);
+    }))];
+    // No channels is not an empty stream, but it IS an empty answer, and asking the broker for a
+    // consumer with no filter would read the WHOLE stream instead of none of it.
+    if (subjects.length === 0) return [];
+    const limit = opts?.limit ?? 100;
+    // ONE CREATE CANNOT CARRY AN UNBOUNDED FILTER LIST. The create names every subject in one
+    // request and the client's request timeout is what gives way, so past roughly 5,000 filters the
+    // read does not answer at all and the route loses the whole chat source: measured on an
+    // isolated broker, 10,000 channels failed `timeout` after 5,023ms while the fan-out this
+    // replaced still returned 2,739 messages on the same corpus. Reading in batches keeps the
+    // single-read cost at the sizes this was built for (69 channels is one batch, so #1210's
+    // round-trip numbers are unchanged) and degrades to a few reads instead of none above that.
+    // `batch` is a knob rather than a constant so the batched path can be compared against the
+    // single-create path on ONE corpus: forcing a small batch makes a space that would otherwise be
+    // one read take many, which is the only way to assert the two select the same messages.
+    const size = Math.max(1, Math.trunc(opts?.batch ?? MULTI_FILTER_BATCH));
+    const batches: string[][] = [];
+    for (let i = 0; i < subjects.length; i += size)
+      batches.push(subjects.slice(i, i + size));
+    const pages: { seq: number; subject: string; msg: CotalMessage }[][] = new Array(batches.length);
+    let next = 0;
+    const readBatch = async (): Promise<void> => {
+      for (;;) {
+        const i = next++;
+        if (i >= batches.length) return;
+        pages[i] = await this.streamHistory(
+          chatStream(this.space), batches[i], limit, undefined, opts?.signal,
+        );
+      }
+    };
+    // A BATCH THAT FAILS FAILS THE READ. Returning the batches that answered would be the newest
+    // `limit` across SOME of the channels asked for while looking like the newest across all of
+    // them, which is a wrong page presented as a right one. Throwing keeps the caller's existing
+    // envelope: the dashboard marks `chat` missing and says the page is partial, which is what it
+    // already did when this method was one read.
+    await Promise.all(
+      Array.from({ length: Math.min(MULTI_FILTER_READ_CONCURRENCY, batches.length) }, readBatch),
     );
+    // MERGE ON ARRIVAL, NOT ON `ts`. Each batch returns the newest `limit` within its own subjects,
+    // and the newest `limit` overall is a subset of their union, so re-selecting by stream sequence
+    // reproduces exactly what one create over the whole list would have selected. Sorting by the
+    // payload's `ts` here instead would change which messages the page holds, which is the
+    // selection question this pull request already had to answer once.
+    const rows = pages.flat().sort((a, b) => a.seq - b.seq).slice(-limit);
+    return rows.map(({ subject, msg }) => {
+      const p = parseSubject(subject);
+      // The filter set is built from chat subjects, so this cannot fire against a healthy broker.
+      // It is here because the alternative to raising is tagging a message with a guess.
+      if (p?.kind !== "chat")
+        throw new Error(`multiChannelHistory: the broker delivered ${subject}, which is not a chat subject on this space`);
+      return { channel: p.rest, msg };
+    });
   }
 
   /** Read a channel's recent history THROUGH THE DELIVERY DAEMON instead of through a consumer this
@@ -2522,13 +2650,13 @@ export class CotalEndpoint extends EventEmitter {
    *  skips for them — only an `admin`-profile cred can read it. */
   async dmHistory(opts?: { limit?: number; signal?: AbortSignal }): Promise<CotalMessage[]> {
     // every inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor> DM — the whole DM subtree (god-view)
-    return this.streamHistory(
+    return (await this.streamHistory(
       dmStream(this.space),
-      `${spacePrefix(this.space)}.inst.>`,
+      [`${spacePrefix(this.space)}.inst.>`],
       opts?.limit ?? 100,
       undefined,
       opts?.signal,
-    );
+    )).map((r) => r.msg);
   }
 
   /**
@@ -2556,11 +2684,11 @@ export class CotalEndpoint extends EventEmitter {
    */
   private async streamHistory(
     stream: string,
-    subject: string,
+    subjects: string[],
     limit: number,
     before?: number,
     signal?: AbortSignal,
-  ): Promise<CotalMessage[]> {
+  ): Promise<{ seq: number; subject: string; msg: CotalMessage }[]> {
     if (!this.nc) throw new Error("endpoint not started");
     signal?.throwIfAborted();
     // A LIMIT THAT IS NOT A FINITE NUMBER HAS NO ANSWER, AND THE SEARCH BELOW CANNOT REFUSE IT.
@@ -2597,7 +2725,7 @@ export class CotalEndpoint extends EventEmitter {
       // Deliberately NOT `getMessage({ last_by_subj })`, which would be the obvious way to ask: it
       // needs `$JS.API.STREAM.MSG.GET`, which read credentials do not hold. That grant hole already
       // shipped once from this function and turned every non-admin history read into an empty list.
-      const ceiling = before !== undefined ? before - 1 : await this.lastMatchingSeq(js, stream, subject, signal);
+      const ceiling = before !== undefined ? before - 1 : await this.lastMatchingSeq(js, stream, subjects, signal);
       if (ceiling < 1) return [];
 
       // Widen from the exact ceiling until a window holds a full page, or until the window IS the
@@ -2605,6 +2733,25 @@ export class CotalEndpoint extends EventEmitter {
       // when it holds FEWER than `limit` matches, so every wasted drain moves less than one page.
       // Geometric growth keeps the number of attempts logarithmic, so total wasted transfer is a
       // small multiple of a page.
+      //
+      // THE FIRST WINDOW IS ONE PAGE WIDE, NOT FOUR. It used to open at `limit * 4` on the reasoning
+      // that a filtered subject is sparse inside its stream and a wider first look would land the
+      // page in one drain. That is true for one channel of a busy stream and false for a subject
+      // that IS most of its stream, and the second case is the one a whole-backlog read takes: the
+      // window succeeds on the first attempt and drains four pages to keep one, because
+      // `drainWindow` delivers everything in the window and keeps the tail. Measured on `/api/dms`
+      // at limit 500 against a 2500-message backlog: 1,995,854 to 1,995,859 bytes moved across
+      // four runs to return a 346,001-byte page, and 8161ms to 8753ms on that link, so all four
+      // missed the dashboard's 8000ms deadline with nothing else on the connection (Cotal #1210).
+      // That cost does not keep growing with the backlog, and saying it did was wrong: the old first
+      // span was `max(limit * 4, 64)`, so at limit 500 it is 2000 messages, and ANY backlog of 2000
+      // or more drains the same 2000-message window. The point is that the window, not the backlog,
+      // sets the cost, and four pages to return one is already past the deadline on this link for
+      // every such deployment. One page wide makes the
+      // SUCCESSFUL drain
+      // obey the same bound the failed ones already promised: it moves at most one page. A sparse
+      // subject pays one more widening step for that, which is four round trips against a transfer
+      // several times the size of the answer.
       //
       // A SHORT PAGE is either "the channel is exhausted" or "the window is still above the
       // first match". Sequence 1 is the wrong floor for the first of those: three matches at
@@ -2614,16 +2761,16 @@ export class CotalEndpoint extends EventEmitter {
       // drain, full) never pays for it. The remaining unbounded-looking case is a subject
       // whose FIRST match really is near sequence 1; that span is the channel's own, not the
       // stream's.
-      let span = Math.max(limit * 4, 64);
+      let span = Math.max(limit, 64);
       let floor = 1;
       let floorKnown = false;
       for (;;) {
         signal?.throwIfAborted();
         const start = Math.max(floor, ceiling - span + 1);
-        const page = await this.drainWindow(js, stream, subject, start, ceiling, limit, signal);
+        const page = await this.drainWindow(js, stream, subjects, start, ceiling, limit, signal);
         if (page.length >= limit) return page.slice(-limit);
         if (!floorKnown) {
-          floor = Math.max(1, await this.firstMatchingSeq(js, stream, subject, signal));
+          floor = Math.max(1, await this.firstMatchingSeq(js, stream, subjects, signal));
           floorKnown = true;
         }
         if (start <= floor) return page.slice(-limit);
@@ -2651,24 +2798,18 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
-  /** The newest stream sequence matching `subject`, or 0 when the subject has no messages.
-   *
-   *  One ordered consumer at `DeliverPolicy.Last` with this subject's filter: its `num_pending`
-   *  (available from the create, before anything is delivered) is 0 for an empty subject, and
-   *  otherwise one message carries the sequence. Same CREATE/INFO/NEXT/DELETE surface `drainWindow`
-   *  already uses, so no broker authority is added. */
   /** The oldest stream sequence matching `subject`, or 0 when the subject has no messages.
    *  Mirror of {@link lastMatchingSeq}: same CREATE/INFO/NEXT/DELETE surface, `DeliverPolicy.All`
    *  instead of `Last`, first delivered seq instead of last. Read credentials already hold this. */
   private async firstMatchingSeq(
     js: ReturnType<typeof jetstream>,
     stream: string,
-    subject: string,
+    subjects: string[],
     signal?: AbortSignal,
   ): Promise<number> {
     signal?.throwIfAborted();
     const consumer = await js.consumers.get(stream, {
-      filter_subjects: [subject],
+      filter_subjects: subjects,
       deliver_policy: DeliverPolicy.All,
     });
     try {
@@ -2684,7 +2825,7 @@ export class CotalEndpoint extends EventEmitter {
         signal?.removeEventListener("abort", stop);
         iter.stop();
       }
-      throw new Error(`history: the broker reported messages on ${subject} but delivered none - the read was cut short, not empty`);
+      throw new Error(`history: the broker reported messages on ${subjectLabel(subjects)} but delivered none - the read was cut short, not empty`);
     } finally {
       try { await consumer.delete(); }
       catch (e) {
@@ -2702,12 +2843,12 @@ export class CotalEndpoint extends EventEmitter {
   private async lastMatchingSeq(
     js: ReturnType<typeof jetstream>,
     stream: string,
-    subject: string,
+    subjects: string[],
     signal?: AbortSignal,
   ): Promise<number> {
     signal?.throwIfAborted();
     const consumer = await js.consumers.get(stream, {
-      filter_subjects: [subject],
+      filter_subjects: subjects,
       deliver_policy: DeliverPolicy.Last,
     });
     try {
@@ -2729,7 +2870,7 @@ export class CotalEndpoint extends EventEmitter {
       // dropped link looks like from here. Returning 0 would make the caller report an empty
       // channel, which is the same "could not read means no history" lie the narrowed catch above
       // exists to stop.
-      throw new Error(`history: the broker reported messages on ${subject} but delivered none - the read was cut short, not empty`);
+      throw new Error(`history: the broker reported messages on ${subjectLabel(subjects)} but delivered none - the read was cut short, not empty`);
     } finally {
       try { await consumer.delete(); }
       catch (e) {
@@ -2745,15 +2886,15 @@ export class CotalEndpoint extends EventEmitter {
   private async drainWindow(
     js: ReturnType<typeof jetstream>,
     stream: string,
-    subject: string,
+    subjects: string[],
     start: number,
     ceiling: number,
     limit: number,
     signal?: AbortSignal,
-  ): Promise<CotalMessage[]> {
+  ): Promise<{ seq: number; subject: string; msg: CotalMessage }[]> {
     signal?.throwIfAborted();
-    const out: CotalMessage[] = [];
-    const consumer = await js.consumers.get(stream, { filter_subjects: [subject], opt_start_seq: start });
+    const out: { seq: number; subject: string; msg: CotalMessage }[] = [];
+    const consumer = await js.consumers.get(stream, { filter_subjects: subjects, opt_start_seq: start });
     try {
       // A freshly created consumer already carries its ConsumerInfo, so read the CACHED copy: the
       // explicit uncached `info()` this used to call was a round trip for data we already had.
@@ -2780,13 +2921,13 @@ export class CotalEndpoint extends EventEmitter {
           delivered++;
           if (m.seq >= ceiling) { // reached the page's upper bound
             if (m.seq === ceiling) {
-              try { out.push(m.json<CotalMessage>()); } catch { /* skip undecodable */ }
+              try { out.push({ seq: m.seq, subject: m.subject, msg: m.json<CotalMessage>() }); } catch { /* skip undecodable */ }
             }
             complete = true;
             break;
           }
           try {
-            out.push(m.json<CotalMessage>());
+            out.push({ seq: m.seq, subject: m.subject, msg: m.json<CotalMessage>() });
             if (out.length > limit) out.shift();
           } catch { /* skip undecodable */ }
           if (delivered >= pending) { complete = true; break; }
@@ -2796,12 +2937,14 @@ export class CotalEndpoint extends EventEmitter {
         iter.stop();
       }
       if (!complete)
-        throw new Error(`history: read ${delivered} of ${pending} messages on ${subject} before the stream ended early - the window was cut short, not empty`);
+        throw new Error(`history: read ${delivered} of ${pending} messages on ${subjectLabel(subjects)} before the stream ended early - the window was cut short, not empty`);
       return out;
     } finally {
       // DELETE THE EPHEMERAL CONSUMER. The pinned client gives an ordered consumer a 5-minute
       // inactive threshold, so leaving them behind is not free: the widening search below can make
-      // up to eight per call, the dashboard makes one call per channel, and a reload repeats it.
+      // up to eight per call, and a reload repeats every call the page makes. The dashboard used to
+      // make one per channel; since #1210 its activity feed makes one for all of chat and one for
+      // DMs, and the single-channel routes still make one each.
       // Left alone that accumulates consumers on the broker until the thresholds expire, and the
       // resulting resource exhaustion would land in streamHistory's catch and read as empty history.
       try { await consumer.delete(); }
@@ -4788,6 +4931,13 @@ export class CotalEndpoint extends EventEmitter {
  *  never absent and never a non-string. An absent or non-string id is a malformed envelope under
  *  SPEC sec 5; each delivery pump handles it per its own class (durable term, live drop, history
  *  skip) so it never reaches the receiver's id-keyed machinery as `undefined`. */
+/** What a history read failure NAMES when it could not finish. One filter subject is the useful
+ *  thing to print; a set of sixty-nine of them is a wall of text in a message a human has to read,
+ *  so a set says its size and the stream it was read from instead. */
+function subjectLabel(subjects: string[]): string {
+  return subjects.length === 1 ? subjects[0] : `${subjects.length} filtered subjects`;
+}
+
 function isUsableMessageId(id: unknown): id is string {
   return typeof id === "string";
 }

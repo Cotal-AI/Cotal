@@ -44,12 +44,12 @@ function instrument(ep: CotalEndpoint): Drain[] {
   const drains: Drain[] = [];
   const proto = Object.getPrototypeOf(ep);
   const orig = proto.drainWindow as (
-    js: unknown, stream: string, subject: string, start: number, ceiling: number,
+    js: unknown, stream: string, subjects: string[], start: number, ceiling: number,
   ) => Promise<unknown[]>;
   proto.drainWindow = async function (
-    this: CotalEndpoint, js: unknown, stream: string, subject: string, start: number, ceiling: number,
+    this: CotalEndpoint, js: unknown, stream: string, subjects: string[], start: number, ceiling: number,
   ) {
-    const page = await orig.call(this, js, stream, subject, start, ceiling) as unknown[];
+    const page = await orig.call(this, js, stream, subjects, start, ceiling) as unknown[];
     drains.push({ start, ceiling, delivered: page.length });
     return page;
   };
