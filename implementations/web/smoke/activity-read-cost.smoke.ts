@@ -36,7 +36,7 @@
  * `544a974b7`. Both are worth having and they are not interchangeable. Measured, same corpus,
  * `/api/activity` with no link cost:
  *
- *     544a974b7, the code that shipped        2524 requests   8,015,723 to 8,016,039 B
+ *     544a974b7, the code that shipped        2524 requests   8,015,332 to 8,016,039 B
  *     this file's frozen fan-out arm          2863 requests   7,743,783 to 7,744,228 B
  *     the single read                          143 requests      908,415 to   908,422 B
  *
@@ -504,12 +504,11 @@ try {
   //
   // WHAT DECIDES IT IS THE WINDOW. `/api/dms` asks for 500, and the window used to open at four
   // pages, and `drainWindow` delivers everything in the window and keeps the tail. Measured on
-  // `544a974b7` at limit 500 against a 2500-message backlog: 1,995,856 and 1,995,859 bytes moved
-  // across two runs to return a 346,001-byte page, 257 requests every time, and ALONE on this link
-  // 7857ms to 8852ms across three runs, so it
-  // straddles the 8000ms deadline on this host with nothing else on the connection. A deployment
-  // whose backlog is larger sits on the wrong side of it every time, which is the reported refusal,
-  // with no contention in it at all.
+  // `544a974b7` at limit 500 against a 2500-message backlog: 1,995,854 to 1,995,859 bytes moved
+  // across four runs to return a 346,001-byte page, 257 requests every time, and ALONE on this link
+  // 8161ms to 8753ms, so ALL FOUR missed the 8000ms deadline on this host with nothing else on the
+  // connection. A deployment whose backlog is larger sits further past it every time, which is the
+  // reported refusal, with no contention in it at all.
   {
     Object.assign(latency, FIELD);
     /** The DM read's OWN elapsed time and wire cost, not the time until everything settles. */
