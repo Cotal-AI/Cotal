@@ -49,6 +49,8 @@ const rig = () => {
     yields: [] as Record<string, unknown>[],
     /** Every adapter swallows a presence-write failure, so the suite has to be able to cause one. */
     failStatusWrite: false,
+    /** What the endpoint refuses the next pull with (undefined = it serves). */
+    pullRefusal: undefined as string | undefined,
   };
   (a as unknown as { ep: unknown }).ep = {
     principal: { owner: "local", actor: "seat" },
@@ -56,7 +58,10 @@ const rig = () => {
     setActivity: async () => {},
     invokeService: async (_ep: string, command: string, args: unknown, opts: unknown) => {
       invokes.push({ command, args, opts });
-      if (command === "turn-pending") return { reply: { ok: true, data: { turns: [...state.pending] } } };
+      if (command === "turn-pending") {
+        if (state.pullRefusal !== undefined) return { reply: { ok: false, error: { message: state.pullRefusal } } };
+        return { reply: { ok: true, data: { turns: [...state.pending] } } };
+      }
       if (command === "turn-yield") {
         state.yields.push(args as Record<string, unknown>);
         if (!state.yieldReply.ok) return { reply: { ok: false, error: { message: state.yieldReply.error ?? "refused" } } };
@@ -237,7 +242,52 @@ const row = (goalId: string, context: string, acceptedAt = Date.now()): PendingT
     text.includes("cotal run answer r1 /ask:size#0 --by seat --value"), text.slice(0, 400));
 }
 
-const EXPECTED_CELLS = 27;
+// ── a pull that stops answering is SAID, once ────────────────────────────────────────────────
+//
+// The poll runs every few seconds for the life of the session, so a line per failure would be a
+// torrent — and there was none at all instead. A seat whose relay had gone quiet looked exactly
+// like a seat that never had one, and neither the operator nor the agent could tell which. The
+// ordinary shapes stay silent, because most joined sessions genuinely have no manager to pull
+// from; everything else is said once per distinct reason.
+{
+  console.log("9 — a pull that stops answering is reported once, and the ordinary silence is kept");
+  const { a, state, poll } = rig();
+  const lines: string[] = [];
+  (a as unknown as { log(m: string): void }).log = (m: string) => { lines.push(m); };
+
+  state.pullRefusal = "no responder answered - a manager may be down";
+  await poll();
+  await poll();
+  check("the no-relay shape stays silent: most joined sessions have no manager to pull from",
+    lines.length === 0, lines);
+
+  state.pullRefusal = "the manager is still reconciling accepted goals at boot; retry";
+  await poll();
+  check("and so does the boot window, which resolves itself", lines.length === 0, lines);
+
+  state.pullRefusal = "permission-denied: this credential holds no turn-pending capability";
+  await poll();
+  check("a refusal that is neither is said, with the reason", lines.length === 1 && lines[0]?.includes("permission-denied"), lines);
+  await poll();
+  await poll();
+  check("and saying it again waits for the reason to change: the poll does not become a torrent",
+    lines.length === 1, lines);
+
+  state.pullRefusal = "unavailable: the goal-writer connection is not standing";
+  await poll();
+  check("a DIFFERENT reason is worth another line", lines.length === 2 && lines[1]?.includes("goal-writer"), lines);
+
+  state.pullRefusal = undefined;
+  state.pending = [row("g9", "back in business")];
+  await poll();
+  check("a pull that succeeds clears the reason, so the next outage is reported again",
+    lines.length === 2 && a.pendingWake() === 1, { lines, wake: a.pendingWake() });
+  state.pullRefusal = "unavailable: the goal-writer connection is not standing";
+  await poll();
+  check("the same reason after a good pull is a new outage and is said", lines.length === 3, lines);
+}
+
+const EXPECTED_CELLS = 34;
 const ran = pass + fail;
 console.log(`\nturn-intake.smoke: ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

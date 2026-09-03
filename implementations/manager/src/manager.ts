@@ -175,6 +175,10 @@ const MIN_LIFETIME = 10_000;
  *  hold's fire into its expired settle and commits the deadline terminal. Deadlines are
  *  minutes-scale; a few seconds of lateness on the commit is invisible to the run. */
 const TURN_SWEEP_MS = 5_000;
+/** How long a settled turn's answer is kept so a RETRIED yield hears it instead of `not-found`.
+ *  The window a lost reply is retried in is seconds; five minutes is generous for that and short
+ *  enough that the map drains between bursts rather than growing for the process lifetime. */
+const TURN_ANSWER_RETENTION_MS = 5 * 60_000;
 /** Backstop for the detached-launch readiness race (#159 B1). `startAgent` waits on two REAL outcomes —
  *  the assigned id joining the mesh (presence) = started, the child process exiting = failed — NOT a
  *  liveness-inferring timer. This is only the last-resort bound for "neither happened in time": the launch
@@ -884,7 +888,16 @@ export class Manager {
   /** The turn relay's same-incarnation idempotency map ({@link goalAcceptances}'s twin): a
    *  same-goalId retry serves the identical acceptance; cross-incarnation retries rebuild from
    *  the goal-index entry (its acceptance floor + note). */
-  private turnAcceptances = new Map<string, TurnAcceptance>();
+  /**
+   * One entry per turn this incarnation accepted: the acceptance a duplicate submission is served
+   * from, and — once the turn settles — the answer a RETRIED yield is served from.
+   *
+   * A yield's reply can be lost, and the retry used to find the pending turn already deleted and
+   * hear `not-found`, which a seat reads as "drop it": failure reported for work that committed.
+   * The settled answer lives here for a bounded window instead, and the sweep drops it after,
+   * which is also what keeps this map from being one entry per turn for the process lifetime.
+   */
+  private turnAcceptances = new Map<string, { acceptance: TurnAcceptance; settled?: { state: string; at: number } }>();
   /** Every relayed turn awaiting its seat's yield, by goal id. The seat's `turn-pending` pull
    *  scans it; the deadline sweep drives expiry; a seat reap fails its entries `agent-down`.
    *  Rebuilt at boot from goal-index entries carrying a turn note. */
@@ -5915,7 +5928,7 @@ export class Manager {
     const executor = { lifecycleUid: this.managerInstanceId, epoch: this.serviceServe?.grant.epoch ?? 0 };
     const acceptedAt = Date.now();
 
-    const prior = this.turnAcceptances.get(goalId);
+    const prior = this.turnAcceptances.get(goalId)?.acceptance;
     if (prior !== undefined) {
       if (prior.fingerprint !== fingerprint)
         throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted under a different submission; one goalId never carries two specs (SPEC 13.6)`);
@@ -5989,7 +6002,7 @@ export class Manager {
     this.pendingTurns.set(goalId, pending);
     this.ensureTurnSweep();
     const acceptance: TurnAcceptance = { name: a.name, owner: t.owner, actor: t.actor, uid: t.lifecycleUid, goalId, fingerprint, deadlineAt, executor };
-    this.turnAcceptances.set(goalId, acceptance);
+    this.turnAcceptances.set(goalId, { acceptance });
     this.emitGoalProgress(ref, executor.epoch, { phase: "relayed" });
     return acceptance;
   }
@@ -6047,7 +6060,20 @@ export class Manager {
     if (status === "handoff" && (to === undefined || to.length === 0))
       throw new EpEnvelopeError("failed-precondition", `a handoff yield names its addressee ("to"); a handoff to nobody relays nothing`);
     const p = this.pendingTurns.get(goalId);
-    if (!p) throw new EpEnvelopeError("not-found", `no pending turn "${goalId}" on this manager`);
+    if (!p) {
+      // A YIELD WHOSE REPLY WAS LOST IS NOT A YIELD THAT FAILED. The commit deleted the pending
+      // turn, so a retry found nothing and heard `not-found` — which a seat reads as "drop it",
+      // reporting failure for work the run already has. The answer the first reply carried is
+      // served again instead, to the addressee it was addressed to and nobody else.
+      const settled = this.turnAcceptances.get(goalId);
+      if (settled?.settled !== undefined) {
+        const a = settled.acceptance;
+        if (a.owner !== c.owner || a.actor !== c.actor || a.uid !== c.uid)
+          throw new EpEnvelopeError("permission-denied", `turn "${goalId}" was addressed to ${a.owner}.${a.actor}/${a.uid}; a yield is the addressee's own (SPEC 13.6)`);
+        return { goalId, state: settled.settled.state };
+      }
+      throw new EpEnvelopeError("not-found", `no pending turn "${goalId}" on this manager`);
+    }
     if (p.seat.owner !== c.owner || p.seat.actor !== c.actor || p.seat.uid !== c.uid)
       throw new EpEnvelopeError("permission-denied", `turn "${goalId}" is addressed to ${p.seat.owner}.${p.seat.actor}/${p.seat.uid}; a yield is the addressee's own (SPEC 13.6)`);
     const cpRef = { endpoint: p.ref.endpoint, token: p.holdToken };
@@ -6080,7 +6106,8 @@ export class Manager {
     this.emitGoalProgress(p.ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
     await clearGoalIndex(gw.ctx, p.ref);
     this.pendingTurns.delete(goalId);
-    if (this.pendingTurns.size === 0) this.stopTurnSweep();
+    this.rememberSettledTurn(goalId, fact.state, at);
+    this.maybeStopTurnSweep();
     return { goalId, state: fact.state };
   }
 
@@ -6092,13 +6119,14 @@ export class Manager {
     const gw = this.goalWriter;
     if (!gw) return;
     if (!this.pendingTurns.delete(p.goalId)) return;
-    if (this.pendingTurns.size === 0) this.stopTurnSweep();
+    this.maybeStopTurnSweep();
     const epoch = this.serviceServe?.grant.epoch ?? 0;
     try {
       await this.assertGoalWriterEpochCurrent(epoch);
       const { fact } = await commitGoalResult(gw.ctx, { ref: p.ref, now: Date.now(), cause: "deny", denial: { kind: "hold-expired", token: p.holdToken }, data: { reason: "turn-deadline", ...(p.seatDiedAt !== undefined ? { agentDownAt: p.seatDiedAt } : {}), ...(p.handoffFrom !== undefined ? { handoffFrom: p.handoffFrom } : {}) }, committer: { instanceId: this.managerInstanceId, epoch } });
       this.emitGoalProgress(p.ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
       await clearGoalIndex(gw.ctx, p.ref);
+      this.rememberSettledTurn(p.goalId, fact.state, Date.now());
     } catch (e) { console.error(`! turn deadline terminal for ${p.goalId}: ${(e as Error).message}`); }
   }
 
@@ -6142,6 +6170,24 @@ export class Manager {
     this.turnSweepTimer = t;
   }
 
+  /** The answer a retried yield is served, held for {@link TURN_ANSWER_RETENTION_MS}. Only for a
+   *  turn this incarnation accepted: an entry it has no acceptance for is one it cannot vouch for. */
+  private rememberSettledTurn(goalId: string, state: string, at: number): void {
+    const entry = this.turnAcceptances.get(goalId);
+    if (entry === undefined) return;
+    entry.settled = { state, at };
+  }
+
+  /** Stop the sweep only when it has nothing left to do. It drives elapsed turns to their deadline
+   *  terminals AND drops settled answers once their retry window has passed, so a stop while the
+   *  second is still owed would leave one entry per turn for the process lifetime. */
+  private maybeStopTurnSweep(): void {
+    if (this.pendingTurns.size > 0) return;
+    for (const e of this.turnAcceptances.values()) if (e.settled !== undefined) return;
+    this.turnAcceptances.clear();
+    this.stopTurnSweep();
+  }
+
   private stopTurnSweep(): void {
     if (this.turnSweepTimer === undefined) return;
     clearInterval(this.turnSweepTimer);
@@ -6152,6 +6198,9 @@ export class Manager {
    *  `deadlineAt` are read at all; a `resumed` settle is a yield mid-commit and is left alone. */
   private async sweepTurnDeadlines(): Promise<void> {
     const now = Date.now();
+    // A settled answer is kept only as long as a lost reply could still be retried under it.
+    for (const [goalId, e] of [...this.turnAcceptances.entries()])
+      if (e.settled !== undefined && now - e.settled.at >= TURN_ANSWER_RETENTION_MS) this.turnAcceptances.delete(goalId);
     for (const p of [...this.pendingTurns.values()]) {
       if (now < p.deadlineAt) continue;
       try {
@@ -6182,11 +6231,20 @@ export class Manager {
       return;
     }
     const spec = await readGoalSpec(gw.ctx, entry.ref);
+    if (spec === undefined) {
+      // NOW IS NOT WHEN THIS WAS ACCEPTED. `acceptedAt` is what orders a seat's queue, and a turn
+      // stamped with the boot instant sorts BEHIND every turn accepted since — a predecessor's
+      // oldest turn served last, which is the one thing the ordering exists to prevent. A goal
+      // with an index entry and no spec is a relay record that is not readable, and this is the
+      // same verdict the garbled-note branch above reaches: left unsettled, said out loud.
+      console.error(`turn reconcile ${entry.ref.goalId}: the goal spec is unreadable, so its acceptance time is unknown; left unsettled rather than re-stamped with the boot instant`);
+      return;
+    }
     const p: PendingTurn = {
       ref: entry.ref, goalId: entry.ref.goalId,
       seat: { name: entry.allocated.name, owner: parsed.owner, actor: entry.allocated.actor, uid: entry.allocated.uid },
       payload: parsed.payload,
-      acceptedAt: spec?.value.acceptedAt ?? Date.now(),
+      acceptedAt: spec.value.acceptedAt,
       deadlineAt: parsed.deadlineAt,
       holdToken: turnHoldToken(entry.ref.goalId), holdEpoch: parsed.holdEpoch,
       ...(parsed.handoffFrom !== undefined ? { handoffFrom: parsed.handoffFrom } : {}),

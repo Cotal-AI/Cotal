@@ -305,6 +305,8 @@ export class MeshAgent extends EventEmitter {
    *  path) vanishes from `turn-pending` and is dropped here on the next pull. */
   private activeTurns = new Map<string, ActiveTurn>();
   private turnPollTimer?: ReturnType<typeof setInterval>;
+  /** The last pull failure this seat reported, so one that keeps failing is said once. */
+  private pullTrouble?: string;
   private turnPollBusy = false;
   private _contextId: string | undefined;
   /** Chat-stream frontier captured when this agent entered `focus` — recall surfaces ambient
@@ -1393,7 +1395,9 @@ export class MeshAgent extends EventEmitter {
 
   private ensureTurnPoll(): void {
     if (this.turnPollTimer !== undefined) return;
-    const t = setInterval(() => { void this.pollTurns().catch(() => { /* next interval retries */ }); }, TURN_POLL_MS);
+    const t = setInterval(() => {
+      void this.pollTurns().catch((e: unknown) => this.notePullTrouble((e as Error).message));
+    }, TURN_POLL_MS);
     (t as { unref?: () => void }).unref?.();
     this.turnPollTimer = t;
   }
@@ -1408,7 +1412,8 @@ export class MeshAgent extends EventEmitter {
     this.turnPollBusy = true;
     try {
       const r = await this.managerInvoke("turn-pending", undefined, { target: { mode: "self" } });
-      if (!r.ok) return;
+      if (!r.ok) { this.notePullTrouble(r.error ?? "refused with no message"); return; }
+      this.pullTrouble = undefined;
       const turns = (r.data as { turns?: { goalId: string; payload: string; acceptedAt: number; deadlineAt: number }[] } | undefined)?.turns ?? [];
       const live = new Set(turns.map((t) => t.goalId));
       for (const id of [...this.activeTurns.keys()]) if (!live.has(id)) this.activeTurns.delete(id);
@@ -1422,6 +1427,25 @@ export class MeshAgent extends EventEmitter {
     } finally {
       this.turnPollBusy = false;
     }
+  }
+
+  /**
+   * A pull that did not come back, said ONCE.
+   *
+   * The poll runs every few seconds for the life of the session, so a line per failure would be a
+   * torrent and there was none at all instead: a seat whose relay had gone quiet looked exactly
+   * like a seat with no relay, and neither the operator nor the agent could tell which. The
+   * ordinary shapes stay silent, because most joined sessions genuinely have no manager to pull
+   * from and that is not trouble. Everything else is said once per distinct reason, and saying it
+   * again waits for the reason to change or for a pull to succeed.
+   */
+  private notePullTrouble(reason: string): void {
+    // "Nobody answered" is the no-relay case this poll expects, and the boot window is a manager
+    // telling the seat to come back — both resolve themselves and neither is worth a line.
+    if (/no responder answered|still reconciling/i.test(reason)) return;
+    if (this.pullTrouble === reason) return;
+    this.pullTrouble = reason;
+    this.log(`the run-turn pull is not answering (${reason}); retrying every ${TURN_POLL_MS}ms`);
   }
 
   /** Format every not-yet-surfaced turn as an injectable context block, WITHOUT marking anything

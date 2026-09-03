@@ -44,8 +44,8 @@
       "file": "implementations/runtime/src/mesh-handler.ts",
       "find": "      if (over) {\n        try {\n          await this.jsm.consumers.delete(stream, durable);",
       "replace": "      if (true) {\n        try {\n          await this.jsm.consumers.delete(stream, durable);",
-      "expectRed": "REPAIRED: the wait's position SURVIVES a refused bind — a throw is not the wait being over",
-      "cell": "REPAIRED: the wait's position SURVIVES a refused bind — a throw is not the wait being over",
+      "expectRed": "REPAIRED: the wait's position SURVIVES a refused bind \u2014 a throw is not the wait being over",
+      "cell": "REPAIRED: the wait's position SURVIVES a refused bind \u2014 a throw is not the wait being over",
       "note": "The shipped state before the repair, and it passed the whole suite: no cell asked what happened to the position when the bind failed, because no cell could make a bind fail."
     },
     {
@@ -60,8 +60,8 @@
     {
       "name": "the timed-out ending forgets to mark the wait over",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "        if (ended !== undefined) { over = true; return null; }",
-      "replace": "        if (ended !== undefined) { return null; }",
+      "find": "        if (ended !== undefined) {\n          if (outer !== undefined && primary !== undefined) await this.cancelTimer(primary);\n          over = true;\n          return null;\n        }",
+      "replace": "        if (ended !== undefined) {\n          if (outer !== undefined && primary !== undefined) await this.cancelTimer(primary);\n          return null;\n        }",
       "expectRed": "and its consumer is gone: an ENDED wait's position is worthless and is not left behind",
       "cell": "and its consumer is gone: an ENDED wait's position is worthless and is not left behind",
       "note": "Narrower than the blanket version above and it is the realistic regression: three separate returns each have to set the flag, and the deadline path is the one that does not look like an ending."

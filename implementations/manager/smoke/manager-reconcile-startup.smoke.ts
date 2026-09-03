@@ -35,6 +35,11 @@ import {
   standaloneConnectOpts,
   DEV_OWNER,
   recordsBucket,
+  actionContext,
+  bindGoal,
+  createGoal,
+  recordGoalIndex,
+  type GoalRef,
   epAuthBucket,
   epCall,
   registry,
@@ -225,7 +230,7 @@ try {
     const booting = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
     const doors = booting as unknown as {
       turnPendingFor: (c: { owner: string; actor: string; uid: string }) => unknown;
-      serveTurnYield: (c: { owner: string; actor: string; uid: string }, raw: Record<string, unknown>) => Promise<unknown>;
+      serveTurnYield: (c: { owner: string; actor: string; uid: string }, raw: Record<string, unknown>) => Promise<{ goalId: string; state: string }>;
     };
     const seat = { owner: "local", actor: "seat", uid: "u1" };
     const pull = ((): { code?: string; message?: string } | "served" => {
@@ -260,11 +265,98 @@ try {
     const served = doors.turnPendingFor(seat) as { turns: { goalId: string }[] };
     check("an ELAPSED turn is not served and does not dam the seat's queue: the live one behind it surfaces",
       served.turns.length === 1 && served.turns[0]?.goalId === "live", served);
+
+    // A YIELD WHOSE REPLY WAS LOST. The commit deletes the pending turn, so the retry found
+    // nothing and heard `not-found` — which a seat reads as "drop it", reporting failure for work
+    // the run already has. The answer the first reply carried is served again instead.
+    const retryDoors = seeded as unknown as {
+      goalWriter?: unknown;
+      turnAcceptances: Map<string, { acceptance: Record<string, unknown>; settled?: { state: string; at: number } }>;
+      sweepTurnDeadlines: () => Promise<void>;
+    };
+    retryDoors.goalWriter = { ctx: {} };
+    seeded.pendingTurns.delete("stale");
+    seeded.pendingTurns.delete("live");
+    retryDoors.turnAcceptances.set("done-already", {
+      acceptance: { name: "s", owner: seat.owner, actor: seat.actor, uid: seat.uid, goalId: "done-already", fingerprint: "f", deadlineAt: t0 + 60_000, executor: { lifecycleUid: "x", epoch: 0 } },
+      settled: { state: "succeeded", at: Date.now() },
+    });
+    const retried = await doors.serveTurnYield(seat, { goalId: "done-already", status: "done" })
+      .then((r) => r as { goalId: string; state: string }, (e: unknown) => e as { code?: string; message?: string });
+    check("a retried yield is served the answer the lost reply carried, never `not-found`",
+      (retried as { state?: string }).state === "succeeded", retried);
+    const stranger = { owner: "local", actor: "someone-else", uid: "u2" };
+    const refusedRetry = await doors.serveTurnYield(stranger, { goalId: "done-already", status: "done" })
+      .then(() => "served" as const, (e: unknown) => e as { code?: string });
+    check("and only to the addressee it was addressed to",
+      refusedRetry !== "served" && (refusedRetry as { code?: string }).code === "permission-denied", refusedRetry);
+
+    // AND THE ANSWER IS NOT KEPT FOREVER. It exists for the window a lost reply is retried in;
+    // holding it past that is one entry per turn for the process lifetime, which is what the map
+    // used to be. The sweep is what drops it.
+    retryDoors.turnAcceptances.set("long-done", {
+      acceptance: { name: "s", owner: seat.owner, actor: seat.actor, uid: seat.uid, goalId: "long-done", fingerprint: "f", deadlineAt: t0, executor: { lifecycleUid: "x", epoch: 0 } },
+      settled: { state: "succeeded", at: Date.now() - 10 * 60_000 },
+    });
+    await retryDoors.sweepTurnDeadlines();
+    check("the sweep drops a settled answer once its retry window has passed, and keeps a fresh one",
+      !retryDoors.turnAcceptances.has("long-done") && retryDoors.turnAcceptances.has("done-already"),
+      [...retryDoors.turnAcceptances.keys()]);
   }
 
   await starting;
   const sweepSettled = await until(async () => (await phase(`orphan-${ORPHANS - 1}`)) === "retired", 20_000);
   check("startup sweep completes after the manager has served", sweepSettled, { phase: await phase(`orphan-${ORPHANS - 1}`) });
+
+  // THE BOOT SWEEP ADOPTING A PREDECESSOR'S ACCEPTED TURN. Two things were wrong with it and both
+  // are invisible from outside: the agents map is EMPTY during reconcile (seats re-register later,
+  // on the resume path), so "not in the map" was read as "dead" and every adopted turn was stamped
+  // as addressing a dead seat — its deadline terminal then carried `agentDownAt` and the run raised
+  // L4002 where the reference says L4003. And a goal whose spec could not be read had its
+  // acceptance time replaced with the BOOT INSTANT, which sorts it behind every turn accepted
+  // since: a predecessor's oldest turn served last, by a queue whose whole job is oldest-first.
+  {
+    const adopting = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
+    const doors = adopting as unknown as {
+      managerInstanceId: string;
+      goalWriter?: unknown;
+      pendingTurns: Map<string, { acceptedAt: number; seatDiedAt?: number; seat: { name: string } }>;
+      adoptTurnGoal: (e: { ref: GoalRef; iid: string; allocated?: { name: string; actor: string; uid: string }; note?: string }) => Promise<void>;
+    };
+    // The fixture writes through the LIVE manager's own goal-writer connection: these records are
+    // the ones a manager writes, and no other credential in this suite may write them.
+    const live = manager as unknown as { goalWriter?: { nc: unknown; ctx: Parameters<typeof bindGoal>[0]; identity: unknown } };
+    const gw = live.goalWriter;
+    if (gw === undefined) throw new Error("the live manager has no goal-writer connection; the adoption fixture cannot write its goal");
+    const actx = gw.ctx;
+    doors.goalWriter = gw;
+    const seatUid = mintLifecycleUid();
+    const runner: EpCaller = { owner: "local", actor: "runner", uid: mintLifecycleUid() };
+    const goalId = "g".repeat(43);
+    const ref: GoalRef = { endpoint: MANAGER_ENDPOINT, caller: runner, goalId };
+    const ACCEPTED_AT = Date.now() - 90_000;
+    await bindGoal(actx, ref, "fp-adopt");
+    await createGoal(actx, ref, {
+      fingerprint: "fp-adopt", command: "turn",
+      caller: { id: `${runner.owner}.${runner.actor}`, lifecycleUid: runner.uid },
+      acceptedEpoch: 0, requestId: goalId, sourceSeq: 0, acceptedAt: ACCEPTED_AT, readinessDeadlineMs: 600_000,
+    });
+    const allocated = { name: "adopted-seat", actor: "seat9", uid: seatUid };
+    const note = JSON.stringify({ payload: "do the thing", deadlineAt: Date.now() + 600_000, holdEpoch: 0, owner: "local" });
+    await recordGoalIndex(actx, ref, doors.managerInstanceId, allocated, note);
+
+    await doors.adoptTurnGoal({ ref, iid: doors.managerInstanceId, allocated, note });
+    const adopted = doors.pendingTurns.get(goalId);
+    check("the boot sweep adopts a predecessor's accepted turn back into the pending index",
+      adopted !== undefined && adopted.seat.name === "adopted-seat", adopted);
+    check("stamped with the acceptance time its goal RECORDS, never the instant the manager booted",
+      adopted?.acceptedAt === ACCEPTED_AT, { recorded: ACCEPTED_AT, adopted: adopted?.acceptedAt });
+    check("and NOT marked as addressing a dead seat: an empty agents map at boot is not evidence of death",
+      adopted?.seatDiedAt === undefined, adopted?.seatDiedAt);
+    await adopting.stop().catch(() => {});
+  }
+
+
 } finally {
   await callerNc?.drain().catch(() => callerNc?.close());
   await observerNc?.drain().catch(() => observerNc?.close());
