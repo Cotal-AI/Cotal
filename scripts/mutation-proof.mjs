@@ -97,13 +97,17 @@ function assertCleanTree(cwd, allowDirty) {
 
 /** Run a command, capture combined output, never let a pipe eat the status. */
 function run(command, cwd, timeoutMs) {
-  // THE TIMEOUT MUST REACH THE WHOLE TREE, not the shell at its root. `spawnSync` with `shell: true`
-  // runs `/bin/sh -c <command>`, and every suite here is a `pnpm` script that forks `node`, which
-  // forks `tsx`, which forks the suite. On timeout Node signals the shell alone; the grandchildren
-  // keep running AND keep the inherited stdout pipe open, and `spawnSync` blocks until that pipe
-  // closes. Measured: a mutant that hung its suite sat for three hours behind a 15-minute budget,
-  // one mutation into a sweep, with the tree mutated the whole time. Detach the shell into its own
-  // process group and kill the GROUP, so a hang costs its budget and nothing more.
+  // A HUNG SUITE MUST COST ITS BUDGET AND NOTHING MORE. `spawnSync` with `shell: true` runs
+  // `/bin/sh -c <command>`, and every suite here is a `pnpm` script that forks `node`, which forks
+  // `tsx`, which forks the suite. Measured on that tree (2026-09-03, a suite that never exits, a 4s
+  // budget): with the default SIGTERM the shell ignored it and `spawnSync` never returned inside a
+  // 60s cap; with `killSignal: "SIGKILL"` it returned at 4.0s, because the leader dying is what
+  // closes the pipe `spawnSync` reads, and three grandchildren were still alive afterwards; the
+  // `process.kill(-pid)` below then took those three to zero. So the two halves do different jobs:
+  // SIGKILL on the leader is what unblocks the RETURN, and the group kill after the return is what
+  // removes the orphans (`detached` is what makes the shell a group leader the second half can
+  // address). Before either, a mutant that hung its suite sat for three hours behind a 15-minute
+  // budget, one mutation into a sweep, with the tree mutated the whole time.
   const r = spawnSync(command, {
     cwd, shell: true, encoding: "utf8", timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024,
     detached: process.platform !== "win32",

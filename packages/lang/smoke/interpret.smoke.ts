@@ -1525,4 +1525,21 @@ await parallel({
     different.peak === 2, different.peak);
 }
 
+// ---- the free string builtins gate their RECEIVER with the gate's own sentence --------------------
+//
+// `trim(5)` refused L4016 already, by the host: `(5).trim` is undefined, the call throws, and
+// `guarded` converts the TypeError. Same code as the gate, so no program's meaning moved; what
+// moved is the sentence, which named a host shape ("is not a function") instead of the rule.
+{
+  const refusals: string[] = [];
+  await run(`
+try { trim(5); } catch (e) { log(e.code, e.message); }
+try { lower(true); } catch (e) { log(e.code, e.message); }
+try { upper(null); } catch (e) { log(e.code, e.message); }
+`, { runId: "gate-receiver", handler: new SimHandler({}), onLog: (l) => refusals.push(JSON.stringify(l.values)) });
+  ok("a free string builtin refuses a non-string receiver as L4016 with the gate's sentence, not the host's",
+    refusals.length === 3 && refusals.every((r) => r.includes('"L4016"') && r.includes("must be a string") && !r.includes("is not a function")),
+    refusals);
+}
+
 console.log(`interpret.smoke: ${pass} checks passed`);

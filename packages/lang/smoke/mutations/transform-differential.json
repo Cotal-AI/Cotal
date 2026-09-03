@@ -383,13 +383,13 @@
       "note": "The method table has always said `str`, so `\"a5b\".split(5)` is L4016; the free spellings cast, so `split(\"a5b\", 5)` silently separated on \"5\". Both arms of the differential share this module, so the shape cell agrees either way \u2014 what notices is the corpus row's DECLARED code."
     },
     {
-      "name": "sort's total order takes a stand-in for a value with no canonical form",
+      "name": "sort's canonical rung refuses a value it cannot place instead of falling to position",
       "file": "packages/lang/src/library.ts",
-      "find": "  } catch (e) {\n    throw new RuntimeFault(\"L4016\", `sort: a value in this list has no canonical form (${(e as Error).message}), so the total order cannot place it`);\n  }",
-      "replace": "  } catch {\n    return `\\uFFFF${String(v)}`;\n  }",
+      "find": "  if (ca === undefined || cb === undefined) return 0;",
+      "replace": "  if (ca === undefined || cb === undefined) throw new RuntimeFault(\"L4016\", \"sort: a value in this list has no canonical form\");",
       "expectRed": "every corpus program completes, or refuses the code it declares",
       "cell": "every corpus program completes, or refuses the code it declares",
-      "note": "SPEC 5.3: sort never answers \"equal\" for two distinct values. The stand-in is `\\uFFFF[object Object]` for every cyclic record, so two DISTINCT ones compared equal and the order the reference promises stopped existing. Both differential arms share this module, so the shape cell agrees either way; the declared code is what notices. Measured 2026-09-03: KILLED, 211/212 with the declared-code cell red (\"declared L4016, got null / null\") and the suite completing. The first measurement died as WRONG-RED because the comparator's JSON.stringify threw on the cyclic value the mutant let through; `j` now falls back to a cycle-safe rendering only after the plain spelling throws."
+      "note": "SPEC 5.3: the order has a third rung, original position, which no two distinct entries share. A value with no canonical form ties on the canonical rung and falls to it; refusing there is a refusal where the reference gives a defined result. The earlier stand-in (String(v)) made distinct cycles EQUAL, which is the other way to be wrong."
     }
   ],
   "completionMarker": "differential.smoke:",

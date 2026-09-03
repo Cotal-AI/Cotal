@@ -365,9 +365,13 @@ const dischargeOf = (handler: unknown): DischargingHandler | undefined =>
  * first), and only then is the entry re-appended with `issued: true`, so a flip in the journal is
  * always DOWNSTREAM of the world being quiet.
  *
- * Runs at the run's completion, where every branch has settled: a released run is not swept (this
- * driver no longer holds it, and its appends would be refused), and a crash before the sweep is
- * repaired by the next completion's sweep reading `issued: false` off the replayed prefix.
+ * Two callers, and the premise each brings. At the run's COMPLETION every branch has settled, so
+ * the loser subtrees it hands the handler are final. At ADOPTION the prefix is a resumed journal:
+ * a recorded cancellation is still a cancellation (the losers' entries are what the crash left,
+ * and nothing inside a cancelled arm runs again), so the same walk is sound there, and it is what
+ * keeps recovery from waiting on a completion that may be hours away. A released run is not swept
+ * by either (this driver no longer holds it, and its appends would be refused), and a crash before
+ * either sweep is repaired by whichever comes next reading `issued: false` off the replayed prefix.
  */
 export async function dischargeCancellations(
   entries: readonly JournalEntry[],
@@ -523,21 +527,32 @@ async function drive(
   }
 
   const resumed = appender.steps() as readonly JournalEntry[];
-  // The explicit callback wins; otherwise a handler that declares `adopted` repairs its own state.
-  // The default is the point: the hook was optional AND unwired, which is indistinguishable at
-  // runtime from a driver that has nothing to repair.
-  const adopt = req.onActivated ?? adoptionOf(req.handler)?.adopted.bind(req.handler);
-  if (adopt !== undefined) await adopt(resumed);
-
   const store = new RunJournalStore(appender);
-  // ADOPTION-TIME discharge, the recovery half of the `cancel.issued` stages: a crash between a
-  // scope's cancel record and its discharge leaves the losers' external state live — a seat still
-  // up in its worktree, a pause still armed — for as long as the resumed run keeps running. The
-  // completion sweep alone would wait until the END of a run that may hold the lease for hours,
-  // so recovery re-issues the owed cancellations before the engine performs any new step.
-  // Idempotent by the plane, exactly as the completion sweep is; an empty or fully-issued prefix
-  // is a no-op, so a fresh run pays nothing.
-  const flipped = new Set(await dischargeCancellations(resumed, store, req.handler));
+  let flipped: ReadonlySet<string>;
+  try {
+    // The explicit callback wins; otherwise a handler that declares `adopted` repairs its own state.
+    // The default is the point: the hook was optional AND unwired, which is indistinguishable at
+    // runtime from a driver that has nothing to repair.
+    const adopt = req.onActivated ?? adoptionOf(req.handler)?.adopted.bind(req.handler);
+    if (adopt !== undefined) await adopt(resumed);
+
+    // ADOPTION-TIME discharge, the recovery half of the `cancel.issued` stages: a crash between a
+    // scope's cancel record and its discharge leaves the losers' external state live — a seat still
+    // up in its worktree, a pause still armed — for as long as the resumed run keeps running. The
+    // completion sweep alone would wait until the END of a run that may hold the lease for hours,
+    // so recovery re-issues the owed cancellations before the engine performs any new step.
+    // Idempotent by the plane, exactly as the completion sweep is; an empty or fully-issued prefix
+    // is a no-op, so a fresh run pays nothing.
+    flipped = new Set(await dischargeCancellations(resumed, store, req.handler));
+  } catch (e) {
+    // The same grading the engine's own failures get below, because these two run on the far side
+    // of the activation and can lose the run the same way: a flip the store refused (L5010) is a
+    // successor holding the journal, and a re-arm the plane refused is that successor holding the
+    // pause. Both used to escape `drive()` raw, out of a function whose whole contract is that
+    // losing a run is an answer; a takeover between the activation and the first note was a crash.
+    if (e instanceof JournalAppendRejected || isNotOurs(e)) return { status: "released", reason: e as Error };
+    throw e;
+  }
   // The prefix the barrier validated and activated on, not a second read of the subject — with
   // the flips the sweep just appended applied in place, so the engine's picture of `issued` never
   // lags the store it writes to and the completion sweep finds nothing left to re-issue. Both

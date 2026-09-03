@@ -130,7 +130,7 @@ const arm = async (kind: "walker" | "engine", source: string, script: object): P
 };
 
 // CYCLE-SAFE, because the grader must outlive the graded. No value a CORRECT run produces is
-// cyclic (sort refuses one with L4016 before it reaches a log), so the plain spelling serves every
+// cyclic once it reaches a log (the corpus never logs one whole), so the plain spelling serves every
 // green comparison byte-for-byte — but the one time a cycle DOES arrive is under a mutant that
 // broke that refusal, and a comparator that throws right there kills the suite before the cell
 // that would have named the defect. The fallback runs only when the plain spelling has already
@@ -618,7 +618,10 @@ log("rounds", rounds, r.status);`,
   // §5.3: `sort` never answers "equal" for two distinct values. A value with no canonical form
   // used to fall to a stand-in built from `String(v)`, which is "[object Object]" for every
   // record, so two distinct cyclic records compared EQUAL and the order stopped being one.
-  ["sort refuses a value the total order cannot place", 'const a = { n: 1 }; a.self = a;\nconst b = { n: 2 }; b.self = b;\nlog(sort([a, b]));', {}, "L4016"],
+  // §5.3 gives the order a third rung, ORIGINAL POSITION, which no two distinct entries share; a
+  // value with no canonical form ties on the canonical rung and falls through to it, so the sort
+  // is still a function of its input and still never answers "equal" for two distinct values.
+  ["sort places a value with no canonical form by its original position", 'const a = { n: 1 }; a.self = a;\nconst b = { n: 2 }; b.self = b;\nconst s = sort([b, a]);\nlog(s[0] === b, s[1] === a, len(s));', {}],
   [
     "the event constructors",
     'const a = await spawn("one"); const c = channel("t"); log(message(c), idle(a), down(a), replied(a));',

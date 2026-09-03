@@ -339,6 +339,10 @@ log("aba".replace("a", "$&x"), "aba".replaceAll("a", "$&x"));
 log("aba".replace("a", "X"), "price: 5".replace("5", "$$9"), "abc".replace("b", "[$\`|$']"));
 `);
 
+await same("replace's REPLACEMENT coerces as the method's does, so the two spellings agree on it too", `
+log(replace("a1a", "a", 5), "a1a".replaceAll("a", 5), replace("x", "x", true), "x".replace("x", true));
+`);
+
 await same("the free string builtins ARE the methods, spelled free: substitution included", `
 log(replace("a.b.c", ".", "/"), replace("aba", "a", "$&x"), replace("price: 5", "5", "$$9"));
 log(replace("abc", "b", "[$\`|$']"), startsWith("abc", "a"), endsWith("abc", "c"), contains("abc", "b"));

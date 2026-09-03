@@ -124,8 +124,8 @@
     {
       "name": "an ask outside the roster is not refused up front",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    if (entry === undefined || entry.uid !== uid)\n      throw new Error(`ask(${step}) addresses ${name}#${uid}, which is not in this run's roster",
-      "replace": "    if (false)\n      throw new Error(`ask(${step}) addresses ${name}#${uid}, which is not in this run's roster",
+      "find": "      if (seat.why === \"not-in-roster\")\n        throw new Error(`ask(${step}) addresses ${name}#${uid}, which is not in this run's roster; an ask is relayed to an agent this run spawned`);\n",
+      "replace": "",
       "expectRed": "the refusal names the roster and reaches no endpoint",
       "cell": "the refusal names the roster and reaches no endpoint",
       "note": "Measured 2026-09-03: KILLED. mesh-ask.smoke: 34 passed, 1 failed Named cell red: the refusal names the roster and reaches no endpoint"
@@ -178,8 +178,8 @@
     {
       "name": "a checkpoint binds nothing, so nothing records what it asks",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    if (ctx.resume?.asks === undefined)\n      await ctx.bind({ asks: req.prompt, ...(req.to !== undefined ? { addressee: req.to } : {}) });",
-      "replace": "    if (false)\n      await ctx.bind({ asks: req.prompt, ...(req.to !== undefined ? { addressee: req.to } : {}) });",
+      "find": "    if (ctx.resume?.asks === undefined)\n      await ctx.bind({ asks: req.prompt, deadlineAt: deadline, ...(req.to !== undefined ? { addressee: req.to } : {}) });",
+      "replace": "    if (false)\n      await ctx.bind({ asks: req.prompt, deadlineAt: deadline, ...(req.to !== undefined ? { addressee: req.to } : {}) });",
       "expectRed": "and the entry itself records what it asks, so the operator surface can show it",
       "cell": "and the entry itself records what it asks, so the operator surface can show it",
       "note": "The entry is what `cotal run journal` reads to print the question under the step key an answer is addressed by."
@@ -187,11 +187,38 @@
     {
       "name": "an escalation relays to whatever `to` names, seat or not",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    const seated = entry !== undefined && entry.owner !== undefined && entry.actor !== undefined;\n    if (!seated) return;",
-      "replace": "    const seated = entry !== undefined && entry.owner !== undefined && entry.actor !== undefined;\n    if (!seated) { /* relay anyway */ }",
+      "find": "    const seat = this.seatAddress(to);\n    if (seat.address === undefined) return;",
+      "replace": "    const seat = this.seatAddress(to);\n    if (seat.address === undefined) { /* relay anyway */ }",
       "expectRed": "an escalation addressed to someone who is not a seat relays to nobody, stays parked, and still records who it names",
       "cell": "an escalation addressed to someone who is not a seat relays to nobody, stays parked, and still records who it names",
       "note": "`to` is a NAME, not a handle: the reference lets a program escalate to a person. With the guard gone the relay path reads coordinates off a roster entry that does not exist and THROWS, which also submits nothing \u2014 so the cell reads the pause's state at the one-second mark as well: the first spelling checked only the relay count and this mutant survived it, because a crash and a clean no-relay leave the same count."
+    },
+    {
+      "name": "an escalation whose seat is gone fails the checkpoint L4002 again",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      if (!(e instanceof EffectError && e.code === \"L4002\")) throw e;\n      console.error(",
+      "replace": "      throw e;\n      console.error(",
+      "expectRed": "an escalation whose seat is gone at the relay is TOLD to nobody and the pause stands, armed and answerable from anywhere",
+      "cell": "an escalation whose seat is gone at the relay is TOLD to nobody and the pause stands, armed and answerable from anywhere",
+      "note": "The reference defines no failure for an unreachable addressee: a checkpoint is a durable pause anyone resolves from anywhere, and L4002 is the turn's vocabulary. A dead relay target is the same case as a person."
+    },
+    {
+      "name": "the escalation is relayed after the pause is armed, so a refused relay leaves a live timer",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (ctx.attempt > 0 && req.to !== undefined) await this.relayEscalation(req, ctx, ref.token, deadline);\n\n    await this.arm(ref, deadline);",
+      "replace": "    await this.arm(ref, deadline);\n\n    if (ctx.attempt > 0 && req.to !== undefined) await this.relayEscalation(req, ctx, ref.token, deadline);",
+      "expectRed": "a relay the endpoint refuses outright fails the step with NOTHING armed behind it",
+      "cell": "a relay the endpoint refuses outright fails the step with NOTHING armed behind it",
+      "note": "Told BEFORE the pause is armed, the order ask uses. With the relay after the arm, an endpoint refusal (anything but a gone seat, which is tolerated) failed the step and left a waiting pause the discharge never walks (it only walks cancelled losers), so the timer fired into a failed step."
+    },
+    {
+      "name": "a resumed checkpoint attempt recomputes its deadline instead of reading the bound one",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    const recorded = ctx.resume?.deadlineAt;\n    const deadline = typeof recorded === \"number\"\n      ? recorded\n      : this.now() + parseDuration(req.timeout ?? this.binding.defaultCheckpointTimeout);",
+      "replace": "    const deadline = this.now() + parseDuration(req.timeout ?? this.binding.defaultCheckpointTimeout);",
+      "expectRed": "a resumed escalation relays the RECORDED deadline, so the seat's hold and the pause deny at one instant",
+      "cell": "a resumed escalation relays the RECORDED deadline, so the seat's hold and the pause deny at one instant",
+      "note": "arm() attaches to the recorded spec and keeps ITS deadline, so a recomputed instant reached only the relay: the manager's hold denied at now+timeout while the pause denied at the recorded instant. ask binds and restores its deadline; the checkpoint now does the same, and the relay's deadlineMs is where the difference is visible."
     }
   ]
 }

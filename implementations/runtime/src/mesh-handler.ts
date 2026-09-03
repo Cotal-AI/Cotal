@@ -637,22 +637,30 @@ export class MeshHandler {
   async checkpoint(req: CheckpointRequest, ctx: EffectContext): Promise<CheckpointRaw> {
     if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
     const ref: CheckpointRef = { endpoint: this.binding.endpoint, token: ctx.requestId };
-    const now = this.now();
-    const deadline = now + parseDuration(req.timeout ?? this.binding.defaultCheckpointTimeout);
+    // ONE deadline per attempt, decided when the attempt is first bound and read back from the
+    // entry on every re-entry, exactly as `ask` does. Recomputing `now + timeout` on a resume
+    // handed the relay an instant the pause did not have: `arm` attaches to the recorded spec and
+    // keeps ITS deadline, so the seat's hold and the checkpoint plane denied at different times.
+    const recorded = ctx.resume?.deadlineAt;
+    const deadline = typeof recorded === "number"
+      ? recorded
+      : this.now() + parseDuration(req.timeout ?? this.binding.defaultCheckpointTimeout);
 
     // Once per attempt, before the pause exists: a crash between the bind and the mint leaves a
     // pending entry that says what it was going to ask, which is the harmless direction.
     if (ctx.resume?.asks === undefined)
-      await ctx.bind({ asks: req.prompt, ...(req.to !== undefined ? { addressee: req.to } : {}) });
-
-    await this.arm(ref, deadline);
+      await ctx.bind({ asks: req.prompt, deadlineAt: deadline, ...(req.to !== undefined ? { addressee: req.to } : {}) });
 
     // AN ESCALATION IS ADDRESSED, so where the addressee is an agent of this run it is TOLD.
     // Attempt 0 has no addressee (the reference allows `to` only with `onExpiry: "escalate"`,
     // and the escalation is the second mint), and a `to` that names no agent of this run is a
     // person: nothing to relay to, and the pause is answerable from anywhere by design. Both
-    // are visible at the operator surface, which is what the bind above is for.
+    // are visible at the operator surface, which is what the bind above is for. Told BEFORE the
+    // pause is armed, the order `ask` uses: a relay this endpoint refuses outright then fails the
+    // step with nothing armed behind it, instead of leaving a timer to fire into a failed step.
     if (ctx.attempt > 0 && req.to !== undefined) await this.relayEscalation(req, ctx, ref.token, deadline);
+
+    await this.arm(ref, deadline);
 
     const settled = await this.settle(ref, ctx.signal);
     if (settled.settle === "expired") return { outcome: "expired", at: settled.ts };
@@ -1152,12 +1160,16 @@ export class MeshHandler {
     let ext: Readonly<Record<string, unknown>> | undefined =
       ctx.resume?.goalId === goalId ? (ctx.resume as Readonly<Record<string, unknown>>) : undefined;
     if (ext === undefined) {
-      const entry = this.roster.get(name);
-      if (entry === undefined || entry.uid !== uid)
-        throw new Error(`turn(${name}#${uid}) addresses an agent that is not in this run's roster; a turn wakes an agent this run spawned`);
-      if (entry.owner === undefined || entry.actor === undefined)
+      const seat = this.seatAddress(name, uid);
+      if (seat.address === undefined) {
+        if (seat.why === "not-in-roster")
+          throw new Error(`turn(${name}#${uid}) addresses an agent that is not in this run's roster; a turn wakes an agent this run spawned`);
         throw new Error(`turn(${name}#${uid}) has no address: the spawn's acceptance floor was never served, so the seat's owner/actor coordinates are unknown`);
-      const { owner, actor } = entry;
+      }
+      const { owner, actor } = seat.address;
+      // The permits are the roster entry's, not the address's: a budget is spent per spawn, and
+      // the address is only where this turn is sent.
+      const entry = this.roster.get(name)!;
       // Spend the scope's handoff memo at BEGIN, honored or not — honoring is immediate-only.
       const memo = this.handoffMemos.get(scope);
       this.handoffMemos.delete(scope);
@@ -1463,13 +1475,27 @@ export class MeshHandler {
    */
   private askSeat(req: AskRequest, ctx: EffectContext): AskSeat {
     const { name, uid } = parseAgentHandle(req.agent.agent);
+    const seat = this.seatAddress(name, uid);
     const step = stepKeyString(ctx.key);
-    const entry = this.roster.get(name);
-    if (entry === undefined || entry.uid !== uid)
-      throw new Error(`ask(${step}) addresses ${name}#${uid}, which is not in this run's roster; an ask is relayed to an agent this run spawned`);
-    if (entry.owner === undefined || entry.actor === undefined)
+    if (seat.address === undefined) {
+      if (seat.why === "not-in-roster")
+        throw new Error(`ask(${step}) addresses ${name}#${uid}, which is not in this run's roster; an ask is relayed to an agent this run spawned`);
       throw new Error(`ask(${step}) has no address for ${name}#${uid}: the spawn's acceptance floor was never served, so the seat's owner/actor coordinates are unknown`);
-    return { name, uid, owner: entry.owner, actor: entry.actor, schema: req.schema };
+    }
+    return { ...seat.address, schema: req.schema };
+  }
+
+  /**
+   * Where a relay to an agent of this run is addressed: the roster entry under the handle's name,
+   * at the handle's incarnation, with the owner/actor coordinates its acceptance floor served.
+   * One resolver for the three relays (`turn`, `ask`, an escalation), because the three
+   * dispositions differ and the lookup does not: a turn and an ask refuse, an escalation stands.
+   */
+  private seatAddress(name: string, uid?: string): { address: SeatAddress; why?: undefined } | { address?: undefined; why: "not-in-roster" | "no-floor" } {
+    const entry = this.roster.get(name);
+    if (entry === undefined || (uid !== undefined && entry.uid !== uid)) return { why: "not-in-roster" };
+    if (entry.owner === undefined || entry.actor === undefined) return { why: "no-floor" };
+    return { address: { name, uid: entry.uid, owner: entry.owner, actor: entry.actor } };
   }
 
   private async relayAsk(
@@ -1503,22 +1529,29 @@ export class MeshHandler {
   private async relayEscalation(req: CheckpointRequest, ctx: EffectContext, token: string, deadlineAt: number): Promise<void> {
     const to = req.to as string;
     const step = stepKeyString(ctx.key);
-    const entry = this.roster.get(to);
     // A seat is a roster entry whose acceptance floor was served: that is what carries the
     // owner/actor coordinates a relay is addressed by. Anything else — a name this run never
     // spawned, or one whose floor never landed — is not a seat, and the escalation stays the
     // durable pause it already is, addressed on its entry and answerable from anywhere.
-    const seated = entry !== undefined && entry.owner !== undefined && entry.actor !== undefined;
-    if (!seated) return;
+    const seat = this.seatAddress(to);
+    if (seat.address === undefined) return;
     const context = renderRunContext({ run: this.binding.runId, step, notices: [] });
     const payload = JSON.stringify({
       run: this.binding.runId, step, context, noticeIds: [],
       checkpoint: { token, prompt: req.prompt, schema: req.schema ?? null, deadlineAt, escalatedTo: to },
     });
-    await this.relayToSeat(
-      { name: to, uid: entry!.uid, owner: entry!.owner!, actor: entry!.actor! },
-      token, payload, deadlineAt, "checkpoint", step,
-    );
+    try {
+      await this.relayToSeat(seat.address, token, payload, deadlineAt, "checkpoint", step);
+    } catch (e) {
+      // THE PAUSE OUTLIVES ITS ADDRESSEE. The reference defines no failure for an escalation whose
+      // addressee cannot be reached: it "mints exactly one further checkpoint addressed to `to`",
+      // and a checkpoint is "a durable pause a human or an agent resolves from anywhere". A seat
+      // the endpoint reports gone is therefore the same case as a `to` that names a person: nobody
+      // is told, the addressee is on the entry, and anyone may still answer. L4002 is the turn's
+      // vocabulary, and this is not a turn the program asked for. Said once, not swallowed.
+      if (!(e instanceof EffectError && e.code === "L4002")) throw e;
+      console.error(`run ${this.binding.runId}: the escalation at ${step} could not be told to ${to} (${e.message}); the pause stands, answerable from anywhere`);
+    }
   }
 
   /**
@@ -1530,7 +1563,7 @@ export class MeshHandler {
    * agent-down failure (L4002); every other refusal is this endpoint's and is uncatchable.
    */
   private async relayToSeat(
-    seat: { name: string; uid: string; owner: string; actor: string },
+    seat: SeatAddress,
     goalId: string,
     payload: string,
     deadlineAt: number,
@@ -2042,7 +2075,8 @@ const WAIT_POLL_MS = 2_000;
 /** The budgets this host meters for an agent, read from the spawn's `permits` record. */
 type AgentPermits = { turns?: number; wallClockMs?: number };
 /** The seat an ask is told to: its roster identity, its address, and the schema it must meet. */
-type AskSeat = { name: string; uid: string; owner: string; actor: string; schema: unknown };
+type SeatAddress = { name: string; uid: string; owner: string; actor: string };
+type AskSeat = SeatAddress & { schema: unknown };
 
 /**
  * Read a spawn's `permits` as the budgets this host can enforce: `turns`, a positive integer of

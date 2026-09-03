@@ -488,6 +488,39 @@ const a = await checkpoint("approve", "Ship it?", { timeout: "2s", onExpiry: "pr
   c("and the original driver, watching the same settle, completes as well", out?.status === "completed", out?.status);
 }
 
+// ── 7c) an attempt's deadline is decided once, bound, and read back on a resume ──────────────
+//
+// `checkpoint` recomputed `now + timeout` on every entry. `arm` attaches to the recorded pause and
+// keeps the deadline that pause was minted with, so a resumed attempt handed its relay a fresh
+// instant the pause did not have: the seat's hold and the checkpoint plane then denied at
+// different times. `ask` binds its deadline and restores it; the checkpoint now does the same.
+{
+  const k = { requestId: "cp7cxxxxxxxxxxxxxxxxxxxxxx".slice(0, 20).padEnd(43, "0").slice(0, 43), attempt: 0 };
+  const bound: Record<string, unknown>[] = [];
+  const first = handler.checkpoint({ prompt: "Ship it?", timeout: "1h", onExpiry: "proceed" } as never,
+    { requestId: k.requestId, attempt: 0, bind: async (v: Record<string, unknown>) => { bound.push(v); }, signal: { cancelled: false, onCancel() { /* never */ } } } as never)
+    .then(() => "settled", (e: unknown) => `threw: ${(e as Error).message}`);
+  await wait(300);
+  const deadlineAt = bound[0]?.deadlineAt;
+  c("the attempt binds the deadline it decided, beside what it asks",
+    typeof deadlineAt === "number" && deadlineAt === NOW + 3_600_000 && bound[0]?.asks === "Ship it?", JSON.stringify(bound[0]));
+  // A successor re-entering the same attempt is handed the bound state and a clock that has
+  // moved on. What it arms and relays must be the RECORDED instant, never a fresh one.
+  const later = new MeshHandler(nc, kv, js, jsm, binding, new EpfSettleWatcher(js, jsm, SPACE, 3_000), () => NOW + 600_000);
+  const rebound: Record<string, unknown>[] = [];
+  const again = later.checkpoint({ prompt: "Ship it?", timeout: "1h", onExpiry: "proceed" } as never,
+    { requestId: k.requestId, attempt: 0, resume: bound[0], bind: async (v: Record<string, unknown>) => { rebound.push(v); }, signal: { cancelled: false, onCancel() { /* never */ } } } as never)
+    .then(() => "settled", (e: unknown) => `threw: ${(e as Error).message}`);
+  await wait(300);
+  const status = await readCheckpointStatus(kv, { endpoint: EP, token: k.requestId });
+  c("a resumed attempt binds nothing new and its pause still runs to the RECORDED deadline",
+    rebound.length === 0 && status?.value.deadline === deadlineAt, JSON.stringify({ rebound, deadline: status?.value.deadline, deadlineAt }));
+  await resolveCheckpoint(deps, { runId: "r-cp", stepKey: STEP, by: "eve", value: "go", now: NOW + 1_000 }).catch(() => undefined);
+  // The two pauses share a token, so one answer ends both; neither is left parked.
+  await resumeCheckpoint(kv, js, jsm, SPACE, { ref: { endpoint: EP, token: k.requestId }, presenter: HOLDER, now: NOW + 1_000 }).catch(() => undefined);
+  await withDeadline(Promise.all([first, again]), 15_000, "the two entries of one attempt");
+}
+
 // ── 8) a checkpoint with no timeout of its own gets the driver's PINNED one ───────────────────
 //
 // There is no such thing as a pause that waits forever on this plane: `mintCheckpoint` refuses a

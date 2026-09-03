@@ -165,24 +165,29 @@ function compareTotal(a: unknown, b: unknown): number {
   }
   if (typeof a === "string" && typeof b === "string") return a < b ? -1 : a > b ? 1 : 0;
   if (ra < 4) return 0; // same rank among undefined/null/false/true means identical
-  const ca = safeCanonical(a);
-  const cb = safeCanonical(b);
+  const ca = canonicalOf(a);
+  const cb = canonicalOf(b);
+  // A value with no canonical form is a tie on THIS rung, never a verdict: the caller's next rung
+  // (the element itself, then original position) is what separates two such entries.
+  if (ca === undefined || cb === undefined) return 0;
   return ca < cb ? -1 : ca > cb ? 1 : 0;
 }
 
-/** The canonical form, or a refusal: this order has no place for a value that has none. */
-function safeCanonical(v: unknown): string {
-  // NO STAND-IN. `\uFFFF${String(v)}` made two distinct cyclic records compare EQUAL, and the
-  // total order's whole claim is that it never answers "equal" for two distinct values. A value
-  // with no canonical form is a value this order cannot place, and saying so is the honest answer.
-  let c: unknown;
+/**
+ * The canonical form this rung of the order compares by, or `undefined` for a value that has none.
+ *
+ * NO STAND-IN. `\uFFFF${String(v)}` made two distinct cyclic records compare EQUAL on this rung,
+ * and the total order's whole claim is that it never answers "equal" for two distinct values.
+ * The reference (5.3) gives the order a rung BELOW this one, original position, which no two
+ * distinct entries share; so a value this rung cannot place is not refused, it falls through.
+ */
+function canonicalOf(v: unknown): string | undefined {
   try {
-    c = canonicalize(v) as unknown;
-  } catch (e) {
-    throw new RuntimeFault("L4016", `sort: a value in this list has no canonical form (${(e as Error).message}), so the total order cannot place it`);
+    const c = canonicalize(v) as unknown;
+    return typeof c === "string" ? c : undefined;
+  } catch {
+    return undefined;
   }
-  if (typeof c === "string") return c;
-  throw new RuntimeFault("L4016", "sort: a value in this list canonicalizes to something that is not a string, so the total order cannot place it");
 }
 
 // ---- methods ---------------------------------------------------------------------------------------
@@ -522,9 +527,9 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
     }, { any: [0] })],
     // strings
     ["split", fn("split", (frame, a) => born(strArg("split", a[0]).split(strArg("split", a[1])), frame.depth))],
-    ["trim", fn("trim", (_f, a) => (a[0] as string).trim())],
-    ["lower", fn("lower", (_f, a) => (a[0] as string).toLowerCase())],
-    ["upper", fn("upper", (_f, a) => (a[0] as string).toUpperCase())],
+    ["trim", fn("trim", (_f, a) => strArg("trim", a[0]).trim())],
+    ["lower", fn("lower", (_f, a) => strArg("lower", a[0]).toLowerCase())],
+    ["upper", fn("upper", (_f, a) => strArg("upper", a[0]).toUpperCase())],
     ["startsWith", fn("startsWith", (_f, a) => strArg("startsWith", a[0]).startsWith(strArg("startsWith", a[1])))],
     ["endsWith", fn("endsWith", (_f, a) => strArg("endsWith", a[0]).endsWith(strArg("endsWith", a[1])))],
     ["contains", fn("contains", (_f, a) => strArg("contains", a[0]).includes(strArg("contains", a[1])))],
@@ -532,7 +537,9 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
     // where the method replaces the first, IN EACH CASE EXACTLY AS JAVASCRIPT SPELLS THE METHOD, and
     // JavaScript's spelling honours `$$`, `$&`, `` $` `` and `$'` in the replacement. split/join
     // took those literally, so the free spelling and the method spelling disagreed on the same call.
-    ["replace", fn("replace", (_f, a) => strArg("replace", a[0]).replaceAll(strArg("replace", a[1]), strArg("replace", a[2])))],
+    // The RECEIVER and the PATTERN are gated (5.2 constrains the pattern); the replacement is
+    // spelled `String(...)` here as it is in the method table, so the two spellings agree on it too.
+    ["replace", fn("replace", (_f, a) => strArg("replace", a[0]).replaceAll(strArg("replace", a[1]), String(a[2])))],
     // numbers
     ["min", fn("min", (_f, a) => Math.min(...(a as number[])))],
     ["max", fn("max", (_f, a) => Math.max(...(a as number[])))],

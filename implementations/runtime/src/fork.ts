@@ -338,7 +338,7 @@ export async function planFork(req: ForkRequest): Promise<ForkPlan> {
     refusals.push({
       code: "L5019",
       step: journalEntryKeyString(e),
-      why: "the cut contains a spawn, and a fork must respawn or adopt that agent at the frontier; both ride the durable-action machinery an agent handle comes from, which has not landed on this host. Fork at a step before the spawn, or wait for it.",
+      why: "the cut contains a spawn that said onFork: \"respawn\" (the default), and a fresh seat would carry a new identity the copied turns do not address, so honouring it would rewrite the parent's history. Mark the spawn onFork: \"adopt\" to share the seat, or fork at a step before it.",
     });
   }
 

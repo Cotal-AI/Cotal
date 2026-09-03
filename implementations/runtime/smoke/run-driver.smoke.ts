@@ -21,7 +21,7 @@ import { connect } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { isReachable, createEndpointStreams, activateRun, replayRunJournal, openRecordsBucket, readRunRecord, createRunSpec, writeRunStatus, RunJournalTailTruncated } from "@cotal-ai/core";
-import { ENGINE_LANGUAGE_VERSION, Journal, PIN_DEFAULTS, SimHandler, WALKER_LANGUAGE_VERSION, resolvePins, run as walkProgram, type EffectHandler, type JournalEntry } from "@cotal-ai/lang";
+import { ENGINE_LANGUAGE_VERSION, Journal, JournalAppendRejected, PIN_DEFAULTS, SimHandler, WALKER_LANGUAGE_VERSION, resolvePins, run as walkProgram, type EffectHandler, type JournalEntry } from "@cotal-ai/lang";
 import { startRun, driveRun, RunJournalStore, PauseToken } from "../src/index.js";
 import { runOnHostedEngine } from "../src/engine-host.js";
 import { pickFreePort } from "./_free-port.js";
@@ -992,7 +992,30 @@ c("every cell the language package's matrix cites from this file is one THIS RUN
   unrun.length === 0, unrun.map(({ s, hits }) => `${hits} execution(s): ${s}`));
 console.log(`  (${seam.cells.length} cited cells checked against ${EXECUTED.length} executed)`);
 
-const EXPECTED_CELLS = 85;
+// ── a takeover that loses the run INSIDE its adoption is released, not thrown ─────────────────
+//
+// `adopt` and the adoption-time discharge run on the far side of the activation and can lose the
+// run the same way the engine can: a flip the store refuses is L5010 from a successor holding the
+// journal, and a re-arm the plane refuses is that successor holding the pause. Both escaped
+// `drive()` raw, out of a function whose contract is that losing a run is an answer.
+{
+  class RefusesToAdopt extends CountingHandler {
+    async adopted(): Promise<string[]> {
+      throw new JournalAppendRejected("/sleep:s1#0", "settled", new Error("a successor holds the journal"));
+    }
+  }
+  const seeded = await attempt(startRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-adopt-lost", source: PROGRAM, lease: lease("m1", 1, takeovers += 1), handler: new CountingHandler(),
+  }));
+  c("the adoption-loss block's run is seeded", seeded.status === "completed", why(seeded));
+  const lost = await attempt(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-adopt-lost", source: PROGRAM, lease: lease("m2", 2, takeovers += 1), handler: new RefusesToAdopt(),
+  }));
+  c("a takeover whose adoption is refused by the journal is RELEASED, not thrown out of drive()",
+    lost.status === "released" && lost.reason.name === "JournalAppendRejected", why(lost));
+}
+
+const EXPECTED_CELLS = 87;
 console.log(`run-driver.smoke: ${ok} passed, ${fail} failed`);
 if (ok + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${ok + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);

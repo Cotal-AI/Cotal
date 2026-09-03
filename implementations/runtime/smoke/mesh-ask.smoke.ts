@@ -36,6 +36,7 @@ import {
   armCheckpointTimer,
   eptReqStreamName,
   readCheckpointSpec,
+  readCheckpointStatus,
   readCheckpointSettle,
   recordCheckpointAnswer,
   checkpointAnswerId,
@@ -783,6 +784,57 @@ const relayOf = (tok: unknown): { invoke?: (typeof turnInvokes)[number]; ask?: R
   k.cancel("the cell has what it came for");
   await withDeadline(parked, 15_000, "the escalated pause");
 
+  // THE PAUSE OUTLIVES ITS ADDRESSEE. A seat the endpoint reports gone at the relay's accept is the
+  // same case as a person: nobody is told, and the pause stands answerable from anywhere. The
+  // relay used to raise L4002 out of the checkpoint, failing a step the reference gives no failure
+  // for, and it did so AFTER arming the pause, so the timer fired into a failed step.
+  const before3 = turnInvokes.length;
+  refuseNextTurn = new EpEnvelopeError("expired", `the target incarnation ${seat11.agent} is gone from presence`);
+  const said: string[] = [];
+  const realErr = console.error;
+  console.error = (...a: unknown[]) => { said.push(a.map(String).join(" ")); };
+  const k3 = stepCtx(token("i3"), undefined, 1, "checkpoint");
+  const parked3 = h.checkpoint({ prompt: "Still ship it?", timeout: "1h", onExpiry: "proceed", to: name11 } as never, k3.ctx)
+    .then(() => "settled", (e: unknown) => `threw: ${(e as Error).message}`);
+  await wait(1_000);
+  console.error = realErr;
+  const early3 = await Promise.race([parked3, Promise.resolve("parked")]);
+  const armed3 = await readCheckpointStatus(kv, { endpoint: EP, token: token("i3") });
+  c("an escalation whose seat is gone at the relay is TOLD to nobody and the pause stands, armed and answerable from anywhere",
+    early3 === "parked" && turnInvokes.length === before3 + 1 && armed3?.value.state === "waiting"
+      && said.some((l) => l.includes("could not be told") && l.includes(name11)),
+    JSON.stringify({ early3, relays: turnInvokes.length - before3, state: armed3?.value.state, said: said.join(" | ").slice(0, 160) }));
+  k3.cancel("the cell has what it came for");
+  await withDeadline(parked3, 15_000, "the unreachable-addressee pause");
+
+  // TOLD BEFORE ARMED. A refusal that is not "the seat is gone" is this endpoint's and is not
+  // tolerated: the step fails. Relayed after the arm, that failure left a waiting pause the
+  // discharge never walks (it only walks cancelled losers), so its timer fired into a failed step.
+  refuseNextTurn = new EpEnvelopeError("permission-denied", "this caller may not address that seat");
+  const k4 = stepCtx(token("i4"), undefined, 1, "checkpoint");
+  const refused4 = await withDeadline(safe(h.checkpoint({ prompt: "Ship it?", timeout: "1h", onExpiry: "proceed", to: name11 } as never, k4.ctx)), 15_000, "the refused escalation");
+  const armed4 = await readCheckpointStatus(kv, { endpoint: EP, token: token("i4") });
+  c("a relay the endpoint refuses outright fails the step with NOTHING armed behind it",
+    (refused4 as { threw?: boolean })?.threw === true && String((refused4 as { message?: string })?.message).includes("refused") && armed4 === undefined,
+    JSON.stringify({ refused4, state: armed4?.value.state }));
+
+  // ONE DEADLINE PER ATTEMPT. A resumed attempt is handed the deadline it bound and a clock that
+  // has moved on; `arm` attaches to the recorded pause either way, so the place a recomputed
+  // instant showed was the relay: the seat's hold denied at now+timeout, the pause at the record.
+  const recordedAt = Date.now() + 120_000;
+  const k5 = stepCtx(token("i5"), { asks: "Ship it?", addressee: name11, deadlineAt: recordedAt }, 1, "checkpoint");
+  const before5 = turnInvokes.length;
+  const parked5 = h.checkpoint({ prompt: "Ship it?", timeout: "1h", onExpiry: "proceed", to: name11 } as never, k5.ctx)
+    .then(() => "settled", (e: unknown) => `threw: ${(e as Error).message}`);
+  for (let i = 0; i < 100 && turnInvokes.length === before5; i += 1) await wait(100);
+  const relay5 = turnInvokes[before5];
+  const slack = relay5 === undefined ? undefined : Math.abs(relay5.deadlineMs - (recordedAt - Date.now()));
+  c("a resumed escalation relays the RECORDED deadline, so the seat's hold and the pause deny at one instant",
+    relay5 !== undefined && slack !== undefined && slack < 15_000 && Object.keys(k5.bound).length === 0,
+    JSON.stringify({ deadlineMs: relay5?.deadlineMs, expected: recordedAt - Date.now(), rebound: k5.bound }));
+  k5.cancel("the cell has what it came for");
+  await withDeadline(parked5, 15_000, "the resumed escalation");
+
   // A `to` that is not a seat of this run is a PERSON. The reference allows it (`to` is a name,
   // not a handle), the pause is answerable from anywhere by design, and its addressee is on the
   // entry: what must not happen is a relay to a seat nobody spawned.
@@ -805,7 +857,7 @@ const relayOf = (tok: unknown): { invoke?: (typeof turnInvokes)[number]; ask?: R
 
 await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
-const EXPECTED_CELLS = 39;
+const EXPECTED_CELLS = 42;
 const ran = ok + fail;
 console.log(`mesh-ask.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

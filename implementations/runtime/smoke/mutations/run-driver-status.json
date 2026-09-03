@@ -31,6 +31,15 @@
       "expectRed": "a run activated but never pinned is released, naming the window it died in rather than a lost journal",
       "cell": "a run activated but never pinned is released, naming the window it died in rather than a lost journal",
       "note": "A run whose journal holds an activation and whose record was never written died in the window between winning the run and pinning it. Telling the operator its journal is gone points them at a stream that is right there."
+    },
+    {
+      "name": "a takeover that loses the run inside its adoption escapes drive() as a raw throw",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "    if (e instanceof JournalAppendRejected || isNotOurs(e)) return { status: \"released\", reason: e as Error };\n    throw e;",
+      "replace": "    throw e;",
+      "expectRed": "a takeover whose adoption is refused by the journal is RELEASED, not thrown out of drive()",
+      "cell": "a takeover whose adoption is refused by the journal is RELEASED, not thrown out of drive()",
+      "note": "adopt and dischargeCancellations run on the far side of the activation and can lose the run the same way the engine can. Both used to sit in no try at all, so a legitimate takeover between the activation and the first note was a crash out of a function whose contract is that losing a run is an answer."
     }
   ]
 }

@@ -27,8 +27,8 @@
     {
       "name": "the free replace is split/join again, so $-patterns are literal",
       "file": "packages/lang/src/library.ts",
-      "find": "    [\"replace\", fn(\"replace\", (_f, a) => strArg(\"replace\", a[0]).replaceAll(strArg(\"replace\", a[1]), strArg(\"replace\", a[2])))],",
-      "replace": "    [\"replace\", fn(\"replace\", (_f, a) => strArg(\"replace\", a[0]).split(strArg(\"replace\", a[1])).join(strArg(\"replace\", a[2])))],",
+      "find": "    [\"replace\", fn(\"replace\", (_f, a) => strArg(\"replace\", a[0]).replaceAll(strArg(\"replace\", a[1]), String(a[2])))],",
+      "replace": "    [\"replace\", fn(\"replace\", (_f, a) => strArg(\"replace\", a[0]).split(strArg(\"replace\", a[1])).join(String(a[2])))],",
       "expectRed": "the free string builtins ARE the methods, spelled free: substitution included",
       "completionMarker": "ok a program that logs a literal",
       "cell": "the free string builtins ARE the methods, spelled free: substitution included",
