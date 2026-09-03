@@ -2476,7 +2476,7 @@ export class CotalEndpoint extends EventEmitter {
    * channel). Counted on the wire over a seeded corpus of 69 chat channels and 24 event channels at
    * limit 200: 2524 broker requests and about 8.0 MB transferred to return a 143,401-byte page,
    * against 143 requests and about 0.91 MB here. The counts and the page size repeat exactly across
-   * runs; the byte totals move by a few hundred. `pnpm smoke:web-activity-read-cost` reproduces the
+   * runs; the byte totals move by tens of bytes. `pnpm smoke:web-activity-read-cost` reproduces the
    * second column and a frozen copy of the fan-out shape; the first is that same suite run against
    * `544a974b7` (Cotal #1210).
    *

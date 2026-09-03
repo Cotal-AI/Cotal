@@ -36,9 +36,12 @@
  * `544a974b7`. Both are worth having and they are not interchangeable. Measured, same corpus,
  * `/api/activity` with no link cost:
  *
- *     544a974b7, the code that shipped        2524 requests   8,015,723 B
- *     this file's frozen fan-out arm          2863 requests   7,744,207 B
- *     the single read                          143 requests     908,420 B
+ *     544a974b7, the code that shipped        2524 requests   8,015,723 to 8,016,039 B
+ *     this file's frozen fan-out arm          2863 requests   7,743,783 to 7,744,228 B
+ *     the single read                          143 requests      908,415 to   908,422 B
+ *
+ * The request counts and the consumer creates held in every run of each arm. The byte totals did
+ * not, so each is the span its runs covered rather than one run's figure.
  *
  * The gap between the first two rows is the per-channel cost of the narrower window, which the pull
  * request states separately. To reproduce the first row, copy this file and its `package.json`
@@ -256,7 +259,7 @@ const FIELD = { oneWayMs: 41, bytesPerSec: 554 * 1024 };
 /** What an aborted read may still leave committed to the connection, in bytes.
  *
  *  One pull batch is 32 messages and this corpus runs about 1,005 wire bytes a message (§3: 500 DMs
- *  for 502,359B), so a batch is roughly 32KB and this is two of them. Measured, an aborted read
+ *  for 502,354 to 502,359B), so a batch is roughly 32KB and this is two of them. Measured, an aborted read
  *  leaves 165B; a read that asked the broker for the whole 2500-message backlog would leave close to
  *  2MB. The ceiling sits between those by two orders of magnitude in both directions rather than
  *  hugging either, so it is not fixed to this host. */
@@ -502,8 +505,8 @@ try {
   // WHAT DECIDES IT IS THE WINDOW. `/api/dms` asks for 500, and the window used to open at four
   // pages, and `drainWindow` delivers everything in the window and keeps the tail. Measured on
   // `544a974b7` at limit 500 against a 2500-message backlog: 1,995,856 and 1,995,859 bytes moved
-  // across two runs to return a 346,001-byte page, 257 requests both times, and ALONE on this link
-  // 8852ms and 7857ms, so it
+  // across two runs to return a 346,001-byte page, 257 requests every time, and ALONE on this link
+  // 7857ms to 8852ms across three runs, so it
   // straddles the 8000ms deadline on this host with nothing else on the connection. A deployment
   // whose backlog is larger sits on the wrong side of it every time, which is the reported refusal,
   // with no contention in it at all.
@@ -594,7 +597,8 @@ try {
   // WHICH OF THE TWO CELLS BELOW ACTUALLY DISCRIMINATES, measured rather than assumed. Restoring the
   // unbounded pull does NOT change what arrives after the abort: 165B either way, because the whole
   // page is committed and delivered BEFORE the reader gets to leave. It changes what the aborted
-  // read moves in total, 36,882B against 502,363B, so 7.3 is the cell the mutation fixture names.
+  // read moves in total, 36,878 to 36,882B unmutated across five runs against about 502,363B on the
+  // one mutated run, so 7.3 is the cell the mutation fixture names.
   // 7.2 stays because it is the bound on the other side of the abort and nothing else asserts it.
   //
   // Three cells outside this section (1.7b, 3.2, 4.6) also redden on that mutation, through pull and
