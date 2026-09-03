@@ -21,7 +21,9 @@ timeout rather than the broker. `MULTI_FILTER_BATCH` is 1,000 and `MULTI_FILTER_
 sequence before the newest N are taken. The size comes from the sweep rather than from the failure
 point: a fifth of the largest count that still answered, answering in about a quarter of a second, so
 a batch stays far from both the create timeout and the 8000ms response deadline. On the same corpus
-the sweep goes from 43ms, 246ms, 5345ms and a timeout, to 54ms, 343ms, 1163ms and 942ms. A space
+the sweep goes from 43ms, 246ms, 5345ms and a timeout, to 54ms, 343ms, 1163ms and 942ms. Those walls
+are single runs on one host and are shaped by it rather than being bounds; a re-run on another box
+landed outside the last of them, as the paragraph below says of every span here. A space
 with the 69 chat channels this work was aimed at is one batch, so every figure above is unchanged at
 that size. Merging on stream sequence rather than the payload's `ts` is asserted in
 `packages/core/smoke/history-recent.smoke.ts` against a corpus whose arrival order and `ts` order are
@@ -30,8 +32,13 @@ opposite.
 Two limits remain and are stated rather than buried. On a 20,000 channel and 20,000 message corpus
 the batched read still fails at 5,000 filters and above, because batching removes the create size
 ceiling and not the cost of a batch matching a small fraction of a long stream; no unbatched numbers
-were taken on that corpus, so no comparative claim is made about it. Separately, a filter list around
-40,000 exceeds `max_payload` and is refused by the broker rather than timing out.
+were taken on that corpus, so no comparative claim is made about it. Separately, a filter list
+big enough to exceed the connection's `max_payload` is refused by the client before anything is
+sent, rather than by the broker and rather than timing out: the client compares the request against
+the limit the broker advertised at connect and throws, so no bytes leave and the broker's own logs
+show nothing. On this corpus's subject shape 40,000 filters serialize to 1,480,032 bytes against an
+advertised 1,048,576. That threshold moves with both the advertised limit and the length of the
+subjects, so the count is an observation on one shape rather than a bound.
 
 Measured on the wire by a proxy between the endpoint and the broker that counts `$JS.API` request
 lines and bytes per direction, over a seeded corpus of 69 chat channels plus 24 event channels at
