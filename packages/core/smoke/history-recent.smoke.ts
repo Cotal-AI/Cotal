@@ -133,8 +133,8 @@ try {
   //    identical values for every fixture in this file.
   const epNc = (ep as unknown as { nc: import("@nats-io/transport-node").NatsConnection }).nc;
   const priv = ep as unknown as {
-    lastMatchingSeq(js: unknown, stream: string, subject: string): Promise<number>;
-    drainWindow(js: unknown, stream: string, subject: string, start: number, ceiling: number, limit: number): Promise<unknown[]>;
+    lastMatchingSeq(js: unknown, stream: string, subjects: string[]): Promise<number>;
+    drainWindow(js: unknown, stream: string, subjects: string[], start: number, ceiling: number, limit: number): Promise<unknown[]>;
   };
   const CHAT = `CHAT_${SPACE}`;
   const TALK = `cotal.${SPACE}.chat.*.*.talk`;
@@ -170,7 +170,7 @@ try {
   // 1. Last probe: bind says a message is pending, the fetch yields none, iterator ends cleanly.
   //    Returning 0 here is what made streamHistory report a live channel as empty.
   let lastThrew: unknown;
-  await priv.lastMatchingSeq(truncatingJs(0), CHAT, TALK).then(
+  await priv.lastMatchingSeq(truncatingJs(0), CHAT, [TALK]).then(
     (v) => { lastThrew = `RETURNED ${v}`; },
     (e) => { lastThrew = e; },
   );
@@ -180,7 +180,7 @@ try {
   // 2. Window drain: cut after 3 of the pending batch, ending cleanly. Returning those 3 is what
   //    made a cut-short read look like a convincing short page.
   let drainThrew: unknown;
-  await priv.drainWindow(truncatingJs(3), CHAT, TALK, 1, 10_000, 100).then(
+  await priv.drainWindow(truncatingJs(3), CHAT, [TALK], 1, 10_000, 100).then(
     (r) => { drainThrew = `RETURNED ${(r as unknown[]).length} messages`; },
     (e) => { drainThrew = e; },
   );
