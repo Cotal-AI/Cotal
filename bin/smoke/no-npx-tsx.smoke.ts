@@ -44,13 +44,28 @@ const ROOT = join(import.meta.dirname, "..", "..");
 //   (c) any call whose first argument is "npm" followed by an array beginning "exec"
 // A bare identifier (`const cmd = "npx"; spawn(cmd, ...)`) carries no token at the call and is
 // out of reach of any grammar guard; the guard says so rather than pretending otherwise.
+// Quote class: single, double, OR backtick. Fifth round found spawn(`npx`, ...) and exec(`npx tsx ...`)
+// slipping because ['"] has no backtick; live smoke already writes template-literal execSync.
+// Token class: npx with any Windows shim suffix (.cmd, .exe, .ps1), and npm likewise.
+// Between the quoted token and the comma: any TypeScript wrapper that keeps the literal at the
+// call (`as const`, `!`, extra parens), so `spawn("npx" as const, ...)` cannot slip either.
+const Q = String.raw`['"\x60]`;
+const WRAP = String.raw`[\s()!]*(?:as\s+const[\s()!]*)?`;
 const BANNED = new RegExp(
   [
-    String.raw`\(\s*['"]npx(?:\.cmd)?['"]\s*,`,
-    String.raw`['"]npx\s+tsx\b`,
-    String.raw`\(\s*['"]npm['"]\s*,\s*\[\s*['"]exec['"]`,
+    // (a) first argument is the npx token, however quoted or wrapped
+    String.raw`\(${WRAP}${Q}npx(?:\.(?:cmd|exe|ps1))?${Q}${WRAP},`,
+    // (b) a shell string beginning `npx tsx` or `npm exec`, the exec/execSync form
+    // (b) a shell string beginning `npx tsx` or `npm exec`, the exec/execSync form. Anchored to
+    //     argument position ( `(` or `,` before the quote ) so a backticked mention inside a
+    //     prose comment does not match; round five's first cut reddened on exactly that.
+    String.raw`[(,]${WRAP}${Q}(?:npx|npm\s+exec)\s+tsx\b`,
+    String.raw`[(,]${WRAP}${Q}npm\s+exec\b`,
+    // (c) argv form of npm exec, with the same quote and shim classes
+    String.raw`\(${WRAP}${Q}npm(?:\.(?:cmd|exe|ps1))?${Q}${WRAP},\s*\[\s*${Q}exec${Q}`,
   ].join("|"),
 );
+
 /** This file quotes the banned form in its own docstring, so it excludes itself and grades the rest. */
 const SELF = "bin/smoke/no-npx-tsx.smoke.ts";
 const SKIP = new Set(["node_modules", "dist", ".git", ".changeset", "coverage", "build", ".internal"]);
@@ -98,6 +113,15 @@ const positives: Array<[string, string]> = [
   ["newline before paren", 'pty.spawn\n("npx", args, {'],
   ["windows shim", 'spawn("npx.cmd", ["tsx"])'],
   ["npm exec", 'spawn("npm", ["exec", "tsx", BIN])'],
+  ["backtick npx", "spawn(`npx`, [\"tsx\", BIN], {})"],
+  ["backtick exec shell string", "exec(`npx tsx BIN attach`, { cwd: root }, () => {})"],
+  ["npx.exe", 'spawn("npx.exe", ["tsx"])'],
+  ["npx.ps1", 'spawn("npx.ps1", ["tsx"])'],
+  ["npm.cmd exec", 'spawn("npm.cmd", ["exec", "tsx"])'],
+  ["as const", 'spawn("npx" as const, ["tsx"])'],
+  ["non-null bang", 'spawn("npx"!, ["tsx"])'],
+  ["extra parens", 'spawn(("npx"), ["tsx"])'],
+  ["shell-string npm exec", 'exec("npm exec tsx BIN attach", cb)'],
 ]; 
 for (const [name, src] of positives) check(`banned form IS matched: ${name}`, BANNED.test(src), src);
 const negatives: Array<[string, string]> = [
@@ -105,6 +129,7 @@ const negatives: Array<[string, string]> = [
   ["robust pty", 'pty.spawn(TSX, args, {'],
   ["version.ts kind field", 'return { kind: "npx", root: packageRoot };'],
   ["prose mention", '// Run: npx tsx implementations/auth/smoke/x.smoke.ts'],
+  ["prose mention in backticks", "// `npx tsx <missing-file>` exits 1, which is indistinguishable from"],
 ]; 
 for (const [name, src] of negatives) check(`legitimate text is NOT matched: ${name}`, !BANNED.test(src), src);
 
