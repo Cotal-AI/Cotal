@@ -32,11 +32,25 @@ const ROOT = join(import.meta.dirname, "..", "..");
 // matched only `spawn(` and missed spawnSync, spawnProc and a multi-line call in seven files; CI
 // found the one it reached. A grammar guard has to match the family, not the one form its author
 // happened to fix.
-// Match the TOKEN, not the form: any spawner handed the literal "npx" as its command. The second
-// version of this guard required `["tsx"` to follow, and missed `pty.spawn("npx", args)` where the
-// array lives in a variable; a reviewer found it. Requiring the array shape was a third way to
-// enumerate the spelling the author happened to know.
-const BANNED = /\b(?:spawn|spawnSync|spawnProc|execFile|execFileSync|pty\.spawn)\(\s*"npx"\s*,/;
+// Match the TOKEN and nothing about the callee. Three earlier versions of this regex each named
+// the spawner identifiers their author had converted (spawn; then spawnSync/spawnProc/pty.spawn;
+// then with any argument shape), and each time the reviewer planted a spelling outside the list:
+// an aliased import (`spawn as spawnProcess`), `exec("npx tsx ...")`, a single-quoted 'npx', a
+// space or newline before the paren, `npx.cmd`, and `spawn("npm", ["exec", "tsx"`. Every one of
+// those is the same hazard: a process launcher handed npx from a scratch cwd. So the grammar here
+// is only the hazard token in argument position, whatever function it is passed to:
+//   (a) any call whose FIRST argument is the literal npx or npx.cmd, single or double quoted
+//   (b) any string literal beginning `npx tsx`, which is the shell-string form exec/execSync take
+//   (c) any call whose first argument is "npm" followed by an array beginning "exec"
+// A bare identifier (`const cmd = "npx"; spawn(cmd, ...)`) carries no token at the call and is
+// out of reach of any grammar guard; the guard says so rather than pretending otherwise.
+const BANNED = new RegExp(
+  [
+    String.raw`\(\s*['"]npx(?:\.cmd)?['"]\s*,`,
+    String.raw`['"]npx\s+tsx\b`,
+    String.raw`\(\s*['"]npm['"]\s*,\s*\[\s*['"]exec['"]`,
+  ].join("|"),
+);
 /** This file quotes the banned form in its own docstring, so it excludes itself and grades the rest. */
 const SELF = "bin/smoke/no-npx-tsx.smoke.ts";
 const SKIP = new Set(["node_modules", "dist", ".git", ".changeset", "coverage", "build", ".internal"]);
@@ -71,9 +85,28 @@ const plantedText = readFileSync(planted, "utf8");
 check("the planted control carries the banned form and the regex sees it", BANNED.test(plantedText), plantedText.slice(0, 80));
 
 // Negative control: the robust form must NOT match, or the guard would redden its own remedy.
-check("the robust form spawn(TSX, [BIN, ...]) is not matched", !BANNED.test('const child = spawn(TSX, [BIN, ...args], options);'));
-check("the multi-line, spawnSync, and variable-args forms ARE matched (the token, not the form)",
-  BANNED.test('spawnSync(\n    "npx",\n    ["tsx", x]') && BANNED.test('spawnProc("npx", ["tsx", BIN])') && BANNED.test('pty.spawn("npx", ["tsx"') && BANNED.test('pty.spawn("npx", args, {'));
+const positives: Array<[string, string]> = [
+  ["spawnSync multi-line", 'spawnSync(\n    "npx",\n    ["tsx", x]'],
+  ["spawnProc", 'spawnProc("npx", ["tsx", BIN])'],
+  ["pty.spawn array", 'pty.spawn("npx", ["tsx"'],
+  ["pty.spawn variable args", 'pty.spawn("npx", args, {'],
+  ["aliased import", 'spawnProcess("npx", ["tsx", BIN])'],
+  ["exec shell string", 'exec("npx tsx BIN attach", cb)'],
+  ["execSync shell string", 'execSync("npx tsx " + BIN)'],
+  ["single-quoted", "spawn('npx', ['tsx'])"],
+  ["space before paren", 'spawn ("npx", ["tsx"])'],
+  ["newline before paren", 'pty.spawn\n("npx", args, {'],
+  ["windows shim", 'spawn("npx.cmd", ["tsx"])'],
+  ["npm exec", 'spawn("npm", ["exec", "tsx", BIN])'],
+]; 
+for (const [name, src] of positives) check(`banned form IS matched: ${name}`, BANNED.test(src), src);
+const negatives: Array<[string, string]> = [
+  ["robust form", 'const child = spawn(TSX, [BIN, ...args], options);'],
+  ["robust pty", 'pty.spawn(TSX, args, {'],
+  ["version.ts kind field", 'return { kind: "npx", root: packageRoot };'],
+  ["prose mention", '// Run: npx tsx implementations/auth/smoke/x.smoke.ts'],
+]; 
+for (const [name, src] of negatives) check(`legitimate text is NOT matched: ${name}`, !BANNED.test(src), src);
 
 check(`no smoke source launches the CLI via npx tsx (${files.length} files walked)`, hits.length === 0, hits);
 
