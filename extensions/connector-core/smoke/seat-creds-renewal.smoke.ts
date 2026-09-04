@@ -134,6 +134,33 @@ try {
     agent.connectionIssue,
   );
 
+  // The source is live, but its identity is not. Put a broker-valid credential for another nkey in
+  // the exact file configFromEnv preserved, then drive the endpoint's explicit adoption operation.
+  // It must reject before committing the candidate and keep serving as the boot-pinned identity.
+  const otherIdentity = newIdentity();
+  const swapped = await mintCreds(auth, otherIdentity, "agent", {
+    lifecycleUid,
+    expiresInSeconds: 60,
+  });
+  writeFileSync(credsPath, swapped, { mode: 0o600 });
+  let swapError = "";
+  try {
+    await (agent as unknown as { ep: CotalEndpoint }).ep.reloadCreds();
+  } catch (error) {
+    swapError = (error as Error).message;
+  }
+  check(
+    "a re-signed file for a different nkey is refused before adoption",
+    swapError.includes(`identity ${otherIdentity.id}, expected ${identity.id}`) && swapError.includes("may not swap"),
+    swapError,
+  );
+  check(
+    "refused credential swap leaves the seat connected as its boot identity",
+    agent.connected && agent.id === `local.${identity.id}` && config.id === identity.id,
+    { connected: agent.connected, id: agent.id },
+  );
+  writeFileSync(credsPath, renewed, { mode: 0o600 });
+
   const reconnect = cotalToolSpecs(config).find((spec) => spec.name === "cotal_reconnect");
   assert.ok(reconnect, "cotal_reconnect tool is registered");
   const result = await reconnect.run(agent, config, {});
