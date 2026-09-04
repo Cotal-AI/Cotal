@@ -94,6 +94,22 @@
       "replace": "  const clean = true;",
       "expectRed": "an errored scan cannot be PUBLISHED even when every reachable package is live",
       "cell": "an errored scan cannot be PUBLISHED even when every reachable package is live"
+    },
+    {
+      "name": "any non-200 is treated as absence again, so a 5xx reads as an unpublished package",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "    if (status === 200) continue;\n    if (status === 404) missing.push(pkg);\n    else errored.push(pkg);",
+      "replace": "    if (status !== 200) missing.push(pkg);",
+      "expectRed": "a total 5xx outage is UNSETTLED, not NONE — a registry that will not answer has published nothing to say",
+      "cell": "a total 5xx outage is UNSETTLED, not NONE — a registry that will not answer has published nothing to say"
+    },
+    {
+      "name": "404 stops counting as absence, so a genuine partial publish can never be detected",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "    if (status === 404) missing.push(pkg);",
+      "replace": "    if (status === 410) missing.push(pkg);",
+      "expectRed": "a genuine held 404 on one package is STILL a partial publish — the loud verdict still fires",
+      "cell": "a genuine held 404 on one package is STILL a partial publish — the loud verdict still fires"
     }
   ]
 }

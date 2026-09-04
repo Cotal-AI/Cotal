@@ -158,14 +158,20 @@ async function readClosure(packages, version, opts, fetchImpl) {
       const res = await fetchImpl(versionUrl(opts.registryBase, pkg, version), { method: "GET" });
       status = res.status;
     } catch {
-      // A transport error is NOT evidence about the package. Merging it into `missing` was a real
-      // defect: an unreachable registry made a genuine partial publish look like `none` (whole
-      // closure absent) and a flapping one made it look like `unsettled`, both of which the caller
-      // treats as a quiet skip. An error is its own state, never an absence.
       errored.push(pkg);
       continue;
     }
-    if (status !== 200) missing.push(pkg);
+    // ONLY 200 is presence and ONLY 404 is absence. Everything else -- 5xx, 429, 403, a proxy's
+    // 502 -- is the registry failing to answer, which is no evidence either way.
+    //
+    // Splitting only the `catch` was not enough, and the miss is worth recording: a 500 on one
+    // origin made a fully published version report PARTIAL and red the release job, which is the
+    // cry-wolf direction this file argues is worse than the hole it closes; and a total 5xx outage
+    // reported `none`, the same quiet skip as an unreachable registry, with a status code instead
+    // of a throw. A throw and a 500 are the same fact arriving by different routes.
+    if (status === 200) continue;
+    if (status === 404) missing.push(pkg);
+    else errored.push(pkg);
   }
   return { missing, errored };
 }
@@ -212,8 +218,8 @@ export async function verifyClosure(version, {
 
     const elapsedMs = now() - started;
     const unchangedForMs = now() - unchangedSince;
-    reads.push({ published: packages.length - missing.length, missing: [...missing], errored: [...errored], elapsedMs });
-    log(`  published=${packages.length - missing.length}/${packages.length} missing=[${missing.join(" ")}] errored=[${errored.join(" ")}] unchanged_for=${Math.round(unchangedForMs / 1000)}s`);
+    reads.push({ published: packages.length - missing.length - errored.length, missing: [...missing], errored: [...errored], elapsedMs });
+    log(`  published=${packages.length - missing.length - errored.length}/${packages.length} missing=[${missing.join(" ")}] errored=[${errored.join(" ")}] unchanged_for=${Math.round(unchangedForMs / 1000)}s`);
 
     const verdict = classify({ missing, errored, total: packages.length, unchangedForMs, elapsedMs }, opts);
     if (verdict.state !== "polling") return { ...verdict, reads, packages: packages.length };

@@ -187,8 +187,8 @@ const flapped = await verifyClosure("9.9.9", {
   ...fastClock(),
 });
 check(
-  "a real partial behind flapping transport never reports NONE or PUBLISHED",
-  flapped.state !== "none" && flapped.state !== "published",
+  "a real partial behind flapping transport reports UNSETTLED — not NONE, PUBLISHED, or a false PARTIAL",
+  flapped.state === "unsettled",
   flapped,
 );
 check(
@@ -202,6 +202,60 @@ check(
 check(
   "a CLEAN scan still settles normally once the errors stop",
   classify({ missing: ["d"], errored: [], total: 4, unchangedForMs: DEFAULTS.stableWindowMs, elapsedMs: 0 }).state === "partial",
+);
+
+// ------------------------------------------------- only 200 is presence, only 404 is absence
+// A 5xx or 429 is the registry failing to answer, not a verdict about the package. Splitting only
+// the `catch` left this half: a 500 on one origin made a fully published version report PARTIAL and
+// red the release job, and a total 5xx outage reported "nothing published".
+const statusFetch = (fn: (pkg: string, scan: number) => number) => {
+  let seen = 0, scan = 0;
+  return (async (url: string | URL | Request) => {
+    const pkg = ["a", "b", "c", "d"].find((x) => String(url).endsWith(`/${x}/9.9.9`))!;
+    if (++seen % 4 === 0) scan++;
+    return { status: fn(pkg, scan) } as Response;
+  }) as unknown as typeof fetch;
+};
+const held = { ...DEFAULTS, pollIntervalMs: 0, stableWindowMs: 5_000, deadlineMs: 40_000 };
+const run = (f: typeof fetch) =>
+  verifyClosure("9.9.9", { packages: ["a", "b", "c", "d"], opts: held, fetchImpl: f, ...fastClock() });
+
+const sibling500 = await run(statusFetch((pkg) => (pkg === "d" ? 500 : 200)));
+check(
+  "a 5xx on one sibling of a published version is NOT a partial publish — it must not red the release",
+  sibling500.state !== "partial" && sibling500.state !== "none",
+  sibling500,
+);
+const all500 = await run(statusFetch(() => 500));
+check(
+  "a total 5xx outage is UNSETTLED, not NONE — a registry that will not answer has published nothing to say",
+  all500.state === "unsettled",
+  all500,
+);
+const throttled = await run(statusFetch((pkg, scan) => (pkg === "a" && scan % 2 === 1 ? 429 : 200)));
+check(
+  "429 throttling on a fully published version still settles PUBLISHED",
+  throttled.state === "published",
+  throttled,
+);
+
+// REGRESSION GUARDS: widening "not evidence" must not have broken real absence detection.
+const real404 = await run(statusFetch((pkg) => (pkg === "d" ? 404 : 200)));
+check(
+  "a genuine held 404 on one package is STILL a partial publish — the loud verdict still fires",
+  real404.state === "partial" && real404.missing?.join() === "d",
+  real404,
+);
+const all404 = await run(statusFetch(() => 404));
+check(
+  "a version nothing serves is STILL none — a version-PR push does not become UNSETTLED",
+  all404.state === "none",
+  all404,
+);
+check(
+  "an errored package is not counted as published in the read log",
+  (all500.reads?.[0]?.published ?? -1) === 0,
+  all500.reads?.[0],
 );
 
 // ---------------------------------------------------------------- operator knobs
@@ -300,7 +354,7 @@ check(
   committedDts === emitDeclaration(),
 );
 
-const EXPECTED = 40;
+const EXPECTED = 46;
 check(`every cell ran (${EXPECTED} before sentinel)`, passed + failed === EXPECTED, passed + failed);
 console.log(`VERIFY PUBLISH CLOSURE SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 console.log("SUITE COMPLETE");
