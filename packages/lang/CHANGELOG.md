@@ -1,5 +1,61 @@
 # @cotal-ai/lang
 
+## 0.41.0
+
+### Minor Changes
+
+- 42d80da: cotal-lang DX: the conformance corpus and the language card. Every js block in the language reference is generated into a JSON artifact shipped inside @cotal-ai/lang (conformance/corpus.json) with the verdict the validator gives it, served by a new conformanceCorpus() accessor, so a second implementation can run the same claims from the file alone; pnpm gen:conformance regenerates it and smoke:lang-conformance holds the shipped bytes identical to a fresh build from the reference. The artifact states its own adjudication rule, so a reader holding only the JSON knows a refusal is checked by membership in the validator's answered codes, never by equality with a single code. docs/lang-card.md is a one-page card of the language (effects and their results, the await rule, branch keys, top refusals), validated block by block like the reference itself, carried in the connector docs bundle, and published on the docs site beside the other reference pages.
+
+## 0.40.0
+
+## 0.39.1
+
+## 0.39.0
+
+### Minor Changes
+
+- 2277e28: A capability refusal is durable and retryable. A handler that cannot perform an effect on its host
+  throws the new `EffectRefused`; the interpreter settles the entry with the new status `refused`
+  under the handler's code (L5016 for the mesh handler's `NotYetDurable`, which now extends it) and
+  unwinds the run with the uncatchable `RunHeld` (L5025). The driver grades the run `released`, and a
+  resume on a capable host finds the new `refused` lookup verdict and performs the step live, so a
+  run started before the durable-action surface lands heals the day it does. Previously the refusal
+  settled `failed` and a resume replayed the failure forever.
+
+  Two concurrent `turn`s on one agent handle are serialized at the dispatch seam both engines share:
+  the second begins when the first settles, in dispatch order. Turns on different handles are
+  unaffected.
+
+  A fork's child records its lineage: the run record's spec gains `forkedFrom` (`{ run, step }`,
+  absent on runs started fresh), `commitFork` writes it with the spec, and `ForkCommitResult.
+lineageRecorded` is now true.
+
+  Spec: §6.5 (turn serialization), §9.2 (six uncatchables), §10.1/§10.7 (the `refused` status and
+  verdict), §11.1, §11.3, Appendix A (+L5025), and SPEC.md §14.3 (`forkedFrom`).
+
+- 43e1f7d: Simulator fidelity, ask schema enforcement, journal result bound, and the scope release law.
+
+  The simulator is now discrete-event: timed effects park at their wake times and are delivered in
+  wake order on one virtual clock, so concurrent branches accumulate the durations they wrote and a
+  simulated race is decided by the same rule as a live handler (least recorded clock, ties by
+  declaration order) instead of by the order effects were asked.
+
+  The reference simulator enforces the ask schema shorthand (spec §6.5): a schema it cannot read is
+  refused with the new L4022 rather than skipped, a non-conforming reply consumes one attempt, and
+  exhausted attempts report L4006.
+
+  A journal can be constructed with a result bound (`JournalInit.resultBytes`, plumbed through
+  `DriveRequest.resultBytes`); a settled ok result over it is refused ahead of the settling append
+  with L5006, which leaves the reserved list.
+
+  A host release or refused append inside a parallel, race, fanOut or conclave no longer cancels
+  sibling branches or settles their in-flight entries cancelled: the unwind propagates bare, the
+  scope settles nothing, and a resume picks the run up exactly where the journal says it stopped.
+  The old behavior permanently poisoned any run a driver stopped while an effect was in flight
+  inside a scope.
+
+## 0.38.0
+
 ## 0.37.0
 
 ### Minor Changes

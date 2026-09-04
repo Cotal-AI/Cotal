@@ -13,6 +13,7 @@ const STARTUP_FAILURE_CODES = new Set([
   "model_prefix_rejected",
   "model_refused",
   "model_mismatch",
+  "private_state",
 ]);
 
 function startupFailureCode(error: unknown): string {

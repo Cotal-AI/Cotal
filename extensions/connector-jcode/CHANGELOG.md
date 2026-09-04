@@ -1,5 +1,75 @@
 # @cotal-ai/connector-jcode
 
+## 0.41.0
+
+## 0.40.0
+
+### Minor Changes
+
+- 005aa61: connector-jcode: keep a seat name launchable after the seat is stopped or reaped.
+
+  The short socket alias at `/tmp/jc-<hash>/home` is derived from the seat home, so one seat name
+  reuses one path for the life of the machine. A launch handed that path back on teardown while a
+  Jcode server the dead lifecycle left running was still using it as its `JCODE_HOME`, that server
+  re-created the path as a real directory, and refusing a non-symlink there retired the name for
+  good: every later launch of it failed before Jcode started, reporting `(unknown)` and pointing at a
+  private log the failure had never reached.
+
+  The alias is now reclaimed rather than refused. Each launch also records its identity nonce and its
+  host process in the private home, and the seat's next launch stops the Jcode tree that record names
+  once the recorded host is provably gone, so a lifecycle killed without its teardown no longer holds
+  the seat's runtime directory for five minutes. A tree whose connector is still alive is left to
+  Jcode's own runtime-directory lock. Failures preparing that private state now report a
+  `private_state` code instead of `unknown`.
+
+## 0.39.1
+
+## 0.39.0
+
+### Minor Changes
+
+- 34ff272: `cotal run`, the workflow-run operator surface, self-registered by `@cotal-ai/runtime` and composed
+  into the `cotal` binary: `start --file <program>` drives a new run on the mesh handler, `resume
+<runId> --file <program>` takes an existing run over and drives it to quiescence, `ps` lists an
+  endpoint's run records (state, holder, journal high-water, fork lineage), `journal <runId>` prints
+  the durable step journal, and `answer <runId> <stepKey> --by <who> [--value <json>]` resolves an
+  open checkpoint through the run driver, presenting as the arming holder read back from the
+  checkpoint record (resume is holder-bound). One raw connection per invocation against the resolved
+  mesh target; the journal's result bound is taken from the broker's own max_payload.
+
+  `docs/workflows.md` gains an "Operating a run" section, the connector docs bundle carries it, and
+  every connector folds a workflow steer (`WORKFLOW_STEER`) into its agent instructions beside the
+  mesh-first steer, so agents reach for a durable journalled run instead of improvising long
+  coordination loops in their own context.
+
+## 0.38.0
+
+### Minor Changes
+
+- 1a330c7: Managed Jcode seats launch on macOS and the BSDs again. Credential mirroring pins each parent
+  directory so an ancestor swapped mid-walk cannot redirect a copy, mkdir, or unlink outside the
+  private home, and the only pin the connector had was `/dev/fd/<fd>/<name>`, which needs Linux
+  procfs traversal, so #1170 bounded managed seats to Linux to keep that guarantee.
+
+  The pin now has a second mechanism with the same contract. macOS and the BSDs pin the parent as the
+  process working directory: after `chdir`, a single-component name resolves from that directory's
+  inode and no ancestor is walked again, which is the same guarantee `/dev/fd/<fd>/<name>` provides on
+  Linux. `chdir` takes a path, so entry is verified rather than trusted: the entered directory's
+  inode must equal the inode of the descriptor opened a moment before, which closes the window between
+  the two. The previous working directory is restored on every exit, including the refusing ones.
+
+  The Linux path is unchanged. The suite's TOCTOU battery previously stood down to eighteen
+  unfailable `check(name, true)` cells off Linux; it now drives all of them on any POSIX platform,
+  including the three controls that show the unpinned pattern still deletes and leaks outside the
+  home. Two cells cover the working-directory pin's own failure modes.
+
+  Windows is unchanged and still refused before launch: Jcode's released Harness API bridge is a
+  Unix-socket surface.
+
+### Patch Changes
+
+- e2cba27: The Jcode MCP bridge entry is written `shared: true`, so the per-seat daemon pools one bridge process and reuses it across sessions. Under `shared: false` every subagent session spawned its own bridge and none stopped before seat teardown, so seats running repeated subagents accumulated bridge processes without bound. Pooling stays inside the seat: the daemon, its home, its socket, and its relay token are all private to the seat.
+
 ## 0.37.0
 
 ### Minor Changes

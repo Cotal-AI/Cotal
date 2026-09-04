@@ -1,5 +1,45 @@
 # @cotal-ai/manager
 
+## 0.41.0
+
+### Patch Changes
+
+- Updated dependencies [de258fb]
+- Updated dependencies [bac1e00]
+- Updated dependencies [5ec7feb]
+  - @cotal-ai/core@0.41.0
+  - @cotal-ai/workspace@0.41.0
+
+## 0.40.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.40.0
+- @cotal-ai/workspace@0.40.0
+
+## 0.39.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.39.1
+- @cotal-ai/workspace@0.39.1
+
+## 0.39.0
+
+### Patch Changes
+
+- Updated dependencies [2277e28]
+  - @cotal-ai/core@0.39.0
+  - @cotal-ai/workspace@0.39.0
+
+## 0.38.0
+
+### Patch Changes
+
+- Updated dependencies [21d9552]
+  - @cotal-ai/workspace@0.38.0
+  - @cotal-ai/core@0.38.0
+
 ## 0.37.0
 
 ### Minor Changes

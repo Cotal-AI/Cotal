@@ -1,0 +1,2 @@
+# The shipped conformance corpus must stay byte-identical to the reference and its verdicts true.
+smoke:lang-conformance

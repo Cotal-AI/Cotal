@@ -96,7 +96,10 @@ jobs:
 
   smoke:
     name: smoke (shard ${{ matrix.shard }}/4)
-    timeout-minutes: 40
+    # Shard 2/4 runs ~39-40 min, so the previous 40 left a median margin of 15 seconds and
+    # cancelled healthy runs (#1220 died at 40m18s). Sized at ~1.5x the slowest observed
+    # success, which absorbs runner variance and lets the corpus grow before this binds again.
+    timeout-minutes: 60
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

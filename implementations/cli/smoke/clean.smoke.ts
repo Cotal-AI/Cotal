@@ -25,7 +25,7 @@ await import("../src/index.js"); // register the base local-process lifecycle de
 const { clean, liveMeshProcess, removeLocalState } = await import("../src/commands/clean.js");
 const { down, pidfileState } = await import("../src/commands/down.js");
 const { isReachable } = await import("@cotal-ai/core");
-const { findCotalRoot, getCurrent, loadMeshes, recordMesh, removeMesh, setCurrent, spaceMaterialDir, spaceSegment } = await import("@cotal-ai/workspace");
+const { findCotalRoot, getCurrent, loadMeshes, recordMesh, removeMesh, setCurrent, spaceMaterialDir, spaceSegment, defaultStartToken } = await import("@cotal-ai/workspace");
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -314,6 +314,7 @@ try {
   if (process.platform !== "win32") {
     const downRoot = meshRoot();
     writeFileSync(join(downRoot, ".cotal", "nats.pid"), "1"); // pid 1: alive, unsignalable as non-root
+    writeFileSync(join(downRoot, ".cotal", "nats.pid.identity"), `1 ${defaultStartToken(1)}`); // #969: pin what a real up pins, so the graded refusal is the EPERM one
     recordMesh(entry("eperm-mesh", downRoot));
     process.exitCode = 0;
     const cwd2 = process.cwd();
@@ -335,6 +336,7 @@ try {
     const blockedRoot = meshRoot();
     const blockedBroker = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });
     writeFileSync(join(blockedRoot, ".cotal", "manager.pid"), "1");
+    writeFileSync(join(blockedRoot, ".cotal", "manager.pid.identity"), `1 ${defaultStartToken(1)}`);
     writeFileSync(join(blockedRoot, ".cotal", "nats.pid"), String(blockedBroker.pid));
     recordMesh(entry("blocked-down", blockedRoot));
     process.exitCode = 0;
@@ -363,6 +365,9 @@ try {
   writeFileSync(join(openRoot2, ".cotal", "delivery.creds"), "x");
   const broker = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });
   writeFileSync(join(openRoot2, ".cotal", "nats.pid"), String(broker.pid));
+  // #969: a real `up` pins the pid to its process start; the planted record must match that shape
+  // or the identity gate correctly refuses it as a legacy record.
+  writeFileSync(join(openRoot2, ".cotal", "nats.pid.identity"), `${broker.pid} ${defaultStartToken(broker.pid ?? 0)}`);
   recordMesh(entry("named-open-2", openRoot2)); // "main" (unrelated root) is still recorded from above
   setCurrent("named-open-2");
   process.exitCode = 0;

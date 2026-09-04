@@ -546,7 +546,7 @@ const NUMBER_CALLS: Readonly<Record<string, string>> = {
 
 // ---- 6) the language reference and the guide parse ------------------------------------------------------
 
-for (const rel of ["spec/cotal-lang.md", "docs/workflows.md"]) {
+for (const rel of ["spec/cotal-lang.md", "docs/workflows.md", "docs/lang-card.md"]) {
   // Both documents are part of the repository, so an unreadable one throws here and fails the suite
   // rather than skipping its cell. The read folds CRLF to LF: on a CRLF checkout the fence regex
   // below would find no block at all, and a cell over zero blocks is green without having validated

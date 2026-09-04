@@ -37,6 +37,14 @@
  *
  * Every mutation must name the assertion it expects to redden (`expectRed`). "It went red" and "it
  * went red for my reason" are the same exit code until you say which.
+ *
+ * A config filtered down to a subset (proving one new mutation without re-running the rest)
+ * must select on the mutation's `find` string, never on its `cell`, `expectRed`, or `name`.
+ * Those three are prose and get reworded; `find` is the code the mutation actually edits. A
+ * filter keyed on the wording silently selects nothing, or worse selects the mutation as it
+ * read BEFORE the rewording, and then proves the old claim while reporting the new one.
+ * Measured here: a subset config keyed on `expectRed` outlived a cell rename and re-ran the
+ * pre-fix mutation for a minute before the mismatch was noticed.
  */
 import { readFileSync, writeFileSync, copyFileSync, existsSync, rmSync, statSync, utimesSync } from "node:fs";
 import { execSync, spawnSync } from "node:child_process";
@@ -48,9 +56,12 @@ const C = { red: "\x1b[31m", green: "\x1b[32m", yellow: "\x1b[33m", dim: "\x1b[2
 const say = (s = "") => process.stdout.write(`${s}\n`);
 const sha = (p) => createHash("sha256").update(readFileSync(p)).digest("hex");
 
+/** Last line of the banner comment, so adding to it cannot silently truncate `usage`. */
+const HDR_END = readFileSync(new URL(import.meta.url)).toString().split("\n").indexOf(" */") + 1;
+
 function usage(msg) {
   say(`${C.red}${msg}${C.off}\n`);
-  say(readFileSync(new URL(import.meta.url)).toString().split("\n").slice(2, 40).join("\n").replace(/^ \* ?/gm, ""));
+  say(readFileSync(new URL(import.meta.url)).toString().split("\n").slice(2, HDR_END).join("\n").replace(/^ \* ?/gm, ""));
   process.exit(2);
 }
 

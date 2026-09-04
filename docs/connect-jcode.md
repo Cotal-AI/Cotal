@@ -15,11 +15,7 @@ supported.
 ## Install
 
 The connector is seeded with the Cotal CLI. Jcode's released Harness API bridge is a Unix-socket
-surface, so Windows is not supported. That socket bound is Linux and macOS. Credential mirroring
-pins each parent through `/dev/fd/<fd>/<name>`, which needs Linux procfs traversal. macOS mounts
-`/dev/fd` but has no subpath namespace under a descriptor, so managed credential copy, mkdir, and
-unlink are Linux-only. A managed Jcode seat launches on Linux only because launch always mirrors
-credentials.
+surface, so Windows is not supported. Managed seats run on Linux, macOS, and the BSDs.
 Install Jcode 0.78.1 or later from its GitHub release and make the binary available as `jcode` on `PATH`:
 
 ```bash
@@ -74,6 +70,14 @@ records, sends a bounded SIGTERM, escalates survivors to an exact-PID SIGKILL, a
 failed stop instead of a clean one if any recorded process survives. It never signals by name, so
 teardown can only ever reach the seat's own tree.
 
+A seat that dies without that teardown, from a manager restart or a kill past the grace window,
+leaves its Jcode server running. The server has a process group of its own and carries no
+`COTAL_NAME`, so a name-keyed reap does not reach it, and it holds the seat's runtime directory
+until its own five-minute idle timer expires. Each launch records its identity nonce and its host
+process in the private home, and the seat's next launch stops the tree that record names. The
+recorded host is the gate: while it is still alive the seat is still serving, so nothing is
+signalled and the second launch meets Jcode's own runtime-directory lock instead.
+
 The private Jcode home lives under `<manager-workspace>/.cotal/jcode/`. It is unique per
 space/name and is owner-only. Jcode's own credential inheritance is used for the private instance,
 so provider logins work without copying its transcript/config tree into the seat. The spawned
@@ -86,7 +90,9 @@ largest transcript, since that is the session carrying the memory a restart woul
 away. A seat spawned under a fresh name keys a different home and starts with an
 empty transcript, so keep the same name when you want a replacement seat to continue where the
 previous one stopped. This automatic continuation is a relaunch of the seat's own private session;
-it is separate from `--resume`, which names an outside session and stays unsupported.
+it is separate from `--resume`, which names an outside session and stays unsupported. The short
+socket alias the connector derives from that home is reclaimed at every launch, so a name a stopped
+seat used stays launchable.
 
 Connector diagnostics are written both to the spawning terminal and to an owner-only
 `<private-home>/logs/connector-<timestamp>-<pid>.log`, so a failed launch remains inspectable after
@@ -96,12 +102,20 @@ codes rather than arbitrary Harness API messages.
 Credential mirroring is mandatory for managed Jcode seats: each launch atomically refreshes the
 allowlisted Jcode, provider-config, and external-login destinations, and removes a destination when
 its source login was removed. Cleanup addresses only that explicit inventory; transcripts, MCP
-configuration, logs, and other private-home state are untouched. Copy, mkdir, and removal open each
-parent with `O_NOFOLLOW` through the previous directory fd after proving `/dev/fd/<fd>/.` traverses,
-then publish, create, or unlink the leaf through that pinned parent. Replacing a walked directory
-with a symlink cannot write, create, or delete a namesake outside the private home. If `/dev/fd`
-cannot traverse, the connector throws a named error. After that probe succeeds, `ENOENT` on a child
-means the mirror path is absent. The Unix-socket short home stays on its Linux and macOS bound.
+configuration, logs, and other private-home state are untouched. Copy, mkdir, and removal walk the
+parents with `O_NOFOLLOW`, then publish, create, or unlink the leaf through the pinned parent rather
+than through a path the kernel re-walks. Replacing a walked directory with a symlink cannot write,
+create, or delete a namesake outside the private home.
+
+Two mechanisms provide that pin. On Linux the leaf is named `/dev/fd/<fd>/<name>`, the openat and
+unlinkat equivalent Node does not expose, after `/dev/fd/<fd>/.` is proven to traverse. macOS mounts
+`/dev/fd` but has no subpath namespace under a descriptor, so there the connector pins the parent as
+the process working directory instead: a single-component name resolves from that directory's inode
+and no ancestor is walked again. Entering by path is verified rather than trusted, because `chdir`
+takes a path: the entered directory's inode must equal the inode of the descriptor opened a moment
+earlier, and a mismatch is refused by name. The working directory is restored on every exit,
+including the refusing ones. If neither pin is available, the connector throws a named error and
+mirrors nothing. Once a pin holds, `ENOENT` on a child means the mirror path is absent.
 
 There is no credential-free opt-out today because the private instance must reproduce the operator's
 current provider-login state rather than silently start with stale or partial authorization.
@@ -164,7 +178,8 @@ receive.
 Model startup refusals are named without exposing provider output: `model_prefix_rejected` means a
 `provider/model` value was supplied where the Harness API requires a bare id, `model_refused` means
 Jcode rejected that bare id, and `model_mismatch` means Jcode accepted the request but reported a
-different effective model.
+different effective model. `private_state` names a different step: the seat's private home, its
+credential mirror, or its short socket alias could not be prepared.
 
 `cotal models --agent jcode` reads the declared catalog from the operator Jcode home's
 `config.toml`: each provider with `model_catalog = true`, its `[[providers.<name>.models]]` ids,

@@ -51,6 +51,10 @@ the same library ([CLI](cli.md)). Minting static creds is a **static-auth** surf
 per-user-auth space refuses it, because agents there join under a logged-in user, never
 via a handed-out file (see *Per-user auth* below).
 
+Agent-profile minting resolves one mesh root for the persona ACL, account signer and default
+credential storage. If the current folder holds trust for a different space or account, mint
+refuses and names both roots. It never signs one root's persona policy with another root's authority.
+
 ## Profiles
 
 Every credential is a profile: an explicit allow-list built from the same

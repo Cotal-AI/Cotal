@@ -180,6 +180,7 @@ smoke:agent-file
 # and never reaches it, so a template that forgot the field would ship an agent whose read set is
 # whatever the current default happens to be.
 smoke:persona-templates
+
 smoke:card-host
 smoke:attach-auth
 smoke:attach-host-persistence
@@ -544,6 +545,7 @@ smoke:session-channels
 smoke:jcode-private-lifecycle
 smoke:hook-load-emitter-race
 smoke:spawn-name-actor
+
 # Claude writes a positional startup prompt before SessionStart reaches the connector. A generic
 # fresh adopt then parks after the only run opener and all later assistant/tool records map to zero.
 # `source: startup` reads this genuinely-new session from byte zero; resume/fork/clear/compact still
@@ -753,3 +755,30 @@ smoke:manager-two-root-renewal
 # deliberate-despawn control showing identical terminal observables.
 # Appended so every existing shard assignment remains unchanged.
 smoke:manager-stop-reap
+
+# `cotal setup` seeds into the catalog `cotal spawn` READS, and names that directory absolutely.
+# setup wrote through a cwd-derived root while spawn loads from the resolved mesh's, so where those
+# differ setup wrote a file spawn would never open and the "no default persona yet - run `cotal
+# setup`" refusal survived running exactly the command it named. Completes the catalog trio:
+# persona-templates guards what is WRITTEN, persona-root which catalog is READ, this one WHERE a
+# write lands. Also pins the fallback narrow: no mesh at all seeds the cwd and SAYS so, but several
+# meshes with none selected must refuse rather than pick a root for the operator.
+# APPENDED AT THE END deliberately: shard.mjs is round-robin on `index % count`, so inserting
+# mid-file re-shards every suite below it (225 of them, from the persona-root neighbourhood).
+smoke:setup-destination
+
+# The persona catalog answers for the RESOLVED MESH, not for the cwd. `personasDir(root =
+# cotalRoot())` defaulted to the directory the cwd walks up to, so `cotal personas` described one
+# project while `cotal spawn` - the only caller passing the resolved root - launched from another,
+# and the two sets could be disjoint with neither surface saying so. Includes the four <TAB>
+# completers, which a typecheck cannot cover: passing `cotalRoot()` there silences the compiler and
+# keeps the bug.
+# APPENDED AT THE END deliberately, same reason as the suite below it: shard.mjs is round-robin on
+# `index % count`, so inserting mid-file re-shards every suite after it. Measured when this line
+# sat at 191: 225 of 387 suites changed shard at the 4-shard config CI actually runs.
+smoke:persona-root
+# `status` names the root each persona row describes, and marks the case where the folder's catalog
+# is NOT the one a bare `spawn` would load. Those two roots diverge silently, and the green row for
+# a `default` that cannot launch is a capability claim the operator has no way to check.
+# Appended at the end: no ordering dependency, and appending keeps two branches from conflicting.
+smoke:status-persona-root

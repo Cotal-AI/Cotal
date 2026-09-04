@@ -12,7 +12,7 @@ import { closeSync, existsSync, ftruncateSync, linkSync, openSync, readdirSync, 
 import { basename, dirname } from "node:path";
 import { type AuthPrepared } from "@cotal-ai/core";
 import { spaceKey } from "@cotal-ai/workspace";
-import { parsePid, probeLiveness, type LivenessProbe } from "@cotal-ai/workspace";
+import { parsePid, probeLiveness, type LivenessProbe, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin } from "@cotal-ai/workspace";
 import type { SignalFn } from "./manager-proc.js";
 
 import { selfArgv } from "./self-exec.js";
@@ -171,6 +171,10 @@ function startAuthServiceDetached(space: string, server: string, command: string
     // never a re-open (truncate first: the fd position sits past the launcher pid).
     ftruncateSync(slot.fd, 0);
     writeSync(slot.fd, String(child.pid), 0);
+    // #969: pin the daemon child's pid to its process start. Written AFTER the pid content is the
+    // final one, so a torn pairing (pin names a different pid) is the crash window, never a launch
+    // state - and the verify below refuses a torn pairing loud.
+    writeIdentityPin(PID_PATH(space), child.pid ?? 0);
     return child.pid ?? 0;
   } finally {
     closeSync(slot.fd);
@@ -221,6 +225,13 @@ export async function stopAuthService(space: string, probe: LivenessProbe = prob
     throw new Error(
       `auth-service pidfile ${p} holds unattributable content ${JSON.stringify(trimmed)} - refusing to remove a record for a process it cannot identify or signal; inspect or remove it manually`,
     );
+  // #969 OPEN-VERIFY-TERMINATE: identity before signal, the same rule as the manager and delivery
+  // helpers. A reused pid fronts an unrelated process; torn or unreadable identity evidence refuses.
+  // A legacy record warns and proceeds so the first teardown after an upgrade remains possible.
+  const identity = verifyIdentityPin(p);
+  if (identity.kind === "mismatch") throw identityRefusal("the user-auth service", p, identity.record, identity.liveToken);
+  if (identity.kind === "legacy") console.error(identityLegacyWarning("the user-auth service", p));
+  else if (identity.kind !== "match" && identity.kind !== "gone") throw identityUncertaintyRefusal("the user-auth service", p, identity);
   try {
     send(pid, "SIGTERM");
   } catch (e) {
@@ -243,5 +254,6 @@ export async function stopAuthService(space: string, probe: LivenessProbe = prob
     throw new Error(
       `auth-service (pid ${pid}) accepted SIGTERM but its death could not be confirmed; its pidfile at ${p} was preserved rather than recording a stop that did not happen - check \`ps -p ${pid}\``,
     );
+  removeIdentityPin(p); // proven death: the pin goes with the pidfile (#969)
   rmSync(p, { force: true });
 }

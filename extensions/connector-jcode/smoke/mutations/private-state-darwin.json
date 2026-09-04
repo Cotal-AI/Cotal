@@ -1,0 +1,39 @@
+{
+  "suite": "extensions/connector-jcode/smoke/private-state.smoke.ts",
+  "guard": "The cwd-inode credential-mirror pin verifies the directory it entered and restores the working directory it moved",
+  "command": "pnpm smoke:jcode-private-state",
+  "progressPattern": "\u2713",
+  "minTicks": 19,
+  "why": [
+    "THIS CONFIG IS NOT GRADABLE ON LINUX, and its two mutants fail differently rather than both",
+    "surviving. `pinMode` returns \"procfs-fd\" on linux, so `#assertCwdIsPinned` never runs and",
+    "`#entryCwd` is never set. Measured on ubuntu at 1a330c7a: the swapped-parent mutant is",
+    "UNGRADABLE, the suite stays green at 23/23 and nothing in the file is killed. The restore",
+    "mutant WRONG-REDs rather than surviving: with `#entryCwd` undefined the flipped condition",
+    "calls `process.chdir(undefined)`, which throws in an earlier cell, so the run exits 1 without",
+    "ever printing the assertion registered for it. A red here is not a kill, and a reader who",
+    "takes it for one records coverage this platform does not have.",
+    "",
+    "Run it on macOS or a BSD, where the pin actually executes. No CI job can run it: the smoke",
+    "lanes are ubuntu-latest and windows-latest, and the only macos-latest job, in installer.yml,",
+    "runs install.sh with no smoke suite."
+  ],
+  "mutations": [
+    {
+      "name": "cwd-inode pin trusts the directory it entered",
+      "file": "extensions/connector-jcode/src/private-state.ts",
+      "find": "    if (!sameInode(statSync(\".\"), fstatSync(this.#fd)))\n      throw new Error(`refusing swapped Jcode credential mirror parent: ${displayPath}`);",
+      "replace": "    if (false) throw new Error(`refusing swapped Jcode credential mirror parent: ${displayPath}`);",
+      "expectRed": "a directory swapped between the pin open and the pin entry never unlinks outside",
+      "cell": "a directory swapped between the pin open and the pin entry never unlinks outside"
+    },
+    {
+      "name": "cwd-inode pin leaks the working directory it moved",
+      "file": "extensions/connector-jcode/src/private-state.ts",
+      "find": "      if (this.#entryCwd !== undefined) process.chdir(this.#entryCwd);",
+      "replace": "      if (this.#entryCwd === undefined) process.chdir(this.#entryCwd as unknown as string);",
+      "expectRed": "credential mirroring restores the working directory, including when it refuses",
+      "cell": "credential mirroring restores the working directory, including when it refuses"
+    }
+  ]
+}

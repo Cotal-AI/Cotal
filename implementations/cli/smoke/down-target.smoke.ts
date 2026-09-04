@@ -15,7 +15,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeScratch } from "../../../bin/smoke/_scratch.js";
-import { probeLiveness, type LocalProcess } from "@cotal-ai/workspace";
+import { probeLiveness, defaultStartToken, type LocalProcess } from "@cotal-ai/workspace";
 
 // Isolate BOTH the machine-home AND the temp root. `findCotalRoot` walks to `/` with no boundary,
 // so a `.cotal` above the temp base (observed: `/tmp/.cotal` on CI; a home-dir `.cotal` when the
@@ -77,6 +77,9 @@ function meshWithDashboard(label: string): { root: string; child: ChildProcess; 
   // reparented, and its pid evidence gone.
   const pidPath = join(root, ".cotal", "web.pid");
   writeFileSync(pidPath, String(child.pid), { mode: 0o600 });
+  // #969: the real `cotal web` pins its pidfile to the process start; the planted record must
+  // match that shape or the identity gate correctly refuses it as a legacy record.
+  writeFileSync(`${pidPath}.identity`, `${child.pid} ${defaultStartToken(child.pid ?? 0)}`, { mode: 0o600 });
   return { root, child, pidPath };
 }
 

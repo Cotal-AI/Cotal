@@ -101,6 +101,8 @@ import {
   type RestoreListenerProof,
   readBrokerPolicy,
   writeBrokerPolicy,
+  removeIdentityPin,
+  writeIdentityPin,
 } from "@cotal-ai/workspace";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { resolveSpace } from "../lib/status.js";
@@ -994,6 +996,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   const child = spawn(bin, natsArgs, { stdio: "inherit" });
   let activationFinished = !resumeAttempt;
   if (child.pid) writeFileSync(cotalPath("nats.pid"), String(child.pid));
+  writeIdentityPin(cotalPath("nats.pid"), child.pid ?? 0); // #969: pin pid to process start
   if (restored && process.env.COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_SPAWN === "1") process.exit(87);
   if (restored) try {
     bindSpawnedRestoreListener(restored, child.pid ?? 0, listenerStartedAt, startupLock);
@@ -1037,7 +1040,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // The broker is gone — drop it from the registry (and the `current` pointer if it was the default)
   // so a later `cotal spawn` doesn't try to join a dead mesh.
   child.on("exit", async (code) => {
-    rmSync(cotalPath("nats.pid"), { force: true });
+    removeIdentityPin(cotalPath("nats.pid")); rmSync(cotalPath("nats.pid"), { force: true });
     // Logged, never silently swallowed; the daemon kill runs in stopDelivery's finally regardless.
     await stopDelivery(undefined, undefined, space).catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
     await stopManager(undefined, undefined, undefined, space).catch((e: Error) => console.error(`! manager teardown: ${e.message}`));
@@ -2098,6 +2101,7 @@ export async function startMeshDetached(
   closeSync(fd);
   if (opts.boundListener) {
     writeFileSync(cotalPath("nats.pid"), String(child.pid));
+  writeIdentityPin(cotalPath("nats.pid"), child.pid ?? 0); // #969: pin pid to process start
     if (process.env.COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_SPAWN === "1") process.exit(87);
     try {
       opts.boundListener.onSpawn(child.pid ?? 0, listenerStartedAt);
@@ -2116,10 +2120,11 @@ export async function startMeshDetached(
   tailing = false;
   if (!ready) {
     child.kill("SIGTERM");
-    if (opts.boundListener) rmSync(cotalPath("nats.pid"), { force: true });
+    if (opts.boundListener) removeIdentityPin(cotalPath("nats.pid")); rmSync(cotalPath("nats.pid"), { force: true });
     throw new Error(`nats-server did not become reachable at ${server} - see ${logPath}`);
   }
   if (!opts.boundListener) writeFileSync(cotalPath("nats.pid"), String(child.pid));
+  writeIdentityPin(cotalPath("nats.pid"), child.pid ?? 0); // #969: pin pid to process start
   if (opts.boundListener) await opts.boundListener.verify();
   // POST-START MUST NOT LEAVE AN ORPHAN LISTENER.
   //
@@ -2141,7 +2146,7 @@ export async function startMeshDetached(
       await postStart(server, space, setup, seedFile);
     } catch (e) {
       try { child.kill("SIGTERM"); } catch { /* already gone */ }
-      try { rmSync(cotalPath("nats.pid"), { force: true }); } catch { /* best effort */ }
+      try { removeIdentityPin(cotalPath("nats.pid")); rmSync(cotalPath("nats.pid"), { force: true }); } catch { /* best effort */ }
       throw e;
     }
   }

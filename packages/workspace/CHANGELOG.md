@@ -1,5 +1,43 @@
 # @cotal-ai/workspace
 
+## 0.41.0
+
+### Minor Changes
+
+- 5ec7feb: Pin every stack pidfile to its process's creation identity before teardown. `up` writes a sibling `<pidfile>.identity` containing the pid and process start where the OS reports one. Every stop path checks it before signalling: a reused pid or torn pin is refused and preserved, and rerunning after the process is stopped clears the stale record automatically. A live pre-pin record warns and proceeds so the first teardown after an upgrade still works; relaunching writes the pin and enables full match and mismatch protection.
+
+### Patch Changes
+
+- Updated dependencies [de258fb]
+- Updated dependencies [bac1e00]
+  - @cotal-ai/core@0.41.0
+
+## 0.40.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.40.0
+
+## 0.39.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.39.1
+
+## 0.39.0
+
+### Patch Changes
+
+- Updated dependencies [2277e28]
+  - @cotal-ai/core@0.39.0
+
+## 0.38.0
+
+### Patch Changes
+
+- 21d9552: The `--resume` spawn flag's help no longer names one connector: resume support is declared per connector and preflighted at spawn. Connector docs now mark pi's fork-resume support and describe Jcode's automatic same-identity session continuation.
+  - @cotal-ai/core@0.38.0
+
 ## 0.37.0
 
 ### Minor Changes

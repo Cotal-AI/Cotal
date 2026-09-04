@@ -16,7 +16,7 @@ import {
   type ParsedArgs,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, accountInventory, authDir, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, localProcessVisible, parsePid, DELIVERY_PIDFILE, MANAGER_PIDFILE, preflightTarget, probeLiveness, readProcessCommand, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, type LocalProcess, type LocalProcessContext, type MeshTarget, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, parsePid, preflightTarget, probeLiveness, readProcessCommand, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, workspaceSecretStore, type LocalProcess, type LocalProcessContext, type MeshTarget } from "@cotal-ai/workspace";
 import { connect } from "@nats-io/transport-node";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, extensionVersions } from "../lib/version.js";
@@ -25,6 +25,7 @@ import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
 import { machineStatus, resolveRuntimeSpace, webUp, WEB_URL, type MachineStatus } from "../lib/status.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
+import { listPersonas } from "../lib/personas.js";
 import { c, statusBadge } from "../ui.js";
 
 /** `--components` is the fail-loud health pass. Bare `status` remains a broad, recovery-oriented
@@ -38,6 +39,23 @@ export const statusFlags = [
 
 type Proc = PidfileState;
 
+/** The mesh `spawn` would load personas from, resolved ONCE for the whole run.
+ *
+ *  Two sections need this answer — "This Folder" (to say whether its catalog is the one that
+ *  launches) and "Selected Mesh" — and resolution is NOT side-effect-free: `resolveMeshTarget`
+ *  prunes a stale registry entry as it fails. Resolving twice would let the first call prune what
+ *  the second then reports as simply absent, so the two sections would describe different worlds.
+ *  Resolve once, share the outcome, including the failure. */
+type Selected = { ok: true; target: MeshTarget } | { ok: false; error: unknown };
+
+function resolveSelected(cwd: string, values: FlagValues<typeof statusFlags>): Selected {
+  try {
+    return { ok: true, target: resolveMeshTarget(cwd, { server: values.server, space: values.space }) };
+  } catch (e) {
+    return { ok: false, error: e };
+  }
+}
+
 /** `cotal status` — detailed, read-only diagnostics for the local machine + selected mesh. */
 export async function status(args: ParsedArgs): Promise<void> {
   const values = args.values as FlagValues<typeof statusFlags>;
@@ -48,9 +66,10 @@ export async function status(args: ParsedArgs): Promise<void> {
   console.log(c.bold("cotal status"));
   await printMachine();
   printExtensions();
-  printProject(root, cmd);
+  const selected = resolveSelected(cwd, values);
+  printProject(root, cmd, selected, values);
   await printRegistry();
-  await printTarget(cwd, values, cmd);
+  await printTarget(selected, cmd);
   if (values.components) await printComponentHealth(cwd, values);
 }
 
@@ -128,7 +147,7 @@ async function printMachine(): Promise<void> {
   row("Web process", web ? c.green(WEB_URL) : c.dim(webExt ? "down" : "not installed"));
 }
 
-function printProject(root: string, cmd: string): void {
+function printProject(root: string, cmd: string, selected: Selected, values: FlagValues<typeof statusFlags>): void {
   section("This Folder");
   row("root", root);
   // The inventory READ itself can throw (an EACCES/ELOOP on `.cotal/auth`, not just a bad record):
@@ -142,7 +161,7 @@ function printProject(root: string, cmd: string): void {
   } catch (e) {
     row("auth", c.red(`auth dir unreadable · ${(e as Error).message}`));
     row("hint", `check permissions on ${authDir(root)} - broker-wide commands refuse while the tenant list cannot be read`);
-    row("personas", personaSummary(root));
+    printPersonas(root, cmd, selected, values);
     return;
   }
   // Status is the command the broker-wide refusals send the operator to, so it must DESCRIBE every
@@ -152,14 +171,14 @@ function printProject(root: string, cmd: string): void {
   if (corrupt.length > 0) {
     row("auth", c.red(`${corrupt.length} unreadable account record(s) · ${corrupt.join(", ")}`));
     row("hint", `repair or remove ${corrupt.map((f) => join(authDir(root), f)).join(", ")} - broker-wide commands refuse while the tenant list is uncertain`);
-    row("personas", personaSummary(root));
+    printPersonas(root, cmd, selected, values);
     return;
   }
   // A root holding several accounts has no single "this folder's space", and the process rows below
   // are keyed by one. Report the tenant list instead of letting the space-blind read throw.
   if (spaces.length > 1) {
     row("auth", c.green(`${spaces.length} spaces · ${spaces.join(", ")}`));
-    row("personas", personaSummary(root));
+    printPersonas(root, cmd, selected, values);
     console.log(c.dim("  per-space process state is not reported on a multi-space root yet"));
     return;
   }
@@ -175,7 +194,7 @@ function printProject(root: string, cmd: string): void {
   } catch (e) {
     row("auth", c.red(`unreadable trust material · ${(e as Error).message.split(" - ")[0]}`));
     row("hint", `${(e as Error).message}`);
-    row("personas", personaSummary(root));
+    printPersonas(root, cmd, selected, values);
     return;
   }
   const userDisk = auth && hasUserAuthState(root, auth.space);
@@ -194,7 +213,7 @@ function printProject(root: string, cmd: string): void {
   }
   const context: LocalProcessContext = { root, space, userAuth: Boolean(userDisk) };
   row("auth", auth ? c.green(`space ${auth.space}${userDisk ? " · user-auth" : ""}`) : c.dim("none (open/local only)"));
-  row("personas", personaSummary(root));
+  printPersonas(root, cmd, selected, values);
   let nats: Proc | undefined;
   for (const component of localProcessSurface().filter((component) => localProcessVisible(component, context)).sort((a, b) => (a.order ?? 50) - (b.order ?? 50))) {
     const state = proc(localProcessPath(component.pidFile, context));
@@ -241,16 +260,10 @@ async function printRegistry(): Promise<void> {
     console.log(c.dim(`  note: current mesh "${current}" is not recorded`));
 }
 
-async function printTarget(
-  cwd: string,
-  values: FlagValues<typeof statusFlags>,
-  cmd: string,
-): Promise<void> {
+async function printTarget(selected: Selected, cmd: string): Promise<void> {
   section("Selected Mesh");
-  let target: ReturnType<typeof resolveMeshTarget>;
-  try {
-    target = resolveMeshTarget(cwd, { server: values.server, space: values.space });
-  } catch (e) {
+  if (!selected.ok) {
+    const e = selected.error;
     if (isWorkspaceTargetError(e)) {
       row("target", c.red(e.code));
       // The canonical renderer names the ACTUAL repair per code (`cotal meshes rm`, `--space
@@ -262,6 +275,7 @@ async function printTarget(
     }
     throw e;
   }
+  const target = selected.target;
 
   row("space", target.space);
   row("server", target.server);
@@ -270,6 +284,7 @@ async function printTarget(
   if (target.userAuth) row("idp", target.userAuth.idp.url);
   row("source", target.source);
   row("root", target.root);
+  row("personas", `${personaSummary(target.root)} ${c.dim(`· ${target.personaRoot}`)}`);
 
   if (target.mode === "user") {
     // Status never static-mints on a user-auth mesh (the flip). Everything here is offline
@@ -411,13 +426,86 @@ function webInstalled(): boolean {
   }
 }
 
+/** Summarize the catalog through the shipped loader. A file is launchable only when
+ *  {@link listPersonas} parsed it with the same {@code loadAgentFile} path spawn uses. */
 function personaSummary(root: string): string {
-  const dir = join(root, ".cotal", "agents");
-  const def = existsSync(join(dir, "default.md"));
-  const demo = ["david.md", "sven.md", "me.md"].filter((f) => existsSync(join(dir, f))).length;
-  const parts = [def ? c.green("default") : c.dim("no default")];
+  const personas = listPersonas(root);
+  const byName = new Map(personas.map((persona) => [persona.name, persona]));
+  const def = byName.get("default");
+  const demo = ["david", "sven", "me"].filter((name) => byName.get(name)?.def !== undefined).length;
+  const parts = [def?.def ? c.green("default") : def?.error ? c.red("invalid default") : c.dim("no default")];
   if (demo) parts.push(c.dim(`demo team ${demo}/3`));
   return parts.join(" · ");
+}
+
+/** The persona rows, which must never let a catalog imply a `spawn` the operator does not have.
+ *
+ *  The row used to read `personas  default` in green under "This Folder" while `cotal spawn` in the
+ *  same second refused with "no default persona yet". Both were right about their OWN root and
+ *  neither NAMED it: the folder's catalog is `<cwd-root>/.cotal/agents`, and spawn loads the
+ *  RESOLVED mesh's `target.personaRoot`, which is a different directory whenever `cotal use`, a
+ *  `--space`, or the registry's sole entry points elsewhere. The listed names and the launchable
+ *  names were disjoint sets.
+ *
+ *  So: always name the root each summary describes, and when the folder is NOT the root a bare
+ *  spawn would use, say so in the same breath and give the folder's catalog its real, reduced
+ *  status — a catalog that does not launch. The divergence is the whole diagnosis, so it gets its
+ *  own row rather than a parenthetical.
+ *
+ *  Never throws. Status is where broker-wide refusals send the operator, and the resolver fails on
+ *  ordinary states (no mesh, several meshes, unreadable trust); an unresolvable target is reported
+ *  as an unknown spawn root, matching the unreadable-auth / multi-space / corrupt-record paths
+ *  above, which all describe the failure and continue. */
+function printPersonas(root: string, cmd: string, selected: Selected, values: FlagValues<typeof statusFlags>): void {
+  const folder = personasDirOf(root);
+  if (!selected.ok) {
+    // No single mesh resolves, so there is no root a bare spawn would use, and this catalog cannot
+    // be claimed to be it. Report the folder as the folder, and refuse to imply launchability.
+    row("personas", `${personaSummary(root)} ${c.dim(`· ${folder}`)}`);
+    row("spawn root", c.yellow("unresolved - see Selected Mesh below; until it resolves, no persona here is launchable"));
+    return;
+  }
+  const spawnRoot = selected.target.personaRoot;
+  if (sameDir(folder, spawnRoot)) {
+    // The simple case: one root, one catalog. Naming it is still worth the width — it is the
+    // difference between "personas exist" and "personas exist HERE, and here is what launches".
+    row("personas", `${personaSummary(root)} ${c.dim(`· ${folder}`)}`);
+    return;
+  }
+  // The divergence. The folder's catalog is real and worth reporting — an operator standing in a
+  // directory full of personas deserves to be told why they are not the ones that will launch —
+  // but it is NOT the spawn catalog, so its `default` must not be green: green here is precisely
+  // the false capability claim. Dim the folder's summary and give the spawn root the live one.
+  row("personas", `${c.dim(stripColor(personaSummary(root)))} ${c.dim(`· ${folder}`)}`);
+  row(
+    "spawn root",
+    `${c.yellow("differs")} ${c.dim(`· ${spawnRoot}`)}`,
+  );
+  row("→ launches", `${personaSummary(selected.target.root)} ${c.dim(`· space ${selected.target.space} · via ${selected.target.source}`)}`);
+  row("hint", `a bare \`${cmd} spawn\` uses the mesh above, NOT this folder - personas in ${folder} will not launch until you run it from that mesh's root or select it (\`${cmd} use <space>\`${values.space ? "" : ", or pass `--space`"})`);
+}
+
+/** `<root>/.cotal/agents` — the persona catalog of a root. Spelled here to match the
+ *  `personaRoot` the resolver puts on every target, so the two sides of the comparison below are
+ *  the same construction and cannot drift apart. */
+function personasDirOf(root: string): string {
+  return join(root, ".cotal", "agents");
+}
+
+/** Do two catalog paths denote the SAME directory? `canonicalRoot` (realpath, `resolve` fallback
+ *  for a path not on disk) is the repo's one spelling for this: a raw `===` reads a symlinked or
+ *  8.3-short-name spelling of one directory as two, which here would fabricate a divergence and
+ *  send the operator chasing a split that does not exist. */
+function sameDir(a: string, b: string): boolean {
+  return canonicalRoot(a) === canonicalRoot(b);
+}
+
+/** Drop ANSI SGR sequences so an already-coloured summary can be re-coloured. `personaSummary`
+ *  greens its `default`, and on the divergent path that green is the untrue claim; wrapping without
+ *  stripping leaves the inner green intact (the reset ends it early) and the row still reads
+ *  "launchable". */
+function stripColor(s: string): string {
+  return s.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
 function proc(path: string): Proc {

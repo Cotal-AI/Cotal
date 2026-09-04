@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, constants, copyFileSync, lstatSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, symlinkSync, unlinkSync, type Dirent } from "node:fs";
+import { closeSync, constants, copyFileSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, symlinkSync, unlinkSync, type Dirent } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { userAppConfigDir, userJcodeHome } from "@1jehuang/jcode-sdk";
@@ -87,9 +87,9 @@ export function ensurePinnedPrivateDirectory(
   const parent = dirname(path);
   const name = basename(path);
   if (name === "" || name === "." || name === "..") throw new Error(`unsafe Jcode private directory: ${path}`);
-  const dirFd = openPinnedRoot(parent);
+  const pin = PinnedParent.open(parent);
   try {
-    const leaf = containedPath(dirFd, name);
+    const leaf = pin.leaf(name);
     try {
       const stats = lstatSync(leaf);
       if (stats.isSymbolicLink()) {
@@ -110,7 +110,7 @@ export function ensurePinnedPrivateDirectory(
     hardenPrivate(leaf, "dir");
     if (requireOwner) assertCurrentUserOwns(path, lstatSync(leaf).uid);
   } finally {
-    closeSync(dirFd);
+    pin.close();
   }
 }
 
@@ -133,26 +133,27 @@ function credentialDestination(home: string, destinationRelative: string): strin
 }
 
 const PIN_DIRECTORY = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
+const OPEN_DIRECTORY = constants.O_RDONLY | constants.O_DIRECTORY;
 
-/** Path relative to an already-open directory fd. O_NOFOLLOW on `open` only applies to the last
- * component, so a swapped ancestor still redirects a full-path open. `/dev/fd/<fd>/<name>` is the
- * openat/unlinkat equivalent Node does not expose; it names the pinned inode, not the original path. */
-function containedPath(dirFd: number, name: string): string {
+/** How this platform names a child of a directory it already holds. */
+type PinMode = "procfs-fd" | "cwd-inode";
+
+function assertComponent(name: string): void {
   if (name === "" || name === "." || name === ".." || name.includes("/") || name.includes("\\") || name.includes("\0"))
     throw new Error(`unsafe Jcode credential mirror path component: ${name}`);
-  return `/dev/fd/${dirFd}/${name}`;
-}
-
-function openContainedDir(dirFd: number, name: string): number {
-  return openSync(containedPath(dirFd, name), PIN_DIRECTORY);
 }
 
 function pinUnsupportedMessage(detail: string): string {
-  return `Jcode credential mirroring requires /dev/fd subpath traversal to pin parent directories (${detail}). macOS /dev/fd has no subpath namespace under a descriptor, so this path is Linux-only`;
+  return `Jcode credential mirroring requires a directory pin to name each parent by inode (${detail})`;
 }
 
-function assertLinuxPin(): void {
-  if (process.platform !== "linux") throw new Error(pinUnsupportedMessage(`platform ${process.platform}`));
+function pinMode(): PinMode {
+  if (process.platform === "linux") return "procfs-fd";
+  // Windows is refused in buildLaunch: Jcode's released Harness API bridge is a Unix socket. This
+  // stays a backstop, because chdir there resolves through a drive-relative namespace and the
+  // O_NOFOLLOW guard below does not exist.
+  if (process.platform === "win32") throw new Error(pinUnsupportedMessage(`platform ${process.platform}`));
+  return "cwd-inode";
 }
 
 /** Existence of `/dev/fd` is not enough: macOS mounts it, but lookup of `/dev/fd/<n>/<name>` is an
@@ -161,88 +162,190 @@ function assertPinnedFdTraversal(dirFd: number): void {
   const probe = `/dev/fd/${dirFd}/.`;
   let probeFd: number;
   try {
-    probeFd = openSync(probe, constants.O_RDONLY | constants.O_DIRECTORY);
+    probeFd = openSync(probe, OPEN_DIRECTORY);
   } catch (error) {
     throw new Error(pinUnsupportedMessage(`opening ${probe} failed with ${(error as NodeJS.ErrnoException).code ?? "unknown"}`));
   }
   closeSync(probeFd);
 }
 
-function openPinnedRoot(home: string): number {
-  assertLinuxPin();
-  const dirFd = openSync(home, constants.O_RDONLY | constants.O_DIRECTORY);
-  try {
-    assertPinnedFdTraversal(dirFd);
-    return dirFd;
-  } catch (error) {
-    closeSync(dirFd);
+function sameInode(a: { dev: number; ino: number }, b: { dev: number; ino: number }): boolean {
+  return a.dev === b.dev && a.ino === b.ino;
+}
+
+/**
+ * One pinned directory. Every leaf operation names a child of the directory this object holds, so
+ * an ancestor swapped after the pin cannot redirect it. Two mechanisms, one contract.
+ *
+ * `procfs-fd` (Linux): `/dev/fd/<fd>/<name>` is the openat/unlinkat equivalent Node does not
+ * expose. It names the pinned inode rather than re-walking the original path.
+ *
+ * `cwd-inode` (macOS, BSD): macOS mounts `/dev/fd`, but a lookup under a descriptor is ENOENT, so
+ * the Linux spelling has nothing to name. The working directory is the other reference Node can
+ * hold to a directory *inode*: after `chdir`, a single-component relative name resolves from that
+ * inode and no ancestor is walked again, which is the same guarantee spelled differently. `chdir` takes a
+ * path, so entry is verified rather than trusted: the cwd's inode must equal the inode of the
+ * descriptor opened a moment before, which closes the open→chdir window. Every mirror call is
+ * synchronous and restores the previous directory in `close()`, so no other code observes the move.
+ */
+class PinnedParent {
+  #mode: PinMode;
+  #fd: number;
+  #entryCwd: string | undefined;
+  #closed = false;
+
+  private constructor(mode: PinMode, fd: number, entryCwd: string | undefined) {
+    this.#mode = mode;
+    this.#fd = fd;
+    this.#entryCwd = entryCwd;
+  }
+
+  /** Pin `directory`. Throws its raw ENOENT so callers keep distinguishing "absent" from "unsafe".
+   * Optional `beforeEnter` runs after the descriptor is open and before the directory is entered,
+   * so the smoke can swap the directory inside that window; production callers omit it. */
+  static open(directory: string, beforeEnter?: () => void): PinnedParent {
+    const mode = pinMode();
+    const fd = openSync(directory, OPEN_DIRECTORY);
+    if (mode === "procfs-fd") {
+      try {
+        assertPinnedFdTraversal(fd);
+        beforeEnter?.();
+      } catch (error) {
+        closeSync(fd);
+        throw error;
+      }
+      return new PinnedParent(mode, fd, undefined);
+    }
+    let entryCwd: string;
+    try {
+      entryCwd = process.cwd();
+    } catch (error) {
+      closeSync(fd);
+      throw new Error(pinUnsupportedMessage(`the working directory is unreadable: ${(error as Error).message}`));
+    }
+    const pin = new PinnedParent(mode, fd, entryCwd);
+    try {
+      beforeEnter?.();
+      process.chdir(directory);
+      pin.#assertCwdIsPinned(directory);
+    } catch (error) {
+      pin.close();
+      throw error;
+    }
+    return pin;
+  }
+
+  /** A path naming `name` inside the pinned directory. Valid only until this pin moves or closes. */
+  leaf(name: string): string {
+    assertComponent(name);
+    return this.#mode === "procfs-fd" ? `/dev/fd/${this.#fd}/${name}` : name;
+  }
+
+  /** Descend into the child `name`, which becomes the pinned directory. */
+  descend(name: string, displayPath: string, create: boolean): void {
+    const next = create ? this.#openOrCreateChild(name, displayPath) : this.#openChild(name);
+    if (this.#mode === "procfs-fd") {
+      closeSync(this.#fd);
+      this.#fd = next;
+      return;
+    }
+    const previous = this.#fd;
+    try {
+      process.chdir(name);
+    } catch (error) {
+      closeSync(next);
+      throw error;
+    }
+    this.#fd = next;
+    try {
+      this.#assertCwdIsPinned(displayPath);
+    } finally {
+      closeSync(previous);
+    }
+  }
+
+  close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    try {
+      if (this.#entryCwd !== undefined) process.chdir(this.#entryCwd);
+    } finally {
+      closeSync(this.#fd);
+    }
+  }
+
+  #openChild(name: string): number {
+    return openSync(this.leaf(name), PIN_DIRECTORY);
+  }
+
+  #openOrCreateChild(name: string, displayPath: string): number {
+    try {
+      const fd = this.#openChild(name);
+      hardenPrivate(this.leaf(name), "dir");
+      return fd;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        try {
+          mkdirSync(this.leaf(name), { mode: 0o700 });
+        } catch (mkdirError) {
+          if ((mkdirError as NodeJS.ErrnoException).code !== "EEXIST") throw mkdirError;
+        }
+      } else if (code === "ELOOP" || code === "ENOTDIR") {
+        let isLink = code === "ELOOP";
+        if (code === "ENOTDIR") {
+          try {
+            isLink = lstatSync(this.leaf(name)).isSymbolicLink();
+          } catch (inner) {
+            this.mapOpenError(inner, name, displayPath);
+          }
+        }
+        if (!isLink) this.mapOpenError(error, name, displayPath);
+        unlinkSync(this.leaf(name));
+        mkdirSync(this.leaf(name), { mode: 0o700 });
+      } else {
+        this.mapOpenError(error, name, displayPath);
+      }
+      try {
+        const fd = this.#openChild(name);
+        hardenPrivate(this.leaf(name), "dir");
+        return fd;
+      } catch (retry) {
+        this.mapOpenError(retry, name, displayPath);
+      }
+    }
+  }
+
+  /** A swap that lands between the descriptor open and the chdir leaves the process in the
+   * attacker's directory rather than the pinned one. The inodes disagree, and nothing is written. */
+  #assertCwdIsPinned(displayPath: string): void {
+    if (!sameInode(statSync("."), fstatSync(this.#fd)))
+      throw new Error(`refusing swapped Jcode credential mirror parent: ${displayPath}`);
+  }
+
+  mapOpenError(error: unknown, name: string, displayPath: string): never {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ELOOP") throw new Error(`refusing symlinked Jcode credential mirror parent: ${displayPath}`);
+    if (code === "ENOTDIR") {
+      // O_NOFOLLOW|O_DIRECTORY against a symlink returns ENOTDIR on Linux and macOS, not ELOOP.
+      if (lstatSync(this.leaf(name)).isSymbolicLink())
+        throw new Error(`refusing symlinked Jcode credential mirror parent: ${displayPath}`);
+      throw new Error(`Jcode credential mirror parent is not a directory: ${displayPath}`);
+    }
     throw error;
   }
 }
 
-function mapPinnedOpenError(error: unknown, dirFd: number, name: string, displayPath: string): never {
-  const code = (error as NodeJS.ErrnoException).code;
-  if (code === "ELOOP") throw new Error(`refusing symlinked Jcode credential mirror parent: ${displayPath}`);
-  if (code === "ENOTDIR") {
-    // O_NOFOLLOW|O_DIRECTORY against a symlink returns ENOTDIR on this kernel, not ELOOP.
-    if (lstatSync(containedPath(dirFd, name)).isSymbolicLink())
-      throw new Error(`refusing symlinked Jcode credential mirror parent: ${displayPath}`);
-    throw new Error(`Jcode credential mirror parent is not a directory: ${displayPath}`);
-  }
-  throw error;
-}
-
-function openOrCreateContainedDir(dirFd: number, name: string, displayPath: string): number {
-  try {
-    const fd = openContainedDir(dirFd, name);
-    hardenPrivate(containedPath(dirFd, name), "dir");
-    return fd;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") {
-      try {
-        mkdirSync(containedPath(dirFd, name), { mode: 0o700 });
-      } catch (mkdirError) {
-        if ((mkdirError as NodeJS.ErrnoException).code !== "EEXIST") throw mkdirError;
-      }
-    } else if (code === "ELOOP" || code === "ENOTDIR") {
-      let isLink = code === "ELOOP";
-      if (code === "ENOTDIR") {
-        try {
-          isLink = lstatSync(containedPath(dirFd, name)).isSymbolicLink();
-        } catch (inner) {
-          mapPinnedOpenError(inner, dirFd, name, displayPath);
-        }
-      }
-      if (!isLink) mapPinnedOpenError(error, dirFd, name, displayPath);
-      unlinkSync(containedPath(dirFd, name));
-      mkdirSync(containedPath(dirFd, name), { mode: 0o700 });
-    } else {
-      mapPinnedOpenError(error, dirFd, name, displayPath);
-    }
-    try {
-      const fd = openContainedDir(dirFd, name);
-      hardenPrivate(containedPath(dirFd, name), "dir");
-      return fd;
-    } catch (retry) {
-      mapPinnedOpenError(retry, dirFd, name, displayPath);
-    }
-  }
-}
-
-function walkPinnedParents(home: string, parentRelative: string, holder: { fd: number }, create: boolean): void {
+function walkPinnedParents(home: string, parentRelative: string, pin: PinnedParent, create: boolean): void {
   let current = home;
   for (const part of parentRelative.split(sep).filter(Boolean)) {
     current = join(current, part);
-    let next: number;
     try {
-      next = create ? openOrCreateContainedDir(holder.fd, part, current) : openContainedDir(holder.fd, part);
+      pin.descend(part, current, create);
     } catch (error) {
       if (create || (error as NodeJS.ErrnoException).code === "ENOENT") throw error;
-      mapPinnedOpenError(error, holder.fd, part, current);
+      pin.mapOpenError(error, part, current);
     }
-    closeSync(holder.fd);
-    holder.fd = next;
   }
 }
 
@@ -257,9 +360,9 @@ export function removeCredentialMirror(home: string, destinationRelative: string
   assertRelative(parentRelative);
   const base = basename(destination);
 
-  let holder: { fd: number };
+  let pin: PinnedParent;
   try {
-    holder = { fd: openPinnedRoot(home) };
+    pin = PinnedParent.open(home);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
@@ -267,14 +370,14 @@ export function removeCredentialMirror(home: string, destinationRelative: string
 
   try {
     try {
-      walkPinnedParents(home, parentRelative, holder, false);
+      walkPinnedParents(home, parentRelative, pin, false);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
       throw error;
     }
 
     try {
-      if (lstatSync(containedPath(holder.fd, base)).isDirectory())
+      if (lstatSync(pin.leaf(base)).isDirectory())
         throw new Error(`Jcode credential mirror destination is a directory: ${destination}`);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
@@ -283,14 +386,14 @@ export function removeCredentialMirror(home: string, destinationRelative: string
 
     beforeUnlink?.();
     try {
-      unlinkSync(containedPath(holder.fd, base));
+      unlinkSync(pin.leaf(base));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
       throw error;
     }
     return true;
   } finally {
-    closeSync(holder.fd);
+    pin.close();
   }
 }
 
@@ -317,12 +420,12 @@ export function copyCredentialFile(home: string, source: string, destinationRela
   const parentRelative = relative(home, dirname(destination));
   assertRelative(parentRelative);
   const base = basename(destination);
-  const holder = { fd: openPinnedRoot(home) };
+  const pin = PinnedParent.open(home);
   try {
-    walkPinnedParents(home, parentRelative, holder, true);
+    walkPinnedParents(home, parentRelative, pin, true);
 
     try {
-      if (lstatSync(containedPath(holder.fd, base)).isDirectory())
+      if (lstatSync(pin.leaf(base)).isDirectory())
         throw new Error(`Jcode credential mirror destination is a directory: ${destination}`);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -331,19 +434,39 @@ export function copyCredentialFile(home: string, source: string, destinationRela
     beforeCopy?.();
     // Single-component temp under the pinned parent. A full-path temp re-resolves swapped ancestors.
     const tempName = `.${randomBytes(6).toString("hex")}.tmp`;
-    const temp = containedPath(holder.fd, tempName);
+    const temp = pin.leaf(tempName);
     try {
       copyFileSync(source, temp, constants.COPYFILE_EXCL);
       hardenPrivate(temp, "file");
-      renameSync(temp, containedPath(holder.fd, base));
+      renameSync(temp, pin.leaf(base));
     } finally {
       rmSync(temp, { force: true });
     }
-    if (lstatSync(containedPath(holder.fd, base)).isSymbolicLink())
+    if (lstatSync(pin.leaf(base)).isSymbolicLink())
       throw new Error(`Jcode credential mirror remained symlinked: ${destination}`);
     return true;
   } finally {
-    closeSync(holder.fd);
+    pin.close();
+  }
+}
+
+/** Open a pin and unlink one leaf through it, swapping the pinned directory in the window between
+ * the descriptor open and the directory entry. Exported for the smoke only: it drives the one
+ * window the two pin mechanisms close differently. */
+export function unlinkThroughSwappedPinForTest(directory: string, name: string, beforeEnter: () => void): { unlinked: boolean; refusal: string | undefined } {
+  let pin: PinnedParent;
+  try {
+    pin = PinnedParent.open(directory, beforeEnter);
+  } catch (error) {
+    return { unlinked: false, refusal: (error as Error).message };
+  }
+  try {
+    unlinkSync(pin.leaf(name));
+    return { unlinked: true, refusal: undefined };
+  } catch (error) {
+    return { unlinked: false, refusal: (error as Error).message };
+  } finally {
+    pin.close();
   }
 }
 
@@ -424,6 +547,28 @@ export interface ShortSocketHome {
 }
 
 /**
+ * Clear whatever occupies the alias path so this launch can claim it.
+ *
+ * The alias is derived from the seat home, so one seat NAME reuses one path for the life of the
+ * machine. That made a refusal here permanent: a launch hands the path back through `dispose()`,
+ * and a Jcode server the previous lifecycle left running re-creates it as a real directory under
+ * its own `JCODE_HOME`, after which every later launch of that name died before Jcode ever started
+ * (#1211). The connector is the only writer of this path and it is never the seat home, so an entry
+ * of any kind is stale and gets reclaimed. It is classified with `lstat` and removed through the
+ * owner-verified 0700 parent above, so the removal cannot follow a link out of that directory.
+ */
+function reclaimSocketAlias(alias: string): void {
+  let stats: ReturnType<typeof lstatSync>;
+  try {
+    stats = lstatSync(alias);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return;
+  }
+  rmSync(alias, { force: true, recursive: stats.isDirectory() });
+}
+
+/**
  * The current SDK derives `run/jcode-api.sock` beneath `jcodeHome` and has no socket-path launch
  * option. Keep managed state at its normal workspace location and pass it through a short private
  * alias instead. The SDK's resulting API pathname is bounded before it reaches AF_UNIX.
@@ -433,13 +578,7 @@ export function shortSocketHome(home: string): ShortSocketHome {
   const socketDir = join("/tmp", `jc-${id}`);
   privateDirectory(socketDir, { requireOwner: true, pin: false });
   const alias = join(socketDir, "home");
-  try {
-    const stats = lstatSync(alias);
-    if (!stats.isSymbolicLink()) throw new Error(`Jcode short socket alias is not a symlink: ${alias}`);
-    rmSync(alias, { force: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
+  reclaimSocketAlias(alias);
   // `home` was made and checked as an owner-only real directory before this call. The alias is
   // inside our 0700 directory and exists only to shrink the SDK's fixed `run/jcode-api.sock` path.
   // A failure here has no long-path fallback: that would reintroduce the SUN_LEN startup failure.

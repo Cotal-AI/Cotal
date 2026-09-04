@@ -312,7 +312,10 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     // transient launch artifacts are exactly the leftovers a "full local reset" must not keep.
     // Absolute paths, every spelling: the runtime records are `{space}` templates now, and the
     // delivery-aware marker rides along with them (it was a literal in the list above).
-    for (const [path] of pidfileTargets(space, root)) rm(path, `${relative(root, path)} (stale runtime record)`);
+    for (const [path] of pidfileTargets(space, root)) {
+      rm(path, `${relative(root, path)} (stale runtime record)`);
+      rm(`${path}.identity`, `${relative(root, path)}.identity (stale identity pin)`); // #969 sibling of the record
+    }
     rm(join(root, ".cotal", "run"), ".cotal/run (launch artifacts)");
     // The auth dir's NON-namer contents (callout, creds, server.conf, the user-auth state dir, any
     // stray) are removed BEFORE the trust records — a locked/immutable stray UNDER `.cotal/auth`

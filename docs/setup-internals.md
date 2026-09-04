@@ -10,24 +10,28 @@
 
 `cotal setup`
 ([`implementations/cli/src/commands/setup.ts`](../implementations/cli/src/commands/setup.ts))
-is **configure-only and state-independent**: it checks prerequisites, installs the Claude Code
+is **configure-only**: it checks prerequisites, installs the Claude Code
 plugin, and seeds persona files, and it **launches nothing**: no mesh, no web dashboard, no
 manager, no delivery daemon, no cmux/tmux session, no demo. Starting the stack is `cotal up`; the
 dashboard is `cotal web`. Every file it writes is announced (`→ wrote …` via `provenance.wrote`).
-It is two-tier, gated on a machine marker.
+It is two-tier, gated on a machine marker. Persona seeding resolves the selected mesh root first,
+then uses the same `.cotal/agents` catalog as spawn. With no mesh it names a cwd fallback; an
+ambiguous or broken target refuses rather than choosing a root.
 
 **First run** (no `~/.cotal/onboarded.json`, or `--full`, or `--yes`) runs `runFirstRun(yes)`:
 
 - splash → intro → core **checks** (Node >= 22; **locate** `nats-server`: located, never
-  started) → **connector picker** → write the demo personas (david/sven/me) and seed the generic
-  `default` → **offer a global install** (`offerGlobalInstall`) → onboarded marker → a finale that
+  started) → **connector picker** → resolve and announce the persona destination → seed the generic
+  `default` and optional demo personas (david/sven/me) there → **offer a global install**
+  (`offerGlobalInstall`) → onboarded marker → a finale that
   lists the commands to start things (`cotal up --detach`, `cotal web`, `cotal spawn …`,
   `cotal console`, `cotal down`). Nothing is running when it returns.
 - The old `--auth` / `--open` flags are **gone**: they set the mesh MODE at launch time, and setup
   no longer launches; mode is now `cotal up [--open]`'s concern (an unknown-option error names
   them, no silent no-op).
 
-**Later runs** run `runEnsure`: re-seed the `default` persona if it's missing (announced),
+**Later runs** run `runEnsure`: resolve and announce the same destination, re-seed the `default`
+persona if it's missing,
 re-offer the **global install** (`offerGlobalInstall`, same `isNpx()` + PATH-scan gate as first
 run, so a repeat `npx cotal-ai setup` on a machine that still lacks a durable `cotal` finally
 installs it), then print the **status card** (`readyCard`). The card is **read-only probes** (`machineStatus`/`meshStatus`/`webUp`/`managerUp` for NATS, the plugin, the mesh, the web
@@ -135,6 +139,12 @@ the full set and stops it in dependency order; `cotal down manager` (or another 
 selects only that descriptor. Installed extensions cache their contributed registry keys, so the
 base CLI does not hardcode optional package pidfiles.
 
+Each recorded pidfile also carries a sibling `<pidfile>.identity` pin (pid plus the process's
+start, where the OS reports one). The pin proves that the live process is still the recorded one.
+A reused pid and a torn or unreadable pin are refused and preserved. A pre-pin record warns and is
+signalled so an upgraded CLI can stop a stack launched by the previous version; the next launch
+writes a pin. A record clears only once death is confirmed.
+
 All re-execs resolve this CLI via `selfArgv()` / `selfCotal()`
 ([`lib/self-exec.ts`](../implementations/cli/src/lib/self-exec.ts)) = `[node, ...loaderFlags,
 entry]` (tsx loader in dev, compiled JS in prod), so they never need `cotal` on PATH; the stack
@@ -188,7 +198,9 @@ resurrects a removal. Before writing the generation stamp, setup verifies that e
 and at the generation version. A version-skewed payload fails loud (`ext seed --repair`) rather than being stamped as current. A cotal
 **older** than the store's stamped generation refuses before writing anything, rather than stamping the
 store back down to its own version while refreshing nothing: run the newer cotal, or `ext seed --reset`
-to rebuild the store for the version you are running. A generation advance records the exact
+to rebuild the store for the version you are running. The refusal names a concrete cotal executable
+only after a bounded `--version` probe proves that executable is at least the store generation;
+otherwise it retains the generic instruction. A generation advance records the exact
 realpath-resolved CLI entry and an ISO timestamp in `seed/stamp.json`, then announces the migration
 after that stamp commits. An older CLI includes those fields in its refusal when present; legacy
 generation-only stamps stay valid and retain the shorter refusal.

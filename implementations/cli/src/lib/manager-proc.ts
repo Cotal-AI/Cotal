@@ -10,6 +10,7 @@ import {
   readProcessCommand, reclaimDeadPreUpgradeRecord,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE,
   type CommandReader, type LivenessProbe, type LocalProcessContext,
+  identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin,
 } from "@cotal-ai/workspace";
 
 /** The space whose manager this folder's commands mean. Every helper below defaults to it, and the
@@ -194,7 +195,12 @@ export function startManagerDetached(
   child.unref();
   // CANONICAL path, never a pre-upgrade one: a start that kept writing the root-scoped name would
   // keep minting the very records this change ends.
-  writeFileSync(canonicalLocalProcessPath(MANAGER_PIDFILE, ctx(space)), String(child.pid));
+  const pidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, ctx(space));
+  writeFileSync(pidPath, String(child.pid));
+  // #969: pin the pid to the start of the process behind it, so a later teardown can refuse a pid
+  // that was reused by an unrelated process. Sibling of the pidfile (marker pattern); absent on a
+  // platform that cannot produce a start token, which reads as a legacy record to every reader.
+  writeIdentityPin(pidPath, child.pid ?? 0);
   // Mark this manager as delivery-aware (non-hosting) so the delivery preflight can tell it apart from
   // an old Plane-3-hosting manager. Written next to the pid, removed together in stopManager / down.
   writeFileSync(canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, ctx(space)), String(child.pid));
@@ -291,8 +297,11 @@ export async function stopManager(
   const send: SignalFn = signal ?? ((pid, sig) => process.kill(pid, sig));
   const p = PID_PATH(space);
   const marker = DELIVERY_AWARE_MARKER(space);
+  // Records are cleared only on PROVEN death; the identity pin is removed with them so the next
+  // start does not inherit a pin for a process that no longer exists (#969).
   const clear = (): void => {
     rmSync(marker, { force: true });
+    removeIdentityPin(p);
     rmSync(p, { force: true });
   };
   if (!existsSync(p)) {
@@ -342,6 +351,15 @@ export async function stopManager(
         `The pidfile and delivery-aware marker are LEFT IN PLACE: deleting them would orphan a process that may still be bound to the control plane.\n` +
         `NEXT: verify with \`ps -p ${pid}\`, then stop it yourself or remove \`${p}\` if it is gone.`,
     );
+  // #969 OPEN-VERIFY-TERMINATE: establish target identity BEFORE any signal. A pinned record whose
+  // live process carries a DIFFERENT start means the pid was reused and fronts an unrelated process
+  // (attribution above cannot catch a reused pid that happens to run a supervisor-shaped command);
+  // a torn or unreadable pin cannot prove identity either. A legacy record warns and proceeds so an
+  // upgraded CLI can stop a manager launched before pins existed. A MATCH is fully verified.
+  const identity = verifyIdentityPin(p);
+  if (identity.kind === "mismatch") throw identityRefusal("the manager", p, identity.record, identity.liveToken);
+  if (identity.kind === "legacy") console.error(identityLegacyWarning("the manager", p));
+  else if (identity.kind !== "match" && identity.kind !== "gone") throw identityUncertaintyRefusal("the manager", p, identity);
   try {
     send(pid, "SIGTERM");
   } catch (e) {

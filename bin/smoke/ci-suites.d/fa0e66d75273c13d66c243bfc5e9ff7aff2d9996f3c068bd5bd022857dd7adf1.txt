@@ -1,0 +1,7 @@
+# #969: launch writes a sibling `<pidfile>.identity` start pin. The four teardown paths (down's
+# shared component stop covering the broker, stopManager, stopDelivery, stopAuthService) refuse a
+# reused pid or torn pin and preserve the record. A legacy live record warns and proceeds so the
+# first teardown after an upgrade still works; proven death clears the pair. Broker-free
+# (real children, no nats-server). Mutation-proofed - bin/smoke/mutations/pid-identity.json.
+# Appended; shard assignments unchanged.
+smoke:pid-identity
