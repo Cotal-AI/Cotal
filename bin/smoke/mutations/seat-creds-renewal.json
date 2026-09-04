@@ -1,0 +1,34 @@
+{
+  "suite": "extensions/connector-core/smoke/seat-creds-renewal.smoke.ts",
+  "guard": "a managed connector seat preserves its credential file as a standing-renewal source and reconnects on a same-identity re-sign after the boot credential expires",
+  "command": "pnpm --filter @cotal-ai/connector-core build > /dev/null && pnpm smoke:seat-creds-renewal",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/seat-creds-renewal.json",
+  "why": [
+    "The mutation restores the reported production defect at the exact connector config seam: it passes the first file contents as a static string instead of a function that re-reads the path.",
+    "The suite crosses the first JWT expiry on a real isolated auth broker, then invokes the real cotal_reconnect tool. Its named failure must say that the endpoint holds no creds source, not merely report an unrelated red.",
+    "The build is part of every run because the connector package resolves @cotal-ai/core through dist. afterRestore rebuilds so the ignored dist tree cannot retain the mutant after source restoration.",
+    "The second mutation covers the compatibility boundary: an unbounded credential has no renewal point and must stay a static string. Always manufacturing a source reproduces the OpenCode cooperative-stop regression where every seat retries forever before joining."
+  ],
+  "mutations": [
+    {
+      "name": "managed connector credentials revert to the one-time boot read",
+      "file": "extensions/connector-core/src/config.ts",
+      "find": "    creds: boundedCreds ? async () => readFileSync(credsPath!, \"utf8\") : initialCreds,",
+      "replace": "    creds: initialCreds,",
+      "expectRed": "holds no creds source to renew them",
+      "cell": "cotal_reconnect adopts the renewed file and reports connected after the old JWT expiry",
+      "note": "This is the source-level shape from issue #1189. The first identity read remains, so the mutation isolates source adoption rather than breaking config parsing or card identity.",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build > /dev/null"
+    },
+    {
+      "name": "all managed credentials become renewal sources even when unbounded",
+      "file": "extensions/connector-core/src/config.ts",
+      "find": "    creds: boundedCreds ? async () => readFileSync(credsPath!, \"utf8\") : initialCreds,",
+      "replace": "    creds: credsPath ? async () => readFileSync(credsPath, \"utf8\") : undefined,",
+      "expectRed": "an unbounded managed credential stays a static string instead of a renewal source",
+      "cell": "an unbounded managed credential stays a static string instead of a renewal source",
+      "note": "This restores f0156ca1f's regression. Core refuses a source-fed credential without exp, so a valid operator-managed unbounded seat never joins.",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build > /dev/null"
+    }
+  ]
+}

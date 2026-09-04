@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { userInfo } from "node:os";
-import { DEFAULT_SERVER, LAUNCH_MATERIAL_ENV, discardLaunchMaterial, assertValidChannel, channelInAllow, isConcreteChannel, loadAgentFile, parseJoinLink, readLaunchMaterial, type AgentDef, type ChannelMode, type EndpointKind, type LaunchMaterial } from "@cotal-ai/core";
+import { DEFAULT_SERVER, LAUNCH_MATERIAL_ENV, discardLaunchMaterial, assertValidChannel, channelInAllow, credsClaims, idFromCreds, isConcreteChannel, loadAgentFile, parseJoinLink, readLaunchMaterial, type AgentDef, type ChannelMode, type EndpointKind, type LaunchMaterial } from "@cotal-ai/core";
 
 /** Keyed beta intake — used when a `COTAL_FEEDBACK_KEY` is configured. */
 export const FEEDBACK_URL = "https://broker.cotal.ai/v1/feedback";
@@ -18,8 +18,8 @@ export interface AgentConfig {
   /** Stable agent id (nkey public key) from the launcher; falls back to a random
    *  uuid in the endpoint when absent (unmanaged sessions). */
   id?: string;
-  /** Minted creds file content (auth mode); the endpoint authenticates with it. */
-  creds?: string;
+  /** Minted creds content, or a source that re-reads a managed seat's file for standing renewal. */
+  creds?: string | (() => Promise<string>);
   /** The incarnation's lifecycle UID (SPEC §13.1) from the launcher (`COTAL_LIFECYCLE_UID`): the
    *  endpoint binds its lifecycle-keyed dm/dlv/chathist durables by it — the same exact names its
    *  credential pins, so a mismatch fails at the broker, never silently. */
@@ -287,6 +287,17 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
   // the ambiguity that ends with a seat connected as something nobody chose, so it throws.
   const material = readMaterial(env);
   const credsPath = material?.creds ?? env.COTAL_CREDS?.trim();
+  // Read once to pin the connection identity at boot, then preserve the FILE as the endpoint's
+  // standing-renewal source. Every later read is checked against this id by CotalEndpoint, so a
+  // re-sign can extend the JWT window but can never swap the seat's nkey.
+  const initialCreds = credsPath ? readFileSync(credsPath, "utf8") : undefined;
+  const credsId = initialCreds ? idFromCreds(initialCreds) : undefined;
+  // An unbounded cred has no renewal point. Preserve it as the endpoint's documented static-string
+  // shape instead of manufacturing a standing-renewal source that core must refuse.
+  const boundedCreds = initialCreds !== undefined && typeof credsClaims(initialCreds).exp === "number";
+  const declaredId = env.COTAL_ID?.trim() || undefined;
+  if (declaredId && credsId && declaredId !== credsId)
+    throw new Error(`COTAL config: COTAL_ID ${declaredId} != creds identity ${credsId} - they must be the same nkey`);
   // USER-MODE identity: all-or-nothing — a partial set means a broken launcher, and connecting
   // with half an identity (or silently falling back to open) is exactly the U10 hazard.
   const userVars = material?.userAuth
@@ -336,9 +347,9 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
   }
   return {
     space: env.COTAL_SPACE?.trim() || link?.space || "demo",
-    id: env.COTAL_ID?.trim() || undefined,
+    id: credsId ?? declaredId,
     lifecycleUid,
-    creds: credsPath ? readFileSync(credsPath, "utf8") : undefined,
+    creds: boundedCreds ? async () => readFileSync(credsPath!, "utf8") : initialCreds,
     userAuth,
     name,
     role: env.COTAL_ROLE?.trim() || def?.role || undefined,
