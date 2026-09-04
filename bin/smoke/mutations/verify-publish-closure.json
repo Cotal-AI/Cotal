@@ -70,6 +70,14 @@
       "replace": "    if (missing.length === total + 1) return { state: \"none\", missing };",
       "expectRed": "a wholly absent version is NONE (published nothing), never PARTIAL",
       "cell": "a wholly absent version is NONE (published nothing), never PARTIAL"
+    },
+    {
+      "name": "the COTAL_ scrub stops matching, so a live credential reaches the spawned child",
+      "file": "bin/smoke/verify-publish-closure.smoke.ts",
+      "find": "  for (const key of Object.keys(env)) if (key.startsWith(\"COTAL_\")) delete env[key];",
+      "replace": "  for (const key of Object.keys(env)) if (key.startsWith(\"COTAL_NEVER_MATCHES_\")) delete env[key];",
+      "expectRed": "no COTAL_ variable reaches the spawned child, even when one is set in this process",
+      "cell": "no COTAL_ variable reaches the spawned child, even when one is set in this process"
     }
   ]
 }
