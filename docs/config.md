@@ -180,7 +180,8 @@ So a launcher-spawned seat does not get them in its environment. The launcher wr
 The session reads the launch-material file once at startup. For a managed creds path, it reads the
 credential once to pin the seat's nkey, then keeps the path as a renewal source. A re-signed file is
 read by renewal and by reconnect after the cached credential expires, and a file for a different
-nkey is refused. This is the same shape
+nkey is refused. An unbounded credential has no renewal point and remains a static boot-time value.
+This is the same shape
 `cotal agent-bearer` already uses for its spawn-time secret: the material rides a file, never argv
 (which is visible in a process listing) and never the ambient environment (which is inherited).
 

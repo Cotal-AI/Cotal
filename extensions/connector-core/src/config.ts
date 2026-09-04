@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { userInfo } from "node:os";
-import { DEFAULT_SERVER, LAUNCH_MATERIAL_ENV, discardLaunchMaterial, assertValidChannel, channelInAllow, idFromCreds, isConcreteChannel, loadAgentFile, parseJoinLink, readLaunchMaterial, type AgentDef, type ChannelMode, type EndpointKind, type LaunchMaterial } from "@cotal-ai/core";
+import { DEFAULT_SERVER, LAUNCH_MATERIAL_ENV, discardLaunchMaterial, assertValidChannel, channelInAllow, credsClaims, idFromCreds, isConcreteChannel, loadAgentFile, parseJoinLink, readLaunchMaterial, type AgentDef, type ChannelMode, type EndpointKind, type LaunchMaterial } from "@cotal-ai/core";
 
 /** Keyed beta intake — used when a `COTAL_FEEDBACK_KEY` is configured. */
 export const FEEDBACK_URL = "https://broker.cotal.ai/v1/feedback";
@@ -292,6 +292,9 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
   // re-sign can extend the JWT window but can never swap the seat's nkey.
   const initialCreds = credsPath ? readFileSync(credsPath, "utf8") : undefined;
   const credsId = initialCreds ? idFromCreds(initialCreds) : undefined;
+  // An unbounded cred has no renewal point. Preserve it as the endpoint's documented static-string
+  // shape instead of manufacturing a standing-renewal source that core must refuse.
+  const boundedCreds = initialCreds !== undefined && typeof credsClaims(initialCreds).exp === "number";
   const declaredId = env.COTAL_ID?.trim() || undefined;
   if (declaredId && credsId && declaredId !== credsId)
     throw new Error(`COTAL config: COTAL_ID ${declaredId} != creds identity ${credsId} - they must be the same nkey`);
@@ -346,7 +349,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     space: env.COTAL_SPACE?.trim() || link?.space || "demo",
     id: credsId ?? declaredId,
     lifecycleUid,
-    creds: credsPath ? async () => readFileSync(credsPath, "utf8") : undefined,
+    creds: boundedCreds ? async () => readFileSync(credsPath!, "utf8") : initialCreds,
     userAuth,
     name,
     role: env.COTAL_ROLE?.trim() || def?.role || undefined,

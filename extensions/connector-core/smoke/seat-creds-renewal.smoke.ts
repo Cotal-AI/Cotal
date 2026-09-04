@@ -67,6 +67,7 @@ const server = spawn("nats-server", ["-D", "-c", configPath], { stdio: "ignore" 
 const releaseBroker = teardownOnSignal(server, dir);
 let manager: CotalEndpoint | undefined;
 let agent: MeshAgent | undefined;
+let staticAgent: MeshAgent | undefined;
 
 try {
   let brokerReady = false;
@@ -170,6 +171,45 @@ try {
     result.text,
   );
 
+  // Unbounded operator-managed credentials have no renewal schedule. They keep the static-string
+  // endpoint shape: boot succeeds, and replacing the file later does not change the resident identity.
+  const staticIdentity = newIdentity();
+  const staticLifecycleUid = mintLifecycleUid();
+  const unbounded = await provisionAgent(manager, auth, staticIdentity, {
+    lifecycleUid: staticLifecycleUid,
+    durableMembership: false,
+  });
+  check("fixture: the unbounded managed credential has no exp", credsClaims(unbounded).exp === undefined);
+  const staticCredsPath = join(dir, "static-seat.creds");
+  writeFileSync(staticCredsPath, unbounded, { mode: 0o600 });
+  const staticConfig = configFromEnv({
+    COTAL_NAME: "static-seat",
+    COTAL_KIND: "agent",
+    COTAL_SPACE: space,
+    COTAL_SERVERS: servers,
+    COTAL_CREDS: staticCredsPath,
+    COTAL_LIFECYCLE_UID: staticLifecycleUid,
+  });
+  check(
+    "an unbounded managed credential stays a static string instead of a renewal source",
+    typeof staticConfig.creds === "string",
+    typeof staticConfig.creds,
+  );
+  if (typeof staticConfig.creds === "string") {
+    staticAgent = new MeshAgent(staticConfig);
+    staticAgent.on("error", () => {});
+    await staticAgent.start(100);
+    writeFileSync(staticCredsPath, swapped, { mode: 0o600 });
+    const staticReconnect = await staticAgent.reconnect();
+    check(
+      "an unbounded managed seat connects and remains on its boot credential after the file changes",
+      staticReconnect.ok && staticAgent.connected && staticAgent.id === `local.${staticIdentity.id}`,
+      { reconnect: staticReconnect, connected: staticAgent.connected, id: staticAgent.id },
+    );
+  } else {
+    check("an unbounded managed seat connects and remains on its boot credential after the file changes", false);
+  }
+
   console.log(
     failed === 0
       ? `\nSEAT CREDS RENEWAL SMOKE OK ✅  (${passed} passed, ${failed} failed)`
@@ -177,6 +217,7 @@ try {
   );
   process.exitCode = failed === 0 ? 0 : 1;
 } finally {
+  await staticAgent?.stop();
   await agent?.stop();
   await manager?.stop();
   server.kill("SIGKILL");
