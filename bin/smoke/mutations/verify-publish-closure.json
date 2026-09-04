@@ -125,8 +125,7 @@
       "find": "    return await Promise.race([\n      fetchImpl(url, { method: \"GET\", redirect: \"manual\", signal: AbortSignal.timeout(remainingMs) }),\n      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(\"read budget expired\")), remainingMs); }),\n    ]);",
       "replace": "    return await fetchImpl(url, { method: \"GET\", redirect: \"manual\", signal: AbortSignal.timeout(remainingMs) });",
       "cell": "a registry that accepts the connection and never answers still settles inside the budget",
-      "expectRed": "a registry that accepts the connection and never answers still settles inside the budget",
-      "why": "The race is what makes termination the GATE's guarantee rather than the transport's. With only the signal, a fetch that ignores it holds the gate forever."
+      "expectRed": "a registry that accepts the connection and never answers still settles inside the budget"
     },
     {
       "name": "the per-read budget stops shrinking, so a hung read cannot be cut short by the time already spent",
@@ -134,17 +133,15 @@
       "find": "    const remainingMs = Math.max(0, budgetEndsAt - Date.now());",
       "replace": "    const remainingMs = opts.deadlineMs;",
       "cell": "the shipped command exits 2 (cannot tell) against a registry that never answers, rather than being killed",
-      "expectRed": "the shipped command exits 2 (cannot tell) against a registry that never answers, rather than being killed",
-      "why": "Each read must be bounded by what is LEFT of the run, not by the full budget: 21 sequential reads each granted the whole deadline is 21x the budget the job allows."
+      "expectRed": "the shipped command exits 2 (cannot tell) against a registry that never answers, rather than being killed"
     },
     {
       "name": "elapsed is read from the injected clock alone, so a run whose reads all time out polls forever",
       "file": "scripts/verify-publish-closure.mjs",
-      "find": "    const elapsedMs = Math.max(now() - started, Date.now() - (budgetEndsAt - opts.deadlineMs));",
+      "find": "    const elapsedMs = Math.max(now() - started, Date.now() - ioStarted);",
       "replace": "    const elapsedMs = now() - started;",
       "cell": "spending the real budget ends the run even when the injected clock has not moved",
-      "expectRed": "spending the real budget ends the run even when the injected clock has not moved",
-      "why": "Spending the real budget has to COUNT as the deadline passing, or the bound on each read just moves the hang into the poll loop."
+      "expectRed": "spending the real budget ends the run even when the injected clock has not moved"
     }
   ]
 }

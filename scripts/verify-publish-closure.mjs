@@ -237,7 +237,8 @@ export async function verifyClosure(version, {
   log = () => {},
 } = {}) {
   const started = now();
-  const budgetEndsAt = Date.now() + opts.deadlineMs;
+  const ioStarted = Date.now();
+  const budgetEndsAt = ioStarted + opts.deadlineMs;
   let previous = null;
   let unchangedSince = started;
   const reads = [];
@@ -258,7 +259,7 @@ export async function verifyClosure(version, {
     // The greater of the simulated and the real elapsed time. Spending the real budget IS the
     // deadline passing: without this, a run whose every read timed out would keep polling forever
     // on an injected clock that had barely moved, which is the same hang by a shorter route.
-    const elapsedMs = Math.max(now() - started, Date.now() - (budgetEndsAt - opts.deadlineMs));
+    const elapsedMs = Math.max(now() - started, Date.now() - ioStarted);
     const unchangedForMs = now() - unchangedSince;
     reads.push({ published: packages.length - missing.length - errored.length, missing: [...missing], errored: [...errored], elapsedMs });
     log(`  published=${packages.length - missing.length - errored.length}/${packages.length} missing=[${missing.join(" ")}] errored=[${errored.join(" ")}] unchanged_for=${Math.round(unchangedForMs / 1000)}s`);
