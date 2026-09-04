@@ -258,6 +258,32 @@ check(
   all500.reads?.[0],
 );
 
+// ------------------------------------------------- a followed redirect is a FALSE PRESENCE
+// This fixture behaves like a real redirecting registry rather than asserting on a status code: a
+// caller that FOLLOWS redirects sees the generic 200 the redirect lands on, and only a caller that
+// declines to follow sees the 3xx. So the cell fails if `redirect: "manual"` is not actually passed,
+// which asserting on a hand-fed 302 would not catch.
+const redirectingRegistry = (async (_url: string | URL | Request, init?: RequestInit) => {
+  if (init?.redirect === "manual") return { status: 302 } as Response;
+  return { status: 200, redirected: true } as Response; // followed to some other resource
+}) as unknown as typeof fetch;
+const redirected = await verifyClosure("9.9.9", {
+  packages: ["a", "b", "c", "d"],
+  opts: { ...DEFAULTS, pollIntervalMs: 0, stableWindowMs: 5_000, deadlineMs: 40_000 },
+  fetchImpl: redirectingRegistry,
+  ...fastClock(),
+});
+check(
+  "a registry that redirects onto a generic 200 does NOT report published — a followed redirect is not presence",
+  redirected.state !== "published",
+  redirected,
+);
+check(
+  "that redirect case is classified as no-evidence rather than absence",
+  redirected.state === "unsettled",
+  redirected,
+);
+
 // ---------------------------------------------------------------- operator knobs
 check("--registry overrides the base and strips a trailing slash", parseOptions(["--registry=http://x/"]).registryBase === "http://x");
 check("--stable-window-ms is parsed", parseOptions(["--stable-window-ms=42000"]).stableWindowMs === 42_000);
@@ -354,7 +380,7 @@ check(
   committedDts === emitDeclaration(),
 );
 
-const EXPECTED = 46;
+const EXPECTED = 48;
 check(`every cell ran (${EXPECTED} before sentinel)`, passed + failed === EXPECTED, passed + failed);
 console.log(`VERIFY PUBLISH CLOSURE SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 console.log("SUITE COMPLETE");

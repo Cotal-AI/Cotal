@@ -155,7 +155,16 @@ async function readClosure(packages, version, opts, fetchImpl) {
   for (const pkg of packages) {
     let status;
     try {
-      const res = await fetchImpl(versionUrl(opts.registryBase, pkg, version), { method: "GET" });
+      // `redirect: "manual"` is load-bearing, not tidiness. Node's fetch FOLLOWS redirects by
+      // default, so a registry that 302s a missing version onto a generic 200 page hands back
+      // status 200 for a resource that is not the package -- a FALSE PRESENCE, and the only
+      // direction that cuts a Release for something unpublished. Not following turns the 3xx into
+      // a status this function already classifies as no-evidence. Verified against the real
+      // registry: it does not redirect this endpoint, so manual changes nothing on the live path.
+      const res = await fetchImpl(versionUrl(opts.registryBase, pkg, version), {
+        method: "GET",
+        redirect: "manual",
+      });
       status = res.status;
     } catch {
       errored.push(pkg);

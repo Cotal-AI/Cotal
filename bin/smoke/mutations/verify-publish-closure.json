@@ -110,6 +110,14 @@
       "replace": "    if (status === 410) missing.push(pkg);",
       "expectRed": "a genuine held 404 on one package is STILL a partial publish — the loud verdict still fires",
       "cell": "a genuine held 404 on one package is STILL a partial publish — the loud verdict still fires"
+    },
+    {
+      "name": "redirects are followed again, so a 302 onto a generic 200 reads as a published package",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "        method: \"GET\",\n        redirect: \"manual\",",
+      "replace": "        method: \"GET\",",
+      "expectRed": "a registry that redirects onto a generic 200 does NOT report published — a followed redirect is not presence",
+      "cell": "a registry that redirects onto a generic 200 does NOT report published — a followed redirect is not presence"
     }
   ]
 }
