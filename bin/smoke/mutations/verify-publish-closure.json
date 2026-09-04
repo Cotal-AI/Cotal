@@ -1,0 +1,67 @@
+{
+  "suite": "smoke:verify-publish-closure",
+  "guard": "pnpm smoke:verify-publish-closure",
+  "command": "pnpm smoke:verify-publish-closure",
+  "completionMarker": "SUITE COMPLETE",
+  "grades": "tool",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/verify-publish-closure.json",
+  "why": "The gate decides whether a release version reached npm across the whole lockstep closure. Its two failure directions are silent and opposite: calling registry lag a partial publish (a false alarm, which gets a gate switched off) and calling a partial publish complete (a Release cut for a version that did not fully ship). Each mutation below breaks one of those decisions and must be caught by the cell named, so the suite is shown to discriminate rather than merely to pass. Every mutated file is the gate's own code or its generator -- no shipped product source -- which is what grades:\"tool\" asserts.",
+  "mutations": [
+    {
+      "name": "stability window collapses, so any missing set is instantly a partial publish",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "  if (unchangedForMs >= opts.stableWindowMs) return { state: \"partial\", missing };",
+      "replace": "  if (missing.length > 0) return { state: \"partial\", missing };",
+      "expectRed": true,
+      "cell": "a missing set that repeats identically and THEN clears is PUBLISHED, not a partial publish"
+    },
+    {
+      "name": "success tolerates one missing package, so a dropped sibling still reads as published",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "  if (missing.length === 0) return { state: \"published\" };",
+      "replace": "  if (missing.length <= 1) return { state: \"published\" };",
+      "expectRed": true,
+      "cell": "cotal-ai being live does NOT clear the gate while a sibling is missing (the #1254 defect)"
+    },
+    {
+      "name": "closure stops being derived and becomes the single package the old gate checked",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "  return [...new Set(names)].sort();",
+      "replace": "  return [\"cotal-ai\"];",
+      "expectRed": true,
+      "cell": "the closure is derived from .changeset/config.json, matching every name in the fixed group"
+    },
+    {
+      "name": "the deadline asserts a failure instead of reporting that it cannot tell",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "  if (elapsedMs >= opts.deadlineMs) return { state: \"unsettled\", missing, why: \"deadline\" };",
+      "replace": "  if (elapsedMs >= opts.deadlineMs) return { state: \"partial\", missing, why: \"deadline\" };",
+      "expectRed": true,
+      "cell": "a set still shrinking at the deadline reports UNSETTLED — the gate fails toward 'cannot tell'"
+    },
+    {
+      "name": "a stability window narrower than the poll interval is silently widened instead of refused",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "    throw new Error(\"--stable-window-ms must be at least --poll-interval-ms\");",
+      "replace": "    opts.stableWindowMs = opts.pollIntervalMs;",
+      "expectRed": true,
+      "cell": "a stability window narrower than the poll interval is refused (it would re-admit one sample)"
+    },
+    {
+      "name": "scoped package names stop being percent-encoded, so every scoped read 404s",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "  return `${base}/${pkg.replace(\"@\", \"%40\").replace(\"/\", \"%2f\")}/${version}`;",
+      "replace": "  return `${base}/${pkg}/${version}`;",
+      "expectRed": true,
+      "cell": "a scoped package encodes as %40scope%2fname in the per-version path"
+    },
+    {
+      "name": "the generated declaration's header changes, so the committed copy no longer matches the emit",
+      "file": "bin/smoke/gen-publish-closure-dts.mts",
+      "find": "  \"// Generated from verify-publish-closure.mjs by gen-publish-closure-dts.mts. Do not edit:\",",
+      "replace": "  \"// Generated. Do not edit:\",",
+      "expectRed": true,
+      "cell": "the committed .d.mts is byte-identical to a fresh emit from the module (run pnpm gen:publish-closure-dts)"
+    }
+  ]
+}
