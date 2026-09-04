@@ -18,7 +18,7 @@
  * Mutation-proved: delete that grant row and this suite goes red.
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { pickFreePort } from "./_free-port.js";
 import { assertScratchHeld, foreignRootFor, killManagerAtRoot, makeScratch } from "../../../bin/smoke/_scratch.js";
@@ -115,6 +115,29 @@ function cotal(args: string[], timeoutMs = 120_000): Promise<Run> {
   });
 }
 
+/**
+ * `up --detach` returns once the manager PROCESS is spawned, not once it has registered its endpoint
+ * (#379, second mode, measured 2026-09-04: `manager.<spaceKey>.log` is 0 bytes when `up` exits 0 and
+ * carries "service endpoint registered" 5s later). A `ps` launched inside that window is refused with
+ * `failed-precondition: service "manager" has no live registered instances`, which cell 2 below would
+ * read as the shipped operator path being broken. Under `npx tsx` the resolve step delayed every `ps`
+ * launch by about a second and hid the window on every run; the direct tsx launch (#1244) lands inside
+ * it three runs in three. So wait, bounded, for the registration line in the manager's own log under
+ * THIS root, then launch `ps` exactly once. A manager that never registers still reaches `ps`, and the
+ * product's own refusal is then graded with that fact printed beside it rather than in its place.
+ */
+async function awaitManagerRegistered(ms: number): Promise<boolean> {
+  const dir = join(root, ".cotal");
+  const registered = () => readdirSync(dir).some((f) =>
+    /^manager(\..*)?\.log$/.test(f) && /service endpoint registered/.test(readFileSync(join(dir, f), "utf8")));
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (registered()) return true;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  return registered();
+}
+
 /** Refuse to grade anything but a self-terminated child with a real exit code: every shape rejected
  *  here would otherwise SATISFY the cells below. */
 function mustHaveRun(r: Run, what: string): void {
@@ -165,13 +188,15 @@ try {
   if (up.status !== 0) { process.exitCode = 1; throw new Error("FIXTURE FAILURE, not a product defect: no mesh came up, so `ps` was never exercised."); }
 
   console.log("\n2) cotal ps --space, under the STATIC credential");
+  const registered = await awaitManagerRegistered(20_000);
+  console.log(`   manager registration ${registered ? "observed" : "NOT observed within 20s"} in ${join(root, ".cotal")} - ps launched once, now`);
   const ps = await cotal(["ps", "--space", SPACE], 20_000);
   console.log(`\n   ===== cotal ps --space ${SPACE} (STATIC) =====`);
   console.log(`   exit status: ${ps.status}`);
   console.log(ps.out.split("\n").map((l) => `   | ${l}`).join("\n"));
   console.log(`   ===== end =====\n`);
 
-  check("the OPERATOR `cotal ps` exits 0 (a RED here is a real defect: the shipped operator path is broken)", ps.status === 0, ps.status);
+  check("the OPERATOR `cotal ps` exits 0 (a RED here is a real defect: the shipped operator path is broken)", ps.status === 0, { status: ps.status, managerRegistered: registered });
   console.log(ps.status === 0
     ? "   => the operator path works."
     : "   => OPERATOR PATH BROKEN. The mesh came up (checked above), so this is the product, not the fixture.\n" +
