@@ -81,7 +81,10 @@ type Run = {
 };
 function cotal(args: string[], timeoutMs = 120_000): Promise<Run> {
   return new Promise((res) => {
-    const options = { cwd: root, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir }, stdio: ["ignore", "pipe", "pipe"] as const };
+    // This suite grades the operator `ps` path and never exercises the connector seeder, so its
+    // CLI opts out of the seed reconcile the way `up` does for the daemons it launches. On a cold
+    // npm cache that reconcile can spend the whole `cotal up` budget this fixture allows (#1245).
+    const options = { cwd: root, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"] as const };
     assertSmokeSandboxDown(sandbox, args, options);
     const child = spawn(TSX, [BIN, ...args], options);
     let out = "";
