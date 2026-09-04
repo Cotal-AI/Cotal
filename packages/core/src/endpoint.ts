@@ -952,6 +952,15 @@ export class CotalEndpoint extends EventEmitter {
    *  reconnect calls it again after {@link clearConnectionScoped}; every binding is
    *  idempotent (durables bind by name, JetStream dedups by msgID, KV opens are idempotent). */
   private async connectAndBind(): Promise<void> {
+    try {
+      await this.bindConnection();
+    } catch (error) {
+      await this.closeFailedBind();
+      throw error;
+    }
+  }
+
+  private async bindConnection(): Promise<void> {
     this.clearConnectionScoped();
     // Bearer-source endpoints fetch before the FIRST connect, and re-fetch on a rebuild whose
     // cached token is already inside the refresh margin (a rebuild after a long outage would
@@ -1165,6 +1174,30 @@ export class CotalEndpoint extends EventEmitter {
     this.channelDefaults = {};
     for (const watch of this.membershipFeedWatches)
       watch.arm = watch.arm.catch(() => {}).then(() => this.disarmMembershipWatch(watch)).catch((err) => { this.emit("error", err as Error); });
+  }
+
+  /** A transport can connect before a later JetStream/KV/subscription bind fails. The caller will
+   * retry the whole start, so release that partial epoch first instead of overwriting `nc` and
+   * leaving one established socket behind per retry. `close()` is deliberate: a failed bind has no
+   * graceful delivery contract to drain, and cleanup itself must not extend the retry failure. */
+  private async closeFailedBind(): Promise<void> {
+    const failedNc = this.nc;
+    this.clearConnectionScoped();
+    this.nc = undefined;
+    this.js = undefined;
+    this.jsm = undefined;
+    this.kv = undefined;
+    this.channelKv = undefined;
+    this.membersKv = undefined;
+    this.aclKv = undefined;
+    this.membershipFeedKv = undefined;
+    this.deliveryKv = undefined;
+    this.managerLeaseKv = undefined;
+    try {
+      await failedNc?.close();
+    } catch {
+      /* already closed or failed while binding */
+    }
   }
 
   /** If stop() ran during a rebuild's `await connectAndBind`, the just-bound connection +

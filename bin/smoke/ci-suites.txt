@@ -70,6 +70,7 @@ smoke:history-recent
 smoke:ep-records
 smoke:ep-journal
 smoke:ep-binding
+smoke:failed-bind-cleanup
 smoke:ep-work
 smoke:ep-virtual
 smoke:ep-action
