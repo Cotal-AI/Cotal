@@ -145,6 +145,7 @@
     "smoke:manager-split": "tsx packages/core/smoke/manager-split-auth.smoke.ts",
     "smoke:cred-lifetime": "tsx packages/core/smoke/cred-lifetime-auth.smoke.ts",
     "smoke:standing-renewal": "tsx packages/core/smoke/standing-renewal-auth.smoke.ts",
+    "smoke:seat-creds-renewal": "tsx extensions/connector-core/smoke/seat-creds-renewal.smoke.ts",
     "smoke:doctor-auth": "tsx implementations/cli/smoke/doctor-auth.smoke.ts",
     "smoke:sys-rotation": "tsx implementations/cli/smoke/sys-rotation.smoke.ts",
     "smoke:sys-rotation-e2e": "tsx implementations/cli/smoke/sys-rotation-e2e.smoke.ts",

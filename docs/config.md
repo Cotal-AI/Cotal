@@ -177,9 +177,11 @@ asked for any of it.
 
 So a launcher-spawned seat does not get them in its environment. The launcher writes them to a single
 **0600 file inside a 0700 private directory** and exports only its path, as `COTAL_LAUNCH_MATERIAL`.
-The session reads the file once at startup. This is the same shape `cotal agent-bearer` already uses
-for its spawn-time secret: the material rides a file, never argv (which is visible in a process
-listing) and never the ambient environment (which is inherited).
+The session reads the launch-material file once at startup. For a managed creds path, it reads the
+credential once to pin the seat's nkey, then keeps the path as a renewal source. A re-signed file is
+read again before reconnecting, and a file for a different nkey is refused. This is the same shape
+`cotal agent-bearer` already uses for its spawn-time secret: the material rides a file, never argv
+(which is visible in a process listing) and never the ambient environment (which is inherited).
 
 Three connectors drop the path once they have read it, so the shells and tools those seats run
 inherit no reference at all: **pi** and **codex**, whose sessions run in the seat process, and

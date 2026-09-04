@@ -48,7 +48,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { LAUNCH_MATERIAL_ENV, discardLaunchMaterial, readLaunchMaterial, registry, type Connector, type LaunchOpts } from "@cotal-ai/core";
+import { LAUNCH_MATERIAL_ENV, createSpaceAuth, discardLaunchMaterial, mintCreds, mintLifecycleUid, newIdentity, readLaunchMaterial, registry, type Connector, type LaunchOpts } from "@cotal-ai/core";
 import { configFromEnv, controlFromEnv, scrubLaunchMaterial } from "@cotal-ai/connector-core";
 import "@cotal-ai/connector-claude-code";
 import "@cotal-ai/connector-opencode";
@@ -74,14 +74,20 @@ const FORBIDDEN = [
 const SERVERS = "nats://127.0.0.1:14999"; // never dialled by this suite; it is a config input, not traffic
 const work = mkdtempSync(join(tmpdir(), "cotal-seat-env-scope-"));
 const credsPath = join(work, "agent.creds");
-writeFileSync(credsPath, "-----BEGIN NATS USER JWT-----\nnot-a-real-credential\n------END NATS USER JWT------\n");
+const seatIdentity = newIdentity();
+const seatLifecycleUid = mintLifecycleUid();
+const seatCreds = await mintCreds(await createSpaceAuth("scope"), seatIdentity, "agent", {
+  lifecycleUid: seatLifecycleUid,
+  expiresInSeconds: 60,
+});
+writeFileSync(credsPath, seatCreds);
 
 const opts: LaunchOpts = {
   space: "scope",
   name: "seat-1",
   role: "worker",
-  id: "AGENTIDPLACEHOLDER",
-  lifecycleUid: "lc-0000000000",
+  id: seatIdentity.id,
+  lifecycleUid: seatLifecycleUid,
   creds: credsPath,
   servers: SERVERS,
   subscribe: ["general"],
@@ -140,7 +146,9 @@ for (const name of CONNECTORS) {
   assert.equal(material.creds, credsPath, `A3: ${name} lost the creds path`);
   const config = configFromEnv(env);
   assert.equal(config.servers, SERVERS, `A3: ${name} session parses a different broker than the launch named`);
-  assert.equal(config.creds, readFileSync(credsPath, "utf8"), `A3: ${name} session cannot read its credential`);
+  const credsSource = config.creds;
+  assert.equal(typeof credsSource, "function", `A3: ${name} session did not preserve its managed credential as a source`);
+  assert.equal(await credsSource(), readFileSync(credsPath, "utf8"), `A3: ${name} session cannot read its credential`);
   assert.equal(config.name, "seat-1", `A3: ${name} session lost its identity`);
   // The control token round-trips to the exact value buildLaunch handed the manager. The hermes
   // connector mints its control endpoint inside its own launcher, so its buildLaunch has none.
