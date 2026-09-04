@@ -208,6 +208,11 @@ try {
   // then (correctly) refuses the foreign account.
   env.XDG_CONFIG_HOME = join(dir, "xdg");
   env.COTAL_HOME = join(dir, "cotal-home");
+  // This harness runs the daemon DIRECTLY (not via `up`, which sets this for the daemon it
+  // launches): its first-real-command seed would run seven npm installs against the scratch store
+  // and, on a cold npm cache, exhaust the arm poll below before the writer is even up. The daemon
+  // needs no connectors, so opt out the way `up` does.
+  env.COTAL_SKIP_CONNECTOR_SEED = "1";
   const wsRoot = join(dir, "ws");
   mkdirSync(join(wsRoot, ".cotal"), { recursive: true });
   // The daemon's startup admission requires the $SYS observer cred in the workspace's own space
