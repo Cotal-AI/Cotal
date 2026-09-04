@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.41.3
+
+### Patch Changes
+
+- 436f7d4: Close a partially connected NATS transport when an endpoint bind fails, preventing retry loops from leaking one socket per attempt.
+
 ## 0.41.2
 
 ## 0.41.1
