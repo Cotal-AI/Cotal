@@ -56,6 +56,7 @@ import {
   submissionFingerprint,
   readGoalResult,
   replayRunJournal,
+  readRunRecord,
   newTakeoverId,
   EpEnvelopeError,
   type EpCommandDef,
@@ -64,7 +65,7 @@ import {
   type GoalRef,
 } from "@cotal-ai/core";
 import { Cancelled, EffectError, type JournalEntry } from "@cotal-ai/lang";
-import { MeshHandler, EpfSettleWatcher, startRun } from "../src/index.js";
+import { MeshHandler, EpfSettleWatcher, startRun, driveRun, migrateRun, commitMigration } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
 const SPACE = "meshspawn";
@@ -611,10 +612,93 @@ log("winner", out.index);
     alloc !== undefined && despawns.some((d) => d.lifecycleUid === alloc.uid), JSON.stringify(despawns.at(-1)));
 }
 
+// ── 10) a migration hands a seat to the edited program under --adopt, and tears one down under --release ─
+{
+  console.log("• 10 — a migrated run adopts the seat its old program spawned, or releases it");
+  // The recorded program spawns one seat and pauses. The edit drops that step and spawns the same
+  // persona under a NEW name: without an override the seat is a leak (L5003); with `--adopt` the
+  // edited program's spawn must receive the recorded seat instead of minting a second one.
+  OUTCOME.keeper = { state: "succeeded" };
+  // The recorded program parks on a mediated sleep the pump below expires; the edit drops the
+  // sleep too, so the migrated program's only step is the spawn that must receive the seat.
+  const LIVE = `const d = await spawn("keeper", { name: "old" });\nlog("seat", d.agent);\nawait sleep("12s", { name: "park" });`;
+  const EDITED = `const d = await spawn("keeper", { name: "new" });\nlog("seat", d.agent);`;
+  const pumpState = { over: false };
+  const pump = (async () => { while (!pumpState.over) { await armPending(2); } })();
+  const parked = driven({ space: SPACE, endpoint: EP, kv, runId: "sp-10", lease: lease(), source: LIVE, handler: mk("sp-10") });
+  parked.catch(() => undefined);
+  let alloc: typeof allocations[number] | undefined;
+  for (let i = 0; i < 150 && alloc === undefined; i += 1) { await wait(100); alloc = allocations.find((a) => a.persona === "keeper"); }
+  // The run parks on the sleep; the seat is up. Its journal is what the migration reads.
+  let entries: JournalEntry[] = [];
+  for (let i = 0; i < 100 && !entries.some((e) => e.kind === "sleep"); i += 1) {
+    await wait(100);
+    const back = await replayRunJournal(js, jsm, SPACE, "sp-10", newTakeoverId());
+    entries = back.records.filter((r) => r.record.kind === "step").map((r) => (r as { record: { entry: unknown } }).record.entry as JournalEntry);
+  }
+  const seat = entries.find((e) => e.kind === "spawn" && e.state === "settled");
+  const handle = (seat?.result as { agent?: string } | undefined)?.agent ?? "";
+  c("the recorded program spawned a seat and parked", alloc !== undefined && handle === `${alloc.name}#${alloc.uid}`, { alloc, handle });
+  const record = await readRunRecord(kv, EP, "sp-10");
+  const pins = record!.spec.value.pins as unknown as Parameters<typeof migrateRun>[0]["pins"];
+  const bare = await migrateRun({ endpoint: EP, runId: "sp-10", source: EDITED, entries, pins, kv, actor: "david", now: () => Date.now() });
+  c("the edit orphans the spawn and is refused without an override",
+    bare.admissible === false && bare.orphans.some((o) => o.step.includes("spawn:old") && o.code === "L5003"), bare.orphans);
+  const report = await migrateRun({ endpoint: EP, runId: "sp-10", source: EDITED, entries, pins, kv, actor: "david", now: () => Date.now(), overrides: { adopt: [handle] } });
+  c("--adopt <handle> makes it admissible", report.admissible === true, report.orphans);
+  const committed = await commitMigration(kv, EP, report, "driver-10", { entries, handler: mk("sp-10x") });
+  c("the migration is filed and applied", committed.created === true && committed.released.length === 0, committed);
+  // The parked driver is superseded by the migrated program's driver: a resume under the edited
+  // source, whose `spawn("keeper")` must receive the recorded seat.
+  const invokesBefore = spawnInvokes.length;
+  const allocBefore = allocations.length;
+  const resumed = await withDeadline(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "sp-10", source: EDITED, lease: lease(), handler: mk("sp-10r"),
+  }).catch((e: unknown) => ({ status: "threw" as const, error: String((e as Error)?.message).slice(0, 160) })), 60_000, "the migrated resume");
+  const outcome = await withDeadline(parked, 60_000, "the superseded driver");
+  c("the migrated program completes under its new driver, and the parked driver is released when its sleep ends",
+    resumed?.status === "completed" && outcome?.status === "released", { outcome: outcome?.status, resumed: resumed?.status });
+  const after = (await journalEntries("sp-10", "spawn"));
+  const adoptedSpawn = after.find((e) => e.name === "new" && e.state === "settled");
+  c("the edited program's spawn settled with the ADOPTED seat's handle, minting nothing",
+    (adoptedSpawn?.result as { agent?: string } | undefined)?.agent === handle && spawnInvokes.length === invokesBefore && allocations.length === allocBefore,
+    { got: (adoptedSpawn?.result as { agent?: string } | undefined)?.agent, want: handle, invokes: spawnInvokes.length - invokesBefore, allocs: allocations.length - allocBefore });
+  const bound = after.filter((e) => e.name === "new" && e.state === "pending").at(-1);
+  c("and bound the hand-over on its own entry: the seat's floor plus the step it was adopted from",
+    bound?.external?.uid === alloc?.uid && typeof bound?.external?.adoptedFrom === "string" && (bound.external.adoptedFrom as string).includes("spawn:old"),
+    JSON.stringify(bound?.external));
+
+  // --release: the same edit, the seat torn down at commit through the run's own discharge.
+  OUTCOME.leaver = { state: "succeeded" };
+  const LIVE2 = `const d = await spawn("leaver", { name: "old" });\nawait sleep("12s", { name: "park" });`;
+  const EDITED2 = `await sleep("12s", { name: "park" });`;
+  const parked2 = driven({ space: SPACE, endpoint: EP, kv, runId: "sp-10b", lease: lease(), source: LIVE2, handler: mk("sp-10b") });
+  parked2.catch(() => undefined);
+  let alloc2: typeof allocations[number] | undefined;
+  for (let i = 0; i < 150 && alloc2 === undefined; i += 1) { await wait(100); alloc2 = allocations.find((a) => a.persona === "leaver"); }
+  let entries2: JournalEntry[] = [];
+  for (let i = 0; i < 100 && !entries2.some((e) => e.kind === "sleep"); i += 1) {
+    await wait(100);
+    const back = await replayRunJournal(js, jsm, SPACE, "sp-10b", newTakeoverId());
+    entries2 = back.records.filter((r) => r.record.kind === "step").map((r) => (r as { record: { entry: unknown } }).record.entry as JournalEntry);
+  }
+  const handle2 = `${alloc2?.name}#${alloc2?.uid}`;
+  const pins2 = (await readRunRecord(kv, EP, "sp-10b"))!.spec.value.pins as unknown as Parameters<typeof migrateRun>[0]["pins"];
+  const rel = await migrateRun({ endpoint: EP, runId: "sp-10b", source: EDITED2, entries: entries2, pins: pins2, kv, actor: "david", now: () => Date.now(), overrides: { release: [handle2] } });
+  const before2 = despawns.length;
+  const done2 = await commitMigration(kv, EP, rel, "driver-10b", { entries: entries2, handler: mk("sp-10b-commit") });
+  c("committing a --release migration despawns the orphaned seat through the run's discharge, gracefully",
+    done2.released.includes(handle2) && despawns.slice(before2).some((d) => d.lifecycleUid === alloc2?.uid && d.graceful === true),
+    { released: done2.released, despawned: despawns.slice(before2) });
+  await withDeadline(parked2, 60_000, "the released run's parked driver");
+  pumpState.over = true;
+  await pump;
+}
+
 await serve2.stop();
 await Promise.allSettled(terminals);
 await nc.drain().catch(() => undefined);
-const EXPECTED_CELLS = 33;
+const EXPECTED_CELLS = 41;
 const ran = ok + fail;
 console.log(`mesh-spawn.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

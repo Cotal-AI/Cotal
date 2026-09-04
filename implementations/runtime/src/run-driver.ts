@@ -30,6 +30,7 @@ import {
   EpEnvelopeError,
   activateRun,
   readRunRecord,
+  listRunMigrations,
   createRunSpec,
   writeRunStatus,
   assertJournalTailIntact,
@@ -65,6 +66,7 @@ import {
 } from "@cotal-ai/lang";
 import { runOnHostedEngine } from "./engine-host.js";
 import { RunJournalStore } from "./journal-store.js";
+import { migrationSeats } from "./migrate.js";
 
 /**
  * What an entry in the engine table is handed: everything `drive()` prepared, with the pieces the
@@ -339,6 +341,33 @@ const adoptionOf = (handler: unknown): AdoptingHandler | undefined =>
     ? (handler as AdoptingHandler)
     : undefined;
 
+/** A handler that can receive the seats a committed migration kept for the program under
+ *  `--adopt` (spec §11.2): the next `spawn` of each persona returns the recorded seat. */
+export interface SeatAdoptingHandler {
+  adoptMigratedSeats(seats: ReadonlyMap<string, readonly JournalEntry[]>): void;
+}
+
+const seatAdoptionOf = (handler: unknown): SeatAdoptingHandler | undefined =>
+  typeof (handler as SeatAdoptingHandler | undefined)?.adoptMigratedSeats === "function"
+    ? (handler as SeatAdoptingHandler)
+    : undefined;
+
+/**
+ * The seats every APPLIED migration of this run handed to its program and that no spawn has
+ * received yet, keyed by persona. Read off the migration records and the replayed journal, so a
+ * resume on any host hands out the same seats in the same order; a migration filed but never
+ * applied moved nothing and hands over nothing.
+ */
+async function migratedSeats(req: DriveRequest, entries: readonly JournalEntry[]): Promise<ReadonlyMap<string, readonly JournalEntry[]>> {
+  const out = new Map<string, JournalEntry[]>();
+  for (const m of await listRunMigrations(req.kv, req.endpoint, req.runId)) {
+    if (m.applied === undefined) continue;
+    for (const [persona, seats] of migrationSeats(entries, m.spec).adopt)
+      out.set(persona, [...(out.get(persona) ?? []), ...seats]);
+  }
+  return out;
+}
+
 /**
  * A handler that can end the external state a cancelled branch left behind (§7.6): timers still
  * armed, a wait's durable consumer still holding a position. Declared here for the same reason as
@@ -535,6 +564,16 @@ async function drive(
     // runtime from a driver that has nothing to repair.
     const adopt = req.onActivated ?? adoptionOf(req.handler)?.adopted.bind(req.handler);
     if (adopt !== undefined) await adopt(resumed);
+    // The seats a committed migration kept for this program (`--adopt`), handed to the handler
+    // before the program runs so its next spawn of that persona receives one. Only on a resume: a
+    // fresh run has no migration behind it.
+    if (expect === "existing") {
+      const seats = seatAdoptionOf(req.handler);
+      if (seats !== undefined) {
+        const kept = await migratedSeats(req, resumed);
+        if (kept.size > 0) seats.adoptMigratedSeats(kept);
+      }
+    }
 
     // ADOPTION-TIME discharge, the recovery half of the `cancel.issued` stages: a crash between a
     // scope's cancel record and its discharge leaves the losers' external state live — a seat still

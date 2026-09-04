@@ -43,7 +43,7 @@
       "replace": "          ...(req.permits !== undefined ? { permits: req.permits } : {}),\n          spawnedAt: this.now(),\n        };",
       "expectRed": "the acceptance floor is bound as the entry's external state before the terminal wait",
       "cell": "the acceptance floor is bound as the entry's external state before the terminal wait",
-      "note": "The bind dropped: the live path still completes (the goalId re-derives), but the journal carries no landed-submission marker and no identity floor — the resume and the uncertain-discharge paths lose their durable input. Measured 2026-09-02: exactly one red, 31 passed. Re-anchored 2026-09-02 (the bind now rides the captured ext the roster registration reads); re-measured: exactly one named red, 31 passed, 1 failed."
+      "note": "The bind dropped: the live path still completes (the goalId re-derives), but the journal carries no landed-submission marker and no identity floor \u2014 the resume and the uncertain-discharge paths lose their durable input. Measured 2026-09-02: exactly one red, 31 passed. Re-anchored 2026-09-02 (the bind now rides the captured ext the roster registration reads); re-measured: exactly one named red, 31 passed, 1 failed."
     },
     {
       "name": "the discharge skips spawn entries",
@@ -52,7 +52,7 @@
       "replace": "      if (e.kind === \"spawn\") {\n        continue;\n      }",
       "expectRed": "the discharge despawned exactly the allocated incarnation",
       "cell": "the discharge despawned exactly the allocated incarnation",
-      "note": "Design 8.6.4 removed: a cancelled loser's seat lives on with nobody addressing it. Measured 2026-09-02: five reds — both handler-level discharge blocks, the floor-less and uncertain variants, and the driver-integration cell 'and the driver's completion sweep despawned its seat'; 27 passed, 5 failed."
+      "note": "Design 8.6.4 removed: a cancelled loser's seat lives on with nobody addressing it. Measured 2026-09-02: five reds \u2014 both handler-level discharge blocks, the floor-less and uncertain variants, and the driver-integration cell 'and the driver's completion sweep despawned its seat'; 27 passed, 5 failed."
     },
     {
       "name": "a refuse-at-accept loses its catchable class",
@@ -79,7 +79,7 @@
       "replace": "function spawnHandleOf(req: SpawnRequest, fact: GoalResultFact, endpoint: string): AgentHandleValue {\n  if (false) {",
       "expectRed": "the failure is the catchable L4002",
       "cell": "the failure is the catchable L4002",
-      "note": "The state gate inverted: a failed or uncertain terminal is mined for a handle it does not carry, and the garbled-terminal guard turns it into an L4000 fault instead of the effect's own L4002. Measured 2026-09-02: two reds — block 5's failed terminal and block 8b's uncertain one; 30 passed."
+      "note": "The state gate inverted: a failed or uncertain terminal is mined for a handle it does not carry, and the garbled-terminal guard turns it into an L4000 fault instead of the effect's own L4002. Measured 2026-09-02: two reds \u2014 block 5's failed terminal and block 8b's uncertain one; 30 passed."
     },
     {
       "name": "the terminal await stops observing cancellation",
@@ -88,7 +88,43 @@
       "replace": "    const actx = await this.actionCtx();\n    for (;;) {\n      void signal;\n      const fact = await readGoalResult(actx, ref);",
       "expectRed": "the await ends Cancelled within one poll",
       "cell": "the await ends Cancelled within one poll",
-      "note": "The per-poll observation removed: a race-lost branch keeps parking on its terminal and then RESOLVES with a handle the run must never see (section 7.6 — a cancelled branch performs no new work). Measured 2026-09-02: exactly one red, the cancelled await resolving instead of throwing; 31 passed."
+      "note": "The per-poll observation removed: a race-lost branch keeps parking on its terminal and then RESOLVES with a handle the run must never see (section 7.6 \u2014 a cancelled branch performs no new work). Measured 2026-09-02: exactly one red, the cancelled await resolving instead of throwing; 31 passed."
+    },
+    {
+      "name": "an adopted seat is never handed to the migrated program's spawn",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    const adopted = ext === undefined ? this.adoptable.get(req.persona)?.shift() : undefined;",
+      "replace": "    const adopted = undefined;",
+      "expectRed": "the edited program's spawn settled with the ADOPTED seat's handle, minting nothing",
+      "cell": "the edited program's spawn settled with the ADOPTED seat's handle, minting nothing",
+      "note": "With the hand-over ignored the migrated program's spawn submits and mints a second seat: a --adopt recorded as honoured over a leak."
+    },
+    {
+      "name": "the adopted spawn binds no hand-over on its entry",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "        adoptedFrom: journalEntryKeyString(adopted),\n",
+      "replace": "",
+      "expectRed": "and bound the hand-over on its own entry: the seat's floor plus the step it was adopted from",
+      "cell": "and bound the hand-over on its own entry: the seat's floor plus the step it was adopted from",
+      "note": "Without `adoptedFrom` a later resume cannot tell the seat was already handed out and hands it to the next spawn of the persona again."
+    },
+    {
+      "name": "the driver never reads the applied migrations at adoption",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "        const kept = await migratedSeats(req, resumed);\n        if (kept.size > 0) seats.adoptMigratedSeats(kept);",
+      "replace": "        void resumed;",
+      "expectRed": "the edited program's spawn settled with the ADOPTED seat's handle, minting nothing",
+      "cell": "the edited program's spawn settled with the ADOPTED seat's handle, minting nothing",
+      "note": "The handler can adopt, but nobody tells it what: the migration record is the only durable statement of the hand-over."
+    },
+    {
+      "name": "a --release commit files the migration and tears nothing down",
+      "file": "implementations/runtime/src/migrate.ts",
+      "find": "  if (release.length > 0) await seats!.handler.discharge(release);",
+      "replace": "  void release;",
+      "expectRed": "committing a --release migration despawns the orphaned seat through the run's discharge, gracefully",
+      "cell": "committing a --release migration despawns the orphaned seat through the run's discharge, gracefully",
+      "note": "The fake success the spec row exists to refuse: a record that says released over a seat still up."
     }
   ]
 }

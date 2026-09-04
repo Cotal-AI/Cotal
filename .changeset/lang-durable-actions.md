@@ -47,5 +47,8 @@ whose seat never came up is L4002; an `ask` whose deadline passes with no confor
 L4006; a fork copies a spawn that said `onFork: "adopt"` and refuses one that would have to
 respawn (L5019). The run driver re-issues
 recorded-but-undischarged cancellations at adoption, so recovery does not wait for completion to
-release a dead loser's seat, pause, or tree. The delivery daemon hosts the checkpoint timer
+release a dead loser's seat, pause, or tree. A migration's `--adopt <handle>` hands the orphaned
+seat to the edited program's next spawn of that persona, and `--release <handle>` despawns it at
+commit through the run's own discharge; both name the agent the step spawned, and a spawn that
+produced none is an orphan like a sleep. The delivery daemon hosts the checkpoint timer
 writer, so mediated deadlines fire with no suite pump.

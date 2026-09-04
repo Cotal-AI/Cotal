@@ -286,6 +286,11 @@ export class MeshHandler {
    *  Fed by `spawn` and reseeded from journal spawn results at adoption. */
   private readonly worktreeHolders = new Map<string, WorktreeHolder>();
 
+  /** Seats a committed migration handed to this program under `--adopt`, keyed by persona and
+   *  handed out in journal order: the next `spawn` of that persona receives the recorded seat
+   *  instead of minting one. Fed by {@link adoptMigratedSeats}; spent by `spawn`. */
+  private readonly adoptable = new Map<string, JournalEntry[]>();
+
   now(): number {
     return this.clock();
   }
@@ -308,6 +313,18 @@ export class MeshHandler {
       this.binding,
       folded,
     );
+  }
+
+  /**
+   * Hand this program the seats a committed migration kept for it under `--adopt` (spec §11.2).
+   * The orphaned spawn's settled entry is the whole hand-over: the next `spawn` of its persona
+   * returns that entry's handle, binds that entry's floor, and submits nothing, so the seat keeps
+   * its identity, its worktree and its turn history across the edit. Called by the driver on the
+   * migrated run before the program runs; a map with no entry for a persona changes nothing.
+   */
+  adoptMigratedSeats(seats: ReadonlyMap<string, readonly JournalEntry[]>): void {
+    for (const [persona, entries] of seats)
+      this.adoptable.set(persona, [...(this.adoptable.get(persona) ?? []), ...entries]);
   }
 
   /**
@@ -1033,6 +1050,37 @@ export class MeshHandler {
     // host. Accepting it and restarting nothing is the silent no-op `readPermits` refuses by name.
     if (req.supervise !== undefined)
       throw new Error(`spawn(${req.persona}): supervise is a restart policy this host does not implement, and a policy it cannot enforce is refused rather than ignored`);
+    // A seat a migration kept for this persona: the orphaned step's settled entry is replayed as
+    // this step's own outcome. Its floor is bound under THIS request id, so a resume of this step
+    // re-attaches to the same seat, and the migration's hand-over is spent once.
+    const adopted = ext === undefined ? this.adoptable.get(req.persona)?.shift() : undefined;
+    if (adopted !== undefined) {
+      const handle = adopted.result as AgentHandleValue;
+      const floor = adopted.external as Readonly<Record<string, unknown>> | undefined;
+      if (typeof handle?.agent !== "string")
+        throw new Error(`spawn(${req.persona}): the migrated seat's entry carries no readable handle; a garbled hand-over is refused rather than minted over`);
+      if (req.worktree !== undefined && handle.worktree !== req.worktree)
+        throw new Error(`spawn(${req.persona}) asks for worktree "${req.worktree}" but the seat the migration hands it holds ${handle.worktree === undefined ? "none" : `"${handle.worktree}"`}; an adopted seat keeps its tree, so the edited program names that tree or none`);
+      await ctx.bind({
+        goalId: adopted.requestId,
+        ...(floor !== undefined ? pickAcceptanceFloor(floor) : {}),
+        ...(handle.worktree !== undefined ? { worktree: handle.worktree } : {}),
+        ...(req.onFork !== undefined ? { onFork: req.onFork } : {}),
+        ...(req.permits !== undefined ? { permits: req.permits } : {}),
+        spawnedAt: typeof floor?.spawnedAt === "number" ? floor.spawnedAt : this.now(),
+        adoptedFrom: journalEntryKeyString(adopted),
+      });
+      const { name, uid } = parseAgentHandle(handle.agent);
+      this.roster.set(name, {
+        handle, uid,
+        ...(typeof floor?.owner === "string" ? { owner: floor.owner } : {}),
+        ...(typeof floor?.actor === "string" ? { actor: floor.actor } : {}),
+        ...(permits !== undefined ? { permits } : {}),
+        ...(typeof floor?.spawnedAt === "number" ? { spawnedAt: floor.spawnedAt } : {}),
+      });
+      if (typeof handle.worktree === "string") this.worktreeHolders.set(handle.worktree, { name, uid });
+      return handle;
+    }
     if (ext === undefined && req.worktree !== undefined) await this.claimWorktree(req.worktree, req.persona, goalId);
     try {
       if (ext === undefined) {

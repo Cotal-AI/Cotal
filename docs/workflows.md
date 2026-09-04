@@ -93,7 +93,11 @@ finds every recorded step the edit changed (a divergence) and every one it no lo
 orphan), and the orphan table says what each means: a removed `sleep` is nothing, a removed `turn`
 already happened, a removed `spawn` is a live agent you must adopt or release, a removed resolved
 `checkpoint` is a human decision you must explicitly discard. The decision is filed as a
-`migration` record with the actor's name on it.
+`migration` record with the actor's name on it. An adopted seat (`--adopt <name>#<uid>`) goes to
+the edited program's next `spawn` of that persona, which returns the recorded handle and mints
+nothing, so the agent keeps its identity, its worktree and its turn history across the edit. A
+released seat (`--release <name>#<uid>`) is despawned when the migration commits, through the same
+discharge a cancelled branch's seat leaves by, so the record never claims a release nothing did.
 
 **Fork** starts a new run from a named step of an old one, copying the prefix under the parent's
 pins (seed included, so the copied history's pure draws are the same draws). The child is a new run

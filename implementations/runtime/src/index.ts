@@ -9,7 +9,7 @@
  * manager daemon.
  */
 export { RunJournalStore, RunJournalUnavailable } from "./journal-store.js";
-export { startRun, driveRun, PauseToken, type RunLease, type DriveRequest, type DriveOutcome, type AdoptingHandler } from "./run-driver.js";
+export { startRun, driveRun, PauseToken, type RunLease, type DriveRequest, type DriveOutcome, type AdoptingHandler, type SeatAdoptingHandler } from "./run-driver.js";
 export {
   MeshHandler,
   EpfSettleWatcher,
@@ -33,6 +33,7 @@ export { renderRunContext, UnrenderableNotice, type RunContextRender } from "./r
 export {
   migrateRun,
   commitMigration,
+  migrationSeats,
   MigrationNotAdmissible,
   type MigrateRequest,
   type MigrateReport,

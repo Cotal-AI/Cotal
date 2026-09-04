@@ -188,13 +188,46 @@ const checkOrThrew = async (...args: Parameters<typeof check>) =>
   c("dropping a spawn is refused with L5003", rowFor(r, "spawn:dev")?.code === "L5003", rowFor(r, "spawn:dev"));
   c("and the migration is not admissible", r.admissible === false, r);
 
-  // The specified repair is --adopt/--release. Neither can be honoured here: there is no durable
-  // spawn to adopt or release, so an override that LOOKED accepted would be the fake success this
-  // lane refuses. It stays a refusal and says why.
-  const adopted = await check(RUN, entries, EDITED, { adopt: ["dev"] });
-  c("--adopt does not clear it on this host", adopted.admissible === false, adopted);
-  c("and the reason names the substrate rather than the caller's mistake",
-    rowFor(adopted, "spawn:dev")?.why.includes("not durable") === true, rowFor(adopted, "spawn:dev")?.why);
+  const handle = (entries.find((e) => e.kind === "spawn")?.result as { agent?: string } | undefined)?.agent ?? "";
+  c("the refusal names the agent the step spawned, so the override can name it back",
+    handle.length > 0 && rowFor(r, "spawn:dev")?.why.includes(handle) === true, rowFor(r, "spawn:dev")?.why);
+
+  // The repair is --adopt <handle> or --release <handle>, each naming THE AGENT. A name that is not
+  // the spawned handle clears nothing: an override that matched loosely would tear down or hand
+  // over a seat the caller never named.
+  const wrong = await check(RUN, entries, EDITED, { adopt: ["dev"] });
+  c("--adopt naming something other than the spawned handle does not clear the row",
+    wrong.admissible === false && rowFor(wrong, "spawn:dev")?.code === "L5003", rowFor(wrong, "spawn:dev"));
+  const adopted = await check(RUN, entries, EDITED, { adopt: [handle] });
+  c("--adopt <handle> keeps the seat for the new program: the row is kept and the report is admissible",
+    adopted.admissible === true && rowFor(adopted, "spawn:dev")?.verdict === "kept", rowFor(adopted, "spawn:dev"));
+  c("and the override is recorded for the fact the commit files", adopted.overrides.includes(`--adopt ${handle}`), adopted.overrides);
+  const released = await check(RUN, entries, EDITED, { release: [handle] });
+  c("--release <handle> lets the seat go: the row is ignored and the report is admissible",
+    released.admissible === true && rowFor(released, "spawn:dev")?.verdict === "ignored", rowFor(released, "spawn:dev"));
+  const both = await check(RUN, entries, EDITED, { adopt: [handle], release: [handle] });
+  c("naming one seat under both overrides is refused: it is reassigned or torn down, never both",
+    both.admissible === false && rowFor(both, "spawn:dev")?.code === "L5003", rowFor(both, "spawn:dev"));
+
+  // --release IS AN ACT. The commit tears the seat down through the run's own discharge before the
+  // migration is filed, and refuses when it has nothing to tear it down with: a record that said
+  // "released" over a seat nothing released would be the fake success this row exists to refuse.
+  const torn: string[] = [];
+  const discharger = { discharge: async (es: readonly JournalEntry[]) => { for (const e of es) torn.push((e.result as { agent: string }).agent); } };
+  const committed = await commitMigration(kv, EP, released, "driver-r", { entries, handler: discharger });
+  c("committing a --release migration despawns exactly the named seat through the run's discharge",
+    torn.length === 1 && torn[0] === handle && committed.released.includes(handle), { torn, released: committed.released });
+  const blind = await commitMigration(kv, EP, { ...released, run: "r-spawn-blind" }, "driver-r").then(() => null, (e: unknown) => e as Error);
+  c("a commit that releases a seat but has no discharger is refused before anything is filed",
+    blind !== null && /releases a seat/.test(blind.message) && (await listRunMigrations(kv, EP, "r-spawn-blind")).length === 0, blind?.message?.slice(0, 120));
+  // A spawn that produced no seat leaks nothing: a failed spawn is an orphan like a sleep.
+  // The program catches the failure so the journal settles the spawn `failed` and the run completes.
+  const failedEntries = await record("r-spawn-failed", `try { await spawn("dev", { name: "dev" }); } catch (e) { log("down", e.code); }\nawait sleep("1s", { name: "after" });`,
+    { faults: [{ at: "spawn:dev#0", kind: "spawn", code: "L4002", message: "never came up" }] }).catch(() => undefined);
+  const failedSpawn = failedEntries?.find((e) => e.kind === "spawn" && e.state === "settled" && e.status === "failed");
+  const noSeat = failedEntries === undefined ? undefined : await check("r-spawn-failed", failedEntries, EDITED);
+  c("a spawn that never produced an agent is ignored: nothing outlives it",
+    failedSpawn !== undefined && rowFor(noSeat!, "spawn:dev")?.verdict === "ignored", { failedSpawn: failedSpawn?.status, row: noSeat && rowFor(noSeat, "spawn:dev") });
 }
 
 // ── 4) a notice the addressee has not been told ────────────────────────────────────────────────
