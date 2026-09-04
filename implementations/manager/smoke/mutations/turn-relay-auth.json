@@ -70,6 +70,33 @@
       "expectRed": "the goal's terminal is the deadline deny, reason `turn-deadline`",
       "cell": "the goal's terminal is the deadline deny, reason `turn-deadline`",
       "note": "A read-only sweep waits for a settle nobody writes: the manager holds no grant to consume the broker's fire, so the settle it reads for is one it has to produce."
+    },
+    {
+      "name": "an ended goal is re-admitted to the accept path",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    const ended = await readGoalResult(gw.ctx, ref);\n    if (ended !== undefined)\n      throw new EpEnvelopeError(\"failed-precondition\", `goal \"${goalId}\" already ended ${ended.state}; a bound goal is never accepted again (SPEC 13.6)`);",
+      "replace": "",
+      "expectRed": "a retry of the unwound accept is refused naming the terminal, never handed a live acceptance",
+      "cell": "a retry of the unwound accept is refused naming the terminal, never handed a live acceptance",
+      "note": "Without the terminal read the retry re-records the index over the unwind's tombstone and is refused as store corruption, or (before the rebuilt-acceptance branch was removed) handed a live deadline on a turn no seat is shown. The terminal is the one durable answer a retry of an ended goal deserves."
+    },
+    {
+      "name": "the unwind commits the failed terminal without the seat's currency",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "          executor: { lifecycleUid: t.lifecycleUid, epoch: 0 },\n          resolveCurrentEpoch: (target) => this.agents.get(a.name)?.lifecycleUid === target.lifecycleUid ? 0 : null,\n        });\n        await clearGoalIndex(gw.ctx, ref);",
+      "replace": "        });\n        await clearGoalIndex(gw.ctx, ref);",
+      "expectRed": "the accept unwinds: refused to the caller, with a failed terminal committed on the bound goal",
+      "cell": "the accept unwinds: refused to the caller, with a failed terminal committed on the bound goal",
+      "note": "The goal is target-pinned, so core refuses a completion that proves no executor currency; the unwind then logged its own failure and left a bound goal with no ending, which is the state every later retry found."
+    },
+    {
+      "name": "the unwind leaves its index entry behind",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "          resolveCurrentEpoch: (target) => this.agents.get(a.name)?.lifecycleUid === target.lifecycleUid ? 0 : null,\n        });\n        await clearGoalIndex(gw.ctx, ref);",
+      "replace": "          resolveCurrentEpoch: (target) => this.agents.get(a.name)?.lifecycleUid === target.lifecycleUid ? 0 : null,\n        });",
+      "expectRed": "and no index entry remains for the ended goal, so no sweep finds a relay to adopt",
+      "cell": "and no index entry remains for the ended goal, so no sweep finds a relay to adopt",
+      "note": "The index entry was recorded before the bind; an unwind that does not take it back leaves a relay record pointing at an ended goal for every later boot sweep to read."
     }
   ]
 }

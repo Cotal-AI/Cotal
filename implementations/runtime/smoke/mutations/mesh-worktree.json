@@ -12,7 +12,7 @@
     "guard able to refuse at all (W3), the adoption reseed that keeps a resumed run enforcing what",
     "its journal shows (W4), and the handle spread that carries the worktree into the journal and",
     "the turn client's L4004 (W5). All five mutate mesh-handler.ts, which the suite imports through",
-    "a relative `../src` path — no build sits between the mutation and the run.",
+    "a relative `../src` path \u2014 no build sits between the mutation and the run.",
     "Batch B2 (2026-09-03) folds the adopted append log to the journal's keyed view before seeding: one record per step, so a turn is charged once, a failed spawn holds no worktree, and a cancelled turn is not re-registered."
   ],
   "mutations": [
@@ -23,7 +23,7 @@
       "replace": "    if (false) await this.claimWorktree(req.worktree!, req.persona, goalId);",
       "expectRed": "the second spawn refuses as the effect's own L4008, naming the tree and its holder",
       "cell": "the second spawn refuses as the effect's own L4008, naming the tree and its holder",
-      "note": "The one call site that enforces the rule at spawn. Measured 2026-09-03: both refusal cells red — the live-holder L4008 and the adopted-registry L4008 — 7 passed, 2 failed."
+      "note": "The one call site that enforces the rule at spawn. Measured 2026-09-03: both refusal cells red \u2014 the live-holder L4008 and the adopted-registry L4008 \u2014 7 passed, 2 failed."
     },
     {
       "name": "the liveness read is inverted, so a dead holder still blocks its tree",
@@ -32,7 +32,7 @@
       "replace": "    if (true || rows.some((p) => p.card?.name === holder.name && p.lifecycleUid === holder.uid))",
       "expectRed": "a spawn into the dead holder's tree performs: sequential reuse is legal",
       "cell": "a spawn into the dead holder's tree performs: sequential reuse is legal",
-      "note": "Presence IS the release: nothing else ever unbinds a tree. Measured 2026-09-03: both sequential-reuse cells red — the dead holder's tree and the lapsed adopted holder's tree stay refused — 7 passed, 2 failed."
+      "note": "Presence IS the release: nothing else ever unbinds a tree. Measured 2026-09-03: both sequential-reuse cells red \u2014 the dead holder's tree and the lapsed adopted holder's tree stay refused \u2014 7 passed, 2 failed."
     },
     {
       "name": "a fresh spawn never records its holder",
@@ -41,7 +41,7 @@
       "replace": "      if (false)\n        this.worktreeHolders.set(String(handle.worktree), { name: parseAgentHandle(handle.agent).name, uid: parseAgentHandle(handle.agent).uid });",
       "expectRed": "the second spawn refuses as the effect's own L4008, naming the tree and its holder",
       "cell": "the second spawn refuses as the effect's own L4008, naming the tree and its holder",
-      "note": "With no registration the guard has nothing to refuse over. Measured 2026-09-03: exactly one cell red — the live-holder L4008 — and the adoption block stays green because its holder arrives through the journal reseed, 8 passed, 1 failed. The single red is why W4 exists separately."
+      "note": "With no registration the guard has nothing to refuse over. Measured 2026-09-03: exactly one cell red \u2014 the live-holder L4008 \u2014 and the adoption block stays green because its holder arrives through the journal reseed, 8 passed, 1 failed. The single red is why W4 exists separately."
     },
     {
       "name": "adoption never reseeds the holders, so a resumed run stops enforcing its journal",
@@ -55,11 +55,11 @@
     {
       "name": "the handle loses its worktree, so the journal and the turn client ride bare handles",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    ...(typeof req.worktree === \"string\" ? { worktree: req.worktree } : {}),\n    ...(typeof d.role === \"string\" ? { role: d.role } : {}),",
+      "find": "    ...(typeof ext.worktree === \"string\" ? { worktree: ext.worktree } : {}),\n    ...(typeof d.role === \"string\" ? { role: d.role } : {}),",
       "replace": "    ...(typeof d.role === \"string\" ? { role: d.role } : {}),",
       "expectRed": "the settled handle carries the logical worktree into the journal",
       "cell": "the settled handle carries the logical worktree into the journal",
-      "note": "The spread is what everything downstream reads: registration, the journal record, and the turn client's cross-tree L4004. Measured 2026-09-03: six cells red across four blocks — the journal cell, both spawn-holds cells, the live-holder L4008, the cross-tree L4004 (the yield succeeds instead), and the lapsed-holder reuse cell whose handle comes back bare — 3 passed, 6 failed."
+      "note": "The spread is what everything downstream reads: registration, the journal record, and the turn client's cross-tree L4004. Measured 2026-09-03: six cells red across four blocks \u2014 the journal cell, both spawn-holds cells, the live-holder L4008, the cross-tree L4004 (the yield succeeds instead), and the lapsed-holder reuse cell whose handle comes back bare \u2014 3 passed, 6 failed."
     },
     {
       "name": "a free tree is read but never claimed",

@@ -27,7 +27,7 @@ import { fileURLToPath } from "node:url";
 import { connect } from "@nats-io/transport-node";
 import {
   createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid, standaloneConnectOpts, setupSpaceStreams,
-  DEV_OWNER, epCall, invokeCommand, resolveService, readGoalResult, registry,
+  DEV_OWNER, epCall, invokeCommand, resolveService, readGoalResult, readGoalIndex, registry,
   startTimerWriter,
   type Connector, type EpCaller, type LaunchOpts, type LaunchSpec, type TimerWriterHandle,
 } from "@cotal-ai/core";
@@ -163,6 +163,24 @@ try {
   const late = await invokeCommand(seatNc, space, seatService, "turn-yield", { goalId: g2, status: "done" }, { target: { mode: "self" }, deadlineMs: 10_000 }).then((r) => r.reply, asValue);
   check("a yield after the deadline is told the turn already ended failed; it never records a success over the deny",
     (late as { ok?: boolean }).ok === true && (late as { data?: { state?: string } }).data?.state === "failed", late);
+
+  console.log("\n5. an accept that unwinds after its bind is never re-accepted: the run's retry is told what the goal came to");
+  // The bind is create-only and outlives the unwind (the failed terminal, the cleared index), so a
+  // same-fingerprint retry of an unwound accept lands on `!bound` with no relay pending. Served
+  // from the index it had just re-recorded, that retry was handed a live deadline on a turn no
+  // seat would ever be shown. The unwind is forced here by a deadline past the scheduler's range,
+  // which the hold's mint refuses after the goal is bound.
+  const g3 = "g3".padEnd(43, "c");
+  const beyond = 300_000_000_000_000;
+  const first = await turnOf(g3, beyond).then((r) => r.reply, asValue);
+  const unwound = await resultOf(g3, 15_000);
+  check("the accept unwinds: refused to the caller, with a failed terminal committed on the bound goal",
+    (first as { ok?: boolean }).ok === false && unwound?.state === "failed", { first, unwound });
+  const retry = await turnOf(g3, beyond).then((r) => r.reply, asValue);
+  check("a retry of the unwound accept is refused naming the terminal, never handed a live acceptance",
+    (retry as { ok?: boolean }).ok === false && /already ended failed/.test(String((retry as { error?: { message?: string } }).error?.message)), retry);
+  const leftover = await readGoalIndex(actx, { endpoint: MANAGER_ENDPOINT, caller: runner, goalId: g3 });
+  check("and no index entry remains for the ended goal, so no sweep finds a relay to adopt", leftover === undefined, leftover);
 } finally {
   await seatNc?.drain().catch(() => seatNc?.close());
   await runnerNc?.drain().catch(() => runnerNc?.close());
@@ -173,7 +191,7 @@ try {
   await broker.stop().catch(() => {});
 }
 
-const EXPECTED_CELLS = 10;
+const EXPECTED_CELLS = 13;
 console.log(`\n${fail === 0 && pass === EXPECTED_CELLS ? "TURN RELAY AUTH SMOKE OK ✅" : "TURN RELAY AUTH SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);

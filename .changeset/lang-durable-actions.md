@@ -50,5 +50,8 @@ recorded-but-undischarged cancellations at adoption, so recovery does not wait f
 release a dead loser's seat, pause, or tree. A migration's `--adopt <handle>` hands the orphaned
 seat to the edited program's next spawn of that persona, and `--release <handle>` despawns it at
 commit through the run's own discharge; both name the agent the step spawned, and a spawn that
-produced none is an orphan like a sleep. The delivery daemon hosts the checkpoint timer
-writer, so mediated deadlines fire with no suite pump.
+produced none is an orphan like a sleep; the adopting spawn binds the orphaned spawn's goal as
+its own, so a resume re-reads the seat and a cancellation despawns it. A turn accept the manager
+cannot finish unwinds to a failed terminal on its bound goal, and a retry of it is refused naming
+that terminal. The delivery daemon hosts the checkpoint timer writer, so mediated deadlines fire
+with no suite pump.

@@ -98,6 +98,8 @@ the edited program's next `spawn` of that persona, which returns the recorded ha
 nothing, so the agent keeps its identity, its worktree and its turn history across the edit. A
 released seat (`--release <name>#<uid>`) is despawned when the migration commits, through the same
 discharge a cancelled branch's seat leaves by, so the record never claims a release nothing did.
+The spawn that adopts a seat binds the orphaned spawn's goal as its own, so a resume of that step
+reads the same seat back and a cancellation of it despawns the seat it holds.
 
 **Fork** starts a new run from a named step of an old one, copying the prefix under the parent's
 pins (seed included, so the copied history's pure draws are the same draws). The child is a new run
@@ -219,7 +221,9 @@ dispatches the second when the first settles, and the manager shows a seat the o
 turn alone. On an auth mesh the relay needs no extra grant: every spawned seat's baseline
 credential carries its own pull and yield rows, the run driver's operator instrument carries the
 turn request, and the manager arms the deadline hold over its own serve grant and expires it
-itself once due.
+itself once due. An accept the manager cannot finish is unwound to a failed terminal on the goal
+it bound, and a retry of that submission is refused naming the terminal rather than accepted a
+second time.
 `wait(replied(...))` observes those turns from another branch: a completed turn is a reply, and
 the wait resolves with the observation record (the handle, the yield's status and note, the
 yield's own stamp). It reads as a level, the way `wait(down)` does: a reply that already exists

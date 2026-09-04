@@ -536,8 +536,9 @@ export class MeshHandler {
   /**
    * Release a cancelled spawn's AGENT (§8.6.4): the world half a loser `spawn` leaves behind is a
    * seat the run will never address, so the discharge despawns it. The goal's identity re-derives
-   * from the entry alone — the request id IS the goalId (the pinned envelope id), and the caller
-   * triple is run-stable — so a crash before the acceptance was even bound still finds its goal.
+   * from the entry alone — the request id IS the goalId (the pinned envelope id) unless the entry
+   * bound another (an adopted seat's), and the caller triple is run-stable — so a crash before the
+   * acceptance was even bound still finds its goal.
    *
    * The terminal is what says whether a seat exists. No goal at all: the submission never landed,
    * nothing to release. Accepted but not terminal: the manager owes a terminal within the accepted
@@ -548,7 +549,9 @@ export class MeshHandler {
    * and `cancelled` means a despawn already drove the teardown, so both are already released.
    */
   private async dischargeSpawn(e: JournalEntry): Promise<void> {
-    const goalId = e.requestId as string;
+    // The bound goal when the entry carries one (a spawn a migration handed a seat binds the
+    // ORPHANED spawn's goal, under which its terminal and its seat live); the request id otherwise.
+    const goalId = typeof e.external?.goalId === "string" ? e.external.goalId : e.requestId as string;
     const ref: GoalRef = { endpoint: this.binding.endpoint, caller: this.binding.caller, goalId };
     const actx = await this.actionCtx();
     let fact = await readGoalResult(actx, ref);
@@ -1035,12 +1038,16 @@ export class MeshHandler {
   async spawn(req: SpawnRequest, ctx: EffectContext): Promise<AgentHandleValue> {
     if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
     const goalId = ctx.requestId;
-    const ref: GoalRef = { endpoint: this.binding.endpoint, caller: this.binding.caller, goalId };
 
     // A recorded goalId is a previous attempt's ACCEPTANCE: the submission landed and its
-    // identity was bound before the crash. Go straight back to the terminal.
+    // identity was bound before the crash. Go straight back to the terminal. An entry that says
+    // `adoptedFrom` names the goal the ORPHANED spawn submitted, not this step's own request id:
+    // that goal is the terminal this step reads on every pass, and no pass ever submits one.
+    const recorded = ctx.resume as Readonly<Record<string, unknown>> | undefined;
     let ext: Readonly<Record<string, unknown>> | undefined =
-      ctx.resume?.goalId === goalId ? (ctx.resume as Readonly<Record<string, unknown>>) : undefined;
+      typeof recorded?.goalId === "string" && (recorded.goalId === goalId || typeof recorded.adoptedFrom === "string")
+        ? recorded
+        : undefined;
     // A budget this host cannot meter is refused before anything is submitted: accepting it and
     // enforcing nothing would be the silent no-op the effect table exists to prevent.
     const permits = req.permits !== undefined ? readPermits(req.permits, req.persona) : undefined;
@@ -1050,18 +1057,20 @@ export class MeshHandler {
     // host. Accepting it and restarting nothing is the silent no-op `readPermits` refuses by name.
     if (req.supervise !== undefined)
       throw new Error(`spawn(${req.persona}): supervise is a restart policy this host does not implement, and a policy it cannot enforce is refused rather than ignored`);
-    // A seat a migration kept for this persona: the orphaned step's settled entry is replayed as
-    // this step's own outcome. Its floor is bound under THIS request id, so a resume of this step
-    // re-attaches to the same seat, and the migration's hand-over is spent once.
+    // A seat a migration kept for this persona (§11.2): the orphaned spawn's GOAL becomes this
+    // step's own, bound with that spawn's floor and the step it came from. From here the two kinds
+    // of spawn are one path — the terminal is read under the bound goal, the handle comes from it,
+    // a resume re-reads it, and a discharge despawns by it — so the hand-over is spent exactly
+    // once and this step never mints a second seat for a persona it was handed one for.
     const adopted = ext === undefined ? this.adoptable.get(req.persona)?.shift() : undefined;
     if (adopted !== undefined) {
-      const handle = adopted.result as AgentHandleValue;
+      const handle = adopted.result as AgentHandleValue | undefined;
       const floor = adopted.external as Readonly<Record<string, unknown>> | undefined;
-      if (typeof handle?.agent !== "string")
-        throw new Error(`spawn(${req.persona}): the migrated seat's entry carries no readable handle; a garbled hand-over is refused rather than minted over`);
+      if (typeof handle?.agent !== "string" || typeof adopted.requestId !== "string")
+        throw new Error(`spawn(${req.persona}): the migrated seat's entry carries no readable handle or goal; a garbled hand-over is refused rather than minted over`);
       if (req.worktree !== undefined && handle.worktree !== req.worktree)
         throw new Error(`spawn(${req.persona}) asks for worktree "${req.worktree}" but the seat the migration hands it holds ${handle.worktree === undefined ? "none" : `"${handle.worktree}"`}; an adopted seat keeps its tree, so the edited program names that tree or none`);
-      await ctx.bind({
+      ext = {
         goalId: adopted.requestId,
         ...(floor !== undefined ? pickAcceptanceFloor(floor) : {}),
         ...(handle.worktree !== undefined ? { worktree: handle.worktree } : {}),
@@ -1069,18 +1078,11 @@ export class MeshHandler {
         ...(req.permits !== undefined ? { permits: req.permits } : {}),
         spawnedAt: typeof floor?.spawnedAt === "number" ? floor.spawnedAt : this.now(),
         adoptedFrom: journalEntryKeyString(adopted),
-      });
-      const { name, uid } = parseAgentHandle(handle.agent);
-      this.roster.set(name, {
-        handle, uid,
-        ...(typeof floor?.owner === "string" ? { owner: floor.owner } : {}),
-        ...(typeof floor?.actor === "string" ? { actor: floor.actor } : {}),
-        ...(permits !== undefined ? { permits } : {}),
-        ...(typeof floor?.spawnedAt === "number" ? { spawnedAt: floor.spawnedAt } : {}),
-      });
-      if (typeof handle.worktree === "string") this.worktreeHolders.set(handle.worktree, { name, uid });
-      return handle;
+      };
+      await ctx.bind(ext);
     }
+    // The goal this step reads its terminal under: its own submission, or the adopted spawn's.
+    const ref: GoalRef = { endpoint: this.binding.endpoint, caller: this.binding.caller, goalId: typeof ext?.goalId === "string" ? ext.goalId : goalId };
     if (ext === undefined && req.worktree !== undefined) await this.claimWorktree(req.worktree, req.persona, goalId);
     try {
       if (ext === undefined) {
@@ -1128,7 +1130,7 @@ export class MeshHandler {
       }
 
       const fact = await this.goalTerminal(ref, ctx.signal);
-      const handle = spawnHandleOf(req, fact, this.binding.endpoint);
+      const handle = spawnHandleOf(req, ext, fact, this.binding.endpoint);
       // Register the run-roster entry `turn` addresses and a handoff resolves to. The owner/actor
       // address prefers the bound floor and falls back to the terminal's own recorded identity —
       // the same discipline the discharge uses (see spawnDespawnTarget).
@@ -1144,7 +1146,8 @@ export class MeshHandler {
         this.worktreeHolders.set(handle.worktree, { name: parseAgentHandle(handle.agent).name, uid: parseAgentHandle(handle.agent).uid });
       return handle;
     } catch (e) {
-      if (req.worktree !== undefined) this.releaseWorktree(req.worktree, goalId, ext, e instanceof Cancelled);
+      const tree = typeof ext?.worktree === "string" ? ext.worktree : req.worktree;
+      if (tree !== undefined) this.releaseWorktree(tree, ref.goalId, ext, e instanceof Cancelled);
       throw e;
     }
   }
@@ -2243,9 +2246,11 @@ function spawnDespawnTarget(
  * `failed` and `uncertain` are the manager's readiness verdicts, `cancelled` means a despawn ended
  * the launch under it. Each of them leaves the program with an agent that is not up, which is
  * what L4002 names; each replays identically because the fact is durable. A refusal at accept is
- * a different thing (no agent was ever allocated) and is classed at the accept, in `spawn`.
+ * a different thing (no agent was ever allocated) and is classed at the accept, in `spawn`. The
+ * handle's worktree is the BOUND one: the request's for a spawn this step submitted, the seat's own
+ * for one a migration handed it (an adopted seat keeps its tree whether or not the edit names it).
  */
-function spawnHandleOf(req: SpawnRequest, fact: GoalResultFact, endpoint: string): AgentHandleValue {
+function spawnHandleOf(req: SpawnRequest, ext: Readonly<Record<string, unknown>>, fact: GoalResultFact, endpoint: string): AgentHandleValue {
   if (fact.state !== "succeeded") {
     const d = fact.data as { error?: unknown; reason?: unknown; cancelledBy?: unknown } | undefined;
     const why =
@@ -2261,7 +2266,7 @@ function spawnHandleOf(req: SpawnRequest, fact: GoalResultFact, endpoint: string
   return {
     agent: `${d.name}#${d.lifecycleUid}`,
     persona: req.persona,
-    ...(typeof req.worktree === "string" ? { worktree: req.worktree } : {}),
+    ...(typeof ext.worktree === "string" ? { worktree: ext.worktree } : {}),
     ...(typeof d.role === "string" ? { role: d.role } : {}),
   };
 }

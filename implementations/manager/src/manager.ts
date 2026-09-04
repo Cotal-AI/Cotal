@@ -5946,6 +5946,15 @@ export class Manager {
     const deadlineAt = acceptedAt + deadlineMs;
     const note = JSON.stringify({ payload, deadlineAt, holdEpoch: executor.epoch, owner: t.owner, ...(handoffFrom !== undefined ? { handoffFrom } : {}) } satisfies TurnNote);
 
+    // A goal that already ENDED is never accepted again, whatever the retry carries: the bind is
+    // create-only and outlives an unwind (the failed terminal, the cleared index), so a retry of an
+    // unwound accept would otherwise re-record an index entry over a tombstone and, before that
+    // check existed, be served an acceptance rebuilt from it — a live deadline on a turn no seat
+    // would ever be shown. The terminal is the durable answer, and it is read before anything is
+    // written.
+    const ended = await readGoalResult(gw.ctx, ref);
+    if (ended !== undefined)
+      throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" already ended ${ended.state}; a bound goal is never accepted again (SPEC 13.6)`);
     // Index-CAS-before-bind, exactly as spawn: the entry (floor + note) is the durable relay
     // record a successor rebuilds from, so it must exist before the acceptance is servable.
     const idx = await recordGoalIndex(gw.ctx, ref, executor.lifecycleUid, { name: a.name, actor: t.actor, uid: t.lifecycleUid, readinessDeadlineMs: deadlineMs }, note);
@@ -5955,9 +5964,14 @@ export class Manager {
     if (!b.bound) {
       if (b.existing.fingerprint !== fingerprint)
         throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" is already bound to a different submission; one goalId never carries two specs (SPEC 13.6)`);
-      // Same submission, not in the live map: a predecessor incarnation accepted it (the boot
-      // sweep already adopted its pending relay). Serve the acceptance its index entry records.
-      return this.turnAcceptanceFromIndex(idx.recorded ? await readGoalIndex(gw.ctx, ref) : idx.existing, goalId, fingerprint, executor);
+      // Same submission, bound, not ended, and not in the acceptance map. Every relay this
+      // incarnation holds is in that map (the accept path and the boot sweep both write it), so
+      // this is a goal nobody is relaying: an earlier attempt bound it and could not finish its
+      // unwind, or a predecessor's relay was left unadopted. Nothing here can rebuild a relay a
+      // seat will be shown, so the caller is refused rather than served an acceptance no pending
+      // entry backs; the index entry this attempt recorded is withdrawn with it.
+      if (idx.recorded) await clearGoalIndex(gw.ctx, ref);
+      throw new EpEnvelopeError("unavailable", `goal "${goalId}" is bound but no relay of it is pending on this instance; retry (SPEC 13.6)`);
     }
     try {
       await createGoal(gw.ctx, ref, {
@@ -5995,7 +6009,16 @@ export class Manager {
       const msg = (e as Error)?.message ?? String(e);
       try {
         await this.assertGoalWriterEpochCurrent(executor.epoch);
-        await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "failed", data: { error: msg }, committer: { instanceId: this.managerInstanceId, epoch: executor.epoch } });
+        // The goal is TARGET-PINNED, so its completion proves the seat's currency exactly as the
+        // yield's does (managed-seat epochs are 0 within an incarnation; the resolver answers from
+        // the live agents map). Committed without it, core refused the terminal and the unwind
+        // left a bound goal with no ending for every retry to find.
+        await commitGoalResult(gw.ctx, {
+          ref, now: Date.now(), cause: "complete", state: "failed", data: { error: msg },
+          committer: { instanceId: this.managerInstanceId, epoch: executor.epoch },
+          executor: { lifecycleUid: t.lifecycleUid, epoch: 0 },
+          resolveCurrentEpoch: (target) => this.agents.get(a.name)?.lifecycleUid === target.lifecycleUid ? 0 : null,
+        });
         await clearGoalIndex(gw.ctx, ref);
       } catch (e2) { console.error(`! turn accept unwind for ${goalId}: ${(e2 as Error).message}`); }
       throw e instanceof EpEnvelopeError ? e : new EpEnvelopeError("internal", `turn accept for ${goalId} failed: ${msg}`);
@@ -6013,15 +6036,6 @@ export class Manager {
     this.turnAcceptances.set(goalId, { acceptance });
     this.emitGoalProgress(ref, executor.epoch, { phase: "relayed" });
     return acceptance;
-  }
-
-  /** Rebuild a turn acceptance from its durable index entry (cross-incarnation retry, or a
-   *  bind-loss whose winner is a dead predecessor). Refuses rather than inventing a floor. */
-  private turnAcceptanceFromIndex(entry: GoalIndexEntry | undefined, goalId: string, fingerprint: string, executor: { lifecycleUid: string; epoch: number }): TurnAcceptance {
-    const parsed = entry?.note !== undefined ? parseTurnNote(entry.note) : undefined;
-    if (entry?.allocated === undefined || parsed === undefined)
-      throw new EpEnvelopeError("unavailable", `goal "${goalId}" is already accepted but its relay record is not readable (no acceptance floor, or a garbled note); retry (SPEC 13.6)`);
-    return { name: entry.allocated.name, owner: parsed.owner, actor: entry.allocated.actor, uid: entry.allocated.uid, goalId, fingerprint, deadlineAt: parsed.deadlineAt, executor };
   }
 
   /** The seat's pull: every pending turn addressed to the CALLER's incarnation, oldest first.

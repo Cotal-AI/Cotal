@@ -1014,6 +1014,16 @@
       "completionMarker": "ok a handler's EffectError crosses the bridge and the thread with its code and kind intact, matching the walker's own raise",
       "cell": "a race loser parked inside the HOST handler hears its cancellation cross the bridge, between its enter and its return",
       "note": "Promoted from unkillable 2026-08-20: the recorded dead-code probe was FALSE - its fixture never parked the loser during the win, so the zero was the fixture's. With a real park (the graded cell holds the slow arm open until its own cancellation arrives), perform.ts's onSettle fires the in-flight frame's signal on BOTH engines, and this swallow survived every suite until the cell existed. The mutant keeps the wire kind and the branch intact on purpose, so the BRIDGE_KINDS source-text audit cannot see it and only behavior can."
+    },
+    {
+      "name": "a stated breach is given the wrapped ReferenceError's diagnosis",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "        ? `the engine broke its own contract: ${breach}. It is not the program's error and is not converted into one.`",
+      "replace": "        ? `the engine broke its own contract: ${breach}. The emitted module has zero free identifiers, so this can only be a binding the transform did not classify as a cell, or an emitter temporary read before it was bound. It is not the program's error and is not converted into one.`",
+      "expectRed": "a stated breach carries no ReferenceError diagnosis and wraps no cause",
+      "completionMarker": "ok and the refusal says what the order costs",
+      "cell": "a stated breach carries no ReferenceError diagnosis and wraps no cause",
+      "note": "The constructor once appended the ReferenceError sentence to every cause it was handed, and four seam-detected breaches then told the maintainer to look at the transform's TDZ classifier for a scope body handed over evaluated. The diagnosis rides the wrapping path only."
     }
   ],
   "unkillable": []

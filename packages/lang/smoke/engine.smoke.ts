@@ -914,6 +914,12 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
   const e = await caught(() => h.inFrame(() => h.ctx.effect("fanOut", [[], 5, h.ctx.born({ name: "f" })])));
   ok("a scope body handed over already evaluated is refused as the emitter breaking the seam's contract", e instanceof EngineFault && (e as Error).message.includes("UNEVALUATED"), String(e));
   ok("and the refusal says what the order costs", (e as Error).message.includes("journalled its effects in the wrong place"), String(e).slice(0, 200));
+  // A breach the seam STATES carries its own diagnosis and nothing else. The ReferenceError sentence
+  // (zero free identifiers, the transform's classifier, an emitter temporary) is true of a wrapped
+  // ReferenceError and of nothing here; appended to this refusal it sent the reader to the wrong
+  // half of the compiler, and a stated breach wraps no native error to hang a cause on.
+  ok("a stated breach carries no ReferenceError diagnosis and wraps no cause",
+    !(e as Error).message.includes("zero free identifiers") && (e as EngineFault).cause === undefined, String(e).slice(0, 300));
   // The entry HAS begun by then, and settles failed: the refusal happens inside the scope, which is
   // exactly where the walker evaluates that argument.
   const entries = h.run.journal.entries();
