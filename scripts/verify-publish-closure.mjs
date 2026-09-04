@@ -35,9 +35,10 @@
  * a slow registry.
  *
  * Usage:  node scripts/verify-publish-closure.mjs <version> [--json]
- * Exit:   0 PUBLISHED (whole closure live) or NONE (nothing published — an ordinary version-PR push)
- *         1 PARTIAL (some of the group live and some not, stable past the window) — the dangerous case
- *         2 UNSETTLED (still shrinking, or deadline reached without settling)
+ * Exit:   0 PUBLISHED  — the whole closure is live; a Release may be cut
+ *         1 PARTIAL    — some of the group live and some not. The dangerous case; do NOT cut
+ *         2 UNSETTLED  — still moving, or the deadline passed. Cannot tell; skip rather than guess
+ *         3 NONE       — nothing published at all (an ordinary version-PR push). Skip, not a failure
  */
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -194,7 +195,10 @@ export async function verifyClosure(version, {
   }
 }
 
-const EXIT = { published: 0, none: 0, partial: 1, unsettled: 2 };
+// NONE gets its own code rather than sharing 0 with PUBLISHED: the caller must cut a Release for
+// one and skip for the other, so collapsing them would cut a Release for a version that published
+// nothing -- the phantom-Release bug this gate exists to prevent, reintroduced at the exit code.
+const EXIT = { published: 0, partial: 1, unsettled: 2, none: 3 };
 
 async function main(argv) {
   const version = argv.find((a) => !a.startsWith("--"));

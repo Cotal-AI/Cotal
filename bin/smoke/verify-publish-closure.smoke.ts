@@ -211,8 +211,8 @@ check(
 
 const nothingPublished = shipped(closure, fast);
 check(
-  "the shipped command exits 0 on a version nothing serves — an ordinary version-PR push, not a failure",
-  nothingPublished.status === 0 && nothingPublished.stdout.includes("nothing published"),
+  "the shipped command exits 3 (not 0) on a version nothing serves, so the caller skips instead of cutting a Release",
+  nothingPublished.status === 3 && nothingPublished.stdout.includes("nothing published"),
   `${nothingPublished.stdout}${nothingPublished.stderr}`,
 );
 
