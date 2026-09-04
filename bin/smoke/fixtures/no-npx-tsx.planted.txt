@@ -1,0 +1,3 @@
+# Planted positive control for bin/smoke/no-npx-tsx.smoke.ts. This is the BANNED form, kept here on
+# purpose so the guard can prove its regex sees it. Never copy this into a suite.
+    const child = spawn("npx", ["tsx", BIN, ...args], options);
