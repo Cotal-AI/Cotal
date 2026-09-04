@@ -42,6 +42,7 @@ import { putSpaceAuth, saveManagerInstanceIdentity, workspaceSecretStore } from 
 import { executePrincipalLiveness } from "../../delivery/src/evict-exec.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
 
 // ---------------------------------------------------------------------------
 // FIRST ACTION: this drives a command that revokes credentials and evicts connections. Refuse the
@@ -220,7 +221,7 @@ try {
     writeFileSync(targetDeliveryCreds, await mintCreds(auth, newIdentity(), "delivery"));
 
     let poisonLog = "";
-    poisonDaemon = spawn("npx", ["tsx", join(REPO, "bin", "cotal.ts"), "deliver", "--space", space, "--server", SERVERS, "--creds", targetDeliveryCreds], {
+    poisonDaemon = spawn(TSX, [join(REPO, "bin", "cotal.ts"), "deliver", "--space", space, "--server", SERVERS, "--creds", targetDeliveryCreds], {
       cwd: FOREIGN_ROOT, stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, COTAL_SERVER: "", COTAL_SERVERS: "", COTAL_CREDS: "", NATS_URL: "" },
     });
@@ -234,7 +235,7 @@ try {
     check("POISONED LEASE: account A with account B root exits before holding lease.0",
       poisonExited && poisonLog.includes(auth.account.pub) && poisonLog.includes(foreignAuth.account.pub), poisonLog.slice(-1200));
 
-    daemon = spawn("npx", ["tsx", join(REPO, "bin", "cotal.ts"), "deliver", "--space", space, "--server", SERVERS, "--dev-mint"], {
+    daemon = spawn(TSX, [join(REPO, "bin", "cotal.ts"), "deliver", "--space", space, "--server", SERVERS, "--dev-mint"], {
       cwd: ROOT, stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, COTAL_SERVER: "", COTAL_SERVERS: "", COTAL_CREDS: "", NATS_URL: "" },
     });
@@ -247,7 +248,7 @@ try {
     if (!ready) {
       if (poisonDaemon.exitCode === null && poisonDaemon.signalCode === null) { poisonDaemon.kill("SIGKILL"); await awaitExit(poisonDaemon); }
       await wait(35_000);
-      daemon = spawn("npx", ["tsx", join(REPO, "bin", "cotal.ts"), "deliver", "--space", space, "--server", SERVERS, "--dev-mint"], {
+      daemon = spawn(TSX, [join(REPO, "bin", "cotal.ts"), "deliver", "--space", space, "--server", SERVERS, "--dev-mint"], {
         cwd: ROOT, stdio: ["ignore", "pipe", "pipe"],
         env: { ...process.env, COTAL_SERVER: "", COTAL_SERVERS: "", COTAL_CREDS: "", NATS_URL: "" },
       });

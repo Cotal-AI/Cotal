@@ -74,6 +74,7 @@ import { attachRefusal, heldSessionNotice, reconnectNotice } from "../../cli/src
 import { isTransportEnd } from "../../cli/src/lib/attach-client.js"; // dev-only cross-impl smoke import
 import { Manager } from "../src/manager.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
@@ -232,7 +233,7 @@ type Attached = {
   kill: () => void;
 };
 function attachUnderPty(root: string, extra: string[] = [], seat: string = SEAT): Attached {
-  const child = pty.spawn("npx", ["tsx", BIN, "attach", "--name", seat, "--space", space, "--server", PROXY, ...extra], {
+  const child = pty.spawn(TSX, [BIN, "attach", "--name", seat, "--space", space, "--server", PROXY, ...extra], {
     name: "xterm-256color", cols: 100, rows: 30, cwd: root,
     env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" } as Record<string, string>,
   });
@@ -262,7 +263,7 @@ function attachUnderPty(root: string, extra: string[] = [], seat: string = SEAT)
 /** A plain (non-terminal) `cotal` run, for the control-plane commands this suite drives itself. */
 const cotal = (args: string[], cwd: string, timeoutMs = 90_000): Promise<{ status: number | null; out: string }> =>
   new Promise((res) => {
-    const child = spawn("npx", ["tsx", BIN, ...args], {
+    const child = spawn(TSX, [BIN, ...args], {
       cwd, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" },
       stdio: ["ignore", "pipe", "pipe"],
     });

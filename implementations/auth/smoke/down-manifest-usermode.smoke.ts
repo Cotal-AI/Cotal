@@ -37,6 +37,7 @@ import { deviceAuthorization } from "better-auth/plugins/device-authorization";
 import { bearer } from "better-auth/plugins/bearer";
 import { toNodeHandler } from "better-auth/node";
 import { pickFreePort } from "./_free-port.js";
+const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
 
 const home = mkdtempSync(join(tmpdir(), "cotal-downf-home-"));
 const configDir = join(home, "xdg");
@@ -67,7 +68,7 @@ function cotal(args: string[], opts: { timeoutMs?: number } = {}): Promise<{ sta
   return new Promise((resolvePromise) => {
     const options = { cwd: root, env: childEnv };
     assertSmokeSandboxDown(sandbox, args, options);
-    const child = spawn("npx", ["tsx", BIN, ...args], options);
+    const child = spawn(TSX, [BIN, ...args], options);
     let out = "";
     child.stdout.on("data", (d: Buffer) => { out += d.toString(); });
     child.stderr.on("data", (d: Buffer) => { out += d.toString(); });
@@ -177,7 +178,7 @@ agents:
   // blocks a replacement's acquire — wait it out first, like the real recovery did.
   await wait(13_000);
   let superviseOut = "";
-  superviseChild = spawn("npx", ["tsx", BIN, "supervise", "--space", SPACE, "--server", SERVER], {
+  superviseChild = spawn(TSX, [BIN, "supervise", "--space", SPACE, "--server", SERVER], {
     cwd: root, env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
   superviseChild.stdout!.on("data", (d: Buffer) => { superviseOut += d.toString(); });
   superviseChild.stderr!.on("data", (d: Buffer) => { superviseOut += d.toString(); });
@@ -240,7 +241,7 @@ agents:
   rmSync(worker2Tok);
   symlinkSync(join(root, "decoy"), worker2Tok);
   await wait(13_000); // the crashed holder's lease again lingers to the bucket TTL
-  superviseChild = spawn("npx", ["tsx", BIN, "supervise", "--space", SPACE, "--server", SERVER], {
+  superviseChild = spawn(TSX, [BIN, "supervise", "--space", SPACE, "--server", SERVER], {
     cwd: root, env: childEnv, stdio: "ignore" });
   let psOk2 = false;
   for (let i = 0; i < 60 && !psOk2; i++) {

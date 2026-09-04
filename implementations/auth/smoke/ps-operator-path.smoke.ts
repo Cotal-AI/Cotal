@@ -23,6 +23,7 @@ import { join } from "node:path";
 import { pickFreePort } from "./_free-port.js";
 import { assertScratchHeld, foreignRootFor, killManagerAtRoot, makeScratch } from "../../../bin/smoke/_scratch.js";
 import { assertSmokeSandboxDown, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
 
 // Same temp-root sandbox as the user-mode sibling, and for the same reason: `findCotalRoot` walks to
 // `/` unbounded, so a `.cotal` above `tmpdir()` sends this fixture's `manager.pid` into that
@@ -82,7 +83,7 @@ function cotal(args: string[], timeoutMs = 120_000): Promise<Run> {
   return new Promise((res) => {
     const options = { cwd: root, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir }, stdio: ["ignore", "pipe", "pipe"] as const };
     assertSmokeSandboxDown(sandbox, args, options);
-    const child = spawn("npx", ["tsx", BIN, ...args], options);
+    const child = spawn(TSX, [BIN, ...args], options);
     let out = "";
     let timedOut = false;
     let settled = false;
