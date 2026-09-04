@@ -4,7 +4,15 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { captureProcessIdentity, processHasLaunchIdentityForTest, readLaunchRecord, recordLaunch, stopOrphanedTree } from "../src/private-lifecycle.js";
+import {
+  captureProcessIdentity,
+  processHasLaunchIdentityForTest,
+  readLaunchRecord,
+  recordLaunch,
+  stopOrphanedTree,
+  stopPrivateTree,
+  type ProcessIdentityProbe,
+} from "../src/private-lifecycle.js";
 
 const operationalFailure = Object.assign(new Error("ps policy denied"), { status: 1 });
 
@@ -19,6 +27,106 @@ assert.throws(
   (error) => error === operationalFailure,
   "a status-1 ps failure for a PID independently proven present must stay loud",
 );
+
+const stopped = async (child: ChildProcess, timeoutMs = 5_000): Promise<boolean> => {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      process.kill(child.pid!, 0);
+    } catch {
+      return true;
+    }
+    if (Date.now() > deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+};
+
+// #1179. Drive the ownership decision through a proof source instead of racing a real process's
+// dying /proc environ. The bridge stays genuinely alive with the same immutable start token while
+// the injected answer selects each state of the proof.
+if (process.platform === "linux") {
+  const root = mkdtempSync(join(tmpdir(), "cotal-jcode-identity-proof-"));
+  const identity = `smoke-${randomBytes(12).toString("base64url")}`;
+  const started: ChildProcess[] = [];
+  const bridge = (): ChildProcess => {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], { stdio: "ignore" });
+    started.push(child);
+    return child;
+  };
+  const proof = (readEnviron: ProcessIdentityProbe["readEnviron"]): ProcessIdentityProbe => ({
+    readEnviron,
+    ps: () => "",
+    pidExists: () => true,
+  });
+  const check = (name: string): void => console.log(`  ✓ ${name}`);
+
+  try {
+    const broken = bridge();
+    const brokenLaunch = captureProcessIdentity(broken.pid!);
+    const refusal = `jcode connector: spawned Jcode bridge ${broken.pid} does not carry its launch-bound identity — refusing unsafe teardown`;
+    await assert.rejects(
+      stopPrivateTree({
+        jcodeHome: root,
+        launch: brokenLaunch,
+        identityValue: identity,
+        settleMs: 0,
+        identityProbe: proof(() => "PATH=/usr/bin\0"),
+      }),
+      (error: Error) => error.message === refusal,
+      "broken wiring: readable environ without the launch identity refuses with the exact sentence",
+    );
+    assert.equal(await stopped(broken, 0), false, "the broken-wiring refusal must not signal the unowned bridge");
+    check("broken wiring: readable environ without the launch identity refuses with the exact sentence");
+
+    const owned = bridge();
+    const ownedLaunch = captureProcessIdentity(owned.pid!);
+    await assert.doesNotReject(
+      stopPrivateTree({
+        jcodeHome: root,
+        launch: ownedLaunch,
+        identityValue: identity,
+        settleMs: 0,
+        identityProbe: proof((pid) => pid === owned.pid ? `JCODE_COTAL_LAUNCH_IDENTITY=${identity}\0` : "PATH=/usr/bin\0"),
+      }),
+      "happy path: readable environ with the launch identity is owned, signalled, and settles",
+    );
+    assert.ok(await stopped(owned), "the owned bridge must be gone when teardown returns");
+    check("happy path: readable environ with the launch identity is owned, signalled, and settles");
+
+    const unprovable: Array<[string, ProcessIdentityProbe["readEnviron"]]> = [
+      ["empty environ", () => ""],
+      ...(["ENOENT", "ESRCH", "EACCES", "EPERM"] as const).map((code): [string, ProcessIdentityProbe["readEnviron"]] => [
+        code,
+        () => { throw Object.assign(new Error("environ unavailable during exit"), { code }); },
+      ]),
+    ];
+    for (const [source, readEnviron] of unprovable) {
+      const exiting = bridge();
+      const exitingLaunch = captureProcessIdentity(exiting.pid!);
+      await assert.doesNotReject(
+        stopPrivateTree({
+          jcodeHome: root,
+          launch: exitingLaunch,
+          identityValue: identity,
+          settleMs: 0,
+          identityProbe: proof(readEnviron),
+        }),
+        `exit window: an unprovable launch identity does not refuse and teardown returns (${source})`,
+      );
+      assert.ok(await stopped(exiting), `the exiting bridge must be gone when teardown returns (${source})`);
+    }
+    check("exit window: an unprovable launch identity does not refuse and teardown returns");
+  } finally {
+    for (const child of started) {
+      try {
+        process.kill(child.pid!, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+}
 
 // #1211. A seat killed without its connector's teardown leaves its Jcode server alive: the server
 // setsids into a group of its own and carries no COTAL_NAME, so neither the manager's signal nor a
@@ -103,4 +211,4 @@ if (process.platform !== "win32") {
   }
 }
 
-console.log("PRIVATE LIFECYCLE SMOKE PASSED (status-1 failure for live PID stays loud; a dead lifecycle's Jcode tree is adopted, a live seat's is not)");
+console.log("PRIVATE LIFECYCLE SMOKE PASSED (launch identity has owned, missing, and unprovable states; status-1 ps failure stays loud; only a dead lifecycle's Jcode tree is adopted)");
