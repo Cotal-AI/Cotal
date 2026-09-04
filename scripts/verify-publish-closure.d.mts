@@ -31,8 +31,9 @@ export function versionUrl(base: any, pkg: any, version: any): string;
  * Classify one reading. Split out from the polling so the decision can be exercised directly:
  * the thing worth testing is the rule, not the sleeping.
  */
-export function classify({ missing, total, unchangedForMs, elapsedMs }: {
+export function classify({ missing, errored, total, unchangedForMs, elapsedMs }: {
     missing: any;
+    errored?: any[];
     total: any;
     unchangedForMs: any;
     elapsedMs: any;
@@ -43,16 +44,29 @@ export function classify({ missing, total, unchangedForMs, elapsedMs }: {
     deadlineMs: number;
 }): {
     state: string;
+    missing: any;
+    errored: any[];
+    why: string;
+} | {
+    state: string;
+    missing: any;
+    errored: any[];
+    why?: undefined;
+} | {
+    state: string;
     missing?: undefined;
+    errored?: undefined;
     why?: undefined;
 } | {
     state: string;
     missing: any;
+    errored?: undefined;
     why?: undefined;
 } | {
     state: string;
     missing: any;
     why: string;
+    errored?: undefined;
 };
 /**
  * Poll the closure until it settles. `packages` has no default on purpose -- there is no sensible
@@ -79,32 +93,62 @@ export function verifyClosure(version: string, { packages, opts, fetchImpl, slee
     reads: {
         published: number;
         missing: any[];
-        elapsedMs: number;
-    }[];
-    packages: number;
-    state: string;
-    missing?: undefined;
-    why?: undefined;
-} | {
-    reads: {
-        published: number;
-        missing: any[];
+        errored: any[];
         elapsedMs: number;
     }[];
     packages: number;
     state: string;
     missing: any;
+    errored: any[];
+    why: string;
+} | {
+    reads: {
+        published: number;
+        missing: any[];
+        errored: any[];
+        elapsedMs: number;
+    }[];
+    packages: number;
+    state: string;
+    missing: any;
+    errored: any[];
     why?: undefined;
 } | {
     reads: {
         published: number;
         missing: any[];
+        errored: any[];
+        elapsedMs: number;
+    }[];
+    packages: number;
+    state: string;
+    missing?: undefined;
+    errored?: undefined;
+    why?: undefined;
+} | {
+    reads: {
+        published: number;
+        missing: any[];
+        errored: any[];
+        elapsedMs: number;
+    }[];
+    packages: number;
+    state: string;
+    missing: any;
+    errored?: undefined;
+    why?: undefined;
+} | {
+    reads: {
+        published: number;
+        missing: any[];
+        errored: any[];
         elapsedMs: number;
     }[];
     packages: number;
     state: string;
     missing: any;
     why: string;
+    errored?: undefined;
 }>;
 export namespace DEFAULTS {
     let registryBase: string;

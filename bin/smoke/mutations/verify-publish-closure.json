@@ -78,6 +78,22 @@
       "replace": "  for (const key of Object.keys(env)) if (key.startsWith(\"COTAL_NEVER_MATCHES_\")) delete env[key];",
       "expectRed": "no COTAL_ variable reaches the spawned child, even when one is set in this process",
       "cell": "no COTAL_ variable reaches the spawned child, even when one is set in this process"
+    },
+    {
+      "name": "transport errors are merged back into the missing set, so an outage reads as absence",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "      errored.push(pkg);\n      continue;",
+      "replace": "      missing.push(pkg);\n      continue;",
+      "expectRed": "a total registry outage is UNSETTLED, never NONE — an unreachable registry is not an absent package",
+      "cell": "a total registry outage is UNSETTLED, never NONE — an unreachable registry is not an absent package"
+    },
+    {
+      "name": "an unclean scan is allowed to reach a decisive verdict again",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "  const clean = errored.length === 0;",
+      "replace": "  const clean = true;",
+      "expectRed": "an errored scan cannot be PUBLISHED even when every reachable package is live",
+      "cell": "an errored scan cannot be PUBLISHED even when every reachable package is live"
     }
   ]
 }

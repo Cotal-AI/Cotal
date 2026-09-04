@@ -52,7 +52,10 @@ export const DEFAULTS = {
   // A missing set must hold UNCHANGED for at least this long before it counts as a real partial
   // publish. Must exceed the observed propagation window (~2 min) with margin; see the header.
   stableWindowMs: 300_000,
-  deadlineMs: 900_000,
+  // 10 minutes, not 15: the release job runs under `timeout-minutes: 15`, so a deadline equal to
+  // the job's own budget means the UNSETTLED path loses to the Actions timeout and reds the job
+  // instead of reporting that it cannot tell. Leave the gate room to finish and say so.
+  deadlineMs: 600_000,
 };
 
 /**
@@ -78,6 +81,11 @@ export function parseOptions(argv, base = DEFAULTS) {
       if (!Number.isFinite(value) || value < 0) throw new Error(`${flag} needs a non-negative number`);
       opts[numeric[flag]] = value;
     }
+  }
+  if (opts.deadlineMs < opts.stableWindowMs) {
+    // Otherwise the deadline fires first every time and PARTIAL is unreachable: the gate could
+    // never raise the one verdict it exists to raise.
+    throw new Error("--deadline-ms must be at least --stable-window-ms");
   }
   if (opts.stableWindowMs < opts.pollIntervalMs) {
     // Otherwise a single read satisfies the window and the gate is back to one sample: several reads
@@ -119,7 +127,15 @@ export function versionUrl(base, pkg, version) {
  * Classify one reading. Split out from the polling so the decision can be exercised directly:
  * the thing worth testing is the rule, not the sleeping.
  */
-export function classify({ missing, total, unchangedForMs, elapsedMs }, opts = DEFAULTS) {
+export function classify({ missing, errored = [], total, unchangedForMs, elapsedMs }, opts = DEFAULTS) {
+  // A scan carrying transport errors is not an observation of the closure, so it can never settle
+  // into `published`, `none` or `partial` -- the three verdicts that decide whether a Release is cut
+  // or a failure is raised. It can only keep polling, or time out as "cannot tell".
+  const clean = errored.length === 0;
+  if (!clean) {
+    if (elapsedMs >= opts.deadlineMs) return { state: "unsettled", missing, errored, why: "transport" };
+    return { state: "polling", missing, errored };
+  }
   if (missing.length === 0) return { state: "published" };
   if (unchangedForMs >= opts.stableWindowMs) {
     // NOTHING published is not a partial publish. A version-PR push runs this job and publishes no
@@ -135,20 +151,23 @@ export function classify({ missing, total, unchangedForMs, elapsedMs }, opts = D
 
 async function readClosure(packages, version, opts, fetchImpl) {
   const missing = [];
+  const errored = [];
   for (const pkg of packages) {
-    let ok = false;
+    let status;
     try {
       const res = await fetchImpl(versionUrl(opts.registryBase, pkg, version), { method: "GET" });
-      ok = res.status === 200;
+      status = res.status;
     } catch {
-      // A transport error is NOT evidence the package is absent; treat it as "not seen yet" so a
-      // network blip reads as lag rather than as a partial publish. It cannot mask a real failure:
-      // a package that never appears keeps the set non-empty and trips the stable window anyway.
-      ok = false;
+      // A transport error is NOT evidence about the package. Merging it into `missing` was a real
+      // defect: an unreachable registry made a genuine partial publish look like `none` (whole
+      // closure absent) and a flapping one made it look like `unsettled`, both of which the caller
+      // treats as a quiet skip. An error is its own state, never an absence.
+      errored.push(pkg);
+      continue;
     }
-    if (!ok) missing.push(pkg);
+    if (status !== 200) missing.push(pkg);
   }
-  return missing;
+  return { missing, errored };
 }
 
 /**
@@ -179,17 +198,24 @@ export async function verifyClosure(version, {
   const reads = [];
 
   for (;;) {
-    const missing = await readClosure(packages, version, opts, fetchImpl);
-    const key = missing.join(" ");
-    if (previous === null || key !== previous) unchangedSince = now();
-    previous = key;
+    const { missing, errored } = await readClosure(packages, version, opts, fetchImpl);
+    if (errored.length > 0) {
+      // No continuous observation across an error, so the stability window restarts rather than
+      // counting the outage as though the set had held.
+      previous = null;
+      unchangedSince = now();
+    } else {
+      const key = missing.join(" ");
+      if (previous === null || key !== previous) unchangedSince = now();
+      previous = key;
+    }
 
     const elapsedMs = now() - started;
     const unchangedForMs = now() - unchangedSince;
-    reads.push({ published: packages.length - missing.length, missing: [...missing], elapsedMs });
-    log(`  published=${packages.length - missing.length}/${packages.length} missing=[${key}] unchanged_for=${Math.round(unchangedForMs / 1000)}s`);
+    reads.push({ published: packages.length - missing.length, missing: [...missing], errored: [...errored], elapsedMs });
+    log(`  published=${packages.length - missing.length}/${packages.length} missing=[${missing.join(" ")}] errored=[${errored.join(" ")}] unchanged_for=${Math.round(unchangedForMs / 1000)}s`);
 
-    const verdict = classify({ missing, total: packages.length, unchangedForMs, elapsedMs }, opts);
+    const verdict = classify({ missing, errored, total: packages.length, unchangedForMs, elapsedMs }, opts);
     if (verdict.state !== "polling") return { ...verdict, reads, packages: packages.length };
     await sleep(opts.pollIntervalMs);
   }

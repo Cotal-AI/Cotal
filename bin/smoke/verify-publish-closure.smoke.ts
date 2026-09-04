@@ -153,9 +153,64 @@ check(
   stalled,
 );
 
+// ---------------------------------------------------------------- transport errors are not absences
+// A registry that cannot be reached says NOTHING about whether a package is published. Merging a
+// throw into the missing set let a genuine partial publish present as `none` (whole closure absent)
+// or, when the errors flapped, as `unsettled` — both of which the caller treats as a quiet skip.
+const alwaysThrows = (async () => { throw new Error("ENOTFOUND registry.npmjs.org"); }) as unknown as typeof fetch;
+const outage = await verifyClosure("9.9.9", {
+  packages: ["a", "b", "c", "d"],
+  opts: { ...DEFAULTS, pollIntervalMs: 0, stableWindowMs: 5_000, deadlineMs: 20_000 },
+  fetchImpl: alwaysThrows,
+  ...fastClock(),
+});
+check(
+  "a total registry outage is UNSETTLED, never NONE — an unreachable registry is not an absent package",
+  outage.state === "unsettled",
+  outage,
+);
+
+// A real partial (d always 404) with transport errors flapping on a live sibling must not settle
+// into a decisive verdict off an unclean scan.
+let oscScan = 0, oscSeen = 0;
+const flapping = (async (url: string | URL | Request) => {
+  const pkg = ["a", "b", "c", "d"].find((p) => String(url).endsWith(`/${p}/9.9.9`))!;
+  if (++oscSeen % 4 === 0) oscScan++;
+  if (pkg === "d") return { status: 404 } as Response;
+  if (pkg === "a" && oscScan % 2 === 1) throw new Error("ECONNRESET");
+  return { status: 200 } as Response;
+}) as unknown as typeof fetch;
+const flapped = await verifyClosure("9.9.9", {
+  packages: ["a", "b", "c", "d"],
+  opts: { ...DEFAULTS, pollIntervalMs: 0, stableWindowMs: 5_000, deadlineMs: 20_000 },
+  fetchImpl: flapping,
+  ...fastClock(),
+});
+check(
+  "a real partial behind flapping transport never reports NONE or PUBLISHED",
+  flapped.state !== "none" && flapped.state !== "published",
+  flapped,
+);
+check(
+  "an errored scan cannot be PUBLISHED even when every reachable package is live",
+  classify({ missing: [], errored: ["a"], total: 4, unchangedForMs: DEFAULTS.stableWindowMs, elapsedMs: 0 }).state !== "published",
+);
+check(
+  "an errored scan held past the window is not PARTIAL — errors are not evidence of absence",
+  classify({ missing: ["d"], errored: ["a"], total: 4, unchangedForMs: DEFAULTS.stableWindowMs, elapsedMs: 0 }).state !== "partial",
+);
+check(
+  "a CLEAN scan still settles normally once the errors stop",
+  classify({ missing: ["d"], errored: [], total: 4, unchangedForMs: DEFAULTS.stableWindowMs, elapsedMs: 0 }).state === "partial",
+);
+
 // ---------------------------------------------------------------- operator knobs
 check("--registry overrides the base and strips a trailing slash", parseOptions(["--registry=http://x/"]).registryBase === "http://x");
 check("--stable-window-ms is parsed", parseOptions(["--stable-window-ms=42000"]).stableWindowMs === 42_000);
+let deadlineGuard = false;
+try { parseOptions(["--stable-window-ms=600000", "--deadline-ms=300000"]); } catch { deadlineGuard = true; }
+check("a deadline narrower than the stability window is refused (it makes PARTIAL unreachable)", deadlineGuard);
+check("the default deadline fits inside the release job's 15min budget", DEFAULTS.deadlineMs < 15 * 60_000, DEFAULTS.deadlineMs);
 let guarded = false;
 try { parseOptions(["--poll-interval-ms=60000", "--stable-window-ms=1000"]); } catch { guarded = true; }
 check("a stability window narrower than the poll interval is refused (it would re-admit one sample)", guarded);
@@ -245,7 +300,7 @@ check(
   committedDts === emitDeclaration(),
 );
 
-const EXPECTED = 33;
+const EXPECTED = 40;
 check(`every cell ran (${EXPECTED} before sentinel)`, passed + failed === EXPECTED, passed + failed);
 console.log(`VERIFY PUBLISH CLOSURE SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 console.log("SUITE COMPLETE");
