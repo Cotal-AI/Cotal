@@ -148,6 +148,7 @@ for (const name of CONNECTORS) {
   assert.equal(config.servers, SERVERS, `A3: ${name} session parses a different broker than the launch named`);
   const credsSource = config.creds;
   assert.equal(typeof credsSource, "function", `A3: ${name} session did not preserve its managed credential as a source`);
+  if (typeof credsSource !== "function") throw new Error(`A3: ${name} session has no managed credential source`);
   assert.equal(await credsSource(), readFileSync(credsPath, "utf8"), `A3: ${name} session cannot read its credential`);
   assert.equal(config.name, "seat-1", `A3: ${name} session lost its identity`);
   // The control token round-trips to the exact value buildLaunch handed the manager. The hermes
