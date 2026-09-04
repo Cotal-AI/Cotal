@@ -1,0 +1,49 @@
+{
+  "suite": "packages/core/smoke/failed-bind-cleanup.smoke.ts",
+  "guard": "closeFailedBind's layered fallback (drain, then transport.close/disconnect) must actually run when nc.close() throws, so the broker's /varz.connections returns to 0 after a bind failure whose close leg rejects",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:failed-bind-cleanup",
+  "completionMarker": "failed bind cleanup smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/failed-bind-cleanup.json",
+  "why": [
+    "SPECIFIER BOUNDARY, and it is the reason the command builds core first. The suite imports",
+    "CotalEndpoint from ../src/index.js. Under tsx that resolves through the workspace tsconfig",
+    "to source, so a mutation on packages/core/src/endpoint.ts is what the run sees. But the",
+    "smoke-kit peer import above resolves through pnpm's exports at @cotal-ai/core, which points",
+    "at dist/. Building core first pins both resolutions at the same source. afterRestore",
+    "rebuilds so dist/ does not stay compiled from the mutant when the next graded suite runs.",
+    "",
+    "THE MUTATION IS THE PRE-REPAIR CODE, restored verbatim rather than approximated. Before the",
+    "fix, closeFailedBind swallowed a throwing close() with a bare catch and had no fallback.",
+    "The reviewer measured that state at head 52458e78e and printed after: 1 on the CLOSE-THROWS",
+    "probe. This mutation reproduces that state by replacing the whole layered teardown (fast",
+    "path, drain layer, transport-destroy layer) with the original swallow-only catch. The",
+    "multi-line find is deliberate: a single-line anchor on the fast-path catch alone would leave",
+    "TypeScript's flow analysis reading the drain and transport-destroy blocks as reachable after",
+    "an always-returning try/catch, and the build would refuse the mutant on unrelated narrowing",
+    "errors before the suite could grade anything. The tool would then report died-before-grading",
+    "and the mutation would be a lie about the invariant. Removing the whole fallback avoids that.",
+    "",
+    "The CLOSE-THROWS cell must kill it. The probe injects a throwing close on the LIVE nc, so",
+    "the pre-repair catch swallows and returns without any drain or transport-destroy, and the",
+    "broker's /varz.connections stays at 1 after the failed attempt.",
+    "",
+    "WHAT THIS PROVES AND WHAT IT DOES NOT. It proves the CLOSE-THROWS cell REACHES the fallback",
+    "and depends on it running to bring the socket down. It does not prove the fallback's",
+    "individual layers (drain first, then transport.close, then transport.disconnect) are each",
+    "necessary. A mutation aimed at each layer in isolation is a coverage question, not a bug",
+    "question: nats.js chooses which layer resolves first at runtime and pinning a single layer",
+    "here would grade the pinned version's internals rather than the invariant. Stated so a",
+    "reader does not read the single mutation as a coverage claim it does not make."
+  ],
+  "mutations": [
+    {
+      "name": "closeFailedBind reverts to a swallow-only catch with no fallback destroy",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    // Fast path: the public close resolved, the broker will drop the connection on its own.\n    try {\n      await failedNc.close();\n      return;\n    } catch {\n      /* fall through to the layered fallback */\n    }\n    // Layer 1: nats.js exposes drain() as the sanctioned \"close on error\" path. It flushes\n    // outbound then closes, and unlike close() has its own idempotent guard against a\n    // half-closed protocol. If drain resolves the socket is gone.\n    if (!failedNc.isClosed?.()) {\n      try {\n        await failedNc.drain();\n        return;\n      } catch {\n        /* both graceful paths refused. Drop to the transport */\n      }\n    }\n    // Layer 2: last resort. nats.js `NatsConnectionImpl.protocol.transport` (see\n    // node_modules/@nats-io/nats-core/lib/{nats,protocol,transport}.d.ts) is the TCP socket the\n    // dialer produced. Its `close(err?)` returns a Promise once the socket is torn down; its\n    // synchronous `disconnect()` forces the FIN without waiting. Reach for it only after the\n    // public API has already refused, and only guard against the shape not being what the\n    // pinned version documents.\n    const proto = (failedNc as unknown as { protocol?: { transport?: {\n      close?: (err?: Error) => Promise<void>;\n      disconnect?: () => void;\n      isClosed?: boolean;\n    } } }).protocol;\n    const transport = proto?.transport;\n    if (transport && !transport.isClosed) {\n      try {\n        await transport.close?.();\n      } catch {\n        /* transport close itself threw. Force it down synchronously below */\n      }\n      if (!transport.isClosed) {\n        try { transport.disconnect?.(); } catch { /* nothing left to try */ }\n      }\n    }",
+      "replace": "    try {\n      await failedNc.close();\n    } catch {\n      /* pre-repair behavior: swallow, no fallback destroy */\n    }",
+      "expectRed": "CLOSE-THROWS: broker connection count returns to 0 after the failed close",
+      "cell": "CLOSE-THROWS: broker connection count returns to 0 after the failed close",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    }
+  ]
+}
