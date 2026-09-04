@@ -67,6 +67,7 @@ import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
@@ -219,7 +220,7 @@ async function instrument(caps: Array<{ command: string; owner?: true }>): Promi
 type Run = { status: number | null; out: string; timedOut: boolean; signal: NodeJS.Signals | null; launchError?: string };
 function cotal(args: string[], timeoutMs = 120_000): Promise<Run> {
   return new Promise((res) => {
-    const child = spawn("npx", ["tsx", BIN, ...args], {
+    const child = spawn(TSX, [BIN, ...args], {
       cwd: workspaceRoot, env: { ...process.env, COTAL_HOME: home }, stdio: ["ignore", "pipe", "pipe"],
     });
     let out = "", timedOut = false, settled = false;

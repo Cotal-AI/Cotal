@@ -81,6 +81,7 @@
     "smoke:codex-host": "tsx extensions/connector-codex/smoke/codex-host.smoke.ts",
     "smoke:codex-dist": "tsx extensions/connector-codex/smoke/codex-dist.smoke.ts",
     "smoke:tree-hygiene": "tsx bin/smoke/tree-hygiene.smoke.ts",
+    "smoke:no-npx-tsx": "tsx bin/smoke/no-npx-tsx.smoke.ts",
     "smoke:web-harness": "tsx implementations/web/smoke/harness.smoke.ts",
     "smoke:web-parts": "tsx implementations/web/smoke/parts-non-silence.smoke.ts",
     "smoke:web-channel-authority": "tsx implementations/web/smoke/channel-authority.smoke.ts",

@@ -56,6 +56,7 @@ import {
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
@@ -169,7 +170,7 @@ type Attached = {
   kill: () => void;
 };
 function attachUnderPty(root: string, seat: string): Attached {
-  const child = pty.spawn("npx", ["tsx", BIN, "attach", "--name", seat, "--space", space, "--server", PROXY], {
+  const child = pty.spawn(TSX, [BIN, "attach", "--name", seat, "--space", space, "--server", PROXY], {
     name: "xterm-256color", cols: 100, rows: 30, cwd: root,
     env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" } as Record<string, string>,
   });

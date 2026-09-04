@@ -49,6 +49,7 @@ const { recordMesh } = await import("@cotal-ai/workspace");
 await import("@cotal-ai/cli"); // registers the CLI commands (spawn/stop/ps/attach) into the registry
 const { Manager } = await import("@cotal-ai/manager");
 import type { Command, Connector, ControlReply, LaunchOpts, SessionGrant } from "@cotal-ai/core";
+const TSX = join(import.meta.dirname, "..", "..", "node_modules", ".bin", "tsx");
 
 let pass = 0;
 const kids: ChildProcess[] = [];
@@ -329,7 +330,7 @@ try {
   const subEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" };
 
   // E — the start tombstone (true subprocess through bin/cotal.ts, i.e. built dist).
-  const tomb = spawnSync("npx", ["tsx", join(import.meta.dirname, "..", "cotal.ts"), "start", "--name", "x"], {
+  const tomb = spawnSync(TSX, [join(import.meta.dirname, "..", "cotal.ts"), "start", "--name", "x"], {
     encoding: "utf8",
     env: subEnv,
   });
@@ -340,13 +341,11 @@ try {
   // pre-dispatch (spawnRequiredExtensions), so first `ext add` THIS WORKTREE's claude connector
   // into the sandbox prefix (the real local-path install + core peer-link path) — never the
   // operator's global store.
-  const extAdd = spawnSync(
-    "npx",
-    ["tsx", join(import.meta.dirname, "..", "cotal.ts"), "ext", "add", join(import.meta.dirname, "..", "..", "extensions", "connector-claude-code")],
+  const extAdd = spawnSync(TSX, [join(import.meta.dirname, "..", "cotal.ts"), "ext", "add", join(import.meta.dirname, "..", "..", "extensions", "connector-claude-code")],
     { encoding: "utf8", env: subEnv },
   );
   ok("sandbox ext add of the worktree claude connector succeeds", extAdd.status === 0, (extAdd.stderr + extAdd.stdout).slice(0, 300));
-  const fg = spawnSync("npx", ["tsx", join(import.meta.dirname, "..", "cotal.ts"), "spawn", "poet", "--creds", "/tmp/x.creds"], {
+  const fg = spawnSync(TSX, [join(import.meta.dirname, "..", "cotal.ts"), "spawn", "poet", "--creds", "/tmp/x.creds"], {
     encoding: "utf8",
     env: subEnv,
   });

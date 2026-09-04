@@ -70,6 +70,7 @@ import {
 import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
 
 const freePort = (): Promise<number> =>
   new Promise((res, rej) => {
@@ -122,7 +123,7 @@ const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
 type Run = { status: number | null; out: string; timedOut: boolean; signal: NodeJS.Signals | null; launchError?: string };
 function cotal(args: string[], cwd: string, timeoutMs = 90_000): Promise<Run> {
   return new Promise((res) => {
-    const child = spawn("npx", ["tsx", BIN, ...args], {
+    const child = spawn(TSX, [BIN, ...args], {
       cwd, env: { ...process.env, COTAL_HOME: home }, stdio: ["ignore", "pipe", "pipe"],
     });
     let out = "", timedOut = false, settled = false;
