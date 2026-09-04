@@ -135,8 +135,9 @@ feature-by-feature.
 
 The endpoint underneath self-heals: when the transport connection dies terminally, a
 supervisor rebuilds it (rebuilds are serialized and coalesced), and unacked in-flight
-messages redeliver on the rebound durables, so nothing is lost across the gap. A manual
-`/reconnect` is the human-invoked counterpart.
+messages redeliver on the rebound durables, so nothing is lost across the gap. A failed
+post-connect bind closes its partial transport before the retry loop starts another attempt.
+A manual `/reconnect` is the human-invoked counterpart.
 
 ## Manager supervision
 
