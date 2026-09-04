@@ -37,6 +37,7 @@ import { deviceAuthorization } from "better-auth/plugins/device-authorization";
 import { bearer } from "better-auth/plugins/bearer";
 import { toNodeHandler } from "better-auth/node";
 import { pickFreePort } from "./_free-port.js";
+const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
 
 const home = mkdtempSync(join(tmpdir(), "cotal-downf-home-"));
 const configDir = join(home, "xdg");
@@ -67,7 +68,7 @@ function cotal(args: string[], opts: { timeoutMs?: number } = {}): Promise<{ sta
   return new Promise((resolvePromise) => {
     const options = { cwd: root, env: childEnv };
     assertSmokeSandboxDown(sandbox, args, options);
-    const child = spawn("npx", ["tsx", BIN, ...args], options);
+    const child = spawn(TSX, [BIN, ...args], options);
     let out = "";
     child.stdout.on("data", (d: Buffer) => { out += d.toString(); });
     child.stderr.on("data", (d: Buffer) => { out += d.toString(); });

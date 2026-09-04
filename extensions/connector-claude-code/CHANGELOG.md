@@ -1,5 +1,13 @@
 # @cotal-ai/connector-claude-code
 
+## 0.41.2
+
+### Patch Changes
+
+- 04dc3fb: Forward the documented Amazon Bedrock and Google Cloud provider credentials into managed Claude Code seats. Keep the explicit environment allowlist and grade it against an independent documentation-derived fixture.
+
+## 0.41.1
+
 ## 0.41.0
 
 ## 0.40.0

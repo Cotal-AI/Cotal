@@ -36,6 +36,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+const TSX = join(import.meta.dirname, "..", "..", "node_modules", ".bin", "tsx");
 
 // Sandbox BEFORE any cotal import: whatever runs this suite may itself be a managed seat, and its
 // COTAL_* environment names a LIVE mesh. The in-process Manager and every child must see only the
@@ -128,7 +129,7 @@ const stageDaemonRoot = (root: string, space: string, files: Record<string, stri
 
 /** Spawn the REAL delivery daemon rooted at `root` (its cwd - the store its re-reads resolve). */
 const spawnDaemon = (root: string, space: string, servers: string, credsPath: string, sink: { out: string; exited: boolean }): ChildProcess => {
-  const d = spawnProc("npx", ["tsx", BIN, "deliver", "--space", space, "--server", servers, "--creds", credsPath], {
+  const d = spawnProc(TSX, [BIN, "deliver", "--space", space, "--server", servers, "--creds", credsPath], {
     cwd: root,
     stdio: ["ignore", "pipe", "pipe"],
     // Direct daemon run (not via `up`): the first-real-command connector seed would run installs

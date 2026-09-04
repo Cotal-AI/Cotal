@@ -71,6 +71,7 @@ const { DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, authDir, recordMesh, save
 await import("@cotal-ai/cli"); // registers the CLI commands (spawn/stop) into the registry
 const { Manager } = await import("@cotal-ai/manager");
 import type { Command, Connector, LaunchOpts } from "@cotal-ai/core";
+const TSX = join(import.meta.dirname, "..", "..", "node_modules", ".bin", "tsx");
 
 let pass = 0;
 let fail = 0;
@@ -190,7 +191,7 @@ const kids: ChildProcess[] = [];
  *  command exits the whole process on failure, which would kill the suite. */
 const cliStop = (name: string): Promise<{ code: number | null; out: string }> =>
   new Promise((resolve, reject) => {
-    const p = spawnProc("npx", ["tsx", BIN, "stop", "--name", name, "--space", SPACE], {
+    const p = spawnProc(TSX, [BIN, "stop", "--name", name, "--space", SPACE], {
       cwd: root,
       env: { ...cleanEnv, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" },
       stdio: ["ignore", "pipe", "pipe"],
@@ -246,7 +247,7 @@ try {
     "membership.json": JSON.stringify({ accountId: auth.account.pub }),
   };
   for (const [kind, bytes] of Object.entries(daemonFiles)) writeFileSync(join(seg, kind), bytes, { mode: 0o600 });
-  daemon = spawnProc("npx", ["tsx", BIN, "deliver", "--space", SPACE, "--server", SERVER, "--creds", join(seg, DELIVERY_CREDS_KIND)], {
+  daemon = spawnProc(TSX, [BIN, "deliver", "--space", SPACE, "--server", SERVER, "--creds", join(seg, DELIVERY_CREDS_KIND)], {
     cwd: root,
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...cleanEnv, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1" },

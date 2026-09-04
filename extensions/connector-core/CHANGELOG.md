@@ -1,5 +1,13 @@
 # @cotal-ai/connector-core
 
+## 0.41.2
+
+## 0.41.1
+
+### Patch Changes
+
+- 80ddc41: Re-read managed seat credential files during renewal and reconnect while pinning the original nkey.
+
 ## 0.41.0
 
 ### Minor Changes

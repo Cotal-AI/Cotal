@@ -1,6 +1,6 @@
 {
   "name": "@cotal-ai/example-06-feed-agent",
-  "version": "0.0.5",
+  "version": "0.0.7",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
