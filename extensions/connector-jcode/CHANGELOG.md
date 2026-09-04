@@ -1,5 +1,11 @@
 # @cotal-ai/connector-jcode
 
+## 0.41.4
+
+### Patch Changes
+
+- bdef9b5: Treat an unreadable or empty Linux process environment as an unprovable launch identity during Jcode bridge teardown, while continuing to refuse readable environments that lack the launch identity.
+
 ## 0.41.3
 
 ## 0.41.2
