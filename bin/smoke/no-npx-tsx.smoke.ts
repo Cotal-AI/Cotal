@@ -32,7 +32,11 @@ const ROOT = join(import.meta.dirname, "..", "..");
 // matched only `spawn(` and missed spawnSync, spawnProc and a multi-line call in seven files; CI
 // found the one it reached. A grammar guard has to match the family, not the one form its author
 // happened to fix.
-const BANNED = /\b(?:spawn|spawnSync|spawnProc|execFile|execFileSync|pty\.spawn)\(\s*"npx"\s*,\s*\[\s*"tsx"/;
+// Match the TOKEN, not the form: any spawner handed the literal "npx" as its command. The second
+// version of this guard required `["tsx"` to follow, and missed `pty.spawn("npx", args)` where the
+// array lives in a variable; a reviewer found it. Requiring the array shape was a third way to
+// enumerate the spelling the author happened to know.
+const BANNED = /\b(?:spawn|spawnSync|spawnProc|execFile|execFileSync|pty\.spawn)\(\s*"npx"\s*,/;
 /** This file quotes the banned form in its own docstring, so it excludes itself and grades the rest. */
 const SELF = "bin/smoke/no-npx-tsx.smoke.ts";
 const SKIP = new Set(["node_modules", "dist", ".git", ".changeset", "coverage", "build", ".internal"]);
@@ -68,8 +72,8 @@ check("the planted control carries the banned form and the regex sees it", BANNE
 
 // Negative control: the robust form must NOT match, or the guard would redden its own remedy.
 check("the robust form spawn(TSX, [BIN, ...]) is not matched", !BANNED.test('const child = spawn(TSX, [BIN, ...args], options);'));
-check("the multi-line and spawnSync forms ARE matched (the family, not the one form)",
-  BANNED.test('spawnSync(\n    "npx",\n    ["tsx", x]') && BANNED.test('spawnProc("npx", ["tsx", BIN])') && BANNED.test('pty.spawn("npx", ["tsx"'));
+check("the multi-line, spawnSync, and variable-args forms ARE matched (the token, not the form)",
+  BANNED.test('spawnSync(\n    "npx",\n    ["tsx", x]') && BANNED.test('spawnProc("npx", ["tsx", BIN])') && BANNED.test('pty.spawn("npx", ["tsx"') && BANNED.test('pty.spawn("npx", args, {'));
 
 check(`no smoke source launches the CLI via npx tsx (${files.length} files walked)`, hits.length === 0, hits);
 
