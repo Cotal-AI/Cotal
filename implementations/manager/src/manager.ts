@@ -190,6 +190,24 @@ const DELIVERY_ADMIN_RELOAD_TIMEOUT_MS = 15_000;
 /** A hard preservation stop should settle quickly. The manager still waits and reports a partial
  * cut rather than pretending a child is gone. Held in ManagerOptions so fake runtimes can shorten it. */
 const PRESERVE_STOP_TIMEOUT_MS = 10_000;
+/** Pick a `setInterval` period for {@link Manager.renewDaemonCreds} that guarantees at least one
+ * tick lands inside every renewal owner's `[renewAt, exp)` window.
+ *
+ * `inspectCredHealth` marks a credential `near-expiry` at 75% of its iat-to-exp lifetime and
+ * `expired` at 100%, so the window width is TTL/4. Ticks TTL/4 apart therefore land at least once
+ * inside every window; ticks TTL/2 apart (the old schedule) can miss it entirely for any TTL. That
+ * is the cause of Cotal #457, reproduced at both TTL=86400 and TTL=20 (the compressed-ratio probe).
+ *
+ * Deriving from the caller's TTL keeps the schedule correct for any credential class: the 24h
+ * `STANDING_RENEWABLE_TTL_SEC` and the 30-day `ROTATION_RENEWED_TTL_SEC` both get a tick inside
+ * their own renewal window without a hardcoded number. Post-boot responsiveness is already
+ * covered by the caller invoking `renewDaemonCreds` once synchronously before starting the timer,
+ * so no separate floor is needed. The pass is idempotent, since `renewDaemonCreds` no-ops each
+ * credential when its state is `healthy`, so a tick that lands before the window costs one health
+ * check per owner. */
+export function credRenewIntervalMs(ttlSeconds: number): number {
+  return Math.max(1, Math.floor((ttlSeconds / 4) * 1000));
+}
 /** Startup reconciliation overlaps control-service registration. A spawn or attach for one of
  * these aliases must wait until THAT alias's exact-op terminal attempt returns rather than racing
  * a reuse. */
@@ -1105,7 +1123,7 @@ export class Manager {
     // `reloadCreds` adoption on the delivery-admin rail, and persist the audit record doctor renders.
     if (this.auth) {
       await this.renewDaemonCreds();
-      this.credRenewTimer = setInterval(() => { void this.renewDaemonCreds(); }, (STANDING_RENEWABLE_TTL_SEC / 2) * 1000);
+      this.credRenewTimer = setInterval(() => { void this.renewDaemonCreds(); }, credRenewIntervalMs(STANDING_RENEWABLE_TTL_SEC));
       this.credRenewTimer.unref?.();
     }
     // P2 item 1: register the manager as an ordinary v0.4 `service` endpoint (SPEC §13.7/§13.9)
@@ -1479,7 +1497,7 @@ export class Manager {
     this.preservationInventory = undefined;
     this.preservationFailures = [];
     if (this.auth && !this.credRenewTimer) {
-      this.credRenewTimer = setInterval(() => { void this.renewDaemonCreds(); }, (STANDING_RENEWABLE_TTL_SEC / 2) * 1000);
+      this.credRenewTimer = setInterval(() => { void this.renewDaemonCreds(); }, credRenewIntervalMs(STANDING_RENEWABLE_TTL_SEC));
       this.credRenewTimer.unref?.();
     }
     // Exit watchers were suppressed while the fence stood: reconcile every child that died during
