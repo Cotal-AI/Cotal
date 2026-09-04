@@ -1228,30 +1228,29 @@ export class CotalEndpoint extends EventEmitter {
     }
     this.subs.length = 0;
     if (!failedNc) return;
-    // Fast path: the public close resolved, the broker will drop the connection on its own.
+    // Layered teardown, comments kept OUT of the code span below on purpose: the mutation fixture
+    // bin/smoke/mutations/failed-bind-cleanup.json anchors on that span verbatim and the fixture
+    // census (bin/smoke/mutation-fixtures.smoke.ts) reddens an anchor that crosses a comment line.
+    //   Fast path: the public close resolved, the broker drops the connection on its own.
+    //   Layer 1: nats.js exposes drain() as the sanctioned "close on error" path. It flushes
+    //   outbound then closes, and unlike close() has its own idempotent guard against a half-closed
+    //   protocol. If drain resolves the socket is gone.
+    //   Layer 2: last resort. nats.js `NatsConnectionImpl.protocol.transport` (see
+    //   node_modules/@nats-io/nats-core/lib/{nats,protocol,transport}.d.ts) is the TCP socket the
+    //   dialer produced. Its `close(err?)` returns a Promise once the socket is torn down; its
+    //   synchronous `disconnect()` forces the FIN without waiting. Reached only after the public
+    //   API has already refused, guarded only against the shape not being what the pinned version
+    //   documents.
     try {
       await failedNc.close();
       return;
-    } catch {
-      /* fall through to the layered fallback */
-    }
-    // Layer 1: nats.js exposes drain() as the sanctioned "close on error" path. It flushes
-    // outbound then closes, and unlike close() has its own idempotent guard against a
-    // half-closed protocol. If drain resolves the socket is gone.
+    } catch { /* fall through to the layered fallback */ }
     if (!failedNc.isClosed?.()) {
       try {
         await failedNc.drain();
         return;
-      } catch {
-        /* both graceful paths refused. Drop to the transport */
-      }
+      } catch { /* both graceful paths refused, drop to the transport */ }
     }
-    // Layer 2: last resort. nats.js `NatsConnectionImpl.protocol.transport` (see
-    // node_modules/@nats-io/nats-core/lib/{nats,protocol,transport}.d.ts) is the TCP socket the
-    // dialer produced. Its `close(err?)` returns a Promise once the socket is torn down; its
-    // synchronous `disconnect()` forces the FIN without waiting. Reach for it only after the
-    // public API has already refused, and only guard against the shape not being what the
-    // pinned version documents.
     const proto = (failedNc as unknown as { protocol?: { transport?: {
       close?: (err?: Error) => Promise<void>;
       disconnect?: () => void;
@@ -1261,9 +1260,7 @@ export class CotalEndpoint extends EventEmitter {
     if (transport && !transport.isClosed) {
       try {
         await transport.close?.();
-      } catch {
-        /* transport close itself threw. Force it down synchronously below */
-      }
+      } catch { /* transport close itself threw, force it down synchronously below */ }
       if (!transport.isClosed) {
         try { transport.disconnect?.(); } catch { /* nothing left to try */ }
       }

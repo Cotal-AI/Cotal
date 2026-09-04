@@ -5,6 +5,12 @@
   "completionMarker": "failed bind cleanup smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/failed-bind-cleanup.json",
   "why": [
+    "ANCHOR ON CODE ONLY. The fixture census (bin/smoke/mutation-fixtures.smoke.ts) reddens a `find` that",
+    "spans a comment line, because prose is what anyone tidies. The explanatory comments for the three",
+    "layers therefore sit ABOVE the code span in endpoint.ts, and the anchor below is the contiguous",
+    "comment-free code from the fast-path try through the transport-destroy block. mutation-proof",
+    "matches `find` verbatim (before.split(find)), so the span must stay contiguous in the source.",
+    "",
     "SPECIFIER BOUNDARY, and it is the reason the command builds core first. The suite imports",
     "CotalEndpoint from ../src/index.js. Under tsx that resolves through the workspace tsconfig",
     "to source, so a mutation on packages/core/src/endpoint.ts is what the run sees. But the",
@@ -39,8 +45,8 @@
     {
       "name": "closeFailedBind reverts to a swallow-only catch with no fallback destroy",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    // Fast path: the public close resolved, the broker will drop the connection on its own.\n    try {\n      await failedNc.close();\n      return;\n    } catch {\n      /* fall through to the layered fallback */\n    }\n    // Layer 1: nats.js exposes drain() as the sanctioned \"close on error\" path. It flushes\n    // outbound then closes, and unlike close() has its own idempotent guard against a\n    // half-closed protocol. If drain resolves the socket is gone.\n    if (!failedNc.isClosed?.()) {\n      try {\n        await failedNc.drain();\n        return;\n      } catch {\n        /* both graceful paths refused. Drop to the transport */\n      }\n    }\n    // Layer 2: last resort. nats.js `NatsConnectionImpl.protocol.transport` (see\n    // node_modules/@nats-io/nats-core/lib/{nats,protocol,transport}.d.ts) is the TCP socket the\n    // dialer produced. Its `close(err?)` returns a Promise once the socket is torn down; its\n    // synchronous `disconnect()` forces the FIN without waiting. Reach for it only after the\n    // public API has already refused, and only guard against the shape not being what the\n    // pinned version documents.\n    const proto = (failedNc as unknown as { protocol?: { transport?: {\n      close?: (err?: Error) => Promise<void>;\n      disconnect?: () => void;\n      isClosed?: boolean;\n    } } }).protocol;\n    const transport = proto?.transport;\n    if (transport && !transport.isClosed) {\n      try {\n        await transport.close?.();\n      } catch {\n        /* transport close itself threw. Force it down synchronously below */\n      }\n      if (!transport.isClosed) {\n        try { transport.disconnect?.(); } catch { /* nothing left to try */ }\n      }\n    }",
-      "replace": "    try {\n      await failedNc.close();\n    } catch {\n      /* pre-repair behavior: swallow, no fallback destroy */\n    }",
+      "find": "    try {\n      await failedNc.close();\n      return;\n    } catch { /* fall through to the layered fallback */ }\n    if (!failedNc.isClosed?.()) {\n      try {\n        await failedNc.drain();\n        return;\n      } catch { /* both graceful paths refused, drop to the transport */ }\n    }\n    const proto = (failedNc as unknown as { protocol?: { transport?: {\n      close?: (err?: Error) => Promise<void>;\n      disconnect?: () => void;\n      isClosed?: boolean;\n    } } }).protocol;\n    const transport = proto?.transport;\n    if (transport && !transport.isClosed) {\n      try {\n        await transport.close?.();\n      } catch { /* transport close itself threw, force it down synchronously below */ }\n      if (!transport.isClosed) {\n        try { transport.disconnect?.(); } catch { /* nothing left to try */ }\n      }\n    }",
+      "replace": "    try {\n      await failedNc.close();\n    } catch { /* pre-repair behavior: swallow, no fallback destroy */ }",
       "expectRed": "CLOSE-THROWS: broker connection count returns to 0 after the failed close",
       "cell": "CLOSE-THROWS: broker connection count returns to 0 after the failed close",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
