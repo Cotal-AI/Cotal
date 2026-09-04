@@ -317,12 +317,26 @@ check(
 // Frozen injected clock: the run's simulated elapsed never moves, so only the REAL budget can end
 // it. Without that, every read timing out would leave the loop polling forever on a clock that had
 // barely advanced -- the same hang arriving by a shorter route.
+// The cell must also be able to STOP the run it abandons. The mutant this is written to catch makes
+// the poll loop spin forever, and an abandoned run that keeps scheduling timers holds the event loop
+// open: the suite would HANG rather than fail, and mutation-proof refuses to score a hang as a red
+// ("run timed out; a hang is not a red") -- correctly, since a hang is also what a broken harness
+// looks like. Measured: without this the mutation graded INCONCLUSIVE. Once the guard fires, the
+// next sleep rejects and the run unwinds, so the mutant produces a named failure and the suite ends.
+let abandoned = false;
+const stoppableSleep = (ms: number) =>
+  abandoned
+    ? Promise.reject(new Error("the cell abandoned this run"))
+    : new Promise<void>((r) => { setTimeout(r, ms); });
+
 const frozen = await withGuard(verifyClosure("9.9.9", {
   packages: ["a", "b", "c", "d"],
   opts: { ...DEFAULTS, pollIntervalMs: 10, stableWindowMs: 100, deadlineMs: 300 },
   fetchImpl: neverAnswers,
+  sleep: stoppableSleep,
   now: () => 0,
-}), 8_000);
+}).catch(() => ({ state: "ABANDONED" })), 8_000);
+abandoned = true;
 check(
   "spending the real budget ends the run even when the injected clock has not moved",
   frozen.state === "unsettled",
