@@ -37,7 +37,12 @@ async function runProbe(flag?: "--mutant" | "--control"): Promise<ProbeResult> {
   return await new Promise((resolve, reject) => {
     const args = ["tsx", PROBE];
     if (flag) args.push(flag);
-    const child = spawn("pnpm", args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, TMPDIR: process.env.TMPDIR ?? "/var/tmp" } });
+    // The probe boots its own broker and mints its own creds; nothing from an ambient seat may reach it.
+    // suite-ambient-env grades this shape: strip COTAL_ from the copy before the copy is spread.
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    for (const k of Object.keys(env)) if (k.startsWith("COTAL_")) delete env[k];
+    env.TMPDIR = process.env.TMPDIR ?? "/var/tmp";
+    const child = spawn("pnpm", args, { stdio: ["ignore", "pipe", "pipe"], env });
     let stdout = ""; let stderr = "";
     child.stdout.on("data", (b) => { stdout += b.toString(); });
     child.stderr.on("data", (b) => { stderr += b.toString(); });
