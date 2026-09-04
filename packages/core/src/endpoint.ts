@@ -952,6 +952,15 @@ export class CotalEndpoint extends EventEmitter {
    *  reconnect calls it again after {@link clearConnectionScoped}; every binding is
    *  idempotent (durables bind by name, JetStream dedups by msgID, KV opens are idempotent). */
   private async connectAndBind(): Promise<void> {
+    try {
+      await this.bindConnection();
+    } catch (error) {
+      await this.closeFailedBind();
+      throw error;
+    }
+  }
+
+  private async bindConnection(): Promise<void> {
     this.clearConnectionScoped();
     // Bearer-source endpoints fetch before the FIRST connect, and re-fetch on a rebuild whose
     // cached token is already inside the refresh margin (a rebuild after a long outage would
@@ -1165,6 +1174,97 @@ export class CotalEndpoint extends EventEmitter {
     this.channelDefaults = {};
     for (const watch of this.membershipFeedWatches)
       watch.arm = watch.arm.catch(() => {}).then(() => this.disarmMembershipWatch(watch)).catch((err) => { this.emit("error", err as Error); });
+  }
+
+  /** A transport can connect before a later JetStream/KV/subscription bind fails. The caller will
+   * retry the whole start, so release that partial epoch first instead of overwriting `nc` and
+   * leaving one established socket behind per retry. `close()` is deliberate: a failed bind has no
+   * graceful delivery contract to drain, and cleanup itself must not extend the retry failure.
+   *
+   * A throwing `close()` is not hypothetical: nats.js `NatsConnectionImpl.close()` awaits the
+   * protocol close, which itself flushes outbound + tears down subscription state; any of those
+   * that reject leaves the underlying TCP transport ESTABLISHED even though every client handle
+   * on this endpoint has been cleared. The next `start()` on the same object then dials a fresh
+   * connection while the old socket stays live on the broker (`/varz.connections` climbs once per
+   * failed attempt). The recovery path is layered, from most graceful to most surgical, matching
+   * nats-core's public surface (nats.d.ts: `close`, `drain`, `isClosed`; protocol.d.ts owns the
+   * `transport` handle whose `close(err?)` is the socket teardown; transport.d.ts exposes a
+   * synchronous `disconnect()` for the case where even close rejects). We only touch a private
+   * (`nc.protocol.transport`) when the public API has already refused, and the ORIGINAL bind
+   * error is re-raised at every layer. The close error is diagnostic noise. The bind error is
+   * what the caller must see.
+   *
+   * The delivery-serve subs and `this.subs` array are handles created by a successful
+   * `armDeliveryControl` on a PREVIOUS epoch; a bind failure on the retry never rewrites them
+   * because arming is a late step. Left in place they point at a dead protocol and survive into
+   * the next retry. The reviewer flagged this as an untested handle class. Zero them here so a
+   * retry starts with the same empty state as a first attempt. */
+  private async closeFailedBind(): Promise<void> {
+    const failedNc = this.nc;
+    this.clearConnectionScoped();
+    this.nc = undefined;
+    this.js = undefined;
+    this.jsm = undefined;
+    this.kv = undefined;
+    this.channelKv = undefined;
+    this.membersKv = undefined;
+    this.aclKv = undefined;
+    this.membershipFeedKv = undefined;
+    this.deliveryKv = undefined;
+    this.managerLeaseKv = undefined;
+    // Handles that armDeliveryControl created on a previous connection: null them so a rebind
+    // does not carry a dead protocol's subs forward. Best-effort unsubscribe first (the sub is
+    // dead with its connection either way; unsubscribing an already-dead sub is a noop).
+    if (this.deliveryServeSub) {
+      try { this.deliveryServeSub.unsubscribe(); } catch { /* dead with the old connection */ }
+      this.deliveryServeSub = undefined;
+    }
+    if (this.deliveryAdminServeSub) {
+      try { this.deliveryAdminServeSub.unsubscribe(); } catch { /* dead with the old connection */ }
+      this.deliveryAdminServeSub = undefined;
+    }
+    for (const sub of this.subs) {
+      try { sub.unsubscribe(); } catch { /* dead with the old connection */ }
+    }
+    this.subs.length = 0;
+    if (!failedNc) return;
+    // Layered teardown, comments kept OUT of the code span below on purpose: the mutation fixture
+    // bin/smoke/mutations/failed-bind-cleanup.json anchors on that span verbatim and the fixture
+    // census (bin/smoke/mutation-fixtures.smoke.ts) reddens an anchor that crosses a comment line.
+    //   Fast path: the public close resolved, the broker drops the connection on its own.
+    //   Layer 1: nats.js exposes drain() as the sanctioned "close on error" path. It flushes
+    //   outbound then closes, and unlike close() has its own idempotent guard against a half-closed
+    //   protocol. If drain resolves the socket is gone.
+    //   Layer 2: last resort. nats.js `NatsConnectionImpl.protocol.transport` (see
+    //   node_modules/@nats-io/nats-core/lib/{nats,protocol,transport}.d.ts) is the TCP socket the
+    //   dialer produced. Its `close(err?)` returns a Promise once the socket is torn down; its
+    //   synchronous `disconnect()` forces the FIN without waiting. Reached only after the public
+    //   API has already refused, guarded only against the shape not being what the pinned version
+    //   documents.
+    try {
+      await failedNc.close();
+      return;
+    } catch { /* fall through to the layered fallback */ }
+    if (!failedNc.isClosed?.()) {
+      try {
+        await failedNc.drain();
+        return;
+      } catch { /* both graceful paths refused, drop to the transport */ }
+    }
+    const proto = (failedNc as unknown as { protocol?: { transport?: {
+      close?: (err?: Error) => Promise<void>;
+      disconnect?: () => void;
+      isClosed?: boolean;
+    } } }).protocol;
+    const transport = proto?.transport;
+    if (transport && !transport.isClosed) {
+      try {
+        await transport.close?.();
+      } catch { /* transport close itself threw, force it down synchronously below */ }
+      if (!transport.isClosed) {
+        try { transport.disconnect?.(); } catch { /* nothing left to try */ }
+      }
+    }
   }
 
   /** If stop() ran during a rebuild's `await connectAndBind`, the just-bound connection +
