@@ -1,0 +1,4 @@
+# Cotal #457: manager credential-renewal schedule must land inside `[renewAt, exp)`. Compressed
+# ratio TTL=20s so the whole boundary fits in ~30s of wall time. See the suite header for the
+# mutant-in-probe scheme.
+smoke:manager-renewal-boundary
