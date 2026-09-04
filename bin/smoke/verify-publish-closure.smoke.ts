@@ -168,15 +168,22 @@ check("a non-numeric timing flag is refused rather than silently defaulted", bad
 // process cannot be used: spawnSync blocks the event loop, so the child would never get a response.
 const fixtureFetch = join(ROOT, "bin/smoke/fixtures/verify-publish-closure-fetch.mjs");
 
+// The child is a plain node process with no business seeing this seat's mesh credentials or broker
+// URL, so the ambient copy is scrubbed before it is spread. Built as a function so the cell below
+// asserts the SAME object the spawn receives, rather than a restatement of the rule.
+function childEnvFor(missing: string[]): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
+  env.SMOKE_CLOSURE_MISSING = missing.join(",");
+  env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ""} --import=${fixtureFetch}`.trim();
+  return env;
+}
+
 function shipped(missing: string[], extra: string[] = []) {
   return spawnSync("node", [join(ROOT, "scripts/verify-publish-closure.mjs"), "9.9.9", ...extra], {
     encoding: "utf8",
     cwd: ROOT,
-    env: {
-      ...process.env,
-      SMOKE_CLOSURE_MISSING: missing.join(","),
-      NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${fixtureFetch}`.trim(),
-    },
+    env: childEnvFor(missing),
   });
 }
 
@@ -216,7 +223,16 @@ check(
   `${nothingPublished.stdout}${nothingPublished.stderr}`,
 );
 
-const noVersion = spawnSync("node", [join(ROOT, "scripts/verify-publish-closure.mjs")], { encoding: "utf8", cwd: ROOT });
+process.env.COTAL_PROBE_AMBIENT = "a-live-credential-would-look-like-this";
+const scrubbed = childEnvFor([]);
+delete process.env.COTAL_PROBE_AMBIENT;
+check(
+  "no COTAL_ variable reaches the spawned child, even when one is set in this process",
+  !("COTAL_PROBE_AMBIENT" in scrubbed) && Object.keys(scrubbed).every((k) => !k.startsWith("COTAL_")),
+  Object.keys(scrubbed).filter((k) => k.startsWith("COTAL_")),
+);
+
+const noVersion = spawnSync("node", [join(ROOT, "scripts/verify-publish-closure.mjs")], { encoding: "utf8", cwd: ROOT, env: childEnvFor([]) });
 check("the shipped command refuses to run with no version argument", noVersion.status === 2, `${noVersion.stdout}${noVersion.stderr}`);
 
 // ---------------------------------------------------------------- the declaration cannot drift
@@ -229,7 +245,7 @@ check(
   committedDts === emitDeclaration(),
 );
 
-const EXPECTED = 32;
+const EXPECTED = 33;
 check(`every cell ran (${EXPECTED} before sentinel)`, passed + failed === EXPECTED, passed + failed);
 console.log(`VERIFY PUBLISH CLOSURE SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 console.log("SUITE COMPLETE");
