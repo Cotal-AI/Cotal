@@ -1,5 +1,7 @@
 # @cotal-ai/connector-claude-code
 
+## 0.41.3
+
 ## 0.41.2
 
 ### Patch Changes
