@@ -1,5 +1,22 @@
 # cotal-ai
 
+## 0.41.1
+
+### Patch Changes
+
+- a2687ed: Smoke suites launch the CLI through the workspace `node_modules/.bin/tsx` instead of `npx tsx`. From a scratch working directory `npx` resolves `tsx` from the npm cache or the registry rather than the workspace, and the registry install banner lands in the output the suites parse. A guard reddens on any suite that reintroduces the `npx tsx` form.
+- 1eb94b8: The `ps-operator-path` and `presence-ttl-refresh-cli` smoke suites opt their CLI out of the connector seed reconcile, as fifteen sibling suites already do and as `up` does for the daemons it launches. Neither suite exercises the seeder, and on a cold npm cache the reconcile can consume the whole `cotal up` budget the fixtures allow.
+- Updated dependencies [e7687e7]
+- Updated dependencies [80ddc41]
+  - @cotal-ai/manager@0.41.1
+  - @cotal-ai/connector-core@0.41.1
+  - @cotal-ai/core@0.41.1
+  - @cotal-ai/workspace@0.41.1
+  - @cotal-ai/runtime@0.41.1
+  - @cotal-ai/cli@0.41.1
+  - @cotal-ai/delivery@0.41.1
+  - @cotal-ai/auth@0.41.1
+
 ## 0.41.0
 
 ### Patch Changes
