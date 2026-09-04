@@ -121,7 +121,7 @@ const execConns: NatsConnection[] = [];
 
 /** Drive the REAL command, from the seeded root, and hand back what an operator would see. */
 const runCli = (args: string[]): { code: number | null; out: string; err: string } => {
-  const r = spawnSync("npx", ["tsx", join(REPO, "bin", "cotal.ts"), ...args], {
+  const r = spawnSync(TSX, [join(REPO, "bin", "cotal.ts"), ...args], {
     cwd: ROOT, encoding: "utf8", timeout: 120_000,
     // Scrubbed: a live ambient broker/creds must never reach a command this smoke drives.
     env: { ...process.env, COTAL_SERVER: "", COTAL_SERVERS: "", COTAL_CREDS: "", NATS_URL: "" },

@@ -28,7 +28,11 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
 const ROOT = join(import.meta.dirname, "..", "..");
-const BANNED = /\bspawn\(\s*"npx"\s*,\s*\[\s*"tsx"/;
+// Any spawner name, any whitespace or newline between the tokens. The first version of this guard
+// matched only `spawn(` and missed spawnSync, spawnProc and a multi-line call in seven files; CI
+// found the one it reached. A grammar guard has to match the family, not the one form its author
+// happened to fix.
+const BANNED = /\b(?:spawn|spawnSync|spawnProc|execFile|execFileSync|pty\.spawn)\(\s*"npx"\s*,\s*\[\s*"tsx"/;
 /** This file quotes the banned form in its own docstring, so it excludes itself and grades the rest. */
 const SELF = "bin/smoke/no-npx-tsx.smoke.ts";
 const SKIP = new Set(["node_modules", "dist", ".git", ".changeset", "coverage", "build", ".internal"]);
@@ -64,6 +68,8 @@ check("the planted control carries the banned form and the regex sees it", BANNE
 
 // Negative control: the robust form must NOT match, or the guard would redden its own remedy.
 check("the robust form spawn(TSX, [BIN, ...]) is not matched", !BANNED.test('const child = spawn(TSX, [BIN, ...args], options);'));
+check("the multi-line and spawnSync forms ARE matched (the family, not the one form)",
+  BANNED.test('spawnSync(\n    "npx",\n    ["tsx", x]') && BANNED.test('spawnProc("npx", ["tsx", BIN])') && BANNED.test('pty.spawn("npx", ["tsx"'));
 
 check(`no smoke source launches the CLI via npx tsx (${files.length} files walked)`, hits.length === 0, hits);
 
