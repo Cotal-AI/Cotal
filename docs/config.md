@@ -179,7 +179,8 @@ So a launcher-spawned seat does not get them in its environment. The launcher wr
 **0600 file inside a 0700 private directory** and exports only its path, as `COTAL_LAUNCH_MATERIAL`.
 The session reads the launch-material file once at startup. For a managed creds path, it reads the
 credential once to pin the seat's nkey, then keeps the path as a renewal source. A re-signed file is
-read again before reconnecting, and a file for a different nkey is refused. This is the same shape
+read by renewal and by reconnect after the cached credential expires, and a file for a different
+nkey is refused. This is the same shape
 `cotal agent-bearer` already uses for its spawn-time secret: the material rides a file, never argv
 (which is visible in a process listing) and never the ambient environment (which is inherited).
 
