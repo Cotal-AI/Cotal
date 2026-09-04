@@ -1,5 +1,43 @@
 # @cotal-ai/cli
 
+## 0.41.0
+
+### Minor Changes
+
+- dbd7d98: Keep agent-profile minting within one resolved mesh root.
+
+  `cotal mint` now reads the persona ACL, loads the signing authority, and stores the default credential under the selected mesh root. If the current folder holds trust for a different space or account, it refuses before writing and names both roots instead of combining authority material from one root with persona policy from another.
+
+- 96e1d54: Resolve the persona catalog from the target mesh rather than the current directory.
+
+  `cotal personas` listed the personas of whatever directory it ran in, while `cotal spawn` launched from the mesh it resolves — so from one directory the two could name completely different sets, with neither saying anything was wrong. Every `cotal personas` subcommand now reads and writes the resolved mesh's catalog, which also makes `--space` and `--server` real for the listing rather than only for the live `--running` overlay: naming a mesh now moves the catalog, and an unresolvable target refuses instead of silently acting on another directory's files. `cotal spawn --role`/`--subscribe` and `cotal send msg`/`ask` complete from that same catalog.
+
+  The library functions behind this (`personasDir`, `listPersonas`, `listPersonaNames`, `listDeclaredChannels`, `listDeclaredRoles`) now require an explicit root instead of defaulting to the current directory, so a caller that omits one fails to compile rather than answering about the wrong place.
+
+- 5ec7feb: Pin every stack pidfile to its process's creation identity before teardown. `up` writes a sibling `<pidfile>.identity` containing the pid and process start where the OS reports one. Every stop path checks it before signalling: a reused pid or torn pin is refused and preserved, and rerunning after the process is stopped clears the stale record automatically. A live pre-pin record warns and proceeds so the first teardown after an upgrade still works; relaunching writes the pin and enables full match and mismatch protection.
+
+### Patch Changes
+
+- bc2f328: Seed personas into the catalog `cotal spawn` reads, and name that directory in the output.
+
+  `cotal setup` wrote `.cotal/agents/default.md` under the directory it ran in, while `cotal spawn` loads its persona from the mesh it resolves. On a machine where those differ — a shell outside any project, plus a mesh whose root is elsewhere — setup created a file spawn would never open, so `no default persona yet - run cotal setup to seed one` survived running exactly the command it named. Setup now seeds into the resolved mesh's catalog, including when that mesh was registered against a brand-new directory with no `.cotal` in it yet.
+
+  Every seed states its destination as an absolute path, and when the mesh's root is not the current directory both are shown, so the choice is visible rather than assumed. With no mesh running at all the current directory is still the answer — setup has to work before the first `cotal up` — but it says that it fell back and why. With several meshes running and none selected it refuses and asks you to pick, instead of choosing a root on your behalf.
+
+  `cotal spawn`'s refusal now names the absolute directory it searched and the mesh that directory came from, so a persona that is missing from one catalog and present in another is diagnosable from the message itself.
+
+- 7dab05c: `cotal status` now names the root behind every persona row, and flags the case where the folder you are standing in is not the one a bare `cotal spawn` will use.
+
+  Status could print `personas  default` in green under "This Folder" while `cotal spawn` refused in the same second with "no default persona yet". Both were right about their own root and neither said which root that was: the folder's catalog is `<root>/.cotal/agents`, while spawn loads the resolved mesh's, and the two diverge whenever `cotal use`, a `--space`, or a registry entry points elsewhere. The personas status listed and the personas spawn could launch could be completely disjoint.
+
+  When the two roots differ, status now names both, says what the spawn root actually offers, and drops the green from a `default` that will not launch. When they agree, the output stays as short as it was.
+
+- Updated dependencies [de258fb]
+- Updated dependencies [bac1e00]
+- Updated dependencies [5ec7feb]
+  - @cotal-ai/core@0.41.0
+  - @cotal-ai/workspace@0.41.0
+
 ## 0.40.0
 
 ### Patch Changes
