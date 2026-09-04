@@ -35,7 +35,8 @@
  * a slow registry.
  *
  * Usage:  node scripts/verify-publish-closure.mjs <version> [--json]
- * Exit:   0 PUBLISHED (whole closure live) · 1 PARTIAL (missing set stable past the window)
+ * Exit:   0 PUBLISHED (whole closure live) or NONE (nothing published — an ordinary version-PR push)
+ *         1 PARTIAL (some of the group live and some not, stable past the window) — the dangerous case
  *         2 UNSETTLED (still shrinking, or deadline reached without settling)
  */
 import { readFileSync } from "node:fs";
@@ -117,9 +118,16 @@ export function versionUrl(base, pkg, version) {
  * Classify one reading. Split out from the polling so the decision can be exercised directly:
  * the thing worth testing is the rule, not the sleeping.
  */
-export function classify({ missing, unchangedForMs, elapsedMs }, opts = DEFAULTS) {
+export function classify({ missing, total, unchangedForMs, elapsedMs }, opts = DEFAULTS) {
   if (missing.length === 0) return { state: "published" };
-  if (unchangedForMs >= opts.stableWindowMs) return { state: "partial", missing };
+  if (unchangedForMs >= opts.stableWindowMs) {
+    // NOTHING published is not a partial publish. A version-PR push runs this job and publishes no
+    // package at all, which is ordinary and must stay the harmless skip it has always been; calling
+    // it a failure would red every such push. A PARTIAL is the dangerous case the gate exists for:
+    // SOME of the lockstep group live and some not.
+    if (missing.length === total) return { state: "none", missing };
+    return { state: "partial", missing };
+  }
   if (elapsedMs >= opts.deadlineMs) return { state: "unsettled", missing, why: "deadline" };
   return { state: "polling", missing };
 }
@@ -180,13 +188,13 @@ export async function verifyClosure(version, {
     reads.push({ published: packages.length - missing.length, missing: [...missing], elapsedMs });
     log(`  published=${packages.length - missing.length}/${packages.length} missing=[${key}] unchanged_for=${Math.round(unchangedForMs / 1000)}s`);
 
-    const verdict = classify({ missing, unchangedForMs, elapsedMs }, opts);
+    const verdict = classify({ missing, total: packages.length, unchangedForMs, elapsedMs }, opts);
     if (verdict.state !== "polling") return { ...verdict, reads, packages: packages.length };
     await sleep(opts.pollIntervalMs);
   }
 }
 
-const EXIT = { published: 0, partial: 1, unsettled: 2 };
+const EXIT = { published: 0, none: 0, partial: 1, unsettled: 2 };
 
 async function main(argv) {
   const version = argv.find((a) => !a.startsWith("--"));
@@ -210,6 +218,8 @@ async function main(argv) {
     process.stdout.write(`${JSON.stringify({ version, ...result }, null, 2)}\n`);
   } else if (result.state === "published") {
     process.stdout.write(`VERDICT: ${version} is fully published across all ${result.packages} packages.\n`);
+  } else if (result.state === "none") {
+    process.stdout.write(`VERDICT: nothing published — no package serves ${version}; skipping the Release.\n`);
   } else if (result.state === "partial") {
     process.stdout.write(`VERDICT: PARTIAL PUBLISH — missing set unchanged past the stability window.\n`);
     process.stdout.write(`  missing: ${result.missing.join(" ")}\n`);

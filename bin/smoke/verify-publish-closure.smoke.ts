@@ -68,19 +68,28 @@ check(
 // ---------------------------------------------------------------- the decision rule
 check(
   "an empty missing set is PUBLISHED immediately, with no waiting (emptiness is monotone)",
-  classify({ missing: [], unchangedForMs: 0, elapsedMs: 0 }).state === "published",
+  classify({ missing: [], total: 4, unchangedForMs: 0, elapsedMs: 0 }).state === "published",
 );
 check(
   "a missing set younger than the stability window is still POLLING, not a failure",
-  classify({ missing: ["a"], unchangedForMs: DEFAULTS.stableWindowMs - 1, elapsedMs: 0 }).state === "polling",
+  classify({ missing: ["a"], total: 4, unchangedForMs: DEFAULTS.stableWindowMs - 1, elapsedMs: 0 }).state === "polling",
 );
 check(
   "a missing set unchanged past the stability window is PARTIAL",
-  classify({ missing: ["a"], unchangedForMs: DEFAULTS.stableWindowMs, elapsedMs: 0 }).state === "partial",
+  classify({ missing: ["a"], total: 4, unchangedForMs: DEFAULTS.stableWindowMs, elapsedMs: 0 }).state === "partial",
+);
+check(
+  "a wholly absent version is NONE (published nothing), never PARTIAL",
+  classify({ missing: ["a", "b"], total: 2, unchangedForMs: DEFAULTS.stableWindowMs, elapsedMs: 0 }).state === "none",
+  classify({ missing: ["a", "b"], total: 2, unchangedForMs: DEFAULTS.stableWindowMs, elapsedMs: 0 }),
+);
+check(
+  "PARTIAL is reserved for SOME of the group live — the case a Release must not be cut for",
+  classify({ missing: ["a"], total: 2, unchangedForMs: DEFAULTS.stableWindowMs, elapsedMs: 0 }).state === "partial",
 );
 check(
   "reaching the deadline while still missing reports UNSETTLED, never PARTIAL",
-  classify({ missing: ["a"], unchangedForMs: 0, elapsedMs: DEFAULTS.deadlineMs }).state === "unsettled",
+  classify({ missing: ["a"], total: 4, unchangedForMs: 0, elapsedMs: DEFAULTS.deadlineMs }).state === "unsettled",
 );
 check(
   "the stability window is wider than the ~2min propagation actually measured on this repo",
@@ -200,6 +209,13 @@ check(
   `${siblingGone.stdout}${siblingGone.stderr}`,
 );
 
+const nothingPublished = shipped(closure, fast);
+check(
+  "the shipped command exits 0 on a version nothing serves — an ordinary version-PR push, not a failure",
+  nothingPublished.status === 0 && nothingPublished.stdout.includes("nothing published"),
+  `${nothingPublished.stdout}${nothingPublished.stderr}`,
+);
+
 const noVersion = spawnSync("node", [join(ROOT, "scripts/verify-publish-closure.mjs")], { encoding: "utf8", cwd: ROOT });
 check("the shipped command refuses to run with no version argument", noVersion.status === 2, `${noVersion.stdout}${noVersion.stderr}`);
 
@@ -213,7 +229,7 @@ check(
   committedDts === emitDeclaration(),
 );
 
-const EXPECTED = 29;
+const EXPECTED = 32;
 check(`every cell ran (${EXPECTED} before sentinel)`, passed + failed === EXPECTED, passed + failed);
 console.log(`VERIFY PUBLISH CLOSURE SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 console.log("SUITE COMPLETE");

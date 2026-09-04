@@ -10,9 +10,9 @@
     {
       "name": "stability window collapses, so any missing set is instantly a partial publish",
       "file": "scripts/verify-publish-closure.mjs",
-      "find": "  if (unchangedForMs >= opts.stableWindowMs) return { state: \"partial\", missing };",
-      "replace": "  if (missing.length > 0) return { state: \"partial\", missing };",
-      "expectRed": true,
+      "find": "  if (unchangedForMs >= opts.stableWindowMs) {",
+      "replace": "  if (missing.length > 0) {",
+      "expectRed": "a missing set that repeats identically and THEN clears is PUBLISHED, not a partial publish",
       "cell": "a missing set that repeats identically and THEN clears is PUBLISHED, not a partial publish"
     },
     {
@@ -20,7 +20,7 @@
       "file": "scripts/verify-publish-closure.mjs",
       "find": "  if (missing.length === 0) return { state: \"published\" };",
       "replace": "  if (missing.length <= 1) return { state: \"published\" };",
-      "expectRed": true,
+      "expectRed": "cotal-ai being live does NOT clear the gate while a sibling is missing (the #1254 defect)",
       "cell": "cotal-ai being live does NOT clear the gate while a sibling is missing (the #1254 defect)"
     },
     {
@@ -28,7 +28,7 @@
       "file": "scripts/verify-publish-closure.mjs",
       "find": "  return [...new Set(names)].sort();",
       "replace": "  return [\"cotal-ai\"];",
-      "expectRed": true,
+      "expectRed": "the closure is derived from .changeset/config.json, matching every name in the fixed group",
       "cell": "the closure is derived from .changeset/config.json, matching every name in the fixed group"
     },
     {
@@ -36,7 +36,7 @@
       "file": "scripts/verify-publish-closure.mjs",
       "find": "  if (elapsedMs >= opts.deadlineMs) return { state: \"unsettled\", missing, why: \"deadline\" };",
       "replace": "  if (elapsedMs >= opts.deadlineMs) return { state: \"partial\", missing, why: \"deadline\" };",
-      "expectRed": true,
+      "expectRed": "a set still shrinking at the deadline reports UNSETTLED — the gate fails toward 'cannot tell'",
       "cell": "a set still shrinking at the deadline reports UNSETTLED — the gate fails toward 'cannot tell'"
     },
     {
@@ -44,7 +44,7 @@
       "file": "scripts/verify-publish-closure.mjs",
       "find": "    throw new Error(\"--stable-window-ms must be at least --poll-interval-ms\");",
       "replace": "    opts.stableWindowMs = opts.pollIntervalMs;",
-      "expectRed": true,
+      "expectRed": "a stability window narrower than the poll interval is refused (it would re-admit one sample)",
       "cell": "a stability window narrower than the poll interval is refused (it would re-admit one sample)"
     },
     {
@@ -52,7 +52,7 @@
       "file": "scripts/verify-publish-closure.mjs",
       "find": "  return `${base}/${pkg.replace(\"@\", \"%40\").replace(\"/\", \"%2f\")}/${version}`;",
       "replace": "  return `${base}/${pkg}/${version}`;",
-      "expectRed": true,
+      "expectRed": "a scoped package encodes as %40scope%2fname in the per-version path",
       "cell": "a scoped package encodes as %40scope%2fname in the per-version path"
     },
     {
@@ -60,8 +60,16 @@
       "file": "bin/smoke/gen-publish-closure-dts.mts",
       "find": "  \"// Generated from verify-publish-closure.mjs by gen-publish-closure-dts.mts. Do not edit:\",",
       "replace": "  \"// Generated. Do not edit:\",",
-      "expectRed": true,
+      "expectRed": "the committed .d.mts is byte-identical to a fresh emit from the module (run pnpm gen:publish-closure-dts)",
       "cell": "the committed .d.mts is byte-identical to a fresh emit from the module (run pnpm gen:publish-closure-dts)"
+    },
+    {
+      "name": "a push that published NOTHING is reported as a partial publish, reddening every version-PR push",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "    if (missing.length === total) return { state: \"none\", missing };",
+      "replace": "    if (missing.length === total + 1) return { state: \"none\", missing };",
+      "expectRed": "a wholly absent version is NONE (published nothing), never PARTIAL",
+      "cell": "a wholly absent version is NONE (published nothing), never PARTIAL"
     }
   ]
 }

@@ -31,8 +31,9 @@ export function versionUrl(base: any, pkg: any, version: any): string;
  * Classify one reading. Split out from the polling so the decision can be exercised directly:
  * the thing worth testing is the rule, not the sleeping.
  */
-export function classify({ missing, unchangedForMs, elapsedMs }: {
+export function classify({ missing, total, unchangedForMs, elapsedMs }: {
     missing: any;
+    total: any;
     unchangedForMs: any;
     elapsedMs: any;
 }, opts?: {
