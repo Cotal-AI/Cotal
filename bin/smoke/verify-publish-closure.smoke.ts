@@ -9,6 +9,9 @@
  * Prove: pnpm mutation-proof --config bin/smoke/mutations/verify-publish-closure.json
  */
 import { spawnSync } from "node:child_process";
+import { createServer } from "node:net";
+import type { AddressInfo } from "node:net";
+import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -284,6 +287,48 @@ check(
   redirected,
 );
 
+// ------------------------------------------- a socket that never answers must not outlast the budget
+// The deadline used to be checked only BETWEEN polls, so a registry that accepted the connection and
+// never sent headers parked the gate inside one await and the release job's own timeout reddened a
+// healthy publish. These cells bound the gate, so they must never be allowed to hang: each races the
+// call against a guard that RESOLVES with a sentinel, which turns a regression into a named failure
+// instead of a suite that never finishes.
+function withGuard<T>(work: Promise<T>, ms: number): Promise<T | { state: string }> {
+  let timer: NodeJS.Timeout;
+  const guard = new Promise<{ state: string }>((r) => { timer = setTimeout(() => r({ state: "HUNG" }), ms); });
+  return Promise.race([work, guard]).finally(() => clearTimeout(timer));
+}
+
+// Ignores the abort signal ON PURPOSE. A fetch that honours it would prove only that Node aborts,
+// which is Node's property and not this gate's; the gate has to terminate either way.
+const neverAnswers = (() => new Promise<Response>(() => {})) as unknown as typeof fetch;
+
+const hung = await withGuard(verifyClosure("9.9.9", {
+  packages: ["a", "b", "c", "d"],
+  opts: { ...DEFAULTS, pollIntervalMs: 10, stableWindowMs: 100, deadlineMs: 300 },
+  fetchImpl: neverAnswers,
+}), 8_000);
+check(
+  "a registry that accepts the connection and never answers still settles inside the budget",
+  hung.state === "unsettled",
+  hung,
+);
+
+// Frozen injected clock: the run's simulated elapsed never moves, so only the REAL budget can end
+// it. Without that, every read timing out would leave the loop polling forever on a clock that had
+// barely advanced -- the same hang arriving by a shorter route.
+const frozen = await withGuard(verifyClosure("9.9.9", {
+  packages: ["a", "b", "c", "d"],
+  opts: { ...DEFAULTS, pollIntervalMs: 10, stableWindowMs: 100, deadlineMs: 300 },
+  fetchImpl: neverAnswers,
+  now: () => 0,
+}), 8_000);
+check(
+  "spending the real budget ends the run even when the injected clock has not moved",
+  frozen.state === "unsettled",
+  frozen,
+);
+
 // ---------------------------------------------------------------- operator knobs
 check("--registry overrides the base and strips a trailing slash", parseOptions(["--registry=http://x/"]).registryBase === "http://x");
 check("--stable-window-ms is parsed", parseOptions(["--stable-window-ms=42000"]).stableWindowMs === 42_000);
@@ -306,9 +351,14 @@ const fixtureFetch = join(ROOT, "bin/smoke/fixtures/verify-publish-closure-fetch
 // The child is a plain node process with no business seeing this seat's mesh credentials or broker
 // URL, so the ambient copy is scrubbed before it is spread. Built as a function so the cell below
 // asserts the SAME object the spawn receives, rather than a restatement of the rule.
-function childEnvFor(missing: string[]): NodeJS.ProcessEnv {
+function scrubbedEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
+  return env;
+}
+
+function childEnvFor(missing: string[]): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = scrubbedEnv();
   env.SMOKE_CLOSURE_MISSING = missing.join(",");
   env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ""} --import=${fixtureFetch}`.trim();
   return env;
@@ -370,6 +420,41 @@ check(
 const noVersion = spawnSync("node", [join(ROOT, "scripts/verify-publish-closure.mjs")], { encoding: "utf8", cwd: ROOT, env: childEnvFor([]) });
 check("the shipped command refuses to run with no version argument", noVersion.status === 2, `${noVersion.stdout}${noVersion.stderr}`);
 
+// ------------------------------------- a real hanging socket, through the real entry point
+// The cells above inject a fetch, so they prove the gate's own bound. This one proves the whole
+// shipped path against a real TCP peer that accepts the connection and never writes a byte -- the
+// shape an operator's mirror or proxy actually fails in, and the one `--registry` exposes.
+//
+// spawnSync blocks this process, yet the server still behaves as "accepted, no answer": the kernel
+// completes the handshake into the listen backlog without the JS loop accepting it. That is what
+// makes this reachable from a blocking spawn at all, where a server that had to REPLY could not be.
+const deaf = createServer(() => {}); // a connection handler that answers nothing
+deaf.listen(0, "127.0.0.1");
+await once(deaf, "listening");
+const deafPort = (deaf.address() as AddressInfo).port;
+
+const hungCli = spawnSync(
+  "node",
+  [join(ROOT, "scripts/verify-publish-closure.mjs"), "9.9.9",
+    `--registry=http://127.0.0.1:${deafPort}`, "--poll-interval-ms=10", "--stable-window-ms=100", "--deadline-ms=1500"],
+  // NOT childEnvFor: that injects the fixture fetch, which would answer in-process and never open a
+  // socket. This cell is only worth having if the child talks to the real network stack, so it gets
+  // the same COTAL_ scrub with no fixture. The first run of this cell reported published=21/21
+  // against a deaf server, which is precisely the masking being removed here.
+  { encoding: "utf8", cwd: ROOT, env: scrubbedEnv(), timeout: 30_000 },
+);
+deaf.close();
+check(
+  "the shipped command exits 2 (cannot tell) against a registry that never answers, rather than being killed",
+  hungCli.status === 2 && hungCli.signal === null,
+  `status=${hungCli.status} signal=${hungCli.signal} ${hungCli.stdout}${hungCli.stderr}`,
+);
+check(
+  "and it says it could not tell rather than reporting a partial publish",
+  hungCli.stdout.includes("UNSETTLED") && !hungCli.stdout.includes("PARTIAL PUBLISH"),
+  `${hungCli.stdout}${hungCli.stderr}`,
+);
+
 // ---------------------------------------------------------------- the declaration cannot drift
 // A hand-written declaration would be a second source of truth about the gate that decides whether a
 // release is complete. This asserts the committed file is byte for byte what the compiler emits from
@@ -380,7 +465,7 @@ check(
   committedDts === emitDeclaration(),
 );
 
-const EXPECTED = 48;
+const EXPECTED = 52;
 check(`every cell ran (${EXPECTED} before sentinel)`, passed + failed === EXPECTED, passed + failed);
 console.log(`VERIFY PUBLISH CLOSURE SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 console.log("SUITE COMPLETE");

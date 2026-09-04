@@ -56,10 +56,10 @@
       "cell": "a scoped package encodes as %40scope%2fname in the per-version path"
     },
     {
-      "name": "the generated declaration's header changes, so the committed copy no longer matches the emit",
+      "name": "the generated header stops being prepended, so the committed declaration no longer matches the emit",
       "file": "bin/smoke/gen-publish-closure-dts.mts",
-      "find": "  \"// Generated from verify-publish-closure.mjs by gen-publish-closure-dts.mts. Do not edit:\",",
-      "replace": "  \"// Generated. Do not edit:\",",
+      "find": "    return `${HEADER}\\n${emitted.replace(/^#!.*\\n/, \"\")}`;",
+      "replace": "    return `${emitted.replace(/^#!.*\\n/, \"\")}`;",
       "expectRed": "the committed .d.mts is byte-identical to a fresh emit from the module (run pnpm gen:publish-closure-dts)",
       "cell": "the committed .d.mts is byte-identical to a fresh emit from the module (run pnpm gen:publish-closure-dts)"
     },
@@ -114,10 +114,37 @@
     {
       "name": "redirects are followed again, so a 302 onto a generic 200 reads as a published package",
       "file": "scripts/verify-publish-closure.mjs",
-      "find": "        method: \"GET\",\n        redirect: \"manual\",",
-      "replace": "        method: \"GET\",",
+      "find": "      fetchImpl(url, { method: \"GET\", redirect: \"manual\", signal: AbortSignal.timeout(remainingMs) }),",
+      "replace": "      fetchImpl(url, { method: \"GET\", signal: AbortSignal.timeout(remainingMs) }),",
       "expectRed": "a registry that redirects onto a generic 200 does NOT report published — a followed redirect is not presence",
       "cell": "a registry that redirects onto a generic 200 does NOT report published — a followed redirect is not presence"
+    },
+    {
+      "name": "the read is awaited unbounded again, so a socket that never answers parks the gate past its own deadline",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "    return await Promise.race([\n      fetchImpl(url, { method: \"GET\", redirect: \"manual\", signal: AbortSignal.timeout(remainingMs) }),\n      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(\"read budget expired\")), remainingMs); }),\n    ]);",
+      "replace": "    return await fetchImpl(url, { method: \"GET\", redirect: \"manual\", signal: AbortSignal.timeout(remainingMs) });",
+      "cell": "a registry that accepts the connection and never answers still settles inside the budget",
+      "expectRed": "a registry that accepts the connection and never answers still settles inside the budget",
+      "why": "The race is what makes termination the GATE's guarantee rather than the transport's. With only the signal, a fetch that ignores it holds the gate forever."
+    },
+    {
+      "name": "the per-read budget stops shrinking, so a hung read cannot be cut short by the time already spent",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "    const remainingMs = Math.max(0, budgetEndsAt - Date.now());",
+      "replace": "    const remainingMs = opts.deadlineMs;",
+      "cell": "the shipped command exits 2 (cannot tell) against a registry that never answers, rather than being killed",
+      "expectRed": "the shipped command exits 2 (cannot tell) against a registry that never answers, rather than being killed",
+      "why": "Each read must be bounded by what is LEFT of the run, not by the full budget: 21 sequential reads each granted the whole deadline is 21x the budget the job allows."
+    },
+    {
+      "name": "elapsed is read from the injected clock alone, so a run whose reads all time out polls forever",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "    const elapsedMs = Math.max(now() - started, Date.now() - (budgetEndsAt - opts.deadlineMs));",
+      "replace": "    const elapsedMs = now() - started;",
+      "cell": "spending the real budget ends the run even when the injected clock has not moved",
+      "expectRed": "spending the real budget ends the run even when the injected clock has not moved",
+      "why": "Spending the real budget has to COUNT as the deadline passing, or the bound on each read just moves the hang into the poll loop."
     }
   ]
 }

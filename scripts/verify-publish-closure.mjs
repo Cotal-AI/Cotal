@@ -55,6 +55,12 @@ export const DEFAULTS = {
   // 10 minutes, not 15: the release job runs under `timeout-minutes: 15`, so a deadline equal to
   // the job's own budget means the UNSETTLED path loses to the Actions timeout and reds the job
   // instead of reporting that it cannot tell. Leave the gate room to finish and say so.
+  //
+  // That margin is only worth anything because this is a WALL-CLOCK budget that bounds the reads
+  // themselves. It used to be consulted only between polls, after every read had already returned,
+  // which made it a deadline on the classification and not on the I/O: a registry that accepted the
+  // connection and never sent headers parked the gate inside a single await, the budget could not
+  // bind, and the job timeout reddened a fully healthy release.
   deadlineMs: 600_000,
 };
 
@@ -149,10 +155,34 @@ export function classify({ missing, errored = [], total, unchangedForMs, elapsed
   return { state: "polling", missing };
 }
 
-async function readClosure(packages, version, opts, fetchImpl) {
+/**
+ * One read, bounded by whatever is left of the run's budget. Two mechanisms, and they are not
+ * redundant with each other: the abort signal tells the transport to give up so the socket is
+ * released, and the race bounds THIS function even when a fetch implementation ignores the signal.
+ * Termination is the gate's own guarantee to make; delegating it to the transport is what left the
+ * budget unenforced. Deleting either line removes a distinct property, so neither is tidy-up.
+ */
+async function readWithinBudget(fetchImpl, url, remainingMs) {
+  let timer;
+  try {
+    return await Promise.race([
+      fetchImpl(url, { method: "GET", redirect: "manual", signal: AbortSignal.timeout(remainingMs) }),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("read budget expired")), remainingMs); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readClosure(packages, version, opts, fetchImpl, budgetEndsAt) {
   const missing = [];
   const errored = [];
   for (const pkg of packages) {
+    // Real time, deliberately, and not the injected clock: this bounds real sockets, while the
+    // injected clock exists so cells can simulate a long propagation window without waiting. Once
+    // the budget is gone `remainingMs` is 0, every remaining read rejects at once, and the run ends
+    // on its own deadline instead of on the job's.
+    const remainingMs = Math.max(0, budgetEndsAt - Date.now());
     let status;
     try {
       // `redirect: "manual"` is load-bearing, not tidiness. Node's fetch FOLLOWS redirects by
@@ -161,12 +191,11 @@ async function readClosure(packages, version, opts, fetchImpl) {
       // direction that cuts a Release for something unpublished. Not following turns the 3xx into
       // a status this function already classifies as no-evidence. Verified against the real
       // registry: it does not redirect this endpoint, so manual changes nothing on the live path.
-      const res = await fetchImpl(versionUrl(opts.registryBase, pkg, version), {
-        method: "GET",
-        redirect: "manual",
-      });
+      const res = await readWithinBudget(fetchImpl, versionUrl(opts.registryBase, pkg, version), remainingMs);
       status = res.status;
     } catch {
+      // A budget expiry lands here with the throws: an unanswered read is no evidence about the
+      // package, which is the same rule a refused connection already follows.
       errored.push(pkg);
       continue;
     }
@@ -208,12 +237,13 @@ export async function verifyClosure(version, {
   log = () => {},
 } = {}) {
   const started = now();
+  const budgetEndsAt = Date.now() + opts.deadlineMs;
   let previous = null;
   let unchangedSince = started;
   const reads = [];
 
   for (;;) {
-    const { missing, errored } = await readClosure(packages, version, opts, fetchImpl);
+    const { missing, errored } = await readClosure(packages, version, opts, fetchImpl, budgetEndsAt);
     if (errored.length > 0) {
       // No continuous observation across an error, so the stability window restarts rather than
       // counting the outage as though the set had held.
@@ -225,7 +255,10 @@ export async function verifyClosure(version, {
       previous = key;
     }
 
-    const elapsedMs = now() - started;
+    // The greater of the simulated and the real elapsed time. Spending the real budget IS the
+    // deadline passing: without this, a run whose every read timed out would keep polling forever
+    // on an injected clock that had barely moved, which is the same hang by a shorter route.
+    const elapsedMs = Math.max(now() - started, Date.now() - (budgetEndsAt - opts.deadlineMs));
     const unchangedForMs = now() - unchangedSince;
     reads.push({ published: packages.length - missing.length - errored.length, missing: [...missing], errored: [...errored], elapsedMs });
     log(`  published=${packages.length - missing.length - errored.length}/${packages.length} missing=[${missing.join(" ")}] errored=[${errored.join(" ")}] unchanged_for=${Math.round(unchangedForMs / 1000)}s`);
