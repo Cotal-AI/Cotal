@@ -14,6 +14,8 @@ export interface MeshLaunchAgent {
   name: string;
   /** Connector type to spawn with (claude / opencode / hermes / …). */
   agent: string;
+  /** Directory on the manager host: absolute, or relative to the manager workspace. */
+  cwd?: string;
   role?: string;
   model?: string;
   variant?: string;

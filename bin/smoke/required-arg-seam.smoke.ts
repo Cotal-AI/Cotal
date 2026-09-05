@@ -286,8 +286,11 @@ const SEAMS: Seam[] = [
   // 301a6cf6e) adds three smoke-side calls. The pin was not moved when that suite landed, so this
   // cell was red from 301a6cf6e until 24b3d9281 corrected it: a whole-repo exact count goes red
   // without the file that holds it being touched, which is the reason it is exact.
+  // 117/86 -> 118/87: gate-reconcile-auth.smoke.ts opens one more provisioner connection for the
+  // records KV the lost-ack same-op recovery needs. It stays under smoke/ with the suite's other
+  // three sites: the call is harness residue, not product connect, and it already states tls: false.
   // Every added site states the transport decision explicitly.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 117, untypecheckedSites: 86 },
+  { fn: "standaloneConnectOpts", key: "tls", sites: 118, untypecheckedSites: 87 },
 ];
 
 /**

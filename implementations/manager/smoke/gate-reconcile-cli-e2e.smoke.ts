@@ -118,13 +118,22 @@ let daemon: ReturnType<typeof spawn> | undefined;
 let poisonDaemon: ReturnType<typeof spawn> | undefined;
 const holderConns: NatsConnection[] = [];
 const execConns: NatsConnection[] = [];
+const childEnv = {
+  ...process.env,
+  COTAL_SERVER: "",
+  COTAL_SERVERS: "",
+  COTAL_CREDS: "",
+  NATS_URL: "",
+  XDG_CONFIG_HOME: join(dir, "xdg"),
+  COTAL_SKIP_CONNECTOR_SEED: "1",
+};
 
 /** Drive the REAL command, from the seeded root, and hand back what an operator would see. */
 const runCli = (args: string[]): { code: number | null; out: string; err: string } => {
   const r = spawnSync(TSX, [join(REPO, "bin", "cotal.ts"), ...args], {
     cwd: ROOT, encoding: "utf8", timeout: 120_000,
     // Scrubbed: a live ambient broker/creds must never reach a command this smoke drives.
-    env: { ...process.env, COTAL_SERVER: "", COTAL_SERVERS: "", COTAL_CREDS: "", NATS_URL: "" },
+    env: childEnv,
   });
   return { code: r.status, out: r.stdout ?? "", err: r.stderr ?? "" };
 };
@@ -223,7 +232,7 @@ try {
     let poisonLog = "";
     poisonDaemon = spawn(TSX, [join(REPO, "bin", "cotal.ts"), "deliver", "--space", space, "--server", SERVERS, "--creds", targetDeliveryCreds], {
       cwd: FOREIGN_ROOT, stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, COTAL_SERVER: "", COTAL_SERVERS: "", COTAL_CREDS: "", NATS_URL: "" },
+      env: childEnv,
     });
     poisonDaemon.stdout?.on("data", (b) => { poisonLog += String(b); });
     poisonDaemon.stderr?.on("data", (b) => { poisonLog += String(b); });
@@ -237,7 +246,7 @@ try {
 
     daemon = spawn(TSX, [join(REPO, "bin", "cotal.ts"), "deliver", "--space", space, "--server", SERVERS, "--dev-mint"], {
       cwd: ROOT, stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, COTAL_SERVER: "", COTAL_SERVERS: "", COTAL_CREDS: "", NATS_URL: "" },
+      env: childEnv,
     });
     let daemonLog = "";
     daemon.stdout?.on("data", (b) => { daemonLog += String(b); });
@@ -250,7 +259,7 @@ try {
       await wait(35_000);
       daemon = spawn(TSX, [join(REPO, "bin", "cotal.ts"), "deliver", "--space", space, "--server", SERVERS, "--dev-mint"], {
         cwd: ROOT, stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, COTAL_SERVER: "", COTAL_SERVERS: "", COTAL_CREDS: "", NATS_URL: "" },
+        env: childEnv,
       });
       daemonLog = "";
       daemon.stdout?.on("data", (b) => { daemonLog += String(b); });

@@ -1,5 +1,43 @@
 # @cotal-ai/manager
 
+## 0.44.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.44.0
+- @cotal-ai/workspace@0.44.0
+
+## 0.43.0
+
+### Minor Changes
+
+- 890d08a: Complete a committed registration spec after a lost ack instead of freezing a new coordinate. Boot self-heal and `cotal reconcile-gate` now finish that same freeze when the spec advanced, and abort-reopen only on a definite no-commit.
+- e5412a1: Add per-agent `cwd` to mesh manifests. Relative paths resolve on the manager host against its workspace, matching the imperative spawn option. The directory survives launch-spec validation and contributes to stale-entry detection without changing hashes for manifests that omit it.
+
+  This implements the working-directory part of #963. Manifest session continuity remains separate work.
+
+- 7ff0c21: Hold the endpoint governance slot through Phase-4 reopen so a concurrent deregister cannot delete the spec a registration is still completing. `deregisterServiceInstance` now requires an observe-only read of this instance's issuance-gate generation: matching the held slot is `registration-in-flight`; a slot behind that generation is a leftover after reopen and does not block.
+
+### Patch Changes
+
+- 42b1fce: A late `turn-yield` after the deadline deny has committed is told the turn ended `failed`, never `not-found`.
+
+  The deny itself held: first-terminal-wins still refused a success over it. What failed was the diagnostic. `commitTurnDeadline` deletes the pending entry (its idempotency latch) _before_ the terminal CAS, then remembers the settled answer only after. A yield in that window, or after a concurrent sweep dropped `turnAcceptances.settled`, heard `no pending turn` — which a seat reads as an addressing fault, not "the run moved on". The durable terminal is the answer the run already has; the yield now reads it when the in-memory settled field is missing, and the sweep no longer wipes an unsettled acceptance the moment pending is empty.
+
+- 5038519: A leftover turn acceptance whose deadline commit never remembered is aged off `leftoverSince` (when the pending latch dropped), not off the original deadline.
+
+  Aging off `deadlineAt` would prune a long-outage leftover on the first sweep tick and take the GoalRef a late yield still needs. `commitTurnDeadline` stamps that clock when it deletes pending.
+
+- 42635d2: Re-anchor the late-yield mutation `find` on the durable-read code block, not the neighbouring comment.
+
+  `smoke:mutation-fixtures` refuses a `find` that spans prose. The #1265 guard used three comment lines to make the window unique; a comment-only tidy would have disarmed it silently. The durable `readGoalResult` block is unique on its own.
+
+- Updated dependencies [890d08a]
+- Updated dependencies [e5412a1]
+- Updated dependencies [7ff0c21]
+  - @cotal-ai/core@0.43.0
+  - @cotal-ai/workspace@0.43.0
+
 ## 0.42.0
 
 ### Minor Changes
