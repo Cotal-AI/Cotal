@@ -188,8 +188,191 @@ try {
 
   const semanticDownOnly = new Set([
     "implementations/runtime/smoke/mesh-wait.smoke.ts",
+    "implementations/runtime/smoke/mesh-monitor.smoke.ts",
     "packages/lang/smoke/engine.smoke.ts",
   ]);
+
+  /** Keep line numbers. Drop comments and templates so `down` inside a string is not a CLI verb. */
+  const codeOf = (source: string): string => {
+    let out = "";
+    let i = 0;
+    const blank = (from: number, to: number): void => {
+      for (let j = from; j < to; j++) out += source[j] === "\n" ? "\n" : " ";
+    };
+    while (i < source.length) {
+      const c = source[i];
+      const n = source[i + 1];
+      if (c === "/" && n === "/") {
+        const start = i;
+        i += 2;
+        while (i < source.length && source[i] !== "\n") i++;
+        blank(start, i);
+        continue;
+      }
+      if (c === "/" && n === "*") {
+        const start = i;
+        i += 2;
+        while (i < source.length && !(source[i] === "*" && source[i + 1] === "/")) i++;
+        i = Math.min(source.length, i + 2);
+        blank(start, i);
+        continue;
+      }
+      if (c === "`") {
+        const start = i;
+        i++;
+        while (i < source.length) {
+          if (source[i] === "\\") { i += 2; continue; }
+          if (source[i] === "`") { i++; break; }
+          i++;
+        }
+        blank(start, i);
+        continue;
+      }
+      if (c === '"' || c === "'") {
+        out += c;
+        i++;
+        while (i < source.length) {
+          if (source[i] === "\\") { out += source[i] + (source[i + 1] ?? ""); i += 2; continue; }
+          out += source[i];
+          if (source[i] === c) { i++; break; }
+          i++;
+        }
+        continue;
+      }
+      out += c;
+      i++;
+    }
+    return out;
+  };
+
+  const lineOf = (source: string, index: number): number => source.slice(0, index).split("\n").length;
+  const windowBefore = (source: string, index: number): string =>
+    source.slice(0, index).split("\n").slice(-5).join("\n");
+
+  const extractFunctions = (source: string): Map<string, string> => {
+    const fns = new Map<string, string>();
+    const header =
+      /(?:function\s+([A-Za-z_][\w]*)\s*\(|const\s+([A-Za-z_][\w]*)\s*=\s*(?:async\s*)?(?:\(|[A-Za-z_][\w]*\s*=>))/g;
+    let match: RegExpExecArray | null;
+    while ((match = header.exec(source))) {
+      const name = match[1] ?? match[2];
+      if (!name) continue;
+      let i = match.index + match[0].length;
+      const fromArrow = match[0].endsWith("=>");
+      if (!fromArrow) {
+        let depth = 1;
+        while (i < source.length && depth > 0) {
+          if (source[i] === "(") depth++;
+          else if (source[i] === ")") depth--;
+          i++;
+        }
+        while (i < source.length && /\s/.test(source[i])) i++;
+        if (source[i] === ":") {
+          i++;
+          let paren = 0;
+          let brace = 0;
+          let angle = 0;
+          while (i < source.length) {
+            const ch = source[i];
+            if (ch === "=" && source[i + 1] === ">" && paren === 0 && brace === 0 && angle === 0) break;
+            if (ch === "{" && paren === 0 && brace === 0 && angle === 0) break;
+            if (ch === "(") paren++;
+            else if (ch === ")") paren--;
+            else if (ch === "{") brace++;
+            else if (ch === "}") brace--;
+            else if (ch === "<") angle++;
+            else if (ch === ">") angle--;
+            i++;
+          }
+        }
+        while (i < source.length && source[i] !== "{" && !(source[i] === "=" && source[i + 1] === ">")) i++;
+        if (source[i] === "=" && source[i + 1] === ">") {
+          i += 2;
+          while (i < source.length && /\s/.test(source[i])) i++;
+        }
+      } else {
+        while (i < source.length && /\s/.test(source[i])) i++;
+      }
+      if (source[i] === "{") {
+        let depth = 1;
+        const start = i;
+        i++;
+        while (i < source.length && depth > 0) {
+          if (source[i] === "{") depth++;
+          else if (source[i] === "}") depth--;
+          i++;
+        }
+        fns.set(name, source.slice(start, i));
+      } else {
+        const start = i;
+        while (i < source.length && source[i] !== ";" && source[i] !== "\n") i++;
+        fns.set(name, source.slice(start, i));
+      }
+    }
+    return fns;
+  };
+
+  const spawnsImmediatelyGuarded = (body: string): boolean => {
+    const spawns = [...body.matchAll(/\b(?:spawnSync|spawn)\s*\(/g)];
+    if (spawns.length === 0) return false;
+    return spawns.every((spawn) => windowBefore(body, spawn.index ?? 0).includes("assertSmokeSandboxDown"));
+  };
+
+  const wrapperReachesSpawn = (name: string, fns: Map<string, string>, seen = new Set<string>()): boolean => {
+    if (name === "spawn" || name === "spawnSync") return true;
+    if (seen.has(name)) return false;
+    seen.add(name);
+    const body = fns.get(name);
+    if (!body) return false;
+    if (/\b(?:spawnSync|spawn)\s*\(/.test(body)) return true;
+    for (const callee of body.matchAll(/\b([A-Za-z_][\w]*)\s*\(/g)) {
+      if (callee[1] && wrapperReachesSpawn(callee[1], fns, seen)) return true;
+    }
+    return false;
+  };
+
+  const wrapperGuardsDown = (name: string, fns: Map<string, string>, seen = new Set<string>()): boolean => {
+    if (name === "assertSmokeSandboxDown" || name === "assertSmokeSandboxTargetDown") return true;
+    if (seen.has(name)) return false;
+    seen.add(name);
+    const body = fns.get(name);
+    if (!body) return false;
+    if (/\b(?:spawnSync|spawn)\s*\(/.test(body)) return spawnsImmediatelyGuarded(body);
+    for (const callee of body.matchAll(/\b([A-Za-z_][\w]*)\s*\(/g)) {
+      const next = callee[1];
+      if (next && wrapperGuardsDown(next, fns, seen)) return true;
+    }
+    return false;
+  };
+
+  const callNameAt = (source: string, downIndex: number): { name: string; callStart: number } | undefined => {
+    let i = downIndex;
+    let paren = 0;
+    let bracket = 0;
+    let brace = 0;
+    while (i > 0) {
+      i--;
+      const ch = source[i];
+      if (ch === ")") paren++;
+      else if (ch === "]") bracket++;
+      else if (ch === "}") brace++;
+      else if (ch === "(") {
+        if (paren === 0 && bracket === 0 && brace === 0) {
+          const before = source.slice(0, i).match(/([A-Za-z_][\w]*)\s*$/);
+          if (!before || before.index === undefined) return undefined;
+          return { name: before[1]!, callStart: before.index };
+        }
+        paren--;
+      } else if (ch === "[") {
+        if (bracket > 0) bracket--;
+      } else if (ch === "{") {
+        if (brace === 0) return undefined;
+        brace--;
+      }
+    }
+    return undefined;
+  };
+
   const files: string[] = [];
   const walk = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -201,17 +384,34 @@ try {
   };
   walk(repo);
   const unguarded: string[] = [];
+  const downArg = /(?<=[\[,(]\s*)["']down["']/g;
   for (const file of files) {
     const relative = file.slice(repo.length + 1);
     const source = readFileSync(file, "utf8");
-    if (!source.includes('"down"') && !source.includes("'down'")) continue;
+    const code = codeOf(source);
     if (semanticDownOnly.has(relative)) continue;
+    const sites = [...code.matchAll(downArg)];
+    if (sites.length === 0) continue;
+    const fns = extractFunctions(code);
+    const cliSites = sites.flatMap((site) => {
+      if (site.index === undefined) return [];
+      const call = callNameAt(code, site.index);
+      if (!call) return [];
+      if (call.name === "assertSmokeSandboxDown" || call.name === "assertSmokeSandboxTargetDown") return [];
+      return [{ ...call, index: site.index }];
+    });
+    if (cliSites.length === 0) continue;
     const guardCalls = [...source.matchAll(/assertSmokeSandboxDown\s*\(/g)];
     if (guardCalls.length < 1) unguarded.push(`${relative}: no shared guard call`);
-    for (const match of source.matchAll(/^(.*(?:spawnSync|spawn)\(.*["']down["'].*)$/gm)) {
-      const before = source.slice(0, match.index).split("\n").slice(-5).join("\n");
-      if (!before.includes("assertSmokeSandboxDown"))
-        unguarded.push(`${relative}:${source.slice(0, match.index).split("\n").length}: raw down spawn is not immediately guarded`);
+    for (const site of cliSites) {
+      const line = lineOf(code, site.index);
+      if (site.name === "spawn" || site.name === "spawnSync") {
+        if (!windowBefore(code, site.callStart).includes("assertSmokeSandboxDown"))
+          unguarded.push(`${relative}:${line}: raw down spawn is not immediately guarded`);
+        continue;
+      }
+      if (wrapperReachesSpawn(site.name, fns) && !wrapperGuardsDown(site.name, fns))
+        unguarded.push(`${relative}:${line}: down wrapper call is not immediately guarded`);
     }
   }
   assert.deepEqual(unguarded, [], `unguarded smoke cotal down call sites:\n${unguarded.join("\n")}`);
