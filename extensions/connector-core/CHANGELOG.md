@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.45.0
+
+### Patch Changes
+
+- 2a34295: `cotal send` identity refusal and CLI docs now name `COTAL_NAME` as required in both accepted shapes: plus either `COTAL_ID` or both `COTAL_OWNER` and `COTAL_ACTOR`.
+
 ## 0.44.0
 
 ### Minor Changes
