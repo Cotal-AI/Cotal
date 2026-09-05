@@ -1,7 +1,7 @@
 {
   "suite": "implementations/manager/smoke/manager-service-ops.smoke.ts",
   "guard": "manager inspect keeps live success local and closed, but distinguishes a nonterminal durable static slot from an unknown name with an honest ordered slot-plus-head observation",
-  "command": "pnpm --filter @cotal-ai/manager... build && pnpm smoke:manager-service-ops",
+  "command": "pnpm --filter @cotal-ai/manager... build && COTAL_SMOKE_STATIC_SLOT_INSPECT_ONLY=1 pnpm smoke:manager-service-ops",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/static-slot-inspect.json",
   "why": [
     "The suite drives the real manager service over ep.one. It plants a durable terminalizing slot and retiring lifecycle head after boot, so startup reconciliation cannot consume the fixture before inspect reads it.",

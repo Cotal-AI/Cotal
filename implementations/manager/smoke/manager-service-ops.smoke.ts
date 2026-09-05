@@ -73,6 +73,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
 };
 const enc = new TextEncoder(), dec = new TextDecoder();
+const PROJECTION_ONLY = process.env.COTAL_SMOKE_STATIC_SLOT_INSPECT_ONLY === "1";
 const retireOpId = (lifecycleUid: string): string =>
   createHash("sha256").update(`retire:${lifecycleUid}`).digest("hex").slice(0, 26);
 
@@ -361,6 +362,7 @@ try {
       kv.get = originalGet;
     }
   }
+  if (!PROJECTION_ONLY) {
   {
     // #651 fix: the persona-file model path. A seat whose model comes from its PERSONA FILE (no
     // --model override) must surface that model in the row - the manager folds def.model into the
@@ -700,6 +702,8 @@ try {
     }
     check("a spawn-capable agent publishing the any-mode despawn subject is broker-dropped (no reply, never served)",
       refused === "unavailable" || refused === "deadline-exceeded", refused);
+  }
+
   }
 
   await A.nc.drain().catch(() => A.nc.close());
