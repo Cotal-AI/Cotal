@@ -39,7 +39,7 @@ import { firstFreeName } from "@cotal-ai/core";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, standaloneConnectOpts, principalKey, DEV_OWNER,
-  gateObserve, gateFreeze, headBeginRetirement, headCompleteRetirement,
+  gateObserve, gateFreeze, gateRetire, headBeginRetirement, headCompleteRetirement,
   staticSlotKey,
   loadAgentFile, saveAgentFile,
   epCall, epRequestSubject, epCallerReplyFilter, EpEnvelopeError,
@@ -51,7 +51,7 @@ import {
 import { agentLifecycleSecretFilePaths, authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager, type SpawnHooks } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS, managerShippedSurface } from "../src/manager-service-contract.js";
-import { activateStaticLifecycle, casStaticSlot, readStaticSlot } from "../src/static-lifecycle.js";
+import { activateStaticLifecycle, casStaticSlot, readStaticSlot, writeStaticSlotIntent } from "../src/static-lifecycle.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 const shipped = managerShippedSurface();
 
@@ -163,6 +163,46 @@ async function plantStrandedSlot(alias: string): Promise<{ actor: string; lifecy
     await headBeginRetirement(transport, { owner: DEV_OWNER, actor, lifecycleUid, opId });
   });
   return { actor, lifecycleUid, opId };
+}
+
+async function plantProvisioningSlotWithoutHead(alias: string): Promise<{ actor: string; lifecycleUid: string }> {
+  const actor = newIdentity().id;
+  const lifecycleUid = mintLifecycleUid();
+  await M.withLifecycleExecutor({ owner: DEV_OWNER, actor, lifecycleUid, alias }, (transport) =>
+    writeStaticSlotIntent(transport, {
+      owner: DEV_OWNER, alias, actor, lifecycleUid,
+      managerInstance: "inspect-projection-fixture", ownerInstanceId: M.managerInstanceId,
+    }));
+  return { actor, lifecycleUid };
+}
+
+async function plantActiveSlot(alias: string): Promise<{ actor: string; lifecycleUid: string }> {
+  const actor = newIdentity().id;
+  const lifecycleUid = mintLifecycleUid();
+  await M.withLifecycleExecutor({ owner: DEV_OWNER, actor, lifecycleUid, alias }, async (transport) => {
+    await activateStaticLifecycle(transport, {
+      owner: DEV_OWNER, alias, actor, lifecycleUid,
+      managerInstance: "inspect-projection-fixture", ownerInstanceId: M.managerInstanceId,
+    });
+    const slot = await readStaticSlot(transport, DEV_OWNER, alias);
+    if (!slot) throw new Error(`missing planted slot ${alias}`);
+    await casStaticSlot(transport, { ...slot.row, phase: "active" }, slot.revision);
+  });
+  return { actor, lifecycleUid };
+}
+
+async function plantRetiredSlot(alias: string): Promise<{ actor: string; lifecycleUid: string }> {
+  const { actor, lifecycleUid, opId } = await plantStrandedSlot(alias);
+  await M.withLifecycleExecutor({ owner: DEV_OWNER, actor, lifecycleUid, alias }, async (transport) => {
+    const gate = await gateObserve(transport, lifecycleUid);
+    if (!gate) throw new Error(`missing planted gate ${lifecycleUid}`);
+    await gateRetire(transport, { lifecycleUid, revision: gate.revision, opId });
+    await headCompleteRetirement(transport, { owner: DEV_OWNER, actor, lifecycleUid, opId });
+    const slot = await readStaticSlot(transport, DEV_OWNER, alias);
+    if (!slot) throw new Error(`missing planted slot ${alias}`);
+    await casStaticSlot(transport, { ...slot.row, phase: "retired", cleanupComplete: true }, slot.revision);
+  });
+  return { actor, lifecycleUid };
 }
 
 /** A caller instrument: mint an agent cred with the given ep capabilities (+ ctl privileged via
@@ -318,6 +358,32 @@ try {
       strandedReply.reply.error.message.includes(`headOp=retirement:${stranded.opId}`) &&
       strandedReply.reply.error.message.includes(`consistency=ordered-not-atomic`),
       strandedReply.reply);
+
+    const provisioning = await plantProvisioningSlotWithoutHead("provisioning-inspect");
+    const provisioningReply = await A.call("inspect", { name: "provisioning-inspect" });
+    const provisioningDetail = provisioningReply.reply.error?.details?.find((d) => d.kind === "ai.cotal.manager.static-slot-observation") as Record<string, unknown> | undefined;
+    check("inspect projects a provisioning slot whose lifecycle head has not been written yet",
+      provisioningReply.reply.ok === false && provisioningReply.reply.error?.code === "failed-precondition" &&
+      provisioningDetail?.slotPhase === "provisioning" && provisioningDetail.slotLifecycleUid === provisioning.lifecycleUid &&
+      !("headState" in (provisioningDetail ?? {})) && !("headOp" in (provisioningDetail ?? {})) &&
+      !("headLifecycleUid" in (provisioningDetail ?? {})) && !("headRevision" in (provisioningDetail ?? {})),
+      provisioningReply.reply);
+
+    const active = await plantActiveSlot("active-inspect");
+    const activeReply = await A.call("inspect", { name: "active-inspect" });
+    const activeDetail = activeReply.reply.error?.details?.find((d) => d.kind === "ai.cotal.manager.static-slot-observation") as Record<string, unknown> | undefined;
+    check("inspect reports an active durable slot with no live manager row as contradictory stranded state",
+      activeReply.reply.ok === false && activeReply.reply.error?.code === "failed-precondition" &&
+      activeDetail?.slotPhase === "active" && activeDetail.headState === "active" &&
+      activeDetail.slotLifecycleUid === active.lifecycleUid && activeDetail.headLifecycleUid === active.lifecycleUid,
+      activeReply.reply);
+
+    await plantRetiredSlot("retired-inspect");
+    const retiredReply = await A.call("inspect", { name: "retired-inspect" });
+    check("inspect keeps a durably retired slot indistinguishable from a genuinely absent current agent",
+      retiredReply.reply.ok === false && retiredReply.reply.error?.code === "not-found" &&
+      retiredReply.reply.error?.details?.some((d) => d.kind === "ai.cotal.manager.static-slot-observation") !== true,
+      retiredReply.reply);
 
     const torn = await plantStrandedSlot("torn-inspect");
     const kv = M.goalWriter?.ctx.kv;

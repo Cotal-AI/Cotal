@@ -36,9 +36,9 @@
       "file": "implementations/manager/src/static-lifecycle.ts",
       "find": "    readOrder: [\"slot\", \"head\"],",
       "replace": "    readOrder: [] as unknown as [\"slot\", \"head\"],",
-      "expectRed": "a head move between the slot-first and head-second reads is reported as an ordered non-atomic pair, never a snapshot",
-      "cell": "a head move between the slot-first and head-second reads is reported as an ordered non-atomic pair, never a snapshot",
-      "note": "The fixture advances the head between reads. Without the explicit order, the pair no longer says how the torn observation was obtained.",
+      "expectRed": "inspect distinguishes a stranded durable slot from a genuinely unknown name through the real service entry point",
+      "cell": "inspect distinguishes a stranded durable slot from a genuinely unknown name through the real service entry point",
+      "note": "The earliest stranded-slot cell requires the declared slot-then-head order, so it is the named red. The later torn-read cell demonstrates why that order matters by advancing the head between the two reads.",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"
     }
   ]
